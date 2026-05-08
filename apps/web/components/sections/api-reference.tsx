@@ -30,15 +30,23 @@ if (cursor) {
   const next = await files.list({ prefix: "avatars/", cursor });
 }`;
 
-const URL_EXAMPLE = `// Public URL — throws if the bucket has no public origin.
+const URL_EXAMPLE = `// One call, every adapter. S3 / R2 / MinIO sign a GetObject (1h default,
+// override with { expiresIn }); Vercel Blob (public) returns its CDN URL.
+// If you configured \`publicBaseUrl\` on the adapter, that wins and signing
+// is skipped.
 const url = await files.url("avatars/abc.png");
+const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 
-// Time-limited signed URL for reads.
-const tempUrl = await files.signedUrl("avatars/abc.png", {
-  expiresIn: 60,
+// Force download (defeat stored XSS from user-uploaded HTML/SVG).
+// Forces signing even if \`publicBaseUrl\` is configured — a permanent
+// CDN URL has no signature to bind the override into, and silently
+// dropping a security ask would be a regression.
+const safe = await files.url("avatars/abc.png", {
+  responseContentDisposition: "attachment",
 });
 
-// Signed upload — discriminated PUT or POST shape.
+// Signed upload — discriminated PUT or POST shape, for direct
+// browser → bucket uploads without proxying through your server.
 const upload = await files.signedUploadUrl("avatars/abc.png", {
   expiresIn: 60,
   contentType: "image/png",
@@ -170,37 +178,69 @@ export const ApiReference = () => (
 
     <section>
       <Heading as="h3" id="files-urls">
-        files.url, files.signedUrl, files.signedUploadUrl
+        files.url, files.signedUploadUrl
       </Heading>
       <p>
-        Three URL helpers for three different needs. <code>url</code> returns a
-        long-lived public URL — it throws if the adapter has no public origin
-        (use <code>signedUrl</code> instead). <code>signedUploadUrl</code>{" "}
-        returns a discriminated shape so callers can handle PUT- and POST-style
-        flows uniformly.
+        <code>files.url(key, opts?)</code> is the unified read-URL entry point:
+        every adapter returns the most direct URL it can. Signing adapters (S3,
+        R2 over HTTP, MinIO, R2 binding when HTTP credentials are also
+        configured) sign a <code>GetObject</code> — defaulting to a 1-hour
+        expiry, override per-call via <code>{"{ expiresIn }"}</code> or
+        per-adapter via <code>defaultUrlExpiresIn</code>. If the adapter is
+        constructed with a <code>publicBaseUrl</code> (CDN, custom domain,{" "}
+        <code>r2.dev</code>), that wins and the URL is built without signing.
       </p>
       <p>
-        On Vercel Blob, both <code>signedUrl</code> and{" "}
-        <code>signedUploadUrl</code> throw: blob URLs are public and don't
-        expire, so signing is meaningless — call <code>url()</code> instead. For
-        browser uploads, use <code>handleUpload()</code> from{" "}
-        <code>@vercel/blob/client</code>.
+        Two configurations have no URL primitive and throw: Vercel Blob in{" "}
+        <code>access: "private"</code> mode, and an R2 Workers binding without
+        either <code>publicBaseUrl</code> or HTTP credentials.
+      </p>
+      <p>
+        <code>files.signedUploadUrl(key, opts)</code> is a different operation —
+        it returns a discriminated PUT-or-POST contract so a client (typically a
+        browser) can upload directly to the bucket without proxying bytes
+        through your server. Vercel Blob throws — use{" "}
+        <code>handleUpload()</code> from <code>@vercel/blob/client</code> for
+        browser uploads.
       </p>
       <CodeBlock code={URL_EXAMPLE} lang="ts" />
       <div className="flex flex-col gap-2">
-        <Heading as="h4">Sign options</Heading>
+        <Heading as="h4">files.url options</Heading>
+        <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
+          <li className="px-4 py-3">
+            <code>expiresIn</code> — number of seconds, optional. Honored on
+            signing adapters; ignored on Vercel Blob (no signing primitive).
+            Defaults to the adapter's <code>defaultUrlExpiresIn</code> (1 hour).
+          </li>
+          <li className="px-4 py-3">
+            <code>responseContentDisposition</code> — string, optional.{" "}
+            <span className="text-foreground">
+              Strongly recommended for buckets with user-uploaded content.
+            </span>{" "}
+            Without it, the browser uses the stored <code>Content-Type</code> to
+            decide whether to render or download — a user-uploaded{" "}
+            <code>.html</code> (or SVG with embedded scripts) will execute
+            inline at your bucket's origin. Pass <code>"attachment"</code> to
+            force a download. <strong>Forces the signing path</strong> on
+            adapters that can sign (overrides <code>publicBaseUrl</code>,
+            because permanent CDN URLs can't carry the override). Throws on
+            Vercel Blob (no Content-Disposition primitive) and on the R2 binding
+            without HTTP credentials.
+          </li>
+        </ul>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Heading as="h4">files.signedUploadUrl options</Heading>
         <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
           <li className="px-4 py-3">
             <code>expiresIn</code> — number of seconds. Required.
           </li>
           <li className="px-4 py-3">
-            <code>contentType</code> — string, optional.{" "}
-            <code>signedUploadUrl</code> only; bound into the signature so the
-            upload must match.
+            <code>contentType</code> — string, optional. Bound into the
+            signature so the upload's <code>Content-Type</code> must match.
           </li>
           <li className="px-4 py-3">
             <code>maxSize</code> — number of bytes, optional.{" "}
-            <code>signedUploadUrl</code> only.{" "}
             <span className="text-foreground">Strongly recommended.</span>{" "}
             Without it, the signed URL has no server-side size cap — anyone with
             the URL can upload an arbitrarily large file until{" "}
@@ -209,22 +249,9 @@ export const ApiReference = () => (
             <code>content-length-range</code>.
           </li>
           <li className="px-4 py-3">
-            <code>minSize</code> — number of bytes, optional.{" "}
-            <code>signedUploadUrl</code> only. Defaults to <code>1</code> when{" "}
-            <code>maxSize</code> is set, so empty uploads are rejected by the
-            POST policy. Pass <code>0</code> to allow them.
-          </li>
-          <li className="px-4 py-3">
-            <code>responseContentDisposition</code> — string, optional.{" "}
-            <code>signedUrl</code> only.{" "}
-            <span className="text-foreground">
-              Strongly recommended for buckets with user-uploaded content.
-            </span>{" "}
-            Without it, the browser uses the stored <code>Content-Type</code> to
-            decide whether to render or download — a user-uploaded{" "}
-            <code>.html</code> (or SVG with embedded scripts) will execute
-            inline at your bucket's origin. Pass <code>"attachment"</code> to
-            force a download.
+            <code>minSize</code> — number of bytes, optional. Defaults to{" "}
+            <code>1</code> when <code>maxSize</code> is set, so empty uploads
+            are rejected by the POST policy. Pass <code>0</code> to allow them.
           </li>
         </ul>
       </div>

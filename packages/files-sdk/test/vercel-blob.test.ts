@@ -263,15 +263,17 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
-  test("signedUrl throws Provider (Vercel Blob URLs don't expire)", async () => {
+  test("url with responseContentDisposition throws Provider (no Content-Disposition primitive)", async () => {
     const files = new Files({ adapter: vercelBlob() });
     try {
-      await files.signedUrl("a.txt", { expiresIn: 60 });
+      await files.url("a.txt", { responseContentDisposition: "attachment" });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).code).toBe("Provider");
-      expect((error as FilesError).message).toMatch(/do not expire/u);
+      expect((error as FilesError).message).toMatch(
+        /responseContentDisposition|signing primitive/u
+      );
     }
   });
 
@@ -666,14 +668,13 @@ describe("vercel-blob adapter", () => {
       process.env.BLOB_READ_WRITE_TOKEN = "test-token";
     });
 
-    test("signedUrl throws with a private-specific message", async () => {
+    test("url with responseContentDisposition still throws on private blobs", async () => {
       const files = new Files({ adapter: vercelBlob({ access: "private" }) });
       try {
-        await files.signedUrl("a.txt", { expiresIn: 60 });
+        await files.url("a.txt", { responseContentDisposition: "attachment" });
         throw new Error("should have thrown");
       } catch (error) {
         expect((error as FilesError).code).toBe("Provider");
-        expect((error as FilesError).message).toMatch(/private/u);
       }
     });
 

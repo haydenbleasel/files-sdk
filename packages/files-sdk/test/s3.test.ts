@@ -147,17 +147,61 @@ describe("s3 adapter", () => {
     expect(input.MaxKeys).toBe(10);
   });
 
-  test("url() throws Provider for S3", async () => {
-    const files = new Files({
-      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+  test("url() returns a presigned GET URL by default (no publicBaseUrl)", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      region: "us-east-1",
     });
-    try {
-      await files.url("a.txt");
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
-    }
+    const url = await adapter.url("a.txt");
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("a.txt");
+    // Default expiry should land on 3600 (1 hour).
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
+
+  test("url() honors a per-call expiresIn override", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      region: "us-east-1",
+    });
+    const url = await adapter.url("a.txt", { expiresIn: 120 });
+    expect(url).toContain("X-Amz-Expires=120");
+  });
+
+  test("url() honors the adapter-level defaultUrlExpiresIn", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      defaultUrlExpiresIn: 300,
+      region: "us-east-1",
+    });
+    const url = await adapter.url("a.txt");
+    expect(url).toContain("X-Amz-Expires=300");
+  });
+
+  test("url() returns the publicBaseUrl when configured (no signing)", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    const url = await adapter.url("a.txt");
+    expect(url).toBe("https://cdn.example.com/a.txt");
+    // No signature querystring when we route around signing.
+    expect(url).not.toContain("X-Amz-Signature=");
+  });
+
+  test("url() trims a trailing slash on publicBaseUrl", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com/",
+      region: "us-east-1",
+    });
+    expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
   test("NoSuchKey is mapped to NotFound", async () => {
@@ -329,24 +373,13 @@ describe("s3 adapter", () => {
     expect(await item.text()).toBe("hello");
   });
 
-  test("signedUrl returns a presigned GET URL", async () => {
+  test("url forwards responseContentDisposition for forced-attachment downloads", async () => {
     const adapter = s3({
       bucket: "b",
       credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
       region: "us-east-1",
     });
-    const url = await adapter.signedUrl("k.txt", { expiresIn: 60 });
-    expect(url).toContain("X-Amz-Signature=");
-    expect(url).toContain("k.txt");
-  });
-
-  test("signedUrl forwards responseContentDisposition for forced-attachment downloads", async () => {
-    const adapter = s3({
-      bucket: "b",
-      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
-      region: "us-east-1",
-    });
-    const url = await adapter.signedUrl("k.txt", {
+    const url = await adapter.url("k.txt", {
       expiresIn: 60,
       responseContentDisposition: "attachment",
     });
@@ -354,6 +387,27 @@ describe("s3 adapter", () => {
     // querystring — without this the browser would render uploaded HTML
     // inline at the bucket's domain.
     expect(url).toContain("response-content-disposition=attachment");
+    expect(url).toContain("X-Amz-Signature=");
+  });
+
+  test("url with responseContentDisposition forces signing even when publicBaseUrl is set", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    // Without the override, publicBaseUrl wins.
+    expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    // With the override, signing wins because permanent CDN URLs can't
+    // carry a Content-Disposition override — silently dropping it would
+    // be a security regression.
+    const signed = await adapter.url("a.txt", {
+      responseContentDisposition: "attachment",
+    });
+    expect(signed).toContain("X-Amz-Signature=");
+    expect(signed).toContain("response-content-disposition=attachment");
+    expect(signed).not.toContain("cdn.example.com");
   });
 
   test("signedUploadUrl returns method PUT with content-type header when no maxSize", async () => {
@@ -542,14 +596,14 @@ describe("s3 adapter", () => {
     expect(done).toBe(true);
   });
 
-  test("signedUrl: presigner errors are mapped via mapS3Error", async () => {
+  test("url: presigner errors are mapped via mapS3Error", async () => {
     const adapter = s3({
       bucket: "b",
       credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
       region: "us-east-1",
     });
     try {
-      await adapter.signedUrl("k.txt", { expiresIn: 10_000_000 });
+      await adapter.url("k.txt", { expiresIn: 10_000_000 });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);

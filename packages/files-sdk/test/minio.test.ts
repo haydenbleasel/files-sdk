@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { S3Client } from "@aws-sdk/client-s3";
 import { mockClient } from "aws-sdk-client-mock";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files } from "../src/index.js";
 import { minio } from "../src/minio/index.js";
 
 describe("minio adapter", () => {
@@ -65,23 +65,28 @@ describe("minio adapter", () => {
     }
   });
 
-  test("url() throws Provider with helpful guidance", async () => {
-    const files = new Files({
-      adapter: minio({
-        accessKeyId: "AKID",
-        bucket: "uploads",
-        endpoint: "http://localhost:9000",
-        secretAccessKey: "SECRET",
-      }),
+  test("url() returns a presigned GET URL by default", async () => {
+    const adapter = minio({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      endpoint: "http://localhost:9000",
+      secretAccessKey: "SECRET",
     });
-    try {
-      await files.url("a.txt");
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
-      expect((error as FilesError).message).toMatch(/private|signedUrl/u);
-    }
+    const url = await adapter.url("a.txt");
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("a.txt");
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
+
+  test("url() returns the publicBaseUrl when configured", async () => {
+    const adapter = minio({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      endpoint: "http://localhost:9000",
+      publicBaseUrl: "https://cdn.example.com",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
   test("delegates upload to underlying S3 client", async () => {

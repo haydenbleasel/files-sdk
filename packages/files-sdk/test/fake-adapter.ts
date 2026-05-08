@@ -5,12 +5,12 @@ import type {
   DownloadOptions,
   ListOptions,
   ListResult,
-  SignOptions,
   SignUploadOptions,
   SignedUpload,
   StoredFile,
   UploadOptions,
   UploadResult,
+  UrlOptions,
 } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 
@@ -159,14 +159,6 @@ export const fakeAdapter = (): FakeAdapter => {
         url: `https://fake.local/${encodeURIComponent(key)}`,
       });
     },
-    signedUrl(key: string, opts: SignOptions): Promise<string> {
-      if (!store.has(key)) {
-        throw new FilesError("NotFound", `not found: ${key}`);
-      }
-      return Promise.resolve(
-        `https://fake.local/${encodeURIComponent(key)}?expires=${opts.expiresIn}`
-      );
-    },
     async upload(
       key: string,
       body: Body,
@@ -190,8 +182,14 @@ export const fakeAdapter = (): FakeAdapter => {
         size: bytes.byteLength,
       };
     },
-    url(_key: string): Promise<string> {
-      throw new FilesError("Provider", "fake adapter has no public URL");
+    url(key: string, opts?: UrlOptions): Promise<string> {
+      if (!store.has(key)) {
+        throw new FilesError("NotFound", `not found: ${key}`);
+      }
+      const expires = opts?.expiresIn ?? 3600;
+      return Promise.resolve(
+        `https://fake.local/${encodeURIComponent(key)}?expires=${expires}`
+      );
     },
   };
 };

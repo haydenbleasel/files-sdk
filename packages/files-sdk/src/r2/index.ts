@@ -9,28 +9,97 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  SignUploadOptions,
+  SignedUpload,
   StoredFile,
   UploadResult,
+  UrlOptions,
 } from "../index.js";
+import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
-import { s3 } from "../s3/index.js";
+// Note: the s3 adapter is *not* imported eagerly. The HTTP and hybrid paths
+// load it via dynamic import on first use so that a binding-only Worker
+// bundle never pulls in @aws-sdk/client-s3 (~500KB+). See
+// `loadHttpAdapter` below.
+import type { S3Adapter, S3AdapterOptions } from "../s3/index.js";
 
 export interface R2HttpOptions {
   bucket: string;
   accountId?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  /**
+   * Origin used to build URLs from `url()` — typically an `r2.dev`
+   * subdomain or a custom domain bound to the bucket. When set, `url()`
+   * returns `${publicBaseUrl}/${key}` and skips signing. When unset,
+   * `url()` returns a presigned GetObject URL (default expiry: 1 hour).
+   */
+  publicBaseUrl?: string;
+  /**
+   * Default expiry, in seconds, for `url()` when `publicBaseUrl` is unset.
+   * Defaults to 3600.
+   */
+  defaultUrlExpiresIn?: number;
 }
 
 export interface R2BindingOptions {
   binding: R2Bucket;
   bucket?: string;
+  /**
+   * Origin used to build URLs from `url()` — typically an `r2.dev`
+   * subdomain or a custom domain bound to the bucket. Without this (and
+   * without HTTP credentials below), `url()` throws because a Workers
+   * binding has no signing primitive.
+   */
+  publicBaseUrl?: string;
+  /**
+   * Hybrid mode: provide HTTP credentials alongside a Workers binding.
+   * When all three are set, `url()` (when no `publicBaseUrl` is
+   * configured, or when `responseContentDisposition` is requested) and
+   * `signedUploadUrl()` route through the S3-compatible HTTP signer
+   * instead of throwing. Reads and writes still go through
+   * the binding so they stay intra-Worker (no egress fees, no extra
+   * round trip). Useful for Workers that need browser-facing presigned
+   * URLs without giving up the binding's I/O performance.
+   */
+  accountId?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  /**
+   * Default expiry, in seconds, for `url()` when it falls back to HTTP
+   * signing (hybrid mode without `publicBaseUrl`). Defaults to 3600.
+   */
+  defaultUrlExpiresIn?: number;
 }
 
 export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
 
 export type R2Adapter = Adapter<S3Client | R2Bucket>;
+
+const DEFAULT_URL_EXPIRES_IN = 3600;
+
+const joinPublicUrl = (base: string, key: string): string => {
+  const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
+  return `${trimmed}/${key}`;
+};
+
+// Lazy-load the s3 adapter via dynamic import so a binding-only Worker
+// bundle doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). The
+// returned function is single-shot: it builds the adapter once on first
+// call and returns the same promise on subsequent calls.
+const lazyS3 = (config: S3AdapterOptions): (() => Promise<S3Adapter>) => {
+  let promise: Promise<S3Adapter> | null = null;
+  return () => {
+    if (!promise) {
+      promise = (async () => {
+        const { s3 } = await import("../s3/index.js");
+        return s3(config);
+      })();
+    }
+    return promise;
+  };
+};
 
 const normalizeForR2 = async (
   body: Body,
@@ -153,6 +222,42 @@ const mapR2Error = (err: unknown): FilesError => {
 
 const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   const bucket = opts.binding;
+  const { publicBaseUrl } = opts;
+  const defaultUrlExpiresIn =
+    opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+
+  // Hybrid mode: when full HTTP creds are passed alongside the binding,
+  // build (lazily, once) an inner s3 adapter to handle URL signing. Reads
+  // and writes still go through the binding — only the signing surface
+  // delegates. The opts object is reused as the cache key so repeated
+  // calls share one adapter instance.
+  const httpBucket = (opts as Partial<R2HttpOptions>).bucket;
+  const hybrid =
+    opts.accountId && opts.accessKeyId && opts.secretAccessKey && httpBucket
+      ? lazyS3({
+          bucket: httpBucket,
+          credentials: {
+            accessKeyId: opts.accessKeyId,
+            secretAccessKey: opts.secretAccessKey,
+          },
+          defaultProviderMessage: "R2 error",
+          ...(opts.defaultUrlExpiresIn !== undefined && {
+            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          }),
+          endpoint: `https://${opts.accountId}.r2.cloudflarestorage.com`,
+          forcePathStyle: true,
+          region: "auto",
+        })
+      : null;
+  const getSigner = (): Promise<S3Adapter> => {
+    if (!hybrid) {
+      throw new FilesError(
+        "Provider",
+        "r2 binding: signing requires either `publicBaseUrl` (for url()) or HTTP credentials (`accountId`, `accessKeyId`, `secretAccessKey`, `bucket`) for presigned URLs. See https://developers.cloudflare.com/r2/api/s3/tokens/."
+      );
+    }
+    return hybrid();
+  };
 
   return {
     async copy(from, to) {
@@ -256,17 +361,12 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     },
     name: "r2-binding",
     raw: bucket,
-    signedUploadUrl(_key, _opts) {
-      throw new FilesError(
-        "Provider",
-        "r2 binding: signed upload URLs are not supported via the Workers binding. Use the HTTP adapter for presigned URLs."
-      );
-    },
-    signedUrl(_key, _opts) {
-      throw new FilesError(
-        "Provider",
-        "r2 binding: signed URLs are not supported via the Workers binding. Use the HTTP adapter (r2({ accountId, accessKeyId, secretAccessKey, bucket })) for presigned URLs."
-      );
+    async signedUploadUrl(
+      key,
+      signOpts: SignUploadOptions
+    ): Promise<SignedUpload> {
+      const signer = await getSigner();
+      return signer.signedUploadUrl(key, signOpts);
     },
     async upload(key, body, options) {
       const { data, contentType, contentLength } = await normalizeForR2(
@@ -295,20 +395,46 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         throw mapR2Error(error);
       }
     },
-    url(_key) {
+    async url(key, urlOpts: UrlOptions = {}): Promise<string> {
+      // `responseContentDisposition` requires signing — bypass the
+      // publicBaseUrl path and route through hybrid signing if available.
+      // No hybrid? Throw rather than silently dropping the security ask.
+      const wantsDisposition = Boolean(urlOpts.responseContentDisposition);
+      if (wantsDisposition && !hybrid) {
+        throw new FilesError(
+          "Provider",
+          "r2 binding: `responseContentDisposition` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
+        );
+      }
+      // Order: explicit `publicBaseUrl` wins (cheapest, no network call) —
+      // unless the caller asked for `responseContentDisposition`, which
+      // forces signing. After that, hybrid HTTP creds let url() sign.
+      // Without either, throw with guidance.
+      if (publicBaseUrl && !wantsDisposition) {
+        return joinPublicUrl(publicBaseUrl, key);
+      }
+      if (hybrid) {
+        const signer = await getSigner();
+        return signer.url(key, {
+          expiresIn: urlOpts.expiresIn ?? defaultUrlExpiresIn,
+          ...(urlOpts.responseContentDisposition && {
+            responseContentDisposition: urlOpts.responseContentDisposition,
+          }),
+        });
+      }
       throw new FilesError(
         "Provider",
-        "r2 binding: public URLs are not available via the Workers binding. Configure an r2.dev or custom domain on the bucket and build URLs manually."
+        "r2 binding: url() requires either `publicBaseUrl` (e.g. an r2.dev or custom domain bound to the bucket) or HTTP credentials for presigned URLs. See https://developers.cloudflare.com/r2/buckets/public-buckets/."
       );
     },
   };
 };
 
 const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
-  const accountId = opts.accountId ?? process.env.R2_ACCOUNT_ID;
-  const accessKeyId = opts.accessKeyId ?? process.env.R2_ACCESS_KEY_ID;
+  const accountId = opts.accountId ?? readEnv("R2_ACCOUNT_ID");
+  const accessKeyId = opts.accessKeyId ?? readEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey =
-    opts.secretAccessKey ?? process.env.R2_SECRET_ACCESS_KEY;
+    opts.secretAccessKey ?? readEnv("R2_SECRET_ACCESS_KEY");
 
   if (!accountId) {
     throw new FilesError(
@@ -323,25 +449,73 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     );
   }
 
-  const inner = s3({
+  // The s3 adapter is loaded lazily via dynamic import — every method on
+  // this proxy `await`s the inner instance, and the import is memoized
+  // after the first hit. The trade-off vs. a static import: a Worker
+  // bundle that imports `files-sdk/r2` but only uses the binding path
+  // never includes @aws-sdk/client-s3. The cost is one extra microtask
+  // on first call and a `raw` getter that returns `undefined` until the
+  // import resolves (call any method first to force the load).
+  const getInner = lazyS3({
     bucket: opts.bucket,
     credentials: { accessKeyId, secretAccessKey },
-    // R2 over HTTP uses the s3 adapter under the hood; relabel the default
-    // provider message so users don't see "S3 error" from their R2 adapter.
     defaultProviderMessage: "R2 error",
+    ...(opts.defaultUrlExpiresIn !== undefined && {
+      defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+    }),
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     forcePathStyle: true,
+    ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
     region: "auto",
   });
 
+  let cachedRaw: S3Client | undefined;
+  const ensure = async (): Promise<S3Adapter> => {
+    const inner = await getInner();
+    cachedRaw ??= inner.raw;
+    return inner;
+  };
+
   return {
-    ...inner,
+    async copy(from, to) {
+      const adapter = await ensure();
+      return adapter.copy(from, to);
+    },
+    async delete(key) {
+      const adapter = await ensure();
+      return adapter.delete(key);
+    },
+    async download(key, downloadOpts) {
+      const adapter = await ensure();
+      return adapter.download(key, downloadOpts);
+    },
+    async head(key) {
+      const adapter = await ensure();
+      return adapter.head(key);
+    },
+    async list(listOpts) {
+      const adapter = await ensure();
+      return adapter.list(listOpts);
+    },
     name: "r2-http",
-    url(_key) {
-      throw new FilesError(
-        "Provider",
-        "r2 adapter: public URLs require a configured r2.dev or custom domain. Build URLs manually for now."
-      );
+    // `raw` reflects the underlying S3Client once the lazy import has
+    // resolved. Returns `undefined` if accessed before any method has
+    // run — call any method first (the import is memoized, so it's a
+    // one-time cost).
+    get raw(): S3Client {
+      return cachedRaw as S3Client;
+    },
+    async signedUploadUrl(key, signOpts) {
+      const adapter = await ensure();
+      return adapter.signedUploadUrl(key, signOpts);
+    },
+    async upload(key, body, uploadOpts) {
+      const adapter = await ensure();
+      return adapter.upload(key, body, uploadOpts);
+    },
+    async url(key, urlOpts) {
+      const adapter = await ensure();
+      return adapter.url(key, urlOpts);
     },
   };
 };

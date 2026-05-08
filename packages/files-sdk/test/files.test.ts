@@ -126,11 +126,12 @@ describe("Files class", () => {
     expect(files.adapter).toBe(adapter);
   });
 
-  test("signedUrl returns a string", async () => {
+  test("url returns a string with the configured expiry", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("k.txt", "v");
-    const url = await files.signedUrl("k.txt", { expiresIn: 60 });
+    const url = await files.url("k.txt", { expiresIn: 60 });
     expect(url).toMatch(/^https:\/\/fake\.local/u);
+    expect(url).toContain("expires=60");
   });
 
   test("signedUploadUrl returns a discriminated SignedUpload", async () => {

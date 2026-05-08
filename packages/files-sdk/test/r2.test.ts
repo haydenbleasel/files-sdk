@@ -15,6 +15,11 @@ describe("r2 adapter — HTTP path", () => {
       secretAccessKey: "SECRET",
     });
     expect(adapter.name).toBe("r2-http");
+    // The s3 adapter is loaded lazily, so `raw` is undefined until any
+    // method has run. `head()` here forces the import (and is mocked away
+    // by the global s3Mock — the rejection doesn't matter; we just want
+    // the inner adapter to materialize so `raw` becomes accessible).
+    await adapter.head("touch").catch(() => {});
     const client = adapter.raw as S3Client;
     expect(await client.config.region()).toBe("auto");
     const endpoint = await client.config.endpoint?.();
@@ -62,7 +67,7 @@ describe("r2 adapter — HTTP path", () => {
     }
   });
 
-  test("url() throws Provider with helpful message", async () => {
+  test("url() returns a presigned GET URL by default", async () => {
     const files = new Files({
       adapter: r2({
         accessKeyId: "K",
@@ -71,14 +76,23 @@ describe("r2 adapter — HTTP path", () => {
         secretAccessKey: "S",
       }),
     });
-    try {
-      await files.url("a.txt");
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
-      expect((error as FilesError).message).toMatch(/r2.dev|custom domain/u);
-    }
+    const url = await files.url("a.txt");
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("a.txt");
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
+
+  test("url() returns the publicBaseUrl when configured (skips signing)", async () => {
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
   });
 
   test("delegates upload to underlying S3 client", async () => {
@@ -289,19 +303,20 @@ describe("r2 adapter — Workers binding path", () => {
     expect(got.type).toBe("text/plain");
   });
 
-  test("signedUrl from binding throws Provider", async () => {
+  test("url() with responseContentDisposition on a plain binding throws Provider", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     await files.upload("a.txt", "x");
     try {
-      await files.signedUrl("a.txt", { expiresIn: 60 });
+      await files.url("a.txt", { responseContentDisposition: "attachment" });
       throw new Error("should have thrown");
     } catch (error) {
       expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).message).toMatch(/HTTP credentials/u);
     }
   });
 
-  test("signedUploadUrl from binding throws Provider", async () => {
+  test("signedUploadUrl from a plain binding throws Provider", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     try {
@@ -312,7 +327,7 @@ describe("r2 adapter — Workers binding path", () => {
     }
   });
 
-  test("url from binding throws Provider with helpful guidance", async () => {
+  test("url() from a plain binding (no publicBaseUrl, no HTTP creds) throws Provider", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     try {
@@ -320,8 +335,118 @@ describe("r2 adapter — Workers binding path", () => {
       throw new Error("should have thrown");
     } catch (error) {
       expect((error as FilesError).code).toBe("Provider");
-      expect((error as FilesError).message).toMatch(/r2\.dev|custom domain/u);
+      expect((error as FilesError).message).toMatch(
+        /publicBaseUrl|HTTP credentials/u
+      );
     }
+  });
+
+  test("url() from a binding with publicBaseUrl returns the configured URL", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        binding: bucket as never,
+        publicBaseUrl: "https://pub.r2.dev",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+  });
+
+  test("hybrid: binding + HTTP creds enables signed url() while reads still go through the binding", async () => {
+    const { bucket, map } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        secretAccessKey: "S",
+      }),
+    });
+    await files.upload("a.txt", "via-binding", { contentType: "text/plain" });
+    // Read goes through the binding (no AWS SDK call would succeed here
+    // since the test runner has no real R2 endpoint anyway).
+    expect(map.has("a.txt")).toBe(true);
+    const got = await files.download("a.txt");
+    expect(await got.text()).toBe("via-binding");
+    // url() falls back to the lazy-loaded HTTP signer.
+    const url = await files.url("a.txt", { expiresIn: 60 });
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("a.txt");
+  });
+
+  test("hybrid: responseContentDisposition forces signing through publicBaseUrl", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    // Without disposition: publicBaseUrl wins.
+    expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+    // With disposition: signing wins.
+    const signed = await files.url("a.txt", {
+      responseContentDisposition: "attachment",
+    });
+    expect(signed).toContain("X-Amz-Signature=");
+    expect(signed).toContain("response-content-disposition=attachment");
+  });
+
+  test("hybrid: signedUploadUrl works with binding + HTTP creds", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        secretAccessKey: "S",
+      }),
+    });
+    const out = await files.signedUploadUrl("a.txt", {
+      contentType: "text/plain",
+      expiresIn: 60,
+    });
+    expect(out.method).toBe("PUT");
+    if (out.method === "PUT") {
+      expect(out.url).toContain("X-Amz-Signature=");
+    }
+  });
+
+  test("hybrid: url() falls back to HTTP signing when no publicBaseUrl is set", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        secretAccessKey: "S",
+      }),
+    });
+    const url = await files.url("a.txt");
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
+
+  test("hybrid: publicBaseUrl wins over HTTP signing fallback", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
   });
 
   test("upload via binding accepts Uint8Array, ArrayBuffer, Blob, ReadableStream", async () => {

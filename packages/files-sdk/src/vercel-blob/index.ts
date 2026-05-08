@@ -8,6 +8,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -146,7 +147,7 @@ const mapBlobError = (err: unknown): FilesError => {
 export const vercelBlob = (
   opts: VercelBlobAdapterOptions = {}
 ): VercelBlobAdapter => {
-  const token = opts.token ?? process.env.BLOB_READ_WRITE_TOKEN;
+  const token = opts.token ?? readEnv("BLOB_READ_WRITE_TOKEN");
   if (!token) {
     throw new FilesError(
       "Provider",
@@ -365,24 +366,6 @@ export const vercelBlob = (
         "vercel-blob: signed upload URLs are not available. Use Vercel's `handleUpload()` route handler with the `@vercel/blob/client` package for browser uploads."
       );
     },
-    signedUrl(_key, _opts): Promise<string> {
-      // Vercel Blob has no signed-URL primitive. Public blobs are reachable via
-      // their permanent CDN URL (`url()`); private blobs require an authenticated
-      // SDK call (`download()`), which is not a URL the caller can hand to a
-      // browser. Returning `url()` would silently violate the `expiresIn`
-      // contract — a 5-minute "signed" URL would actually live forever (or, for
-      // private blobs, never work).
-      if (access === "private") {
-        throw new FilesError(
-          "Provider",
-          "vercel-blob: signed URLs are not supported for private blobs. Use `download()` to read the body via the SDK with the token."
-        );
-      }
-      throw new FilesError(
-        "Provider",
-        "vercel-blob: signed URLs are not supported. Vercel Blob URLs are public and do not expire — call `url()` instead if a permanent public URL is acceptable."
-      );
-    },
     async upload(key, body, options) {
       try {
         const result = await blob.put(key, body as Blob | string, {
@@ -422,7 +405,22 @@ export const vercelBlob = (
         throw mapBlobError(error);
       }
     },
-    async url(key) {
+    async url(key, urlOpts) {
+      // `urlOpts.expiresIn` is intentionally ignored: Vercel Blob has no
+      // signing primitive, so the public CDN URL is the only thing we can
+      // return — and it doesn't expire. Documented on `UrlOptions`.
+      //
+      // `responseContentDisposition` is a different story — it's a
+      // security knob (force download for user-uploaded HTML/SVG to
+      // prevent stored XSS). Silently dropping it would be a regression,
+      // so we throw if it's passed. There's no Vercel Blob primitive for
+      // overriding Content-Disposition on a public CDN URL.
+      if (urlOpts?.responseContentDisposition) {
+        throw new FilesError(
+          "Provider",
+          "vercel-blob: `responseContentDisposition` is not supported. Vercel Blob has no signing primitive, so the Content-Disposition override that prevents stored XSS on user-uploaded HTML/SVG cannot be applied. Use a different provider for buckets with untrusted content."
+        );
+      }
       // Private blobs have no permanent public URL — the `url` field
       // returned by head()/list() requires authentication to fetch. Returning
       // it from `url()` would silently violate the documented "permanent

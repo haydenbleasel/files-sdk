@@ -18,6 +18,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -32,6 +33,24 @@ export interface S3AdapterOptions {
     secretAccessKey: string;
     sessionToken?: string;
   };
+  /**
+   * Origin used to build URLs from `url()`. When set, `url(key)` returns
+   * `${publicBaseUrl}/${key}` and skips signing — appropriate for buckets
+   * fronted by a CDN, public-read policy, or custom domain. When unset,
+   * `url()` falls back to a presigned `GetObject` URL (see
+   * {@link defaultUrlExpiresIn}).
+   *
+   * The base is concatenated as-is. Trailing slashes are tolerated. Keys
+   * are embedded literally — caller is responsible for URL-encoding
+   * untrusted segments.
+   */
+  publicBaseUrl?: string;
+  /**
+   * Default expiry, in seconds, for the presigned URLs returned by
+   * `url()` when `publicBaseUrl` is not set. Defaults to 3600 (1 hour).
+   * Per-call `url(key, { expiresIn })` overrides.
+   */
+  defaultUrlExpiresIn?: number;
   /**
    * Override the fallback message used when an unknown error has no
    * `message` of its own. Internal — set by the r2-http adapter so its
@@ -169,9 +188,20 @@ export const mapS3Error = (
   return new FilesError(code, e?.message ?? messages[code], err);
 };
 
+// Default expiry for url() in seconds — 1 hour. Long enough for normal
+// browser-driven flows, short enough that an accidentally-leaked URL stops
+// working before the day is out. Overridable per adapter via
+// `defaultUrlExpiresIn` and per call via `url(key, { expiresIn })`.
+const DEFAULT_URL_EXPIRES_IN = 3600;
+
+const joinPublicUrl = (base: string, key: string): string => {
+  const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
+  return `${trimmed}/${key}`;
+};
+
 export const s3 = (opts: S3AdapterOptions): S3Adapter => {
   const region =
-    opts.region ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+    opts.region ?? readEnv("AWS_REGION") ?? readEnv("AWS_DEFAULT_REGION");
   if (!region) {
     throw new FilesError(
       "Provider",
@@ -190,10 +220,30 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
 
   const client = new S3Client(config);
   const { bucket } = opts;
+  const { publicBaseUrl } = opts;
+  const defaultUrlExpiresIn =
+    opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
   const messages = opts.defaultProviderMessage
     ? defaultMessages(opts.defaultProviderMessage)
     : DEFAULT_S3_MESSAGES;
   const wrapErr = (err: unknown): FilesError => mapS3Error(err, messages);
+
+  const signGet = (
+    key: string,
+    expiresIn: number,
+    responseContentDisposition?: string
+  ): Promise<string> =>
+    getSignedUrl(
+      client,
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...(responseContentDisposition && {
+          ResponseContentDisposition: responseContentDisposition,
+        }),
+      }),
+      { expiresIn }
+    );
 
   return {
     bucket,
@@ -378,23 +428,6 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
-    async signedUrl(key, signOpts) {
-      try {
-        return await getSignedUrl(
-          client,
-          new GetObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            ...(signOpts.responseContentDisposition && {
-              ResponseContentDisposition: signOpts.responseContentDisposition,
-            }),
-          }),
-          { expiresIn: signOpts.expiresIn }
-        );
-      } catch (error) {
-        throw wrapErr(error);
-      }
-    },
     async upload(key, body, options) {
       const { data, contentType, contentLength } = await normalizeBody(
         body,
@@ -443,11 +476,26 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
-    url(_key) {
-      throw new FilesError(
-        "Provider",
-        "S3 buckets do not expose a public URL by default. Use signedUrl() instead."
-      );
+    async url(key, urlOpts) {
+      // `responseContentDisposition` forces signing even when `publicBaseUrl`
+      // is configured — a permanent CDN URL has no signature to bind the
+      // override into, and silently dropping the override would be a
+      // security regression (uploaded HTML/SVG would render inline at the
+      // bucket's origin). The override wins; if the user wanted the CDN URL
+      // they wouldn't have asked for the disposition override.
+      const wantsDisposition = Boolean(urlOpts?.responseContentDisposition);
+      if (publicBaseUrl && !wantsDisposition) {
+        return joinPublicUrl(publicBaseUrl, key);
+      }
+      try {
+        return await signGet(
+          key,
+          urlOpts?.expiresIn ?? defaultUrlExpiresIn,
+          urlOpts?.responseContentDisposition
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
     },
   };
 };

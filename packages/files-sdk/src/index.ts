@@ -56,18 +56,44 @@ export interface ListResult {
   cursor?: string;
 }
 
-export interface SignOptions {
-  expiresIn: number;
+export interface UrlOptions {
   /**
-   * Override the `Content-Disposition` header on the signed response.
+   * Override the adapter's default URL expiry, in seconds.
+   *
+   * **Honored** by adapters that sign (S3, Cloudflare R2 over HTTP, MinIO,
+   * and the R2 binding when HTTP credentials are also configured) — those
+   * adapters return a presigned URL that expires after `expiresIn` seconds.
+   *
+   * **Ignored** by Vercel Blob (public): the underlying CDN URL has no
+   * expiry, and the adapter returns it unchanged. If you need expiring
+   * URLs there, you'll need a different provider — Vercel Blob has no
+   * signing primitive.
+   *
+   * **N/A** for adapters where `url()` throws (Vercel Blob private; the
+   * R2 binding without `publicBaseUrl` and without HTTP credentials).
+   */
+  expiresIn?: number;
+  /**
+   * Override the `Content-Disposition` header on the response.
    *
    * **Strongly recommended** for buckets that contain user-uploaded
    * content. Without this override, the browser uses the stored
    * Content-Type to decide whether to render or download, which means a
    * user-uploaded `.html` (or SVG with embedded scripts) will execute
-   * inline when someone follows the signed URL — stored XSS in the
-   * trust context of your domain. Pass `"attachment"` (or
-   * `'attachment; filename="..."'`) to force a download instead.
+   * inline at your bucket's origin — stored XSS in the trust context of
+   * your domain. Pass `"attachment"` (or `'attachment; filename="..."'`)
+   * to force a download.
+   *
+   * **Forces the signing path.** On signing adapters (S3, R2 HTTP, MinIO,
+   * R2 hybrid), passing this option always returns a presigned URL —
+   * even when `publicBaseUrl` is configured, because a permanent CDN URL
+   * has no signature in which to bind the override. If `publicBaseUrl`
+   * was the deliberate choice and you also need the security override,
+   * the override wins (it's the safe default).
+   *
+   * **Throws** on Vercel Blob (no Content-Disposition primitive) and on
+   * the R2 binding without HTTP credentials (can't sign). These cases
+   * fail loudly rather than silently dropping the security ask.
    */
   responseContentDisposition?: string;
 }
@@ -126,19 +152,31 @@ export interface Adapter<Raw = unknown> {
   copy(from: string, to: string): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
   /**
-   * Return a permanent public URL for `key`.
+   * Return a URL the caller can use to fetch `key`.
+   *
+   * Adapters return the most direct URL they can produce:
+   *
+   * - **S3 / R2 (HTTP) / MinIO** sign a `GetObject` request — the URL
+   *   expires after `opts.expiresIn` seconds (or the adapter's default,
+   *   typically 3600). If the adapter was constructed with
+   *   `publicBaseUrl`, the URL is built against that origin instead and
+   *   does not expire.
+   * - **R2 (binding)** uses `publicBaseUrl` if configured, falls back to
+   *   HTTP signing if HTTP credentials were also passed (hybrid mode),
+   *   and otherwise throws.
+   * - **Vercel Blob (public)** returns the permanent CDN URL.
+   *   `expiresIn` is ignored.
+   * - **Vercel Blob (private)** throws — there is no URL primitive for
+   *   private blobs. Use `download()` instead.
    *
    * **Caller is responsible for URL-encoding.** Adapters do not escape
-   * special characters in keys when building URLs (Vercel Blob's fast
-   * path embeds `key` literally into a `https://...` URL). If `key` is
-   * derived from untrusted input, callers should validate or
-   * `encodeURIComponent`-style escape segments before passing it in —
-   * a key like `"../foo"` will produce a literal `../foo` URL fragment.
-   * The bucket-internal storage layer is unaffected, but downstream URL
-   * consumers may resolve the path differently than intended.
+   * special characters in keys when building URLs against a
+   * `publicBaseUrl` or Vercel Blob's fast path — the key is embedded
+   * literally. If `key` is derived from untrusted input, callers should
+   * validate or `encodeURIComponent`-style escape segments before
+   * passing it in.
    */
-  url(key: string): Promise<string>;
-  signedUrl(key: string, opts: SignOptions): Promise<string>;
+  url(key: string, opts?: UrlOptions): Promise<string>;
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
 }
 
@@ -222,22 +260,23 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   /**
-   * Return a permanent public URL for `key`.
+   * Return a URL the caller can use to fetch `key`.
+   *
+   * The exact URL kind depends on the adapter — see {@link Adapter.url}
+   * for the per-provider behavior. In short: signing adapters (S3, R2
+   * HTTP, MinIO) return an expiring presigned URL by default;
+   * Vercel-Blob-public returns its permanent CDN URL; configurations
+   * with no URL primitive (Vercel-Blob-private, R2 binding without
+   * `publicBaseUrl`/HTTP creds) throw.
    *
    * **Caller is responsible for URL-encoding.** Adapters do not escape
-   * special characters in keys when building URLs (Vercel Blob's fast
-   * path embeds `key` literally into a `https://...` URL). If `key` is
-   * derived from untrusted input, callers should validate or escape it
-   * before passing it in.
+   * special characters in keys when building URLs against a
+   * `publicBaseUrl` or Vercel Blob's fast path. If `key` is derived
+   * from untrusted input, callers should validate or escape it.
    */
-  url(key: string): Promise<string> {
+  url(key: string, opts?: UrlOptions): Promise<string> {
     assertValidKey(key);
-    return run(() => this.#adapter.url(key));
-  }
-
-  signedUrl(key: string, opts: SignOptions): Promise<string> {
-    assertValidKey(key);
-    return run(() => this.#adapter.signedUrl(key, opts));
+    return run(() => this.#adapter.url(key, opts));
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {

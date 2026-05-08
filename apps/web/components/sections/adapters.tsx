@@ -26,6 +26,20 @@ const files = new Files({
   }),
 });`;
 
+const R2_HYBRID_EXAMPLE = `// Inside a Cloudflare Worker. The binding handles uploads/downloads
+// (intra-Worker, no egress fees). The HTTP credentials let url() /
+// signedUrl() / signedUploadUrl() sign presigned URLs the binding alone
+// can't produce.
+const files = new Files({
+  adapter: r2({
+    binding: env.UPLOADS,
+    bucket: "uploads",
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+  }),
+});`;
+
 const VERCEL_BLOB_EXAMPLE = `import { Files } from "files-sdk";
 import { vercelBlob } from "files-sdk/vercel-blob";
 
@@ -85,6 +99,13 @@ export const Adapters = () => (
             <code>endpoint</code> — optional. Override for S3-compatible
             services.
           </li>
+          <li>
+            <code>publicBaseUrl</code> — optional. When set, <code>url()</code>{" "}
+            returns <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips
+            signing — use this if your bucket is fronted by CloudFront or has a
+            public-read policy. When unset, <code>url()</code> returns a
+            presigned GetObject (1-hour default).
+          </li>
         </ul>
       </TabsContent>
 
@@ -96,6 +117,23 @@ export const Adapters = () => (
           pass an <code>R2Bucket</code> binding directly instead.
         </p>
         <CodeBlock code={R2_EXAMPLE} lang="ts" />
+        <p>
+          <code>publicBaseUrl</code> — optional, an <code>r2.dev</code>{" "}
+          subdomain or custom domain bound to the bucket. When set,{" "}
+          <code>url()</code> returns{" "}
+          <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips signing.
+        </p>
+        <Heading as="h4">Hybrid: binding + HTTP credentials</Heading>
+        <p>
+          Inside a Worker, you can pass <em>both</em> a binding and HTTP
+          credentials. Reads and writes go through the binding (no egress, no
+          extra round trip); <code>url()</code>, <code>signedUrl()</code>, and{" "}
+          <code>signedUploadUrl()</code> route through the HTTP signer because a
+          Worker binding has no signing primitive. The S3 client is lazy-loaded
+          — bindings-only Workers don't pull <code>@aws-sdk/client-s3</code>{" "}
+          into their bundle.
+        </p>
+        <CodeBlock code={R2_HYBRID_EXAMPLE} lang="ts" />
       </TabsContent>
 
       <TabsContent className="flex flex-col gap-4" value="vercel-blob">
@@ -162,13 +200,14 @@ export const Adapters = () => (
             <code>true</code>; flip off only if you've set up per-bucket
             subdomain routing.
           </li>
+          <li>
+            <code>publicBaseUrl</code> — optional. When set, <code>url()</code>{" "}
+            returns <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips
+            signing. Use this if you've fronted MinIO with a CDN or set a public
+            bucket policy. When unset, <code>url()</code> returns a presigned
+            GetObject (1-hour default).
+          </li>
         </ul>
-        <p>
-          <span className="text-foreground">Limitations.</span>{" "}
-          <code>url()</code> throws — MinIO buckets are private by default. Use{" "}
-          <code>signedUrl()</code>, or configure a public bucket policy and
-          build URLs yourself.
-        </p>
       </TabsContent>
     </Tabs>
   </section>

@@ -10,7 +10,7 @@ const files = new Files({
 });
 
 await files.upload("hello.txt", "world");
-const url = await files.signedUrl("hello.txt", { expiresIn: 60 });`,
+const url = await files.url("hello.txt");`,
     id: "s3",
     label: "S3",
     lang: "tsx",
@@ -24,7 +24,7 @@ const files = new Files({
 });
 
 await files.upload("hello.txt", "world");
-const url = await files.signedUrl("hello.txt", { expiresIn: 60 });`,
+const url = await files.url("hello.txt");`,
     id: "r2",
     label: "Cloudflare R2",
     lang: "tsx",
@@ -38,7 +38,7 @@ const files = new Files({
 });
 
 await files.upload("hello.txt", "world");
-const url = await files.signedUrl("hello.txt", { expiresIn: 60 });`,
+const url = await files.url("hello.txt");`,
     id: "vercel-blob",
     label: "Vercel Blob",
     lang: "tsx",
@@ -52,7 +52,7 @@ const files = new Files({
 });
 
 await files.upload("hello.txt", "world");
-const url = await files.signedUrl("hello.txt", { expiresIn: 60 });`,
+const url = await files.url("hello.txt");`,
     id: "minio",
     label: "MinIO",
     lang: "tsx",
