@@ -92,6 +92,14 @@ export interface Adapter<Raw = unknown> {
   readonly raw: Raw;
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
+  /**
+   * Fetch metadata only — does not transfer the body.
+   *
+   * **Note:** the returned `StoredFile` still exposes `text()` /
+   * `arrayBuffer()` / `blob()` / `stream()`, but those accessors lazily
+   * issue a full GET on first use. If you only want metadata, don't call
+   * the body accessors. They are not free.
+   */
   head(key: string): Promise<StoredFile>;
   delete(key: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
@@ -152,6 +160,14 @@ export class Files<A extends Adapter = Adapter> {
     return run(() => this.#adapter.download(key, opts));
   }
 
+  /**
+   * Fetch metadata only — does not transfer the body.
+   *
+   * **Note:** the returned `StoredFile` still exposes `text()` /
+   * `arrayBuffer()` / `blob()` / `stream()`, but those accessors lazily
+   * issue a full GET on first use. If you only want metadata, don't call
+   * the body accessors. They are not free.
+   */
   head(key: string): Promise<StoredFile> {
     assertValidKey(key);
     return run(() => this.#adapter.head(key));
