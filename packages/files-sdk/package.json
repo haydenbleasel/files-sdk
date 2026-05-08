@@ -51,7 +51,7 @@
     "@cloudflare/workers-types": "^4.20241218.0",
     "@smithy/util-stream": "^4.5.25",
     "@types/bun": "^1.1.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^25.6.2",
     "@typescript/native-preview": "^7.0.0-dev.20250101.1",
     "aws-sdk-client-mock": "^4.1.0",
     "tsup": "^8.3.0",
