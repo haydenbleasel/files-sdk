@@ -13,9 +13,24 @@ import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
   token?: string;
-  /** Add a random suffix to uploaded keys (Vercel default). When `false`, the resulting pathname matches the key 1:1. Defaults to `false` so SDK users get predictable keys. */
+  /**
+   * Add a random suffix to uploaded keys (Vercel default).
+   *
+   * When `false`, the resulting pathname matches the key 1:1, which keeps
+   * the API consistent with S3/R2 where callers expect to control the key.
+   * Defaults to `false`.
+   */
   addRandomSuffix?: boolean;
-  /** Allow overwriting existing keys on upload. Defaults to `true`, paired with `addRandomSuffix: false`. */
+  /**
+   * Allow overwriting existing keys on upload. Defaults to `true` so that the
+   * "predictable keys" behavior (`addRandomSuffix: false`) actually works —
+   * Vercel rejects same-pathname uploads otherwise.
+   *
+   * **Trade-off:** with the defaults, an `upload(key, ...)` call silently
+   * clobbers any existing object at `key`. If keys are derived from
+   * untrusted input or your callers expect "create-only" semantics, set
+   * `allowOverwrite: false` and handle the resulting Conflict.
+   */
   allowOverwrite?: boolean;
 }
 
