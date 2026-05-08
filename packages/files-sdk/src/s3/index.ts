@@ -181,10 +181,16 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     bucket,
     async copy(from, to) {
       try {
+        // CopySource must be URL-encoded per
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
+        // S3 bucket naming rules don't require encoding in practice, but we
+        // encode both halves defensively in case a custom endpoint (e.g.
+        // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
+        // signs and serializes it as part of the request, not as a URL value.
         await client.send(
           new CopyObjectCommand({
             Bucket: bucket,
-            CopySource: `${bucket}/${encodeURIComponent(from)}`,
+            CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
             Key: to,
           })
         );
