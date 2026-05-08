@@ -63,6 +63,15 @@ export interface SignOptions {
 export interface SignUploadOptions {
   expiresIn: number;
   contentType?: string;
+  /**
+   * Maximum upload size in bytes, enforced server-side.
+   *
+   * **Strongly recommended.** When omitted, the adapter falls back to a
+   * presigned PUT URL with no server-side size limit — anyone with the URL
+   * can upload an arbitrarily large file until `expiresIn` elapses. When set,
+   * the adapter uses a presigned POST form (S3/R2) that enforces the size
+   * via a `content-length-range` policy.
+   */
   maxSize?: number;
 }
 
