@@ -71,6 +71,20 @@ const url = await files.url("hello.txt");`,
     label: "GCS",
     lang: "tsx",
   },
+  {
+    code: `import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+
+const files = new Files({
+  adapter: azure({ container: "uploads" }),
+});
+
+await files.upload("hello.txt", "world");
+const url = await files.url("hello.txt");`,
+    id: "azure",
+    label: "Azure Blob",
+    lang: "tsx",
+  },
 ] as const;
 
 export const Demo = () => <CodeTabs tabs={TABS} />;

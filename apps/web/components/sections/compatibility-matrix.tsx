@@ -30,6 +30,7 @@ const COLUMNS = [
   { key: "vb-private", label: "private", parent: "Vercel Blob" },
   { key: "minio", label: "MinIO", parent: "MinIO" },
   { key: "gcs", label: "GCS", parent: "GCS" },
+  { key: "azure", label: "Azure", parent: "Azure" },
 ] as const;
 
 type ColumnKey = (typeof COLUMNS)[number]["key"];
@@ -37,6 +38,7 @@ type ColumnKey = (typeof COLUMNS)[number]["key"];
 const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   {
     cells: {
+      azure: ok,
       gcs: ok,
       minio: ok,
       "r2-binding": ok,
@@ -50,6 +52,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: ok,
       gcs: ok,
       minio: ok,
       "r2-binding": ok,
@@ -63,6 +66,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: ok,
       gcs: ok,
       minio: ok,
       "r2-binding": ok,
@@ -76,6 +80,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: ok,
       gcs: ok,
       minio: ok,
       "r2-binding": ok,
@@ -89,6 +94,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: ok,
       gcs: ok,
       minio: ok,
       "r2-binding": ok,
@@ -102,6 +108,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: warn(
+        "Server-side copy via `syncCopyFromURL` — capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
+      ),
       gcs: ok,
       minio: ok,
       "r2-binding": warn(
@@ -119,6 +128,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: warn(
+        "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
+      ),
       gcs: ok,
       minio: ok,
       "r2-binding": no(
@@ -138,6 +150,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   },
   {
     cells: {
+      azure: warn(
+        "PUT URL only — Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
+      ),
       gcs: ok,
       minio: ok,
       "r2-binding": no(

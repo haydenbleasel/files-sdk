@@ -71,6 +71,18 @@ const files = new Files({
   }),
 });`;
 
+const AZURE_EXAMPLE = `import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+
+const files = new Files({
+  adapter: azure({
+    container: "uploads",
+    // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
+    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
+    // Pass connectionString / accountKey / sasToken explicitly to override.
+  }),
+});`;
+
 export const Adapters = () => (
   <section>
     <Heading as="h2">Adapters</Heading>
@@ -89,6 +101,7 @@ export const Adapters = () => (
         <TabsTrigger value="vercel-blob">Vercel Blob</TabsTrigger>
         <TabsTrigger value="minio">MinIO</TabsTrigger>
         <TabsTrigger value="gcs">GCS</TabsTrigger>
+        <TabsTrigger value="azure">Azure Blob</TabsTrigger>
       </TabsList>
 
       <TabsContent className="flex flex-col gap-4" value="s3">
@@ -262,6 +275,71 @@ export const Adapters = () => (
             at a Cloud CDN / load balancer host. When unset, <code>url()</code>{" "}
             returns a V4 signed read URL (1-hour default; GCS caps V4 at 7
             days).
+          </li>
+        </ul>
+      </TabsContent>
+
+      <TabsContent className="flex flex-col gap-4" value="azure">
+        <p>
+          Azure Blob Storage via the official <code>@azure/storage-blob</code>{" "}
+          SDK. Four credential modes: connection string, account name + account
+          key, account name + SAS token, or anonymous (public-read containers
+          only). Connection-string parsing recovers the account name + key so
+          signing methods keep working.
+        </p>
+        <CodeBlock code={AZURE_EXAMPLE} lang="ts" />
+        <ul>
+          <li>
+            <code>container</code> — required. Surfaced as{" "}
+            <code>adapter.bucket</code> for cross-adapter API consistency, even
+            though Azure's term is "container".
+          </li>
+          <li>
+            <code>connectionString</code> — highest precedence. Falls back to{" "}
+            <code>AZURE_STORAGE_CONNECTION_STRING</code>.
+          </li>
+          <li>
+            <code>accountName</code> — falls back to{" "}
+            <code>AZURE_STORAGE_ACCOUNT_NAME</code> then{" "}
+            <code>AZURE_STORAGE_ACCOUNT</code>.
+          </li>
+          <li>
+            <code>accountKey</code> — falls back to{" "}
+            <code>AZURE_STORAGE_ACCOUNT_KEY</code> then{" "}
+            <code>AZURE_STORAGE_KEY</code>. Required if you want{" "}
+            <code>url()</code> or <code>signedUploadUrl()</code> to mint new SAS
+            tokens.
+          </li>
+          <li>
+            <code>sasToken</code> — pre-issued SAS, with or without leading{" "}
+            <code>?</code>. Without an account key the signing methods throw —
+            reads/writes still work as long as the SAS grants those permissions.
+          </li>
+          <li>
+            <code>endpoint</code> — optional. Defaults to{" "}
+            <code>https://&lt;accountName&gt;.blob.core.windows.net</code>.
+            Override for Azurite (local emulator) or sovereign clouds (US
+            Government, China).
+          </li>
+          <li>
+            <code>publicBaseUrl</code> — optional. When set, <code>url()</code>{" "}
+            returns <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips
+            signing. Use for a public-access container or a CDN (
+            <code>*.azureedge.net</code>) in front of the account. When unset,{" "}
+            <code>url()</code> returns a SAS read URL (1-hour default).
+          </li>
+          <li>
+            <span className="text-foreground">Limitations.</span>{" "}
+            <code>signedUploadUrl()</code> issues PUT-only — Azure SAS has no
+            POST-policy equivalent. <code>maxSize</code> throws because Azure
+            can't enforce upload caps at the URL level; enforce them at your
+            application gateway. <code>copy()</code> uses{" "}
+            <code>syncCopyFromURL</code>, which caps at 256 MB source size;
+            larger blobs need <code>beginCopyFromURL</code> via{" "}
+            <code>adapter.raw</code>. <code>@azure/identity</code> / Managed
+            Identity is not supported in v1 — drop down to{" "}
+            <code>adapter.raw</code> or wait for a future <code>client</code>{" "}
+            option.
           </li>
         </ul>
       </TabsContent>

@@ -1,7 +1,7 @@
 {
   "name": "files-sdk",
   "version": "0.0.0",
-  "description": "Unified storage SDK for object/blob backends (S3, R2, Vercel Blob, MinIO, GCS).",
+  "description": "Unified storage SDK for object/blob backends (S3, R2, Vercel Blob, MinIO, GCS, Azure Blob Storage).",
   "license": "MIT",
   "author": "Hayden Bleasel",
   "files": [
@@ -36,6 +36,10 @@
     "./gcs": {
       "types": "./dist/gcs/index.d.ts",
       "import": "./dist/gcs/index.js"
+    },
+    "./azure": {
+      "types": "./dist/azure/index.d.ts",
+      "import": "./dist/azure/index.js"
     }
   },
   "scripts": {
@@ -49,6 +53,7 @@
     "@aws-sdk/client-s3": "^3.700.0",
     "@aws-sdk/s3-presigned-post": "^3.700.0",
     "@aws-sdk/s3-request-presigner": "^3.700.0",
+    "@azure/storage-blob": "^12.26.0",
     "@google-cloud/storage": "^7.19.0",
     "@vercel/blob": "^2.3"
   },

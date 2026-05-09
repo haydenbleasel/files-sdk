@@ -31,9 +31,10 @@ if (cursor) {
 }`;
 
 const URL_EXAMPLE = `// One call, every adapter. S3 / R2 / MinIO / GCS sign a GetObject (1h
-// default, override with { expiresIn }); Vercel Blob (public) returns its CDN URL.
-// If you configured \`publicBaseUrl\` on the adapter, that wins and signing
-// is skipped.
+// default, override with { expiresIn }); Azure signs a SAS read URL with
+// the same default; Vercel Blob (public) returns its CDN URL. If you
+// configured \`publicBaseUrl\` on the adapter, that wins and signing is
+// skipped.
 const url = await files.url("avatars/abc.png");
 const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 
@@ -196,12 +197,13 @@ export const ApiReference = () => (
       <p>
         Returns a URL the caller can use to fetch <code>key</code>. Every
         adapter returns the most direct URL it can produce. Signing adapters
-        (S3, R2 over HTTP, MinIO, GCS, R2 binding when HTTP credentials are also
-        configured) sign a <code>GetObject</code> — defaulting to a 1-hour
-        expiry, override per-call via <code>{"{ expiresIn }"}</code> or
-        per-adapter via <code>defaultUrlExpiresIn</code>. If the adapter is
-        constructed with a <code>publicBaseUrl</code> (CDN, custom domain,{" "}
-        <code>r2.dev</code>), that wins and the URL is built without signing.
+        (S3, R2 over HTTP, MinIO, GCS, Azure with shared key, R2 binding when
+        HTTP credentials are also configured) sign a <code>GetObject</code> —
+        defaulting to a 1-hour expiry, override per-call via{" "}
+        <code>{"{ expiresIn }"}</code> or per-adapter via{" "}
+        <code>defaultUrlExpiresIn</code>. If the adapter is constructed with a{" "}
+        <code>publicBaseUrl</code> (CDN, custom domain, <code>r2.dev</code>),
+        that wins and the URL is built without signing.
       </p>
       <p>
         Two configurations have no URL primitive and throw: Vercel Blob in{" "}
@@ -247,8 +249,8 @@ export const ApiReference = () => (
         browser) can upload directly to the bucket without proxying bytes
         through your server. The flow is: your server calls{" "}
         <code>signedUploadUrl()</code>, returns the result to the browser, the
-        browser uploads straight to S3/R2/MinIO/GCS. Bandwidth and CPU stay off
-        your server.
+        browser uploads straight to S3/R2/MinIO/GCS/Azure. Bandwidth and CPU
+        stay off your server.
       </p>
       <p>
         Without <code>maxSize</code>, the adapter returns a presigned PUT URL —
@@ -262,7 +264,10 @@ export const ApiReference = () => (
         Vercel Blob throws here — its upload model goes through{" "}
         <code>handleUpload()</code> from <code>@vercel/blob/client</code>{" "}
         instead of presigned URLs. The R2 Workers binding throws unless you've
-        configured hybrid mode (binding + HTTP credentials).
+        configured hybrid mode (binding + HTTP credentials). Azure returns a PUT
+        URL but throws on <code>maxSize</code> — Azure SAS has no
+        <code>content-length-range</code> equivalent, so enforce upload caps at
+        your application gateway.
       </p>
       <CodeBlock code={SIGNED_UPLOAD_EXAMPLE} lang="ts" />
       <div className="flex flex-col gap-2">
