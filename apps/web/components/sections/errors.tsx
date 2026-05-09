@@ -25,7 +25,7 @@ export const Errors = () => (
       <Heading as="h4" id="error-codes">
         Codes
       </Heading>
-      <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
+      <ul className="list-none! pl-0! gap-0! rounded-md border border-dotted divide-y divide-dotted">
         <li className="px-4 py-3">
           <code>"NotFound"</code> — key does not exist.
         </li>

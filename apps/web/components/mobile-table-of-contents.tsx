@@ -27,7 +27,7 @@ export const MobileTableOfContents = () => (
     <CollapsibleContent className="overflow-hidden data-open:animate-collapsible-down data-closed:animate-collapsible-up">
       <ul
         role="list"
-        className="!list-none !px-4 flex flex-col gap-1 border-t border-dotted py-3"
+        className="list-none! px-4! flex flex-col gap-1 border-t border-dotted py-3"
       >
         {sections.map(({ id, label }) => (
           <li className="text-sm" key={id}>
