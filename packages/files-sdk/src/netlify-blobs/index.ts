@@ -417,21 +417,36 @@ export const netlifyBlobs = (
       );
     },
     async list(options): Promise<ListResult> {
-      let result: Awaited<ReturnType<Store["list"]>>;
+      // Use the paginated iterator so a small `limit` actually bounds
+      // server-side I/O — the non-paginated form drains every page
+      // internally, which on a large store could cost MBs of network
+      // traffic for `limit: 10`. Netlify's pagination cursor is opaque
+      // (not exposed on the iterator value), so we still can't thread
+      // it through the unified `cursor` API; we just stop iterating
+      // when we have enough.
+      const limit = options?.limit;
+      const blobs: { etag: string; key: string }[] = [];
+      const reachedLimit = (): boolean =>
+        limit !== undefined && blobs.length >= limit;
       try {
-        // Non-paginated form auto-drains all server-side pages internally.
-        // Netlify's pagination cursor is opaque (not exposed on the result),
-        // so we can't thread it through the unified `cursor` API. Document
-        // this limitation in the adapter docs / compatibility matrix.
-        result = await store.list({
+        const iter = store.list({
+          paginate: true,
           ...(options?.prefix && { prefix: options.prefix }),
         });
+        for await (const page of iter) {
+          for (const b of page.blobs) {
+            blobs.push(b);
+            if (reachedLimit()) {
+              break;
+            }
+          }
+          if (reachedLimit()) {
+            break;
+          }
+        }
       } catch (error) {
         throw mapNetlifyError(error);
       }
-      const limit = options?.limit;
-      const blobs =
-        limit === undefined ? result.blobs : result.blobs.slice(0, limit);
       const items: StoredFile[] = blobs.map((b) =>
         createStoredFile(
           {

@@ -140,7 +140,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       hetzner: ok,
       minio: ok,
       nb: warn(
-        "Netlify's list response only carries key + etag — size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. The unified `cursor` is not honoured because Netlify's pagination cursor is internal to the SDK; non-paginated `list()` drains all server-side pages and the adapter's `limit` is applied client-side."
+        "Netlify's list response only carries key + etag — size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. The unified `cursor` is not honoured because Netlify's pagination cursor is internal to the SDK; the adapter iterates the SDK's paginated form and stops once `limit` is satisfied, so `limit` does bound server-side I/O."
       ),
       onedrive: warn(
         "Returns immediate-children files only at `rootFolderPath` — no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Graph's `@odata.nextLink` as the opaque cursor."

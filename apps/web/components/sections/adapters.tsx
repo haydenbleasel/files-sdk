@@ -472,10 +472,11 @@ export const Adapters = () => (
           from a follow-up <code>head()</code> per item, so list entries return{" "}
           <code>size: 0</code> and <code>type: "application/octet-stream"</code>{" "}
           by default. The unified <code>cursor</code> is not honoured because
-          Netlify's pagination cursor is internal to the SDK; the non-paginated{" "}
-          <code>list()</code> drains all server-side pages, and the adapter's{" "}
-          <code>limit</code> is applied client-side. Stream uploads are buffered
-          up-front because Netlify's <code>set()</code> has no streaming form.
+          Netlify's pagination cursor is internal to the SDK, but the adapter
+          iterates the SDK's paginated form and stops once <code>limit</code> is
+          satisfied — so <code>limit</code> does bound server-side I/O. Stream
+          uploads are buffered up-front because Netlify's <code>set()</code> has
+          no streaming form.
         </p>
       </div>
     </section>

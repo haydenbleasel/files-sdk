@@ -140,20 +140,51 @@ const deleteMock = mock((key: string): Promise<void> => {
   return Promise.resolve();
 });
 
+// Page size for the paginated mock. Real Netlify uses ~1000; the mock keeps
+// it small so tests can verify the adapter stops iterating once `limit` is
+// satisfied without needing thousands of fixtures.
+const MOCK_PAGE_SIZE = 2;
+let listPagesYielded = 0;
+
+const matchingBlobs = (prefix?: string): { etag: string; key: string }[] =>
+  [...backing.entries()]
+    .filter(([k]) => !prefix || k.startsWith(prefix))
+    .map(([key, entry]) => ({ etag: entry.etag, key }));
+
 const listMock = mock(
   (opts?: {
     prefix?: string;
     paginate?: boolean;
-  }): Promise<{
-    blobs: { key: string; etag: string }[];
-    directories: string[];
-  }> => {
+  }):
+    | Promise<{
+        blobs: { etag: string; key: string }[];
+        directories: string[];
+      }>
+    | AsyncIterable<{
+        blobs: { etag: string; key: string }[];
+        directories: string[];
+      }> => {
+    const all = matchingBlobs(opts?.prefix);
     if (opts?.paginate) {
-      return Promise.reject(new Error("paginate not supported in this mock"));
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < all.length; i += MOCK_PAGE_SIZE) {
+            listPagesYielded += 1;
+            yield {
+              blobs: all.slice(i, i + MOCK_PAGE_SIZE),
+              directories: [],
+            };
+          }
+          // If the store is empty, real Netlify still yields one (empty)
+          // page before completing — match that so callers always see at
+          // least one tick of the iterator.
+          if (all.length === 0) {
+            listPagesYielded += 1;
+            yield { blobs: [], directories: [] };
+          }
+        },
+      };
     }
-    const all = [...backing.entries()]
-      .filter(([k]) => !opts?.prefix || k.startsWith(opts.prefix))
-      .map(([key, entry]) => ({ etag: entry.etag, key }));
     return Promise.resolve({ blobs: all, directories: [] });
   }
 );
@@ -180,6 +211,7 @@ const { netlifyBlobs } = await import("../src/netlify-blobs/index.js");
 beforeEach(() => {
   backing.clear();
   etagCounter = 0;
+  listPagesYielded = 0;
   setMock.mockClear();
   getMock.mockClear();
   getMetadataMock.mockClear();
@@ -456,6 +488,43 @@ describe("netlify-blobs adapter", () => {
     await files.upload("c", "3");
     const out = await files.list({ limit: 2 });
     expect(out.items).toHaveLength(2);
+  });
+
+  test("list with a small limit stops iterating server-side pages", async () => {
+    // Upload 6 items at MOCK_PAGE_SIZE=2 → 3 pages. limit=3 should consume
+    // exactly 2 pages (the second page completes the 3rd item) and skip
+    // the third page entirely. This is the perf-cliff regression test:
+    // before pagination, the adapter drained all pages regardless of limit.
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    for (const k of ["a", "b", "c", "d", "e", "f"]) {
+      await files.upload(k, k);
+    }
+    listPagesYielded = 0;
+    const out = await files.list({ limit: 3 });
+    expect(out.items).toHaveLength(3);
+    expect(listPagesYielded).toBe(2);
+  });
+
+  test("list without a limit drains all pages", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    for (const k of ["a", "b", "c", "d", "e"]) {
+      await files.upload(k, k);
+    }
+    listPagesYielded = 0;
+    const out = await files.list();
+    expect(out.items).toHaveLength(5);
+    // 5 items at MOCK_PAGE_SIZE=2 → ceil(5/2) = 3 pages.
+    expect(listPagesYielded).toBe(3);
+  });
+
+  test("list passes paginate: true to the underlying SDK", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("a", "1");
+    await files.list();
+    const call = listMock.mock.calls[0]?.[0] as
+      | { paginate?: boolean }
+      | undefined;
+    expect(call?.paginate).toBe(true);
   });
 
   test("list returns no cursor (Netlify pagination is opaque)", async () => {
