@@ -5,6 +5,7 @@ import "./globals.css";
 import type { ReactNode } from "react";
 
 import { MotionProvider } from "@/components/motion-provider";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const geistSans = Geist({
@@ -14,7 +15,7 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   subsets: ["latin"],
-  variable: "--font-geist-mono",
+  variable: "--font-mono",
 });
 
 export const metadata: Metadata = {
@@ -37,7 +38,9 @@ const RootLayout = ({ children }: RootLayoutProps) => (
     )}
   >
     <body className="flex min-h-full flex-col">
-      <MotionProvider>{children}</MotionProvider>
+      <TooltipProvider>
+        <MotionProvider>{children}</MotionProvider>
+      </TooltipProvider>
     </body>
   </html>
 );
