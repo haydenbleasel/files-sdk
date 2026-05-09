@@ -1,6 +1,6 @@
 {
   "name": "files-sdk",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Unified storage SDK for object/blob backends (S3, R2, Vercel Blob, MinIO, GCS, Azure Blob Storage, Supabase Storage).",
   "license": "MIT",
   "author": "Hayden Bleasel",
