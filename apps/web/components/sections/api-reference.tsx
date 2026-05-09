@@ -1,5 +1,11 @@
 import { CodeBlock } from "@/components/code-block";
 import { Heading } from "@/components/heading";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 
 const UPLOAD_EXAMPLE = `await files.upload("avatars/abc.png", file, {
   contentType: "image/png",
@@ -94,23 +100,41 @@ export const ApiReference = () => (
         <Heading as="h4" id="files-upload-options">
           Options
         </Heading>
-        <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
-          <li className="px-4 py-3">
-            <code>contentType</code> — string, optional. Inferred from{" "}
-            <code>File</code>/<code>Blob</code> <code>type</code> when not set.
-          </li>
-          <li className="px-4 py-3">
-            <code>cacheControl</code> — string, optional. Sent verbatim to the
-            provider.
-          </li>
-          <li className="px-4 py-3">
-            <code>metadata</code> — <code>Record&lt;string, string&gt;</code>,
-            optional. Provider user-metadata, returned by <code>head</code> and{" "}
-            <code>list</code> where the provider supports it. Vercel Blob does
-            not expose user metadata, so it round-trips as{" "}
-            <code>undefined</code>.
-          </li>
-        </ul>
+        <Accordion className="rounded-md border-dotted" type="multiple">
+          <AccordionItem className="border-dotted" value="contentType">
+            <AccordionTrigger>
+              <code>contentType</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                string, optional. Inferred from <code>File</code>/
+                <code>Blob</code> <code>type</code> when not set.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="cacheControl">
+            <AccordionTrigger>
+              <code>cacheControl</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>string, optional. Sent verbatim to the provider.</p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="metadata">
+            <AccordionTrigger>
+              <code>metadata</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                <code>Record&lt;string, string&gt;</code>, optional. Provider
+                user-metadata, returned by <code>head</code> and{" "}
+                <code>list</code> where the provider supports it. Vercel Blob
+                does not expose user metadata, so it round-trips as{" "}
+                <code>undefined</code>.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </div>
     </section>
 
@@ -175,19 +199,35 @@ export const ApiReference = () => (
         <Heading as="h4" id="files-list-options">
           Options
         </Heading>
-        <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
-          <li className="px-4 py-3">
-            <code>prefix</code> — string, optional.
-          </li>
-          <li className="px-4 py-3">
-            <code>limit</code> — number, optional. Provider-specific cap;
-            defaults to 1000.
-          </li>
-          <li className="px-4 py-3">
-            <code>cursor</code> — string, optional. Pass <code>cursor</code>{" "}
-            from the previous result to continue.
-          </li>
-        </ul>
+        <Accordion className="rounded-md border-dotted" type="multiple">
+          <AccordionItem className="border-dotted" value="prefix">
+            <AccordionTrigger>
+              <code>prefix</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>string, optional.</p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="limit">
+            <AccordionTrigger>
+              <code>limit</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>number, optional. Provider-specific cap; defaults to 1000.</p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="cursor">
+            <AccordionTrigger>
+              <code>cursor</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                string, optional. Pass <code>cursor</code> from the previous
+                result to continue.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </div>
     </section>
 
@@ -216,28 +256,46 @@ export const ApiReference = () => (
         <Heading as="h4" id="files-url-options">
           Options
         </Heading>
-        <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
-          <li className="px-4 py-3">
-            <code>expiresIn</code> — number of seconds, optional. Honored on
-            signing adapters; ignored on Vercel Blob (no signing primitive).
-            Defaults to the adapter's <code>defaultUrlExpiresIn</code> (1 hour).
-          </li>
-          <li className="px-4 py-3">
-            <code>responseContentDisposition</code> — string, optional.{" "}
-            <span className="text-foreground">
-              Strongly recommended for buckets with user-uploaded content.
-            </span>{" "}
-            Without it, the browser uses the stored <code>Content-Type</code> to
-            decide whether to render or download — a user-uploaded{" "}
-            <code>.html</code> (or SVG with embedded scripts) will execute
-            inline at your bucket's origin. Pass <code>"attachment"</code> to
-            force a download. <strong>Forces the signing path</strong> on
-            adapters that can sign (overrides <code>publicBaseUrl</code>,
-            because permanent CDN URLs can't carry the override). Throws on
-            Vercel Blob (no Content-Disposition primitive) and on the R2 binding
-            without HTTP credentials.
-          </li>
-        </ul>
+        <Accordion className="rounded-md border-dotted" type="multiple">
+          <AccordionItem className="border-dotted" value="expiresIn">
+            <AccordionTrigger>
+              <code>expiresIn</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                number of seconds, optional. Honored on signing adapters;
+                ignored on Vercel Blob (no signing primitive). Defaults to the
+                adapter's <code>defaultUrlExpiresIn</code> (1 hour).
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem
+            className="border-dotted"
+            value="responseContentDisposition"
+          >
+            <AccordionTrigger>
+              <code>responseContentDisposition</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                string, optional.{" "}
+                <span className="text-foreground">
+                  Strongly recommended for buckets with user-uploaded content.
+                </span>{" "}
+                Without it, the browser uses the stored{" "}
+                <code>Content-Type</code> to decide whether to render or
+                download — a user-uploaded <code>.html</code> (or SVG with
+                embedded scripts) will execute inline at your bucket's origin.
+                Pass <code>"attachment"</code> to force a download.{" "}
+                <strong>Forces the signing path</strong> on adapters that can
+                sign (overrides <code>publicBaseUrl</code>, because permanent
+                CDN URLs can't carry the override). Throws on Vercel Blob (no
+                Content-Disposition primitive) and on the R2 binding without
+                HTTP credentials.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </div>
     </section>
 
@@ -276,29 +334,55 @@ export const ApiReference = () => (
         <Heading as="h4" id="files-signed-upload-url-options">
           Options
         </Heading>
-        <ul className="!list-none !pl-0 !gap-0 rounded-md border border-dotted divide-y divide-dotted">
-          <li className="px-4 py-3">
-            <code>expiresIn</code> — number of seconds. Required.
-          </li>
-          <li className="px-4 py-3">
-            <code>contentType</code> — string, optional. Bound into the
-            signature so the upload's <code>Content-Type</code> must match.
-          </li>
-          <li className="px-4 py-3">
-            <code>maxSize</code> — number of bytes, optional.{" "}
-            <span className="text-foreground">Strongly recommended.</span>{" "}
-            Without it, the signed URL has no server-side size cap — anyone with
-            the URL can upload an arbitrarily large file until{" "}
-            <code>expiresIn</code> elapses. With it, the adapter switches to a
-            presigned POST form that enforces the size via{" "}
-            <code>content-length-range</code>.
-          </li>
-          <li className="px-4 py-3">
-            <code>minSize</code> — number of bytes, optional. Defaults to{" "}
-            <code>1</code> when <code>maxSize</code> is set, so empty uploads
-            are rejected by the POST policy. Pass <code>0</code> to allow them.
-          </li>
-        </ul>
+        <Accordion className="rounded-md border-dotted" type="multiple">
+          <AccordionItem className="border-dotted" value="expiresIn">
+            <AccordionTrigger>
+              <code>expiresIn</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>number of seconds. Required.</p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="contentType">
+            <AccordionTrigger>
+              <code>contentType</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                string, optional. Bound into the signature so the upload's{" "}
+                <code>Content-Type</code> must match.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="maxSize">
+            <AccordionTrigger>
+              <code>maxSize</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                number of bytes, optional.{" "}
+                <span className="text-foreground">Strongly recommended.</span>{" "}
+                Without it, the signed URL has no server-side size cap — anyone
+                with the URL can upload an arbitrarily large file until{" "}
+                <code>expiresIn</code> elapses. With it, the adapter switches to
+                a presigned POST form that enforces the size via{" "}
+                <code>content-length-range</code>.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem className="border-dotted" value="minSize">
+            <AccordionTrigger>
+              <code>minSize</code>
+            </AccordionTrigger>
+            <AccordionContent>
+              <p>
+                number of bytes, optional. Defaults to <code>1</code> when{" "}
+                <code>maxSize</code> is set, so empty uploads are rejected by
+                the POST policy. Pass <code>0</code> to allow them.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </div>
     </section>
   </section>
