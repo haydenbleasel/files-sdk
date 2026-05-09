@@ -317,7 +317,7 @@ describe("netlify-blobs adapter", () => {
     expect(entry.metadata.__contentType).toBe("text/plain");
     expect(entry.metadata.__size).toBe(5);
     expect(entry.metadata.__cacheControl).toBe("public, max-age=60");
-    expect((entry.metadata.user as Record<string, string>).uploadedBy).toBe(
+    expect((entry.metadata.__user as Record<string, string>).uploadedBy).toBe(
       "alice"
     );
     expect(typeof entry.metadata.__lastModified).toBe("number");
@@ -559,10 +559,10 @@ describe("netlify-blobs adapter", () => {
     }
     expect(dst.metadata.__contentType).toBe("text/plain");
     expect(dst.metadata.__cacheControl).toBe("public, max-age=60");
-    expect((dst.metadata.user as Record<string, string>).uploadedBy).toBe(
+    expect((dst.metadata.__user as Record<string, string>).uploadedBy).toBe(
       "alice"
     );
-    expect((dst.metadata.user as Record<string, string>).region).toBe(
+    expect((dst.metadata.__user as Record<string, string>).region).toBe(
       "us-west"
     );
     const got = await files.download("to.txt");

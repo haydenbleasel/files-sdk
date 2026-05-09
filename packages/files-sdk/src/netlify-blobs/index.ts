@@ -64,7 +64,7 @@ const META_CONTENT_TYPE = "__contentType";
 const META_SIZE = "__size";
 const META_LAST_MODIFIED = "__lastModified";
 const META_CACHE_CONTROL = "__cacheControl";
-const META_USER = "user";
+const META_USER = "__user";
 
 interface PackedMetadata {
   [META_CONTENT_TYPE]?: string;
@@ -502,7 +502,7 @@ export const netlifyBlobs = (
           contentType,
           ...(result.etag && { etag: result.etag }),
           key,
-          lastModified: (packed[META_LAST_MODIFIED] as number) ?? Date.now(),
+          lastModified: packed[META_LAST_MODIFIED] as number,
           size,
         };
       } catch (error) {
@@ -510,11 +510,9 @@ export const netlifyBlobs = (
       }
     },
     url(_key, _urlOpts?: UrlOptions): Promise<string> {
-      return Promise.reject(
-        new FilesError(
-          "Provider",
-          "netlify-blobs: url() is not supported. Netlify Blobs has no public URL primitive — use download() to read the body via the SDK with the token."
-        )
+      throw new FilesError(
+        "Provider",
+        "netlify-blobs: url() is not supported. Netlify Blobs has no public URL primitive — use download() to read the body via the SDK with the token."
       );
     },
   };
