@@ -21,6 +21,7 @@ export default defineConfig({
     "src/fs/index.ts",
     "src/uploadthing/index.ts",
     "src/onedrive/index.ts",
+    "src/dropbox/index.ts",
   ],
   format: ["esm"],
   sourcemap: true,

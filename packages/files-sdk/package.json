@@ -89,6 +89,10 @@
     "./onedrive": {
       "types": "./dist/onedrive/index.d.ts",
       "import": "./dist/onedrive/index.js"
+    },
+    "./dropbox": {
+      "types": "./dist/dropbox/index.d.ts",
+      "import": "./dist/dropbox/index.js"
     }
   },
   "scripts": {
@@ -110,6 +114,7 @@
     "@netlify/blobs": "^10.7.4",
     "@supabase/storage-js": "^2.105.4",
     "@vercel/blob": "^2.3",
+    "dropbox": "^10.34.0",
     "google-auth-library": "^9.15.1",
     "uploadthing": "^7"
   },

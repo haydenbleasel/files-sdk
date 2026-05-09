@@ -13,6 +13,7 @@ const iconLabels: Record<keyof typeof icons, string> = {
   Akamai: "Akamai",
   AzureBlobStorage: "Azure Blob Storage",
   DigitalOcean: "DigitalOcean Spaces",
+  Dropbox: "Dropbox",
   GoogleCloudStorage: "Google Cloud Storage",
   GoogleDrive: "Google Drive",
   Hetzner: "Hetzner",
@@ -25,7 +26,6 @@ const iconLabels: Record<keyof typeof icons, string> = {
   Supabase: "Supabase Storage",
   UploadThing: "UploadThing",
   Vercel: "Vercel Blob",
-  dropbox: "Dropbox",
 };
 
 const iconList = Object.entries(icons) as [

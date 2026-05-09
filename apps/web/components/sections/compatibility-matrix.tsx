@@ -39,6 +39,7 @@ const COLUMNS = [
   { key: "gcs", label: "GCS", parent: "GCS" },
   { key: "google-drive", label: "Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
+  { key: "dropbox", label: "Dropbox", parent: "Dropbox" },
   { key: "azure", label: "Azure", parent: "Azure" },
   { key: "supabase", label: "Supabase", parent: "Supabase" },
   { key: "ut-public", label: "public", parent: "UploadThing" },
@@ -53,6 +54,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      dropbox: warn(
+        "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw — Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
+      ),
       fs: ok,
       gcs: ok,
       "google-drive": ok,
@@ -82,6 +86,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      dropbox: warn(
+        "`filesDownload` buffers the full body — the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
+      ),
       fs: ok,
       gcs: ok,
       "google-drive": ok,
@@ -107,6 +114,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      dropbox: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
@@ -132,6 +140,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      dropbox: warn(
+        "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
+      ),
       fs: ok,
       gcs: ok,
       "google-drive": warn(
@@ -169,6 +180,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      dropbox: warn(
+        "Dropbox doesn't store user-supplied content types — `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
+      ),
       fs: ok,
       gcs: ok,
       "google-drive": ok,
@@ -202,6 +216,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: warn(
         "Server-side copy via `syncCopyFromURL` — capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
       ),
+      dropbox: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
@@ -240,6 +255,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       akamai: ok,
       azure: warn(
         "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
+      ),
+      dropbox: warn(
+        "Default mints a 4-hour temporary link via `filesGetTemporaryLink` — `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws — Dropbox links have no Content-Disposition override."
       ),
       fs: warn(
         "Returns a `file://` URL by default — fine for CLIs and tests, not browsers. With `urlBaseUrl` set, returns `<urlBaseUrl>/<key>` so a dev server (Next.js `/public` mount, `serve-static`, etc.) can deliver the body. `responseContentDisposition` requires `urlBaseUrl` — `file://` has no signature mechanism in which to bind the override."
@@ -287,6 +305,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       akamai: ok,
       azure: warn(
         "PUT URL only — Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
+      ),
+      dropbox: no(
+        "Throws — Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."
       ),
       fs: warn(
         "Throws without `urlBaseUrl` — the fs adapter has no built-in upload server, so there's nothing to sign against. With `urlBaseUrl` set, returns a PUT URL with `?expires=`, `?content-type=`, and `?max-size=` query params for a dev upload-handler to validate. The fs adapter does not enforce the params itself."
