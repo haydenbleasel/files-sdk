@@ -781,4 +781,160 @@ describe("netlify-blobs adapter", () => {
     // It's the same object the mock returned to getStore.
     expect(typeof (adapter.raw as { set: unknown }).set).toBe("function");
   });
+
+  test("error: 'not found' in message (no status) maps to NotFound", async () => {
+    // Force the message-only fallback in classifyNetlifyError — error has
+    // no parseable status code in its text, only the keyword.
+    setMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("Object not found in store"))
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.upload("a.txt", "x");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("NotFound");
+    }
+  });
+
+  test("error: 'unauthorized'/'forbidden' in message (no status) maps to Unauthorized", async () => {
+    setMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("Request was forbidden by upstream"))
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.upload("a.txt", "x");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("Unauthorized");
+    }
+  });
+
+  test("getStore throwing at construction is wrapped as FilesError", () => {
+    getStoreMock.mockImplementationOnce(() => {
+      throw new Error(
+        "Netlify Blobs has generated an internal error (500 status code)"
+      );
+    });
+    expect(() => netlifyBlobs({ name: "s" })).toThrow(FilesError);
+  });
+
+  test("delete error is mapped to FilesError", async () => {
+    deleteMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(
+          new Error(
+            "Netlify Blobs has generated an internal error (500 status code)"
+          ),
+          { name: "BlobsInternalError" }
+        )
+      )
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.delete("a.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("Provider");
+    }
+  });
+
+  test("download as: stream maps null result to NotFound", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.download("missing.txt", { as: "stream" });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("NotFound");
+    }
+  });
+
+  test("head's lazy body throws NotFound if the blob is gone before the lazy fetch", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("a.txt", "hello");
+    const info = await files.head("a.txt");
+    // Simulate the blob disappearing between head() and the lazy body
+    // accessor — store.get returns null.
+    backing.delete("a.txt");
+    try {
+      await info.text();
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("NotFound");
+    }
+  });
+
+  test("list iterator throwing is mapped to FilesError", async () => {
+    listMock.mockImplementationOnce(() => ({
+      [Symbol.asyncIterator]() {
+        return {
+          next: () =>
+            Promise.reject(
+              Object.assign(
+                new Error(
+                  "Netlify Blobs has generated an internal error (500 status code)"
+                ),
+                { name: "BlobsInternalError" }
+              )
+            ),
+        };
+      },
+    }));
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.list();
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("Provider");
+    }
+  });
+
+  test("list item's lazy body throws NotFound if the blob is gone before the lazy fetch", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("a.txt", "hello");
+    const out = await files.list();
+    backing.delete("a.txt");
+    try {
+      await out.items[0]?.text();
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("NotFound");
+    }
+  });
+
+  test("upload of a ReadableStream that errors is wrapped as FilesError", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.error(new Error("upstream went away"));
+      },
+    });
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.upload("a.bin", stream);
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      // Stream error has no recognizable status — falls through to Provider.
+      expect((error as FilesError).code).toBe("Provider");
+    }
+  });
+
+  test("head returns no userMetadata when raw metadata is undefined", async () => {
+    // Real Netlify always returns `{ etag, metadata: {...} }`, but the
+    // unpackUserMetadata guard handles the defensive `undefined` case.
+    // Force it via the mock.
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.resolve({ etag: '"x"', metadata: undefined as never })
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    const info = await files.head("anything.txt");
+    expect(info.metadata).toBeUndefined();
+    expect(info.size).toBe(0);
+    expect(info.type).toBe("application/octet-stream");
+  });
 });
