@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { Files, FilesError } from "../src/index.js";
 
@@ -473,6 +474,61 @@ describe("netlify-blobs adapter", () => {
     const got = await files.download("to.txt");
     expect(await got.text()).toBe("hello");
     expect(got.type).toBe("text/plain");
+  });
+
+  test("copy preserves user metadata, contentType, and cacheControl", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("from.txt", "hello", {
+      cacheControl: "public, max-age=60",
+      contentType: "text/plain",
+      metadata: { region: "us-west", uploadedBy: "alice" },
+    });
+    await files.copy("from.txt", "to.txt");
+    const dst = backing.get("to.txt");
+    if (!dst) {
+      throw new Error("expected destination entry");
+    }
+    expect(dst.metadata.__contentType).toBe("text/plain");
+    expect(dst.metadata.__cacheControl).toBe("public, max-age=60");
+    expect((dst.metadata.user as Record<string, string>).uploadedBy).toBe(
+      "alice"
+    );
+    expect((dst.metadata.user as Record<string, string>).region).toBe(
+      "us-west"
+    );
+    const got = await files.download("to.txt");
+    expect(got.type).toBe("text/plain");
+    expect(got.metadata?.uploadedBy).toBe("alice");
+  });
+
+  test("copy refreshes __lastModified to the time of the copy", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("from.txt", "hello");
+    const src = backing.get("from.txt");
+    if (!src) {
+      throw new Error("expected source entry");
+    }
+    const srcMtime = src.metadata.__lastModified as number;
+    // Advance the clock by at least 1ms so the copy gets a strictly later
+    // timestamp — Date.now() at sub-ms resolution would otherwise tie.
+    await sleep(2);
+    await files.copy("from.txt", "to.txt");
+    const dst = backing.get("to.txt");
+    if (!dst) {
+      throw new Error("expected destination entry");
+    }
+    expect(dst.metadata.__lastModified).toBeGreaterThan(srcMtime);
+  });
+
+  test("copy of a missing source throws NotFound", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.copy("missing.txt", "to.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).toBe("NotFound");
+    }
   });
 
   test("url() throws Provider with a netlify-specific message", async () => {

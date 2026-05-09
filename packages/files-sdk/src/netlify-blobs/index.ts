@@ -296,14 +296,30 @@ export const netlifyBlobs = (
 
   const adapter: NetlifyBlobsAdapter = {
     async copy(from, to) {
-      // No native copy primitive — read the source and re-write at the
-      // destination. Not server-side atomic; concurrent writes to `from`
-      // between the get and put are not detected. Costs both a read and a
-      // write within the store.
-      const src = await adapter.download(from, { as: "stream" });
-      await adapter.upload(to, src.stream(), {
-        ...(src.type && { contentType: src.type }),
-      });
+      // No native copy primitive — read the source body + metadata and
+      // re-write at the destination. Not server-side atomic; concurrent
+      // writes to `from` between the get and put are not detected.
+      //
+      // Forward the source's packed metadata verbatim so user `metadata`,
+      // `contentType`, `size`, and `cacheControl` all round-trip on copy.
+      // Refresh `__lastModified` to the time of the copy — the destination
+      // is a new write, not a clone of the source's mtime (matches S3
+      // server-side copy semantics).
+      try {
+        const src = await store.getWithMetadata(from, {
+          type: "arrayBuffer",
+        });
+        if (!src) {
+          throw new FilesError("NotFound", `netlify-blobs: not found: ${from}`);
+        }
+        const meta: PackedMetadata = {
+          ...src.metadata,
+          [META_LAST_MODIFIED]: Date.now(),
+        };
+        await store.set(to, src.data, { metadata: meta });
+      } catch (error) {
+        throw mapNetlifyError(error);
+      }
     },
     async delete(key) {
       try {
