@@ -22,7 +22,7 @@ export const Errors = () => (
     </p>
     <CodeBlock code={ERROR_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="error-codes">
+      <Heading as="h3" id="error-codes">
         Codes
       </Heading>
       <ul className="list-none! pl-0! gap-0! rounded-md border border-dotted divide-y divide-dotted">
