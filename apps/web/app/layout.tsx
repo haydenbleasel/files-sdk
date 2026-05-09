@@ -30,7 +30,7 @@ const RootLayout = ({ children }: RootLayoutProps) => (
   <html
     lang="en"
     className={cn(
-      "touch-manipulation font-sans antialiased",
+      "scroll-smooth touch-manipulation font-sans antialiased",
       geistSans.variable,
       geistMono.variable
     )}
