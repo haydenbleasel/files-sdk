@@ -12,6 +12,7 @@ const EASE = [0.16, 1, 0.3, 1] as const;
 const iconLabels: Record<keyof typeof icons, string> = {
   Akamai: "Akamai",
   AzureBlobStorage: "Azure Blob Storage",
+  Box: "Box",
   DigitalOcean: "DigitalOcean Spaces",
   Dropbox: "Dropbox",
   GoogleCloudStorage: "Google Cloud Storage",

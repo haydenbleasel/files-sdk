@@ -40,6 +40,7 @@ const COLUMNS = [
   { key: "google-drive", label: "Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
   { key: "dropbox", label: "Dropbox", parent: "Dropbox" },
+  { key: "box", label: "Box", parent: "Box" },
   { key: "azure", label: "Azure", parent: "Azure" },
   { key: "supabase", label: "Supabase", parent: "Supabase" },
   { key: "ut-public", label: "public", parent: "UploadThing" },
@@ -54,6 +55,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      box: warn(
+        "Two-stage: walks/creates parent folders by ID under `rootFolderId`, then `uploads.uploadFile` (≤50 MB) or `chunkedUploads.uploadBigFile` (>50 MB). Re-uploads against existing leaf names route through `uploadFileVersion` (overwrite). Stream bodies are buffered up-front — Box's upload manager takes a Node `Readable`, not a Web stream. User `metadata` and `cacheControl` throw — Box exposes file metadata via classifications and metadata templates; drop to `raw.fileMetadata.*` if you need it."
+      ),
       dropbox: warn(
         "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw — Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
       ),
@@ -86,6 +90,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      box: warn(
+        "Resolves the file ID, then fetches `getDownloadFileUrl` for both buffered and streaming reads — the SDK's native `downloadFile` returns a Node `Readable` that's awkward to expose isomorphically, so the adapter routes through standard HTTP, which gives a `ReadableStream` body."
+      ),
       dropbox: warn(
         "`filesDownload` buffers the full body — the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
       ),
@@ -114,6 +121,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      box: ok,
       dropbox: ok,
       fs: ok,
       gcs: ok,
@@ -140,6 +148,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      box: warn(
+        "Returns immediate-children files only at `rootFolderId` — no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Box's offset, encoded as a numeric cursor string."
+      ),
       dropbox: warn(
         "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
       ),
@@ -180,6 +191,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      box: warn(
+        "Box doesn't store user-supplied content types on file content — `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `size`, `etag`, and `lastModified` come from `getFileById`."
+      ),
       dropbox: warn(
         "Dropbox doesn't store user-supplied content types — `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
       ),
@@ -216,6 +230,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: warn(
         "Server-side copy via `syncCopyFromURL` — capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
       ),
+      box: ok,
       dropbox: ok,
       fs: ok,
       gcs: ok,
@@ -255,6 +270,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       akamai: ok,
       azure: warn(
         "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
+      ),
+      box: warn(
+        "Default mints a signed download URL via `getDownloadFileUrl` — Box controls the TTL server-side, so `expiresIn` is accepted for API symmetry but is not honoured. With `publicByDefault: true`, `upload()` calls `addShareLinkToFile` (open access) and `url()` returns the link's `download_url`. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws — Box's URLs have no Content-Disposition override."
       ),
       dropbox: warn(
         "Default mints a 4-hour temporary link via `filesGetTemporaryLink` — `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws — Dropbox links have no Content-Disposition override."
@@ -305,6 +323,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       akamai: ok,
       azure: warn(
         "PUT URL only — Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
+      ),
+      box: no(
+        "Throws — Box uploads require a multipart POST with both an `attributes` JSON part and the file bytes part, which fits neither the SDK's PUT-with-headers nor S3-style POST-with-form-fields shape. Use `upload()` server-side, or Box's UI Elements / Content Uploader for browser flows."
       ),
       dropbox: no(
         "Throws — Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."
