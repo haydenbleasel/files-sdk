@@ -2,8 +2,17 @@
   "name": "files-sdk",
   "version": "1.0.0",
   "description": "Unified storage SDK for object/blob backends (S3, R2, Vercel Blob, MinIO, GCS, Azure Blob Storage, Supabase Storage).",
+  "homepage": "https://github.com/haydenbleasel/files-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/haydenbleasel/files-sdk/issues"
+  },
   "license": "MIT",
   "author": "Hayden Bleasel",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haydenbleasel/files-sdk.git",
+    "directory": "packages/files-sdk"
+  },
   "files": [
     "dist"
   ],
