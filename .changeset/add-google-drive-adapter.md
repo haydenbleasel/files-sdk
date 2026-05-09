@@ -1,5 +1,0 @@
----
-"files-sdk": minor
----
-
-Add Google Drive adapter (`files-sdk/google-drive`) via the official `@googleapis/drive` v3 client. Drive has no native key field, so the adapter maps virtual keys onto `appProperties.fsdkKey` and amortizes lookups with a per-instance LRU cache (configurable via `fileIdCacheSize`, defaults to 1024). Three auth shapes: inline service-account `credentials`, a `keyFilename` JSON path, or 3-legged `oauth` refresh tokens — plus a pre-built `client` escape hatch (note: `signedUploadUrl()` requires an auth handle and throws when constructed via `client`). `signedUploadUrl()` initiates a Drive resumable session and returns the session URL as a one-shot PUT (`maxSize` is forwarded as `X-Upload-Content-Length` advisory only; `minSize` is ignored). `url()` requires `publicByDefault: true` (grants `anyone, reader` on upload and returns the permanent Drive download URL); `expiresIn` ignored, `responseContentDisposition` always throws. Service-account workloads should target a Shared Drive via `driveId` to avoid the 15 GB personal quota. Caller `metadata` keys starting with `fsdk` are reserved.

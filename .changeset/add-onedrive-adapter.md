@@ -1,5 +1,0 @@
----
-"files-sdk": minor
----
-
-Add OneDrive adapter (`files-sdk/onedrive`) for OneDrive personal, OneDrive for Business, and SharePoint document libraries via Microsoft Graph (`@microsoft/microsoft-graph-client` + `@azure/identity`). Path-addressable like the underlying API, so virtual keys map onto real OneDrive paths — no virtual-key cache, no reserved-metadata namespace. Four auth shapes (`clientCredentials` for app-only, `oauth` for delegated refresh-token flow, `accessToken` for caller-managed tokens, and a pre-built `client` escape hatch) and four drive targets (`/me/drive`, `driveId`, `siteId`, `userId`). `signedUploadUrl()` returns a Graph upload-session URL (one-shot PUT, advisory `maxSize`/`minSize`); `url()` requires `publicByDefault: true` and creates an anonymous-view share link (Graph has no signed URL primitive, `expiresIn` ignored). `copy()` polls Graph's async copy monitor with a configurable `copyTimeoutMs`. Direct `upload()` is capped at OneDrive's 250 MB simple-upload limit; user `metadata` and `cacheControl` throw (Graph drive items have no native arbitrary-metadata field — use `raw` for Open Extensions).
