@@ -296,9 +296,8 @@ export const ApiReference = () => (
         browser) can upload directly to the bucket without proxying bytes
         through your server. The flow is: your server calls{" "}
         <code>signedUploadUrl()</code>, returns the result to the browser, the
-        browser uploads straight to S3/R2/MinIO/DO
-        Spaces/Storj/Hetzner/Akamai/GCS/Azure/Supabase. Bandwidth and CPU stay
-        off your server.
+        browser uploads straight to the provider directly. Bandwidth and CPU
+        stay off your server.
       </p>
       <p>
         Without <code>maxSize</code>, the adapter returns a presigned PUT URL —
