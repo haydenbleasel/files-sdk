@@ -28,9 +28,8 @@ const files = new Files({
 });`;
 
 const R2_HYBRID_EXAMPLE = `// Inside a Cloudflare Worker. The binding handles uploads/downloads
-// (intra-Worker, no egress fees). The HTTP credentials let url() /
-// signedUrl() / signedUploadUrl() sign presigned URLs the binding alone
-// can't produce.
+// (intra-Worker, no egress fees). The HTTP credentials let url() and
+// signedUploadUrl() sign presigned URLs the binding alone can't produce.
 const files = new Files({
   adapter: r2({
     binding: env.UPLOADS,
@@ -208,11 +207,10 @@ export const Adapters = () => (
       <p>
         Inside a Worker, you can pass <em>both</em> a binding and HTTP
         credentials. Reads and writes go through the binding (no egress, no
-        extra round trip); <code>url()</code>, <code>signedUrl()</code>, and{" "}
-        <code>signedUploadUrl()</code> route through the HTTP signer because a
-        Worker binding has no signing primitive. The S3 client is lazy-loaded —
-        bindings-only Workers don't pull <code>@aws-sdk/client-s3</code> into
-        their bundle.
+        extra round trip); <code>url()</code> and <code>signedUploadUrl()</code>{" "}
+        route through the HTTP signer because a Worker binding has no signing
+        primitive. The S3 client is lazy-loaded — bindings-only Workers don't
+        pull <code>@aws-sdk/client-s3</code> into their bundle.
       </p>
       <CodeBlock code={R2_HYBRID_EXAMPLE} lang="ts" />
     </section>
@@ -248,12 +246,16 @@ export const Adapters = () => (
           Limitations
         </Heading>
         <p>
-          <code>signedUrl</code> and <code>signedUploadUrl</code> both throw —
-          public blob URLs don't expire, private blobs require an authenticated
-          SDK call, and browser uploads go through <code>handleUpload()</code>{" "}
-          from <code>@vercel/blob/client</code> instead of presigned URLs. User{" "}
-          <code>metadata</code> isn't supported by the underlying API, so it
-          round-trips as <code>undefined</code>.
+          <code>signedUploadUrl()</code> throws — browser uploads go through{" "}
+          <code>handleUpload()</code> from <code>@vercel/blob/client</code>{" "}
+          instead of presigned URLs. <code>url()</code> on public blobs returns
+          the permanent CDN URL: <code>expiresIn</code> is silently ignored (no
+          signing primitive) and <code>responseContentDisposition</code> throws
+          (no override available). On <code>access: "private"</code>,{" "}
+          <code>url()</code> throws because there's no public URL — use{" "}
+          <code>download()</code> instead. User <code>metadata</code> isn't
+          supported by the underlying API, so it round-trips as{" "}
+          <code>undefined</code>.
         </p>
       </div>
     </section>
