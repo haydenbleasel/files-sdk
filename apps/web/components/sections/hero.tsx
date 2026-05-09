@@ -23,8 +23,9 @@ export const Hero = () => (
       transition={{ delay: 0.12, duration: 0.6, ease: EASE }}
     >
       A unified storage SDK for object and blob backends — S3, Cloudflare R2,
-      Vercel Blob, MinIO, GCS, Azure, Supabase, UploadThing. One small, honest
-      API. Web-standards I/O. An escape hatch when you need the native client.
+      Vercel Blob, MinIO, DigitalOcean Spaces, GCS, Azure, Supabase,
+      UploadThing. One small, honest API. Web-standards I/O. An escape hatch
+      when you need the native client.
     </motion.p>
   </section>
 );
