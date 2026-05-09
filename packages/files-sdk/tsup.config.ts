@@ -8,6 +8,7 @@ export default defineConfig({
     "src/s3/index.ts",
     "src/r2/index.ts",
     "src/vercel-blob/index.ts",
+    "src/netlify-blobs/index.ts",
     "src/minio/index.ts",
     "src/digitalocean-spaces/index.ts",
     "src/storj/index.ts",

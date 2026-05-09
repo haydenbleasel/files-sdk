@@ -30,6 +30,7 @@ const COLUMNS = [
   { key: "r2-hybrid", label: "hybrid", parent: "Cloudflare R2" },
   { key: "vb-public", label: "public", parent: "Vercel Blob" },
   { key: "vb-private", label: "private", parent: "Vercel Blob" },
+  { key: "nb", label: "Netlify", parent: "Netlify Blobs" },
   { key: "minio", label: "MinIO", parent: "MinIO" },
   { key: "spaces", label: "Spaces", parent: "DigitalOcean" },
   { key: "storj", label: "Storj", parent: "Storj" },
@@ -57,6 +58,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "google-drive": ok,
       hetzner: ok,
       minio: ok,
+      nb: warn(
+        "Stream bodies are buffered up-front — Netlify's `set()` has no streaming form, so streaming uploads can't avoid materializing the body in memory."
+      ),
       onedrive: warn(
         "Single-PUT simple upload, capped at OneDrive's 250 MB simple-upload limit. Bodies above the cap throw — use `signedUploadUrl()` (`createUploadSession` returns a chunkable session URL) or drop to `raw` for chunked uploads. User `metadata` and `cacheControl` throw — Graph drive items have no native arbitrary-metadata field; use `raw` to set Open Extensions if you need them."
       ),
@@ -83,6 +87,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "google-drive": ok,
       hetzner: ok,
       minio: ok,
+      nb: ok,
       onedrive: ok,
       "r2-binding": ok,
       "r2-http": ok,
@@ -107,6 +112,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "google-drive": ok,
       hetzner: ok,
       minio: ok,
+      nb: ok,
       onedrive: ok,
       "r2-binding": ok,
       "r2-http": ok,
@@ -133,6 +139,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       hetzner: ok,
       minio: ok,
+      nb: warn(
+        "Netlify's list response only carries key + etag — size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. The unified `cursor` is not honoured because Netlify's pagination cursor is internal to the SDK; non-paginated `list()` drains all server-side pages and the adapter's `limit` is applied client-side."
+      ),
       onedrive: warn(
         "Returns immediate-children files only at `rootFolderPath` — no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Graph's `@odata.nextLink` as the opaque cursor."
       ),
@@ -165,6 +174,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "google-drive": ok,
       hetzner: ok,
       minio: ok,
+      nb: warn(
+        "Netlify Blobs has no native size, content-type, or last-modified — the adapter packs them into Netlify's metadata at upload time and reads them back via `getMetadata`. Blobs written outside the SDK come back with `size: 0` and `type: 'application/octet-stream'` because the embedded fields are absent."
+      ),
       onedrive: ok,
       "r2-binding": ok,
       "r2-http": ok,
@@ -195,6 +207,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "google-drive": ok,
       hetzner: ok,
       minio: ok,
+      nb: warn(
+        "Read-then-write — Netlify Blobs has no server-side copy primitive, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected."
+      ),
       onedrive: warn(
         "Async copy on Graph (`POST /items/{id}/copy` returns 202 + monitor URL). The adapter polls the monitor every 500 ms until status is `completed`/`failed`, capped by `copyTimeoutMs` (default 60_000). On timeout the call throws `Provider`; tune `copyTimeoutMs` for large files."
       ),
@@ -235,6 +250,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       hetzner: ok,
       minio: ok,
+      nb: no(
+        "No URL primitive — Netlify Blobs has no public URL or signing endpoint; reads always go through the SDK with the token. Use `download()` instead, or proxy the body through your application."
+      ),
       onedrive: warn(
         "Throws by default — Graph has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` calls `createLink` (anonymous-view scope) and `url()` returns the share link's `webUrl`. The link is permanent (`expiresIn` ignored) and `responseContentDisposition` always throws — Graph has no Content-Disposition override. Anonymous links are blocked on tenants where admins disable them."
       ),
@@ -279,6 +297,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       hetzner: ok,
       minio: ok,
+      nb: no(
+        "No presigned upload primitive — Netlify Blobs writes go through the SDK with the token. Upload server-side via the SDK or proxy uploads through your application."
+      ),
       onedrive: warn(
         "Initiates a Graph upload session via `POST /createUploadSession` and returns the session URL as a one-shot PUT (the session URL is pre-authenticated by Graph itself). `maxSize` and `minSize` are advisory — Graph does not enforce a server-side `content-length-range` policy on upload sessions; clients can still chunk via `Content-Range` to the same URL."
       ),

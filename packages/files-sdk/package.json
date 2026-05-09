@@ -38,6 +38,10 @@
       "types": "./dist/vercel-blob/index.d.ts",
       "import": "./dist/vercel-blob/index.js"
     },
+    "./netlify-blobs": {
+      "types": "./dist/netlify-blobs/index.d.ts",
+      "import": "./dist/netlify-blobs/index.js"
+    },
     "./minio": {
       "types": "./dist/minio/index.d.ts",
       "import": "./dist/minio/index.js"
@@ -103,6 +107,7 @@
     "@google-cloud/storage": "^7.19.0",
     "@googleapis/drive": "^14.0.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@netlify/blobs": "^10.7.4",
     "@supabase/storage-js": "^2.105.4",
     "@vercel/blob": "^2.3",
     "google-auth-library": "^9.15.1",

@@ -19,6 +19,7 @@ const sections: Section[] = [
       { id: "adapter-s3", label: "S3" },
       { id: "adapter-r2", label: "Cloudflare R2" },
       { id: "adapter-vercel-blob", label: "Vercel Blob" },
+      { id: "adapter-netlify-blobs", label: "Netlify Blobs" },
       { id: "adapter-minio", label: "MinIO" },
       { id: "adapter-digitalocean-spaces", label: "DigitalOcean Spaces" },
       { id: "adapter-storj", label: "Storj" },

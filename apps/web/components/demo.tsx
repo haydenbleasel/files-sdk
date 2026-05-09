@@ -45,6 +45,22 @@ const url = await files.url("hello.txt");`,
   },
   {
     code: `import { Files } from "files-sdk";
+import { netlifyBlobs } from "files-sdk/netlify-blobs";
+
+// On Netlify, siteID + token come from NETLIFY_BLOBS_CONTEXT.
+const files = new Files({
+  adapter: netlifyBlobs({ name: "uploads" }),
+});
+
+await files.upload("hello.txt", "world");
+// Netlify Blobs has no public URL — use download() instead.
+const got = await files.download("hello.txt");`,
+    id: "netlify-blobs",
+    label: "Netlify Blobs",
+    lang: "tsx",
+  },
+  {
+    code: `import { Files } from "files-sdk";
 import { minio } from "files-sdk/minio";
 
 const files = new Files({
