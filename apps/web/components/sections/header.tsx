@@ -1,4 +1,7 @@
+import { cn } from "@/lib/utils";
+
 import { Badge } from "../ui/badge";
+import * as icons from "./icons";
 
 const GithubMark = ({ className }: { className?: string }) => (
   <svg
@@ -15,7 +18,18 @@ const GithubMark = ({ className }: { className?: string }) => (
 );
 
 export const Header = () => (
-  <header className="self-end">
+  <header className="flex items-center justify-between">
+    <div className="flex items-center -gap-2">
+      {Object.values(icons).map((Icon, index) => (
+        <Icon
+          className={cn(
+            "size-6 rounded-sm ring-2 ring-background",
+            index % 2 === 0 ? "rotate-3" : "-rotate-3"
+          )}
+          key={Icon.name}
+        />
+      ))}
+    </div>
     <a
       className="flex items-center gap-1.5 text-muted-foreground text-xs transition-colors hover:text-foreground"
       href="https://github.com/haydenbleasel/files-sdk"
