@@ -23,6 +23,7 @@ const sections: Section[] = [
       { id: "adapter-digitalocean-spaces", label: "DigitalOcean Spaces" },
       { id: "adapter-storj", label: "Storj" },
       { id: "adapter-hetzner", label: "Hetzner" },
+      { id: "adapter-akamai", label: "Akamai Object Storage" },
       { id: "adapter-gcs", label: "Google Cloud Storage" },
       { id: "adapter-azure", label: "Azure Blob Storage" },
       { id: "adapter-supabase", label: "Supabase Storage" },

@@ -12,6 +12,7 @@ export default defineConfig({
     "src/digitalocean-spaces/index.ts",
     "src/storj/index.ts",
     "src/hetzner/index.ts",
+    "src/akamai/index.ts",
     "src/gcs/index.ts",
     "src/azure/index.ts",
     "src/supabase/index.ts",

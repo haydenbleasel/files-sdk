@@ -90,6 +90,21 @@ const url = await files.url("hello.txt");`,
   },
   {
     code: `import { Files } from "files-sdk";
+import { akamai } from "files-sdk/akamai";
+
+// AKAMAI_ACCESS_KEY_ID / AKAMAI_SECRET_ACCESS_KEY read from env.
+const files = new Files({
+  adapter: akamai({ bucket: "uploads", region: "us-iad-1" }),
+});
+
+await files.upload("hello.txt", "world");
+const url = await files.url("hello.txt");`,
+    id: "akamai",
+    label: "Akamai",
+    lang: "tsx",
+  },
+  {
+    code: `import { Files } from "files-sdk";
 import { gcs } from "files-sdk/gcs";
 
 const files = new Files({

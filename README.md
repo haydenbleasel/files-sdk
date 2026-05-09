@@ -1,6 +1,6 @@
 # files-sdk
 
-Unified storage SDK for object/blob backends — AWS S3, Cloudflare R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner Object Storage, Google Cloud Storage, Azure Blob Storage, Supabase Storage, UploadThing, and a local filesystem adapter for dev/test.
+Unified storage SDK for object/blob backends — AWS S3, Cloudflare R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner Object Storage, Akamai Cloud Object Storage (formerly Linode), Google Cloud Storage, Azure Blob Storage, Supabase Storage, UploadThing, and a local filesystem adapter for dev/test.
 
 ```ts
 import { Files } from "files-sdk";

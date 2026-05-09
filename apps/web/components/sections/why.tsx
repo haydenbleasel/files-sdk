@@ -13,8 +13,8 @@ export const Why = () => (
       <li>
         <span className="text-foreground">One small API across providers.</span>{" "}
         Swap S3 for R2 for Vercel Blob for MinIO for DigitalOcean Spaces for
-        Storj for Hetzner for GCS for Azure Blob for Supabase for UploadThing
-        without rewriting calls.
+        Storj for Hetzner for Akamai for GCS for Azure Blob for Supabase for
+        UploadThing without rewriting calls.
       </li>
       <li>
         <span className="text-foreground">Web-standards I/O.</span> Accepts{" "}

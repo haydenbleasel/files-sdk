@@ -1,6 +1,6 @@
 # Contributing to Files SDK
 
-Thanks for your interest in contributing! Files SDK is a unified storage SDK for object/blob backends (AWS S3, Cloudflare R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner, GCS, Azure, Supabase, UploadThing). Bug reports, new adapters, docs improvements, and discussion are all welcome.
+Thanks for your interest in contributing! Files SDK is a unified storage SDK for object/blob backends (AWS S3, Cloudflare R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai, GCS, Azure, Supabase, UploadThing). Bug reports, new adapters, docs improvements, and discussion are all welcome.
 
 ## Source Code
 
@@ -22,7 +22,7 @@ The repo is a Bun + Turbo monorepo:
 
 - `packages/files-sdk` — the SDK itself
   - `src/index.ts` — the `Files` class and shared types
-  - `src/s3/`, `src/r2/`, `src/vercel-blob/`, `src/minio/`, `src/digitalocean-spaces/`, `src/storj/`, `src/hetzner/`, `src/gcs/`, `src/azure/`, `src/supabase/`, `src/uploadthing/`, `src/fs/` — adapter implementations, each exposed as its own subpath export (`files-sdk/s3`, etc.)
+  - `src/s3/`, `src/r2/`, `src/vercel-blob/`, `src/minio/`, `src/digitalocean-spaces/`, `src/storj/`, `src/hetzner/`, `src/akamai/`, `src/gcs/`, `src/azure/`, `src/supabase/`, `src/uploadthing/`, `src/fs/` — adapter implementations, each exposed as its own subpath export (`files-sdk/s3`, etc.)
   - `src/internal/` — shared helpers (errors, stored-file wrapper, env)
   - `test/` — Bun tests, including a `fake-adapter.ts` for exercising the `Files` class without a real backend
 - `apps/web` — the Next.js docs/marketing site at [files-sdk.dev](https://files-sdk.dev)
@@ -110,7 +110,7 @@ We use [Changesets](https://github.com/changesets/changesets) to manage versions
 
 Use the [issue tracker](https://github.com/haydenbleasel/files-sdk/issues). A good bug report includes:
 
-- The adapter you're using (S3, R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner, GCS, Azure, Supabase, UploadThing, fs)
+- The adapter you're using (S3, R2, Vercel Blob, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai, GCS, Azure, Supabase, UploadThing, fs)
 - A minimal reproduction (the smallest `new Files({ adapter: ... })` snippet that triggers it)
 - What you expected vs. what happened
 - SDK version and runtime (Node, Bun, Cloudflare Workers, etc.)
