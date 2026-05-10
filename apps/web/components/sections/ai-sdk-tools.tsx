@@ -33,7 +33,7 @@ const INSTALL_TABS = [
 
 const QUICK_START = `import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
-import { createFileTools } from "files-sdk/ai";
+import { createFileTools } from "files-sdk/ai-sdk";
 import { generateText } from "ai";
 
 const files = new Files({
@@ -77,7 +77,7 @@ const OVERRIDES_EXAMPLE = `createFileTools({
 });`;
 
 const CHERRY_PICK_EXAMPLE = `import { Files } from "files-sdk";
-import { listFiles, downloadFile, uploadFile } from "files-sdk/ai";
+import { listFiles, downloadFile, uploadFile } from "files-sdk/ai-sdk";
 
 const files = new Files({ adapter });
 
@@ -87,13 +87,13 @@ const tools = {
   uploadFile: uploadFile(files),
 };`;
 
-export const AiTools = () => (
+export const AiSdkTools = () => (
   <section>
-    <Heading as="h2" id="ai-tools">
+    <Heading as="h2" id="ai-sdk-tools">
       AI SDK tools
     </Heading>
     <p>
-      The <code>files-sdk/ai</code> subpath exposes a configured{" "}
+      The <code>files-sdk/ai-sdk</code> subpath exposes a configured{" "}
       <code>Files</code> instance to the{" "}
       <a
         className="underline decoration-dotted underline-offset-4 hover:text-foreground"
@@ -118,19 +118,19 @@ export const AiTools = () => (
     </p>
 
     <section>
-      <Heading as="h3" id="ai-tools-installation">
+      <Heading as="h3" id="ai-sdk-tools-installation">
         Installation
       </Heading>
       <p>
         <code>ai</code> and <code>zod</code> are optional peer dependencies —
-        only install them if you're consuming the <code>files-sdk/ai</code>{" "}
+        only install them if you're consuming the <code>files-sdk/ai-sdk</code>{" "}
         subpath.
       </p>
       <CodeTabs tabs={INSTALL_TABS} />
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-quick-start">
+      <Heading as="h3" id="ai-sdk-tools-quick-start">
         Quick start
       </Heading>
       <p>
@@ -142,7 +142,7 @@ export const AiTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-approval">
+      <Heading as="h3" id="ai-sdk-tools-approval">
         Approval control
       </Heading>
       <p>
@@ -155,7 +155,7 @@ export const AiTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-read-only">
+      <Heading as="h3" id="ai-sdk-tools-read-only">
         Read-only mode
       </Heading>
       <p>
@@ -168,7 +168,7 @@ export const AiTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-surface">
+      <Heading as="h3" id="ai-sdk-tools-surface">
         Tool surface
       </Heading>
       <p>
@@ -247,7 +247,7 @@ export const AiTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-overrides">
+      <Heading as="h3" id="ai-sdk-tools-overrides">
         Overrides
       </Heading>
       <p>
@@ -263,7 +263,7 @@ export const AiTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-tools-cherry-pick">
+      <Heading as="h3" id="ai-sdk-tools-cherry-pick">
         Cherry-picking tools
       </Heading>
       <p>

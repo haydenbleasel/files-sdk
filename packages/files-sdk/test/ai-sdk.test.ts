@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { ToolExecutionOptions } from "ai";
 
-import { createFileTools } from "../src/ai/index.js";
+import { createFileTools } from "../src/ai-sdk/index.js";
 import { Files, FilesError } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 

@@ -37,12 +37,12 @@ A growing catalog covering S3 and S3-compatible stores, the major cloud blob pla
 
 ## AI SDK tools
 
-The `files-sdk/ai` subpath wraps a configured `Files` instance as a set of [Vercel AI SDK](https://ai-sdk.dev) tools — drop them into `generateText`, `streamText`, or any agent and the model can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code.
+The `files-sdk/ai-sdk` subpath wraps a configured `Files` instance as a set of [Vercel AI SDK](https://ai-sdk.dev) tools — drop them into `generateText`, `streamText`, or any agent and the model can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code.
 
 ```ts
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
-import { createFileTools } from "files-sdk/ai";
+import { createFileTools } from "files-sdk/ai-sdk";
 import { generateText } from "ai";
 
 const files = new Files({ adapter: s3({ bucket: "uploads" }) });
@@ -56,7 +56,7 @@ await generateText({
 
 Eight tools are returned by default — `listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl` (read) and `uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl` (write). Write tools require user approval by default; pass `requireApproval: false` to disable globally, an object keyed by tool name for fine-grained control, or `readOnly: true` to strip writes entirely. `ai` and `zod` are optional peer dependencies — install them only when consuming this subpath.
 
-For full details — installation, approval control, read-only mode, the per-tool input/output shapes, overrides, and cherry-picking individual factories — see [`packages/files-sdk/src/ai/README.md`](packages/files-sdk/src/ai/README.md) or the [AI SDK tools section](https://files-sdk.dev/#ai-tools) of the docs site.
+For full details — installation, approval control, read-only mode, the per-tool input/output shapes, overrides, and cherry-picking individual factories — see [`src/ai-sdk/README.md`](src/ai-sdk/README.md) or the [AI SDK tools section](https://files-sdk.dev/#ai-sdk-tools) of the docs site.
 
 ## License
 

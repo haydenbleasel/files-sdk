@@ -101,7 +101,7 @@ const resolveApproval = (
  * @example
  * ```ts
  * import { Files } from "files-sdk";
- * import { createFileTools } from "files-sdk/ai";
+ * import { createFileTools } from "files-sdk/ai-sdk";
  * import { s3 } from "files-sdk/s3";
  * import { generateText } from "ai";
  *

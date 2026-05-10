@@ -1,11 +1,11 @@
-# files-sdk/ai
+# files-sdk/ai-sdk
 
-AI SDK tools for [`files-sdk`](https://github.com/haydenbleasel/files-sdk). Wraps a configured `Files` instance as a set of [Vercel AI SDK](https://ai-sdk.dev) tools so an LLM can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code.
+[Vercel AI SDK](https://ai-sdk.dev) tools for [`files-sdk`](https://github.com/haydenbleasel/files-sdk). Wraps a configured `Files` instance as a set of AI SDK tools so an LLM can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code.
 
 ```ts
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
-import { createFileTools } from "files-sdk/ai";
+import { createFileTools } from "files-sdk/ai-sdk";
 import { generateText } from "ai";
 
 const files = new Files({
@@ -133,7 +133,7 @@ Each tool factory is also exported individually for fully custom setups — usef
 
 ```ts
 import { Files } from "files-sdk";
-import { listFiles, downloadFile, uploadFile } from "files-sdk/ai";
+import { listFiles, downloadFile, uploadFile } from "files-sdk/ai-sdk";
 
 const files = new Files({ adapter });
 
