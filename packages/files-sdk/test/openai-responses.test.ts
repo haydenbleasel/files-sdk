@@ -1,0 +1,384 @@
+import { describe, expect, test } from "bun:test";
+
+import { Files, FilesError } from "../src/index.js";
+import { createResponsesFileTools } from "../src/openai/index.js";
+import type { FunctionCallItem } from "../src/openai/index.js";
+import { fakeAdapter } from "./fake-adapter.js";
+
+const newFiles = () => new Files({ adapter: fakeAdapter() });
+
+const call = (
+  name: string,
+  args: Record<string, unknown> | string,
+  callId = "call_1"
+): FunctionCallItem => ({
+  arguments: typeof args === "string" ? args : JSON.stringify(args),
+  call_id: callId,
+  name,
+  type: "function_call",
+});
+
+describe("createResponsesFileTools", () => {
+  test("definitions returns all eight tools by default", () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    expect(ft.definitions.map((d) => d.name).toSorted()).toEqual(
+      [
+        "copyFile",
+        "deleteFile",
+        "downloadFile",
+        "getFileMetadata",
+        "getFileUrl",
+        "listFiles",
+        "signUploadUrl",
+        "uploadFile",
+      ].toSorted()
+    );
+  });
+
+  test("readOnly: true strips every write tool", () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      readOnly: true,
+    });
+    expect(ft.definitions.map((d) => d.name).toSorted()).toEqual(
+      ["downloadFile", "getFileMetadata", "getFileUrl", "listFiles"].toSorted()
+    );
+  });
+
+  test("each definition is a strict-defaulted-false function tool with object parameters", () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    for (const def of ft.definitions) {
+      expect(def.type).toBe("function");
+      expect(typeof def.name).toBe("string");
+      expect(typeof def.description).toBe("string");
+      expect(def.strict).toBe(false);
+      expect(def.parameters).toMatchObject({
+        additionalProperties: false,
+        type: "object",
+      });
+    }
+  });
+
+  test("needsApproval reports writes true / reads false by default", () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    expect(ft.needsApproval("uploadFile")).toBe(true);
+    expect(ft.needsApproval("deleteFile")).toBe(true);
+    expect(ft.needsApproval("copyFile")).toBe(true);
+    expect(ft.needsApproval("signUploadUrl")).toBe(true);
+    expect(ft.needsApproval("listFiles")).toBe(false);
+    expect(ft.needsApproval("downloadFile")).toBe(false);
+    expect(ft.needsApproval("notATool")).toBe(false);
+  });
+
+  test("requireApproval: false clears every write", () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      requireApproval: false,
+    });
+    expect(ft.needsApproval("uploadFile")).toBe(false);
+    expect(ft.needsApproval("deleteFile")).toBe(false);
+    expect(ft.needsApproval("copyFile")).toBe(false);
+    expect(ft.needsApproval("signUploadUrl")).toBe(false);
+  });
+
+  test("requireApproval object resolves per-tool with default true for unspecified writes", () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      requireApproval: { deleteFile: true, uploadFile: false },
+    });
+    expect(ft.needsApproval("uploadFile")).toBe(false);
+    expect(ft.needsApproval("deleteFile")).toBe(true);
+    expect(ft.needsApproval("copyFile")).toBe(true);
+    expect(ft.needsApproval("signUploadUrl")).toBe(true);
+  });
+
+  test("overrides patch description and strict on the right definition", () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      overrides: {
+        listFiles: { description: "Custom list" },
+        uploadFile: { strict: true },
+      },
+    });
+    const list = ft.definitions.find((d) => d.name === "listFiles");
+    const upload = ft.definitions.find((d) => d.name === "uploadFile");
+    expect(list?.description).toBe("Custom list");
+    expect(list?.strict).toBe(false);
+    expect(upload?.strict).toBe(true);
+  });
+
+  test("execute round-trip: upload → list → download → delete", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+
+    const uploadOut = await ft.execute(
+      call("uploadFile", {
+        content: "hello",
+        contentType: "text/plain",
+        key: "a.txt",
+      })
+    );
+    expect(uploadOut.type).toBe("function_call_output");
+    expect(uploadOut.call_id).toBe("call_1");
+    expect(JSON.parse(uploadOut.output)).toMatchObject({
+      contentType: "text/plain",
+      key: "a.txt",
+      size: 5,
+    });
+
+    const listOut = await ft.execute(call("listFiles", {}));
+    const listed = JSON.parse(listOut.output) as {
+      items: { key: string }[];
+    };
+    expect(listed.items.map((i) => i.key)).toEqual(["a.txt"]);
+
+    const dlOut = await ft.execute(call("downloadFile", { key: "a.txt" }));
+    expect(JSON.parse(dlOut.output)).toMatchObject({
+      content: "hello",
+      encoding: "text",
+    });
+
+    const delOut = await ft.execute(call("deleteFile", { key: "a.txt" }));
+    expect(JSON.parse(delOut.output)).toEqual({ deleted: true, key: "a.txt" });
+  });
+
+  test("invalid JSON arguments come back as an error in the output", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(call("listFiles", "not json"));
+    expect(out.type).toBe("function_call_output");
+    const parsed = JSON.parse(out.output) as { error: string };
+    expect(parsed.error).toMatch(/Invalid JSON/u);
+  });
+
+  test("validation failures come back as an error in the output", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(
+      call("uploadFile", {
+        // missing required `content` and `key`
+        contentType: "text/plain",
+      })
+    );
+    const parsed = JSON.parse(out.output) as { error: string; issues: unknown };
+    expect(parsed.error).toBe("Argument validation failed");
+    expect(Array.isArray(parsed.issues)).toBe(true);
+  });
+
+  test("unknown tool name comes back as error, does not throw", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(call("notATool", {}));
+    const parsed = JSON.parse(out.output) as { error: string };
+    expect(parsed.error).toMatch(/Unknown tool/u);
+  });
+
+  test("readOnly: true rejects write calls as unknown", async () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      readOnly: true,
+    });
+    const out = await ft.execute(
+      call("uploadFile", { content: "x", key: "k" })
+    );
+    const parsed = JSON.parse(out.output) as { error: string };
+    expect(parsed.error).toMatch(/Unknown tool/u);
+  });
+
+  test("FilesError from executor (maxBytes) is rethrown", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    await ft.execute(
+      call("uploadFile", { content: "abcdefghij", key: "big.txt" })
+    );
+
+    try {
+      await ft.execute(call("downloadFile", { key: "big.txt", maxBytes: 4 }));
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).message).toMatch(/maxBytes/u);
+    }
+  });
+
+  test("uploadFile encoding=base64 round-trips bytes", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+
+    const raw = new Uint8Array([10, 20, 30, 40, 50]);
+    let binary = "";
+    for (const b of raw) {
+      binary += String.fromCodePoint(b);
+    }
+    const base64 = btoa(binary);
+
+    await ft.execute(
+      call("uploadFile", {
+        content: base64,
+        contentType: "application/octet-stream",
+        encoding: "base64",
+        key: "blob.dat",
+      })
+    );
+
+    const stored = await files.download("blob.dat");
+    const buf = await stored.arrayBuffer();
+    expect(new Uint8Array(buf)).toEqual(raw);
+  });
+
+  test("downloadFile binary=true returns base64-encoded bytes", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+
+    const raw = new Uint8Array([0, 1, 2, 254, 255]);
+    await files.upload("blob.bin", raw);
+
+    const out = await ft.execute(
+      call("downloadFile", { binary: true, key: "blob.bin" })
+    );
+    const result = JSON.parse(out.output) as {
+      content: string;
+      encoding: "text" | "base64";
+    };
+    expect(result.encoding).toBe("base64");
+    const decoded = Uint8Array.from(
+      atob(result.content),
+      (c) => c.codePointAt(0) ?? 0
+    );
+    expect([...decoded]).toEqual([...raw]);
+  });
+
+  test("getFileMetadata returns size + custom metadata without transferring body", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    await ft.execute(
+      call("uploadFile", {
+        content: "payload",
+        contentType: "text/plain",
+        key: "report.txt",
+        metadata: { tenant: "acme" },
+      })
+    );
+
+    const out = await ft.execute(
+      call("getFileMetadata", { key: "report.txt" })
+    );
+    const meta = JSON.parse(out.output) as {
+      key: string;
+      size: number;
+      type: string;
+      metadata?: Record<string, string>;
+    };
+    expect(meta.key).toBe("report.txt");
+    expect(meta.size).toBe("payload".length);
+    expect(meta.type).toBe("text/plain");
+    expect(meta.metadata).toEqual({ tenant: "acme" });
+  });
+
+  test("getFileUrl forwards expiresIn and responseContentDisposition", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    await ft.execute(call("uploadFile", { content: "x", key: "u.txt" }));
+
+    const out = await ft.execute(
+      call("getFileUrl", {
+        expiresIn: 60,
+        key: "u.txt",
+        responseContentDisposition: 'attachment; filename="u.txt"',
+      })
+    );
+    const result = JSON.parse(out.output) as { key: string; url: string };
+    expect(result.key).toBe("u.txt");
+    expect(result.url).toContain("expires=60");
+  });
+
+  test("copyFile duplicates the source key, leaves source intact", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    await ft.execute(
+      call("uploadFile", { content: "payload", key: "src.txt" })
+    );
+
+    const out = await ft.execute(
+      call("copyFile", { from: "src.txt", to: "dst.txt" })
+    );
+    expect(JSON.parse(out.output)).toEqual({
+      copied: true,
+      from: "src.txt",
+      to: "dst.txt",
+    });
+    const srcFile = await files.download("src.txt");
+    const dstFile = await files.download("dst.txt");
+    expect(await srcFile.text()).toBe("payload");
+    expect(await dstFile.text()).toBe("payload");
+  });
+
+  test("signUploadUrl returns a SignedUpload descriptor", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(
+      call("signUploadUrl", { expiresIn: 120, key: "upload.bin" })
+    );
+    const result = JSON.parse(out.output) as { method: string; url: string };
+    expect(result.method).toBe("PUT");
+    expect(result.url).toMatch(/^https:\/\/fake\.local/u);
+  });
+
+  test("listFiles forwards prefix, cursor, and limit", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    for (const k of ["a/1.txt", "a/2.txt", "b/1.txt"]) {
+      await ft.execute(call("uploadFile", { content: "x", key: k }));
+    }
+
+    const out = await ft.execute(
+      call("listFiles", { limit: 10, prefix: "a/" })
+    );
+    const result = JSON.parse(out.output) as { items: { key: string }[] };
+    expect(result.items.map((i) => i.key)).toEqual(["a/1.txt", "a/2.txt"]);
+  });
+
+  test("validation failure on signUploadUrl (missing required expiresIn)", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(call("signUploadUrl", { key: "k" }));
+    const parsed = JSON.parse(out.output) as { error: string; issues: unknown };
+    expect(parsed.error).toBe("Argument validation failed");
+    expect(Array.isArray(parsed.issues)).toBe(true);
+  });
+
+  test("validation failure path is consistent for every tool", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    // Each tool requires at least one string field — passing a number
+    // for `key` (or a missing required field for the from/to/expiresIn
+    // tools) reliably trips validation across the whole surface.
+    const cases: { name: string; args: Record<string, unknown> }[] = [
+      { args: { key: 123 }, name: "getFileMetadata" },
+      { args: { key: 123 }, name: "downloadFile" },
+      { args: { key: 123 }, name: "getFileUrl" },
+      { args: { limit: -1 }, name: "listFiles" },
+      { args: { from: "x" }, name: "copyFile" },
+      { args: { key: 123 }, name: "deleteFile" },
+    ];
+    for (const c of cases) {
+      const out = await ft.execute(call(c.name, c.args));
+      const parsed = JSON.parse(out.output) as {
+        error: string;
+        issues: unknown;
+      };
+      expect(parsed.error).toBe("Argument validation failed");
+      expect(Array.isArray(parsed.issues)).toBe(true);
+    }
+  });
+
+  test("execute requireApproval=false leaves needsApproval false for writes", () => {
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      requireApproval: false,
+    });
+    // sanity: every write reports false
+    for (const name of [
+      "uploadFile",
+      "deleteFile",
+      "copyFile",
+      "signUploadUrl",
+    ]) {
+      expect(ft.needsApproval(name)).toBe(false);
+    }
+  });
+});

@@ -58,6 +58,52 @@ Eight tools are returned by default — `listFiles`, `getFileMetadata`, `downloa
 
 For full details — installation, approval control, read-only mode, the per-tool input/output shapes, overrides, and cherry-picking individual factories — see [`src/ai-sdk/README.md`](src/ai-sdk/README.md) or the [AI SDK tools section](https://files-sdk.dev/#ai-sdk-tools) of the docs site.
 
+## OpenAI tools
+
+The `files-sdk/openai` subpath ships two factories targeting OpenAI directly — one for the native [Responses API](https://platform.openai.com/docs/api-reference/responses) and one for the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) (`@openai/agents`). Both wrap the same eight file operations as the AI SDK subpath with the same approval-gating defaults.
+
+```ts
+// Responses API loop
+import OpenAI from "openai";
+import { Files } from "files-sdk";
+import { createResponsesFileTools } from "files-sdk/openai";
+
+const client = new OpenAI();
+const ft = createResponsesFileTools({ files: new Files({ adapter }) });
+
+const res = await client.responses.create({
+  model: "gpt-4.1",
+  input: "List my files.",
+  tools: ft.definitions,
+});
+for (const item of res.output) {
+  if (item.type === "function_call") {
+    if (ft.needsApproval(item.name)) {
+      // surface approval UX
+    }
+    const out = await ft.execute(item);
+    // out is a function_call_output to push into the next turn's input
+  }
+}
+```
+
+```ts
+// Agents SDK
+import { Agent, run } from "@openai/agents";
+import { createAgentsFileTools } from "files-sdk/openai";
+
+const tools = createAgentsFileTools({ files: new Files({ adapter }) });
+const agent = new Agent({
+  name: "Files agent",
+  tools: Object.values(tools),
+});
+const result = await run(agent, "List my files.");
+```
+
+`openai` and `@openai/agents` are optional peer dependencies — install only the one(s) you use. The subpath requires Zod 4 (`@openai/agents` peer-requires it, and Zod 4's built-in JSON Schema converter powers the Responses tool definitions).
+
+For full details see [`src/openai/README.md`](src/openai/README.md).
+
 ## License
 
 MIT

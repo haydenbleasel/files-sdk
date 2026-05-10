@@ -57,16 +57,11 @@ const sections: Section[] = [
   { id: "escape-hatch", label: "Escape hatch" },
   {
     children: [
-      { id: "ai-sdk-tools-installation", label: "Installation" },
-      { id: "ai-sdk-tools-quick-start", label: "Quick start" },
-      { id: "ai-sdk-tools-approval", label: "Approval control" },
-      { id: "ai-sdk-tools-read-only", label: "Read-only mode" },
-      { id: "ai-sdk-tools-surface", label: "Tool surface" },
-      { id: "ai-sdk-tools-overrides", label: "Overrides" },
-      { id: "ai-sdk-tools-cherry-pick", label: "Cherry-picking tools" },
+      { id: "openai-tools", label: "OpenAI" },
+      { id: "ai-sdk-tools", label: "Vercel AI SDK" },
     ],
-    id: "ai-sdk-tools",
-    label: "AI SDK tools",
+    id: "ai-tools",
+    label: "AI tools",
   },
   { id: "compatibility-matrix", label: "Compatibility matrix" },
 ];

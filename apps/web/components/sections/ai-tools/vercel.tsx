@@ -87,10 +87,10 @@ const tools = {
   uploadFile: uploadFile(files),
 };`;
 
-export const AiSdkTools = () => (
+export const VercelAiSdk = () => (
   <section>
-    <Heading as="h2" id="ai-sdk-tools">
-      AI SDK tools
+    <Heading as="h3" id="ai-sdk-tools">
+      Vercel AI SDK
     </Heading>
     <p>
       The <code>files-sdk/ai-sdk</code> subpath exposes a configured{" "}
@@ -118,7 +118,7 @@ export const AiSdkTools = () => (
     </p>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-installation">
+      <Heading as="h4" id="ai-sdk-tools-installation">
         Installation
       </Heading>
       <p>
@@ -130,7 +130,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-quick-start">
+      <Heading as="h4" id="ai-sdk-tools-quick-start">
         Quick start
       </Heading>
       <p>
@@ -142,7 +142,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-approval">
+      <Heading as="h4" id="ai-sdk-tools-approval">
         Approval control
       </Heading>
       <p>
@@ -155,7 +155,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-read-only">
+      <Heading as="h4" id="ai-sdk-tools-read-only">
         Read-only mode
       </Heading>
       <p>
@@ -168,7 +168,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-surface">
+      <Heading as="h4" id="ai-sdk-tools-surface">
         Tool surface
       </Heading>
       <p>
@@ -247,7 +247,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-overrides">
+      <Heading as="h4" id="ai-sdk-tools-overrides">
         Overrides
       </Heading>
       <p>
@@ -263,7 +263,7 @@ export const AiSdkTools = () => (
     </section>
 
     <section>
-      <Heading as="h3" id="ai-sdk-tools-cherry-pick">
+      <Heading as="h4" id="ai-sdk-tools-cherry-pick">
         Cherry-picking tools
       </Heading>
       <p>

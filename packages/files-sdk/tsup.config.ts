@@ -24,6 +24,7 @@ export default defineConfig({
     "src/dropbox/index.ts",
     "src/box/index.ts",
     "src/ai-sdk/index.ts",
+    "src/openai/index.ts",
   ],
   format: ["esm"],
   sourcemap: true,
