@@ -126,7 +126,10 @@ describe("createFileTools", () => {
   test("overrides for unknown tool names are ignored", () => {
     const tools = createFileTools({
       files: newFiles(),
-      overrides: { notATool: { description: "noop" } },
+      overrides: {
+        // @ts-expect-error — unknown keys are typed out; runtime guard still drops them for JS callers
+        notATool: { description: "noop" },
+      },
     });
     expect("notATool" in tools).toBe(false);
   });

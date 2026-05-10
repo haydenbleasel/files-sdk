@@ -11,11 +11,19 @@ import {
 } from "./tools.js";
 import type { ToolOverrides } from "./types.js";
 
+export type FileReadToolName =
+  | "listFiles"
+  | "getFileMetadata"
+  | "downloadFile"
+  | "getFileUrl";
+
 export type FileWriteToolName =
   | "uploadFile"
   | "deleteFile"
   | "copyFile"
   | "signUploadUrl";
+
+export type FileToolName = FileReadToolName | FileWriteToolName;
 
 /**
  * Whether write operations require user approval.
@@ -71,8 +79,21 @@ export interface FileToolsOptions {
    * })
    * ```
    */
-  overrides?: Partial<Record<string, ToolOverrides>>;
+  overrides?: Partial<Record<FileToolName, ToolOverrides>>;
 }
+
+export interface FileTools {
+  listFiles: ReturnType<typeof listFiles>;
+  getFileMetadata: ReturnType<typeof getFileMetadata>;
+  downloadFile: ReturnType<typeof downloadFile>;
+  getFileUrl: ReturnType<typeof getFileUrl>;
+  uploadFile: ReturnType<typeof uploadFile>;
+  deleteFile: ReturnType<typeof deleteFile>;
+  copyFile: ReturnType<typeof copyFile>;
+  signUploadUrl: ReturnType<typeof signUploadUrl>;
+}
+
+export type ReadOnlyFileTools = Pick<FileTools, FileReadToolName>;
 
 const WRITE_TOOL_NAMES: ReadonlySet<FileWriteToolName> = new Set([
   "uploadFile",
@@ -132,17 +153,26 @@ const resolveApproval = (
  * })
  * ```
  */
-export const createFileTools = ({
+export function createFileTools(
+  opts: FileToolsOptions & { readOnly: true }
+): ReadOnlyFileTools;
+export function createFileTools(
+  opts: FileToolsOptions & { readOnly?: false | undefined }
+): FileTools;
+export function createFileTools(
+  opts: FileToolsOptions
+): FileTools | ReadOnlyFileTools;
+export function createFileTools({
   files,
   readOnly = false,
   requireApproval = true,
   overrides,
-}: FileToolsOptions) => {
+}: FileToolsOptions): FileTools | ReadOnlyFileTools {
   const approval = (name: FileWriteToolName) => ({
     needsApproval: resolveApproval(name, requireApproval),
   });
 
-  const allTools = {
+  const allTools: FileTools = {
     copyFile: copyFile(files, approval("copyFile")),
     deleteFile: deleteFile(files, approval("deleteFile")),
     downloadFile: downloadFile(files),
@@ -156,7 +186,7 @@ export const createFileTools = ({
   if (overrides) {
     for (const [name, toolOverrides] of Object.entries(overrides)) {
       if (name in allTools && toolOverrides) {
-        const key = name as keyof typeof allTools;
+        const key = name as keyof FileTools;
         Object.assign(allTools, {
           [key]: { ...allTools[key], ...toolOverrides },
         });
@@ -172,10 +202,8 @@ export const createFileTools = ({
     Object.entries(allTools).filter(
       ([name]) => !WRITE_TOOL_NAMES.has(name as FileWriteToolName)
     )
-  ) as Partial<typeof allTools>;
-};
-
-export type FileTools = ReturnType<typeof createFileTools>;
+  ) as ReadOnlyFileTools;
+}
 
 export type { ToolOptions, ToolOverrides } from "./types.js";
 export {
