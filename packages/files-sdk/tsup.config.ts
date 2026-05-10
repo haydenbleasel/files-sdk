@@ -23,6 +23,7 @@ export default defineConfig({
     "src/onedrive/index.ts",
     "src/dropbox/index.ts",
     "src/box/index.ts",
+    "src/ai/index.ts",
   ],
   format: ["esm"],
   sourcemap: true,
