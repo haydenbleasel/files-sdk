@@ -1,5 +1,0 @@
----
-"files-sdk": patch
----
-
-`googleDrive` and `onedrive` adapters now auto-load credentials from `process.env` when not passed explicitly, matching the convention already in place for the other adapters. `googleDrive()` reads `GOOGLE_DRIVE_CLIENT_EMAIL` + `GOOGLE_DRIVE_PRIVATE_KEY` (service-account credentials) or `GOOGLE_DRIVE_KEY_FILE` (path to a service-account JSON), plus `GOOGLE_DRIVE_SUBJECT` for domain-wide delegation, `GOOGLE_DRIVE_ID` to target a Shared Drive, and `GOOGLE_DRIVE_ROOT_FOLDER_ID` to override the bucket root (when only `GOOGLE_DRIVE_ID` is set, `rootFolderId` defaults to the drive id so Shared Drives work with no extra config). `onedrive()` reads `ONEDRIVE_ACCESS_TOKEN` (static token) or the `ONEDRIVE_TENANT_ID` + `ONEDRIVE_CLIENT_ID` + `ONEDRIVE_CLIENT_SECRET` triple (client-credentials/app-only auth), plus `ONEDRIVE_DRIVE_ID` / `ONEDRIVE_SITE_ID` / `ONEDRIVE_USER_ID` to target a specific drive — the existing "client-credentials needs a target" guard still applies. Explicit options continue to take precedence over env vars; missing-auth error messages now mention the env fallback names.
