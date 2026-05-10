@@ -15,6 +15,7 @@ const sections = [
   { id: "the-storedfile-type", label: "The StoredFile type" },
   { id: "errors", label: "Errors" },
   { id: "escape-hatch", label: "Escape hatch" },
+  { id: "ai-tools", label: "AI SDK tools" },
   { id: "compatibility-matrix", label: "Compatibility matrix" },
 ];
 
