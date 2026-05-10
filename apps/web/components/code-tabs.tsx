@@ -21,7 +21,7 @@ export const CodeTabs = ({ tabs, defaultValue }: CodeTabsProps) => (
     className="gap-0 rounded-xl bg-sidebar"
     defaultValue={defaultValue ?? tabs[0]?.id}
   >
-    <div className="mx-3 mt-4 -mb-2 overflow-x-auto scrollbar-hide">
+    <div className="mx-3 mt-4 -mb-2 overflow-x-auto overflow-y-hidden scrollbar-hide">
       <TabsList className="bg-transparent">
         {tabs.map((tab) => (
           <TabsTrigger key={tab.id} value={tab.id}>
