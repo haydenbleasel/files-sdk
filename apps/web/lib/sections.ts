@@ -17,6 +17,7 @@ export const ADAPTER_SECTIONS: TocSection[] = [
   { id: "adapter-storj", label: "Storj" },
   { id: "adapter-hetzner", label: "Hetzner" },
   { id: "adapter-akamai", label: "Akamai Object Storage" },
+  { id: "adapter-bunny-storage", label: "Bunny Storage" },
   { id: "adapter-backblaze-b2", label: "Backblaze B2" },
   { id: "adapter-wasabi", label: "Wasabi" },
   { id: "adapter-scaleway", label: "Scaleway" },

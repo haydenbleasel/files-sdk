@@ -31,6 +31,12 @@ const ADAPTERS = [
     import: `import { minio } from "files-sdk/minio";`,
     label: "MinIO",
   },
+  {
+    config: `bunnyStorage({ zone: "uploads", region: "de", accessKey: "..." })`,
+    id: "bunny-storage",
+    import: `import { bunnyStorage } from "files-sdk/bunny-storage";`,
+    label: "Bunny Storage",
+  },
 ] as const;
 
 const buildCode = (adapter: (typeof ADAPTERS)[number]) =>

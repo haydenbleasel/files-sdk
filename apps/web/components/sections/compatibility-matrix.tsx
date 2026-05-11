@@ -36,6 +36,7 @@ const COLUMNS = [
   { key: "storj", label: "Storj", parent: "Storj" },
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
+  { key: "bunny", label: "Bunny", parent: "Bunny Storage" },
   { key: "b2", label: "B2", parent: "Backblaze B2" },
   { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
   { key: "scaleway", label: "Scaleway", parent: "Scaleway" },
@@ -69,6 +70,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: warn(
         "Two-stage: walks/creates parent folders by ID under `rootFolderId`, then `uploads.uploadFile` (≤50 MB) or `chunkedUploads.uploadBigFile` (>50 MB). Re-uploads against existing leaf names route through `uploadFileVersion` (overwrite). Stream bodies are buffered up-front - Box's upload manager takes a Node `Readable`, not a Web stream. User `metadata` and `cacheControl` throw - Box exposes file metadata via classifications and metadata templates; drop to `raw.fileMetadata.*` if you need it."
+      ),
+      bunny: warn(
+        "Custom `metadata` and `cacheControl` throw — the Bunny Storage TypeScript SDK exposes content-type/checksum but no arbitrary object metadata or per-object cache-control field. Configure cache behavior on the Pull Zone/CDN."
       ),
       dropbox: warn(
         "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw - Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
@@ -116,6 +120,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       box: warn(
         "Resolves the file ID, then fetches `getDownloadFileUrl` for both buffered and streaming reads - the SDK's native `downloadFile` returns a Node `Readable` that's awkward to expose isomorphically, so the adapter routes through standard HTTP, which gives a `ReadableStream` body."
       ),
+      bunny: ok,
       dropbox: warn(
         "`filesDownload` buffers the full body - the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
       ),
@@ -156,6 +161,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: ok,
       b2: ok,
       box: ok,
+      bunny: ok,
       dropbox: ok,
       exoscale: ok,
       filebase: ok,
@@ -195,6 +201,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: warn(
         "Returns immediate-children files only at `rootFolderId` - no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Box's offset, encoded as a numeric cursor string."
+      ),
+      bunny: warn(
+        "Bunny lists a directory, not a recursive object-prefix scan. The adapter chooses the nearest directory for `prefix`, filters that page client-side, and encodes numeric offsets as cursors after fetching the directory listing."
       ),
       dropbox: warn(
         "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
@@ -250,6 +259,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       box: warn(
         "Box doesn't store user-supplied content types on file content - `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `size`, `etag`, and `lastModified` come from `getFileById`."
       ),
+      bunny: ok,
       dropbox: warn(
         "Dropbox doesn't store user-supplied content types - `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
       ),
@@ -344,6 +354,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       b2: ok,
       box: ok,
+      bunny: warn(
+        "Read-then-write — Bunny Storage's TypeScript SDK has no server-side copy primitive, so the source is downloaded and re-uploaded. Not server-side atomic."
+      ),
       dropbox: ok,
       exoscale: ok,
       filebase: ok,
@@ -397,6 +410,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: warn(
         "Default mints a signed download URL via `getDownloadFileUrl` - Box controls the TTL server-side, so `expiresIn` is accepted for API symmetry but is not honoured. With `publicByDefault: true`, `upload()` calls `addShareLinkToFile` (open access) and `url()` returns the link's `download_url`. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Box's URLs have no Content-Disposition override."
+      ),
+      bunny: warn(
+        "Requires `publicBaseUrl` (for example a Bunny Pull Zone or custom CDN hostname) and returns `<publicBaseUrl>/<key>`. Without it, throws because the Storage API URL requires an `AccessKey` header. `expiresIn` is ignored and `responseContentDisposition` throws — Bunny Storage has no signed-read URL primitive."
       ),
       dropbox: warn(
         "Default mints a 4-hour temporary link via `filesGetTemporaryLink` - `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Dropbox links have no Content-Disposition override."
@@ -461,6 +477,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: no(
         "Throws - Box uploads require a multipart POST with both an `attributes` JSON part and the file bytes part, which fits neither the SDK's PUT-with-headers nor S3-style POST-with-form-fields shape. Use `upload()` server-side, or Box's UI Elements / Content Uploader for browser flows."
+      ),
+      bunny: no(
+        "Throws — Bunny Storage has no presigned upload primitive. Writes go through the Storage API with an `AccessKey` header, so upload server-side via the SDK or proxy through your application."
       ),
       dropbox: no(
         "Throws - Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."

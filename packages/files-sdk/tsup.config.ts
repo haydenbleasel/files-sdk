@@ -14,6 +14,7 @@ export default defineConfig({
     "src/storj/index.ts",
     "src/hetzner/index.ts",
     "src/akamai/index.ts",
+    "src/bunny-storage/index.ts",
     "src/backblaze-b2/index.ts",
     "src/wasabi/index.ts",
     "src/scaleway/index.ts",

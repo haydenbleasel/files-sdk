@@ -135,6 +135,181 @@ export const Minio = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+export const BunnyStorage = (props: SVGProps<SVGSVGElement>) => (
+  <svg
+    viewBox="0 0 48 48"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <title>Bunny Storage</title>
+    <rect width="48" height="48" fill="black" />
+    <svg
+      viewBox="0 0 150 169"
+      width="48"
+      height="48"
+      preserveAspectRatio="xMidYMid meet"
+      role="presentation"
+    >
+      <defs>
+        <linearGradient
+          id="bunnyStoragePaint0"
+          x1="66.4522"
+          y1="24.0848"
+          x2="143.907"
+          y2="24.0848"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FBAA19" />
+          <stop offset="1" stopColor="#EF3E23" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint1"
+          x1="62.1991"
+          y1="122.616"
+          x2="68.2761"
+          y2="106.009"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#F78D1E" />
+          <stop offset="1" stopColor="#F37121" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint2"
+          x1="14.0411"
+          y1="128.48"
+          x2="108.45"
+          y2="27.3204"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FEBE2D" />
+          <stop offset="1" stopColor="#F04E23" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint3"
+          x1="80.8572"
+          y1="69.2811"
+          x2="28.6168"
+          y2="149.666"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#EA4425" />
+          <stop offset="1" stopColor="#FDBB27" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint4"
+          x1="0.945961"
+          y1="41.7072"
+          x2="165.794"
+          y2="41.7072"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#F47920" />
+          <stop offset="1" stopColor="#E93825" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint5"
+          x1="-86.1313"
+          y1="30.7323"
+          x2="249.284"
+          y2="30.7323"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FDCA0B" />
+          <stop offset="1" stopColor="#F5841F" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint6"
+          x1="33.6979"
+          y1="71.2824"
+          x2="68.6221"
+          y2="193.061"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#E73C25" />
+          <stop offset="1" stopColor="#FAA21B" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint7"
+          x1="-202.59"
+          y1="91.0541"
+          x2="295.308"
+          y2="91.0541"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FDBA12" />
+          <stop offset="1" stopColor="#F7921E" />
+        </linearGradient>
+        <linearGradient
+          id="bunnyStoragePaint8"
+          x1="0.316408"
+          y1="66.1012"
+          x2="18.9706"
+          y2="69.4129"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FEBE2D" />
+          <stop offset="1" stopColor="#F04E23" />
+        </linearGradient>
+      </defs>
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M82.8187 26.8267L121.862 48.1302L85.9737 0C80.0581 7.8902 78.875 18.1475 82.8187 26.8267Z"
+        fill="url(#bunnyStoragePaint0)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M65.0721 105.334C69.8046 105.334 73.7483 109.279 73.7483 114.408C73.7483 119.142 69.8046 123.087 64.6777 123.087C59.9452 123.087 56.0015 119.142 56.0015 114.408C56.3958 109.674 60.3396 105.334 65.0721 105.334Z"
+        fill="url(#bunnyStoragePaint1)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M38.2541 7.24541L147.101 66.4219C149.862 67.6054 150.651 70.7615 149.468 73.5231C149.073 74.7066 148.285 75.4956 147.101 75.8901C138.82 81.0188 129.749 84.5694 120.284 86.1474L97.4103 132.7C97.4103 132.7 90.3115 148.874 70.5928 142.562C78.8747 134.278 88.734 126.782 88.734 114.158C88.734 100.744 78.0859 90.0925 64.6772 90.0925C51.2685 90.0925 40.6203 100.744 40.6203 114.158C40.6203 130.727 57.1841 137.828 66.2547 149.269C70.1984 155.187 69.8041 163.077 65.0716 168.205C54.0291 157.159 32.3385 138.223 23.2679 125.993C18.5354 119.681 15.7747 112.185 15.3804 104.295C16.1691 86.9364 28.0004 71.945 44.5641 66.8164C49.691 65.2384 54.8178 64.8439 59.9447 64.8439C67.0434 65.2384 74.1422 67.6054 80.4522 71.156C90.3115 76.6792 94.6497 75.4956 101.354 69.578C105.298 66.4219 109.636 55.7701 102.932 53.4031C100.565 52.614 98.5934 52.2195 96.2271 51.825C84.0015 49.458 62.3109 47.0909 54.4234 42.7513C41.8035 35.6501 33.1272 21.0533 38.2541 7.24541Z"
+        fill="url(#bunnyStoragePaint2)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M88.734 114.408C93.8609 87.9758 67.0434 62.7271 46.1416 66.2777L47.7191 65.8832C46.536 66.2777 45.3528 66.2777 44.5641 66.6722C28.0004 71.8009 16.1691 86.7922 15.3804 104.151C15.3804 112.041 18.141 119.931 23.2679 125.849C32.3385 138.079 54.0291 157.015 65.4659 168.456C70.1984 163.327 70.9872 155.437 66.6491 149.519C57.1841 138.079 41.0147 130.977 41.0147 114.408C41.0147 100.995 51.6628 90.3428 65.0716 90.3428C78.4803 90.3428 89.1284 100.995 88.734 114.408Z"
+        fill="url(#bunnyStoragePaint3)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M38.2538 7.10117L121.072 52.0753L123.439 53.2588C125.411 54.8369 127.382 57.9929 125.016 63.5161C121.072 71.8008 105.297 80.0855 87.1562 73.7734C92.6775 75.3514 96.6212 73.3788 101.748 69.4337C105.692 66.2777 110.03 55.6259 103.326 53.2588C100.959 52.4698 98.9875 52.0753 96.6212 51.6808C84.3956 49.3137 62.705 46.9467 54.8175 42.6071C41.8032 35.5059 33.1269 20.909 38.2538 7.10117Z"
+        fill="url(#bunnyStoragePaint4)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M38.2544 7.10117C46.9306 38.662 98.9881 41.4235 125.017 54.4424L38.2544 7.10117Z"
+        fill="url(#bunnyStoragePaint5)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M66.649 149.519C57.5784 138.078 41.0147 130.977 41.0147 114.408C41.0147 102.178 50.0853 92.3153 61.9165 90.7373C42.9866 90.7373 27.606 106.123 27.606 125.454C27.606 127.821 28.0003 130.188 28.3947 132.555C35.8878 141.235 46.9303 151.097 56.0009 159.777C59.5503 162.933 63.0997 166.483 65.4659 168.85C67.8321 166.089 69.0153 162.933 69.4096 159.382C69.804 155.831 68.6209 152.281 66.649 149.519Z"
+        fill="url(#bunnyStoragePaint6)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M88.7345 117.17C88.7345 116.38 88.7345 115.197 88.7345 114.408C93.8614 87.9758 66.6496 62.7271 46.1421 66.2777C50.4802 65.0942 55.2127 64.6997 59.5508 65.0942C86.7627 65.8832 94.6502 95.0769 88.7345 117.17Z"
+        fill="url(#bunnyStoragePaint7)"
+      />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M9.07061 58.5317C13.8031 58.5317 18.1412 62.4768 18.1412 67.6055V76.6792H9.07061C4.33812 76.6792 0 72.7341 0 67.6055C0 62.8713 3.94374 58.5317 9.07061 58.5317Z"
+        fill="url(#bunnyStoragePaint8)"
+      />
+    </svg>
+  </svg>
+);
+
 export const GoogleCloudStorage = (props: SVGProps<SVGSVGElement>) => (
   <svg
     viewBox="0 0 48 48"

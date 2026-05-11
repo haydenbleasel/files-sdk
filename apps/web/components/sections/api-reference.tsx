@@ -41,8 +41,9 @@ const URL_EXAMPLE = `// One call, every adapter. S3 and the S3-compatible catalo
 // sign a GetObject (1h default, override with { expiresIn }); Azure signs a
 // SAS read URL with the same default; Supabase signs via createSignedUrl
 // (or returns the public URL when constructed with public:true); Vercel Blob
-// (public) and UploadThing (public-read) return their CDN URLs. If you
-// configured \`publicBaseUrl\` on the adapter, that wins and signing is skipped.
+// (public), UploadThing (public-read), and Bunny Storage with publicBaseUrl
+// return their CDN URLs. If you configured \`publicBaseUrl\` on the adapter, that
+// wins and signing is skipped.
 const url = await files.url("avatars/abc.png");
 const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 
@@ -128,6 +129,8 @@ export const ApiReference = () => (
               <code>head()</code> and <code>list()</code> where the provider
               supports it. Vercel Blob and UploadThing have no user-metadata
               primitive, so it round-trips as <code>undefined</code> there.
+              Bunny Storage has no arbitrary metadata primitive in the
+              TypeScript SDK, so its adapter throws when this option is passed.
             </p>
           </PropAccordionItem>
         </Accordion>
@@ -247,14 +250,16 @@ export const ApiReference = () => (
         <code>GetObject</code> - defaulting to a 1-hour expiry, override
         per-call via <code>{"{ expiresIn }"}</code> or per-adapter via{" "}
         <code>defaultUrlExpiresIn</code>. If the adapter is constructed with a{" "}
-        <code>publicBaseUrl</code> (CDN, custom domain, <code>r2.dev</code>) or
-        UploadThing's <code>public-read</code> ACL, that wins and the URL is
-        built without signing.
+        <code>publicBaseUrl</code> (CDN, custom domain, <code>r2.dev</code>,
+        Bunny Pull Zone) or UploadThing's <code>public-read</code> ACL, that
+        wins and the URL is built without signing.
       </p>
       <p>
-        Two configurations have no URL primitive and throw: Vercel Blob in{" "}
-        <code>access: "private"</code> mode, and an R2 Workers binding without
-        either <code>publicBaseUrl</code> or HTTP credentials.
+        Three configurations have no URL primitive and throw: Vercel Blob in{" "}
+        <code>access: "private"</code> mode, an R2 Workers binding without
+        either <code>publicBaseUrl</code> or HTTP credentials, and Bunny Storage
+        without <code>publicBaseUrl</code> because the Storage API URL requires
+        an <code>AccessKey</code> header.
       </p>
       <CodeBlock code={URL_EXAMPLE} lang="ts" />
       <div className="flex flex-col gap-2">
@@ -271,8 +276,9 @@ export const ApiReference = () => (
               URL expiry, in seconds. Honored on signing adapters (S3 and the
               S3-compatible catalog, GCS, Azure with shared key, Supabase, R2
               hybrid, UploadThing in <code>private</code> mode); ignored on
-              Vercel Blob and on UploadThing's <code>public-read</code> mode (no
-              signing primitive). Defaults to the adapter's{" "}
+              Vercel Blob, Bunny Storage with <code>publicBaseUrl</code>, and
+              on UploadThing's <code>public-read</code> mode (no signing
+              primitive). Defaults to the adapter's{" "}
               <code>defaultUrlExpiresIn</code> (1 hour).
             </p>
           </PropAccordionItem>
@@ -294,8 +300,9 @@ export const ApiReference = () => (
               force a download. <strong>Forces the signing path</strong> on
               adapters that can sign (overrides <code>publicBaseUrl</code>,
               because permanent CDN URLs can't carry the override). Throws on
-              Vercel Blob and UploadThing (no Content-Disposition primitive on
-              either) and on the R2 binding without HTTP credentials.
+              Vercel Blob, UploadThing, and Bunny Storage (no
+              Content-Disposition primitive on those URL shapes) and on the R2
+              binding without HTTP credentials.
             </p>
           </PropAccordionItem>
         </Accordion>
@@ -323,17 +330,20 @@ export const ApiReference = () => (
         the URL can DoS your storage costs until <code>expiresIn</code> elapses.
       </p>
       <p>
-        Vercel Blob throws here - its upload model goes through{" "}
+        Vercel Blob and Bunny Storage throw here - Vercel's upload model goes
+        through{" "}
         <code>handleUpload()</code> from <code>@vercel/blob/client</code>{" "}
-        instead of presigned URLs. The R2 Workers binding throws unless you've
-        configured hybrid mode (binding + HTTP credentials). Azure, Supabase,
-        and UploadThing return PUT URLs but treat <code>maxSize</code> as
-        advisory rather than enforced - Azure and Supabase have no{" "}
-        <code>content-length-range</code> equivalent (Azure throws on the
-        option, Supabase throws too), and UploadThing enforces caps via the
-        file-router config tied to the adapter's <code>slug</code> instead of
-        via the URL signature. Enforce upload caps at your application gateway
-        (or at the provider's dashboard-level bucket/route setting).
+        instead of presigned URLs, and Bunny Storage writes require the Storage
+        API <code>AccessKey</code> header.
+        The R2 Workers binding throws unless you've configured hybrid mode
+        (binding + HTTP credentials). Azure, Supabase, and UploadThing return
+        PUT URLs but treat <code>maxSize</code> as advisory rather than enforced
+        — Azure and Supabase have no <code>content-length-range</code>{" "}
+        equivalent (Azure throws on the option, Supabase throws too), and
+        UploadThing enforces caps via the file-router config tied to the
+        adapter's <code>slug</code> instead of via the URL signature. Enforce
+        upload caps at your application gateway (or at the provider's
+        dashboard-level bucket/route setting).
       </p>
       <CodeBlock code={SIGNED_UPLOAD_EXAMPLE} lang="ts" />
       <div className="flex flex-col gap-2">

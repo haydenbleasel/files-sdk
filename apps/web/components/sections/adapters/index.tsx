@@ -2,6 +2,7 @@ import { Akamai } from "./akamai";
 import { Azure } from "./azure";
 import { BackblazeB2 } from "./backblaze-b2";
 import { Box } from "./box";
+import { BunnyStorage } from "./bunny-storage";
 import { DigitalOceanSpaces } from "./digitalocean-spaces";
 import { Dropbox } from "./dropbox";
 import { Exoscale } from "./exoscale";
@@ -39,6 +40,7 @@ export const Adapters = () => (
     <Storj />
     <Hetzner />
     <Akamai />
+    <BunnyStorage />
     <BackblazeB2 />
     <Wasabi />
     <Scaleway />
