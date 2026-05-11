@@ -1,0 +1,5 @@
+---
+"files-sdk": minor
+---
+
+Add Appwrite adapter at `files-sdk/appwrite`, a wrapper around the official `node-appwrite` SDK's `Storage` API. Auto-loads `endpoint`, `projectId`, and `key` from `APPWRITE_ENDPOINT` / `APPWRITE_PROJECT_ID` / `APPWRITE_API_KEY` (with `NEXT_PUBLIC_*` fallbacks for the first two), or accepts an existing `Client` or `Storage` instance via `client`. `upload()` buffers stream bodies up-front since `InputFile.fromBuffer` has no streaming form. `copy()` is read-then-write — Appwrite has no server-side copy primitive, so it costs an egress + an ingest and is not atomic. `url()` throws by default (Appwrite SDKs cannot mint signed read URLs with API keys); set `public: true` on a public bucket to return the constructed permanent `view` URL. `signedUploadUrl()` throws — Appwrite has no presigned upload primitive; use JWTs or the client SDK for direct uploads. Keys (Appwrite file IDs) must be alphanumeric/dashes/underscores and max 36 characters — slashes are not supported. Errors are relabelled as `Appwrite error`, with `404`/`401`+`403`/`409` mapped to `NotFound`/`Unauthorized`/`Conflict`.
