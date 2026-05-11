@@ -95,7 +95,7 @@ export const Hero = () => (
           ease: EASE,
         }}
       >
-        + 15 more
+        + 16 more
       </motion.span>
     </div>
   </section>
