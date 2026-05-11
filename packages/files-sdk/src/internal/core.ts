@@ -25,12 +25,11 @@ export const DEFAULT_URL_EXPIRES_IN = 3600;
 
 /**
  * Concatenate a public base URL with a key. Tolerates a single trailing
- * slash on the base. The key is embedded literally — the adapter's caller
- * is responsible for URL-encoding any untrusted segments.
+ * slash on the base. The key is URL-encoded so it's safe to embed in a URL path.
  */
 export const joinPublicUrl = (base: string, key: string): string => {
   const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
-  return `${trimmed}/${key}`;
+  return `${trimmed}/${key.split("/").map(encodeURIComponent).join("/")}`;
 };
 
 export interface UrlStrategyInput {

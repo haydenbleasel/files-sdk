@@ -435,7 +435,7 @@ export const vercelBlob = (
       // URL without an API call. `addRandomSuffix: true` makes the actual
       // pathname unknowable in advance, so we have to head() in that case.
       if (storeId && !addRandomSuffix) {
-        return `https://${storeId}.public.blob.vercel-storage.com/${key}`;
+        return `https://${storeId}.public.blob.vercel-storage.com/${key.split("/").map(encodeURIComponent).join("/")}`;
       }
       const result = await headRaw(key);
       if (!result.url) {
