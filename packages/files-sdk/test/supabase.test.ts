@@ -495,6 +495,18 @@ describe("supabase adapter", () => {
       expect(listCall[1]).toEqual({ limit: 10, offset: 0 });
     });
 
+    test("keys from list prefix join correctly and round-trip through head/download", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      const out = await files.list({ limit: 10, prefix: "a/" });
+      const [item] = out.items;
+      if (!item) {
+        throw new Error("expected at least one item");
+      }
+      expect(item.key).toBe("a/a/1.txt");
+      await expect(files.head(item.key)).resolves.toBeDefined();
+      await expect(files.download(item.key)).resolves.toBeDefined();
+    });
+
     test("encodes next offset as cursor when page is full", async () => {
       // Two items returned, limit 2 → full page → cursor "2".
       const out = await makeAdapter().list({ limit: 2 });

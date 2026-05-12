@@ -228,6 +228,18 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
+  test("url encodes special characters in the key on the storeId fast path", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_random";
+    const files = new Files({ adapter: vercelBlob() });
+    headMock.mockClear();
+    const url = await files.url("my file?q#frag");
+    expect(url).toBe(
+      "https://abc123store.public.blob.vercel-storage.com/my%20file%3Fq%23frag"
+    );
+    expect(headMock).not.toHaveBeenCalled();
+    process.env.BLOB_READ_WRITE_TOKEN = "test-token";
+  });
+
   test("url falls back to head() when token format is unfamiliar (e.g. version segment added)", async () => {
     // Hypothetical future token shape with a version prefix segment after
     // `vercel_blob_rw_`. Old code naively grabbed split('_')[3] and would

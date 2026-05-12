@@ -8,6 +8,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { joinPublicUrl } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -435,7 +436,10 @@ export const vercelBlob = (
       // URL without an API call. `addRandomSuffix: true` makes the actual
       // pathname unknowable in advance, so we have to head() in that case.
       if (storeId && !addRandomSuffix) {
-        return `https://${storeId}.public.blob.vercel-storage.com/${key.split("/").map(encodeURIComponent).join("/")}`;
+        return joinPublicUrl(
+          `https://${storeId}.public.blob.vercel-storage.com`,
+          key
+        );
       }
       const result = await headRaw(key);
       if (!result.url) {

@@ -26,6 +26,8 @@ export const DEFAULT_URL_EXPIRES_IN = 3600;
 /**
  * Concatenate a public base URL with a key. Tolerates a single trailing
  * slash on the base. The key is URL-encoded so it's safe to embed in a URL path.
+ * Pass raw keys — this function handles encoding. Passing a pre-encoded key
+ * causes double-encoding (e.g. `%20` becomes `%2520`).
  */
 export const joinPublicUrl = (base: string, key: string): string => {
   const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
