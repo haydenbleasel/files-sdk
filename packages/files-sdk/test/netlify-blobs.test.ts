@@ -446,6 +446,13 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("a.txt", "hello", { contentType: "text/plain" });
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete delegates to store.delete (idempotent)", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     await files.upload("a.txt", "hello");

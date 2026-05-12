@@ -190,6 +190,21 @@ describe("r2 adapter — HTTP path", () => {
       expect(info.type).toBe("text/plain");
     });
 
+    test("exists maps HeadObjectCommand success and 404 correctly", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+
+      s3Mock.on(HeadObjectCommand).resolves({});
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+
+      s3Mock.reset();
+      s3Mock.on(HeadObjectCommand).rejects(
+        Object.assign(new Error("missing"), {
+          $metadata: { httpStatusCode: 404 },
+        })
+      );
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
+
     test("list issues a ListObjectsV2Command and maps Contents to StoredFiles", async () => {
       s3Mock.on(ListObjectsV2Command).resolves({
         Contents: [
@@ -414,6 +429,14 @@ describe("r2 adapter — Workers binding path", () => {
     } catch (error) {
       expect((error as FilesError).code).toBe("NotFound");
     }
+  });
+
+  test("exists on the binding path returns true for present keys and false for missing keys", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("a.txt", "x");
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
   });
 
   test("copy round-trips body since binding has no native copy", async () => {

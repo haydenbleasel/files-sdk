@@ -244,3 +244,27 @@ export const makeErrorMapper = (
     return new FilesError(errorCode, message ?? fallback[errorCode], err);
   };
 };
+
+/**
+ * Standard `exists()` scaffold for providers whose "does this object exist?"
+ * probe is "attempt a metadata lookup and classify NotFound specially".
+ *
+ * The `probe` should be the cheapest provider call that can distinguish
+ * present vs missing for the adapter. Successful probes return `true`;
+ * mapped `NotFound` errors return `false`; every other failure is rethrown.
+ */
+export const existsByProbe = async (
+  probe: () => Promise<unknown>,
+  mapError: (err: unknown) => FilesError
+): Promise<boolean> => {
+  try {
+    await probe();
+    return true;
+  } catch (error) {
+    const mapped = mapError(error);
+    if (mapped.code === "NotFound") {
+      return false;
+    }
+    throw mapped;
+  }
+};

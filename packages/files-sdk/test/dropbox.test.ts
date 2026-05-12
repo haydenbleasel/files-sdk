@@ -447,6 +447,13 @@ describe("dropbox adapter", () => {
     expect(filesDownloadMock).toHaveBeenCalledTimes(1);
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("a.txt", "hi");
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("ghost.txt")).resolves.toBe(false);
+  });
+
   test("delete is idempotent on missing keys", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.delete("ghost.txt");

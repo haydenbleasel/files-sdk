@@ -101,6 +101,23 @@ describe("s3 adapter", () => {
     expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    s3Mock.on(HeadObjectCommand).resolves({});
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    s3Mock.reset();
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("missing"), {
+        $metadata: { httpStatusCode: 404 },
+        name: "NotFound",
+      })
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete sends DeleteObjectCommand", async () => {
     s3Mock.on(DeleteObjectCommand).resolves({});
     const files = new Files({

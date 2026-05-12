@@ -14,7 +14,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -410,18 +414,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         throw mapFsError(error);
       }
     },
-    async exists(key) {
+    exists(key) {
       const bodyPath = resolveKeyPath(root, key);
-      try {
-        await fsp.stat(bodyPath);
-        return true;
-      } catch (error) {
-        const mapped = mapFsError(error);
-        if (mapped.code === "NotFound") {
-          return false;
-        }
-        throw mapped;
-      }
+      return existsByProbe(() => fsp.stat(bodyPath), mapFsError);
     },
     async head(key) {
       const bodyPath = resolveKeyPath(root, key);

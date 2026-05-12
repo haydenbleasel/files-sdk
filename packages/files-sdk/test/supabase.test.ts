@@ -448,6 +448,16 @@ describe("supabase adapter", () => {
       expect(await info.text()).toBe("hello");
       expect(downloadResolveMock).toHaveBeenCalledTimes(1);
     });
+
+    test("exists returns true for present keys and false for missing keys", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+
+      infoMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(404, "NotFound", "missing"))
+      );
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
   });
 
   describe("delete", () => {

@@ -261,6 +261,14 @@ describe("fs adapter", () => {
         code: "NotFound",
       });
     });
+
+    test("exists returns true for present keys and false for missing keys", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("exists.txt", "hi");
+      await expect(files.exists("exists.txt")).resolves.toBe(true);
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
   });
 
   describe("delete", () => {

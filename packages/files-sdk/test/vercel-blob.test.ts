@@ -391,6 +391,28 @@ describe("vercel-blob adapter", () => {
     }
   });
 
+  test("exists returns true for present blobs and false for BlobNotFound errors", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error("missing"), { name: "BlobNotFoundError" })
+      )
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("exists rethrows non-NotFound errors from blob.head()", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("denied"), { status: 403 }))
+    );
+    await expect(files.exists("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
   test("upload error: status 409 maps to Conflict", async () => {
     const files = new Files({ adapter: vercelBlob() });
     putMock.mockImplementationOnce(() =>
