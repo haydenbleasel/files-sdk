@@ -24,12 +24,25 @@ const got = await files.download("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
+```ts
+await files.delete("avatars/abc.png");
+await files.unlink("avatars/abc.png"); // exact alias of delete()
+```
+
 ## What you get
 
-- **One API across providers** — `upload`, `download`, `head`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox.
+- **One API across providers** — `upload`, `download`, `head`, `delete`, `unlink`, `copy`, `list`, `url`, `signedUploadUrl`. `unlink()` is an alias of `delete()`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox.
 - **Web-standard I/O** — bodies are `Blob`, `File`, `ReadableStream`, `Uint8Array`, `ArrayBuffer`, or `string`. No provider-specific types leak into your code.
 - **Escape hatch** — every adapter exposes its native client at `files.raw`, so provider-specific features are one property access away.
 - **Tree-shakeable** — each adapter is a separate entry point. You only bundle what you import.
+
+## Delete vs unlink
+
+`files.unlink(key)` is a convenience alias for `files.delete(key)`.
+
+- Use `delete()` if you want the storage/object-store wording.
+- Use `unlink()` if your codebase already uses filesystem-style naming.
+- Adapter authors do not implement `unlink()`; the alias exists only on the public `Files` wrapper.
 
 ## Adapters
 

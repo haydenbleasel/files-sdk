@@ -67,6 +67,15 @@ describe("Files class", () => {
     expect(adapter.has("d.txt")).toBe(false);
   });
 
+  test("unlink is an alias of delete", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("u.txt", "x");
+    expect(adapter.has("u.txt")).toBe(true);
+    await files.unlink("u.txt");
+    expect(adapter.has("u.txt")).toBe(false);
+  });
+
   test("copy duplicates an object", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("from.txt", "payload");

@@ -21,6 +21,9 @@ const HEAD_EXAMPLE = `const info = await files.head("avatars/abc.png");
 
 const DELETE_EXAMPLE = `await files.delete("avatars/abc.png");`;
 
+const UNLINK_EXAMPLE = `await files.unlink("avatars/abc.png");
+// exact alias of files.delete("avatars/abc.png")`;
+
 const COPY_EXAMPLE = `await files.copy("avatars/abc.png", "avatars/abc.bak.png");`;
 
 const LIST_EXAMPLE = `const { items, cursor } = await files.list({
@@ -165,9 +168,23 @@ export const ApiReference = () => (
         Removes an object. No-op friendly: a missing key resolves successfully
         on providers that treat delete as idempotent, and throws{" "}
         <code>FilesError</code> with <code>code: "NotFound"</code> on ones that
-        don't.
+        don't. If you prefer filesystem-style naming,{" "}
+        <code>files.unlink(key)</code> is an exact alias.
       </p>
       <CodeBlock code={DELETE_EXAMPLE} lang="ts" />
+    </section>
+
+    <section>
+      <Heading as="h3" id="files-unlink">
+        files.unlink(key)
+      </Heading>
+      <p>
+        Exact alias of <code>files.delete(key)</code>. Exists for callers coming
+        from Node.js / POSIX filesystem APIs. Adapters do not implement a
+        separate <code>unlink</code> method; the alias lives on the public{" "}
+        <code>Files</code> wrapper.
+      </p>
+      <CodeBlock code={UNLINK_EXAMPLE} lang="ts" />
     </section>
 
     <section>

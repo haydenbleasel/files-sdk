@@ -150,6 +150,13 @@ export interface Adapter<Raw = unknown> {
    * the body accessors. They are not free.
    */
   head(key: string): Promise<StoredFile>;
+  /**
+   * Remove the object stored at `key`.
+   *
+   * Adapter authors only implement `delete()`. The public `Files` class also
+   * exposes `unlink()` as a convenience alias for callers coming from
+   * filesystem-style APIs.
+   */
   delete(key: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
@@ -246,9 +253,26 @@ export class Files<A extends Adapter = Adapter> {
     return run(() => this.#adapter.head(key));
   }
 
+  /**
+   * Remove the object stored at `key`.
+   *
+   * This is the canonical delete method on the unified API surface. For
+   * filesystem-style call sites, {@link Files.unlink} is an exact alias.
+   */
   delete(key: string): Promise<void> {
     assertValidKey(key);
     return run(() => this.#adapter.delete(key));
+  }
+
+  /**
+   * Alias of {@link Files.delete}.
+   *
+   * Exists for parity with filesystem-style APIs (`fs.unlink`, POSIX
+   * `unlink(2)`, etc.). Adapters do not implement this method separately;
+   * the alias lives entirely on the public `Files` wrapper.
+   */
+  unlink(key: string): Promise<void> {
+    return this.delete(key);
   }
 
   copy(from: string, to: string): Promise<void> {
