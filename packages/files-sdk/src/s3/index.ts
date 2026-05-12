@@ -265,6 +265,18 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
+    async exists(key) {
+      try {
+        await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+        return true;
+      } catch (error) {
+        const mapped = wrapErr(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         const result = await client.send(

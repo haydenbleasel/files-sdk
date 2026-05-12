@@ -293,6 +293,18 @@ export const vercelBlob = (
         throw mapBlobError(error);
       }
     },
+    async exists(key) {
+      try {
+        await headRaw(key);
+        return true;
+      } catch (error) {
+        const mapped = mapBlobError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       const result = await headRaw(key);
       return createStoredFile(

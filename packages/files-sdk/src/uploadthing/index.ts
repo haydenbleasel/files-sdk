@@ -406,6 +406,19 @@ export const uploadthing = (
         { data: bytes, kind: "buffer" }
       );
     },
+    async exists(key) {
+      try {
+        const url = await resolveFetchUrl(key);
+        await headViaFetch(url, key);
+        return true;
+      } catch (error) {
+        const mapped = mapUploadThingError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       const url = await resolveFetchUrl(key);
       let info: Awaited<ReturnType<typeof headViaFetch>>;

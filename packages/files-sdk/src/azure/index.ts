@@ -407,6 +407,17 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
+    async exists(key) {
+      try {
+        return await containerClient.getBlobClient(key).exists();
+      } catch (error) {
+        const mapped = mapAzureError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         const blobClient = containerClient.getBlobClient(key);

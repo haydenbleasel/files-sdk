@@ -750,6 +750,18 @@ export const onedrive = (
         throw mapGraphError(error);
       }
     },
+    async exists(key) {
+      try {
+        await client.api(itemApiPath(key)).get();
+        return true;
+      } catch (error) {
+        const mapped = mapGraphError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         const meta = (await client.api(itemApiPath(key)).get()) as DriveItem;

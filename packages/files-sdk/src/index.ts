@@ -150,6 +150,14 @@ export interface Adapter<Raw = unknown> {
    * the body accessors. They are not free.
    */
   head(key: string): Promise<StoredFile>;
+  /**
+   * Check whether `key` exists without fetching its body.
+   *
+   * Returns `true` when the object exists, `false` when the provider reports
+   * `NotFound`, and rethrows every other error (permissions, transport
+   * failures, bad credentials, etc.).
+   */
+  exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
@@ -244,6 +252,18 @@ export class Files<A extends Adapter = Adapter> {
   head(key: string): Promise<StoredFile> {
     assertValidKey(key);
     return run(() => this.#adapter.head(key));
+  }
+
+  /**
+   * Check whether `key` exists without fetching its body.
+   *
+   * Returns `true` when the object exists and `false` when the adapter
+   * reports `NotFound`. Other failures still propagate so callers do not
+   * accidentally treat auth or transport errors as "missing file".
+   */
+  exists(key: string): Promise<boolean> {
+    assertValidKey(key);
+    return run(() => this.#adapter.exists(key));
   }
 
   delete(key: string): Promise<void> {

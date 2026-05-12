@@ -879,6 +879,18 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         throw mapBoxError(error);
       }
     },
+    async exists(key) {
+      try {
+        await adapter.head(key);
+        return true;
+      } catch (error) {
+        const mapped = mapBoxError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         await authHandle.ensureReady();

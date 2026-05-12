@@ -570,6 +570,23 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
+    async exists(key) {
+      try {
+        const fileId = await resolveFileId(key);
+        await driveClient.files.get({
+          ...sharedDriveParams,
+          fields: "id",
+          fileId,
+        });
+        return true;
+      } catch (error) {
+        const mapped = mapDriveError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         const fileId = await resolveFileId(key);

@@ -410,6 +410,19 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         throw mapFsError(error);
       }
     },
+    async exists(key) {
+      const bodyPath = resolveKeyPath(root, key);
+      try {
+        await fsp.stat(bodyPath);
+        return true;
+      } catch (error) {
+        const mapped = mapFsError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       const bodyPath = resolveKeyPath(root, key);
       try {

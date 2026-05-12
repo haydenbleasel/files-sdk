@@ -209,6 +209,18 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         throw mapGCSError(error);
       }
     },
+    async exists(key) {
+      try {
+        const [exists] = await bucket.file(key).exists();
+        return exists;
+      } catch (error) {
+        const mapped = mapGCSError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       try {
         const file = bucket.file(key);
