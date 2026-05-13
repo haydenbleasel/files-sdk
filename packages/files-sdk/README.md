@@ -24,9 +24,28 @@ const got = await files.download("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
+## File handles
+
+Use `files.file(key)` when your application code works with the same object repeatedly:
+
+```ts
+const avatar = files.file("avatars/abc.png");
+
+await avatar.upload(file, { contentType: "image/png" });
+
+if (await avatar.exists()) {
+  const meta = await avatar.head();
+  const url = await avatar.url({ expiresIn: 300 });
+}
+
+await avatar.delete();
+```
+
+File handles are a thin layer over the same adapter methods, so adapters do not need to implement anything extra.
+
 ## What you get
 
-- **One API across providers** — `upload`, `download`, `head`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox.
+- **One API across providers** — `upload`, `download`, `head`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`, and `file`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox.
 - **Web-standard I/O** — bodies are `Blob`, `File`, `ReadableStream`, `Uint8Array`, `ArrayBuffer`, or `string`. No provider-specific types leak into your code.
 - **Escape hatch** — every adapter exposes its native client at `files.raw`, so provider-specific features are one property access away.
 - **Tree-shakeable** — each adapter is a separate entry point. You only bundle what you import.

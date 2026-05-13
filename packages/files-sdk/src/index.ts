@@ -186,6 +186,20 @@ export interface FilesOptions<A extends Adapter> {
   adapter: A;
 }
 
+export interface FileHandle {
+  readonly key: string;
+  upload(body: Body, opts?: UploadOptions): Promise<UploadResult>;
+  download(opts?: DownloadOptions): Promise<StoredFile>;
+  head(): Promise<StoredFile>;
+  exists(): Promise<boolean>;
+  delete(): Promise<void>;
+  unlink(): Promise<void>;
+  url(opts?: UrlOptions): Promise<string>;
+  signedUploadUrl(opts: SignUploadOptions): Promise<SignedUpload>;
+  copyTo(destinationKey: string): Promise<void>;
+  copyFrom(sourceKey: string): Promise<void>;
+}
+
 const run = async <T>(fn: () => Promise<T>): Promise<T> => {
   try {
     return await fn();
@@ -221,6 +235,33 @@ export class Files<A extends Adapter = Adapter> {
 
   get adapter(): A {
     return this.#adapter;
+  }
+
+  file(key: string): FileHandle {
+    assertValidKey(key);
+    return {
+      copyFrom: (sourceKey) => this.copy(sourceKey, key),
+      copyTo: (destinationKey) => this.copy(key, destinationKey),
+      delete: () => this.delete(key),
+      download: (opts) => this.download(key, opts),
+      exists: async () => {
+        try {
+          await this.head(key);
+          return true;
+        } catch (error) {
+          if (error instanceof FilesError && error.code === "NotFound") {
+            return false;
+          }
+          throw error;
+        }
+      },
+      head: () => this.head(key),
+      key,
+      signedUploadUrl: (opts) => this.signedUploadUrl(key, opts),
+      unlink: () => this.delete(key),
+      upload: (body, opts) => this.upload(key, body, opts),
+      url: (opts) => this.url(key, opts),
+    };
   }
 
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult> {
