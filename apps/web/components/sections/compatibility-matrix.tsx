@@ -306,6 +306,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: ok,
       b2: ok,
       box: ok,
+      bunny: ok,
       dropbox: warn(
         "Resolves via `filesGetMetadata` and returns `false` for folder or deleted entries at the path - matches Dropbox's semantics where the same path can hold a folder or a tombstone. Only true file entries return `true`."
       ),

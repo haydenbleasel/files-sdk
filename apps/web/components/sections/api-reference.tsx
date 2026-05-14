@@ -276,8 +276,8 @@ export const ApiReference = () => (
               URL expiry, in seconds. Honored on signing adapters (S3 and the
               S3-compatible catalog, GCS, Azure with shared key, Supabase, R2
               hybrid, UploadThing in <code>private</code> mode); ignored on
-              Vercel Blob, Bunny Storage with <code>publicBaseUrl</code>, and
-              on UploadThing's <code>public-read</code> mode (no signing
+              Vercel Blob, Bunny Storage with <code>publicBaseUrl</code>, and on
+              UploadThing's <code>public-read</code> mode (no signing
               primitive). Defaults to the adapter's{" "}
               <code>defaultUrlExpiresIn</code> (1 hour).
             </p>
@@ -331,10 +331,9 @@ export const ApiReference = () => (
       </p>
       <p>
         Vercel Blob and Bunny Storage throw here - Vercel's upload model goes
-        through{" "}
-        <code>handleUpload()</code> from <code>@vercel/blob/client</code>{" "}
-        instead of presigned URLs, and Bunny Storage writes require the Storage
-        API <code>AccessKey</code> header.
+        through <code>handleUpload()</code> from{" "}
+        <code>@vercel/blob/client</code> instead of presigned URLs, and Bunny
+        Storage writes require the Storage API <code>AccessKey</code> header.
         The R2 Workers binding throws unless you've configured hybrid mode
         (binding + HTTP credentials). Azure, Supabase, and UploadThing return
         PUT URLs but treat <code>maxSize</code> as advisory rather than enforced

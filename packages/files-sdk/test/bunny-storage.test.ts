@@ -31,8 +31,7 @@ const makeStorageFile = (
 ) => {
   const normalizedKey = isDirectory ? key.replace(/\/+$/u, "") : key;
   const idx = normalizedKey.lastIndexOf("/");
-  const objectName =
-    idx === -1 ? normalizedKey : normalizedKey.slice(idx + 1);
+  const objectName = idx === -1 ? normalizedKey : normalizedKey.slice(idx + 1);
   const path = isDirectory ? `/${normalizedKey}/` : `/${normalizedKey}`;
   return {
     _tag: "StorageFile" as const,
@@ -117,9 +116,9 @@ const listMock = mock((_storageZone: unknown, path: string) => {
   return Promise.resolve(entries);
 });
 
-const removeMock = mock((_storageZone: unknown, path: string) => {
-  return Promise.resolve(backing.delete(stripPath(path)));
-});
+const removeMock = mock((_storageZone: unknown, path: string) =>
+  Promise.resolve(backing.delete(stripPath(path)))
+);
 
 const uploadMock = mock(
   async (
@@ -260,7 +259,7 @@ describe("bunnyStorage adapter", () => {
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
-  test("download, stream download, and head expose StoredFile fields", async () => {
+  test("download, stream download, head, and exists expose StoredFile fields", async () => {
     const files = new Files({
       adapter: bunnyStorage({
         accessKey: "key",
@@ -281,6 +280,8 @@ describe("bunnyStorage adapter", () => {
     const headed = await files.head("a.txt");
     expect(headed.size).toBe(5);
     expect(await headed.text()).toBe("hello");
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
   });
 
   test("list supports prefix, limit, and numeric cursor over Bunny directory listings", async () => {

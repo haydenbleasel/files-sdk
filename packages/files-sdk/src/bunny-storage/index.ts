@@ -11,6 +11,7 @@ import type {
   UrlOptions,
 } from "../index.js";
 import {
+  existsByProbe,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
@@ -285,10 +286,7 @@ export const bunnyStorage = (
     async delete(key) {
       try {
         const path = toBunnyPath(key);
-        const removed = await BunnyStorageSDK.file.remove(client, path);
-        if (removed === false) {
-          return;
-        }
+        await BunnyStorageSDK.file.remove(client, path);
       } catch (error) {
         const mapped = mapBunnyStorageError(error);
         if (mapped.code === "NotFound") {
@@ -311,6 +309,12 @@ export const bunnyStorage = (
       } catch (error) {
         throw mapBunnyStorageError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(
+        () => BunnyStorageSDK.file.get(client, toBunnyPath(key)),
+        mapBunnyStorageError
+      );
     },
     async head(key) {
       try {
@@ -351,9 +355,11 @@ export const bunnyStorage = (
     name: "bunny-storage",
     raw: client,
     async signedUploadUrl(_key, _opts): Promise<SignedUpload> {
-      throw new FilesError(
-        "Provider",
-        "bunnyStorage: signed upload URLs are not available. Bunny Storage writes go through the Storage API with an AccessKey header; upload server-side via the SDK or proxy through your application."
+      return await Promise.reject(
+        new FilesError(
+          "Provider",
+          "bunnyStorage: signed upload URLs are not available. Bunny Storage writes go through the Storage API with an AccessKey header; upload server-side via the SDK or proxy through your application."
+        )
       );
     },
     async upload(key, body: Body, options): Promise<UploadResult> {
