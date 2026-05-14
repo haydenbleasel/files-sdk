@@ -336,6 +336,17 @@ describe("uploadthing adapter", () => {
     expect(info.key).toBe("a.png");
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({ adapter: uploadthing() });
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(null, { status: 404, statusText: "Not Found" })
+      )) as unknown as typeof fetch;
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete delegates to utapi.deleteFiles with the key", async () => {
     const files = new Files({ adapter: uploadthing() });
     await files.delete("a.txt");

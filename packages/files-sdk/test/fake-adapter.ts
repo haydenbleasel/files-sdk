@@ -118,6 +118,9 @@ export const fakeAdapter = (): FakeAdapter => {
       }
       return Promise.resolve(toStored(key, entry));
     },
+    exists(key: string): Promise<boolean> {
+      return Promise.resolve(store.has(key));
+    },
     has(key) {
       return store.has(key);
     },

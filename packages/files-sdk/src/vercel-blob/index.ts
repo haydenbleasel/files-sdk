@@ -8,7 +8,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { joinPublicUrl } from "../internal/core.js";
+import { existsByProbe, joinPublicUrl } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -293,6 +293,9 @@ export const vercelBlob = (
       } catch (error) {
         throw mapBlobError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(() => headRaw(key), mapBlobError);
     },
     async head(key) {
       const result = await headRaw(key);

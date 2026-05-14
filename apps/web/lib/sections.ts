@@ -51,6 +51,7 @@ export const API_SECTIONS: TocSection[] = [
       { id: "files-upload", label: "upload" },
       { id: "files-download", label: "download" },
       { id: "files-head", label: "head" },
+      { id: "files-exists", label: "exists" },
       { id: "files-delete", label: "delete" },
       { id: "files-copy", label: "copy" },
       { id: "files-list", label: "list" },

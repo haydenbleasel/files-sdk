@@ -14,7 +14,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -409,6 +413,13 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       } catch (error) {
         throw mapFsError(error);
       }
+    },
+    exists(key) {
+      // stat resolves for both files and directories, matching head()'s
+      // permissive behavior. Tighten both together if file-only semantics
+      // are ever needed.
+      const bodyPath = resolveKeyPath(root, key);
+      return existsByProbe(() => fsp.stat(bodyPath), mapFsError);
     },
     async head(key) {
       const bodyPath = resolveKeyPath(root, key);

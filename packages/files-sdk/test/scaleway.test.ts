@@ -163,6 +163,32 @@ describe("scaleway adapter", () => {
     s3Mock.reset();
   });
 
+  test("delegates exists to underlying S3 client", async () => {
+    const s3Mock = mockClient(S3Client);
+    s3Mock.reset();
+    const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+    const files = new Files({
+      adapter: scaleway({
+        accessKeyId: "AKID",
+        bucket: "uploads",
+        region: "fr-par",
+        secretAccessKey: "SECRET",
+      }),
+    });
+
+    s3Mock.on(HeadObjectCommand).resolves({});
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    s3Mock.reset();
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("missing"), {
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+    s3Mock.reset();
+  });
+
   test("default error messages from the inner s3 adapter are relabeled as 'Scaleway error'", async () => {
     const { mapS3Error } = await import("../src/s3/index.js");
     const scalewayMessages = {

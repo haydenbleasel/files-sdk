@@ -19,6 +19,10 @@ const stream = await files.download("avatars/abc.png", { as: "stream" });
 const HEAD_EXAMPLE = `const info = await files.head("avatars/abc.png");
 // → StoredFile with no body materialized`;
 
+const EXISTS_EXAMPLE = `const present = await files.exists("avatars/abc.png");
+const missing = await files.exists("avatars/missing.png");
+// → true / false`;
+
 const DELETE_EXAMPLE = `await files.delete("avatars/abc.png");`;
 
 const COPY_EXAMPLE = `await files.copy("avatars/abc.png", "avatars/abc.bak.png");`;
@@ -152,6 +156,20 @@ export const ApiReference = () => (
         lazy-fetches.
       </p>
       <CodeBlock code={HEAD_EXAMPLE} lang="ts" />
+    </section>
+
+    <section>
+      <Heading as="h3" id="files-exists">
+        files.exists(key)
+      </Heading>
+      <p>
+        Checks whether an object exists without fetching its body. Returns{" "}
+        <code>true</code> when the key exists and <code>false</code> when the
+        provider reports <code>NotFound</code>. Permission, auth, and transport
+        failures still throw so callers do not accidentally treat them as a
+        missing file.
+      </p>
+      <CodeBlock code={EXISTS_EXAMPLE} lang="ts" />
     </section>
 
     <section>

@@ -297,6 +297,20 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       }
       return r2ObjectToStoredFile(obj, downloadOpts);
     },
+    async exists(key) {
+      // R2's binding `head()` returns null for a missing object on the happy
+      // path, but the runtime can also throw on transport-level failures that
+      // the mapper classifies as NotFound — handle both.
+      try {
+        return (await bucket.head(key)) !== null;
+      } catch (error) {
+        const mapped = mapR2Error(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+    },
     async head(key) {
       let obj: Awaited<ReturnType<typeof bucket.head>>;
       try {
@@ -482,6 +496,10 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     async download(key, downloadOpts) {
       const adapter = await ensure();
       return adapter.download(key, downloadOpts);
+    },
+    async exists(key) {
+      const adapter = await ensure();
+      return adapter.exists(key);
     },
     async head(key) {
       const adapter = await ensure();

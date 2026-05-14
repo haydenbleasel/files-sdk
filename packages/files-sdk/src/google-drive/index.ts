@@ -13,6 +13,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -569,6 +570,16 @@ export const googleDrive = (
       } catch (error) {
         throw mapDriveError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(async () => {
+        const fileId = await resolveFileId(key);
+        await driveClient.files.get({
+          ...sharedDriveParams,
+          fields: "id",
+          fileId,
+        });
+      }, mapDriveError);
     },
     async head(key) {
       try {

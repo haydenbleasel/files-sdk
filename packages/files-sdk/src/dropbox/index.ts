@@ -11,7 +11,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -786,6 +790,20 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       } catch (error) {
         throw mapDropboxError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(async () => {
+        await authHandle.ensureAccessToken();
+        const res = await client.filesGetMetadata({ path: keyToPath(key) });
+        const item = res.result;
+        const tag = (item as { ".tag"?: string })[".tag"];
+        if (tag === "folder" || tag === "deleted") {
+          throw new FilesError(
+            "NotFound",
+            `dropbox: ${key} is not a file (tag=${tag})`
+          );
+        }
+      }, mapDropboxError);
     },
     async head(key) {
       try {

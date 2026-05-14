@@ -432,6 +432,17 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       return downloadAsBufferFile(key);
     },
+    async exists(key) {
+      const { error } = await bucketRef.info(key);
+      if (!error) {
+        return true;
+      }
+      const mapped = mapSupabaseError(error);
+      if (mapped.code === "NotFound") {
+        return false;
+      }
+      throw mapped;
+    },
     async head(key) {
       const { data, error } = await bucketRef.info(key);
       if (error) {
