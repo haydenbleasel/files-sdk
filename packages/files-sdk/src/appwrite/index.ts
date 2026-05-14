@@ -11,9 +11,12 @@ import type {
   UploadOptions,
   UrlOptions,
 } from "../index.js";
-import { existsByProbe } from "../internal/core.js";
+import {
+  existsByProbe,
+  makeErrorMapper,
+  normalizeBody as coreNormalizeBody,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import type { FilesErrorCode } from "../internal/errors.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -56,40 +59,29 @@ export type AppwriteAdapter = Adapter<Storage> & {
 
 const DEFAULT_LIST_LIMIT = 100;
 
-const NOT_FOUND_CODES = new Set([404]);
-const UNAUTH_CODES = new Set([401, 403]);
-const CONFLICT_CODES = new Set([409]);
+const EMPTY_CODES: ReadonlySet<string> = new Set();
 
-const classifyAppwriteError = (status?: number): FilesErrorCode => {
-  if (status && NOT_FOUND_CODES.has(status)) {
-    return "NotFound";
-  }
-  if (status && UNAUTH_CODES.has(status)) {
-    return "Unauthorized";
-  }
-  if (status && CONFLICT_CODES.has(status)) {
-    return "Conflict";
-  }
-  return "Provider";
-};
-
-const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
-  Conflict: "Conflict",
-  NotFound: "Not found",
-  Provider: "Appwrite error",
-  Unauthorized: "Unauthorized",
-};
-
-export const mapAppwriteError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
-  }
-  if (err instanceof AppwriteException) {
-    const code = classifyAppwriteError(err.code);
-    return new FilesError(code, err.message || DEFAULT_MESSAGES[code], err);
-  }
-  return new FilesError("Provider", DEFAULT_MESSAGES.Provider, err);
-};
+// Appwrite classifies purely by HTTP status — its `AppwriteException` exposes
+// the response code on `err.code`. The shared mapper expects `status`, so
+// hoist `code` into `status` here. Non-`AppwriteException` errors fall through
+// to the `Provider` bucket.
+export const mapAppwriteError = makeErrorMapper({
+  codes: {
+    conflict: EMPTY_CODES,
+    notFound: EMPTY_CODES,
+    unauthorized: EMPTY_CODES,
+  },
+  extract: (err) => {
+    if (err instanceof AppwriteException) {
+      return {
+        ...(err.message && { message: err.message }),
+        ...(typeof err.code === "number" && { status: err.code }),
+      };
+    }
+    return {};
+  },
+  providerLabel: "Appwrite error",
+});
 
 // Appwrite custom file IDs: max 36 chars, must start with alphanumeric,
 // remaining chars are alphanumeric/`.`/`-`/`_`. Surfaced as a clear FilesError
@@ -105,48 +97,50 @@ const assertAppwriteKey = (key: string, label = "key"): void => {
   }
 };
 
-const normalizeBody = async (
-  body: Body,
-  filename: string
-): Promise<unknown> => {
-  let data: Uint8Array;
+const drainStream = async (
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+};
 
-  if (typeof body === "string") {
-    data = new TextEncoder().encode(body);
-  } else if (body instanceof Blob) {
-    data = new Uint8Array(await body.arrayBuffer());
-  } else if (body instanceof Uint8Array) {
-    data = body;
-  } else if (body instanceof ArrayBuffer) {
-    data = new Uint8Array(body);
-  } else if (ArrayBuffer.isView(body)) {
-    data = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-  } else if (body instanceof ReadableStream) {
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      chunks.push(value);
-    }
-    const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-    data = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      data.set(chunk, offset);
-      offset += chunk.length;
-    }
-  } else {
+const isSupportedBody = (body: unknown): body is Body =>
+  typeof body === "string" ||
+  body instanceof Uint8Array ||
+  body instanceof ArrayBuffer ||
+  ArrayBuffer.isView(body) ||
+  body instanceof Blob ||
+  body instanceof ReadableStream;
+
+// `InputFile.fromBuffer` has no streaming form, so streamed bodies must be
+// drained up-front. Other Body shapes already arrive as `Uint8Array` from
+// the shared helper.
+const toInputFile = async (body: Body, filename: string): Promise<unknown> => {
+  if (!isSupportedBody(body)) {
     throw new FilesError(
       "Provider",
-      "Unsupported body type for Appwrite adapter",
-      null
+      "Unsupported body type for Appwrite adapter"
     );
   }
-
-  return InputFile.fromBuffer(Buffer.from(data), filename);
+  const { data } = await coreNormalizeBody(body);
+  const bytes = data instanceof ReadableStream ? await drainStream(data) : data;
+  return InputFile.fromBuffer(Buffer.from(bytes), filename);
 };
 
 const isStorageInstance = (candidate: unknown): candidate is Storage =>
@@ -204,23 +198,24 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     storage = new Storage(client);
   }
 
-  // `cacheControl` and `metadata` on UploadOptions are silently dropped —
-  // Appwrite's createFile has no equivalent fields. Documented on the
+  // `contentType`, `cacheControl`, and `metadata` on UploadOptions are
+  // silently dropped — Appwrite's createFile auto-detects mime from the
+  // payload and exposes no equivalent for the other two. Documented on the
   // adapter's limitations section.
   return {
     bucket: opts.bucket,
     copy: async (from: string, to: string) => {
       assertAppwriteKey(to, "copy destination");
       try {
-        const [stat, buffer] = await Promise.all([
-          storage.getFile({ bucketId: opts.bucket, fileId: from }),
-          storage.getFileDownload({ bucketId: opts.bucket, fileId: from }),
-        ]);
-
-        const inputFile = InputFile.fromBuffer(
-          Buffer.from(buffer),
-          stat.name ?? to
-        );
+        // Use `to` as the InputFile filename rather than fetching the
+        // source's display name — saves a roundtrip per copy. Appwrite's
+        // storage identity is the file ID, and the destination key is
+        // already what callers expect to see.
+        const buffer = await storage.getFileDownload({
+          bucketId: opts.bucket,
+          fileId: from,
+        });
+        const inputFile = InputFile.fromBuffer(Buffer.from(buffer), to);
         await storage.createFile({
           bucketId: opts.bucket,
           file: inputFile as unknown as File,
@@ -351,8 +346,10 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     upload: async (key: string, body: Body, _uploadOpts?: UploadOptions) => {
       assertAppwriteKey(key);
       try {
-        const inputFile = await normalizeBody(body, key);
+        const inputFile = await toInputFile(body, key);
 
+        // Cast: the SDK types `file` as the DOM `File`, but at runtime
+        // accepts the Node `InputFile` returned by `InputFile.fromBuffer`.
         const response = await storage.createFile({
           bucketId: opts.bucket,
           file: inputFile as unknown as File,

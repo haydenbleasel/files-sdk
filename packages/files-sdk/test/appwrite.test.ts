@@ -623,6 +623,44 @@ describe("appwrite adapter", () => {
     );
   });
 
+  test("list > paginates through a prefix using cursor + prefix together", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({
+      adapter: appwrite({ bucket: BUCKET }),
+    });
+    listFilesMock.mockResolvedValueOnce({
+      files: [
+        { $id: "user-123/a", mimeType: "text/plain", sizeOriginal: 1 },
+        { $id: "user-123/b", mimeType: "text/plain", sizeOriginal: 1 },
+      ],
+      total: 2,
+    } as never);
+    const first = await files.list({ limit: 2, prefix: "user-123/" });
+    expect(first.cursor).toBe("user-123/b");
+
+    listFilesMock.mockResolvedValueOnce({
+      files: [{ $id: "user-123/c", mimeType: "text/plain", sizeOriginal: 1 }],
+      total: 1,
+    } as never);
+    const second = await files.list({
+      cursor: first.cursor,
+      limit: 2,
+      prefix: "user-123/",
+    });
+    expect(second.items).toHaveLength(1);
+    expect(second.cursor).toBeUndefined();
+    expect(listFilesMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        bucketId: BUCKET,
+        queries: expect.arrayContaining([
+          "limit(2)",
+          'startsWith("name", "user-123/")',
+          'cursorAfter("user-123/b")',
+        ]),
+      })
+    );
+  });
+
   test("list > items expose lazy bodies that fetch on demand", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
