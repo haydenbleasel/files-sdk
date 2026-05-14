@@ -1,4 +1,4 @@
-import { AppwriteException, Client, Storage } from "node-appwrite";
+import { AppwriteException, Client, Query, Storage } from "node-appwrite";
 import { InputFile } from "node-appwrite/file";
 
 import type {
@@ -80,22 +80,34 @@ const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
-export const mapAppwriteError = (err?: unknown): FilesError => {
+export const mapAppwriteError = (err: unknown): FilesError => {
   if (err instanceof FilesError) {
     return err;
   }
   if (err instanceof AppwriteException) {
     const code = classifyAppwriteError(err.code);
-    return new FilesError(code, err.message ?? DEFAULT_MESSAGES[code], err);
+    return new FilesError(code, err.message || DEFAULT_MESSAGES[code], err);
   }
-  const code = "Provider";
-  return new FilesError(code, DEFAULT_MESSAGES[code], err);
+  return new FilesError("Provider", DEFAULT_MESSAGES.Provider, err);
+};
+
+// Appwrite custom file IDs: max 36 chars, must start with alphanumeric,
+// remaining chars are alphanumeric/`.`/`-`/`_`. Surfaced as a clear FilesError
+// before hitting the API so callers see what's wrong instead of an opaque 400.
+const APPWRITE_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$/u;
+
+const assertAppwriteKey = (key: string, label = "key"): void => {
+  if (!APPWRITE_KEY_RE.test(key)) {
+    throw new FilesError(
+      "Provider",
+      `appwrite: ${label} "${key}" is not a valid Appwrite file ID — must be 1-36 chars, start with [a-zA-Z0-9], and use only [a-zA-Z0-9._-] (no slashes).`
+    );
+  }
 };
 
 const normalizeBody = async (
   body: Body,
-  filename: string,
-  _contentTypeHint?: string
+  filename: string
 ): Promise<unknown> => {
   let data: Uint8Array;
 
@@ -143,22 +155,20 @@ const isStorageInstance = (candidate: unknown): candidate is Storage =>
   "createFile" in candidate &&
   typeof (candidate as { createFile?: unknown }).createFile === "function";
 
-export const createAppwriteAdapter = (
-  opts: AppwriteAdapterOptions
-): AppwriteAdapter => {
+export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   let storage: Storage;
   let { endpoint, projectId } = opts;
 
   if (opts.client) {
     if (isStorageInstance(opts.client)) {
       storage = opts.client;
-      const { client } = storage as unknown as { client?: Client };
-      if (client?.config) {
-        endpoint ??= client.config.endpoint;
-        projectId ??= client.config.project;
+      const innerClient = storage.client;
+      if (innerClient?.config) {
+        endpoint ??= innerClient.config.endpoint;
+        projectId ??= innerClient.config.project;
       }
     } else {
-      const client = opts.client as Client;
+      const { client } = opts;
       storage = new Storage(client);
       if (client.config) {
         endpoint ??= client.config.endpoint;
@@ -179,7 +189,8 @@ export const createAppwriteAdapter = (
       opts.key ?? readEnv("APPWRITE_API_KEY") ?? readEnv("APPWRITE_KEY");
 
     if (!projectId) {
-      throw new Error(
+      throw new FilesError(
+        "Provider",
         "Appwrite adapter requires a projectId or an existing client"
       );
     }
@@ -193,16 +204,23 @@ export const createAppwriteAdapter = (
     storage = new Storage(client);
   }
 
+  // `cacheControl` and `metadata` on UploadOptions are silently dropped —
+  // Appwrite's createFile has no equivalent fields. Documented on the
+  // adapter's limitations section.
   return {
     bucket: opts.bucket,
     copy: async (from: string, to: string) => {
+      assertAppwriteKey(to, "copy destination");
       try {
-        const buffer = await storage.getFileDownload({
-          bucketId: opts.bucket,
-          fileId: from,
-        });
+        const [stat, buffer] = await Promise.all([
+          storage.getFile({ bucketId: opts.bucket, fileId: from }),
+          storage.getFileDownload({ bucketId: opts.bucket, fileId: from }),
+        ]);
 
-        const inputFile = InputFile.fromBuffer(Buffer.from(buffer), to);
+        const inputFile = InputFile.fromBuffer(
+          Buffer.from(buffer),
+          stat.name ?? to
+        );
         await storage.createFile({
           bucketId: opts.bucket,
           file: inputFile as unknown as File,
@@ -273,12 +291,14 @@ export const createAppwriteAdapter = (
     },
     list: async (listOpts?: ListOptions): Promise<ListResult> => {
       try {
-        const queries: string[] = [];
         const limit = listOpts?.limit ?? DEFAULT_LIST_LIMIT;
-        queries.push(`limit(${limit})`);
+        const queries: string[] = [Query.limit(limit)];
 
+        if (listOpts?.prefix) {
+          queries.push(Query.startsWith("name", listOpts.prefix));
+        }
         if (listOpts?.cursor) {
-          queries.push(`cursorAfter("${listOpts.cursor}")`);
+          queries.push(Query.cursorAfter(listOpts.cursor));
         }
 
         const response = await storage.listFiles({
@@ -322,14 +342,16 @@ export const createAppwriteAdapter = (
     name: "appwrite",
     raw: storage,
     signedUploadUrl: (_key: string, _opts: unknown) =>
-      Promise.reject(new FilesError("Provider", "unsupported_operation", null)),
-    upload: async (key: string, body: Body, uploadOpts?: UploadOptions) => {
+      Promise.reject(
+        new FilesError(
+          "Provider",
+          "appwrite: signedUploadUrl is not supported. Appwrite has no presigned upload primitive — use a JWT or the client SDK for direct uploads."
+        )
+      ),
+    upload: async (key: string, body: Body, _uploadOpts?: UploadOptions) => {
+      assertAppwriteKey(key);
       try {
-        const inputFile = await normalizeBody(
-          body,
-          key,
-          uploadOpts?.contentType
-        );
+        const inputFile = await normalizeBody(body, key);
 
         const response = await storage.createFile({
           bucketId: opts.bucket,
@@ -349,15 +371,17 @@ export const createAppwriteAdapter = (
     url: (key: string, _urlOpts?: UrlOptions) => {
       if (!opts.public) {
         return Promise.reject(
-          new FilesError("Provider", "unsupported_operation", null)
+          new FilesError(
+            "Provider",
+            "appwrite: url() is not supported. Appwrite SDKs cannot mint signed read URLs with API keys — set { public: true } on the adapter for a public bucket to return a permanent view URL."
+          )
         );
       }
       if (!endpoint || !projectId) {
         return Promise.reject(
           new FilesError(
             "Provider",
-            "Missing endpoint or projectId required for URL generation",
-            null
+            "appwrite: missing endpoint or projectId required for URL generation"
           )
         );
       }

@@ -81,9 +81,12 @@ export const Appwrite = () => (
         S3-style presigned upload URLs. <code>url()</code> throws by default
         (Appwrite cannot mint presigned read URLs with API keys); set{" "}
         <code>public: true</code> for public buckets. <code>copy()</code> is
-        read-then-write (no native server-side copy). File IDs (keys) must be
-        alphanumeric, dashes, or underscores, and max 36 characters (no
-        slashes).
+        read-then-write (no native server-side copy). File IDs (keys) must start
+        with an alphanumeric and use only <code>[a-zA-Z0-9._-]</code>, max 36
+        characters (no slashes) — invalid keys are rejected before the API call.{" "}
+        <code>UploadOptions</code> <code>cacheControl</code> and{" "}
+        <code>metadata</code> are silently dropped: Appwrite has no equivalent
+        fields on <code>createFile</code>.
       </p>
     </div>
   </section>
