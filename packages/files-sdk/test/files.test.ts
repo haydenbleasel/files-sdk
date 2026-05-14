@@ -109,10 +109,6 @@ describe("Files class", () => {
 
     await file.delete();
     expect(await file.exists()).toBe(false);
-
-    await file.upload("again");
-    await file.unlink();
-    expect(await file.exists()).toBe(false);
   });
 
   test("file handle supports copy helpers", async () => {

@@ -202,7 +202,6 @@ export interface FileHandle {
   head(): Promise<StoredFile>;
   exists(): Promise<boolean>;
   delete(): Promise<void>;
-  unlink(): Promise<void>;
   url(opts?: UrlOptions): Promise<string>;
   signedUploadUrl(opts: SignUploadOptions): Promise<SignedUpload>;
   copyTo(destinationKey: string): Promise<void>;
@@ -253,21 +252,10 @@ export class Files<A extends Adapter = Adapter> {
       copyTo: (destinationKey) => this.copy(key, destinationKey),
       delete: () => this.delete(key),
       download: (opts) => this.download(key, opts),
-      exists: async () => {
-        try {
-          await this.head(key);
-          return true;
-        } catch (error) {
-          if (error instanceof FilesError && error.code === "NotFound") {
-            return false;
-          }
-          throw error;
-        }
-      },
+      exists: () => this.exists(key),
       head: () => this.head(key),
       key,
       signedUploadUrl: (opts) => this.signedUploadUrl(key, opts),
-      unlink: () => this.delete(key),
       upload: (body, opts) => this.upload(key, body, opts),
       url: (opts) => this.url(key, opts),
     };
