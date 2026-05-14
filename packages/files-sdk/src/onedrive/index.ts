@@ -27,6 +27,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -749,6 +750,12 @@ export const onedrive = (
       } catch (error) {
         throw mapGraphError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(
+        () => client.api(itemApiPath(key)).get(),
+        mapGraphError
+      );
     },
     async head(key) {
       try {

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -261,6 +261,14 @@ describe("fs adapter", () => {
         code: "NotFound",
       });
     });
+
+    test("exists returns true for present keys and false for missing keys", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("exists.txt", "hi");
+      await expect(files.exists("exists.txt")).resolves.toBe(true);
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
   });
 
   describe("delete", () => {
@@ -391,6 +399,58 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
       const result = await files.list();
       expect(result.items).toEqual([]);
+    });
+
+    test("skips files that vanish between walk and stat (ENOENT mid-page)", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("a.txt", "1");
+      await files.upload("b.txt", "1");
+      await files.upload("c.txt", "1");
+      // Walk produces all three keys; the items loop then stats each in
+      // turn. Make the first stat call reject with ENOENT — that file is
+      // skipped rather than failing the whole listing.
+      const originalStat = fsp.stat;
+      const statSpy = spyOn(fsp, "stat");
+      let consumed = false;
+      statSpy.mockImplementation(((p: Parameters<typeof fsp.stat>[0]) => {
+        if (!consumed) {
+          consumed = true;
+          return Promise.reject(
+            Object.assign(new Error("vanished"), { code: "ENOENT" })
+          );
+        }
+        return originalStat(p);
+      }) as typeof fsp.stat);
+      try {
+        const result = await files.list();
+        expect(result.items.map((i) => i.key)).toEqual(["b.txt", "c.txt"]);
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
+    test("surfaces non-ENOENT walk errors as FilesError", async () => {
+      // Force fsp.readdir on a subdirectory to fail with EACCES by chmod'ing
+      // it to 0o000. Exercises the walk's non-ENOENT throw branch and the
+      // outer list() catch.
+      if (process.platform === "win32" || process.getuid?.() === 0) {
+        // chmod is a no-op for root on POSIX and isn't meaningful on Windows.
+        return;
+      }
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("ok.txt", "hi");
+      const blocked = path.join(root, "blocked");
+      await fsp.mkdir(blocked);
+      await fsp.writeFile(path.join(blocked, "inner.txt"), "x");
+      await fsp.chmod(blocked, 0o000);
+      try {
+        await expect(files.list()).rejects.toBeInstanceOf(FilesError);
+      } finally {
+        // Restore so the afterAll cleanup can remove the tree.
+        await fsp.chmod(blocked, 0o755);
+      }
     });
   });
 

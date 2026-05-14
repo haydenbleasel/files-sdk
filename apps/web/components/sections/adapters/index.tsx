@@ -1,34 +1,35 @@
-import { Heading } from "@/components/heading";
-
 import { Akamai } from "./akamai";
 import { Azure } from "./azure";
+import { BackblazeB2 } from "./backblaze-b2";
 import { Box } from "./box";
 import { DigitalOceanSpaces } from "./digitalocean-spaces";
 import { Dropbox } from "./dropbox";
+import { Exoscale } from "./exoscale";
+import { Filebase } from "./filebase";
 import { Fs } from "./fs";
 import { Gcs } from "./gcs";
 import { GoogleDrive } from "./google-drive";
 import { Hetzner } from "./hetzner";
+import { IbmCos } from "./ibm-cos";
+import { IdriveE2 } from "./idrive-e2";
 import { Minio } from "./minio";
 import { NetlifyBlobs } from "./netlify-blobs";
 import { Onedrive } from "./onedrive";
+import { OracleCloud } from "./oracle-cloud";
+import { Ovhcloud } from "./ovhcloud";
 import { R2 } from "./r2";
 import { S3 } from "./s3";
+import { Scaleway } from "./scaleway";
 import { Storj } from "./storj";
 import { Supabase } from "./supabase";
+import { Tigris } from "./tigris";
 import { Uploadthing } from "./uploadthing";
 import { VercelBlob } from "./vercel-blob";
+import { Vultr } from "./vultr";
+import { Wasabi } from "./wasabi";
 
 export const Adapters = () => (
   <section>
-    <Heading as="h2">Adapters</Heading>
-    <p>
-      Each adapter is a subpath import. Bring only what you use; the others
-      tree-shake away. Adapters auto-load credentials from the standard
-      environment variables for that provider — pass options explicitly to
-      override. If an adapter is constructed without enough info to
-      authenticate, it throws at construction time naming the missing variable.
-    </p>
     <S3 />
     <R2 />
     <VercelBlob />
@@ -38,6 +39,17 @@ export const Adapters = () => (
     <Storj />
     <Hetzner />
     <Akamai />
+    <BackblazeB2 />
+    <Wasabi />
+    <Scaleway />
+    <Ovhcloud />
+    <IdriveE2 />
+    <Vultr />
+    <Filebase />
+    <Exoscale />
+    <OracleCloud />
+    <IbmCos />
+    <Tigris />
     <Gcs />
     <GoogleDrive />
     <Onedrive />

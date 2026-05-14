@@ -19,6 +19,7 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
@@ -264,6 +265,12 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
       } catch (error) {
         throw wrapErr(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(
+        () => client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })),
+        wrapErr
+      );
     },
     async head(key) {
       try {

@@ -61,8 +61,8 @@ export interface UrlOptions {
    * Override the adapter's default URL expiry, in seconds.
    *
    * **Honored** by adapters that sign (S3, Cloudflare R2 over HTTP, MinIO,
-   * DigitalOcean Spaces, Storj, Hetzner, and the R2 binding when HTTP
-   * credentials are also configured) — those
+   * DigitalOcean Spaces, Storj, Hetzner, Akamai, Backblaze B2, Wasabi,
+   * Tigris, and the R2 binding when HTTP credentials are also configured) — those
    * adapters return a presigned URL that expires after `expiresIn` seconds.
    *
    * **Ignored** by Vercel Blob (public): the underlying CDN URL has no
@@ -86,7 +86,8 @@ export interface UrlOptions {
    * to force a download.
    *
    * **Forces the signing path.** On signing adapters (S3, R2 HTTP, MinIO,
-   * DigitalOcean Spaces, Storj, Hetzner, R2 hybrid), passing this option always returns a
+   * DigitalOcean Spaces, Storj, Hetzner, Akamai, Backblaze B2, Wasabi,
+   * Tigris, R2 hybrid), passing this option always returns a
    * presigned URL —
    * even when `publicBaseUrl` is configured, because a permanent CDN URL
    * has no signature in which to bind the override. If `publicBaseUrl`
@@ -150,6 +151,14 @@ export interface Adapter<Raw = unknown> {
    * the body accessors. They are not free.
    */
   head(key: string): Promise<StoredFile>;
+  /**
+   * Check whether `key` exists without fetching its body.
+   *
+   * Returns `true` when the object exists, `false` when the provider reports
+   * `NotFound`, and rethrows every other error (permissions, transport
+   * failures, bad credentials, etc.).
+   */
+  exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   copy(from: string, to: string): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
@@ -158,7 +167,7 @@ export interface Adapter<Raw = unknown> {
    *
    * Adapters return the most direct URL they can produce:
    *
-   * - **S3 / R2 (HTTP) / MinIO / DigitalOcean Spaces / Storj / Hetzner** sign a `GetObject` request — the URL
+   * - **S3 / R2 (HTTP) / MinIO / DigitalOcean Spaces / Storj / Hetzner / Akamai / Backblaze B2 / Wasabi / Tigris** sign a `GetObject` request — the URL
    *   expires after `opts.expiresIn` seconds (or the adapter's default,
    *   typically 3600). If the adapter was constructed with
    *   `publicBaseUrl`, the URL is built against that origin instead and
@@ -287,6 +296,18 @@ export class Files<A extends Adapter = Adapter> {
     return run(() => this.#adapter.head(key));
   }
 
+  /**
+   * Check whether `key` exists without fetching its body.
+   *
+   * Returns `true` when the object exists and `false` when the adapter
+   * reports `NotFound`. Other failures still propagate so callers do not
+   * accidentally treat auth or transport errors as "missing file".
+   */
+  exists(key: string): Promise<boolean> {
+    assertValidKey(key);
+    return run(() => this.#adapter.exists(key));
+  }
+
   delete(key: string): Promise<void> {
     assertValidKey(key);
     return run(() => this.#adapter.delete(key));
@@ -307,7 +328,8 @@ export class Files<A extends Adapter = Adapter> {
    *
    * The exact URL kind depends on the adapter — see {@link Adapter.url}
    * for the per-provider behavior. In short: signing adapters (S3, R2
-   * HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner) return an expiring presigned URL by default;
+   * HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai, Backblaze B2,
+   * Wasabi, Tigris) return an expiring presigned URL by default;
    * Vercel-Blob-public returns its permanent CDN URL; configurations
    * with no URL primitive (Vercel-Blob-private, R2 binding without
    * `publicBaseUrl`/HTTP creds) throw.

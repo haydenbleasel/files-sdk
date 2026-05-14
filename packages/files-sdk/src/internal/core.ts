@@ -25,12 +25,13 @@ export const DEFAULT_URL_EXPIRES_IN = 3600;
 
 /**
  * Concatenate a public base URL with a key. Tolerates a single trailing
- * slash on the base. The key is embedded literally — the adapter's caller
- * is responsible for URL-encoding any untrusted segments.
+ * slash on the base. The key is URL-encoded so it's safe to embed in a URL path.
+ * Pass raw keys — this function handles encoding. Passing a pre-encoded key
+ * causes double-encoding (e.g. `%20` becomes `%2520`).
  */
 export const joinPublicUrl = (base: string, key: string): string => {
   const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
-  return `${trimmed}/${key}`;
+  return `${trimmed}/${key.split("/").map(encodeURIComponent).join("/")}`;
 };
 
 export interface UrlStrategyInput {
@@ -243,4 +244,28 @@ export const makeErrorMapper = (
     const errorCode = classify(config, code, status);
     return new FilesError(errorCode, message ?? fallback[errorCode], err);
   };
+};
+
+/**
+ * Standard `exists()` scaffold for providers whose "does this object exist?"
+ * probe is "attempt a metadata lookup and classify NotFound specially".
+ *
+ * The `probe` should be the cheapest provider call that can distinguish
+ * present vs missing for the adapter. Successful probes return `true`;
+ * mapped `NotFound` errors return `false`; every other failure is rethrown.
+ */
+export const existsByProbe = async (
+  probe: () => Promise<unknown>,
+  mapError: (err: unknown) => FilesError
+): Promise<boolean> => {
+  try {
+    await probe();
+    return true;
+  } catch (error) {
+    const mapped = mapError(error);
+    if (mapped.code === "NotFound") {
+      return false;
+    }
+    throw mapped;
+  }
 };

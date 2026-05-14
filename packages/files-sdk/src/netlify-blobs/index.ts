@@ -381,6 +381,19 @@ export const netlifyBlobs = (
         throw mapNetlifyError(error);
       }
     },
+    async exists(key) {
+      let result: Awaited<ReturnType<Store["getMetadata"]>>;
+      try {
+        result = await store.getMetadata(key);
+      } catch (error) {
+        const mapped = mapNetlifyError(error);
+        if (mapped.code === "NotFound") {
+          return false;
+        }
+        throw mapped;
+      }
+      return result !== null;
+    },
     async head(key) {
       let result: Awaited<ReturnType<Store["getMetadata"]>>;
       try {

@@ -21,6 +21,7 @@ const saveMock = mock(async (_data: unknown, _opts: unknown) => {});
 const downloadMock = mock(() =>
   Promise.resolve([Buffer.from("hello")] as [Buffer])
 );
+const existsMock = mock(() => Promise.resolve([true] as [boolean]));
 const getMetadataMock = mock(() =>
   Promise.resolve([baseMetadata("a.txt")] as const)
 );
@@ -48,6 +49,7 @@ const makeFile = (name: string, populateMetadata = false) => ({
   createWriteStream: createWriteStreamMock,
   delete: deleteMock,
   download: downloadMock,
+  exists: existsMock,
   generateSignedPostPolicyV4: generateSignedPostPolicyV4Mock,
   getMetadata: getMetadataMock,
   getSignedUrl: getSignedUrlMock,
@@ -92,6 +94,7 @@ const { gcs, mapGCSError } = await import("../src/gcs/index.js");
 beforeEach(() => {
   saveMock.mockClear();
   downloadMock.mockClear();
+  existsMock.mockClear();
   getMetadataMock.mockClear();
   deleteMock.mockClear();
   copyMock.mockClear();
@@ -107,6 +110,7 @@ beforeEach(() => {
   downloadMock.mockImplementation(() =>
     Promise.resolve([Buffer.from("hello")] as [Buffer])
   );
+  existsMock.mockImplementation(() => Promise.resolve([true] as [boolean]));
   getMetadataMock.mockImplementation(() =>
     Promise.resolve([baseMetadata("a.txt")] as const)
   );
@@ -286,6 +290,26 @@ describe("gcs adapter", () => {
     downloadMock.mockClear();
     expect(await info.text()).toBe("hello");
     expect(downloadMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("exists returns true/false from the SDK tuple response", async () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    existsMock.mockImplementationOnce(() =>
+      Promise.resolve([false] as [boolean])
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("exists rethrows non-NotFound errors", async () => {
+    existsMock.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+    );
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(files.exists("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
   });
 
   test("delete delegates to file.delete()", async () => {

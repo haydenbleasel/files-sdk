@@ -101,6 +101,23 @@ describe("s3 adapter", () => {
     expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    s3Mock.on(HeadObjectCommand).resolves({});
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    s3Mock.reset();
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("missing"), {
+        $metadata: { httpStatusCode: 404 },
+        name: "NotFound",
+      })
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete sends DeleteObjectCommand", async () => {
     s3Mock.on(DeleteObjectCommand).resolves({});
     const files = new Files({
@@ -202,6 +219,17 @@ describe("s3 adapter", () => {
       region: "us-east-1",
     });
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+  });
+
+  test("url() URL-encodes special characters in the key but preserves / as path separator", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    const url = await adapter.url("foo bar?baz#qux/a&b");
+    expect(url).toBe("https://cdn.example.com/foo%20bar%3Fbaz%23qux/a%26b");
   });
 
   test("NoSuchKey is mapped to NotFound", async () => {

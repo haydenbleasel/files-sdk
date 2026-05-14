@@ -8,7 +8,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN } from "../internal/core.js";
+import { DEFAULT_URL_EXPIRES_IN, existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -405,6 +405,12 @@ export const uploadthing = (
         { ...meta, size: bytes.byteLength },
         { data: bytes, kind: "buffer" }
       );
+    },
+    exists(key) {
+      return existsByProbe(async () => {
+        const url = await resolveFetchUrl(key);
+        await headViaFetch(url, key);
+      }, mapUploadThingError);
     },
     async head(key) {
       const url = await resolveFetchUrl(key);

@@ -21,7 +21,11 @@ import type {
   UploadOptions,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -878,6 +882,15 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       } catch (error) {
         throw mapBoxError(error);
       }
+    },
+    exists(key) {
+      return existsByProbe(async () => {
+        await authHandle.ensureReady();
+        const fileId = await resolveFileId(key);
+        await client.files.getFileById(fileId, {
+          queryParams: { fields: ["id"] },
+        });
+      }, mapBoxError);
     },
     async head(key) {
       try {

@@ -68,6 +68,7 @@ const downloadMock = mock(
     })
 );
 const downloadToBufferMock = mock(() => Promise.resolve(Buffer.from("hello")));
+const existsMock = mock(() => Promise.resolve(true));
 const getPropertiesMock = mock(() => Promise.resolve(baseProps()));
 const deleteIfExistsMock = mock(() => Promise.resolve({ succeeded: true }));
 const syncCopyFromURLMock = mock((_source: string) =>
@@ -81,6 +82,7 @@ const makeBlobClient = (key: string) => ({
   deleteIfExists: deleteIfExistsMock,
   download: downloadMock,
   downloadToBuffer: downloadToBufferMock,
+  exists: existsMock,
   getProperties: getPropertiesMock,
   syncCopyFromURL: syncCopyFromURLMock,
   url: blobUrlOf(key),
@@ -222,6 +224,7 @@ beforeEach(() => {
   uploadStreamMock.mockClear();
   downloadMock.mockClear();
   downloadToBufferMock.mockClear();
+  existsMock.mockClear();
   getPropertiesMock.mockClear();
   deleteIfExistsMock.mockClear();
   syncCopyFromURLMock.mockClear();
@@ -254,6 +257,7 @@ beforeEach(() => {
   downloadToBufferMock.mockImplementation(() =>
     Promise.resolve(Buffer.from("hello"))
   );
+  existsMock.mockImplementation(() => Promise.resolve(true));
   getPropertiesMock.mockImplementation(() => Promise.resolve(baseProps()));
   deleteIfExistsMock.mockImplementation(() =>
     Promise.resolve({ succeeded: true })
@@ -577,6 +581,47 @@ describe("azure adapter", () => {
       downloadToBufferMock.mockClear();
       expect(await info.text()).toBe("hello");
       expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("exists", () => {
+    test("returns true when the blob exists", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+    });
+
+    test("returns false when the blob is missing", async () => {
+      existsMock.mockImplementationOnce(() => Promise.resolve(false));
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
+
+    test("rethrows non-NotFound errors from blobClient.exists()", async () => {
+      existsMock.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error("denied"), { statusCode: 403 }))
+      );
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      await expect(files.exists("a.txt")).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
     });
   });
 

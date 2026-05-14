@@ -7,7 +7,7 @@ const UPLOADTHING_EXAMPLE = `import { Files } from "files-sdk";
 import { uploadthing } from "files-sdk/uploadthing";
 
 // UPLOADTHING_TOKEN is auto-loaded from env. The token is a base64
-// JSON of { apiKey, appId, regions[] } — the adapter decodes it at
+// JSON of { apiKey, appId, regions[] } - the adapter decodes it at
 // construction so url() can synthesize the public CDN URL and
 // signedUploadUrl() can sign a UFS PUT URL without an API round trip.
 const files = new Files({
@@ -20,19 +20,19 @@ const files = new Files({
 
 export const Uploadthing = () => (
   <section>
-    <Heading as="h3" id="adapter-uploadthing">
+    <Heading as="h2" id="adapter-uploadthing">
       UploadThing
     </Heading>
     <p>
       UploadThing via the official <code>uploadthing/server</code> SDK.
       UploadThing generates its own internal file keys, so the adapter maps the
       user-supplied key onto UploadThing's <code>customId</code> with{" "}
-      <code>defaultKeyType: "customId"</code> — every subsequent operation
+      <code>defaultKeyType: "customId"</code> - every subsequent operation
       routes by your key, not the auto-generated one.
     </p>
     <CodeBlock code={UPLOADTHING_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-uploadthing-options">
+      <Heading as="h3" id="adapter-uploadthing-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -41,14 +41,14 @@ export const Uploadthing = () => (
             UploadThing token (base64 JSON of{" "}
             <code>{"{ apiKey, appId, regions }"}</code>). Falls back to{" "}
             <code>UPLOADTHING_TOKEN</code>; the adapter throws at construction
-            if neither is set, or if the token doesn't decode to that shape — so
+            if neither is set, or if the token doesn't decode to that shape - so
             misconfiguration surfaces immediately rather than on the first call.
           </p>
         </PropAccordionItem>
         <PropAccordionItem name="acl" status="optional" value="acl">
           <p>
             <code>"public-read"</code> (default) or <code>"private"</code>.
-            Drives both the upload-time ACL and <code>url()</code> behavior —{" "}
+            Drives both the upload-time ACL and <code>url()</code> behavior -{" "}
             <code>public-read</code> returns the permanent CDN URL,{" "}
             <code>private</code> mints a short-lived signed URL via{" "}
             <code>generateSignedURL</code>. Fixed at construction, so a single{" "}
@@ -60,7 +60,7 @@ export const Uploadthing = () => (
           <p>
             UploadThing file-router slug. Required only by{" "}
             <code>signedUploadUrl()</code>, which embeds it as{" "}
-            <code>x-ut-slug</code> on the ingest URL — UploadThing validates the
+            <code>x-ut-slug</code> on the ingest URL - UploadThing validates the
             upload against the route's config (allowed file types and sizes).
             Server-side <code>upload()</code> doesn't need it.
           </p>
@@ -101,25 +101,25 @@ export const Uploadthing = () => (
       </Accordion>
     </div>
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-uploadthing-limitations">
+      <Heading as="h3" id="adapter-uploadthing-limitations">
         Limitations
       </Heading>
       <p>
-        <code>copy()</code> is a read-then-write — UploadThing has no
+        <code>copy()</code> is a read-then-write - UploadThing has no
         server-side copy primitive, so the source is downloaded and re-uploaded;
         not atomic and pays both an egress and an ingest cost.{" "}
         <code>head()</code> falls back to a HEAD request against the resolved
-        file URL because UploadThing has no metadata endpoint — fields come from
+        file URL because UploadThing has no metadata endpoint - fields come from
         response headers, and user <code>metadata</code> isn't supported by the
         underlying API. <code>list()</code> uses UploadThing's offset/limit API;
         the adapter encodes <code>offset</code> as a numeric cursor string, and{" "}
         <code>prefix</code> is filtered client-side over each page (it can
         under-return when the prefix isn't satisfied within a single page).{" "}
         <code>signedUploadUrl()</code> issues PUT URLs against the UFS ingest
-        endpoint — <code>maxSize</code> is advisory (UploadThing enforces caps
+        endpoint - <code>maxSize</code> is advisory (UploadThing enforces caps
         via the file-router config tied to <code>slug</code>, not via the URL
         signature) and <code>minSize</code> is ignored. <code>url()</code>{" "}
-        throws on <code>responseContentDisposition</code> — UploadThing has no
+        throws on <code>responseContentDisposition</code> - UploadThing has no
         Content-Disposition override on signed or CDN URLs.
       </p>
     </div>

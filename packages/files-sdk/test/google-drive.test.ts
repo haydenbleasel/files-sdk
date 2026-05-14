@@ -369,6 +369,13 @@ describe("google-drive adapter", () => {
     expect(filesGetMock.mock.calls.length).toBeGreaterThan(before);
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("list filters to files with fsdkKey and applies prefix client-side", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("docs/a.txt", "x");

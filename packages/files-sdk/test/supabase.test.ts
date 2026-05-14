@@ -259,6 +259,11 @@ describe("supabase adapter", () => {
       expect(StorageClientStub.lastInit?.url).toBe(STORAGE_URL);
     });
 
+    test("strips trailing slashes from project URL before appending suffix", () => {
+      supabase({ bucket: BUCKET, key: KEY, url: `${PROJECT_URL}///` });
+      expect(StorageClientStub.lastInit?.url).toBe(STORAGE_URL);
+    });
+
     test("accepts a SupabaseClient-like object via `client`", () => {
       const fakeStorage = { from: () => bucketRef } as never;
       const adapter = supabase({
@@ -448,6 +453,16 @@ describe("supabase adapter", () => {
       expect(await info.text()).toBe("hello");
       expect(downloadResolveMock).toHaveBeenCalledTimes(1);
     });
+
+    test("exists returns true for present keys and false for missing keys", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+
+      infoMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(404, "NotFound", "missing"))
+      );
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
   });
 
   describe("delete", () => {
@@ -493,6 +508,18 @@ describe("supabase adapter", () => {
       }
       expect(listCall[0]).toBe("a/");
       expect(listCall[1]).toEqual({ limit: 10, offset: 0 });
+    });
+
+    test("keys from list prefix join correctly and round-trip through head/download", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      const out = await files.list({ limit: 10, prefix: "a/" });
+      const [item] = out.items;
+      if (!item) {
+        throw new Error("expected at least one item");
+      }
+      expect(item.key).toBe("a/a/1.txt");
+      await expect(files.head(item.key)).resolves.toBeDefined();
+      await expect(files.download(item.key)).resolves.toBeDefined();
     });
 
     test("encodes next offset as cursor when page is full", async () => {

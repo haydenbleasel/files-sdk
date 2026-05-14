@@ -5,8 +5,8 @@ export const Why = () => (
     <Heading as="h2">Why</Heading>
     <p>
       Object storage SDKs are all subtly different. <code>files-sdk</code>{" "}
-      exposes the slice that's the same everywhere — upload, download, list,
-      delete — behind a single class, and gets out of the way for anything
+      exposes the slice that's the same everywhere - upload, download, list,
+      delete - behind a single class, and gets out of the way for anything
       provider-specific.
     </p>
     <ul>
@@ -18,13 +18,13 @@ export const Why = () => (
         <span className="text-foreground">Web-standards I/O.</span> Accepts{" "}
         <code>File</code>, <code>Blob</code>, <code>ReadableStream</code>,{" "}
         <code>ArrayBuffer</code>, <code>string</code>. Runs on Node, Bun,
-        Workers, Vercel — anywhere fetch runs.
+        Workers, Vercel - anywhere fetch runs.
       </li>
       <li>
         <span className="text-foreground">
           Escape hatch via <code>files.raw</code>.
         </span>{" "}
-        The native client is always one property away, typed per adapter —
+        The native client is always one property away, typed per adapter -
         versioning, lifecycle, ACLs, multipart, all of it.
       </li>
       <li>

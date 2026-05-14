@@ -165,6 +165,32 @@ describe("akamai adapter", () => {
     s3Mock.reset();
   });
 
+  test("delegates exists to underlying S3 client", async () => {
+    const s3Mock = mockClient(S3Client);
+    s3Mock.reset();
+    const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+    const files = new Files({
+      adapter: akamai({
+        accessKeyId: "AKID",
+        bucket: "uploads",
+        region: "us-iad-1",
+        secretAccessKey: "SECRET",
+      }),
+    });
+
+    s3Mock.on(HeadObjectCommand).resolves({});
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+
+    s3Mock.reset();
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("missing"), {
+        $metadata: { httpStatusCode: 404 },
+      })
+    );
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+    s3Mock.reset();
+  });
+
   test("default error messages from the inner s3 adapter are relabeled as 'Akamai error'", async () => {
     // Bypass the SDK mock and exercise the error mapper directly: the akamai
     // adapter configures it to use 'Akamai error' as the Provider fallback.

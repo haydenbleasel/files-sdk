@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { GraphError } from "@microsoft/microsoft-graph-client";
 
 import { Files, FilesError } from "../src/index.js";
-import { onedrive } from "../src/onedrive/index.js";
+import { mapGraphError, onedrive } from "../src/onedrive/index.js";
 
 interface FakeItem {
   id: string;
@@ -522,6 +522,13 @@ describe("onedrive adapter", () => {
     expect(after.length).toBe(1);
   });
 
+  test("exists returns true for present keys and false for missing keys", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    await expect(files.exists("a.txt")).resolves.toBe(true);
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete is idempotent on missing keys", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.delete("ghost.txt");
@@ -743,5 +750,35 @@ describe("onedrive adapter", () => {
     expect(err).toBeInstanceOf(FilesError);
     expect((err as FilesError).message).toBe("Item not found in drive root.");
     expect((err as FilesError).code).toBe("NotFound");
+  });
+
+  test("mapGraphError classifies plain error objects via statusCode", () => {
+    const err = mapGraphError({ message: "missing", statusCode: 404 });
+    expect(err).toBeInstanceOf(FilesError);
+    expect(err.code).toBe("NotFound");
+    expect(err.message).toBe("missing");
+  });
+
+  test("mapGraphError falls back to status when statusCode is absent", () => {
+    const err = mapGraphError({ message: "no perms", status: 403 });
+    expect(err.code).toBe("Unauthorized");
+    expect(err.message).toBe("no perms");
+  });
+
+  test("mapGraphError uses the code field when no status is provided", () => {
+    const err = mapGraphError({ code: "nameAlreadyExists" });
+    expect(err.code).toBe("Conflict");
+    expect(err.message).toBe("Conflict");
+  });
+
+  test("mapGraphError defaults to Provider for opaque errors", () => {
+    const err = mapGraphError({});
+    expect(err.code).toBe("Provider");
+    expect(err.message).toBe("OneDrive error");
+  });
+
+  test("mapGraphError passes existing FilesError through unchanged", () => {
+    const original = new FilesError("NotFound", "already mapped");
+    expect(mapGraphError(original)).toBe(original);
   });
 });

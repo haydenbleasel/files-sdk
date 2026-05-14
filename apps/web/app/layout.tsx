@@ -5,6 +5,8 @@ import "./globals.css";
 import type { ReactNode } from "react";
 
 import { MotionProvider } from "@/components/motion-provider";
+import { Footer } from "@/components/sections/footer";
+import { Header } from "@/components/sections/header";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -22,7 +24,7 @@ const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
 const origin = process.env.VERCEL_PROJECT_PRODUCTION_URL ?? "localhost:3000";
 const baseUrl = `${protocol}://${origin}`;
 
-const title = "Files SDK — One API for S3, R2, GCS, Azure & blob storage";
+const title = "Files SDK - One API for S3, R2, GCS, Azure & blob storage";
 const description =
   "A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.";
 
@@ -40,7 +42,10 @@ export const metadata: Metadata = {
     type: "website",
     url: "/",
   },
-  title,
+  title: {
+    default: title,
+    template: "%s · Files SDK",
+  },
   twitter: {
     card: "summary_large_image",
     description,
@@ -62,9 +67,10 @@ const jsonLd = {
 
 interface RootLayoutProps {
   children: ReactNode;
+  toc: ReactNode;
 }
 
-const RootLayout = ({ children }: RootLayoutProps) => (
+const RootLayout = ({ children, toc }: RootLayoutProps) => (
   <html
     lang="en"
     className={cn(
@@ -80,7 +86,21 @@ const RootLayout = ({ children }: RootLayoutProps) => (
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <TooltipProvider>
-        <MotionProvider>{children}</MotionProvider>
+        <MotionProvider>
+          <div className="relative isolate flex min-h-dvh flex-col bg-background">
+            <div className="mx-auto w-full max-w-7xl flex-1 lg:grid lg:grid-cols-[1fr_42rem_1fr]">
+              <div aria-hidden className="hidden lg:block" />
+              <main className="mx-auto w-full max-w-2xl border-x border-dotted px-4 sm:px-8 pt-8 pb-8 flex flex-col gap-12">
+                <Header />
+                <div className="flex flex-1 flex-col gap-12">{children}</div>
+                <Footer />
+              </main>
+              <aside className="hidden lg:block pr-8 pt-44">
+                <div className="sticky top-8">{toc}</div>
+              </aside>
+            </div>
+          </div>
+        </MotionProvider>
       </TooltipProvider>
     </body>
   </html>

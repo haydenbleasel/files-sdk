@@ -58,6 +58,13 @@ describe("Files class", () => {
     expect(info.size).toBe(1);
   });
 
+  test("exists returns true for present keys and false for missing ones", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await files.upload("e.txt", "x");
+    expect(await files.exists("e.txt")).toBe(true);
+    expect(await files.exists("missing.txt")).toBe(false);
+  });
+
   test("delete removes the object", async () => {
     const adapter = fakeAdapter();
     const files = new Files({ adapter });
@@ -218,6 +225,16 @@ describe("Files class", () => {
       throw new Error("should have thrown");
     } catch (error) {
       expect((error as FilesError).message).toMatch(/copy destination/u);
+    }
+  });
+
+  test("exists validates the key at the SDK boundary", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    try {
+      await files.exists("");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toMatch(/non-empty/u);
     }
   });
 });

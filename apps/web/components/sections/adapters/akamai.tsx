@@ -17,23 +17,23 @@ const files = new Files({
 
 export const Akamai = () => (
   <section>
-    <Heading as="h3" id="adapter-akamai">
+    <Heading as="h2" id="adapter-akamai">
       Akamai Cloud Object Storage
     </Heading>
     <p>
       Akamai Cloud Object Storage (formerly Linode Object Storage) via its
-      S3-compatible API. A thin wrapper around the S3 adapter — endpoint derived
+      S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived
       from the region/cluster code (<code>us-iad-1</code>, <code>nl-ams-1</code>
       , <code>fr-par-1</code>, …), virtual-hosted-style addressing, errors
       relabelled. The endpoint domain <code>linodeobjects.com</code> is
-      unchanged from the Linode era — only the product branding moved to Akamai.
+      unchanged from the Linode era - only the product branding moved to Akamai.
       Auto-loads from <code>AKAMAI_ACCESS_KEY_ID</code> and{" "}
       <code>AKAMAI_SECRET_ACCESS_KEY</code>. Generate access keys in the Akamai
       Cloud Manager under Object Storage → Access Keys.
     </p>
     <CodeBlock code={AKAMAI_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-akamai-options">
+      <Heading as="h3" id="adapter-akamai-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -42,7 +42,7 @@ export const Akamai = () => (
         </PropAccordionItem>
         <PropAccordionItem name="region" status="required" value="region">
           <p>
-            Akamai region/cluster code — newer regions follow the{" "}
+            Akamai region/cluster code - newer regions follow the{" "}
             <code>us-iad-1</code> (Washington DC), <code>us-mia-1</code>{" "}
             (Miami), <code>nl-ams-1</code> (Amsterdam), <code>fr-par-1</code>{" "}
             (Paris) pattern; older clusters use <code>us-east-1</code>,{" "}
@@ -76,7 +76,7 @@ export const Akamai = () => (
         >
           <p>
             Use path-style addressing (<code>/&lt;bucket&gt;/&lt;key&gt;</code>)
-            rather than virtual-hosted style. Defaults to <code>false</code> —
+            rather than virtual-hosted style. Defaults to <code>false</code> -
             virtual-hosted is canonical for Akamai.
           </p>
         </PropAccordionItem>
