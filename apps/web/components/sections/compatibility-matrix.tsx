@@ -36,6 +36,9 @@ const COLUMNS = [
   { key: "storj", label: "Storj", parent: "Storj" },
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
+  { key: "b2", label: "B2", parent: "Backblaze B2" },
+  { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
+  { key: "tigris", label: "Tigris", parent: "Tigris" },
   { key: "gcs", label: "GCS", parent: "GCS" },
   { key: "google-drive", label: "Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
@@ -55,6 +58,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      b2: ok,
       box: warn(
         "Two-stage: walks/creates parent folders by ID under `rootFolderId`, then `uploads.uploadFile` (≤50 MB) or `chunkedUploads.uploadBigFile` (>50 MB). Re-uploads against existing leaf names route through `uploadFileVersion` (overwrite). Stream bodies are buffered up-front — Box's upload manager takes a Node `Readable`, not a Web stream. User `metadata` and `cacheControl` throw — Box exposes file metadata via classifications and metadata templates; drop to `raw.fileMetadata.*` if you need it."
       ),
@@ -79,10 +83,12 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "upload",
   },
@@ -90,6 +96,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      b2: ok,
       box: warn(
         "Resolves the file ID, then fetches `getDownloadFileUrl` for both buffered and streaming reads — the SDK's native `downloadFile` returns a Node `Readable` that's awkward to expose isomorphically, so the adapter routes through standard HTTP, which gives a `ReadableStream` body."
       ),
@@ -110,10 +117,12 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "download",
   },
@@ -121,6 +130,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      b2: ok,
       box: ok,
       dropbox: ok,
       fs: ok,
@@ -137,10 +147,12 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "delete",
   },
@@ -148,6 +160,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      b2: ok,
       box: warn(
         "Returns immediate-children files only at `rootFolderId` — no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Box's offset, encoded as a numeric cursor string."
       ),
@@ -176,6 +189,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "Supabase's stable list API is offset/limit, not cursor-based. The adapter encodes the next offset as a numeric cursor string so the unified API works unchanged — the cursor is opaque to callers but is just `String(offset + page)` underneath."
       ),
+      tigris: ok,
       "ut-private": warn(
         "UploadThing's listFiles is offset/limit, not cursor-based — the adapter encodes the next offset as a numeric cursor. `prefix` is unsupported server-side; the adapter filters the returned page client-side, which under-returns when the prefix isn't satisfied within a single page."
       ),
@@ -184,6 +198,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "list",
   },
@@ -191,6 +206,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
     cells: {
       akamai: ok,
       azure: ok,
+      b2: ok,
       box: warn(
         "Box doesn't store user-supplied content types on file content — `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `size`, `etag`, and `lastModified` come from `getFileById`."
       ),
@@ -213,6 +229,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tigris: ok,
       "ut-private": warn(
         "UploadThing has no metadata endpoint, so `head()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and parses size/content-type/etag/last-modified from the response headers. User `metadata` isn't supported."
       ),
@@ -221,6 +238,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "head",
   },
@@ -230,6 +248,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: warn(
         "Server-side copy via `syncCopyFromURL` — capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
       ),
+      b2: ok,
       box: ok,
       dropbox: ok,
       fs: ok,
@@ -254,6 +273,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tigris: ok,
       "ut-private": warn(
         "Read-then-write — UploadThing has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic."
       ),
@@ -262,6 +282,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      wasabi: ok,
     },
     method: "copy",
   },
@@ -271,6 +292,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: warn(
         "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
       ),
+      b2: ok,
       box: warn(
         "Default mints a signed download URL via `getDownloadFileUrl` — Box controls the TTL server-side, so `expiresIn` is accepted for API symmetry but is not honoured. With `publicByDefault: true`, `upload()` calls `addShareLinkToFile` (open access) and `url()` returns the link's `download_url`. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws — Box's URLs have no Content-Disposition override."
       ),
@@ -303,6 +325,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "Default mints a signed read URL via `createSignedUrl` (1-hour default). With `public: true`, returns the permanent unsigned `getPublicUrl` result. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` is honored — it threads through Supabase's `download` option in the signed path."
       ),
+      tigris: ok,
       "ut-private": warn(
         "Mints a signed read URL via `generateSignedURL` (1-hour default). `responseContentDisposition` throws — UploadThing has no Content-Disposition override on signed or CDN URLs."
       ),
@@ -315,6 +338,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": warn(
         "Returns the permanent CDN URL. `expiresIn` is silently ignored (no signing primitive); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content."
       ),
+      wasabi: ok,
     },
     method: "url",
   },
@@ -324,6 +348,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       azure: warn(
         "PUT URL only — Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
       ),
+      b2: ok,
       box: no(
         "Throws — Box uploads require a multipart POST with both an `attributes` JSON part and the file bytes part, which fits neither the SDK's PUT-with-headers nor S3-style POST-with-form-fields shape. Use `upload()` server-side, or Box's UI Elements / Content Uploader for browser flows."
       ),
@@ -356,6 +381,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "PUT URL only — Supabase has no POST policy equivalent. `maxSize` throws (Supabase signed upload URLs have no `content-length-range` policy; set the bucket-level size limit in the dashboard instead). `expiresIn` is silently ignored — Supabase fixes the TTL at 2 hours server-side. The returned headers include `x-upsert: true`."
       ),
+      tigris: ok,
       "ut-private": warn(
         "PUT URL only — built against UploadThing's UFS ingest endpoint with an HMAC-SHA256 signature over the URL. `maxSize` is advisory: UploadThing enforces upload caps via the file-router config tied to the adapter's `slug`, not via the URL signature. `minSize` is ignored (no equivalent on UFS). The user-supplied key is bound as `x-ut-custom-id` so subsequent ops can route by it."
       ),
@@ -368,6 +394,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": no(
         "No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads."
       ),
+      wasabi: ok,
     },
     method: "signedUploadUrl",
   },

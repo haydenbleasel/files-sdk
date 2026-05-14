@@ -2,6 +2,7 @@ import { Heading } from "@/components/heading";
 
 import { Akamai } from "./akamai";
 import { Azure } from "./azure";
+import { BackblazeB2 } from "./backblaze-b2";
 import { Box } from "./box";
 import { DigitalOceanSpaces } from "./digitalocean-spaces";
 import { Dropbox } from "./dropbox";
@@ -16,8 +17,10 @@ import { R2 } from "./r2";
 import { S3 } from "./s3";
 import { Storj } from "./storj";
 import { Supabase } from "./supabase";
+import { Tigris } from "./tigris";
 import { Uploadthing } from "./uploadthing";
 import { VercelBlob } from "./vercel-blob";
+import { Wasabi } from "./wasabi";
 
 export const Adapters = () => (
   <section>
@@ -38,6 +41,9 @@ export const Adapters = () => (
     <Storj />
     <Hetzner />
     <Akamai />
+    <BackblazeB2 />
+    <Wasabi />
+    <Tigris />
     <Gcs />
     <GoogleDrive />
     <Onedrive />

@@ -62,6 +62,18 @@
       "types": "./dist/akamai/index.d.ts",
       "import": "./dist/akamai/index.js"
     },
+    "./backblaze-b2": {
+      "types": "./dist/backblaze-b2/index.d.ts",
+      "import": "./dist/backblaze-b2/index.js"
+    },
+    "./wasabi": {
+      "types": "./dist/wasabi/index.d.ts",
+      "import": "./dist/wasabi/index.js"
+    },
+    "./tigris": {
+      "types": "./dist/tigris/index.d.ts",
+      "import": "./dist/tigris/index.js"
+    },
     "./gcs": {
       "types": "./dist/gcs/index.d.ts",
       "import": "./dist/gcs/index.js"

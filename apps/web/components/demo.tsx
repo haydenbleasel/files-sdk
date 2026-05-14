@@ -56,6 +56,24 @@ const ADAPTERS = [
     label: "Akamai",
   },
   {
+    config: `backblazeB2({ bucket: "uploads", region: "us-west-002" })`,
+    id: "backblaze-b2",
+    import: `import { backblazeB2 } from "files-sdk/backblaze-b2";`,
+    label: "Backblaze B2",
+  },
+  {
+    config: `wasabi({ bucket: "uploads", region: "us-east-1" })`,
+    id: "wasabi",
+    import: `import { wasabi } from "files-sdk/wasabi";`,
+    label: "Wasabi",
+  },
+  {
+    config: `tigris({ bucket: "uploads" })`,
+    id: "tigris",
+    import: `import { tigris } from "files-sdk/tigris";`,
+    label: "Tigris",
+  },
+  {
     config: `gcs({ bucket: "uploads" })`,
     id: "gcs",
     import: `import { gcs } from "files-sdk/gcs";`,
