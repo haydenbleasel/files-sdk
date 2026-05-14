@@ -293,6 +293,52 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   {
     cells: {
       akamai: ok,
+      azure: ok,
+      b2: ok,
+      box: ok,
+      dropbox: warn(
+        "Resolves via `filesGetMetadata` and returns `false` for folder or deleted entries at the path - matches Dropbox's semantics where the same path can hold a folder or a tombstone. Only true file entries return `true`."
+      ),
+      exoscale: ok,
+      filebase: ok,
+      fs: ok,
+      gcs: ok,
+      "google-drive": warn(
+        "Drive has no native key field. The adapter resolves by parent folder + `fsdkKey` appProperty, so files written into the same folder out-of-band return `false` even if a file with that name exists."
+      ),
+      hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
+      minio: ok,
+      nb: ok,
+      onedrive: ok,
+      "oracle-cloud": ok,
+      ovhcloud: ok,
+      "r2-binding": ok,
+      "r2-http": ok,
+      "r2-hybrid": ok,
+      s3: ok,
+      scaleway: ok,
+      spaces: ok,
+      storj: ok,
+      supabase: ok,
+      tigris: ok,
+      "ut-private": warn(
+        "UploadThing has no metadata endpoint, so `exists()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and treats `404` as `false`."
+      ),
+      "ut-public": warn(
+        "UploadThing has no metadata endpoint, so `exists()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and treats `404` as `false`."
+      ),
+      "vb-private": ok,
+      "vb-public": ok,
+      vultr: ok,
+      wasabi: ok,
+    },
+    method: "exists",
+  },
+  {
+    cells: {
+      akamai: ok,
       azure: warn(
         "Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
       ),
@@ -540,7 +586,7 @@ export const CompatibilityMatrix = () => (
   <section>
     <Heading as="h2">Compatibility matrix</Heading>
     <p>
-      Every adapter implements the same nine-method surface, but the URL methods
+      Every adapter implements the same ten-method surface, but the URL methods
       and a couple of edge cases vary by provider. Hover the warning and error
       icons for the why behind each one.
     </p>

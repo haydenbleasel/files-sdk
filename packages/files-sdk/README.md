@@ -27,7 +27,7 @@ Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …
 
 ## What you get
 
-- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox.
+- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox. `exists` returns `false` only when the provider reports `NotFound`; auth, permission, and transport failures still throw.
 - **Web-standard I/O** — bodies are `Blob`, `File`, `ReadableStream`, `Uint8Array`, `ArrayBuffer`, or `string`. No provider-specific types leak into your code.
 - **Escape hatch** — every adapter exposes its native client at `files.raw`, so provider-specific features are one property access away.
 - **Tree-shakeable** — each adapter is a separate entry point. You only bundle what you import.
