@@ -38,6 +38,7 @@ export default defineConfig({
     "src/ai-sdk/index.ts",
     "src/openai/index.ts",
     "src/claude/index.ts",
+    "src/appwrite/index.ts",
   ],
   format: ["esm"],
   sourcemap: true,

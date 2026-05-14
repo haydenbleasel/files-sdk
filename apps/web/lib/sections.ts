@@ -37,6 +37,7 @@ export const ADAPTER_SECTIONS: TocSection[] = [
   { id: "adapter-supabase", label: "Supabase Storage" },
   { id: "adapter-uploadthing", label: "UploadThing" },
   { id: "adapter-fs", label: "Filesystem" },
+  { id: "adapter-appwrite", label: "Appwrite" },
 ];
 
 export const AI_SECTIONS: TocSection[] = [
@@ -57,6 +58,7 @@ export const API_SECTIONS: TocSection[] = [
       { id: "files-list", label: "list" },
       { id: "files-url", label: "url" },
       { id: "files-signed-upload-url", label: "signedUploadUrl" },
+      { id: "files-file", label: "file" },
     ],
     id: "functions",
     label: "Functions",

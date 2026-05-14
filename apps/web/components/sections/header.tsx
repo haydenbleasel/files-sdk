@@ -29,6 +29,7 @@ const navItems = [
   { href: "/adapters", label: "Adapters" },
   { href: "/ai", label: "AI" },
   { href: "/api", label: "API" },
+  { href: "/updates", label: "Updates" },
 ];
 
 const isActiveHref = (href: string, pathname: string) =>

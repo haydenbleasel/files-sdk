@@ -73,6 +73,7 @@ interface RootLayoutProps {
 const RootLayout = ({ children, toc }: RootLayoutProps) => (
   <html
     lang="en"
+    data-scroll-behavior="smooth"
     className={cn(
       "scroll-smooth touch-manipulation font-sans antialiased",
       geistSans.variable,
@@ -90,7 +91,7 @@ const RootLayout = ({ children, toc }: RootLayoutProps) => (
           <div className="relative isolate flex min-h-dvh flex-col bg-background">
             <div className="mx-auto w-full max-w-7xl flex-1 lg:grid lg:grid-cols-[1fr_42rem_1fr]">
               <div aria-hidden className="hidden lg:block" />
-              <main className="mx-auto w-full max-w-2xl border-x border-dotted px-4 sm:px-8 pt-8 pb-8 flex flex-col gap-12">
+              <main className="mx-auto w-full max-w-2xl sm:border-x border-dotted px-4 sm:px-8 pt-8 pb-8 flex flex-col gap-12">
                 <Header />
                 <div className="flex flex-1 flex-col gap-12">{children}</div>
                 <Footer />

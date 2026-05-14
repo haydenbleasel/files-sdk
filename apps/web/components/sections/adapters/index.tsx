@@ -1,4 +1,5 @@
 import { Akamai } from "./akamai";
+import { Appwrite } from "./appwrite";
 import { Azure } from "./azure";
 import { BackblazeB2 } from "./backblaze-b2";
 import { Box } from "./box";
@@ -59,5 +60,6 @@ export const Adapters = () => (
     <Supabase />
     <Uploadthing />
     <Fs />
+    <Appwrite />
   </section>
 );

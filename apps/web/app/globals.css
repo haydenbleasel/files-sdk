@@ -174,6 +174,7 @@
 
   p {
     @apply text-pretty text-muted-foreground text-base leading-relaxed sm:text-sm;
+    overflow-wrap: anywhere;
   }
 
   section.hero > p {
@@ -183,6 +184,7 @@
   ul,
   ol {
     @apply flex text-base leading-relaxed flex-col gap-2 pl-5 list-disc text-muted-foreground sm:text-sm;
+    overflow-wrap: anywhere;
   }
 
   li::marker {
@@ -191,6 +193,7 @@
 
   :not(pre) > code {
     @apply px-1 rounded-sm bg-muted font-mono text-foreground;
+    overflow-wrap: anywhere;
   }
 }
 

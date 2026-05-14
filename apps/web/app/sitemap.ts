@@ -9,6 +9,7 @@ const routes: { path: string; priority: number }[] = [
   { path: "/adapters", priority: 0.9 },
   { path: "/api", priority: 0.9 },
   { path: "/ai", priority: 0.8 },
+  { path: "/updates", priority: 0.7 },
 ];
 
 const sitemap = (): MetadataRoute.Sitemap =>
