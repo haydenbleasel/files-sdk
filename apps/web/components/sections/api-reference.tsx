@@ -36,17 +36,18 @@ if (cursor) {
   const next = await files.list({ prefix: "avatars/", cursor });
 }`;
 
-const URL_EXAMPLE = `// One call, every adapter. S3 / R2 / MinIO / DO Spaces / Storj / Hetzner / Akamai / GCS sign a GetObject (1h
-// default, override with { expiresIn }); Azure signs a SAS read URL with
-// the same default; Supabase signs via createSignedUrl (or returns the
-// public URL when constructed with public:true); Vercel Blob (public)
-// and UploadThing (public-read) return their CDN URLs. If you configured
-// \`publicBaseUrl\` on the adapter, that wins and signing is skipped.
+const URL_EXAMPLE = `// One call, every adapter. S3 and the S3-compatible catalog (R2 over HTTP,
+// GCS via S3 interop, plus every regional / budget / decentralised wrapper)
+// sign a GetObject (1h default, override with { expiresIn }); Azure signs a
+// SAS read URL with the same default; Supabase signs via createSignedUrl
+// (or returns the public URL when constructed with public:true); Vercel Blob
+// (public) and UploadThing (public-read) return their CDN URLs. If you
+// configured \`publicBaseUrl\` on the adapter, that wins and signing is skipped.
 const url = await files.url("avatars/abc.png");
 const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 
 // Force download (defeat stored XSS from user-uploaded HTML/SVG).
-// Forces signing even if \`publicBaseUrl\` is configured — a permanent
+// Forces signing even if \`publicBaseUrl\` is configured - a permanent
 // CDN URL has no signature to bind the override into, and silently
 // dropping a security ask would be a regression.
 const safe = await files.url("avatars/abc.png", {
@@ -78,13 +79,9 @@ await fetch(upload.url, { method: "POST", body: form });`;
 
 export const ApiReference = () => (
   <section>
-    <Heading as="h2">API reference</Heading>
-    <p>
-      Every method is available on the <code>Files</code> instance. The unified
-      surface only covers what every adapter can do cleanly — anything
-      provider-specific lives on <code>files.raw</code>.
-    </p>
-
+    <Heading as="h2" id="functions">
+      Functions
+    </Heading>
     <section>
       <Heading as="h3" id="files-upload">
         files.upload(key, body, options?)
@@ -242,16 +239,17 @@ export const ApiReference = () => (
       </Heading>
       <p>
         Returns a URL the caller can use to fetch <code>key</code>. Every
-        adapter returns the most direct URL it can produce. Signing adapters
-        (S3, R2 over HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai,
-        GCS, Azure with shared key, Supabase, UploadThing in{" "}
-        <code>private</code> mode, R2 binding when HTTP credentials are also
-        configured) sign a <code>GetObject</code> — defaulting to a 1-hour
-        expiry, override per-call via <code>{"{ expiresIn }"}</code> or
-        per-adapter via <code>defaultUrlExpiresIn</code>. If the adapter is
-        constructed with a <code>publicBaseUrl</code> (CDN, custom domain,{" "}
-        <code>r2.dev</code>) or UploadThing's <code>public-read</code> ACL, that
-        wins and the URL is built without signing.
+        adapter returns the most direct URL it can produce. Signing adapters (S3
+        and the S3-compatible catalog — R2 over HTTP, GCS via S3 interop, plus
+        every regional / budget / decentralised wrapper — alongside Azure with
+        shared key, Supabase, UploadThing in <code>private</code> mode, and R2
+        binding when HTTP credentials are also configured) sign a{" "}
+        <code>GetObject</code> - defaulting to a 1-hour expiry, override
+        per-call via <code>{"{ expiresIn }"}</code> or per-adapter via{" "}
+        <code>defaultUrlExpiresIn</code>. If the adapter is constructed with a{" "}
+        <code>publicBaseUrl</code> (CDN, custom domain, <code>r2.dev</code>) or
+        UploadThing's <code>public-read</code> ACL, that wins and the URL is
+        built without signing.
       </p>
       <p>
         Two configurations have no URL primitive and throw: Vercel Blob in{" "}
@@ -270,12 +268,11 @@ export const ApiReference = () => (
             value="expiresIn"
           >
             <p>
-              URL expiry, in seconds. Honored on signing adapters (S3, R2 over
-              HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai, GCS,
-              Azure with shared key, Supabase, R2 hybrid, UploadThing in{" "}
-              <code>private</code> mode); ignored on Vercel Blob and on
-              UploadThing's <code>public-read</code> mode (no signing
-              primitive). Defaults to the adapter's{" "}
+              URL expiry, in seconds. Honored on signing adapters (S3 and the
+              S3-compatible catalog, GCS, Azure with shared key, Supabase, R2
+              hybrid, UploadThing in <code>private</code> mode); ignored on
+              Vercel Blob and on UploadThing's <code>public-read</code> mode (no
+              signing primitive). Defaults to the adapter's{" "}
               <code>defaultUrlExpiresIn</code> (1 hour).
             </p>
           </PropAccordionItem>
@@ -291,7 +288,7 @@ export const ApiReference = () => (
                 Strongly recommended for buckets with user-uploaded content.
               </span>{" "}
               Without it, the browser uses the stored <code>Content-Type</code>{" "}
-              to decide whether to render or download — a user-uploaded{" "}
+              to decide whether to render or download - a user-uploaded{" "}
               <code>.html</code> (or SVG with embedded scripts) will execute
               inline at your bucket's origin. Pass <code>"attachment"</code> to
               force a download. <strong>Forces the signing path</strong> on
@@ -318,20 +315,20 @@ export const ApiReference = () => (
         stay off your server.
       </p>
       <p>
-        Without <code>maxSize</code>, the adapter returns a presigned PUT URL —
+        Without <code>maxSize</code>, the adapter returns a presigned PUT URL -
         simpler, but with no server-side size cap. With <code>maxSize</code>,
         the adapter switches to a presigned POST form whose policy enforces the
         size at the bucket via <code>content-length-range</code>. In practice
-        you should always pass <code>maxSize</code> — without it, anyone with
+        you should always pass <code>maxSize</code> - without it, anyone with
         the URL can DoS your storage costs until <code>expiresIn</code> elapses.
       </p>
       <p>
-        Vercel Blob throws here — its upload model goes through{" "}
+        Vercel Blob throws here - its upload model goes through{" "}
         <code>handleUpload()</code> from <code>@vercel/blob/client</code>{" "}
         instead of presigned URLs. The R2 Workers binding throws unless you've
         configured hybrid mode (binding + HTTP credentials). Azure, Supabase,
         and UploadThing return PUT URLs but treat <code>maxSize</code> as
-        advisory rather than enforced — Azure and Supabase have no{" "}
+        advisory rather than enforced - Azure and Supabase have no{" "}
         <code>content-length-range</code> equivalent (Azure throws on the
         option, Supabase throws too), and UploadThing enforces caps via the
         file-router config tied to the adapter's <code>slug</code> instead of
@@ -370,7 +367,7 @@ export const ApiReference = () => (
               Maximum upload size in bytes, enforced server-side.{" "}
               <span className="text-foreground">Strongly recommended.</span>{" "}
               Without it, the adapter falls back to a presigned PUT URL with no
-              server-side size cap — anyone with the URL can upload an
+              server-side size cap - anyone with the URL can upload an
               arbitrarily large file until <code>expiresIn</code> elapses. With
               it, the adapter switches to a presigned POST form whose policy
               enforces the size via <code>content-length-range</code>.
@@ -380,8 +377,8 @@ export const ApiReference = () => (
             <p>
               Minimum upload size in bytes for the presigned POST policy.
               Defaults to <code>1</code> when <code>maxSize</code> is set, so
-              empty uploads are rejected (the most common app assumption — "file
-              present means real content" — fails silently when 0-byte uploads
+              empty uploads are rejected (the most common app assumption - "file
+              present means real content" - fails silently when 0-byte uploads
               land). Pass <code>0</code> to allow empty uploads. Only consulted
               when <code>maxSize</code> is set.
             </p>

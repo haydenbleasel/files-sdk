@@ -6,20 +6,13 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 
-const sections = [
-  { id: "why", label: "Why" },
-  { id: "installation", label: "Installation" },
-  { id: "quick-start", label: "Quick start" },
-  { id: "adapters", label: "Adapters" },
-  { id: "api-reference", label: "API reference" },
-  { id: "the-storedfile-type", label: "The StoredFile type" },
-  { id: "errors", label: "Errors" },
-  { id: "escape-hatch", label: "Escape hatch" },
-  { id: "ai-tools", label: "AI tools" },
-  { id: "compatibility-matrix", label: "Compatibility matrix" },
-];
+interface MobileTableOfContentsProps {
+  sections: { id: string; label: string }[];
+}
 
-export const MobileTableOfContents = () => (
+export const MobileTableOfContents = ({
+  sections,
+}: MobileTableOfContentsProps) => (
   <Collapsible className="rounded-md border border-dotted lg:hidden">
     <CollapsibleTrigger className="group flex w-full cursor-pointer select-none items-center justify-between px-4 py-3 text-sm text-foreground">
       On this page

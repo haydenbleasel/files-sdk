@@ -492,7 +492,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         // here so callers get a key that round-trips through the other
         // methods (download/head/delete).
         const fullKey = options?.prefix
-          ? joinPublicUrl(options.prefix, item.name)
+          ? `${options.prefix.replace(/\/$/u, "")}/${item.name}`
           : item.name;
         return createStoredFile(
           {

@@ -7,7 +7,7 @@ const BOX_EXAMPLE = `import { Files } from "files-sdk";
 import { box } from "files-sdk/box";
 
 // Server-side: Client Credentials Grant (recommended for backend services).
-// The SDK manages access-token lifetime internally — no manual refresh
+// The SDK manages access-token lifetime internally - no manual refresh
 // bookkeeping in the adapter.
 const files = new Files({
   adapter: box({
@@ -30,7 +30,7 @@ const files = new Files({
 
 export const Box = () => (
   <section>
-    <Heading as="h3" id="adapter-box">
+    <Heading as="h2" id="adapter-box">
       Box
     </Heading>
     <p>
@@ -40,18 +40,18 @@ export const Box = () => (
       subfolders, auto-creating intermediate folders on <code>upload()</code>.
       Five auth shapes (pre-built client, developer token, OAuth refresh-token,
       Client Credentials Grant, JWT server auth) cover scripts, user apps, and
-      enterprise installs — token lifecycle is handled by the SDK's built-in{" "}
+      enterprise installs - token lifecycle is handled by the SDK's built-in{" "}
       <code>Authentication</code> classes.
     </p>
     <CodeBlock code={BOX_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-box-options">
+      <Heading as="h3" id="adapter-box-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
         <PropAccordionItem name="client" status="optional" value="box-client">
           <p>
-            Pre-built <code>BoxClient</code> — escape hatch for callers that
+            Pre-built <code>BoxClient</code> - escape hatch for callers that
             already wire auth themselves (custom <code>NetworkSession</code>,
             proxy config, downscoped tokens). When passed, the adapter delegates
             auth entirely to the SDK; the other auth options are ignored.
@@ -81,7 +81,7 @@ export const Box = () => (
         </PropAccordionItem>
         <PropAccordionItem name="ccg" status="optional" value="box-ccg">
           <p>
-            Client Credentials Grant — server-side enterprise auth. Pass{" "}
+            Client Credentials Grant - server-side enterprise auth. Pass{" "}
             <code>clientId</code>, <code>clientSecret</code>, and either{" "}
             <code>enterpriseId</code> (authenticate as the service account) or{" "}
             <code>userId</code> (authenticate as a managed/app user). At least
@@ -102,7 +102,7 @@ export const Box = () => (
           value="rootFolderId"
         >
           <p>
-            Logical "bucket root" — virtual keys live under this Box folder ID.
+            Logical "bucket root" - virtual keys live under this Box folder ID.
             The folder must already exist; intermediate subfolders are
             auto-created on <code>upload()</code>. Defaults to <code>"0"</code>{" "}
             (the user's root folder).
@@ -117,7 +117,7 @@ export const Box = () => (
             When <code>true</code>, <code>upload()</code> also calls{" "}
             <code>addShareLinkToFile</code> with <code>access: "open"</code> and{" "}
             <code>url()</code> returns that link's <code>download_url</code> (or{" "}
-            <code>url</code> if <code>download_url</code> is absent — typical
+            <code>url</code> if <code>download_url</code> is absent - typical
             for non-binary previews). When <code>false</code> (default),{" "}
             <code>url()</code> mints a short-lived signed download URL via{" "}
             <code>getDownloadFileUrl</code>. Public shared links may be
@@ -155,11 +155,11 @@ export const Box = () => (
       </Accordion>
     </div>
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-box-limitations">
+      <Heading as="h3" id="adapter-box-limitations">
         Limitations
       </Heading>
       <p>
-        <code>signedUploadUrl()</code> throws — Box uploads require a multipart
+        <code>signedUploadUrl()</code> throws - Box uploads require a multipart
         POST with both an <code>attributes</code> JSON part and the file bytes
         part, which fits neither the SDK's PUT-with-headers nor
         POST-with-form-fields shape. Use <code>upload()</code> server-side, or
@@ -169,13 +169,13 @@ export const Box = () => (
         Stream bodies are buffered up-front because the SDK's upload manager
         takes a Node <code>Readable</code> rather than a Web stream.{" "}
         <code>list()</code> returns immediate-children files only at{" "}
-        <code>rootFolderId</code> — no recursion, subfolders are filtered out,
+        <code>rootFolderId</code> - no recursion, subfolders are filtered out,
         and <code>prefix</code> is matched client-side within the page; for deep
         enumeration drop to <code>raw.folders.getFolderItems</code> and recurse
-        manually. <code>responseContentDisposition</code> always throws — Box's{" "}
+        manually. <code>responseContentDisposition</code> always throws - Box's{" "}
         <code>getDownloadFileUrl</code> and shared-link URLs have no
         Content-Disposition override. User <code>metadata</code> and{" "}
-        <code>cacheControl</code> on <code>upload()</code> throw — Box exposes
+        <code>cacheControl</code> on <code>upload()</code> throw - Box exposes
         file metadata via classifications and metadata templates; drop to{" "}
         <code>raw.fileMetadata.*</code> if you need it. Box doesn't store
         user-supplied content types on file content, so <code>head()</code> and{" "}

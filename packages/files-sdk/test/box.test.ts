@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 
 import type { BoxClient } from "box-typescript-sdk-gen";
 
-import { box } from "../src/box/index.js";
+import { box, mapBoxError } from "../src/box/index.js";
 import { Files, FilesError } from "../src/index.js";
 
 interface FakeFile {
@@ -1204,5 +1204,96 @@ describe("box adapter", () => {
     const url = await files.url("never/seen.txt");
     expect(url).toBe("https://cdn.example.com/never/seen.txt");
     expect(getFolderItemsMock).not.toHaveBeenCalled();
+  });
+
+  test("mapBoxError returns Provider for null", () => {
+    const err = mapBoxError(null);
+    expect(err).toBeInstanceOf(FilesError);
+    expect(err.code).toBe("Provider");
+    expect(err.message).toBe("Box error");
+  });
+
+  test("mapBoxError returns Provider for non-object primitives", () => {
+    const err = mapBoxError("a string");
+    expect(err.code).toBe("Provider");
+    expect(err.message).toBe("Box error");
+  });
+
+  test("mapBoxError classifies status 401 with non-mapped code as Unauthorized", () => {
+    // Code is unknown to UNAUTH_CODES, so classification falls through to
+    // the status-only branch (status === 401 → Unauthorized).
+    const err = mapBoxError({
+      message: "denied",
+      responseInfo: { code: "some_unknown_code", statusCode: 401 },
+    });
+    expect(err.code).toBe("Unauthorized");
+    expect(err.message).toBe("denied");
+  });
+
+  test("mapBoxError classifies status 403 with no code as Unauthorized", () => {
+    const err = mapBoxError({
+      message: "forbidden",
+      responseInfo: { statusCode: 403 },
+    });
+    expect(err.code).toBe("Unauthorized");
+  });
+
+  test("mapBoxError passes existing FilesError through unchanged", () => {
+    const original = new FilesError("Conflict", "boom");
+    expect(mapBoxError(original)).toBe(original);
+  });
+
+  test("upload with a trailing slash on the key trims it and uses the leaf", async () => {
+    // Drives trimSlashes' trailing-slash trim loop (the `end -= 1` branch).
+    const files = new Files({ adapter: box(baseOpts) });
+    const r = await files.upload("trailing.txt/", "hi");
+    expect(r.key).toBe("trailing.txt/");
+    const [call] = uploadFileMock.mock.calls;
+    expect(call?.[0]?.attributes?.name).toBe("trailing.txt");
+  });
+
+  test("download of a file without an extension uses octet-stream", async () => {
+    // inferTypeFromName: no `.` in the name → falls back to octet-stream.
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("README", "hi");
+    stubFetchToServeStore();
+    const f = await files.download("README");
+    expect(f.type).toBe("application/octet-stream");
+  });
+
+  test("upload from a fresh adapter reuses an existing file by name (cache miss path)", async () => {
+    // First adapter primes the store; second adapter has an empty fileIdCache,
+    // so findChildByName re-discovers the existing file and the upload routes
+    // through uploadFileVersion (the existing.type === "file" branch).
+    const filesA = new Files({ adapter: box(baseOpts) });
+    await filesA.upload("shared.txt", "v1");
+    uploadFileMock.mockClear();
+    uploadFileVersionMock.mockClear();
+
+    const filesB = new Files({ adapter: box(baseOpts) });
+    await filesB.upload("shared.txt", "v2");
+    expect(uploadFileMock).not.toHaveBeenCalled();
+    expect(uploadFileVersionMock).toHaveBeenCalledTimes(1);
+    const file = [...store.values()].find(
+      (it) => it.type === "file" && it.name === "shared.txt"
+    ) as FakeFile | undefined;
+    expect(file?.bytes.toString("utf-8")).toBe("v2");
+  });
+
+  test("upload throws Conflict when the leaf name is taken by a non-file", async () => {
+    // Pre-seed a *folder* named "collide.txt" under the root, then attempt
+    // to upload a file with the same key — resolveExistingFileForUpload
+    // must reject with Conflict.
+    const collideId = newId();
+    store.set(collideId, {
+      id: collideId,
+      name: "collide.txt",
+      parentId: ROOT_ID,
+      type: "folder",
+    });
+    const files = new Files({ adapter: box(baseOpts) });
+    await expect(files.upload("collide.txt", "hi")).rejects.toMatchObject({
+      code: "Conflict",
+    });
   });
 });

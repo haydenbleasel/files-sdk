@@ -18,12 +18,12 @@ const files = new Files({
 
 export const Storj = () => (
   <section>
-    <Heading as="h3" id="adapter-storj">
+    <Heading as="h2" id="adapter-storj">
       Storj
     </Heading>
     <p>
       Storj DCS via its S3-compatible Gateway. A thin wrapper around the S3
-      adapter — endpoint defaults to Storj's hosted Gateway MT, path-style
+      adapter - endpoint defaults to Storj's hosted Gateway MT, path-style
       addressing on, errors relabelled. Auto-loads from{" "}
       <code>STORJ_ACCESS_KEY_ID</code> and <code>STORJ_SECRET_ACCESS_KEY</code>.
       Generate access keys in the Storj console or with{" "}
@@ -31,7 +31,7 @@ export const Storj = () => (
     </p>
     <CodeBlock code={STORJ_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-storj-options">
+      <Heading as="h3" id="adapter-storj-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -47,13 +47,13 @@ export const Storj = () => (
             Static credentials. Falls back to <code>STORJ_ACCESS_KEY_ID</code>{" "}
             and <code>STORJ_SECRET_ACCESS_KEY</code>; required if those env vars
             aren't set. These are S3-style gateway keys, not your Storj access
-            grant — the gateway translates them server-side.
+            grant - the gateway translates them server-side.
           </p>
         </PropAccordionItem>
         <PropAccordionItem name="endpoint" status="optional" value="endpoint">
           <p>
             Storj S3 gateway URL. Defaults to{" "}
-            <code>https://gateway.storjshare.io</code> (Gateway MT — the hosted
+            <code>https://gateway.storjshare.io</code> (Gateway MT - the hosted
             multi-tenant gateway, what most users want). Override with your own
             URL if you self-host Gateway ST.
           </p>
@@ -73,7 +73,7 @@ export const Storj = () => (
         >
           <p>
             Use path-style addressing (<code>/&lt;bucket&gt;/&lt;key&gt;</code>
-            ). Defaults to <code>true</code> for Storj — the gateway routes
+            ). Defaults to <code>true</code> for Storj - the gateway routes
             path-style. Flip off only if you've fronted the gateway with
             subdomain routing.
           </p>
@@ -89,7 +89,7 @@ export const Storj = () => (
             <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips signing.
             For Storj, the natural value is a linksharing prefix like{" "}
             <code>{`https://link.storjshare.io/raw/<accessGrant>/<bucket>`}</code>{" "}
-            — generate one with <code>uplink share --url</code>. When unset,{" "}
+            - generate one with <code>uplink share --url</code>. When unset,{" "}
             <code>url()</code> returns a presigned GetObject (1-hour default).
           </p>
         </PropAccordionItem>

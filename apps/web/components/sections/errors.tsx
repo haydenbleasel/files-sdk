@@ -27,18 +27,18 @@ export const Errors = () => (
       </Heading>
       <ul className="list-none! pl-0! gap-0! rounded-md border border-dotted divide-y divide-dotted">
         <li className="px-4 py-3">
-          <code>"NotFound"</code> — key does not exist.
+          <code>"NotFound"</code> - key does not exist.
         </li>
         <li className="px-4 py-3">
-          <code>"Unauthorized"</code> — credentials missing, expired, or
+          <code>"Unauthorized"</code> - credentials missing, expired, or
           insufficient.
         </li>
         <li className="px-4 py-3">
-          <code>"Conflict"</code> — precondition failed, e.g. conditional write
+          <code>"Conflict"</code> - precondition failed, e.g. conditional write
           lost a race.
         </li>
         <li className="px-4 py-3">
-          <code>"Provider"</code> — anything else; inspect <code>cause</code>{" "}
+          <code>"Provider"</code> - anything else; inspect <code>cause</code>{" "}
           for the underlying error.
         </li>
       </ul>

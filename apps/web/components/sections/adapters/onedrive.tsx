@@ -7,7 +7,7 @@ const ONEDRIVE_EXAMPLE = `import { Files } from "files-sdk";
 import { onedrive } from "files-sdk/onedrive";
 
 // App-only auth (client credentials) into a SharePoint site library.
-// Cannot use /me/drive — pass driveId, siteId, or userId instead.
+// Cannot use /me/drive - pass driveId, siteId, or userId instead.
 const files = new Files({
   adapter: onedrive({
     clientCredentials: {
@@ -24,14 +24,14 @@ const files = new Files({
 
 export const Onedrive = () => (
   <section>
-    <Heading as="h3" id="adapter-onedrive">
+    <Heading as="h2" id="adapter-onedrive">
       OneDrive
     </Heading>
     <p>
       OneDrive and SharePoint document libraries via the official{" "}
       <code>@microsoft/microsoft-graph-client</code> SDK. Microsoft Graph is
       path-addressable (<code>/drive/root:/folder/file.txt</code>), so the
-      adapter maps virtual keys onto real OneDrive paths — no virtual-key cache,
+      adapter maps virtual keys onto real OneDrive paths - no virtual-key cache,
       no <code>fsdkKey</code> bookkeeping. Five auth shapes (app-only, OAuth
       refresh token, raw access token, pre-built Graph client, or env-var
       fallback) and four drive targets (<code>/me/drive</code>,{" "}
@@ -41,7 +41,7 @@ export const Onedrive = () => (
     </p>
     <CodeBlock code={ONEDRIVE_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-onedrive-options">
+      <Heading as="h3" id="adapter-onedrive-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -51,10 +51,10 @@ export const Onedrive = () => (
           value="clientCredentials"
         >
           <p>
-            App-only (client credentials) auth —{" "}
+            App-only (client credentials) auth -{" "}
             <code>{"{ tenantId, clientId, clientSecret }"}</code>. Required for
             unattended SharePoint or OneDrive-for-Business access; the app acts
-            on its own behalf. Cannot target <code>/me/drive</code> — pass{" "}
+            on its own behalf. Cannot target <code>/me/drive</code> - pass{" "}
             <code>driveId</code>, <code>siteId</code>, or <code>userId</code> to
             specify the drive. Falls back to the <code>ONEDRIVE_TENANT_ID</code>{" "}
             + <code>ONEDRIVE_CLIENT_ID</code> +{" "}
@@ -63,7 +63,7 @@ export const Onedrive = () => (
         </PropAccordionItem>
         <PropAccordionItem name="oauth" status="optional" value="oauth">
           <p>
-            Delegated (3-legged) auth via OAuth refresh token —{" "}
+            Delegated (3-legged) auth via OAuth refresh token -{" "}
             <code>{"{ clientId, clientSecret, refreshToken, tenantId? }"}</code>
             . The adapter mints fresh access tokens against the tenant's token
             endpoint (<code>tenantId</code> defaults to <code>"common"</code>)
@@ -76,7 +76,7 @@ export const Onedrive = () => (
           value="accessToken"
         >
           <p>
-            Static or dynamic access token — a string for one-shot tokens, or an
+            Static or dynamic access token - a string for one-shot tokens, or an
             async function for callers minting tokens themselves (
             <code>@azure/identity</code>, NextAuth, custom brokers). The adapter
             does not cache; your callable owns refresh. Falls back to the{" "}
@@ -87,7 +87,7 @@ export const Onedrive = () => (
         <PropAccordionItem name="client" status="optional" value="client">
           <p>
             Pre-built <code>@microsoft/microsoft-graph-client</code>{" "}
-            <code>Client</code> — escape hatch when you've wired auth and
+            <code>Client</code> - escape hatch when you've wired auth and
             middleware yourself. Unlike Google Drive's escape hatch,{" "}
             <code>signedUploadUrl()</code> still works because Graph's upload
             session URL is pre-authenticated by Graph itself, no auth handle
@@ -127,7 +127,7 @@ export const Onedrive = () => (
           value="rootFolderPath"
         >
           <p>
-            Logical "bucket root" — virtual keys live under this folder path
+            Logical "bucket root" - virtual keys live under this folder path
             (which must already exist on the drive). Defaults to the drive root.
           </p>
         </PropAccordionItem>
@@ -140,7 +140,7 @@ export const Onedrive = () => (
             When <code>true</code>, <code>upload()</code> also calls{" "}
             <code>createLink</code> with anonymous-view scope and{" "}
             <code>url()</code> returns the link's <code>webUrl</code>. When{" "}
-            <code>false</code> (default), <code>url()</code> throws — Graph has
+            <code>false</code> (default), <code>url()</code> throws - Graph has
             no signed URL primitive. Anonymous links are blocked on tenants
             where admins disable them; the adapter surfaces Graph's{" "}
             <code>accessDenied</code> in that case.
@@ -162,31 +162,31 @@ export const Onedrive = () => (
       </Accordion>
     </div>
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-onedrive-limitations">
+      <Heading as="h3" id="adapter-onedrive-limitations">
         Limitations
       </Heading>
       <p>
         <code>url()</code> throws unless the adapter is constructed with{" "}
-        <code>publicByDefault: true</code> — Graph has no signed URL primitive.
+        <code>publicByDefault: true</code> - Graph has no signed URL primitive.
         With <code>publicByDefault</code>, the returned share link has no expiry
         by Graph's default policy (<code>expiresIn</code> is silently ignored)
-        and <code>responseContentDisposition</code> always throws — Graph has no
+        and <code>responseContentDisposition</code> always throws - Graph has no
         Content-Disposition override. <code>signedUploadUrl()</code> initiates
         an upload session via <code>createUploadSession</code> and returns the
         session URL as a one-shot PUT; <code>maxSize</code> and{" "}
-        <code>minSize</code> are advisory — Graph does not enforce a server-side{" "}
+        <code>minSize</code> are advisory - Graph does not enforce a server-side{" "}
         <code>content-length-range</code> policy on upload sessions. Direct{" "}
         <code>upload()</code> is capped at OneDrive's 250 MB simple-upload
         limit; larger bodies must use <code>signedUploadUrl()</code> or drop to{" "}
         <code>raw</code> for chunked sessions. Drive items have no native
         arbitrary-metadata field, so user <code>metadata</code> and{" "}
-        <code>cacheControl</code> on <code>upload()</code> throw — use{" "}
+        <code>cacheControl</code> on <code>upload()</code> throw - use{" "}
         <code>raw</code> to set Open Extensions if you need them.{" "}
         <code>copy()</code> is async on Graph (202 + monitor URL); the adapter
         polls the monitor and resolves when status is <code>"completed"</code>,
         with a configurable <code>copyTimeoutMs</code> ceiling.{" "}
         <code>list()</code> returns immediate-children files only at{" "}
-        <code>rootFolderPath</code> — no recursion; subfolders are filtered out.
+        <code>rootFolderPath</code> - no recursion; subfolders are filtered out.
       </p>
     </div>
   </section>

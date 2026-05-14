@@ -89,7 +89,7 @@ const tools = {
 
 export const VercelAiSdk = () => (
   <section>
-    <Heading as="h3" id="ai-sdk-tools">
+    <Heading as="h2" id="ai-sdk-tools">
       Vercel AI SDK
     </Heading>
     <p>
@@ -103,7 +103,7 @@ export const VercelAiSdk = () => (
       >
         Vercel AI SDK
       </a>{" "}
-      as a set of ready-to-use tools — drop them into <code>generateText</code>,{" "}
+      as a set of ready-to-use tools - drop them into <code>generateText</code>,{" "}
       <code>streamText</code>, or any agent and the model can browse, read, and
       mutate your bucket through the same unified surface as your application
       code.
@@ -111,18 +111,18 @@ export const VercelAiSdk = () => (
     <p>
       Write tools (<code>uploadFile</code>, <code>deleteFile</code>,{" "}
       <code>copyFile</code>, <code>signUploadUrl</code>) require user approval
-      by default — designed for human-in-the-loop agents. Read tools (
+      by default - designed for human-in-the-loop agents. Read tools (
       <code>listFiles</code>, <code>getFileMetadata</code>,{" "}
       <code>downloadFile</code>, <code>getFileUrl</code>) never require
       approval.
     </p>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-installation">
+      <Heading as="h3" id="ai-sdk-tools-installation">
         Installation
       </Heading>
       <p>
-        <code>ai</code> and <code>zod</code> are optional peer dependencies —
+        <code>ai</code> and <code>zod</code> are optional peer dependencies -
         only install them if you're consuming the <code>files-sdk/ai-sdk</code>{" "}
         subpath.
       </p>
@@ -130,7 +130,7 @@ export const VercelAiSdk = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-quick-start">
+      <Heading as="h3" id="ai-sdk-tools-quick-start">
         Quick start
       </Heading>
       <p>
@@ -142,7 +142,7 @@ export const VercelAiSdk = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-approval">
+      <Heading as="h3" id="ai-sdk-tools-approval">
         Approval control
       </Heading>
       <p>
@@ -155,24 +155,24 @@ export const VercelAiSdk = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-read-only">
+      <Heading as="h3" id="ai-sdk-tools-read-only">
         Read-only mode
       </Heading>
       <p>
         Pass <code>readOnly: true</code> to drop every write tool. The model
         cannot mutate the bucket regardless of how <code>requireApproval</code>{" "}
-        is configured — useful for retrieval-style agents that only need to
+        is configured - useful for retrieval-style agents that only need to
         browse, summarize, or hand the user a download URL.
       </p>
       <CodeBlock code={READ_ONLY_EXAMPLE} lang="ts" />
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-surface">
+      <Heading as="h3" id="ai-sdk-tools-surface">
         Tool surface
       </Heading>
       <p>
-        Eight tools are returned by default — four read, four write. Each one is
+        Eight tools are returned by default - four read, four write. Each one is
         a thin wrapper around a <code>Files</code> method, so they share the
         SDK's key validation, normalized errors, and adapter portability.
       </p>
@@ -197,7 +197,7 @@ export const VercelAiSdk = () => (
           <p>
             Download an object and return its contents. Accepts a{" "}
             <code>maxBytes</code> guard (default 1 MiB) checked via{" "}
-            <code>head()</code> <em>before</em> any transfer — JSON tool
+            <code>head()</code> <em>before</em> any transfer - JSON tool
             boundaries don't love multi-megabyte payloads. Returns UTF-8 text by
             default; pass <code>binary: true</code> to receive base64-encoded
             bytes for non-text files.
@@ -207,7 +207,7 @@ export const VercelAiSdk = () => (
           <p>
             Build a URL for the object. Forwards <code>expiresIn</code> and{" "}
             <code>responseContentDisposition</code> straight to{" "}
-            <code>files.url()</code> — handy for letting the model hand the user
+            <code>files.url()</code> - handy for letting the model hand the user
             a download link instead of streaming bytes back through the tool
             boundary.
           </p>
@@ -215,7 +215,7 @@ export const VercelAiSdk = () => (
         <PropAccordionItem name="uploadFile" value="ai-upload-file">
           <p>
             Upload a file. Accepts <code>content: string</code> plus an optional{" "}
-            <code>encoding: "text" | "base64"</code> — base64 is decoded before
+            <code>encoding: "text" | "base64"</code> - base64 is decoded before
             upload so binary payloads stay JSON-safe at the tool boundary.
             Forwards <code>contentType</code>, <code>cacheControl</code>, and{" "}
             <code>metadata</code>.{" "}
@@ -238,7 +238,7 @@ export const VercelAiSdk = () => (
         <PropAccordionItem name="signUploadUrl" value="ai-sign-upload-url">
           <p>
             Issue a presigned URL the model can hand back to the client for a
-            direct upload. Approval-gated by default — even though no bytes move
+            direct upload. Approval-gated by default - even though no bytes move
             during the tool call itself, issuing the URL grants upload
             permission until <code>expiresIn</code> elapses.
           </p>
@@ -247,7 +247,7 @@ export const VercelAiSdk = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-overrides">
+      <Heading as="h3" id="ai-sdk-tools-overrides">
         Overrides
       </Heading>
       <p>
@@ -263,12 +263,12 @@ export const VercelAiSdk = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="ai-sdk-tools-cherry-pick">
+      <Heading as="h3" id="ai-sdk-tools-cherry-pick">
         Cherry-picking tools
       </Heading>
       <p>
         Each tool factory is also exported individually for fully custom setups
-        — useful when you want to mix AI SDK tools across multiple domains and
+        - useful when you want to mix AI SDK tools across multiple domains and
         need full control over the returned object's shape.
       </p>
       <CodeBlock code={CHERRY_PICK_EXAMPLE} lang="ts" />

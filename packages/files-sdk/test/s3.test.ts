@@ -221,6 +221,17 @@ describe("s3 adapter", () => {
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
+  test("url() URL-encodes special characters in the key but preserves / as path separator", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    const url = await adapter.url("foo bar?baz#qux/a&b");
+    expect(url).toBe("https://cdn.example.com/foo%20bar%3Fbaz%23qux/a%26b");
+  });
+
   test("NoSuchKey is mapped to NotFound", async () => {
     s3Mock.on(GetObjectCommand).rejects(
       Object.assign(new Error("nope"), {

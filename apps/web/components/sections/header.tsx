@@ -1,6 +1,10 @@
 "use client";
 
 import { motion } from "motion/react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+import { cn } from "@/lib/utils";
 
 import { Badge } from "../ui/badge";
 
@@ -20,28 +24,60 @@ const GithubMark = ({ className }: { className?: string }) => (
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
-export const Header = () => (
-  <header className="self-end">
-    <motion.a
-      className="text-muted-foreground transition-colors hover:text-foreground"
-      href="https://github.com/haydenbleasel/files-sdk"
-      rel="noreferrer"
-      target="_blank"
-      aria-label="haydenbleasel/files-sdk on GitHub"
-      initial={{ opacity: 0, x: 10 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.5, ease: EASE }}
-    >
-      <span className="flex size-9 items-center justify-center rounded-full border border-dotted hover:bg-sidebar transition-colors sm:hidden">
-        <GithubMark className="size-4" />
-      </span>
-      <Badge
-        variant="outline"
-        className="hidden sm:inline-flex h-auto py-2 px-4 bg-transparent hover:bg-sidebar transition-colors border-dotted"
+const navItems = [
+  { href: "/", label: "Home" },
+  { href: "/adapters", label: "Adapters" },
+  { href: "/ai", label: "AI" },
+  { href: "/api", label: "API" },
+];
+
+const isActiveHref = (href: string, pathname: string) =>
+  href === "/" ? pathname === "/" : pathname.startsWith(href);
+
+export const Header = () => {
+  const pathname = usePathname();
+
+  return (
+    <header className="flex items-center justify-between gap-3">
+      <nav aria-label="Primary" className="flex items-center gap-4 text-sm">
+        {navItems.map(({ href, label }) => {
+          const active = isActiveHref(href, pathname);
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cn(
+                "transition-colors hover:text-foreground",
+                active ? "text-foreground" : "text-muted-foreground"
+              )}
+              aria-current={active ? "page" : undefined}
+            >
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
+      <motion.a
+        className="text-muted-foreground transition-colors hover:text-foreground"
+        href="https://github.com/haydenbleasel/files-sdk"
+        rel="noreferrer"
+        target="_blank"
+        aria-label="haydenbleasel/files-sdk on GitHub"
+        initial={{ opacity: 0, x: 10 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.5, ease: EASE }}
       >
-        <GithubMark className="size-3.5" />
-        haydenbleasel/files-sdk
-      </Badge>
-    </motion.a>
-  </header>
-);
+        <span className="flex size-9 items-center justify-center rounded-full border border-dotted hover:bg-sidebar transition-colors sm:hidden">
+          <GithubMark className="size-4" />
+        </span>
+        <Badge
+          variant="outline"
+          className="hidden sm:inline-flex h-auto py-2 px-4 bg-transparent hover:bg-sidebar transition-colors border-dotted"
+        >
+          <GithubMark className="size-3.5" />
+          haydenbleasel/files-sdk
+        </Badge>
+      </motion.a>
+    </header>
+  );
+};

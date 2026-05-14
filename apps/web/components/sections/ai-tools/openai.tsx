@@ -117,12 +117,12 @@ createAgentsFileTools({ files, readOnly: true });
 
 export const Openai = () => (
   <section>
-    <Heading as="h3" id="openai-tools">
+    <Heading as="h2" id="openai-tools">
       OpenAI
     </Heading>
     <p>
       The <code>files-sdk/openai</code> subpath ships two factories targeting
-      OpenAI directly — one for the native{" "}
+      OpenAI directly - one for the native{" "}
       <a
         className="underline decoration-dotted underline-offset-4 hover:text-foreground"
         href="https://platform.openai.com/docs/api-reference/responses"
@@ -145,14 +145,14 @@ export const Openai = () => (
     </p>
     <p>
       <code>openai</code> and <code>@openai/agents</code> are optional peer
-      dependencies — install only the one(s) you use. The subpath requires{" "}
+      dependencies - install only the one(s) you use. The subpath requires{" "}
       <strong>Zod 4</strong>: <code>@openai/agents</code> peer-requires it, and
       Zod 4's built-in <code>toJSONSchema</code> powers the Responses tool
       definitions.
     </p>
 
     <section>
-      <Heading as="h4" id="openai-tools-responses">
+      <Heading as="h3" id="openai-tools-responses">
         Responses API
       </Heading>
       <p>
@@ -170,19 +170,19 @@ export const Openai = () => (
         <code>execute</code> returns JSON parse failures and Zod validation
         errors <em>as the tool's output</em>, so the model can self-correct on
         the next turn. <code>FilesError</code> from the underlying SDK is
-        rethrown — you decide how to surface it.{" "}
+        rethrown - you decide how to surface it.{" "}
         <code>needsApproval(name)</code> is informational; checking it is the
         caller's responsibility.
       </p>
     </section>
 
     <section>
-      <Heading as="h4" id="openai-tools-agents">
+      <Heading as="h3" id="openai-tools-agents">
         Agents SDK
       </Heading>
       <p>
         <code>createAgentsFileTools</code> returns a record of{" "}
-        <code>tool()</code> outputs keyed by tool name — spread{" "}
+        <code>tool()</code> outputs keyed by tool name - spread{" "}
         <code>Object.values()</code> into <code>new Agent({"{ tools }"})</code>.
         Write tools default to <code>needsApproval: true</code>; the Agents SDK
         runner surfaces an <code>interruption</code> that your program resolves
@@ -192,7 +192,7 @@ export const Openai = () => (
       <CodeBlock code={AGENTS_EXAMPLE} lang="tsx" />
       <p>
         Errors thrown from <code>execute()</code> are wrapped by the Agents
-        SDK's default <code>errorFunction</code> into a model-visible string —
+        SDK's default <code>errorFunction</code> into a model-visible string -
         the model sees the message and can self-correct on the next turn. This
         is the standard Agents-SDK pattern, and differs from the Responses flow
         where <code>FilesError</code> rethrows.
@@ -200,7 +200,7 @@ export const Openai = () => (
     </section>
 
     <section>
-      <Heading as="h4" id="openai-tools-options">
+      <Heading as="h3" id="openai-tools-options">
         Approval, read-only, overrides
       </Heading>
       <p>

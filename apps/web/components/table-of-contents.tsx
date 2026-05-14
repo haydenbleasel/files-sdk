@@ -4,71 +4,18 @@ import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-interface Section {
+export interface TocSection {
   id: string;
   label: string;
   children?: { id: string; label: string }[];
 }
 
-const sections: Section[] = [
-  { id: "why", label: "Why" },
-  { id: "installation", label: "Installation" },
-  { id: "quick-start", label: "Quick start" },
-  {
-    children: [
-      { id: "adapter-s3", label: "S3" },
-      { id: "adapter-r2", label: "Cloudflare R2" },
-      { id: "adapter-vercel-blob", label: "Vercel Blob" },
-      { id: "adapter-netlify-blobs", label: "Netlify Blobs" },
-      { id: "adapter-minio", label: "MinIO" },
-      { id: "adapter-digitalocean-spaces", label: "DigitalOcean Spaces" },
-      { id: "adapter-storj", label: "Storj" },
-      { id: "adapter-hetzner", label: "Hetzner" },
-      { id: "adapter-akamai", label: "Akamai Object Storage" },
-      { id: "adapter-gcs", label: "Google Cloud Storage" },
-      { id: "adapter-google-drive", label: "Google Drive" },
-      { id: "adapter-onedrive", label: "OneDrive" },
-      { id: "adapter-dropbox", label: "Dropbox" },
-      { id: "adapter-box", label: "Box" },
-      { id: "adapter-azure", label: "Azure Blob Storage" },
-      { id: "adapter-supabase", label: "Supabase Storage" },
-      { id: "adapter-uploadthing", label: "UploadThing" },
-      { id: "adapter-fs", label: "Filesystem" },
-    ],
-    id: "adapters",
-    label: "Adapters",
-  },
-  {
-    children: [
-      { id: "files-upload", label: "upload" },
-      { id: "files-download", label: "download" },
-      { id: "files-head", label: "head" },
-      { id: "files-delete", label: "delete" },
-      { id: "files-copy", label: "copy" },
-      { id: "files-list", label: "list" },
-      { id: "files-url", label: "url" },
-      { id: "files-signed-upload-url", label: "signedUploadUrl" },
-    ],
-    id: "api-reference",
-    label: "API reference",
-  },
-  { id: "the-storedfile-type", label: "The StoredFile type" },
-  { id: "errors", label: "Errors" },
-  { id: "escape-hatch", label: "Escape hatch" },
-  {
-    children: [
-      { id: "openai-tools", label: "OpenAI" },
-      { id: "ai-sdk-tools", label: "Vercel AI SDK" },
-      { id: "claude-tools", label: "Claude Agent SDK" },
-    ],
-    id: "ai-tools",
-    label: "AI tools",
-  },
-  { id: "compatibility-matrix", label: "Compatibility matrix" },
-];
+interface TableOfContentsProps {
+  sections: TocSection[];
+}
 
-export const TableOfContents = () => {
-  const [activeId, setActiveId] = useState<string>(sections[0].id);
+export const TableOfContents = ({ sections }: TableOfContentsProps) => {
+  const [activeId, setActiveId] = useState<string>(sections[0]?.id ?? "");
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -100,7 +47,7 @@ export const TableOfContents = () => {
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [sections]);
 
   const activeParentId = sections.find(
     ({ id, children }) =>

@@ -17,16 +17,16 @@ const files = new Files({
 
 export const S3 = () => (
   <section>
-    <Heading as="h3" id="adapter-s3">
+    <Heading as="h2" id="adapter-s3">
       S3
     </Heading>
     <p>
       AWS S3 (and any S3-compatible bucket). Uses the standard AWS credential
-      chain — environment, IAM role, shared profile.
+      chain - environment, IAM role, shared profile.
     </p>
     <CodeBlock code={S3_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">
-      <Heading as="h4" id="adapter-s3-options">
+      <Heading as="h3" id="adapter-s3-options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -45,7 +45,7 @@ export const S3 = () => (
           value="credentials"
         >
           <p>
-            Static credentials —{" "}
+            Static credentials -{" "}
             <code>{"{ accessKeyId, secretAccessKey, sessionToken? }"}</code>.
             Skip to use the AWS credential chain (env vars, IAM role, shared
             profile, EC2/ECS/EKS instance metadata).
@@ -66,7 +66,7 @@ export const S3 = () => (
           <p>
             Origin used to build URLs from <code>url()</code>. When set,{" "}
             <code>url(key)</code> returns{" "}
-            <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips signing —
+            <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips signing -
             use this if your bucket is fronted by CloudFront or has a
             public-read policy. When unset, <code>url()</code> returns a
             presigned GetObject (1-hour default).
