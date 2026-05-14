@@ -32,12 +32,13 @@ if (cursor) {
   const next = await files.list({ prefix: "avatars/", cursor });
 }`;
 
-const URL_EXAMPLE = `// One call, every adapter. S3 / R2 / MinIO / DO Spaces / Storj / Hetzner / Akamai / GCS sign a GetObject (1h
-// default, override with { expiresIn }); Azure signs a SAS read URL with
-// the same default; Supabase signs via createSignedUrl (or returns the
-// public URL when constructed with public:true); Vercel Blob (public)
-// and UploadThing (public-read) return their CDN URLs. If you configured
-// \`publicBaseUrl\` on the adapter, that wins and signing is skipped.
+const URL_EXAMPLE = `// One call, every adapter. S3 and the S3-compatible catalog (R2 over HTTP,
+// GCS via S3 interop, plus every regional / budget / decentralised wrapper)
+// sign a GetObject (1h default, override with { expiresIn }); Azure signs a
+// SAS read URL with the same default; Supabase signs via createSignedUrl
+// (or returns the public URL when constructed with public:true); Vercel Blob
+// (public) and UploadThing (public-read) return their CDN URLs. If you
+// configured \`publicBaseUrl\` on the adapter, that wins and signing is skipped.
 const url = await files.url("avatars/abc.png");
 const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 
@@ -220,16 +221,17 @@ export const ApiReference = () => (
       </Heading>
       <p>
         Returns a URL the caller can use to fetch <code>key</code>. Every
-        adapter returns the most direct URL it can produce. Signing adapters
-        (S3, R2 over HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai,
-        GCS, Azure with shared key, Supabase, UploadThing in{" "}
-        <code>private</code> mode, R2 binding when HTTP credentials are also
-        configured) sign a <code>GetObject</code> - defaulting to a 1-hour
-        expiry, override per-call via <code>{"{ expiresIn }"}</code> or
-        per-adapter via <code>defaultUrlExpiresIn</code>. If the adapter is
-        constructed with a <code>publicBaseUrl</code> (CDN, custom domain,{" "}
-        <code>r2.dev</code>) or UploadThing's <code>public-read</code> ACL, that
-        wins and the URL is built without signing.
+        adapter returns the most direct URL it can produce. Signing adapters (S3
+        and the S3-compatible catalog — R2 over HTTP, GCS via S3 interop, plus
+        every regional / budget / decentralised wrapper — alongside Azure with
+        shared key, Supabase, UploadThing in <code>private</code> mode, and R2
+        binding when HTTP credentials are also configured) sign a{" "}
+        <code>GetObject</code> - defaulting to a 1-hour expiry, override
+        per-call via <code>{"{ expiresIn }"}</code> or per-adapter via{" "}
+        <code>defaultUrlExpiresIn</code>. If the adapter is constructed with a{" "}
+        <code>publicBaseUrl</code> (CDN, custom domain, <code>r2.dev</code>) or
+        UploadThing's <code>public-read</code> ACL, that wins and the URL is
+        built without signing.
       </p>
       <p>
         Two configurations have no URL primitive and throw: Vercel Blob in{" "}
@@ -248,12 +250,11 @@ export const ApiReference = () => (
             value="expiresIn"
           >
             <p>
-              URL expiry, in seconds. Honored on signing adapters (S3, R2 over
-              HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai, GCS,
-              Azure with shared key, Supabase, R2 hybrid, UploadThing in{" "}
-              <code>private</code> mode); ignored on Vercel Blob and on
-              UploadThing's <code>public-read</code> mode (no signing
-              primitive). Defaults to the adapter's{" "}
+              URL expiry, in seconds. Honored on signing adapters (S3 and the
+              S3-compatible catalog, GCS, Azure with shared key, Supabase, R2
+              hybrid, UploadThing in <code>private</code> mode); ignored on
+              Vercel Blob and on UploadThing's <code>public-read</code> mode (no
+              signing primitive). Defaults to the adapter's{" "}
               <code>defaultUrlExpiresIn</code> (1 hour).
             </p>
           </PropAccordionItem>

@@ -70,6 +70,38 @@
       "types": "./dist/wasabi/index.d.ts",
       "import": "./dist/wasabi/index.js"
     },
+    "./scaleway": {
+      "types": "./dist/scaleway/index.d.ts",
+      "import": "./dist/scaleway/index.js"
+    },
+    "./ovhcloud": {
+      "types": "./dist/ovhcloud/index.d.ts",
+      "import": "./dist/ovhcloud/index.js"
+    },
+    "./idrive-e2": {
+      "types": "./dist/idrive-e2/index.d.ts",
+      "import": "./dist/idrive-e2/index.js"
+    },
+    "./vultr": {
+      "types": "./dist/vultr/index.d.ts",
+      "import": "./dist/vultr/index.js"
+    },
+    "./filebase": {
+      "types": "./dist/filebase/index.d.ts",
+      "import": "./dist/filebase/index.js"
+    },
+    "./exoscale": {
+      "types": "./dist/exoscale/index.d.ts",
+      "import": "./dist/exoscale/index.js"
+    },
+    "./oracle-cloud": {
+      "types": "./dist/oracle-cloud/index.d.ts",
+      "import": "./dist/oracle-cloud/index.js"
+    },
+    "./ibm-cos": {
+      "types": "./dist/ibm-cos/index.d.ts",
+      "import": "./dist/ibm-cos/index.js"
+    },
     "./tigris": {
       "types": "./dist/tigris/index.d.ts",
       "import": "./dist/tigris/index.js"
@@ -124,7 +156,7 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "NODE_OPTIONS='--max-old-space-size=8192' tsup",
     "dev": "tsup --watch",
     "test": "bun test",
     "test:coverage": "bun test --coverage",

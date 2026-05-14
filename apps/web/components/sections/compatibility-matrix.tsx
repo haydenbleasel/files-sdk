@@ -38,6 +38,14 @@ const COLUMNS = [
   { key: "akamai", label: "Akamai", parent: "Akamai" },
   { key: "b2", label: "B2", parent: "Backblaze B2" },
   { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
+  { key: "scaleway", label: "Scaleway", parent: "Scaleway" },
+  { key: "ovhcloud", label: "OVHcloud", parent: "OVHcloud" },
+  { key: "idrive-e2", label: "iDrive e2", parent: "iDrive e2" },
+  { key: "vultr", label: "Vultr", parent: "Vultr" },
+  { key: "filebase", label: "Filebase", parent: "Filebase" },
+  { key: "exoscale", label: "Exoscale", parent: "Exoscale" },
+  { key: "oracle-cloud", label: "Oracle", parent: "Oracle Cloud" },
+  { key: "ibm-cos", label: "IBM COS", parent: "IBM COS" },
   { key: "tigris", label: "Tigris", parent: "Tigris" },
   { key: "gcs", label: "GCS", parent: "GCS" },
   { key: "google-drive", label: "Drive", parent: "Google Drive" },
@@ -65,10 +73,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: warn(
         "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw - Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: warn(
         "Stream bodies are buffered up-front - Netlify's `set()` has no streaming form, so streaming uploads can't avoid materializing the body in memory."
@@ -76,10 +88,13 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       onedrive: warn(
         "Single-PUT simple upload, capped at OneDrive's 250 MB simple-upload limit. Bodies above the cap throw - use `signedUploadUrl()` (`createUploadSession` returns a chunkable session URL) or drop to `raw` for chunked uploads. User `metadata` and `cacheControl` throw - Graph drive items have no native arbitrary-metadata field; use `raw` to set Open Extensions if you need them."
       ),
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": ok,
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
@@ -88,6 +103,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "upload",
@@ -103,17 +119,24 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: warn(
         "`filesDownload` buffers the full body - the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: ok,
       onedrive: ok,
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": ok,
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
@@ -122,6 +145,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "download",
@@ -133,17 +157,24 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: ok,
       dropbox: ok,
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: ok,
       onedrive: ok,
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": ok,
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
@@ -152,6 +183,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "ut-public": ok,
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "delete",
@@ -167,12 +199,16 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: warn(
         "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": warn(
         "Drive has no native key field. The adapter scopes by parent folder and filters client-side to files carrying its `fsdkKey` appProperty - files written into the same folder out-of-band are excluded. `prefix` is filtered page-local and can under-return when the prefix isn't satisfied within a single page."
       ),
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: warn(
         "Netlify's list response only carries key + etag - size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. The unified `cursor` is not honoured because Netlify's pagination cursor is internal to the SDK; the adapter iterates the SDK's paginated form and stops once `limit` is satisfied, so `limit` does bound server-side I/O."
@@ -180,10 +216,13 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       onedrive: warn(
         "Returns immediate-children files only at `rootFolderPath` - no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Graph's `@odata.nextLink` as the opaque cursor."
       ),
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": ok,
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: warn(
@@ -198,6 +237,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "list",
@@ -213,19 +253,26 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: warn(
         "Dropbox doesn't store user-supplied content types - `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: warn(
         "Netlify Blobs has no native size, content-type, or last-modified - the adapter packs them into Netlify's metadata at upload time and reads them back via `getMetadata`. Blobs written outside the SDK come back with `size: 0` and `type: 'application/octet-stream'` because the embedded fields are absent."
       ),
       onedrive: ok,
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": ok,
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
@@ -238,6 +285,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "head",
@@ -251,10 +299,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       b2: ok,
       box: ok,
       dropbox: ok,
+      exoscale: ok,
+      filebase: ok,
       fs: ok,
       gcs: ok,
       "google-drive": ok,
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: warn(
         "Read-then-write - Netlify Blobs has no server-side copy primitive, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected."
@@ -262,6 +314,8 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       onedrive: warn(
         "Async copy on Graph (`POST /items/{id}/copy` returns 202 + monitor URL). The adapter polls the monitor every 500 ms until status is `completed`/`failed`, capped by `copyTimeoutMs` (default 60_000). On timeout the call throws `Provider`; tune `copyTimeoutMs` for large files."
       ),
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": warn(
         "Read-then-write - Workers bindings have no native copy command, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected."
       ),
@@ -270,6 +324,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
         "Read-then-write - copy goes through the binding (no native copy command on Workers)."
       ),
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
@@ -282,6 +337,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       "vb-private": ok,
       "vb-public": ok,
+      vultr: ok,
       wasabi: ok,
     },
     method: "copy",
@@ -299,6 +355,8 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: warn(
         "Default mints a 4-hour temporary link via `filesGetTemporaryLink` - `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Dropbox links have no Content-Disposition override."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: warn(
         "Returns a `file://` URL by default - fine for CLIs and tests, not browsers. With `urlBaseUrl` set, returns `<urlBaseUrl>/<key>` so a dev server (Next.js `/public` mount, `serve-static`, etc.) can deliver the body. `responseContentDisposition` requires `urlBaseUrl` - `file://` has no signature mechanism in which to bind the override."
       ),
@@ -307,6 +365,8 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
         "Throws by default - Drive has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` grants `anyone, reader` and `url()` returns the permanent Drive download URL (`expiresIn` ignored). `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override."
       ),
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: no(
         "No URL primitive - Netlify Blobs has no public URL or signing endpoint; reads always go through the SDK with the token. Use `download()` instead, or proxy the body through your application."
@@ -314,12 +374,15 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       onedrive: warn(
         "Throws by default - Graph has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` calls `createLink` (anonymous-view scope) and `url()` returns the share link's `webUrl`. The link is permanent (`expiresIn` ignored) and `responseContentDisposition` always throws - Graph has no Content-Disposition override. Anonymous links are blocked on tenants where admins disable them."
       ),
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": no(
         "Throws unless `publicBaseUrl` is set on the adapter (an r2.dev subdomain or a custom domain). For a presigned URL from a Worker, switch to hybrid mode by also passing `accountId` + `accessKeyId` + `secretAccessKey`."
       ),
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: warn(
@@ -338,6 +401,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": warn(
         "Returns the permanent CDN URL. `expiresIn` is silently ignored (no signing primitive); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content."
       ),
+      vultr: ok,
       wasabi: ok,
     },
     method: "url",
@@ -355,6 +419,8 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       dropbox: no(
         "Throws - Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."
       ),
+      exoscale: ok,
+      filebase: ok,
       fs: warn(
         "Throws without `urlBaseUrl` - the fs adapter has no built-in upload server, so there's nothing to sign against. With `urlBaseUrl` set, returns a PUT URL with `?expires=`, `?content-type=`, and `?max-size=` query params for a dev upload-handler to validate. The fs adapter does not enforce the params itself."
       ),
@@ -363,6 +429,8 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
         "Initiates a Drive resumable session via `POST /upload/drive/v3/files?uploadType=resumable` and returns the session URL as a one-shot PUT. `maxSize` is forwarded as `X-Upload-Content-Length` but Drive does not enforce a server-side size cap - it's advisory. `minSize` is ignored. Throws when the adapter was constructed via the pre-built `client` escape hatch (no auth handle to mint access tokens)."
       ),
       hetzner: ok,
+      "ibm-cos": ok,
+      "idrive-e2": ok,
       minio: ok,
       nb: no(
         "No presigned upload primitive - Netlify Blobs writes go through the SDK with the token. Upload server-side via the SDK or proxy uploads through your application."
@@ -370,12 +438,15 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       onedrive: warn(
         "Initiates a Graph upload session via `POST /createUploadSession` and returns the session URL as a one-shot PUT (the session URL is pre-authenticated by Graph itself). `maxSize` and `minSize` are advisory - Graph does not enforce a server-side `content-length-range` policy on upload sessions; clients can still chunk via `Content-Range` to the same URL."
       ),
+      "oracle-cloud": ok,
+      ovhcloud: ok,
       "r2-binding": no(
         "Workers bindings can't sign uploads - the secret access key is not available to the runtime. Use hybrid mode (binding + HTTP credentials) to issue presigned upload URLs."
       ),
       "r2-http": ok,
       "r2-hybrid": ok,
       s3: ok,
+      scaleway: ok,
       spaces: ok,
       storj: ok,
       supabase: warn(
@@ -394,6 +465,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": no(
         "No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads."
       ),
+      vultr: ok,
       wasabi: ok,
     },
     method: "signedUploadUrl",
