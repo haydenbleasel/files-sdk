@@ -887,7 +887,9 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       return existsByProbe(async () => {
         await authHandle.ensureReady();
         const fileId = await resolveFileId(key);
-        await client.files.getFileById(fileId);
+        await client.files.getFileById(fileId, {
+          queryParams: { fields: ["id"] },
+        });
       }, mapBoxError);
     },
     async head(key) {

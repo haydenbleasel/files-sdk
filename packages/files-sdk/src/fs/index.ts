@@ -415,6 +415,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       }
     },
     exists(key) {
+      // stat resolves for both files and directories, matching head()'s
+      // permissive behavior. Tighten both together if file-only semantics
+      // are ever needed.
       const bodyPath = resolveKeyPath(root, key);
       return existsByProbe(() => fsp.stat(bodyPath), mapFsError);
     },
