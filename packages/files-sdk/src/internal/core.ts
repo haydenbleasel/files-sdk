@@ -269,3 +269,34 @@ export const existsByProbe = async (
     throw mapped;
   }
 };
+
+/**
+ * Drain a `ReadableStream<Uint8Array>` into a single concatenated `Uint8Array`.
+ * Used by adapters whose SDK lacks a streaming upload form and by
+ * {@link createStoredFile} when a stream body is read into a buffering
+ * accessor.
+ */
+export const collectStream = async (
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value) {
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+};

@@ -66,7 +66,9 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
   {
     cells: {
       akamai: ok,
-      appwrite: ok,
+      appwrite: warn(
+        "Stream bodies are buffered up-front - `InputFile.fromBuffer` has no streaming form, so streamed uploads can't avoid materializing the body in memory. User `metadata` and `cacheControl` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and has no override."
+      ),
       azure: ok,
       b2: ok,
       box: warn(

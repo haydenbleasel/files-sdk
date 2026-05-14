@@ -84,10 +84,15 @@ export const Appwrite = () => (
         read-then-write (no native server-side copy). File IDs (keys) must start
         with an alphanumeric and use only <code>[a-zA-Z0-9._-]</code>, max 36
         characters (no slashes) — invalid keys are rejected before the API call.{" "}
-        <code>UploadOptions</code> <code>contentType</code>,{" "}
-        <code>cacheControl</code>, and <code>metadata</code> are silently
-        dropped: Appwrite auto-detects mime from the payload and has no
-        equivalent fields on <code>createFile</code>.
+        <code>UploadOptions</code> <code>cacheControl</code> and{" "}
+        <code>metadata</code> throw — Appwrite&apos;s <code>createFile</code>{" "}
+        has no equivalent fields. <code>contentType</code> is silently ignored —
+        Appwrite auto-detects mime from the payload and exposes no override.{" "}
+        <code>list(&#123; prefix &#125;)</code> queries{" "}
+        <code>startsWith(&quot;$id&quot;, ...)</code> against the canonical file
+        ID; files created outside the adapter where the display{" "}
+        <code>name</code> differs from <code>$id</code> won&apos;t be matched by
+        prefix.
       </p>
     </div>
   </section>

@@ -580,7 +580,7 @@ describe("appwrite adapter", () => {
     expect(cursor).toBe("b");
   });
 
-  test("list > forwards prefix as startsWith(name) query", async () => {
+  test("list > forwards prefix as startsWith($id) query", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -589,9 +589,46 @@ describe("appwrite adapter", () => {
     expect(listFilesMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         bucketId: BUCKET,
-        queries: expect.arrayContaining(['startsWith("name", "user-123/")']),
+        queries: expect.arrayContaining(['startsWith("$id", "user-123/")']),
       })
     );
+  });
+
+  test("upload > rejects cacheControl with Provider error", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({
+      adapter: appwrite({ bucket: BUCKET }),
+    });
+    await expect(
+      files.upload("k", "data", { cacheControl: "max-age=60" })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("`cacheControl` is not supported"),
+    });
+    expect(createFileMock).not.toHaveBeenCalled();
+  });
+
+  test("upload > rejects non-empty metadata with Provider error", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({
+      adapter: appwrite({ bucket: BUCKET }),
+    });
+    await expect(
+      files.upload("k", "data", { metadata: { owner: "alice" } })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("`metadata` is not supported"),
+    });
+    expect(createFileMock).not.toHaveBeenCalled();
+  });
+
+  test("upload > accepts empty metadata object", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({
+      adapter: appwrite({ bucket: BUCKET }),
+    });
+    const result = await files.upload("k", "data", { metadata: {} });
+    expect(result.key).toBe("file-id-123");
   });
 
   test("upload > rejects invalid Appwrite key", async () => {
@@ -654,7 +691,7 @@ describe("appwrite adapter", () => {
         bucketId: BUCKET,
         queries: expect.arrayContaining([
           "limit(2)",
-          'startsWith("name", "user-123/")',
+          'startsWith("$id", "user-123/")',
           'cursorAfter("user-123/b")',
         ]),
       })

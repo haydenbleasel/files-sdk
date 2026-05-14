@@ -12,6 +12,7 @@ import type {
   UrlOptions,
 } from "../index.js";
 import {
+  collectStream,
   existsByProbe,
   makeErrorMapper,
   normalizeBody as coreNormalizeBody,
@@ -97,29 +98,6 @@ const assertAppwriteKey = (key: string, label = "key"): void => {
   }
 };
 
-const drainStream = async (
-  stream: ReadableStream<Uint8Array>
-): Promise<Uint8Array> => {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-    total += value.byteLength;
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-};
-
 const isSupportedBody = (body: unknown): body is Body =>
   typeof body === "string" ||
   body instanceof Uint8Array ||
@@ -139,7 +117,8 @@ const toInputFile = async (body: Body, filename: string): Promise<unknown> => {
     );
   }
   const { data } = await coreNormalizeBody(body);
-  const bytes = data instanceof ReadableStream ? await drainStream(data) : data;
+  const bytes =
+    data instanceof ReadableStream ? await collectStream(data) : data;
   return InputFile.fromBuffer(Buffer.from(bytes), filename);
 };
 
@@ -198,10 +177,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     storage = new Storage(client);
   }
 
-  // `contentType`, `cacheControl`, and `metadata` on UploadOptions are
-  // silently dropped — Appwrite's createFile auto-detects mime from the
-  // payload and exposes no equivalent for the other two. Documented on the
-  // adapter's limitations section.
+  // `contentType` is silently dropped — Appwrite's createFile auto-detects
+  // mime from the payload and has no override. `cacheControl` and
+  // `metadata` throw at upload time (Appwrite has no equivalent fields),
+  // matching the dropbox/box pattern instead of swallowing a caller's
+  // explicit intent. Documented on the adapter's limitations section.
   return {
     bucket: opts.bucket,
     copy: async (from: string, to: string) => {
@@ -290,7 +270,12 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         const queries: string[] = [Query.limit(limit)];
 
         if (listOpts?.prefix) {
-          queries.push(Query.startsWith("name", listOpts.prefix));
+          // Query on `$id` (the canonical key) rather than `name` (Appwrite's
+          // display filename). For SDK-controlled flows the two are equal —
+          // `upload()` sets both to the user-supplied key — but for files
+          // created via the console or REST they can diverge, and filtering
+          // on the field we don't return would leak unrelated results.
+          queries.push(Query.startsWith("$id", listOpts.prefix));
         }
         if (listOpts?.cursor) {
           queries.push(Query.cursorAfter(listOpts.cursor));
@@ -343,8 +328,20 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           "appwrite: signedUploadUrl is not supported. Appwrite has no presigned upload primitive — use a JWT or the client SDK for direct uploads."
         )
       ),
-    upload: async (key: string, body: Body, _uploadOpts?: UploadOptions) => {
+    upload: async (key: string, body: Body, uploadOpts?: UploadOptions) => {
       assertAppwriteKey(key);
+      if (uploadOpts?.cacheControl) {
+        throw new FilesError(
+          "Provider",
+          "appwrite: `cacheControl` is not supported. Appwrite does not expose HTTP cache headers on file content."
+        );
+      }
+      if (uploadOpts?.metadata && Object.keys(uploadOpts.metadata).length > 0) {
+        throw new FilesError(
+          "Provider",
+          "appwrite: `metadata` is not supported. Appwrite's `createFile` has no arbitrary-metadata field; drop to `raw` if you need to attach metadata via a separate API."
+        );
+      }
       try {
         const inputFile = await toInputFile(body, key);
 
