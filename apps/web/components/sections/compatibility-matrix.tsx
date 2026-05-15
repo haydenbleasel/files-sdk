@@ -23,20 +23,20 @@ const ok: Cell = { status: "ok" };
 const warn = (note: string): Cell => ({ note, status: "warn" });
 const no = (note: string): Cell => ({ note, status: "no" });
 
-const COLUMNS = [
+const ADAPTERS = [
   { key: "s3", label: "S3", parent: "S3" },
   { key: "r2-http", label: "HTTP", parent: "Cloudflare R2" },
   { key: "r2-binding", label: "binding", parent: "Cloudflare R2" },
   { key: "r2-hybrid", label: "hybrid", parent: "Cloudflare R2" },
   { key: "vb-public", label: "public", parent: "Vercel Blob" },
   { key: "vb-private", label: "private", parent: "Vercel Blob" },
-  { key: "nb", label: "Netlify", parent: "Netlify Blobs" },
+  { key: "nb", label: "Netlify Blobs", parent: "Netlify Blobs" },
   { key: "minio", label: "MinIO", parent: "MinIO" },
-  { key: "spaces", label: "Spaces", parent: "DigitalOcean" },
+  { key: "spaces", label: "DigitalOcean", parent: "DigitalOcean" },
   { key: "storj", label: "Storj", parent: "Storj" },
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
-  { key: "b2", label: "B2", parent: "Backblaze B2" },
+  { key: "b2", label: "Backblaze B2", parent: "Backblaze B2" },
   { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
   { key: "scaleway", label: "Scaleway", parent: "Scaleway" },
   { key: "ovhcloud", label: "OVHcloud", parent: "OVHcloud" },
@@ -44,11 +44,11 @@ const COLUMNS = [
   { key: "vultr", label: "Vultr", parent: "Vultr" },
   { key: "filebase", label: "Filebase", parent: "Filebase" },
   { key: "exoscale", label: "Exoscale", parent: "Exoscale" },
-  { key: "oracle-cloud", label: "Oracle", parent: "Oracle Cloud" },
+  { key: "oracle-cloud", label: "Oracle Cloud", parent: "Oracle Cloud" },
   { key: "ibm-cos", label: "IBM COS", parent: "IBM COS" },
   { key: "tigris", label: "Tigris", parent: "Tigris" },
   { key: "gcs", label: "GCS", parent: "GCS" },
-  { key: "google-drive", label: "Drive", parent: "Google Drive" },
+  { key: "google-drive", label: "Google Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
   { key: "dropbox", label: "Dropbox", parent: "Dropbox" },
   { key: "box", label: "Box", parent: "Box" },
@@ -56,13 +56,13 @@ const COLUMNS = [
   { key: "supabase", label: "Supabase", parent: "Supabase" },
   { key: "ut-public", label: "public", parent: "UploadThing" },
   { key: "ut-private", label: "private", parent: "UploadThing" },
-  { key: "fs", label: "fs", parent: "Filesystem" },
+  { key: "fs", label: "Filesystem", parent: "Filesystem" },
   { key: "appwrite", label: "Appwrite", parent: "Appwrite" },
 ] as const;
 
-type ColumnKey = (typeof COLUMNS)[number]["key"];
+type AdapterKey = (typeof ADAPTERS)[number]["key"];
 
-const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
+const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
   {
     cells: {
       akamai: ok,
@@ -569,22 +569,6 @@ const StatusIcon = ({ cell }: { cell: Cell }) => {
   );
 };
 
-// Header row: providers grouped above their configurations. Each parent
-// label spans only its own configurations so the visual grouping stays
-// truthful (S3 / MinIO / DigitalOcean span 1, R2 spans 3, Vercel Blob spans 2).
-const HEADER_GROUPS: { parent: string; span: number }[] = (() => {
-  const groups: { parent: string; span: number }[] = [];
-  for (const col of COLUMNS) {
-    const last = groups.at(-1);
-    if (last && last.parent === col.parent) {
-      last.span += 1;
-    } else {
-      groups.push({ parent: col.parent, span: 1 });
-    }
-  }
-  return groups;
-})();
-
 const Legend = ({
   icon: Icon,
   cls,
@@ -613,72 +597,45 @@ export const CompatibilityMatrix = () => (
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground" />
-              {HEADER_GROUPS.map((g, i) => (
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                Adapter
+              </th>
+              {ROWS.map((row) => (
                 <th
-                  className={cn(
-                    "px-2 py-2 text-center font-medium text-foreground",
-                    i < HEADER_GROUPS.length - 1 && "border-r border-dotted"
-                  )}
-                  colSpan={g.span}
-                  key={g.parent}
+                  className="px-2 py-2 text-center font-mono font-normal text-muted-foreground whitespace-nowrap"
+                  key={row.method}
                 >
-                  {g.parent}
+                  {row.method}
                 </th>
               ))}
             </tr>
-            <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground">
-                Method
-              </th>
-              {COLUMNS.map((col, i) => {
-                const next = COLUMNS[i + 1];
-                const endsGroup = !next || next.parent !== col.parent;
-                const sameAsParent = col.parent === col.label;
-                return (
-                  <th
-                    className={cn(
-                      "px-2 py-2 text-center font-normal text-muted-foreground whitespace-nowrap",
-                      endsGroup &&
-                        i < COLUMNS.length - 1 &&
-                        "border-r border-dotted"
-                    )}
-                    key={col.key}
-                  >
-                    {sameAsParent ? "" : col.label}
-                  </th>
-                );
-              })}
-            </tr>
           </thead>
           <tbody>
-            {ROWS.map((row) => (
-              <tr
-                className="border-b border-dotted last:border-b-0"
-                key={row.method}
-              >
-                <th className="sticky left-0 bg-background px-3 py-2 text-left font-mono font-normal whitespace-nowrap">
-                  {row.method}
-                </th>
-                {COLUMNS.map((col, i) => {
-                  const next = COLUMNS[i + 1];
-                  const endsGroup = !next || next.parent !== col.parent;
-                  return (
-                    <td
-                      className={cn(
-                        "px-2 py-2 text-center",
-                        endsGroup &&
-                          i < COLUMNS.length - 1 &&
-                          "border-r border-dotted"
-                      )}
-                      key={col.key}
-                    >
-                      <StatusIcon cell={row.cells[col.key]} />
+            {ADAPTERS.map((adapter) => {
+              const sameAsParent = adapter.parent === adapter.label;
+              return (
+                <tr
+                  className="border-b border-dotted last:border-b-0"
+                  key={adapter.key}
+                >
+                  <th className="px-3 py-2 text-left font-normal whitespace-nowrap align-top">
+                    <div className="font-medium text-foreground">
+                      {adapter.parent}
+                    </div>
+                    {!sameAsParent && (
+                      <div className="text-muted-foreground">
+                        {adapter.label}
+                      </div>
+                    )}
+                  </th>
+                  {ROWS.map((row) => (
+                    <td className="px-2 py-2 text-center" key={row.method}>
+                      <StatusIcon cell={row.cells[adapter.key]} />
                     </td>
-                  );
-                })}
-              </tr>
-            ))}
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
