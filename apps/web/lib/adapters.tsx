@@ -5,6 +5,7 @@ import { Appwrite } from "@/components/sections/adapters/appwrite";
 import { Azure } from "@/components/sections/adapters/azure";
 import { BackblazeB2 } from "@/components/sections/adapters/backblaze-b2";
 import { Box } from "@/components/sections/adapters/box";
+import { Cloudinary } from "@/components/sections/adapters/cloudinary";
 import { DigitalOceanSpaces } from "@/components/sections/adapters/digitalocean-spaces";
 import { Dropbox } from "@/components/sections/adapters/dropbox";
 import { Exoscale } from "@/components/sections/adapters/exoscale";
@@ -23,6 +24,7 @@ import { Ovhcloud } from "@/components/sections/adapters/ovhcloud";
 import { R2 } from "@/components/sections/adapters/r2";
 import { S3 } from "@/components/sections/adapters/s3";
 import { Scaleway } from "@/components/sections/adapters/scaleway";
+import { Sharepoint } from "@/components/sections/adapters/sharepoint";
 import { Storj } from "@/components/sections/adapters/storj";
 import { Supabase } from "@/components/sections/adapters/supabase";
 import { Tigris } from "@/components/sections/adapters/tigris";
@@ -287,6 +289,22 @@ export const ADAPTERS: Adapter[] = [
     name: "Appwrite",
     sections: [OPTIONS, LIMITATIONS],
     slug: "appwrite",
+  },
+  {
+    Component: Cloudinary,
+    description:
+      "Cloudinary asset CDN via the official Node SDK. Defaults to resource_type: raw for arbitrary-bytes storage; switch to image/video for transforms.",
+    name: "Cloudinary",
+    sections: [OPTIONS, LIMITATIONS],
+    slug: "cloudinary",
+  },
+  {
+    Component: Sharepoint,
+    description:
+      "SharePoint document libraries via Microsoft Graph. Resolves siteUrl and library names; delegates to the OneDrive adapter for the file operations.",
+    name: "SharePoint",
+    sections: [OPTIONS, LIMITATIONS],
+    slug: "sharepoint",
   },
 ];
 

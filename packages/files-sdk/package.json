@@ -157,6 +157,14 @@
     "./appwrite": {
       "types": "./dist/appwrite/index.d.ts",
       "import": "./dist/appwrite/index.js"
+    },
+    "./cloudinary": {
+      "types": "./dist/cloudinary/index.d.ts",
+      "import": "./dist/cloudinary/index.js"
+    },
+    "./sharepoint": {
+      "types": "./dist/sharepoint/index.d.ts",
+      "import": "./dist/sharepoint/index.js"
     }
   },
   "scripts": {
@@ -180,6 +188,7 @@
     "@supabase/storage-js": "^2.105.4",
     "@vercel/blob": "^2.3",
     "box-typescript-sdk-gen": "^1.19.1",
+    "cloudinary": "^2.10.0",
     "dropbox": "^10.34.0",
     "google-auth-library": "^9.15.1",
     "node-appwrite": "^24.1.0",

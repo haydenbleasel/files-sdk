@@ -38,6 +38,8 @@ export default defineConfig({
     "src/openai/index.ts",
     "src/claude/index.ts",
     "src/appwrite/index.ts",
+    "src/cloudinary/index.ts",
+    "src/sharepoint/index.ts",
   ],
   format: ["esm"],
   sourcemap: true,

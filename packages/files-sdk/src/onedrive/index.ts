@@ -459,7 +459,7 @@ const usesClientCredentialsAuth = (opts: OneDriveAdapterOptions): boolean => {
   return Boolean(envClientCredentials());
 };
 
-const buildAuthProvider = (
+export const buildAuthProvider = (
   opts: OneDriveAdapterOptions
 ): AuthenticationProvider | undefined => {
   if (opts.client) {
