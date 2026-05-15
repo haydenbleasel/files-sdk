@@ -30,13 +30,18 @@ import { Uploadthing } from "@/components/sections/adapters/uploadthing";
 import { VercelBlob } from "@/components/sections/adapters/vercel-blob";
 import { Vultr } from "@/components/sections/adapters/vultr";
 import { Wasabi } from "@/components/sections/adapters/wasabi";
+import type { TocSection } from "@/components/table-of-contents";
 
 export interface Adapter {
   slug: string;
   name: string;
   description: string;
   Component: ComponentType;
+  sections: TocSection[];
 }
+
+const OPTIONS: TocSection = { id: "options", label: "Options" };
+const LIMITATIONS: TocSection = { id: "limitations", label: "Limitations" };
 
 export const ADAPTERS: Adapter[] = [
   {
@@ -44,6 +49,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "AWS S3 (and any S3-compatible bucket). Uses the standard AWS credential chain - environment, IAM role, shared profile.",
     name: "S3",
+    sections: [OPTIONS],
     slug: "s3",
   },
   {
@@ -51,6 +57,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Cloudflare R2 over the S3-compatible HTTP API. Auto-loads R2_* env vars or accepts an R2Bucket binding inside Workers.",
     name: "Cloudflare R2",
+    sections: [{ id: "hybrid", label: "Hybrid: binding + HTTP" }],
     slug: "r2",
   },
   {
@@ -58,6 +65,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Vercel Blob. BLOB_READ_WRITE_TOKEN is auto-injected on Vercel; pass token manually for local dev or other hosts.",
     name: "Vercel Blob",
+    sections: [LIMITATIONS],
     slug: "vercel-blob",
   },
   {
@@ -65,6 +73,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Netlify Blobs via @netlify/blobs. Auto-detects siteID and token on Netlify runtimes; falls back to env vars elsewhere.",
     name: "Netlify Blobs",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "netlify-blobs",
   },
   {
@@ -72,6 +81,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled.",
     name: "MinIO",
+    sections: [OPTIONS],
     slug: "minio",
   },
   {
@@ -79,6 +89,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "DigitalOcean Spaces via the S3-compatible API. Endpoint derived from the region, virtual-hosted addressing.",
     name: "DigitalOcean Spaces",
+    sections: [OPTIONS],
     slug: "digitalocean-spaces",
   },
   {
@@ -86,6 +97,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Storj DCS via the S3-compatible Gateway. Defaults to the hosted Gateway MT, path-style addressing on.",
     name: "Storj",
+    sections: [OPTIONS],
     slug: "storj",
   },
   {
@@ -93,6 +105,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Hetzner Object Storage via the S3-compatible API. Endpoint derived from the location code (fsn1, nbg1, hel1).",
     name: "Hetzner Object Storage",
+    sections: [OPTIONS],
     slug: "hetzner",
   },
   {
@@ -100,6 +113,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Akamai Cloud Object Storage (formerly Linode) via the S3-compatible API. Endpoint derived from the region/cluster code.",
     name: "Akamai Cloud Object Storage",
+    sections: [OPTIONS],
     slug: "akamai",
   },
   {
@@ -107,6 +121,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Backblaze B2 via the S3-compatible API. Endpoint derived from the cluster code (us-west-002, us-east-005, eu-central-003, ...).",
     name: "Backblaze B2",
+    sections: [OPTIONS],
     slug: "backblaze-b2",
   },
   {
@@ -114,6 +129,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Wasabi Hot Cloud Storage via the S3-compatible API. AWS-style region names, Wasabi's own endpoints.",
     name: "Wasabi",
+    sections: [OPTIONS],
     slug: "wasabi",
   },
   {
@@ -121,6 +137,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Scaleway Object Storage via the S3-compatible API. Endpoint derived from the region code (fr-par, nl-ams, pl-waw).",
     name: "Scaleway Object Storage",
+    sections: [OPTIONS],
     slug: "scaleway",
   },
   {
@@ -128,6 +145,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "OVHcloud Object Storage (High Performance S3) via the S3-compatible API. Endpoint derived from the region code.",
     name: "OVHcloud Object Storage",
+    sections: [OPTIONS],
     slug: "ovhcloud",
   },
   {
@@ -135,6 +153,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "iDrive e2 via the S3-compatible API. Endpoint required (iDrive hostnames are tied to the cluster your bucket lives in).",
     name: "iDrive e2",
+    sections: [OPTIONS],
     slug: "idrive-e2",
   },
   {
@@ -142,6 +161,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Vultr Object Storage via the S3-compatible API. Endpoint derived from the region code (ewr, sjc, ams, blr, ...).",
     name: "Vultr Object Storage",
+    sections: [OPTIONS],
     slug: "vultr",
   },
   {
@@ -149,6 +169,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Filebase via the S3-compatible API. Fronts decentralized networks (IPFS, Sia, Storj) chosen per-bucket.",
     name: "Filebase",
+    sections: [OPTIONS],
     slug: "filebase",
   },
   {
@@ -156,6 +177,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Exoscale Object Storage (SOS) via the S3-compatible API. Endpoint derived from the zone code (ch-gva-2, de-fra-1, ...).",
     name: "Exoscale Object Storage",
+    sections: [OPTIONS],
     slug: "exoscale",
   },
   {
@@ -163,6 +185,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Oracle Cloud Infrastructure Object Storage via the S3 compatibility layer. Auth uses HMAC Customer Secret Keys, not regular API keys.",
     name: "Oracle Cloud Object Storage",
+    sections: [OPTIONS],
     slug: "oracle-cloud",
   },
   {
@@ -170,6 +193,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "IBM Cloud Object Storage via the S3-compatible API. Auth uses IBM Cloud HMAC credentials, not IAM API keys.",
     name: "IBM Cloud Object Storage",
+    sections: [OPTIONS],
     slug: "ibm-cos",
   },
   {
@@ -177,6 +201,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Tigris globally-distributed object storage via the S3-compatible API. Fixed global endpoint, region defaults to auto.",
     name: "Tigris",
+    sections: [OPTIONS],
     slug: "tigris",
   },
   {
@@ -184,6 +209,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Google Cloud Storage via the official @google-cloud/storage SDK. Application Default Credentials by default.",
     name: "Google Cloud Storage",
+    sections: [OPTIONS],
     slug: "gcs",
   },
   {
@@ -191,6 +217,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Google Drive via the official Drive v3 client. Maps unified string keys onto Drive's appProperties with a per-instance LRU cache.",
     name: "Google Drive",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "google-drive",
   },
   {
@@ -198,6 +225,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "OneDrive and SharePoint document libraries via Microsoft Graph. Path-addressable, no virtual-key bookkeeping.",
     name: "OneDrive",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "onedrive",
   },
   {
@@ -205,6 +233,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Dropbox via the official SDK. Path-addressable, virtual keys map directly to Dropbox paths - no cache.",
     name: "Dropbox",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "dropbox",
   },
   {
@@ -212,6 +241,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Box via the official typed SDK. Translates virtual keys into nested folders under a configurable rootFolderId.",
     name: "Box",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "box",
   },
   {
@@ -219,6 +249,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Azure Blob Storage via @azure/storage-blob. Four credential modes - connection string, account key, SAS token, or anonymous.",
     name: "Azure Blob Storage",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "azure",
   },
   {
@@ -226,6 +257,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Supabase Storage via @supabase/storage-js. Pass an existing SupabaseClient to share auth/postgrest with the rest of your app.",
     name: "Supabase Storage",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "supabase",
   },
   {
@@ -233,6 +265,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "UploadThing via uploadthing/server. Maps user-supplied keys onto UploadThing's customId.",
     name: "UploadThing",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "uploadthing",
   },
   {
@@ -240,6 +273,11 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Local filesystem - the dev/test adapter. Uses node:fs/promises with a sidecar .meta.json per file. Not for production.",
     name: "Filesystem",
+    sections: [
+      OPTIONS,
+      { id: "storage-layout", label: "Storage layout" },
+      LIMITATIONS,
+    ],
     slug: "fs",
   },
   {
@@ -247,6 +285,7 @@ export const ADAPTERS: Adapter[] = [
     description:
       "Appwrite Storage via the official Node.js SDK. Auto-loads configuration from environment variables.",
     name: "Appwrite",
+    sections: [OPTIONS, LIMITATIONS],
     slug: "appwrite",
   },
 ];
