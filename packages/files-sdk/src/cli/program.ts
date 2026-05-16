@@ -41,6 +41,20 @@ const collect = (value: string, prev: string[] | undefined): string[] => {
   return arr;
 };
 
+// Pulled out so the missing-optional-dep branch is unit-testable without
+// having to make `await import("./mcp.js")` reject — Bun's `mock.module`
+// factory can't cleanly model a rejecting dynamic import across test files.
+export const rewrapMcpLoadError = (loadError: unknown): Error => {
+  const { code } = (loadError ?? {}) as NodeJS.ErrnoException;
+  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+    return new Error(
+      "the `mcp` subcommand requires `@modelcontextprotocol/sdk` — install it with `npm install @modelcontextprotocol/sdk`",
+      { cause: loadError }
+    );
+  }
+  return loadError as Error;
+};
+
 // commander has no first-class "groups" — labels are achieved by tagging each
 // flag's description with a bracketed prefix so `--help` sorts visually.
 const G = {
@@ -424,14 +438,7 @@ export const buildProgram = (): Command => {
         try {
           mcp = await import("./mcp.js");
         } catch (loadError) {
-          const { code } = loadError as NodeJS.ErrnoException;
-          if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-            throw new Error(
-              "the `mcp` subcommand requires `@modelcontextprotocol/sdk` — install it with `npm install @modelcontextprotocol/sdk`",
-              { cause: loadError }
-            );
-          }
-          throw loadError;
+          throw rewrapMcpLoadError(loadError);
         }
         await mcp.startMcpServer({ global });
       } catch (error) {
