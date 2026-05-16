@@ -101,15 +101,34 @@ const bytesFromStream = async (
 const keyFromStorageFile = (
   entry: BunnyStorageSDK.file.StorageFile
 ): string => {
-  const path = fromBunnyPath(entry.path);
+  // Bunny's `Path` is the file's containing directory and always starts
+  // with `/<StorageZoneName>/`; `ObjectName` carries the file name on its
+  // own. Strip the leading slash and the zone segment so the returned key
+  // is relative to the zone root, then join with the object name. Empty
+  // directory means the entry lives at the zone root.
   const name = fromBunnyPath(entry.objectName);
-  if (!path) {
+  let directory = fromBunnyPath(entry.path);
+  const zone = entry.storageZoneName;
+  if (zone) {
+    if (directory === zone) {
+      directory = "";
+    } else if (directory.startsWith(`${zone}/`)) {
+      directory = directory.slice(zone.length + 1);
+    }
+  }
+  directory = directory.replace(/\/+$/u, "");
+  if (!directory) {
     return name;
   }
-  if (!name || path.endsWith(name)) {
-    return path;
+  if (!name) {
+    return directory;
   }
-  return `${path.replace(/\/+$/u, "")}/${name}`;
+  // Defensive: if a Bunny endpoint ever returns Path as `/zone/dir/file`
+  // instead of `/zone/dir/`, don't append ObjectName a second time.
+  if (directory === name || directory.endsWith(`/${name}`)) {
+    return directory;
+  }
+  return `${directory}/${name}`;
 };
 
 const toStoredFile = (

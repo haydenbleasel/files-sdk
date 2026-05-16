@@ -25,15 +25,21 @@ const nextChecksum = () => {
   return `checksum-${checksumCounter}`;
 };
 
+const MOCK_ZONE = "uploads";
+
 const makeStorageFile = (
   key: string,
   entry: StoredEntry,
   isDirectory = false
 ) => {
-  const normalizedKey = isDirectory ? key.replace(/\/+$/u, "") : key;
-  const idx = normalizedKey.lastIndexOf("/");
-  const objectName = idx === -1 ? normalizedKey : normalizedKey.slice(idx + 1);
-  const path = isDirectory ? `/${normalizedKey}/` : `/${normalizedKey}`;
+  // Mirror real Bunny semantics:
+  //   Path        = "/<StorageZoneName>/<parent-dir>/"   (always trailing /)
+  //   ObjectName  = "<filename>" or "<dirname>"           (no slashes)
+  const trimmed = key.replace(/\/+$/u, "");
+  const lastSlash = trimmed.lastIndexOf("/");
+  const objectName = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
+  const parentDir = lastSlash === -1 ? "" : trimmed.slice(0, lastSlash);
+  const path = parentDir ? `/${MOCK_ZONE}/${parentDir}/` : `/${MOCK_ZONE}/`;
   return {
     _tag: "StorageFile" as const,
     checksum: entry.checksum,
@@ -59,7 +65,7 @@ const makeStorageFile = (
     replicatedZones: null,
     serverId: 1,
     storageZoneId: 1,
-    storageZoneName: "uploads",
+    storageZoneName: MOCK_ZONE,
     userId: "user-1",
   };
 };
@@ -775,25 +781,44 @@ describe("bunnyStorage adapter", () => {
     }
   });
 
-  test("list reassembles path + objectName when Bunny returns them split", async () => {
-    // Bunny's real listing API returns `Path: "/uploads/docs/"` (directory)
-    // plus `ObjectName: "file.txt"` on each entry. `keyFromStorageFile`
-    // joins them with a slash when `path` doesn't already end with `name`.
+  test("list strips the storage-zone prefix from Bunny's Path field", async () => {
+    // Bunny's real listing API returns each entry with `Path: "/<zone>/<dir>/"`
+    // (zone-prefixed, trailing slash) and `ObjectName: "file.txt"`. The
+    // adapter strips the zone segment so the key returned to callers is
+    // relative to the storage zone.
     const realList = listMock.getMockImplementation();
     listMock.mockImplementation(() =>
       Promise.resolve([
         {
           _tag: "StorageFile" as const,
-          checksum: "etag-split",
+          checksum: "etag-nested",
           contentType: "text/plain",
           data: () => Promise.reject(new Error("body not exercised")),
           dateCreated: new Date("2024-01-01T00:00:00.000Z"),
-          guid: "g",
+          guid: "g1",
           isDirectory: false,
           lastChanged: new Date("2024-01-01T00:00:00.000Z"),
           length: 4,
           objectName: "file.txt",
           path: "/uploads/docs/",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+        {
+          _tag: "StorageFile" as const,
+          checksum: "etag-root",
+          contentType: "text/plain",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g2",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 2,
+          objectName: "root.txt",
+          path: "/uploads/",
           replicatedZones: null,
           serverId: 1,
           storageZoneId: 1,
@@ -810,8 +835,136 @@ describe("bunnyStorage adapter", () => {
       });
       const result = await adapter.list();
       expect(result.items.map((item) => item.key)).toEqual([
-        "uploads/docs/file.txt",
+        "docs/file.txt",
+        "root.txt",
       ]);
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
+  });
+
+  test("keyFromStorageFile clears the directory when Path equals the zone with no trailing slash", async () => {
+    // Defensive: real Bunny always returns `Path: "/<zone>/"` with a
+    // trailing slash, but if it ever omitted the slash we should still
+    // treat the entry as living at the zone root.
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.resolve([
+        {
+          _tag: "StorageFile" as const,
+          checksum: "etag-zone-no-slash",
+          contentType: "text/plain",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g4",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 2,
+          objectName: "loose.txt",
+          path: "/uploads",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+      ])
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const result = await adapter.list();
+      expect(result.items.map((item) => item.key)).toEqual(["loose.txt"]);
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
+  });
+
+  test("keyFromStorageFile returns the directory when ObjectName is missing", async () => {
+    // Defensive: if Bunny ever returned an entry with an empty
+    // `ObjectName` (e.g. a directory marker), fall back to the directory
+    // portion of the key rather than producing an empty string.
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.resolve([
+        {
+          _tag: "StorageFile" as const,
+          checksum: null,
+          contentType: "",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g5",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 0,
+          objectName: "",
+          path: "/uploads/docs/",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+      ])
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const result = await adapter.list();
+      expect(result.items.map((item) => item.key)).toEqual(["docs"]);
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
+  });
+
+  test("keyFromStorageFile tolerates a Path that already contains the object name", async () => {
+    // Defensive coverage for the `directory.endsWith('/' + name)` branch:
+    // if a Bunny endpoint ever returns `Path` as `/<zone>/<dir>/<name>`
+    // (i.e. the full key) the adapter must not duplicate `ObjectName` on
+    // the end.
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.resolve([
+        {
+          _tag: "StorageFile" as const,
+          checksum: "etag-fullpath",
+          contentType: "text/plain",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g3",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 4,
+          objectName: "file.txt",
+          path: "/uploads/docs/file.txt",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+      ])
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const result = await adapter.list();
+      expect(result.items.map((item) => item.key)).toEqual(["docs/file.txt"]);
     } finally {
       if (realList) {
         listMock.mockImplementation(realList);
