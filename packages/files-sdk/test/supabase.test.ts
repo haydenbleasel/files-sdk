@@ -481,6 +481,18 @@ describe("supabase adapter", () => {
       removeMock.mockImplementationOnce(() => Promise.resolve(ok([])));
       await expect(makeAdapter().delete("nope.txt")).resolves.toBeUndefined();
     });
+
+    test("deleteMany delegates to remove(keys)", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      const result = await files.deleteMany(["a.txt", "b.txt"]);
+      expect(result).toEqual({ delete: ["a.txt", "b.txt"] });
+      expect(removeMock).toHaveBeenCalledTimes(1);
+      const [removeCall] = removeMock.mock.calls;
+      if (!removeCall) {
+        throw new Error("expected remove");
+      }
+      expect(removeCall[0]).toEqual(["a.txt", "b.txt"]);
+    });
   });
 
   describe("copy", () => {
