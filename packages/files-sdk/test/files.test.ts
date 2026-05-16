@@ -135,6 +135,47 @@ describe("Files class", () => {
     expect(items.map((i) => i.key).toSorted()).toEqual(["a/1.txt", "a/2.txt"]);
   });
 
+  test("constructor prefix is prepended to key operations", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "/users" });
+
+    const uploaded = await files.upload("/123", "avatar");
+    expect(uploaded.key).toBe("/users/123");
+    expect(adapter.has("/users/123")).toBe(true);
+
+    const head = await files.head("/123");
+    expect(head.key).toBe("/users/123");
+    expect(await files.exists("123")).toBe(true);
+
+    const downloaded = await files.download("123");
+    expect(await downloaded.text()).toBe("avatar");
+
+    await files.copy("123", "/456");
+    expect(adapter.has("/users/456")).toBe(true);
+
+    const url = await files.url("/123", { expiresIn: 60 });
+    expect(url).toContain(encodeURIComponent("/users/123"));
+
+    const signed = await files.signedUploadUrl("789", { expiresIn: 60 });
+    expect(signed.url).toContain(encodeURIComponent("/users/789"));
+
+    await files.delete("/123");
+    expect(adapter.has("/users/123")).toBe(false);
+  });
+
+  test("constructor prefix is prepended to file handles and list prefix", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "/users" });
+    const avatar = files.file("/avatars/1.png");
+
+    expect(avatar.key).toBe("/avatars/1.png");
+    await avatar.upload("one");
+    await files.upload("/docs/1.txt", "doc");
+
+    const { items } = await files.list({ prefix: "/avatars" });
+    expect(items.map((item) => item.key)).toEqual(["/users/avatars/1.png"]);
+  });
+
   test("error normalization wraps adapter errors as FilesError with code", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     try {

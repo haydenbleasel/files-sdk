@@ -25,6 +25,19 @@ const exists = await files.exists("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
+## Prefixing keys
+
+Pass `prefix` when every operation should live under the same path:
+
+```ts
+const users = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  prefix: "/users",
+});
+
+await users.head("/123"); // reads /users/123
+```
+
 ## File handles
 
 Use `files.file(key)` when your application code works with the same object repeatedly:
