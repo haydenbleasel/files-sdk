@@ -28,6 +28,7 @@ const navItems = [
   { href: "/", label: "Home" },
   { href: "/adapters", label: "Adapters" },
   { href: "/ai", label: "AI" },
+  { href: "/cli", label: "CLI" },
   { href: "/api", label: "API" },
   { href: "/updates", label: "Updates" },
 ];

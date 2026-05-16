@@ -623,6 +623,24 @@ describe("azure adapter", () => {
         code: "Unauthorized",
       });
     });
+
+    test("swallows a NotFound *thrown* by blobClient.exists()", async () => {
+      // Happy path returns true/false; the SDK can also throw a 404 in some
+      // configurations — the adapter should still report `false`.
+      existsMock.mockImplementationOnce(() =>
+        Promise.reject(
+          Object.assign(new Error("BlobNotFound"), { statusCode: 404 })
+        )
+      );
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
   });
 
   describe("delete", () => {

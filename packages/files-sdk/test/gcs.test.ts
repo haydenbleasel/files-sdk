@@ -312,6 +312,16 @@ describe("gcs adapter", () => {
     });
   });
 
+  test("exists swallows a NotFound *thrown* by file().exists()", async () => {
+    // The SDK's exists() normally returns [false] for misses, but it can
+    // throw a 404 in some configurations — adapter must still report `false`.
+    existsMock.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("not found"), { code: 404 }))
+    );
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
   test("delete delegates to file.delete()", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     await files.delete("a.txt");

@@ -811,6 +811,26 @@ describe("dropbox adapter", () => {
     expect((err as FilesError).message).toMatch(/not a file.*tag=deleted/u);
   });
 
+  test("exists returns false when filesGetMetadata reports a folder", async () => {
+    // exists() has its own copy of the folder/deleted guard (it can't reuse
+    // head() because the probe wrapper expects NotFound, not a value).
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    filesGetMetadataMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({ ".tag": "folder", id: "folder-id", name: "subdir" })
+      )) as never);
+    await expect(files.exists("subdir")).resolves.toBe(false);
+  });
+
+  test("exists returns false when filesGetMetadata reports a deleted entry", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    filesGetMetadataMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({ ".tag": "deleted", name: "gone.txt" })
+      )) as never);
+    await expect(files.exists("gone.txt")).resolves.toBe(false);
+  });
+
   test("delete throws non-NotFound errors instead of swallowing them", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     filesDeleteV2Mock.mockImplementationOnce(() =>
@@ -968,6 +988,26 @@ describe("dropbox adapter", () => {
     );
     const err = await files.url("a.txt").catch((error: unknown) => error);
     expect((err as FilesError).code).toBe("Unauthorized");
+  });
+
+  test("publicByDefault rethrows shared_link_already_exists when no existing URL is embedded", async () => {
+    // The "already exists" recovery only fires when the embedded metadata
+    // actually carries a usable url — empty/missing url falls through to
+    // the outer throw rather than synthesizing a bogus link.
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          ".tag": "shared_link_already_exists",
+          shared_link_already_exists: { metadata: { url: "" } },
+        })
+      )
+    );
+    const err = await files.url("a.txt").catch((error: unknown) => error);
+    expect((err as FilesError).code).toBe("Conflict");
   });
 
   test("list filters out the root folder entry when its path equals rootFolderPath", async () => {

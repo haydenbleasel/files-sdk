@@ -17,9 +17,6 @@ const files = new Files({
 
 export const Hetzner = () => (
   <section>
-    <Heading as="h2" id="adapter-hetzner">
-      Hetzner Object Storage
-    </Heading>
     <p>
       Hetzner Object Storage via its S3-compatible API. A thin wrapper around
       the S3 adapter - endpoint derived from the location code (
@@ -30,8 +27,8 @@ export const Hetzner = () => (
       Cloud Console under Object Storage → Credentials.
     </p>
     <CodeBlock code={HETZNER_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-hetzner-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -103,6 +100,6 @@ export const Hetzner = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

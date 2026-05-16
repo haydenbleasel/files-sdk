@@ -21,9 +21,6 @@ const files = new Files({
 
 export const Fs = () => (
   <section>
-    <Heading as="h2" id="adapter-fs">
-      Filesystem
-    </Heading>
     <p>
       Local filesystem. The dev/test adapter - point it at a directory and it
       implements the same <code>Adapter</code> contract as the cloud adapters
@@ -33,8 +30,8 @@ export const Fs = () => (
       replication, no signing, no auth.
     </p>
     <CodeBlock code={FS_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-fs-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -74,9 +71,9 @@ export const Fs = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-fs-storage-layout">
+    </section>
+    <section>
+      <Heading as="h2" id="storage-layout">
         Storage layout
       </Heading>
       <p>
@@ -86,9 +83,9 @@ export const Fs = () => (
         <code>list()</code> hides them. ETag is a SHA-1-derived stable hash
         computed at upload time.
       </p>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-fs-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -100,6 +97,6 @@ export const Fs = () => (
         readable - <code>contentType</code> falls back to{" "}
         <code>application/octet-stream</code> and <code>etag</code> is absent.
       </p>
-    </div>
+    </section>
   </section>
 );

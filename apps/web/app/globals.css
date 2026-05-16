@@ -194,6 +194,13 @@
   :not(pre) > code {
     @apply px-1 rounded-sm bg-muted font-mono text-foreground;
     overflow-wrap: anywhere;
+    /* Geist Mono's contextual alternates collapse `--` against adjacent
+       text (and across DOM boundaries with Shiki). See code-block.tsx for
+       the matching reset on syntax-highlighted blocks. */
+    font-feature-settings:
+      "liga" 0,
+      "calt" 0;
+    font-variant-ligatures: none;
   }
 }
 

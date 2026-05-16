@@ -1,6 +1,6 @@
 {
   "name": "files-sdk",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Unified storage SDK for object/blob backends.",
   "homepage": "https://github.com/haydenbleasel/files-sdk#readme",
   "bugs": {
@@ -12,6 +12,9 @@
     "type": "git",
     "url": "git+https://github.com/haydenbleasel/files-sdk.git",
     "directory": "packages/files-sdk"
+  },
+  "bin": {
+    "files": "./dist/cli/index.js"
   },
   "files": [
     "dist"
@@ -110,6 +113,18 @@
       "types": "./dist/tigris/index.d.ts",
       "import": "./dist/tigris/index.js"
     },
+    "./tencent": {
+      "types": "./dist/tencent/index.d.ts",
+      "import": "./dist/tencent/index.js"
+    },
+    "./alibaba": {
+      "types": "./dist/alibaba/index.d.ts",
+      "import": "./dist/alibaba/index.js"
+    },
+    "./yandex": {
+      "types": "./dist/yandex/index.d.ts",
+      "import": "./dist/yandex/index.js"
+    },
     "./gcs": {
       "types": "./dist/gcs/index.d.ts",
       "import": "./dist/gcs/index.js"
@@ -161,6 +176,14 @@
     "./appwrite": {
       "types": "./dist/appwrite/index.d.ts",
       "import": "./dist/appwrite/index.js"
+    },
+    "./cloudinary": {
+      "types": "./dist/cloudinary/index.d.ts",
+      "import": "./dist/cloudinary/index.js"
+    },
+    "./sharepoint": {
+      "types": "./dist/sharepoint/index.d.ts",
+      "import": "./dist/sharepoint/index.js"
     }
   },
   "scripts": {
@@ -184,6 +207,8 @@
     "@supabase/storage-js": "^2.105.4",
     "@vercel/blob": "^2.3",
     "box-typescript-sdk-gen": "^1.19.1",
+    "cloudinary": "^2.10.0",
+    "commander": "^12.1.0",
     "dropbox": "^10.34.0",
     "google-auth-library": "^9.15.1",
     "node-appwrite": "^24.1.0",
@@ -227,5 +252,8 @@
     "zod": {
       "optional": true
     }
+  },
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
   }
 }

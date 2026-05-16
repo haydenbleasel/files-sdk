@@ -23,9 +23,6 @@ const files = new Files({
 
 export const Dropbox = () => (
   <section>
-    <Heading as="h2" id="adapter-dropbox">
-      Dropbox
-    </Heading>
     <p>
       Dropbox via the official <code>dropbox</code> SDK. Path-addressable like
       OneDrive (<code>/folder/file.txt</code>), so virtual keys map directly to
@@ -35,8 +32,8 @@ export const Dropbox = () => (
       and team-space deployments.
     </p>
     <CodeBlock code={DROPBOX_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-dropbox-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -141,9 +138,9 @@ export const Dropbox = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-dropbox-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -168,6 +165,6 @@ export const Dropbox = () => (
         rather than streaming through the SDK, since <code>filesDownload</code>{" "}
         buffers the full body.
       </p>
-    </div>
+    </section>
   </section>
 );

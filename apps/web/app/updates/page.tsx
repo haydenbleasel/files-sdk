@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 
 import { FadeIn } from "@/components/fade-in";
-import { MobileTableOfContents } from "@/components/mobile-table-of-contents";
-import { Changelog } from "@/components/sections/changelog";
 import { PageHero } from "@/components/sections/page-hero";
-import { getChangelog } from "@/lib/changelog";
+import { UpdatesIndex } from "@/components/sections/updates-index";
+import { getChangelog, getReleaseSummary } from "@/lib/changelog";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/updates" },
@@ -15,11 +14,7 @@ export const metadata: Metadata = {
 };
 
 const UpdatesPage = () => {
-  const releases = getChangelog();
-  const mobileSections = releases.map((release) => ({
-    id: release.slug,
-    label: `v${release.version}`,
-  }));
+  const releases = getChangelog().map(getReleaseSummary);
 
   return (
     <>
@@ -27,11 +22,8 @@ const UpdatesPage = () => {
         title="Updates"
         description="What shipped in each release of files-sdk. Pulled and parsed straight from the package CHANGELOG.md, so this page is whatever the registry has."
       />
-      <FadeIn className="lg:hidden">
-        <MobileTableOfContents sections={mobileSections} />
-      </FadeIn>
       <FadeIn>
-        <Changelog />
+        <UpdatesIndex releases={releases} />
       </FadeIn>
     </>
   );

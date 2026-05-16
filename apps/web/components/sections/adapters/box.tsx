@@ -30,9 +30,6 @@ const files = new Files({
 
 export const Box = () => (
   <section>
-    <Heading as="h2" id="adapter-box">
-      Box
-    </Heading>
     <p>
       Box via the official <code>box-typescript-sdk-gen</code> SDK. Box files
       live by ID, not by path, so the adapter walks <code>rootFolderId</code>{" "}
@@ -44,8 +41,8 @@ export const Box = () => (
       <code>Authentication</code> classes.
     </p>
     <CodeBlock code={BOX_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-box-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -153,9 +150,9 @@ export const Box = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-box-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -181,6 +178,6 @@ export const Box = () => (
         user-supplied content types on file content, so <code>head()</code> and{" "}
         <code>list()</code> return a type inferred from the filename extension.
       </p>
-    </div>
+    </section>
   </section>
 );

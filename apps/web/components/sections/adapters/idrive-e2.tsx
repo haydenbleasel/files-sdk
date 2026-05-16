@@ -17,9 +17,6 @@ const files = new Files({
 
 export const IdriveE2 = () => (
   <section>
-    <Heading as="h2" id="adapter-idrive-e2">
-      iDrive e2
-    </Heading>
     <p>
       iDrive e2 via its S3-compatible API. A thin wrapper around the S3 adapter
       with iDrive-friendly defaults - endpoint is required (iDrive e2 hostnames
@@ -30,8 +27,8 @@ export const IdriveE2 = () => (
       iDrive e2 dashboard under Access Keys.
     </p>
     <CodeBlock code={IDRIVE_E2_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-idrive-e2-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -103,6 +100,6 @@ export const IdriveE2 = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

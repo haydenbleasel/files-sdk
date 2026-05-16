@@ -9,9 +9,6 @@ const files = new Files({ adapter: vercelBlob() });`;
 
 export const VercelBlob = () => (
   <section>
-    <Heading as="h2" id="adapter-vercel-blob">
-      Vercel Blob
-    </Heading>
     <p>
       Vercel Blob. The <code>BLOB_READ_WRITE_TOKEN</code> is auto-injected when
       deployed on Vercel; pass <code>token</code> manually for local dev or
@@ -33,8 +30,8 @@ export const VercelBlob = () => (
       public URL fetch - there is no permanent public URL for private blobs, so{" "}
       <code>url()</code> throws. Need both? Use two adapters.
     </p>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-vercel-blob-limitations">
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -49,6 +46,6 @@ export const VercelBlob = () => (
         supported by the underlying API, so it round-trips as{" "}
         <code>undefined</code>.
       </p>
-    </div>
+    </section>
   </section>
 );

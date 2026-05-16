@@ -28,9 +28,6 @@ const files = new Files({
 
 export const R2 = () => (
   <section>
-    <Heading as="h2" id="adapter-r2">
-      Cloudflare R2
-    </Heading>
     <p>
       Cloudflare R2 over the S3-compatible HTTP API. Auto-loads from{" "}
       <code>R2_ACCOUNT_ID</code>, <code>R2_ACCESS_KEY_ID</code>,{" "}
@@ -43,7 +40,7 @@ export const R2 = () => (
       custom domain bound to the bucket. When set, <code>url()</code> returns{" "}
       <code>{`\`\${publicBaseUrl}/\${key}\``}</code> and skips signing.
     </p>
-    <Heading as="h3" id="adapter-r2-hybrid">
+    <Heading as="h2" id="hybrid">
       Hybrid: binding + HTTP credentials
     </Heading>
     <p>

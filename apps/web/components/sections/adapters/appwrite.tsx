@@ -20,16 +20,13 @@ const files = new Files({
 
 export const Appwrite = () => (
   <section>
-    <Heading as="h2" id="adapter-appwrite">
-      Appwrite
-    </Heading>
     <p>
       Appwrite Storage. Uses the official Node.js SDK under the hood. Supports
       auto-loading configuration from environment variables.
     </p>
     <CodeBlock code={APPWRITE_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-appwrite-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -71,9 +68,9 @@ export const Appwrite = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-appwrite-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -94,6 +91,6 @@ export const Appwrite = () => (
         <code>name</code> differs from <code>$id</code> won&apos;t be matched by
         prefix.
       </p>
-    </div>
+    </section>
   </section>
 );

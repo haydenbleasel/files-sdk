@@ -1,0 +1,527 @@
+import { Buffer } from "node:buffer";
+
+import { v2 as cloudinary } from "cloudinary";
+import type { UploadApiOptions, UploadApiResponse } from "cloudinary";
+
+import type {
+  Adapter,
+  Body,
+  ListOptions,
+  ListResult,
+  SignUploadOptions,
+  SignedUpload,
+  StoredFile,
+  UploadOptions,
+  UploadResult,
+  UrlOptions,
+} from "../index.js";
+import {
+  collectStream,
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  makeErrorMapper,
+  normalizeBody,
+} from "../internal/core.js";
+import { readEnv } from "../internal/env.js";
+import { FilesError } from "../internal/errors.js";
+import { createStoredFile } from "../internal/stored-file.js";
+
+export type CloudinaryResourceType = "image" | "video" | "raw";
+export type CloudinaryDeliveryType = "upload" | "private" | "authenticated";
+
+export interface CloudinaryAdapterOptions {
+  /**
+   * Cloudinary cloud name. Falls back to `CLOUDINARY_CLOUD_NAME` or to the
+   * `cloud_name` parsed out of `CLOUDINARY_URL`.
+   */
+  cloudName?: string;
+  /**
+   * Cloudinary API key. Falls back to `CLOUDINARY_API_KEY` or the value parsed
+   * out of `CLOUDINARY_URL`.
+   */
+  apiKey?: string;
+  /**
+   * Cloudinary API secret. Falls back to `CLOUDINARY_API_SECRET` or the value
+   * parsed out of `CLOUDINARY_URL`. Required for `signedUploadUrl()` and for
+   * private/authenticated `url()` signing.
+   */
+  apiSecret?: string;
+  /**
+   * Cloudinary resource_type bucket. Defaults to `"raw"` — the closest match
+   * to S3-style "arbitrary bytes" storage. Switch to `"image"`/`"video"` if
+   * the bucket holds those types and you want transforms.
+   */
+  resourceType?: CloudinaryResourceType;
+  /**
+   * Delivery type. Defaults to `"upload"` (public CDN). Use `"private"` or
+   * `"authenticated"` for access-controlled assets — `url()` then mints
+   * short-lived signed URLs.
+   */
+  type?: CloudinaryDeliveryType;
+  /**
+   * Pre-configured `cloudinary.v2` namespace — escape hatch for callers that
+   * have already called `cloudinary.config()` themselves and want the adapter
+   * to skip its own configuration. When passed, `cloudName`/`apiKey`/
+   * `apiSecret` are ignored for SDK calls but still needed for
+   * `signedUploadUrl()` (the adapter computes the signature locally).
+   */
+  client?: typeof cloudinary;
+  /**
+   * Serve assets over HTTPS. Defaults to `true`.
+   */
+  secure?: boolean;
+  /**
+   * Default expiry, in seconds, for signed URLs returned by `url()` on
+   * private/authenticated assets. Per-call `opts.expiresIn` overrides.
+   * Defaults to 3600.
+   */
+  signedUrlExpiresIn?: number;
+}
+
+export type CloudinaryAdapter = Adapter<typeof cloudinary> & {
+  readonly resourceType: CloudinaryResourceType;
+  readonly type: CloudinaryDeliveryType;
+  readonly cloudName: string;
+};
+
+const DEFAULT_LIST_LIMIT = 100;
+const MAX_LIST_LIMIT = 500;
+const CLOUDINARY_API_ROOT = "https://api.cloudinary.com/v1_1";
+
+const EMPTY_CODES: ReadonlySet<string> = new Set();
+
+// Cloudinary errors come in two shapes: the SDK throws an Error with
+// `error.http_code` for admin/api calls, and `http_code` for upload errors.
+// Both are classified purely by HTTP status; provider code strings are
+// inconsistent enough that we don't bother matching on them.
+export const mapCloudinaryError = makeErrorMapper({
+  codes: {
+    conflict: EMPTY_CODES,
+    notFound: EMPTY_CODES,
+    unauthorized: EMPTY_CODES,
+  },
+  extract: (err) => {
+    const e = err as {
+      http_code?: number;
+      error?: { http_code?: number; message?: string };
+      message?: string;
+    };
+    const status = e?.error?.http_code ?? e?.http_code;
+    const message = e?.error?.message ?? e?.message;
+    return {
+      ...(typeof status === "number" && { status }),
+      ...(message && { message }),
+    };
+  },
+  providerLabel: "Cloudinary error",
+});
+
+const parseCloudinaryUrl = (
+  url: string
+): { cloudName?: string; apiKey?: string; apiSecret?: string } => {
+  // Format: cloudinary://<api_key>:<api_secret>@<cloud_name>
+  const match = /^cloudinary:\/\/([^:]+):([^@]+)@(.+)$/u.exec(url);
+  if (!match) {
+    return {};
+  }
+  return {
+    apiKey: decodeURIComponent(match[1] ?? ""),
+    apiSecret: decodeURIComponent(match[2] ?? ""),
+    cloudName: decodeURIComponent(match[3] ?? ""),
+  };
+};
+
+const resolveConfig = (
+  opts: CloudinaryAdapterOptions
+): { cloudName: string; apiKey?: string; apiSecret?: string } => {
+  const envUrl = readEnv("CLOUDINARY_URL");
+  const envParsed = envUrl ? parseCloudinaryUrl(envUrl) : {};
+  const cloudName =
+    opts.cloudName ?? readEnv("CLOUDINARY_CLOUD_NAME") ?? envParsed.cloudName;
+  const apiKey =
+    opts.apiKey ?? readEnv("CLOUDINARY_API_KEY") ?? envParsed.apiKey;
+  const apiSecret =
+    opts.apiSecret ?? readEnv("CLOUDINARY_API_SECRET") ?? envParsed.apiSecret;
+  if (!cloudName) {
+    throw new FilesError(
+      "Provider",
+      "cloudinary: missing cloudName. Pass `cloudName` (and `apiKey`/`apiSecret` for non-public ops) or set CLOUDINARY_CLOUD_NAME or CLOUDINARY_URL."
+    );
+  }
+  return {
+    cloudName,
+    ...(apiKey && { apiKey }),
+    ...(apiSecret && { apiSecret }),
+  };
+};
+
+const toBuffer = async (body: Body): Promise<Buffer> => {
+  const normalized = await normalizeBody(body);
+  const bytes =
+    normalized.data instanceof ReadableStream
+      ? await collectStream(normalized.data)
+      : normalized.data;
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+};
+
+const resolveContentType = (
+  resource: { resource_type?: string; format?: string },
+  hint?: string
+): string => {
+  if (hint) {
+    return hint;
+  }
+  if (resource.resource_type === "image" && resource.format) {
+    return `image/${resource.format}`;
+  }
+  if (resource.resource_type === "video" && resource.format) {
+    return `video/${resource.format}`;
+  }
+  return "application/octet-stream";
+};
+
+export const cloudinaryAdapter = (
+  opts: CloudinaryAdapterOptions = {}
+): CloudinaryAdapter => {
+  const resourceType: CloudinaryResourceType = opts.resourceType ?? "raw";
+  const type: CloudinaryDeliveryType = opts.type ?? "upload";
+  const secure = opts.secure ?? true;
+  const signedUrlExpiresIn = opts.signedUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+
+  const { cloudName, apiKey, apiSecret } = resolveConfig(opts);
+
+  const sdk = opts.client ?? cloudinary;
+
+  // Cloudinary's SDK keeps configuration as module-level global state. When
+  // the caller passes a pre-built `client`, we trust they configured it
+  // already. Otherwise we set the config now — note this DOES mutate the
+  // global namespace; mounting multiple cloudinary adapters in the same
+  // process with different credentials will see only the last config win.
+  // Documented as a limitation.
+  if (!opts.client) {
+    sdk.config({
+      ...(apiKey && { api_key: apiKey }),
+      ...(apiSecret && { api_secret: apiSecret }),
+      cloud_name: cloudName,
+      secure,
+    });
+  }
+
+  const uploadBuffer = (
+    buf: Buffer,
+    uploadOpts: UploadApiOptions
+  ): Promise<UploadApiResponse> =>
+    // Cloudinary's upload_stream is a node Writable that delivers the
+    // response via callback — there is no Promise-returning equivalent.
+    // oxlint-disable-next-line promise/avoid-new
+    new Promise((resolve, reject) => {
+      // oxlint-disable-next-line promise/prefer-await-to-callbacks
+      const stream = sdk.uploader.upload_stream(uploadOpts, (err, result) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        if (!result) {
+          reject(
+            new FilesError(
+              "Provider",
+              "cloudinary: upload_stream returned no result"
+            )
+          );
+          return;
+        }
+        resolve(result);
+      });
+      stream.end(buf);
+    });
+
+  const buildDeliveryUrl = (key: string): string =>
+    sdk.url(key, {
+      resource_type: resourceType,
+      secure,
+      type,
+    });
+
+  const buildSignedDeliveryUrl = (
+    key: string,
+    format: string,
+    expiresIn: number
+  ): string =>
+    sdk.utils.private_download_url(key, format, {
+      expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+      resource_type: resourceType,
+      type,
+    });
+
+  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
+    const url = buildDeliveryUrl(key);
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new FilesError(
+        res.status === 404 ? "NotFound" : "Provider",
+        `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
+      );
+    }
+    const buf = await res.arrayBuffer();
+    return new Uint8Array(buf);
+  };
+
+  return {
+    cloudName,
+    async copy(from, to) {
+      try {
+        // Cloudinary has no native copy — `rename` is move-only. Re-upload
+        // by URL: Cloudinary fetches `secure_url` and ingests it as a new
+        // asset under `to`. Document: copies produce a new asset_id and a
+        // new etag, not a byte-identical reference.
+        const sourceUrl = buildDeliveryUrl(from);
+        await sdk.uploader.upload(sourceUrl, {
+          overwrite: true,
+          public_id: to,
+          resource_type: resourceType,
+          type,
+        });
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    async delete(key) {
+      try {
+        await sdk.uploader.destroy(key, {
+          invalidate: true,
+          resource_type: resourceType,
+          type,
+        });
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    async download(key) {
+      try {
+        const [resource, bytes] = await Promise.all([
+          sdk.api.resource(key, {
+            resource_type: resourceType,
+            type,
+          }) as Promise<{
+            bytes?: number;
+            format?: string;
+            resource_type?: string;
+            etag?: string;
+            created_at?: string;
+          }>,
+          lazyDownload(key)(),
+        ]);
+        return createStoredFile(
+          {
+            ...(resource.etag && { etag: resource.etag }),
+            key,
+            ...(resource.created_at && {
+              lastModified: new Date(resource.created_at).getTime(),
+            }),
+            size: resource.bytes ?? bytes.byteLength,
+            type: resolveContentType(resource),
+          },
+          { data: bytes, kind: "buffer" }
+        );
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    exists(key) {
+      return existsByProbe(
+        () =>
+          sdk.api.resource(key, {
+            resource_type: resourceType,
+            type,
+          }),
+        mapCloudinaryError
+      );
+    },
+    async head(key) {
+      try {
+        const resource = (await sdk.api.resource(key, {
+          resource_type: resourceType,
+          type,
+        })) as {
+          bytes?: number;
+          format?: string;
+          resource_type?: string;
+          etag?: string;
+          created_at?: string;
+        };
+        return createStoredFile(
+          {
+            ...(resource.etag && { etag: resource.etag }),
+            key,
+            ...(resource.created_at && {
+              lastModified: new Date(resource.created_at).getTime(),
+            }),
+            size: resource.bytes ?? 0,
+            type: resolveContentType(resource),
+          },
+          { factory: lazyDownload(key), kind: "lazy" }
+        );
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    async list(listOpts?: ListOptions): Promise<ListResult> {
+      try {
+        const requested = listOpts?.limit ?? DEFAULT_LIST_LIMIT;
+        const limit = Math.min(requested, MAX_LIST_LIMIT);
+        const apiOpts: Record<string, unknown> = {
+          max_results: limit,
+          resource_type: resourceType,
+          type,
+        };
+        if (listOpts?.prefix) {
+          apiOpts.prefix = listOpts.prefix;
+        }
+        if (listOpts?.cursor) {
+          apiOpts.next_cursor = listOpts.cursor;
+        }
+        const response = (await sdk.api.resources(apiOpts)) as {
+          resources?: {
+            public_id: string;
+            bytes?: number;
+            format?: string;
+            resource_type?: string;
+            etag?: string;
+            created_at?: string;
+          }[];
+          next_cursor?: string;
+        };
+        const items: StoredFile[] = (response.resources ?? []).map((resource) =>
+          createStoredFile(
+            {
+              ...(resource.etag && { etag: resource.etag }),
+              key: resource.public_id,
+              ...(resource.created_at && {
+                lastModified: new Date(resource.created_at).getTime(),
+              }),
+              size: resource.bytes ?? 0,
+              type: resolveContentType(resource),
+            },
+            { factory: lazyDownload(resource.public_id), kind: "lazy" }
+          )
+        );
+        return {
+          ...(response.next_cursor && { cursor: response.next_cursor }),
+          items,
+        };
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    name: "cloudinary",
+    raw: sdk,
+    resourceType,
+    signedUploadUrl(
+      key: string,
+      signOpts: SignUploadOptions
+    ): Promise<SignedUpload> {
+      if (!apiKey || !apiSecret) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: signedUploadUrl requires both apiKey and apiSecret. Pass them at construction or set CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET / CLOUDINARY_URL."
+        );
+      }
+      // Cloudinary signatures are computed over a sorted, ampersand-joined
+      // parameter set excluding `file`, `cloud_name`, `resource_type`, and
+      // `api_key`. The SDK helper handles the sort+hash for us.
+      const timestamp = Math.floor(Date.now() / 1000);
+      const paramsToSign: Record<string, string | number> = {
+        public_id: key,
+        timestamp,
+        ...(signOpts.contentType && { content_type: signOpts.contentType }),
+      };
+      const signature = sdk.utils.api_sign_request(paramsToSign, apiSecret);
+      const url = `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`;
+      const fields: Record<string, string> = {
+        api_key: apiKey,
+        public_id: key,
+        signature,
+        timestamp: String(timestamp),
+      };
+      if (signOpts.contentType) {
+        fields.content_type = signOpts.contentType;
+      }
+      return Promise.resolve({
+        fields,
+        method: "POST",
+        url,
+      });
+    },
+    type,
+    async upload(
+      key: string,
+      body: Body,
+      uploadOpts?: UploadOptions
+    ): Promise<UploadResult> {
+      if (uploadOpts?.cacheControl) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `cacheControl` is not supported. Cloudinary does not expose HTTP cache headers on asset content — configure cache policies at the cloud level instead."
+        );
+      }
+      if (uploadOpts?.metadata && Object.keys(uploadOpts.metadata).length > 0) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `metadata` is not supported. Drop to `raw` and use `context`/`metadata` parameters via the underlying uploader if you need structured metadata."
+        );
+      }
+      try {
+        const buf = await toBuffer(body);
+        const response = await uploadBuffer(buf, {
+          invalidate: true,
+          overwrite: true,
+          public_id: key,
+          resource_type: resourceType,
+          type,
+        });
+        return {
+          contentType: resolveContentType(response, uploadOpts?.contentType),
+          ...(response.etag && { etag: response.etag }),
+          key: response.public_id,
+          ...(response.created_at && {
+            lastModified: new Date(response.created_at).getTime(),
+          }),
+          size: response.bytes,
+        };
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+    async url(key: string, urlOpts?: UrlOptions): Promise<string> {
+      if (urlOpts?.responseContentDisposition) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `responseContentDisposition` is not supported. Cloudinary has no per-request Content-Disposition override — set the `attachment` flag on the asset URL via `raw` if you need it."
+        );
+      }
+      try {
+        if (type === "upload") {
+          return buildDeliveryUrl(key);
+        }
+        // private / authenticated — sign with expiry. private_download_url
+        // needs the asset format, so do a HEAD to learn it.
+        const expiresIn = urlOpts?.expiresIn ?? signedUrlExpiresIn;
+        const resource = (await sdk.api.resource(key, {
+          resource_type: resourceType,
+          type,
+        })) as { format?: string };
+        if (!resource.format) {
+          throw new FilesError(
+            "Provider",
+            `cloudinary: cannot mint signed URL for "${key}" — resource has no format. Raw assets must store their extension in the public_id.`
+          );
+        }
+        return buildSignedDeliveryUrl(key, resource.format, expiresIn);
+      } catch (error) {
+        throw mapCloudinaryError(error);
+      }
+    },
+  };
+};
+
+export { cloudinaryAdapter as cloudinary };

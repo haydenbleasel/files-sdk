@@ -439,6 +439,34 @@ describe("r2 adapter — Workers binding path", () => {
     await expect(files.exists("missing.txt")).resolves.toBe(false);
   });
 
+  test("exists swallows a NotFound thrown by binding head()", async () => {
+    // Happy path: head() returns null. But the runtime can also throw a
+    // transport error that mapR2Error classifies as NotFound — the adapter
+    // should still report `false` rather than bubble it.
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    bucket.head = (() =>
+      Promise.reject(
+        Object.assign(new Error("vanished"), { name: "R2NotFoundError" })
+      )) as never;
+    await expect(files.exists("a.txt")).resolves.toBe(false);
+  });
+
+  test("exists rethrows non-NotFound errors from binding head()", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    bucket.head = (() =>
+      Promise.reject(
+        Object.assign(new Error("auth"), { code: 10_004, name: "R2Error" })
+      )) as never;
+    try {
+      await files.exists("a.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("Unauthorized");
+    }
+  });
+
   test("copy round-trips body since binding has no native copy", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });

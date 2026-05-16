@@ -18,9 +18,6 @@ const files = new Files({
 
 export const Tigris = () => (
   <section>
-    <Heading as="h2" id="adapter-tigris">
-      Tigris
-    </Heading>
     <p>
       Tigris globally-distributed object storage via its S3-compatible API. A
       thin wrapper around the S3 adapter - fixed global endpoint, region
@@ -31,8 +28,8 @@ export const Tigris = () => (
       console (or via the Fly CLI: <code>fly storage create</code>).
     </p>
     <CodeBlock code={TIGRIS_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-tigris-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -105,6 +102,6 @@ export const Tigris = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

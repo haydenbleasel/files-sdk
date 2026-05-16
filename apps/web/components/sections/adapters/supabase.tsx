@@ -18,9 +18,6 @@ const files = new Files({
 
 export const Supabase = () => (
   <section>
-    <Heading as="h2" id="adapter-supabase">
-      Supabase Storage
-    </Heading>
     <p>
       Supabase Storage via the official <code>@supabase/storage-js</code> SDK.
       Auto-loads the project URL and an API key from the standard env vars; pass{" "}
@@ -28,8 +25,8 @@ export const Supabase = () => (
       the rest of your app (auth, postgrest).
     </p>
     <CodeBlock code={SUPABASE_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-supabase-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -103,9 +100,9 @@ export const Supabase = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-supabase-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -119,6 +116,6 @@ export const Supabase = () => (
         encodes <code>offset</code> as a numeric cursor string so it threads
         through the unified API.
       </p>
-    </div>
+    </section>
   </section>
 );

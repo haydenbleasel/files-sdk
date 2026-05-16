@@ -453,6 +453,45 @@ describe("netlify-blobs adapter", () => {
     await expect(files.exists("missing.txt")).resolves.toBe(false);
   });
 
+  test("exists swallows a NotFound thrown by getMetadata", async () => {
+    // The happy path returns null for misses, but Netlify's getMetadata can
+    // *throw* a 404 in some configurations — exists() should still report
+    // false instead of bubbling.
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(
+          new Error(
+            "Netlify Blobs has generated an internal error (404 status code)"
+          ),
+          { name: "BlobsInternalError" }
+        )
+      )
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("exists rethrows non-NotFound errors from getMetadata", async () => {
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(
+          new Error(
+            "Netlify Blobs has generated an internal error (500 status code)"
+          ),
+          { name: "BlobsInternalError" }
+        )
+      )
+    );
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    try {
+      await files.exists("a.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).code).not.toBe("NotFound");
+    }
+  });
+
   test("delete delegates to store.delete (idempotent)", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     await files.upload("a.txt", "hello");

@@ -333,3 +333,61 @@ export const getChangelog = (): ChangelogRelease[] => {
   }
   return cached;
 };
+
+export const getRelease = (slug: string): ChangelogRelease | undefined =>
+  getChangelog().find((release) => release.slug === slug);
+
+const inlineToText = (nodes: InlineNode[]): string =>
+  nodes
+    .map((node) => {
+      if (node.type === "text" || node.type === "code") {
+        return node.value;
+      }
+      if (node.type === "link") {
+        return node.label;
+      }
+      return inlineToText(node.nodes);
+    })
+    .join("");
+
+const blockToText = (block: ChangelogBlock): string => {
+  if (block.type === "paragraph") {
+    return inlineToText(block.nodes);
+  }
+  if (block.type === "list") {
+    return block.items.map(inlineToText).join(" ");
+  }
+  return block.code;
+};
+
+export interface ReleaseSummary {
+  version: string;
+  slug: string;
+  kinds: ChangeKind[];
+  itemCount: number;
+  headline: string;
+  searchText: string;
+}
+
+export const getReleaseSummary = (
+  release: ChangelogRelease
+): ReleaseSummary => {
+  const items = release.groups.flatMap((group) => group.items);
+  const firstParagraph = items
+    .flatMap((item) => item.blocks)
+    .find((block) => block.type === "paragraph");
+  const headline = firstParagraph ? blockToText(firstParagraph) : "";
+  const searchText = items
+    .flatMap((item) => item.blocks.map(blockToText))
+    .join(" ")
+    .toLowerCase();
+
+  return {
+    headline,
+    itemCount: items.length,
+    kinds: release.groups.map((group) => group.kind),
+    searchText,
+    slug: release.slug,
+    version: release.version,
+  };
+};

@@ -18,17 +18,14 @@ const files = new Files({
 
 export const Gcs = () => (
   <section>
-    <Heading as="h2" id="adapter-gcs">
-      Google Cloud Storage
-    </Heading>
     <p>
       Google Cloud Storage via the official <code>@google-cloud/storage</code>{" "}
       SDK. Auth follows the standard Google chain - Application Default
       Credentials by default, with explicit overrides if you need them.
     </p>
     <CodeBlock code={GCS_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-gcs-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -85,6 +82,6 @@ export const Gcs = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

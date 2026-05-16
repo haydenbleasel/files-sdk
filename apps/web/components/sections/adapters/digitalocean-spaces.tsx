@@ -17,9 +17,6 @@ const files = new Files({
 
 export const DigitalOceanSpaces = () => (
   <section>
-    <Heading as="h2" id="adapter-digitalocean-spaces">
-      DigitalOcean Spaces
-    </Heading>
     <p>
       DigitalOcean Spaces via the S3-compatible API. A thin wrapper around the
       S3 adapter - endpoint derived from the region you pass, errors relabelled,
@@ -27,8 +24,8 @@ export const DigitalOceanSpaces = () => (
       <code>DO_SPACES_KEY</code> and <code>DO_SPACES_SECRET</code>.
     </p>
     <CodeBlock code={DIGITALOCEAN_SPACES_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-digitalocean-spaces-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -104,6 +101,6 @@ export const DigitalOceanSpaces = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

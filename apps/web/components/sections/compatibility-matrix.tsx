@@ -23,20 +23,20 @@ const ok: Cell = { status: "ok" };
 const warn = (note: string): Cell => ({ note, status: "warn" });
 const no = (note: string): Cell => ({ note, status: "no" });
 
-const COLUMNS = [
+const ADAPTERS = [
   { key: "s3", label: "S3", parent: "S3" },
   { key: "r2-http", label: "HTTP", parent: "Cloudflare R2" },
   { key: "r2-binding", label: "binding", parent: "Cloudflare R2" },
   { key: "r2-hybrid", label: "hybrid", parent: "Cloudflare R2" },
   { key: "vb-public", label: "public", parent: "Vercel Blob" },
   { key: "vb-private", label: "private", parent: "Vercel Blob" },
-  { key: "nb", label: "Netlify", parent: "Netlify Blobs" },
+  { key: "nb", label: "Netlify Blobs", parent: "Netlify Blobs" },
   { key: "minio", label: "MinIO", parent: "MinIO" },
-  { key: "spaces", label: "Spaces", parent: "DigitalOcean" },
+  { key: "spaces", label: "DigitalOcean", parent: "DigitalOcean" },
   { key: "storj", label: "Storj", parent: "Storj" },
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
-  { key: "b2", label: "B2", parent: "Backblaze B2" },
+  { key: "b2", label: "Backblaze B2", parent: "Backblaze B2" },
   { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
   { key: "scaleway", label: "Scaleway", parent: "Scaleway" },
   { key: "ovhcloud", label: "OVHcloud", parent: "OVHcloud" },
@@ -44,11 +44,14 @@ const COLUMNS = [
   { key: "vultr", label: "Vultr", parent: "Vultr" },
   { key: "filebase", label: "Filebase", parent: "Filebase" },
   { key: "exoscale", label: "Exoscale", parent: "Exoscale" },
-  { key: "oracle-cloud", label: "Oracle", parent: "Oracle Cloud" },
+  { key: "oracle-cloud", label: "Oracle Cloud", parent: "Oracle Cloud" },
   { key: "ibm-cos", label: "IBM COS", parent: "IBM COS" },
+  { key: "tencent", label: "Tencent COS", parent: "Tencent COS" },
+  { key: "alibaba", label: "Alibaba OSS", parent: "Alibaba OSS" },
   { key: "tigris", label: "Tigris", parent: "Tigris" },
+  { key: "yandex", label: "Yandex", parent: "Yandex Object Storage" },
   { key: "gcs", label: "GCS", parent: "GCS" },
-  { key: "google-drive", label: "Drive", parent: "Google Drive" },
+  { key: "google-drive", label: "Google Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
   { key: "dropbox", label: "Dropbox", parent: "Dropbox" },
   { key: "box", label: "Box", parent: "Box" },
@@ -56,16 +59,17 @@ const COLUMNS = [
   { key: "supabase", label: "Supabase", parent: "Supabase" },
   { key: "ut-public", label: "public", parent: "UploadThing" },
   { key: "ut-private", label: "private", parent: "UploadThing" },
-  { key: "fs", label: "fs", parent: "Filesystem" },
+  { key: "fs", label: "Filesystem", parent: "Filesystem" },
   { key: "appwrite", label: "Appwrite", parent: "Appwrite" },
 ] as const;
 
-type ColumnKey = (typeof COLUMNS)[number]["key"];
+type AdapterKey = (typeof ADAPTERS)[number]["key"];
 
-const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
+const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: warn(
         "Stream bodies are buffered up-front - `InputFile.fromBuffer` has no streaming form, so streamed uploads can't avoid materializing the body in memory. User `metadata` and `cacheControl` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and has no override."
       ),
@@ -102,6 +106,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -109,12 +114,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "upload",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: ok,
       azure: ok,
       b2: ok,
@@ -145,6 +152,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -152,12 +160,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "download",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: ok,
       azure: ok,
       b2: ok,
@@ -184,6 +194,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -191,12 +202,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "delete",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: ok,
       azure: ok,
       b2: ok,
@@ -235,6 +248,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "Supabase's stable list API is offset/limit, not cursor-based. The adapter encodes the next offset as a numeric cursor string so the unified API works unchanged - the cursor is opaque to callers but is just `String(offset + page)` underneath."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing's listFiles is offset/limit, not cursor-based - the adapter encodes the next offset as a numeric cursor. `prefix` is unsupported server-side; the adapter filters the returned page client-side, which under-returns when the prefix isn't satisfied within a single page."
@@ -246,12 +260,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "list",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: ok,
       azure: ok,
       b2: ok,
@@ -284,6 +300,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing has no metadata endpoint, so `head()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and parses size/content-type/etag/last-modified from the response headers. User `metadata` isn't supported."
@@ -295,12 +312,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "head",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: ok,
       azure: ok,
       b2: ok,
@@ -331,6 +350,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing has no metadata endpoint, so `exists()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and treats `404` as `false`."
@@ -342,12 +362,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "exists",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: warn(
         "Read-then-write - Appwrite has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic."
       ),
@@ -386,6 +408,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "Read-then-write - UploadThing has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic."
@@ -397,12 +420,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "copy",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: warn(
         "Throws by default because Appwrite SDKs cannot mint presigned reading URLs with keys. Set `public: true` at construction to return the constructed Appwrite public CDN URL. `expiresIn` and `responseContentDisposition` are ignored."
       ),
@@ -449,6 +474,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "Default mints a signed read URL via `createSignedUrl` (1-hour default). With `public: true`, returns the permanent unsigned `getPublicUrl` result. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` is honored - it threads through Supabase's `download` option in the signed path."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "Mints a signed read URL via `generateSignedURL` (1-hour default). `responseContentDisposition` throws - UploadThing has no Content-Disposition override on signed or CDN URLs."
@@ -464,12 +490,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "url",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
       appwrite: no(
         "No presigned upload primitive in Appwrite. Use JWTs or client SDKs for direct uploads."
       ),
@@ -516,6 +544,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       supabase: warn(
         "PUT URL only - Supabase has no POST policy equivalent. `maxSize` throws (Supabase signed upload URLs have no `content-length-range` policy; set the bucket-level size limit in the dashboard instead). `expiresIn` is silently ignored - Supabase fixes the TTL at 2 hours server-side. The returned headers include `x-upsert: true`."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "PUT URL only - built against UploadThing's UFS ingest endpoint with an HMAC-SHA256 signature over the URL. `maxSize` is advisory: UploadThing enforces upload caps via the file-router config tied to the adapter's `slug`, not via the URL signature. `minSize` is ignored (no equivalent on UFS). The user-supplied key is bound as `x-ut-custom-id` so subsequent ops can route by it."
@@ -531,6 +560,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "signedUploadUrl",
   },
@@ -569,22 +599,6 @@ const StatusIcon = ({ cell }: { cell: Cell }) => {
   );
 };
 
-// Header row: providers grouped above their configurations. Each parent
-// label spans only its own configurations so the visual grouping stays
-// truthful (S3 / MinIO / DigitalOcean span 1, R2 spans 3, Vercel Blob spans 2).
-const HEADER_GROUPS: { parent: string; span: number }[] = (() => {
-  const groups: { parent: string; span: number }[] = [];
-  for (const col of COLUMNS) {
-    const last = groups.at(-1);
-    if (last && last.parent === col.parent) {
-      last.span += 1;
-    } else {
-      groups.push({ parent: col.parent, span: 1 });
-    }
-  }
-  return groups;
-})();
-
 const Legend = ({
   icon: Icon,
   cls,
@@ -613,72 +627,45 @@ export const CompatibilityMatrix = () => (
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground" />
-              {HEADER_GROUPS.map((g, i) => (
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                Adapter
+              </th>
+              {ROWS.map((row) => (
                 <th
-                  className={cn(
-                    "px-2 py-2 text-center font-medium text-foreground",
-                    i < HEADER_GROUPS.length - 1 && "border-r border-dotted"
-                  )}
-                  colSpan={g.span}
-                  key={g.parent}
+                  className="px-2 py-2 text-center font-mono font-normal text-muted-foreground whitespace-nowrap"
+                  key={row.method}
                 >
-                  {g.parent}
+                  {row.method}
                 </th>
               ))}
             </tr>
-            <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground">
-                Method
-              </th>
-              {COLUMNS.map((col, i) => {
-                const next = COLUMNS[i + 1];
-                const endsGroup = !next || next.parent !== col.parent;
-                const sameAsParent = col.parent === col.label;
-                return (
-                  <th
-                    className={cn(
-                      "px-2 py-2 text-center font-normal text-muted-foreground whitespace-nowrap",
-                      endsGroup &&
-                        i < COLUMNS.length - 1 &&
-                        "border-r border-dotted"
-                    )}
-                    key={col.key}
-                  >
-                    {sameAsParent ? "" : col.label}
-                  </th>
-                );
-              })}
-            </tr>
           </thead>
           <tbody>
-            {ROWS.map((row) => (
-              <tr
-                className="border-b border-dotted last:border-b-0"
-                key={row.method}
-              >
-                <th className="sticky left-0 bg-background px-3 py-2 text-left font-mono font-normal whitespace-nowrap">
-                  {row.method}
-                </th>
-                {COLUMNS.map((col, i) => {
-                  const next = COLUMNS[i + 1];
-                  const endsGroup = !next || next.parent !== col.parent;
-                  return (
-                    <td
-                      className={cn(
-                        "px-2 py-2 text-center",
-                        endsGroup &&
-                          i < COLUMNS.length - 1 &&
-                          "border-r border-dotted"
-                      )}
-                      key={col.key}
-                    >
-                      <StatusIcon cell={row.cells[col.key]} />
+            {ADAPTERS.map((adapter) => {
+              const sameAsParent = adapter.parent === adapter.label;
+              return (
+                <tr
+                  className="border-b border-dotted last:border-b-0"
+                  key={adapter.key}
+                >
+                  <th className="px-3 py-2 text-left font-normal whitespace-nowrap align-top">
+                    <div className="font-medium text-foreground">
+                      {adapter.parent}
+                    </div>
+                    {!sameAsParent && (
+                      <div className="text-muted-foreground">
+                        {adapter.label}
+                      </div>
+                    )}
+                  </th>
+                  {ROWS.map((row) => (
+                    <td className="px-2 py-2 text-center" key={row.method}>
+                      <StatusIcon cell={row.cells[adapter.key]} />
                     </td>
-                  );
-                })}
-              </tr>
-            ))}
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

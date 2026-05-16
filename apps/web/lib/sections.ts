@@ -7,44 +7,20 @@ export const HOME_SECTIONS: TocSection[] = [
   { id: "compatibility-matrix", label: "Compatibility matrix" },
 ];
 
-export const ADAPTER_SECTIONS: TocSection[] = [
-  { id: "adapter-s3", label: "S3" },
-  { id: "adapter-bun-s3", label: "Bun S3" },
-  { id: "adapter-r2", label: "Cloudflare R2" },
-  { id: "adapter-vercel-blob", label: "Vercel Blob" },
-  { id: "adapter-netlify-blobs", label: "Netlify Blobs" },
-  { id: "adapter-minio", label: "MinIO" },
-  { id: "adapter-digitalocean-spaces", label: "DigitalOcean Spaces" },
-  { id: "adapter-storj", label: "Storj" },
-  { id: "adapter-hetzner", label: "Hetzner" },
-  { id: "adapter-akamai", label: "Akamai Object Storage" },
-  { id: "adapter-backblaze-b2", label: "Backblaze B2" },
-  { id: "adapter-wasabi", label: "Wasabi" },
-  { id: "adapter-scaleway", label: "Scaleway" },
-  { id: "adapter-ovhcloud", label: "OVHcloud" },
-  { id: "adapter-idrive-e2", label: "iDrive e2" },
-  { id: "adapter-vultr", label: "Vultr" },
-  { id: "adapter-filebase", label: "Filebase" },
-  { id: "adapter-exoscale", label: "Exoscale" },
-  { id: "adapter-oracle-cloud", label: "Oracle Cloud" },
-  { id: "adapter-ibm-cos", label: "IBM Cloud Object Storage" },
-  { id: "adapter-tigris", label: "Tigris" },
-  { id: "adapter-gcs", label: "Google Cloud Storage" },
-  { id: "adapter-google-drive", label: "Google Drive" },
-  { id: "adapter-onedrive", label: "OneDrive" },
-  { id: "adapter-dropbox", label: "Dropbox" },
-  { id: "adapter-box", label: "Box" },
-  { id: "adapter-azure", label: "Azure Blob Storage" },
-  { id: "adapter-supabase", label: "Supabase Storage" },
-  { id: "adapter-uploadthing", label: "UploadThing" },
-  { id: "adapter-fs", label: "Filesystem" },
-  { id: "adapter-appwrite", label: "Appwrite" },
-];
-
 export const AI_SECTIONS: TocSection[] = [
   { id: "openai-tools", label: "OpenAI" },
   { id: "ai-sdk-tools", label: "Vercel AI SDK" },
   { id: "claude-tools", label: "Claude Agent SDK" },
+];
+
+export const CLI_SECTIONS: TocSection[] = [
+  { id: "cli-install", label: "Install" },
+  { id: "cli-providers", label: "Pick a provider" },
+  { id: "cli-commands", label: "Commands" },
+  { id: "cli-output", label: "JSON output & exit codes" },
+  { id: "cli-streaming", label: "Streaming & dry-run" },
+  { id: "cli-mcp", label: "MCP server" },
+  { id: "cli-agents", label: "Wiring agents" },
 ];
 
 export const API_SECTIONS: TocSection[] = [

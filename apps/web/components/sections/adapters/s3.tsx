@@ -17,16 +17,13 @@ const files = new Files({
 
 export const S3 = () => (
   <section>
-    <Heading as="h2" id="adapter-s3">
-      S3
-    </Heading>
     <p>
       AWS S3 (and any S3-compatible bucket). Uses the standard AWS credential
       chain - environment, IAM role, shared profile.
     </p>
     <CodeBlock code={S3_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-s3-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -73,6 +70,6 @@ export const S3 = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );
