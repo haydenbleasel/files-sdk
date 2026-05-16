@@ -9,6 +9,7 @@ export const HOME_SECTIONS: TocSection[] = [
 
 export const ADAPTER_SECTIONS: TocSection[] = [
   { id: "adapter-s3", label: "S3" },
+  { id: "adapter-bun-s3", label: "Bun S3" },
   { id: "adapter-r2", label: "Cloudflare R2" },
   { id: "adapter-vercel-blob", label: "Vercel Blob" },
   { id: "adapter-netlify-blobs", label: "Netlify Blobs" },

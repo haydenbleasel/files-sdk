@@ -3,6 +3,7 @@ import { Appwrite } from "./appwrite";
 import { Azure } from "./azure";
 import { BackblazeB2 } from "./backblaze-b2";
 import { Box } from "./box";
+import { BunS3 } from "./bun-s3";
 import { DigitalOceanSpaces } from "./digitalocean-spaces";
 import { Dropbox } from "./dropbox";
 import { Exoscale } from "./exoscale";
@@ -32,6 +33,7 @@ import { Wasabi } from "./wasabi";
 export const Adapters = () => (
   <section>
     <S3 />
+    <BunS3 />
     <R2 />
     <VercelBlob />
     <NetlifyBlobs />
