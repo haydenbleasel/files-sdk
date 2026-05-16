@@ -33,6 +33,10 @@
       "types": "./dist/s3/index.d.ts",
       "import": "./dist/s3/index.js"
     },
+    "./bun-s3": {
+      "types": "./dist/bun-s3/index.d.ts",
+      "import": "./dist/bun-s3/index.js"
+    },
     "./r2": {
       "types": "./dist/r2/index.d.ts",
       "import": "./dist/r2/index.js"

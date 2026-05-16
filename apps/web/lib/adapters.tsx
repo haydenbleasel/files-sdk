@@ -6,6 +6,7 @@ import { Appwrite } from "@/components/sections/adapters/appwrite";
 import { Azure } from "@/components/sections/adapters/azure";
 import { BackblazeB2 } from "@/components/sections/adapters/backblaze-b2";
 import { Box } from "@/components/sections/adapters/box";
+import { BunS3 } from "@/components/sections/adapters/bun-s3";
 import { Cloudinary } from "@/components/sections/adapters/cloudinary";
 import { DigitalOceanSpaces } from "@/components/sections/adapters/digitalocean-spaces";
 import { Dropbox } from "@/components/sections/adapters/dropbox";
@@ -56,6 +57,14 @@ export const ADAPTERS: Adapter[] = [
     name: "S3",
     sections: [OPTIONS],
     slug: "s3",
+  },
+  {
+    Component: BunS3,
+    description:
+      "AWS S3 (and any S3-compatible bucket) via Bun's native Bun.S3Client instead of @aws-sdk/client-s3. Bun-only.",
+    name: "Bun S3",
+    sections: [OPTIONS],
+    slug: "bun-s3",
   },
   {
     Component: R2,
