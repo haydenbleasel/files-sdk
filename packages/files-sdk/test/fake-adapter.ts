@@ -2,6 +2,8 @@ import { createStoredFile } from "../src/index.js";
 import type {
   Adapter,
   Body,
+  DeleteManyOptions,
+  DeleteManyResult,
   DownloadOptions,
   ListOptions,
   ListResult,
@@ -110,6 +112,31 @@ export const fakeAdapter = (): FakeAdapter => {
     delete(key: string): Promise<void> {
       store.delete(key);
       return Promise.resolve();
+    },
+    deleteMany(
+      keys: string[],
+      opts?: DeleteManyOptions
+    ): Promise<DeleteManyResult> {
+      const deleted: string[] = [];
+      const errors: NonNullable<DeleteManyResult["errors"]> = [];
+      for (const key of keys) {
+        if (key.startsWith("fail/")) {
+          errors.push({
+            error: new FilesError("Provider", `delete failed: ${key}`),
+            key,
+          });
+          if (opts?.stopOnError) {
+            break;
+          }
+          continue;
+        }
+        store.delete(key);
+        deleted.push(key);
+      }
+      if (errors.length === 0) {
+        return Promise.resolve({ delete: deleted });
+      }
+      return Promise.resolve({ delete: deleted, errors });
     },
     download(key: string, _opts?: DownloadOptions): Promise<StoredFile> {
       const entry = store.get(key);
