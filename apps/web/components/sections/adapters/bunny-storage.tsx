@@ -26,9 +26,9 @@ export const BunnyStorage = () => (
       and uses Bunny's HTTP Storage API for reads, writes, listing, and deletes.
       Auto-loads from <code>BUNNY_STORAGE_ZONE</code>,{" "}
       <code>BUNNY_STORAGE_ACCESS_KEY</code>, and{" "}
-      <code>BUNNY_STORAGE_REGION</code>, with the SDK's{" "}
-      <code>STORAGE_ZONE</code>, <code>STORAGE_ACCESS_KEY</code>, and{" "}
-      <code>STORAGE_REGION</code> names as aliases.
+      <code>BUNNY_STORAGE_REGION</code>; also accepts <code>STORAGE_ZONE</code>,{" "}
+      <code>STORAGE_ACCESS_KEY</code>, and <code>STORAGE_REGION</code> as
+      aliases (the names used in the Bunny SDK's README example).
     </p>
     <CodeBlock code={BUNNY_STORAGE_EXAMPLE} lang="ts" />
     <div className="flex flex-col gap-2">

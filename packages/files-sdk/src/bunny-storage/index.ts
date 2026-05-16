@@ -24,14 +24,14 @@ export type BunnyStorageRegion = `${BunnyStorageSDK.regions.StorageRegion}`;
 
 export interface BunnyStorageAdapterOptions {
   /**
-   * Bunny Storage zone name. Falls back to `BUNNY_STORAGE_ZONE`, then the
-   * SDK-documented `STORAGE_ZONE`.
+   * Bunny Storage zone name. Falls back to `BUNNY_STORAGE_ZONE`, then
+   * `STORAGE_ZONE` (the convention used in the SDK's README example).
    */
   zone?: string;
   /**
    * Bunny Storage zone password / API access key. Falls back to
-   * `BUNNY_STORAGE_ACCESS_KEY`, `BUNNY_ACCESS_KEY`, then the SDK-documented
-   * `STORAGE_ACCESS_KEY`.
+   * `BUNNY_STORAGE_ACCESS_KEY`, `BUNNY_ACCESS_KEY`, then `STORAGE_ACCESS_KEY`
+   * (the convention used in the SDK's README example).
    */
   accessKey?: string;
   /**
@@ -154,6 +154,12 @@ const BUNNY_NOT_FOUND_CODES: ReadonlySet<string> = new Set(["NotFound"]);
 const BUNNY_UNAUTH_CODES: ReadonlySet<string> = new Set(["Unauthorized"]);
 const BUNNY_CONFLICT_CODES: ReadonlySet<string> = new Set(["Conflict"]);
 
+// The Bunny SDK throws `new Error(...)` with no `code` or `status` field —
+// see `statusCodeToException` in `@bunny.net/storage-sdk`. Classification
+// has to fall back to regex-matching the English message. The SDK's message
+// templates are stable today, but this will silently degrade to `Provider`
+// if they ever localize or rephrase. Keep the regex permissive enough to
+// match the current templates exactly.
 const _mapBunnyStorageError = makeErrorMapper({
   codes: {
     conflict: BUNNY_CONFLICT_CODES,
@@ -236,7 +242,7 @@ const buildClient = (opts: BunnyStorageAdapterOptions): BunnyStorageClient => {
   if (!zone || !accessKey || !region) {
     throw new FilesError(
       "Provider",
-      "bunnyStorage adapter: missing credentials. Pass `zone` + `accessKey` + `region`, or set BUNNY_STORAGE_ZONE / BUNNY_STORAGE_ACCESS_KEY / BUNNY_STORAGE_REGION (SDK aliases: STORAGE_ZONE / STORAGE_ACCESS_KEY / STORAGE_REGION)."
+      "bunnyStorage adapter: missing credentials. Pass `zone` + `accessKey` + `region`, or set BUNNY_STORAGE_ZONE / BUNNY_STORAGE_ACCESS_KEY / BUNNY_STORAGE_REGION (also accepted: STORAGE_ZONE / STORAGE_ACCESS_KEY / STORAGE_REGION, the names used in the Bunny SDK's README example)."
     );
   }
   return BunnyStorageSDK.zone.connect_with_accesskey(
@@ -284,15 +290,13 @@ export const bunnyStorage = (
       }
     },
     async delete(key) {
+      // The Bunny SDK's `file.remove` returns `response.ok` and does not
+      // throw on 4xx — idempotency for missing keys comes for free. Only
+      // network-layer failures reach the catch.
       try {
-        const path = toBunnyPath(key);
-        await BunnyStorageSDK.file.remove(client, path);
+        await BunnyStorageSDK.file.remove(client, toBunnyPath(key));
       } catch (error) {
-        const mapped = mapBunnyStorageError(error);
-        if (mapped.code === "NotFound") {
-          return;
-        }
-        throw mapped;
+        throw mapBunnyStorageError(error);
       }
     },
     async download(key, downloadOpts) {
@@ -354,8 +358,8 @@ export const bunnyStorage = (
     },
     name: "bunny-storage",
     raw: client,
-    async signedUploadUrl(_key, _opts): Promise<SignedUpload> {
-      return await Promise.reject(
+    signedUploadUrl(_key, _opts): Promise<SignedUpload> {
+      return Promise.reject(
         new FilesError(
           "Provider",
           "bunnyStorage: signed upload URLs are not available. Bunny Storage writes go through the Storage API with an AccessKey header; upload server-side via the SDK or proxy through your application."
@@ -366,17 +370,35 @@ export const bunnyStorage = (
       assertSupportedUploadOptions(options);
       try {
         const normalized = await normalizeBody(body, options?.contentType);
+        const path = toBunnyPath(key);
         await BunnyStorageSDK.file.upload(
           client,
-          toBunnyPath(key),
+          path,
           streamFromBytes(normalized.data),
           { contentType: normalized.contentType }
         );
-        return {
-          contentType: normalized.contentType,
-          key,
-          size: normalized.contentLength ?? 0,
-        };
+        // Bunny's PUT response carries no body or metadata. Round-trip via
+        // `file.get` so `etag`, `lastModified`, and the authoritative size
+        // (important for streamed uploads where `contentLength` is unknown
+        // up front) match what other adapters return.
+        try {
+          const meta = await BunnyStorageSDK.file.get(client, path);
+          return {
+            contentType: meta.contentType || normalized.contentType,
+            ...(meta.checksum && { etag: meta.checksum }),
+            key,
+            ...(meta.lastChanged && {
+              lastModified: meta.lastChanged.getTime(),
+            }),
+            size: meta.length,
+          };
+        } catch {
+          return {
+            contentType: normalized.contentType,
+            key,
+            size: normalized.contentLength ?? 0,
+          };
+        }
       } catch (error) {
         throw mapBunnyStorageError(error);
       }

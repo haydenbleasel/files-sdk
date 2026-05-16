@@ -216,7 +216,7 @@ describe("bunnyStorage adapter", () => {
     ).toThrow(/unsupported region/u);
   });
 
-  test("upload writes through the Bunny SDK without a metadata round-trip", async () => {
+  test("upload writes through the Bunny SDK and rounds-trips metadata", async () => {
     const files = new Files({
       adapter: bunnyStorage({
         accessKey: "key",
@@ -229,17 +229,60 @@ describe("bunnyStorage adapter", () => {
     });
     expect(result).toEqual({
       contentType: "text/plain",
+      etag: "checksum-1",
       key: "docs/a.txt",
+      lastModified: new Date("2024-01-01T00:00:00.000Z").getTime(),
       size: 5,
     });
-    expect(result.etag).toBeUndefined();
-    expect(result.lastModified).toBeUndefined();
     expect(uploadMock).toHaveBeenCalledTimes(1);
-    expect(getMock).not.toHaveBeenCalled();
+    expect(getMock).toHaveBeenCalledTimes(1);
     expect(uploadMock.mock.calls[0]?.[1]).toBe("/docs/a.txt");
     expect(uploadMock.mock.calls[0]?.[3]).toEqual({
       contentType: "text/plain",
     });
+    expect(getMock.mock.calls[0]?.[1]).toBe("/docs/a.txt");
+  });
+
+  test("upload falls back to local metadata when the head round-trip fails", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    // Force the post-upload `get()` to reject without affecting the upload
+    // itself. The adapter should still return a sensible UploadResult.
+    const realGet = (_storageZone: unknown, path: string) => {
+      const key = stripPath(path);
+      const entry = backing.get(key);
+      if (!entry) {
+        return Promise.reject(new Error(`File not found: ${path}`));
+      }
+      return Promise.resolve(makeStorageFile(key, entry));
+    };
+    let getCalls = 0;
+    getMock.mockImplementation((zone: unknown, path: string) => {
+      getCalls += 1;
+      if (getCalls === 1) {
+        return Promise.reject(new Error("transient network blip"));
+      }
+      return realGet(zone, path);
+    });
+    try {
+      const result = await files.upload("docs/a.txt", "hello", {
+        contentType: "text/plain",
+      });
+      expect(result).toEqual({
+        contentType: "text/plain",
+        key: "docs/a.txt",
+        size: 5,
+      });
+      expect(result.etag).toBeUndefined();
+      expect(result.lastModified).toBeUndefined();
+    } finally {
+      getMock.mockImplementation(realGet);
+    }
   });
 
   test("upload rejects unsupported cacheControl and metadata", async () => {
