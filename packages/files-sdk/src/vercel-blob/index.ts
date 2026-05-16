@@ -8,7 +8,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { existsByProbe, joinPublicUrl } from "../internal/core.js";
+import {
+  deleteManyWithFallback,
+  existsByProbe,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -245,6 +249,14 @@ export const vercelBlob = (
       } catch (error) {
         throw mapBlobError(error);
       }
+    },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        (key) => blob.del(key, { token }),
+        deleteOpts,
+        mapBlobError
+      );
     },
     async download(key, downloadOpts) {
       const result = await headRaw(key);

@@ -22,6 +22,7 @@ import type {
   UploadResult,
 } from "../index.js";
 import {
+  deleteManyWithFallback,
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
@@ -841,6 +842,14 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       } catch (error) {
         throw mapBoxError(error);
       }
+    },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        (key) => adapter.delete(key),
+        deleteOpts,
+        mapBoxError
+      );
     },
     async download(key, downloadOpts) {
       try {

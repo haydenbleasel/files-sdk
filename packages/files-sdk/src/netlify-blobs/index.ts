@@ -11,6 +11,7 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
+import { deleteManyWithFallback } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -329,6 +330,14 @@ export const netlifyBlobs = (
       } catch (error) {
         throw mapNetlifyError(error);
       }
+    },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        (key) => store.delete(key),
+        deleteOpts,
+        mapNetlifyError
+      );
     },
     async download(key, downloadOpts) {
       try {

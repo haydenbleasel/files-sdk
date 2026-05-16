@@ -18,6 +18,7 @@ import type {
 import {
   collectStream,
   DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
   existsByProbe,
   makeErrorMapper,
   normalizeBody,
@@ -295,6 +296,19 @@ export const cloudinaryAdapter = (
       } catch (error) {
         throw mapCloudinaryError(error);
       }
+    },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        (key) =>
+          sdk.uploader.destroy(key, {
+            invalidate: true,
+            resource_type: resourceType,
+            type,
+          }),
+        deleteOpts,
+        mapCloudinaryError
+      );
     },
     async download(key) {
       try {
