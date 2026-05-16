@@ -4,11 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The mcp subcommand dynamically imports ./mcp.js, which requires the optional
-// @modelcontextprotocol/sdk dep and would otherwise block on stdio. Stub it
-// before the dispatcher loads so the success path is exercisable in-process —
-// the mock has to be installed *before* `program.js` is loaded so its dynamic
-// import resolves to the stub, hence the await-import dance below.
+import { buildProgram } from "../src/cli/program.js";
+
+// The mcp subcommand pulls ./mcp.js in via a dynamic import inside its action
+// handler — that's load-bearing because @modelcontextprotocol/sdk is optional
+// and the real server blocks on stdio. The mock only needs to be in place
+// before parseAsync runs the action; program.ts itself doesn't import mcp.ts
+// statically, so installing the mock at module top level is sufficient.
 const MCP_MODULE_PATH = fileURLToPath(
   new URL("../src/cli/mcp.ts", import.meta.url)
 );
@@ -19,8 +21,6 @@ mock.module(MCP_MODULE_PATH, () => ({
     return Promise.resolve();
   },
 }));
-
-const { buildProgram } = await import("../src/cli/program.js");
 
 // Integration tests for program.ts — they drive `parseAsync` end-to-end against
 // the fs adapter so the wrap()/resolveOpts/action-builder paths get exercised.

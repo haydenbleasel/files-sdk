@@ -1,12 +1,16 @@
 import { describe, expect, mock, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
+import { buildProgram } from "../src/cli/program.js";
+
 // Isolated file: mocks the mcp module's *first* import to throw at module
 // evaluation. Bun's mock.module factory only runs once per file, and a
 // throwing factory is the only way to drive program.ts's
 // "@modelcontextprotocol/sdk is missing" branch — so the success-path mock
 // (which lives in cli-program.test.ts) can't share a file with this one.
-
+// program.ts pulls mcp.ts in via a dynamic import inside the action, so the
+// mock just needs to be installed before parseAsync — not before the static
+// import above.
 const MCP_MODULE_PATH = fileURLToPath(
   new URL("../src/cli/mcp.ts", import.meta.url)
 );
@@ -16,8 +20,6 @@ mock.module(MCP_MODULE_PATH, () => {
     code: "ERR_MODULE_NOT_FOUND",
   });
 });
-
-const { buildProgram } = await import("../src/cli/program.js");
 
 type WriteFn = typeof process.stderr.write;
 type ExitFn = typeof process.exit;
