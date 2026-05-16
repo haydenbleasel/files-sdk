@@ -51,8 +51,15 @@ await files.upload("avatars/abc.png", file, {
 
 You can also pass a number for `retries`, e.g. `retries: 3`. Retries apply to
 provider-level failures; `NotFound`, `Unauthorized`, `Conflict`, and explicit
-abort signals are not retried. Upload retries are disabled for `ReadableStream`
+abort signals and timeouts are not retried. The default backoff is
+`100 * 2 ** (attempt - 1)` with no jitter; for high-fanout callers, pass your
+own `backoff` function. Upload retries are disabled for `ReadableStream`
 bodies because a consumed stream cannot be safely replayed.
+
+The merged `signal` is forwarded to every adapter call. Adapters whose
+underlying SDK exposes cancellation honor it directly; adapters backed by SDKs
+with no signal primitive still fail fast at the `Files` layer, but the provider
+request may continue cooperatively in the background.
 
 ## File handles
 
