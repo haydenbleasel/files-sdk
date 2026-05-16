@@ -11,6 +11,7 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
   joinPublicUrl,
   makeErrorMapper,
 } from "../internal/core.js";
@@ -409,6 +410,16 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     );
   };
 
+  const deleteOne = async (key: string): Promise<void> => {
+    // `remove()` is idempotent in Supabase — it returns an empty array
+    // (not an error) when the key doesn't exist, matching the
+    // silent-on-missing behavior of S3/Azure.
+    const { error } = await bucketRef.remove([key]);
+    if (error) {
+      throw mapSupabaseError(error);
+    }
+  };
+
   return {
     bucket,
     async copy(from, to) {
@@ -417,14 +428,28 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         throw mapSupabaseError(error);
       }
     },
-    async delete(key) {
-      // `remove()` is idempotent in Supabase — it returns an empty array
-      // (not an error) when the key doesn't exist, matching the
-      // silent-on-missing behavior of S3/Azure.
-      const { error } = await bucketRef.remove([key]);
-      if (error) {
-        throw mapSupabaseError(error);
+    delete: deleteOne,
+    async deleteMany(keys, deleteOpts) {
+      if (keys.length === 0) {
+        return { delete: [] };
       }
+      if (deleteOpts?.stopOnError) {
+        return deleteManyWithFallback(
+          keys,
+          deleteOne,
+          deleteOpts,
+          mapSupabaseError
+        );
+      }
+      const { error } = await bucketRef.remove(keys);
+      if (!error) {
+        return { delete: [...keys] };
+      }
+      const mapped = mapSupabaseError(error);
+      return {
+        delete: [],
+        errors: keys.map((key) => ({ error: mapped, key })),
+      };
     },
     download(key, downloadOpts) {
       if (downloadOpts?.as === "stream") {

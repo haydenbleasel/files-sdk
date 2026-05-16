@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -13,6 +14,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import type {
   Adapter,
+  DeleteManyOptions,
+  DeleteManyResult,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -228,6 +231,64 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         );
       } catch (error) {
         throw wrapErr(error);
+      }
+    },
+    async deleteMany(
+      keys: string[],
+      deleteOpts?: DeleteManyOptions
+    ): Promise<DeleteManyResult> {
+      if (keys.length === 0) {
+        return { delete: [] };
+      }
+      if (deleteOpts?.stopOnError) {
+        const deleted: string[] = [];
+        const errors: NonNullable<DeleteManyResult["errors"]> = [];
+        for (const key of keys) {
+          try {
+            await client.send(
+              new DeleteObjectCommand({ Bucket: bucket, Key: key })
+            );
+            deleted.push(key);
+          } catch (error) {
+            errors.push({ error: wrapErr(error), key });
+            return { delete: deleted, errors };
+          }
+        }
+        return { delete: deleted };
+      }
+      try {
+        const result = await client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: { Objects: keys.map((key) => ({ Key: key })) },
+          })
+        );
+        const deleted = new Set(
+          (result.Deleted ?? [])
+            .map((item) => item.Key)
+            .filter((key): key is string => key !== undefined)
+        );
+        const errors = (result.Errors ?? []).map((item) => ({
+          error: wrapErr({
+            Code: item.Code,
+            message: item.Message ?? item.Code ?? "Delete failed",
+            name: item.Code,
+          }),
+          key: item.Key ?? "",
+        }));
+        if (errors.length === 0) {
+          return { delete: keys.filter((key) => deleted.has(key)) };
+        }
+        return {
+          delete: keys.filter((key) => deleted.has(key)),
+          errors,
+        };
+      } catch (error) {
+        const mapped = wrapErr(error);
+        return {
+          delete: [],
+          errors: keys.map((key) => ({ error: mapped, key })),
+        };
       }
     },
     async download(key, downloadOpts) {

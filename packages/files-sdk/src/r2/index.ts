@@ -15,7 +15,11 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -285,6 +289,14 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         throw mapR2Error(error);
       }
     },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        (key) => bucket.delete(key),
+        deleteOpts,
+        mapR2Error
+      );
+    },
     async download(key, downloadOpts) {
       let obj: Awaited<ReturnType<typeof bucket.get>>;
       try {
@@ -492,6 +504,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     async delete(key) {
       const adapter = await ensure();
       return adapter.delete(key);
+    },
+    async deleteMany(keys, deleteOpts) {
+      const adapter = await ensure();
+      return (
+        adapter.deleteMany?.(keys, deleteOpts) ??
+        deleteManyWithFallback(keys, (key) => adapter.delete(key), deleteOpts)
+      );
     },
     async download(key, downloadOpts) {
       const adapter = await ensure();
