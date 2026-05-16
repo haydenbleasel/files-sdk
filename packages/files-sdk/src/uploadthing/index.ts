@@ -68,15 +68,24 @@ export interface UploadThingAdapterOptions {
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
 const DEFAULT_REGION = "sea1";
 
+const withTimeoutSignal = (
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): AbortSignal | undefined => {
+  if (timeoutMs <= 0) {
+    return signal;
+  }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+};
+
 const fetchWithTimeout = (
   url: string,
   init: RequestInit | undefined,
   timeoutMs: number
 ): Promise<Response> => {
-  if (timeoutMs <= 0) {
-    return fetch(url, init);
-  }
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const signal = withTimeoutSignal(init?.signal ?? undefined, timeoutMs);
+  return signal ? fetch(url, { ...init, signal }) : fetch(url, init);
 };
 
 export type UploadThingClient = UTApi;
@@ -271,9 +280,9 @@ const randomFileKey = (): string => {
 };
 
 export const uploadthing = (
-  opts: UploadThingAdapterOptions = {}
+  config: UploadThingAdapterOptions = {}
 ): UploadThingAdapter => {
-  const token = opts.token ?? readEnv("UPLOADTHING_TOKEN");
+  const token = config.token ?? readEnv("UPLOADTHING_TOKEN");
   if (!token) {
     throw new FilesError(
       "Provider",
@@ -282,11 +291,11 @@ export const uploadthing = (
   }
   const decoded = decodeToken(token);
   const { apiKey, appId } = decoded;
-  const region = opts.region ?? decoded.regions?.[0] ?? DEFAULT_REGION;
-  const acl = opts.acl ?? "public-read";
+  const region = config.region ?? decoded.regions?.[0] ?? DEFAULT_REGION;
+  const acl = config.acl ?? "public-read";
   const downloadTimeoutMs =
-    opts.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
-  const defaultExpiresIn = opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+    config.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const defaultExpiresIn = config.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
   // `defaultKeyType: "customId"` makes deleteFiles / generateSignedURL /
   // updateACL route by the user's key (passed as customId on upload)
@@ -315,7 +324,8 @@ export const uploadthing = (
 
   const headViaFetch = async (
     url: string,
-    key: string
+    key: string,
+    signal?: AbortSignal
   ): Promise<{
     size: number;
     type: string;
@@ -324,7 +334,7 @@ export const uploadthing = (
   }> => {
     const res = await fetchWithTimeout(
       url,
-      { method: "HEAD" },
+      { method: "HEAD", ...(signal && { signal }) },
       downloadTimeoutMs
     );
     if (!res.ok) {
@@ -346,7 +356,7 @@ export const uploadthing = (
   };
 
   const adapter: UploadThingAdapter = {
-    async copy(from, to) {
+    async copy(from, to, opts) {
       // UploadThing has no server-side copy. Stream the source through a
       // re-upload so we don't buffer the whole object — multi-GB copies
       // would otherwise blow past serverless memory limits. Source and
@@ -354,9 +364,13 @@ export const uploadthing = (
       // the get and put are not detected. This call costs both an egress
       // download and an ingest upload — for large files, prefer doing the
       // copy at the application layer with a different storage strategy.
-      const src = await adapter.download(from, { as: "stream" });
+      const src = await adapter.download(from, {
+        as: "stream",
+        signal: opts?.signal,
+      });
       await adapter.upload(to, src.stream(), {
         ...(src.type && { contentType: src.type }),
+        signal: opts?.signal,
       });
     },
     async delete(key) {
@@ -372,7 +386,11 @@ export const uploadthing = (
       const url = await resolveFetchUrl(key);
       let res: Response;
       try {
-        res = await fetchWithTimeout(url, undefined, downloadTimeoutMs);
+        res = await fetchWithTimeout(
+          url,
+          downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined,
+          downloadTimeoutMs
+        );
       } catch (error) {
         throw mapUploadThingError(error);
       }
@@ -406,17 +424,17 @@ export const uploadthing = (
         { data: bytes, kind: "buffer" }
       );
     },
-    exists(key) {
+    exists(key, opts) {
       return existsByProbe(async () => {
         const url = await resolveFetchUrl(key);
-        await headViaFetch(url, key);
+        await headViaFetch(url, key, opts?.signal);
       }, mapUploadThingError);
     },
-    async head(key) {
+    async head(key, opts) {
       const url = await resolveFetchUrl(key);
       let info: Awaited<ReturnType<typeof headViaFetch>>;
       try {
-        info = await headViaFetch(url, key);
+        info = await headViaFetch(url, key, opts?.signal);
       } catch (error) {
         throw mapUploadThingError(error);
       }
@@ -529,8 +547,8 @@ export const uploadthing = (
       if (options.maxSize !== undefined) {
         url.searchParams.set("x-ut-file-size", String(options.maxSize));
       }
-      if (opts.slug) {
-        url.searchParams.set("x-ut-slug", opts.slug);
+      if (config.slug) {
+        url.searchParams.set("x-ut-slug", config.slug);
       }
       if (options.contentType) {
         url.searchParams.set("x-ut-file-type", options.contentType);
@@ -559,6 +577,7 @@ export const uploadthing = (
       try {
         result = await utapi.uploadFiles(file, {
           acl,
+          ...(options?.signal && { signal: options.signal }),
         });
       } catch (error) {
         throw mapUploadThingError(error);
