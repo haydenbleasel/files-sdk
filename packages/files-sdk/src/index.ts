@@ -231,13 +231,25 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+const normalizePrefix = (prefix: string | undefined): string => {
+  if (prefix === undefined) {
+    return "";
+  }
+  if (typeof prefix !== "string") {
+    throw new FilesError("Provider", "prefix must be a non-empty string");
+  }
+  const normalized = prefix.replace(/\/+$/u, "");
+  assertValidKey(normalized, "prefix");
+  return normalized;
+};
+
 export class Files<A extends Adapter = Adapter> {
   readonly #adapter: A;
   readonly #prefix: string;
 
   constructor(opts: FilesOptions<A>) {
     this.#adapter = opts.adapter;
-    this.#prefix = opts.prefix?.replace(/\/+$/u, "") ?? "";
+    this.#prefix = normalizePrefix(opts.prefix);
   }
 
   get raw(): A["raw"] {
@@ -249,7 +261,7 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   file(key: string): FileHandle {
-    assertValidKey(key);
+    this.#path(key);
     return {
       copyFrom: (sourceKey) => this.copy(sourceKey, key),
       copyTo: (destinationKey) => this.copy(key, destinationKey),
@@ -265,11 +277,17 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult> {
-    return run(() => this.#adapter.upload(this.#path(key), body, opts));
+    return run(async () =>
+      this.#uploadResult(
+        await this.#adapter.upload(this.#path(key), body, opts)
+      )
+    );
   }
 
   download(key: string, opts?: DownloadOptions): Promise<StoredFile> {
-    return run(() => this.#adapter.download(this.#path(key), opts));
+    return run(async () =>
+      this.#storedFile(await this.#adapter.download(this.#path(key), opts))
+    );
   }
 
   /**
@@ -281,7 +299,9 @@ export class Files<A extends Adapter = Adapter> {
    * the body accessors. They are not free.
    */
   head(key: string): Promise<StoredFile> {
-    return run(() => this.#adapter.head(this.#path(key)));
+    return run(async () =>
+      this.#storedFile(await this.#adapter.head(this.#path(key)))
+    );
   }
 
   /**
@@ -315,7 +335,13 @@ export class Files<A extends Adapter = Adapter> {
     const prefix = opts?.prefix
       ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
       : `${this.#prefix}/`;
-    return run(() => this.#adapter.list({ ...opts, prefix }));
+    return run(async () => {
+      const result = await this.#adapter.list({ ...opts, prefix });
+      return {
+        ...result,
+        items: result.items.map((item) => this.#storedFile(item)),
+      };
+    });
   }
 
   /**
@@ -345,5 +371,21 @@ export class Files<A extends Adapter = Adapter> {
   #path(key: string, label = "key"): string {
     assertValidKey(key, label);
     return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+  }
+
+  #storedFile(file: StoredFile): StoredFile {
+    return this.#prefix ? { ...file, key: this.#stripPrefix(file.key) } : file;
+  }
+
+  #uploadResult(result: UploadResult): UploadResult {
+    return this.#prefix
+      ? { ...result, key: this.#stripPrefix(result.key) }
+      : result;
+  }
+
+  #stripPrefix(key: string): string {
+    return key.startsWith(`${this.#prefix}/`)
+      ? key.slice(this.#prefix.length)
+      : key;
   }
 }

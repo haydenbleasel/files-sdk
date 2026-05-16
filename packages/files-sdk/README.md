@@ -38,6 +38,9 @@ const users = new Files({
 await users.head("/123"); // reads /users/123
 ```
 
+Trailing slashes are trimmed. Leading slashes are preserved, so the prefix is
+otherwise used verbatim.
+
 ## File handles
 
 Use `files.file(key)` when your application code works with the same object repeatedly:
