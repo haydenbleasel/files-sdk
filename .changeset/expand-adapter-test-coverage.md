@@ -2,4 +2,4 @@
 "files-sdk": patch
 ---
 
-Expand test coverage for `box`, `fs`, `onedrive`, `supabase`, and `openai/responses` adapters. Adds tests covering `mapBoxError` / `mapGraphError` non-API error shapes, trailing-slash key handling, no-extension content-type inference, cache-miss reuse and non-file conflict paths in Box, trailing-slash URL trimming in Supabase, and ENOENT mid-page plus non-ENOENT walk errors in the fs adapter. No behavior changes.
+Expand adapter test coverage for error-recovery branches that were previously unexercised: `exists()` swallowing a thrown `NotFound` (azure, gcs, netlify-blobs, r2) versus rethrowing other mapped errors; the supabase stream-download error envelope; and dropbox's `exists()` returning false for `folder`/`deleted` `.tag`s plus the `shared_link_already_exists` recovery falling through when no usable URL is embedded. No runtime behavior changes.

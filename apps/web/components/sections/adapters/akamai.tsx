@@ -17,9 +17,6 @@ const files = new Files({
 
 export const Akamai = () => (
   <section>
-    <Heading as="h2" id="adapter-akamai">
-      Akamai Cloud Object Storage
-    </Heading>
     <p>
       Akamai Cloud Object Storage (formerly Linode Object Storage) via its
       S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived
@@ -32,8 +29,8 @@ export const Akamai = () => (
       Cloud Manager under Object Storage → Access Keys.
     </p>
     <CodeBlock code={AKAMAI_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-akamai-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -108,6 +105,6 @@ export const Akamai = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

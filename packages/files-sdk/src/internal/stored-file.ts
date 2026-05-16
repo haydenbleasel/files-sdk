@@ -1,4 +1,5 @@
 import type { StoredFile } from "../index.js";
+import { collectStream } from "./core.js";
 import { FilesError } from "./errors.js";
 
 export interface StoredFileMeta {
@@ -14,31 +15,6 @@ export type BodySource =
   | { kind: "buffer"; data: Uint8Array }
   | { kind: "stream"; factory: () => ReadableStream<Uint8Array> }
   | { kind: "lazy"; factory: () => Promise<Uint8Array> };
-
-const collectStream = async (
-  stream: ReadableStream<Uint8Array>
-): Promise<Uint8Array> => {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const reader = stream.getReader();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (value) {
-      chunks.push(value);
-      total += value.byteLength;
-    }
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-};
 
 const streamFromBytes = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({

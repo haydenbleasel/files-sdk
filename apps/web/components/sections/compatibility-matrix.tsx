@@ -23,16 +23,17 @@ const ok: Cell = { status: "ok" };
 const warn = (note: string): Cell => ({ note, status: "warn" });
 const no = (note: string): Cell => ({ note, status: "no" });
 
-const COLUMNS = [
-  { key: "s3", label: "S3", parent: "S3" },
+const ADAPTERS = [
+  { key: "s3", label: "AWS SDK", parent: "S3" },
+  { key: "bun-s3", label: "Bun", parent: "S3" },
   { key: "r2-http", label: "HTTP", parent: "Cloudflare R2" },
   { key: "r2-binding", label: "binding", parent: "Cloudflare R2" },
   { key: "r2-hybrid", label: "hybrid", parent: "Cloudflare R2" },
   { key: "vb-public", label: "public", parent: "Vercel Blob" },
   { key: "vb-private", label: "private", parent: "Vercel Blob" },
-  { key: "nb", label: "Netlify", parent: "Netlify Blobs" },
+  { key: "nb", label: "Netlify Blobs", parent: "Netlify Blobs" },
   { key: "minio", label: "MinIO", parent: "MinIO" },
-  { key: "spaces", label: "Spaces", parent: "DigitalOcean" },
+  { key: "spaces", label: "DigitalOcean", parent: "DigitalOcean" },
   { key: "storj", label: "Storj", parent: "Storj" },
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
@@ -45,34 +46,50 @@ const COLUMNS = [
   { key: "vultr", label: "Vultr", parent: "Vultr" },
   { key: "filebase", label: "Filebase", parent: "Filebase" },
   { key: "exoscale", label: "Exoscale", parent: "Exoscale" },
-  { key: "oracle-cloud", label: "Oracle", parent: "Oracle Cloud" },
+  { key: "oracle-cloud", label: "Oracle Cloud", parent: "Oracle Cloud" },
   { key: "ibm-cos", label: "IBM COS", parent: "IBM COS" },
+  { key: "tencent", label: "Tencent COS", parent: "Tencent COS" },
+  { key: "alibaba", label: "Alibaba OSS", parent: "Alibaba OSS" },
   { key: "tigris", label: "Tigris", parent: "Tigris" },
+  { key: "yandex", label: "Yandex", parent: "Yandex Object Storage" },
   { key: "gcs", label: "GCS", parent: "GCS" },
-  { key: "google-drive", label: "Drive", parent: "Google Drive" },
+  { key: "google-drive", label: "Google Drive", parent: "Google Drive" },
   { key: "onedrive", label: "OneDrive", parent: "OneDrive" },
+  { key: "sharepoint", label: "SharePoint", parent: "SharePoint" },
   { key: "dropbox", label: "Dropbox", parent: "Dropbox" },
   { key: "box", label: "Box", parent: "Box" },
   { key: "azure", label: "Azure", parent: "Azure" },
   { key: "supabase", label: "Supabase", parent: "Supabase" },
   { key: "ut-public", label: "public", parent: "UploadThing" },
   { key: "ut-private", label: "private", parent: "UploadThing" },
-  { key: "fs", label: "fs", parent: "Filesystem" },
+  { key: "cloudinary", label: "Cloudinary", parent: "Cloudinary" },
+  { key: "fs", label: "Filesystem", parent: "Filesystem" },
+  { key: "appwrite", label: "Appwrite", parent: "Appwrite" },
 ] as const;
 
-type ColumnKey = (typeof COLUMNS)[number]["key"];
+type AdapterKey = (typeof ADAPTERS)[number]["key"];
 
-const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
+const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: warn(
+        "Stream bodies are buffered up-front - `InputFile.fromBuffer` has no streaming form, so streamed uploads can't avoid materializing the body in memory. User `metadata` and `cacheControl` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and has no override."
+      ),
       azure: ok,
       b2: ok,
       box: warn(
         "Two-stage: walks/creates parent folders by ID under `rootFolderId`, then `uploads.uploadFile` (≤50 MB) or `chunkedUploads.uploadBigFile` (>50 MB). Re-uploads against existing leaf names route through `uploadFileVersion` (overwrite). Stream bodies are buffered up-front - Box's upload manager takes a Node `Readable`, not a Web stream. User `metadata` and `cacheControl` throw - Box exposes file metadata via classifications and metadata templates; drop to `raw.fileMetadata.*` if you need it."
       ),
+      "bun-s3": warn(
+        "User `metadata` and `cacheControl` throw - `Bun.S3Client.write()` exposes neither field. Reach for `s3()` on the same bucket if you need them. Stream bodies are wrapped in a `Response` and handed to Bun's writer."
+      ),
       bunny: warn(
         "Custom `metadata` and `cacheControl` throw — the Bunny Storage TypeScript SDK exposes content-type/checksum but no arbitrary object metadata or per-object cache-control field. Configure cache behavior on the Pull Zone/CDN."
+      ),
+      cloudinary: warn(
+        "Bodies are buffered into memory and handed to `upload_stream` - Cloudinary's SDK has no streaming form. User `metadata` and `cacheControl` throw - Cloudinary has no per-asset HTTP cache header and no arbitrary-metadata field on upload; drop to `raw` for `context`. Uploads are scoped to the adapter's `resourceType`/`type` and overwrite (`invalidate: true`)."
       ),
       dropbox: warn(
         "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw - Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
@@ -99,9 +116,13 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: warn(
+        "Delegates to `onedrive` after site/library resolution: single-PUT simple upload capped at OneDrive's 250 MB simple-upload limit. Bodies above the cap throw - use `signedUploadUrl()` for chunked. User `metadata` and `cacheControl` throw - Graph drive items have no native arbitrary-metadata field; use `raw` to set Open Extensions if you need them."
+      ),
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -109,18 +130,25 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "upload",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: ok,
       azure: ok,
       b2: ok,
       box: warn(
         "Resolves the file ID, then fetches `getDownloadFileUrl` for both buffered and streaming reads - the SDK's native `downloadFile` returns a Node `Readable` that's awkward to expose isomorphically, so the adapter routes through standard HTTP, which gives a `ReadableStream` body."
       ),
+      "bun-s3": ok,
       bunny: ok,
+      cloudinary: warn(
+        "No streaming primitive - the adapter fetches the delivery URL with `fetch()` to read bytes, so streamed downloads still buffer the body in memory. Metadata comes from a parallel `api.resource` call."
+      ),
       dropbox: warn(
         "`filesDownload` buffers the full body - the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
       ),
@@ -142,9 +170,11 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -152,16 +182,21 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "download",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: ok,
       azure: ok,
       b2: ok,
       box: ok,
+      "bun-s3": ok,
       bunny: ok,
+      cloudinary: ok,
       dropbox: ok,
       exoscale: ok,
       filebase: ok,
@@ -181,9 +216,11 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": ok,
       "ut-public": ok,
@@ -191,19 +228,26 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "delete",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: ok,
       azure: ok,
       b2: ok,
       box: warn(
         "Returns immediate-children files only at `rootFolderId` - no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Box's offset, encoded as a numeric cursor string."
       ),
+      "bun-s3": ok,
       bunny: warn(
         "Bunny lists a directory, not a recursive object-prefix scan. The adapter chooses the nearest directory for `prefix`, filters that page client-side, and encodes numeric offsets as cursors after fetching the directory listing."
+      ),
+      cloudinary: warn(
+        "Page size clamped to 500 (Cloudinary Admin API ceiling). Resources are scoped by `resource_type` and `type` at adapter construction, so mixed-type buckets need separate adapters. Pagination uses Cloudinary's opaque `next_cursor`."
       ),
       dropbox: warn(
         "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
@@ -232,11 +276,15 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: warn(
+        "Delegates to `onedrive`: returns immediate-children files only at `rootFolderPath` - no recursion, and subfolders are filtered out. `prefix` is filename-prefix only (matched client-side within the page). Pagination uses Graph's `@odata.nextLink` as the opaque cursor."
+      ),
       spaces: ok,
       storj: ok,
       supabase: warn(
         "Supabase's stable list API is offset/limit, not cursor-based. The adapter encodes the next offset as a numeric cursor string so the unified API works unchanged - the cursor is opaque to callers but is just `String(offset + page)` underneath."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing's listFiles is offset/limit, not cursor-based - the adapter encodes the next offset as a numeric cursor. `prefix` is unsupported server-side; the adapter filters the returned page client-side, which under-returns when the prefix isn't satisfied within a single page."
@@ -248,18 +296,23 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "list",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: ok,
       azure: ok,
       b2: ok,
       box: warn(
         "Box doesn't store user-supplied content types on file content - `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `size`, `etag`, and `lastModified` come from `getFileById`."
       ),
+      "bun-s3": ok,
       bunny: ok,
+      cloudinary: ok,
       dropbox: warn(
         "Dropbox doesn't store user-supplied content types - `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
       ),
@@ -283,9 +336,11 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing has no metadata endpoint, so `head()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and parses size/content-type/etag/last-modified from the response headers. User `metadata` isn't supported."
@@ -297,16 +352,21 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "head",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: ok,
       azure: ok,
       b2: ok,
       box: ok,
+      "bun-s3": ok,
       bunny: ok,
+      cloudinary: ok,
       dropbox: warn(
         "Resolves via `filesGetMetadata` and returns `false` for folder or deleted entries at the path - matches Dropbox's semantics where the same path can hold a folder or a tombstone. Only true file entries return `true`."
       ),
@@ -330,9 +390,11 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: ok,
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "UploadThing has no metadata endpoint, so `exists()` issues a HEAD request against the resolved file URL (signed for private, CDN for public) and treats `404` as `false`."
@@ -344,19 +406,30 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "exists",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: warn(
+        "Read-then-write - Appwrite has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic."
+      ),
       azure: warn(
         "Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS."
       ),
       b2: ok,
       box: ok,
+      "bun-s3": warn(
+        "Client-side stream copy - `Bun.S3Client` doesn't expose a server-side `CopyObject`, so the source is streamed through this process and re-uploaded. Doubled bandwidth, not atomic, and drops Content-Disposition/cache headers/user metadata/ACL (only Content-Type is preserved). Reach for `s3()` on the same bucket for server-side copy."
+      ),
       bunny: warn(
         "Read-then-write — Bunny Storage's TypeScript SDK has no server-side copy primitive, so the source is downloaded and re-uploaded. Not server-side atomic."
+      ),
+      cloudinary: warn(
+        "Re-upload by URL - Cloudinary has no native copy and `rename` is move-only. The adapter fetches the source delivery URL and ingests it as a new asset under `to`. Produces a new `asset_id`/`etag`, not a byte-identical reference. Costs an egress + an ingest; not atomic."
       ),
       dropbox: ok,
       exoscale: ok,
@@ -385,9 +458,13 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       s3: ok,
       scaleway: ok,
+      sharepoint: warn(
+        "Delegates to `onedrive`: async copy on Graph (`POST /items/{id}/copy` returns 202 + monitor URL). The adapter polls the monitor every 500 ms until status is `completed`/`failed`, capped by `copyTimeoutMs` (default 60_000). On timeout the call throws `Provider`; tune `copyTimeoutMs` for large files."
+      ),
       spaces: ok,
       storj: ok,
       supabase: ok,
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "Read-then-write - UploadThing has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic."
@@ -399,12 +476,17 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "vb-public": ok,
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "copy",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: warn(
+        "Throws by default because Appwrite SDKs cannot mint presigned reading URLs with keys. Set `public: true` at construction to return the constructed Appwrite public CDN URL. `expiresIn` and `responseContentDisposition` are ignored."
+      ),
       azure: warn(
         "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
       ),
@@ -412,8 +494,12 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       box: warn(
         "Default mints a signed download URL via `getDownloadFileUrl` - Box controls the TTL server-side, so `expiresIn` is accepted for API symmetry but is not honoured. With `publicByDefault: true`, `upload()` calls `addShareLinkToFile` (open access) and `url()` returns the link's `download_url`. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Box's URLs have no Content-Disposition override."
       ),
+      "bun-s3": ok,
       bunny: warn(
         "Requires `publicBaseUrl` (for example a Bunny Pull Zone or custom CDN hostname) and returns `<publicBaseUrl>/<key>`. Without it, throws because the Storage API URL requires an `AccessKey` header. `expiresIn` is ignored and `responseContentDisposition` throws — Bunny Storage has no signed-read URL primitive."
+      ),
+      cloudinary: warn(
+        "Public delivery URLs by default (`type: 'upload'`). For `private`/`authenticated` types, mints a signed delivery URL via `private_download_url` (requires `apiSecret` and the asset's stored format - costs a HEAD round-trip per call). `responseContentDisposition` always throws - Cloudinary has no per-request Content-Disposition override (drop to `raw` for the `attachment` flag)."
       ),
       dropbox: warn(
         "Default mints a 4-hour temporary link via `filesGetTemporaryLink` - `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Dropbox links have no Content-Disposition override."
@@ -446,11 +532,15 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: warn(
+        "Delegates to `onedrive`: throws by default - Graph has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` calls `createLink` (anonymous-view scope) and `url()` returns the share link's `webUrl`. The link is permanent (`expiresIn` ignored) and `responseContentDisposition` always throws. Anonymous links are blocked on tenants where admins disable them."
+      ),
       spaces: ok,
       storj: ok,
       supabase: warn(
         "Default mints a signed read URL via `createSignedUrl` (1-hour default). With `public: true`, returns the permanent unsigned `getPublicUrl` result. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` is honored - it threads through Supabase's `download` option in the signed path."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "Mints a signed read URL via `generateSignedURL` (1-hour default). `responseContentDisposition` throws - UploadThing has no Content-Disposition override on signed or CDN URLs."
@@ -466,12 +556,17 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "url",
   },
   {
     cells: {
       akamai: ok,
+      alibaba: ok,
+      appwrite: no(
+        "No presigned upload primitive in Appwrite. Use JWTs or client SDKs for direct uploads."
+      ),
       azure: warn(
         "PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
       ),
@@ -479,8 +574,14 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       box: no(
         "Throws - Box uploads require a multipart POST with both an `attributes` JSON part and the file bytes part, which fits neither the SDK's PUT-with-headers nor S3-style POST-with-form-fields shape. Use `upload()` server-side, or Box's UI Elements / Content Uploader for browser flows."
       ),
+      "bun-s3": warn(
+        "PUT URL only - Bun exposes presigned URLs, not S3 POST policy fields, so `maxSize` throws (no `content-length-range` policy). Enforce upload caps at your application gateway instead."
+      ),
       bunny: no(
         "Throws — Bunny Storage has no presigned upload primitive. Writes go through the Storage API with an `AccessKey` header, so upload server-side via the SDK or proxy through your application."
+      ),
+      cloudinary: warn(
+        "Form-POST shape with `fields` (`method: 'POST'`), not a single presigned PUT URL - signs Cloudinary's `api_sign_request` payload. Requires `apiSecret`. `maxSize` and `minSize` aren't enforced server-side - use an upload preset with `max_file_size` if you need a cap. `expiresIn` is informational - Cloudinary signatures are fixed at 1h."
       ),
       dropbox: no(
         "Throws - Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."
@@ -513,11 +614,15 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       "r2-hybrid": ok,
       s3: ok,
       scaleway: ok,
+      sharepoint: warn(
+        "Delegates to `onedrive`: initiates a Graph upload session via `POST /createUploadSession` and returns the session URL as a one-shot PUT (the session URL is pre-authenticated by Graph itself). `maxSize` and `minSize` are advisory - Graph does not enforce a server-side `content-length-range` policy on upload sessions; clients can still chunk via `Content-Range` to the same URL."
+      ),
       spaces: ok,
       storj: ok,
       supabase: warn(
         "PUT URL only - Supabase has no POST policy equivalent. `maxSize` throws (Supabase signed upload URLs have no `content-length-range` policy; set the bucket-level size limit in the dashboard instead). `expiresIn` is silently ignored - Supabase fixes the TTL at 2 hours server-side. The returned headers include `x-upsert: true`."
       ),
+      tencent: ok,
       tigris: ok,
       "ut-private": warn(
         "PUT URL only - built against UploadThing's UFS ingest endpoint with an HMAC-SHA256 signature over the URL. `maxSize` is advisory: UploadThing enforces upload caps via the file-router config tied to the adapter's `slug`, not via the URL signature. `minSize` is ignored (no equivalent on UFS). The user-supplied key is bound as `x-ut-custom-id` so subsequent ops can route by it."
@@ -533,6 +638,7 @@ const ROWS: { method: string; cells: Record<ColumnKey, Cell> }[] = [
       ),
       vultr: ok,
       wasabi: ok,
+      yandex: ok,
     },
     method: "signedUploadUrl",
   },
@@ -571,22 +677,6 @@ const StatusIcon = ({ cell }: { cell: Cell }) => {
   );
 };
 
-// Header row: providers grouped above their configurations. Each parent
-// label spans only its own configurations so the visual grouping stays
-// truthful (S3 / MinIO / DigitalOcean span 1, R2 spans 3, Vercel Blob spans 2).
-const HEADER_GROUPS: { parent: string; span: number }[] = (() => {
-  const groups: { parent: string; span: number }[] = [];
-  for (const col of COLUMNS) {
-    const last = groups.at(-1);
-    if (last && last.parent === col.parent) {
-      last.span += 1;
-    } else {
-      groups.push({ parent: col.parent, span: 1 });
-    }
-  }
-  return groups;
-})();
-
 const Legend = ({
   icon: Icon,
   cls,
@@ -615,72 +705,45 @@ export const CompatibilityMatrix = () => (
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground" />
-              {HEADER_GROUPS.map((g, i) => (
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">
+                Adapter
+              </th>
+              {ROWS.map((row) => (
                 <th
-                  className={cn(
-                    "px-2 py-2 text-center font-medium text-foreground",
-                    i < HEADER_GROUPS.length - 1 && "border-r border-dotted"
-                  )}
-                  colSpan={g.span}
-                  key={g.parent}
+                  className="px-2 py-2 text-center font-mono font-normal text-muted-foreground whitespace-nowrap"
+                  key={row.method}
                 >
-                  {g.parent}
+                  {row.method}
                 </th>
               ))}
             </tr>
-            <tr className="border-b border-dotted">
-              <th className="sticky left-0 bg-background px-3 py-2 text-left font-medium text-muted-foreground">
-                Method
-              </th>
-              {COLUMNS.map((col, i) => {
-                const next = COLUMNS[i + 1];
-                const endsGroup = !next || next.parent !== col.parent;
-                const sameAsParent = col.parent === col.label;
-                return (
-                  <th
-                    className={cn(
-                      "px-2 py-2 text-center font-normal text-muted-foreground whitespace-nowrap",
-                      endsGroup &&
-                        i < COLUMNS.length - 1 &&
-                        "border-r border-dotted"
-                    )}
-                    key={col.key}
-                  >
-                    {sameAsParent ? "" : col.label}
-                  </th>
-                );
-              })}
-            </tr>
           </thead>
           <tbody>
-            {ROWS.map((row) => (
-              <tr
-                className="border-b border-dotted last:border-b-0"
-                key={row.method}
-              >
-                <th className="sticky left-0 bg-background px-3 py-2 text-left font-mono font-normal whitespace-nowrap">
-                  {row.method}
-                </th>
-                {COLUMNS.map((col, i) => {
-                  const next = COLUMNS[i + 1];
-                  const endsGroup = !next || next.parent !== col.parent;
-                  return (
-                    <td
-                      className={cn(
-                        "px-2 py-2 text-center",
-                        endsGroup &&
-                          i < COLUMNS.length - 1 &&
-                          "border-r border-dotted"
-                      )}
-                      key={col.key}
-                    >
-                      <StatusIcon cell={row.cells[col.key]} />
+            {ADAPTERS.map((adapter) => {
+              const sameAsParent = adapter.parent === adapter.label;
+              return (
+                <tr
+                  className="border-b border-dotted last:border-b-0"
+                  key={adapter.key}
+                >
+                  <th className="px-3 py-2 text-left font-normal whitespace-nowrap align-top">
+                    <div className="font-medium text-foreground">
+                      {adapter.parent}
+                    </div>
+                    {!sameAsParent && (
+                      <div className="text-muted-foreground">
+                        {adapter.label}
+                      </div>
+                    )}
+                  </th>
+                  {ROWS.map((row) => (
+                    <td className="px-2 py-2 text-center" key={row.method}>
+                      <StatusIcon cell={row.cells[adapter.key]} />
                     </td>
-                  );
-                })}
-              </tr>
-            ))}
+                  ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

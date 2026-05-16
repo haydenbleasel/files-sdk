@@ -125,7 +125,7 @@ export const Openai = () => (
       OpenAI directly - one for the native{" "}
       <a
         className="underline decoration-dotted underline-offset-4 hover:text-foreground"
-        href="https://platform.openai.com/docs/api-reference/responses"
+        href="https://developers.openai.com/api/reference/responses/overview"
         rel="noreferrer"
         target="_blank"
       >

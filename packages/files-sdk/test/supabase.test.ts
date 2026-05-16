@@ -771,6 +771,21 @@ describe("supabase adapter", () => {
       expect(got.size).toBe(0);
     });
 
+    test("stream download maps an asStream() error response to FilesError", async () => {
+      // Drives downloadAsStreamFile's `throw mapSupabaseError(error)` path —
+      // the asStream() builder returns a Supabase-shaped error envelope.
+      downloadStreamMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(404, "NotFound", "stream gone"))
+      );
+      try {
+        await makeAdapter().download("a.txt", { as: "stream" });
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).code).toBe("NotFound");
+      }
+    });
+
     test("buffer download with empty Blob.type recovers via info()", async () => {
       // Drives toMs(Date) and stringifyMetadata branches via metadata that
       // arrives as a Date and a non-string value.

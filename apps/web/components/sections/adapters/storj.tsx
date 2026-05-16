@@ -18,9 +18,6 @@ const files = new Files({
 
 export const Storj = () => (
   <section>
-    <Heading as="h2" id="adapter-storj">
-      Storj
-    </Heading>
     <p>
       Storj DCS via its S3-compatible Gateway. A thin wrapper around the S3
       adapter - endpoint defaults to Storj's hosted Gateway MT, path-style
@@ -30,8 +27,8 @@ export const Storj = () => (
       <code>uplink share --register</code>.
     </p>
     <CodeBlock code={STORJ_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-storj-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -106,6 +103,6 @@ export const Storj = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

@@ -17,9 +17,6 @@ const files = new Files({
 
 export const Azure = () => (
   <section>
-    <Heading as="h2" id="adapter-azure">
-      Azure Blob Storage
-    </Heading>
     <p>
       Azure Blob Storage via the official <code>@azure/storage-blob</code> SDK.
       Four credential modes: connection string, account name + account key,
@@ -28,8 +25,8 @@ export const Azure = () => (
       methods keep working.
     </p>
     <CodeBlock code={AZURE_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-azure-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -112,9 +109,9 @@ export const Azure = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-azure-limitations">
+    </section>
+    <section>
+      <Heading as="h2" id="limitations">
         Limitations
       </Heading>
       <p>
@@ -128,6 +125,6 @@ export const Azure = () => (
         drop down to <code>adapter.raw</code> or wait for a future{" "}
         <code>client</code> option.
       </p>
-    </div>
+    </section>
   </section>
 );

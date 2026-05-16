@@ -82,6 +82,50 @@ describe("Files class", () => {
     expect(await got.text()).toBe("payload");
   });
 
+  test("file handle binds operations to one key", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const file = files.file("handle.txt");
+
+    expect(file.key).toBe("handle.txt");
+    expect(await file.exists()).toBe(false);
+
+    const uploaded = await file.upload("hello", { contentType: "text/plain" });
+    expect(uploaded.key).toBe("handle.txt");
+    expect(await file.exists()).toBe(true);
+
+    const meta = await file.head();
+    expect(meta.key).toBe("handle.txt");
+    expect(meta.type).toBe("text/plain");
+
+    const downloaded = await file.download();
+    expect(await downloaded.text()).toBe("hello");
+
+    const url = await file.url({ expiresIn: 60 });
+    expect(url).toContain("handle.txt");
+    expect(url).toContain("expires=60");
+
+    const signed = await file.signedUploadUrl({ expiresIn: 60 });
+    expect(signed.method).toBe("PUT");
+
+    await file.delete();
+    expect(await file.exists()).toBe(false);
+  });
+
+  test("file handle supports copy helpers", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const source = files.file("source.txt");
+    await source.upload("payload");
+
+    await source.copyTo("copy.txt");
+    const copied = await files.download("copy.txt");
+    expect(await copied.text()).toBe("payload");
+
+    const mirror = files.file("mirror.txt");
+    await mirror.copyFrom("copy.txt");
+    const mirrored = await mirror.download();
+    expect(await mirrored.text()).toBe("payload");
+  });
+
   test("list returns items filtered by prefix", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("a/1.txt", "1");

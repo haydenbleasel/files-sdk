@@ -17,9 +17,6 @@ const files = new Files({
 
 export const IbmCos = () => (
   <section>
-    <Heading as="h2" id="adapter-ibm-cos">
-      IBM Cloud Object Storage
-    </Heading>
     <p>
       IBM Cloud Object Storage via its S3-compatible API. A thin wrapper around
       the S3 adapter - endpoint derived from the region code (
@@ -33,8 +30,8 @@ export const IbmCos = () => (
       <code>IBM_COS_SECRET_ACCESS_KEY</code>.
     </p>
     <CodeBlock code={IBM_COS_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-ibm-cos-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -120,6 +117,6 @@ export const IbmCos = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

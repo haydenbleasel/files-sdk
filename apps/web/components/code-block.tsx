@@ -53,7 +53,15 @@ export const CodeBlock = async ({ code, lang, className }: CodeBlockProps) => {
         "overflow-x-auto p-6 text-sm bg-sidebar rounded-lg"
       )}
       data-language={lang}
-      style={{ color: result.fg }}
+      // Geist Mono ships ligatures/contextual alternates that span text-node
+      // boundaries — without this, `<space>--flag` collapses visually even
+      // though the whitespace exists in the DOM. Spans from Shiki put each
+      // token in its own <span>, but Harfbuzz still shapes across them.
+      style={{
+        color: result.fg,
+        fontFeatureSettings: '"liga" 0, "calt" 0',
+        fontVariantLigatures: "none",
+      }}
     >
       <code>
         {result.tokens.map((row, index) => (

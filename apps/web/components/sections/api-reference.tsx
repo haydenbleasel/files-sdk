@@ -55,6 +55,18 @@ const safe = await files.url("avatars/abc.png", {
   responseContentDisposition: "attachment",
 });`;
 
+const FILE_HANDLE_EXAMPLE = `const avatar = files.file("avatars/abc.png");
+
+await avatar.upload(file, { contentType: "image/png" });
+
+if (await avatar.exists()) {
+  const meta = await avatar.head();
+  const url = await avatar.url({ expiresIn: 300 });
+}
+
+await avatar.copyTo("avatars/abc.bak.png");
+await avatar.delete();`;
+
 const SIGNED_UPLOAD_EXAMPLE = `// On your server: hand back an upload contract that lets the browser
 // PUT/POST the file directly to the bucket. Bytes never touch your server.
 const upload = await files.signedUploadUrl("avatars/abc.png", {
@@ -394,6 +406,24 @@ export const ApiReference = () => (
           </PropAccordionItem>
         </Accordion>
       </div>
+    </section>
+
+    <section>
+      <Heading as="h3" id="files-file">
+        files.file(key)
+      </Heading>
+      <p>
+        Returns a <code>FileHandle</code> bound to <code>key</code>: a thin
+        wrapper that exposes <code>upload</code>, <code>download</code>,{" "}
+        <code>head</code>, <code>exists</code>, <code>delete</code>,{" "}
+        <code>url</code>, <code>signedUploadUrl</code>, <code>copyTo</code>, and{" "}
+        <code>copyFrom</code> without re-passing the key each time. Useful when
+        application code works with the same object repeatedly. The key is
+        validated at construction; every method routes through the same{" "}
+        <code>Files</code> entry points, so adapters do not implement anything
+        extra.
+      </p>
+      <CodeBlock code={FILE_HANDLE_EXAMPLE} lang="ts" />
     </section>
   </section>
 );

@@ -17,9 +17,6 @@ const files = new Files({
 
 export const Minio = () => (
   <section>
-    <Heading as="h2" id="adapter-minio">
-      MinIO
-    </Heading>
     <p>
       MinIO and other self-hosted S3-compatible servers. A thin wrapper around
       the S3 adapter with MinIO-friendly defaults - path-style addressing on,
@@ -27,8 +24,8 @@ export const Minio = () => (
       <code>MINIO_ACCESS_KEY_ID</code> and <code>MINIO_SECRET_ACCESS_KEY</code>.
     </p>
     <CodeBlock code={MINIO_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-minio-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -88,6 +85,6 @@ export const Minio = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

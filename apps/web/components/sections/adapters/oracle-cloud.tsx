@@ -18,9 +18,6 @@ const files = new Files({
 
 export const OracleCloud = () => (
   <section>
-    <Heading as="h2" id="adapter-oracle-cloud">
-      Oracle Cloud Object Storage
-    </Heading>
     <p>
       Oracle Cloud Infrastructure Object Storage via its S3 compatibility layer.
       A thin wrapper around the S3 adapter - endpoint derived from your tenancy
@@ -34,8 +31,8 @@ export const OracleCloud = () => (
       <code>OCI_SECRET_ACCESS_KEY</code>.
     </p>
     <CodeBlock code={ORACLE_CLOUD_EXAMPLE} lang="ts" />
-    <div className="flex flex-col gap-2">
-      <Heading as="h3" id="adapter-oracle-cloud-options">
+    <section>
+      <Heading as="h2" id="options">
         Options
       </Heading>
       <Accordion className="rounded-md border-dotted" type="multiple">
@@ -122,6 +119,6 @@ export const OracleCloud = () => (
           </p>
         </PropAccordionItem>
       </Accordion>
-    </div>
+    </section>
   </section>
 );

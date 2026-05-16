@@ -6,7 +6,7 @@ const EASE = [0.16, 1, 0.3, 1] as const;
 
 interface PageHeroProps {
   title: string;
-  description: string;
+  description?: string;
 }
 
 export const PageHero = ({ title, description }: PageHeroProps) => (
@@ -21,13 +21,15 @@ export const PageHero = ({ title, description }: PageHeroProps) => (
         {title}
       </h1>
     </motion.div>
-    <motion.p
-      className="text-muted-foreground text-balance leading-relaxed"
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.12, duration: 0.6, ease: EASE }}
-    >
-      {description}
-    </motion.p>
+    {description ? (
+      <motion.p
+        className="text-muted-foreground text-balance leading-relaxed"
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.12, duration: 0.6, ease: EASE }}
+      >
+        {description}
+      </motion.p>
+    ) : null}
   </section>
 );
