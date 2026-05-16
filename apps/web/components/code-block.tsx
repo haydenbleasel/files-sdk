@@ -50,7 +50,7 @@ export const CodeBlock = async ({ code, lang, className }: CodeBlockProps) => {
     <pre
       className={cn(
         className,
-        "overflow-x-auto p-6 text-sm bg-sidebar rounded-lg"
+        "overflow-x-auto rounded-lg bg-sidebar p-6 font-mono text-sm"
       )}
       data-language={lang}
       // Geist Mono ships ligatures/contextual alternates that span text-node
@@ -60,6 +60,7 @@ export const CodeBlock = async ({ code, lang, className }: CodeBlockProps) => {
       style={{
         color: result.fg,
         fontFeatureSettings: '"liga" 0, "calt" 0',
+        fontKerning: "none",
         fontVariantLigatures: "none",
       }}
     >
