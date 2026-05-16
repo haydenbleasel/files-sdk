@@ -45,8 +45,8 @@ export const BunnyStorage = () => (
         <PropAccordionItem name="accessKey" status="required" value="accessKey">
           <p>
             Storage Zone password / API access key. Falls back to{" "}
-            <code>BUNNY_STORAGE_ACCESS_KEY</code>, <code>BUNNY_ACCESS_KEY</code>
-            , then <code>STORAGE_ACCESS_KEY</code>.
+            <code>BUNNY_STORAGE_ACCESS_KEY</code>, then{" "}
+            <code>STORAGE_ACCESS_KEY</code>.
           </p>
         </PropAccordionItem>
         <PropAccordionItem name="region" status="required" value="region">

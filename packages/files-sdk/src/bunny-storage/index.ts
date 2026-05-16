@@ -30,8 +30,8 @@ export interface BunnyStorageAdapterOptions {
   zone?: string;
   /**
    * Bunny Storage zone password / API access key. Falls back to
-   * `BUNNY_STORAGE_ACCESS_KEY`, `BUNNY_ACCESS_KEY`, then `STORAGE_ACCESS_KEY`
-   * (the convention used in the SDK's README example).
+   * `BUNNY_STORAGE_ACCESS_KEY`, then `STORAGE_ACCESS_KEY` (the convention
+   * used in the SDK's README example).
    */
   accessKey?: string;
   /**
@@ -102,12 +102,23 @@ const keyFromStorageFile = (
   entry: BunnyStorageSDK.file.StorageFile
 ): string => {
   // Bunny's `Path` is the file's containing directory and always starts
-  // with `/<StorageZoneName>/`; `ObjectName` carries the file name on its
-  // own. Strip the leading slash and the zone segment so the returned key
-  // is relative to the zone root, then join with the object name. Empty
-  // directory means the entry lives at the zone root.
+  // with `/<StorageZoneName>/` ending in `/`; `ObjectName` carries the file
+  // name on its own. Strip the leading slash and the zone segment so the
+  // returned key is relative to the zone root, then join with the object
+  // name. An empty directory means the entry lives at the zone root.
+  //
+  // Defensive case: if a Bunny endpoint ever returns `Path` as
+  // `/zone/dir/file` (the full key, no trailing slash) instead of the
+  // documented `/zone/dir/`, treat `Path` itself as the key and don't
+  // append `ObjectName` a second time. Detecting this via "did the raw
+  // path end with `/`?" — rather than "does the directory end with `/
+  // <objectName>`?" — is important because the latter false-positives when
+  // a file legitimately shares a name with its parent directory (e.g.
+  // `docs/somename/somename`).
   const name = fromBunnyPath(entry.objectName);
-  let directory = fromBunnyPath(entry.path);
+  const rawPath = fromBunnyPath(entry.path);
+  const pathIsDirectory = rawPath === "" || rawPath.endsWith("/");
+  let directory = rawPath;
   const zone = entry.storageZoneName;
   if (zone) {
     if (directory === zone) {
@@ -117,15 +128,13 @@ const keyFromStorageFile = (
     }
   }
   directory = directory.replace(/\/+$/u, "");
+  if (!pathIsDirectory) {
+    return directory || name;
+  }
   if (!directory) {
     return name;
   }
   if (!name) {
-    return directory;
-  }
-  // Defensive: if a Bunny endpoint ever returns Path as `/zone/dir/file`
-  // instead of `/zone/dir/`, don't append ObjectName a second time.
-  if (directory === name || directory.endsWith(`/${name}`)) {
     return directory;
   }
   return `${directory}/${name}`;
@@ -253,7 +262,6 @@ const buildClient = (opts: BunnyStorageAdapterOptions): BunnyStorageClient => {
   const accessKey =
     opts.accessKey ??
     readEnv("BUNNY_STORAGE_ACCESS_KEY") ??
-    readEnv("BUNNY_ACCESS_KEY") ??
     readEnv("STORAGE_ACCESS_KEY");
   const region = parseRegion(
     opts.region ?? readEnv("BUNNY_STORAGE_REGION") ?? readEnv("STORAGE_REGION")

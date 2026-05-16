@@ -38,7 +38,7 @@ const ADAPTERS = [
   { key: "hetzner", label: "Hetzner", parent: "Hetzner" },
   { key: "akamai", label: "Akamai", parent: "Akamai" },
   { key: "bunny", label: "Bunny", parent: "Bunny Storage" },
-  { key: "b2", label: "B2", parent: "Backblaze B2" },
+  { key: "b2", label: "Backblaze B2", parent: "Backblaze B2" },
   { key: "wasabi", label: "Wasabi", parent: "Wasabi" },
   { key: "scaleway", label: "Scaleway", parent: "Scaleway" },
   { key: "ovhcloud", label: "OVHcloud", parent: "OVHcloud" },

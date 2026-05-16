@@ -184,7 +184,6 @@ beforeEach(() => {
   uploadMock.mockClear();
   delete process.env.BUNNY_STORAGE_ZONE;
   delete process.env.BUNNY_STORAGE_ACCESS_KEY;
-  delete process.env.BUNNY_ACCESS_KEY;
   delete process.env.BUNNY_STORAGE_REGION;
   delete process.env.STORAGE_ZONE;
   delete process.env.STORAGE_ACCESS_KEY;
@@ -459,18 +458,6 @@ describe("bunnyStorage adapter", () => {
     process.env.STORAGE_REGION = "de";
     const adapter = bunnyStorage();
     expect(adapter.zone).toBe("uploads");
-    expect(connectWithAccessKeyMock).toHaveBeenCalledWith(
-      "de",
-      "uploads",
-      "key"
-    );
-  });
-
-  test("BUNNY_ACCESS_KEY is accepted as an alias", () => {
-    process.env.BUNNY_STORAGE_ZONE = "uploads";
-    process.env.BUNNY_ACCESS_KEY = "key";
-    process.env.BUNNY_STORAGE_REGION = "de";
-    bunnyStorage();
     expect(connectWithAccessKeyMock).toHaveBeenCalledWith(
       "de",
       "uploads",
@@ -922,6 +909,53 @@ describe("bunnyStorage adapter", () => {
       });
       const result = await adapter.list();
       expect(result.items.map((item) => item.key)).toEqual(["docs"]);
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
+  });
+
+  test("keyFromStorageFile keeps the filename when it equals the parent directory name", async () => {
+    // Regression: when a file legitimately shares its name with its
+    // containing directory (e.g. `docs/somename/somename`), the adapter
+    // must still return the full key. An earlier defensive branch keyed
+    // off `directory.endsWith('/<objectName>')` and false-positively
+    // collapsed this case to `docs/somename`. The fix keys off whether
+    // Bunny's `Path` had a trailing slash instead.
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.resolve([
+        {
+          _tag: "StorageFile" as const,
+          checksum: "etag-same-name",
+          contentType: "text/plain",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g6",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 3,
+          objectName: "somename",
+          path: "/uploads/docs/somename/",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+      ])
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const result = await adapter.list();
+      expect(result.items.map((item) => item.key)).toEqual([
+        "docs/somename/somename",
+      ]);
     } finally {
       if (realList) {
         listMock.mockImplementation(realList);
