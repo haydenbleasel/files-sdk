@@ -8,7 +8,7 @@ import type { AdapterEntry } from "./adapters";
 const { fontFamily: geist } = loadGeist();
 const { fontFamily: geistMono } = loadGeistMono();
 
-const ROW_ONE_COUNT = 4;
+const ROW_ONE_COUNT = 3;
 const CHIP_WIDTH = 360;
 const CHIP_GAP = 18;
 const CHIP_DELAY = 7;
@@ -179,7 +179,7 @@ export const AdaptersScene: React.FC = () => {
               textTransform: "uppercase",
             }}
           >
-            7 more adapters
+            9 more adapters
           </div>
           <div
             style={{

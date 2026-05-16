@@ -17,17 +17,12 @@ const BULLET_START = 70;
 const BULLET_STAGGER = 10;
 
 const LINES: Line[] = [
-  [
-    ["$ ", "kw"],
-    ["npx skills add"],
-    [" "],
-    ["github.com/haydenbleasel/files-sdk", "str"],
-  ],
+  [["$ ", "kw"], ["npx skills add"], [" "], ["haydenbleasel/files-sdk", "str"]],
   [
     ["✓ added skill: ", "ok"],
     ["files-sdk", "fn"],
   ],
-  [["  ~/.claude/skills/files-sdk/SKILL.md", "cm"]],
+  [["  .agents/skills/files-sdk/SKILL.md", "cm"]],
 ];
 
 const TOTAL = totalChars(LINES);
@@ -168,7 +163,7 @@ export const SkillScene: React.FC = () => {
               "0 2px 20px rgba(20, 12, 6, 0.45), 0 1px 2px rgba(20, 12, 6, 0.30)",
           }}
         >
-          A Claude skill, one install away.
+          An agent skill file, one install away.
         </div>
       </div>
       <CodeWindow
