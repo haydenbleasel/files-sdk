@@ -160,7 +160,7 @@ class FakeBunS3Client implements BunS3ClientLike {
 describe("bun-s3 adapter", () => {
   test("upload and download round-trip through a Bun S3 client", async () => {
     const client = new FakeBunS3Client();
-    const files = new Files({ adapter: bunS3({ bucket: "b", client }) });
+    const files = new Files({ adapter: bunS3({ client }) });
 
     const result = await files.upload("a.txt", "hello", {
       contentType: "text/plain",
@@ -281,6 +281,16 @@ describe("bun-s3 adapter", () => {
     await expect(
       adapter.upload("c.txt", "x", { cacheControl: "max-age=60" })
     ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("rejects ambiguous options when a custom client is provided", () => {
+    const client = new FakeBunS3Client();
+    expect(() => bunS3({ bucket: "b", client })).toThrow(
+      /client.*bucket\/region\/credentials.*bucket/u
+    );
+    expect(() =>
+      bunS3({ accessKeyId: "x", client, region: "us-east-1" })
+    ).toThrow(/region, accessKeyId/u);
   });
 
   test("maps Bun S3 errors into FilesError codes", () => {

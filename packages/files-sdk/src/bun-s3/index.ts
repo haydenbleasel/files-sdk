@@ -116,13 +116,12 @@ export const mapBunS3Error = makeErrorMapper({
     const e = err as {
       code?: string;
       Code?: string;
-      name?: string;
       status?: number;
       statusCode?: number;
       $metadata?: { httpStatusCode?: number };
       message?: string;
     };
-    const code = e?.code ?? e?.Code ?? e?.name;
+    const code = e?.code ?? e?.Code;
     const status = e?.status ?? e?.statusCode ?? e?.$metadata?.httpStatusCode;
     return {
       ...(code && { code }),
@@ -158,7 +157,32 @@ const storedFromStat = (
     body
   );
 
+const CLIENT_CONSTRUCTION_OPTS = [
+  "bucket",
+  "region",
+  "endpoint",
+  "virtualHostedStyle",
+  "accessKeyId",
+  "secretAccessKey",
+  "sessionToken",
+] as const satisfies readonly (keyof BunS3AdapterOptions)[];
+
 export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
+  if (opts.client) {
+    // A caller-provided client already owns its bucket/region/credentials.
+    // Accepting these alongside would silently ignore them — and worse, the
+    // adapter's `.bucket` accessor would report a value the client doesn't
+    // actually use. Reject at construction so the mismatch surfaces immediately.
+    const conflicting = CLIENT_CONSTRUCTION_OPTS.filter(
+      (key) => opts[key] !== undefined
+    );
+    if (conflicting.length > 0) {
+      throw new FilesError(
+        "Provider",
+        `bun-s3 adapter: when \`client\` is provided, the client owns its bucket/region/credentials. Remove these conflicting options: ${conflicting.join(", ")}.`
+      );
+    }
+  }
   const client =
     opts.client ??
     (() => {
@@ -193,6 +217,16 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
 
   return {
     bucket: opts.bucket,
+    /**
+     * Client-side stream copy: reads the source through this process and
+     * writes it to the destination. Bun's `S3Client` does not expose a
+     * server-side `CopyObject` primitive, so unlike the `s3()` adapter
+     * (which uses `CopyObjectCommand`) this round-trips bytes through the
+     * caller — doubled bandwidth, no atomicity, bounded by your network.
+     * Only the source `Content-Type` is preserved; `Content-Disposition`,
+     * cache headers, custom user metadata, and ACL are dropped. For
+     * server-side copy on the same bucket, reach for the `s3()` adapter.
+     */
     async copy(from, to) {
       try {
         const source = client.file(from);
