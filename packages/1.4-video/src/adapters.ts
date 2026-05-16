@@ -42,4 +42,10 @@ export const NEW_ADAPTERS: AdapterEntry[] = [
     label: "Bun S3",
     name: "bunS3",
   },
+  {
+    color: "#FF7B00",
+    importPath: "files-sdk/bunny-storage",
+    label: "Bunny Storage",
+    name: "bunnyStorage",
+  },
 ];
