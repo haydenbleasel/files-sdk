@@ -243,6 +243,16 @@ export interface FileHandle {
 
 const DEFAULT_RETRY_BACKOFF_MS = 100;
 
+const timeoutError = (timeout: number): FilesError =>
+  new FilesError(
+    "Provider",
+    `Operation timed out after ${timeout}ms`,
+    undefined,
+    {
+      aborted: true,
+    }
+  );
+
 const mergeSignals = (
   signals: AbortSignal[],
   timeout?: number
@@ -275,9 +285,7 @@ const mergeSignals = (
   const timer =
     timeout !== undefined && timeout > 0
       ? setTimeout(() => {
-          abort(
-            new FilesError("Provider", `Operation timed out after ${timeout}ms`)
-          );
+          abort(timeoutError(timeout));
         }, timeout)
       : undefined;
 
@@ -302,7 +310,8 @@ const abortError = (reason: unknown): FilesError => {
     return new FilesError(
       "Provider",
       `Operation aborted: ${reason.message}`,
-      reason
+      reason,
+      { aborted: true }
     );
   }
   return new FilesError(
@@ -310,7 +319,8 @@ const abortError = (reason: unknown): FilesError => {
     reason === undefined
       ? "Operation aborted"
       : `Operation aborted: ${String(reason)}`,
-    reason
+    reason,
+    { aborted: true }
   );
 };
 
@@ -398,9 +408,7 @@ const canRetry = (
   attempt: number,
   maxAttempts: number
 ): boolean =>
-  attempt < maxAttempts &&
-  error.code === "Provider" &&
-  !error.message.startsWith("Operation aborted");
+  attempt < maxAttempts && error.code === "Provider" && !error.aborted;
 
 // Catch the obviously-broken cases at the SDK boundary so callers get a
 // useful error from us instead of an opaque provider 400. We deliberately
@@ -568,11 +576,12 @@ export class Files<A extends Adapter = Adapter> {
       try {
         return await runWithSignal(runtime.signal, () => fn(attemptOpts));
       } catch (error) {
-        const wrapped = FilesError.wrap(error);
+        const wrapped = runtime.signal?.aborted
+          ? abortError(runtime.signal.reason)
+          : FilesError.wrap(error);
         if (!canRetry(wrapped, attempt, maxAttempts)) {
           throw wrapped;
         }
-        runtime.cleanup?.();
         const wait = mergeSignals(signals);
         try {
           await sleep(

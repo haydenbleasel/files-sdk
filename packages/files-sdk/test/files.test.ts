@@ -236,6 +236,52 @@ describe("Files class", () => {
     }
   });
 
+  test("Unauthorized and Conflict errors are not retried", async () => {
+    for (const code of ["Unauthorized", "Conflict"] as const) {
+      let attempts = 0;
+      const files = new Files({
+        adapter: {
+          ...fakeAdapter(),
+          head() {
+            attempts += 1;
+            throw new FilesError(code, code);
+          },
+        },
+        retries: { backoff: () => 0, max: 3 },
+      });
+
+      try {
+        await files.head(`${code}.txt`);
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect((error as FilesError).code).toBe(code);
+        expect(attempts).toBe(1);
+      }
+    }
+  });
+
+  test("retries stop at the configured max", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        exists() {
+          attempts += 1;
+          throw new Error("still broken");
+        },
+      },
+      retries: { backoff: () => 0, max: 2 },
+    });
+
+    try {
+      await files.exists("cap.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("still broken");
+      expect(attempts).toBe(3);
+    }
+  });
+
   test("ReadableStream uploads are not retried", async () => {
     let attempts = 0;
     const files = new Files({
@@ -264,12 +310,14 @@ describe("Files class", () => {
     }
   });
 
-  test("timeout aborts an operation and passes signal to the adapter", async () => {
+  test("timeout aborts an operation, passes signal to the adapter, and is not retried", async () => {
+    let attempts = 0;
     let seenSignal: AbortSignal | undefined;
     const files = new Files({
       adapter: {
         ...fakeAdapter(),
         head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
           seenSignal = opts?.signal;
           // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
           return new Promise((_resolve, reject) => {
@@ -279,17 +327,19 @@ describe("Files class", () => {
           });
         },
       },
+      retries: 3,
       timeout: 1,
     });
 
     try {
-      await files.head("slow.txt", { retries: 0 });
+      await files.head("slow.txt");
       throw new Error("should have thrown");
     } catch (error) {
       expect((error as FilesError).code).toBe("Provider");
       expect((error as FilesError).message).toBe(
         "Operation timed out after 1ms"
       );
+      expect(attempts).toBe(1);
       expect(seenSignal).toBeDefined();
       expect(seenSignal?.aborted).toBe(true);
     }
@@ -316,6 +366,104 @@ describe("Files class", () => {
     } catch (error) {
       expect((error as FilesError).message).toBe("Operation aborted: stop");
       expect(attempts).toBe(0);
+    }
+  });
+
+  test("constructor signal aborts a pending operation", async () => {
+    const controller = new AbortController();
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: controller.signal,
+    });
+
+    const pending = files.head("constructor-abort.txt");
+    controller.abort(new Error("constructor stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: constructor stop"
+      );
+    }
+  });
+
+  test("per-call signal aborts a pending operation even with a constructor signal", async () => {
+    const constructorController = new AbortController();
+    const callController = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          seenSignal = opts?.signal;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: constructorController.signal,
+    });
+
+    const pending = files.head("call-abort.txt", {
+      signal: callController.signal,
+    });
+    callController.abort(new Error("call stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(seenSignal).toBeDefined();
+      expect(seenSignal).not.toBe(constructorController.signal);
+      expect(seenSignal).not.toBe(callController.signal);
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: call stop"
+      );
+    }
+  });
+
+  test("per-call timeout overrides the constructor timeout", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(opts.signal?.reason);
+            });
+          });
+        },
+      },
+      retries: 2,
+      timeout: 50,
+    });
+
+    try {
+      await files.head("override-timeout.txt", { timeout: 1 });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation timed out after 1ms"
+      );
+      expect(attempts).toBe(1);
     }
   });
 
