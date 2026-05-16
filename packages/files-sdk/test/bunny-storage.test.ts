@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files } from "../src/index.js";
+import { FilesError } from "../src/internal/errors.js";
 
 interface StoredEntry {
   bytes: Uint8Array;
@@ -164,7 +165,8 @@ mock.module("@bunny.net/storage-sdk", () => ({
   },
 }));
 
-const { bunnyStorage } = await import("../src/bunny-storage/index.js");
+const { bunnyStorage, mapBunnyStorageError } =
+  await import("../src/bunny-storage/index.js");
 
 beforeEach(() => {
   backing.clear();
@@ -443,5 +445,452 @@ describe("bunnyStorage adapter", () => {
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
     ).rejects.toMatchObject({ code: "Provider" });
+  });
+
+  test("constructs from STORAGE_* aliases used in the Bunny SDK README", () => {
+    process.env.STORAGE_ZONE = "uploads";
+    process.env.STORAGE_ACCESS_KEY = "key";
+    process.env.STORAGE_REGION = "de";
+    const adapter = bunnyStorage();
+    expect(adapter.zone).toBe("uploads");
+    expect(connectWithAccessKeyMock).toHaveBeenCalledWith(
+      "de",
+      "uploads",
+      "key"
+    );
+  });
+
+  test("BUNNY_ACCESS_KEY is accepted as an alias", () => {
+    process.env.BUNNY_STORAGE_ZONE = "uploads";
+    process.env.BUNNY_ACCESS_KEY = "key";
+    process.env.BUNNY_STORAGE_REGION = "de";
+    bunnyStorage();
+    expect(connectWithAccessKeyMock).toHaveBeenCalledWith(
+      "de",
+      "uploads",
+      "key"
+    );
+  });
+
+  test("explicit options override env vars", () => {
+    process.env.BUNNY_STORAGE_ZONE = "from-env";
+    process.env.BUNNY_STORAGE_ACCESS_KEY = "env-key";
+    process.env.BUNNY_STORAGE_REGION = "ny";
+    bunnyStorage({
+      accessKey: "explicit-key",
+      region: "de",
+      zone: "explicit-zone",
+    });
+    expect(connectWithAccessKeyMock).toHaveBeenCalledWith(
+      "de",
+      "explicit-zone",
+      "explicit-key"
+    );
+  });
+
+  test("client option bypasses zone/accessKey/region resolution", () => {
+    const customClient = {
+      _tag: "StorageZone",
+      accessKey: "from-client",
+      name: "custom-zone",
+      region: "ny",
+    } as never;
+    const adapter = bunnyStorage({
+      client: customClient,
+    });
+    expect(adapter.zone).toBe("custom-zone");
+    expect(adapter.raw).toBe(customClient);
+    expect(connectWithAccessKeyMock).not.toHaveBeenCalled();
+  });
+
+  test("upload accepts a Uint8Array body", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    const bytes = new TextEncoder().encode("binary-payload");
+    const result = await files.upload("bin.dat", bytes);
+    expect(result.size).toBe(bytes.byteLength);
+    expect(result.contentType).toBe("application/octet-stream");
+    expect(uploadMock.mock.calls[0]?.[3]).toEqual({
+      contentType: "application/octet-stream",
+    });
+  });
+
+  test("upload accepts an ArrayBuffer body", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    const ab = new TextEncoder().encode("from-arraybuffer").buffer;
+    const result = await files.upload("ab.dat", ab);
+    expect(result.size).toBe(ab.byteLength);
+  });
+
+  test("upload accepts a Blob and inherits its content type", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    const blob = new Blob(["from-blob"], { type: "text/markdown" });
+    const result = await files.upload("note.md", blob);
+    expect(result.contentType).toBe("text/markdown");
+    expect(result.size).toBe(blob.size);
+  });
+
+  test("upload accepts a ReadableStream of unknown length, head fills the final size", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    const payload = new TextEncoder().encode("streamed-payload");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+    const result = await files.upload("stream.dat", stream);
+    expect(result.size).toBe(payload.byteLength);
+    expect(getMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("upload accepts an empty metadata object", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await expect(
+      files.upload("a.txt", "hi", { metadata: {} })
+    ).resolves.toMatchObject({ key: "a.txt" });
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("download maps a missing key to NotFound", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await expect(files.download("missing.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  test("head maps a missing key to NotFound", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await expect(files.head("missing.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  test("copy maps a missing source to NotFound", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await expect(files.copy("missing.txt", "dest.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(uploadMock).not.toHaveBeenCalled();
+  });
+
+  test("copy preserves the source content type", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("a.bin", "payload", { contentType: "image/png" });
+    uploadMock.mockClear();
+    await files.copy("a.bin", "b.bin");
+    expect(uploadMock).toHaveBeenCalledTimes(1);
+    expect(uploadMock.mock.calls[0]?.[3]).toEqual({ contentType: "image/png" });
+  });
+
+  test("url URL-encodes special characters in the key", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        publicBaseUrl: "https://cdn.example.com/uploads/",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await expect(files.url("folder name/file (1).png")).resolves.toBe(
+      "https://cdn.example.com/uploads/folder%20name/file%20(1).png"
+    );
+  });
+
+  test("list with no prefix lists the storage zone root", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("top.txt", "x");
+    await files.upload("docs/nested.txt", "y");
+    listMock.mockClear();
+    const result = await files.list();
+    expect(listMock.mock.calls.at(-1)?.[1]).toBe("/");
+    expect(result.items.map((item) => item.key)).toEqual(["top.txt"]);
+  });
+
+  test("list with a prefix that doesn't end in slash falls back to the parent directory", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("docs/alpha.txt", "a");
+    await files.upload("docs/beta.txt", "b");
+    listMock.mockClear();
+    const result = await files.list({ prefix: "docs/al" });
+    expect(listMock.mock.calls.at(-1)?.[1]).toBe("/docs");
+    expect(result.items.map((item) => item.key)).toEqual(["docs/alpha.txt"]);
+  });
+
+  test("list returns no items when prefix matches nothing", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("docs/a.txt", "a");
+    const result = await files.list({ prefix: "videos/" });
+    expect(result.items).toEqual([]);
+    expect(result.cursor).toBeUndefined();
+  });
+
+  test("mapBunnyStorageError classifies the SDK's Unauthorized message", () => {
+    const mapped = mapBunnyStorageError(
+      new Error("Unauthorized access to storage zone: uploads")
+    );
+    expect(mapped.code).toBe("Unauthorized");
+    expect(mapped.cause).toBeInstanceOf(Error);
+  });
+
+  test("mapBunnyStorageError passes FilesError through unchanged", () => {
+    const original = new FilesError("Conflict", "already exists");
+    const mapped = mapBunnyStorageError(original);
+    expect(mapped).toBe(original);
+  });
+
+  test("adapter exposes name, zone, and raw client", () => {
+    const adapter = bunnyStorage({
+      accessKey: "key",
+      region: "de",
+      zone: "uploads",
+    });
+    expect(adapter.name).toBe("bunny-storage");
+    expect(adapter.zone).toBe("uploads");
+    expect(adapter.raw).toMatchObject({
+      _tag: "StorageZone",
+      name: "uploads",
+      region: "de",
+    });
+  });
+
+  test("head returns just the object name when the SDK reports an empty path", async () => {
+    // The Bunny API can return `Path: "/"` for files at the storage-zone
+    // root; after stripping the leading slash, `path` is empty and
+    // `keyFromStorageFile` should fall back to `objectName`.
+    const realGet = getMock.getMockImplementation();
+    getMock.mockImplementation(() =>
+      Promise.resolve({
+        _tag: "StorageFile" as const,
+        checksum: "etag-root",
+        contentType: "text/plain",
+        data: () =>
+          Promise.resolve({
+            length: 3,
+            response: new Response("hey"),
+            stream: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("hey"));
+                controller.close();
+              },
+            }),
+          }),
+        dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+        guid: "g",
+        isDirectory: false,
+        lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+        length: 3,
+        objectName: "root.txt",
+        path: "/",
+        replicatedZones: null,
+        serverId: 1,
+        storageZoneId: 1,
+        storageZoneName: "uploads",
+        userId: "u",
+      })
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const stored = await adapter.head("root.txt");
+      expect(stored.key).toBe("root.txt");
+    } finally {
+      if (realGet) {
+        getMock.mockImplementation(realGet);
+      }
+    }
+  });
+
+  test("list reassembles path + objectName when Bunny returns them split", async () => {
+    // Bunny's real listing API returns `Path: "/uploads/docs/"` (directory)
+    // plus `ObjectName: "file.txt"` on each entry. `keyFromStorageFile`
+    // joins them with a slash when `path` doesn't already end with `name`.
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.resolve([
+        {
+          _tag: "StorageFile" as const,
+          checksum: "etag-split",
+          contentType: "text/plain",
+          data: () => Promise.reject(new Error("body not exercised")),
+          dateCreated: new Date("2024-01-01T00:00:00.000Z"),
+          guid: "g",
+          isDirectory: false,
+          lastChanged: new Date("2024-01-01T00:00:00.000Z"),
+          length: 4,
+          objectName: "file.txt",
+          path: "/uploads/docs/",
+          replicatedZones: null,
+          serverId: 1,
+          storageZoneId: 1,
+          storageZoneName: "uploads",
+          userId: "u",
+        },
+      ])
+    );
+    try {
+      const adapter = bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      });
+      const result = await adapter.list();
+      expect(result.items.map((item) => item.key)).toEqual([
+        "uploads/docs/file.txt",
+      ]);
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
+  });
+
+  test("mapBunnyStorageError reads `code` directly when the source error exposes one", () => {
+    const mapped = mapBunnyStorageError({
+      code: "NotFound",
+      message: "object missing",
+    });
+    expect(mapped.code).toBe("NotFound");
+    expect(mapped.message).toBe("object missing");
+  });
+
+  test("mapBunnyStorageError handles non-object errors via the optional-chain short-circuit", () => {
+    // Exercises the `e?.code` / `e?.message` short-circuit branch when the
+    // thrown value isn't an object (the SDK should never do this, but it's
+    // cheap to harden the extractor).
+    const fromString = mapBunnyStorageError("plain string error");
+    expect(fromString).toBeInstanceOf(FilesError);
+    expect(fromString.code).toBe("Provider");
+    const fromNull = mapBunnyStorageError(null);
+    expect(fromNull.code).toBe("Provider");
+  });
+
+  test("mapBunnyStorageError classifies conflict/precondition messages as Conflict", () => {
+    const fromConflict = mapBunnyStorageError(new Error("Conflict on write"));
+    expect(fromConflict.code).toBe("Conflict");
+    const fromPrecondition = mapBunnyStorageError(
+      new Error("Precondition failed")
+    );
+    expect(fromPrecondition.code).toBe("Conflict");
+  });
+
+  test("delete wraps SDK-thrown errors in a FilesError", async () => {
+    const realRemove = removeMock.getMockImplementation();
+    removeMock.mockImplementation(() =>
+      Promise.reject(new Error("Unauthorized access to storage zone: uploads"))
+    );
+    try {
+      const files = new Files({
+        adapter: bunnyStorage({
+          accessKey: "key",
+          region: "de",
+          zone: "uploads",
+        }),
+      });
+      const promise = files.delete("a.txt");
+      await expect(promise).rejects.toBeInstanceOf(FilesError);
+      await expect(promise).rejects.toMatchObject({ code: "Unauthorized" });
+    } finally {
+      if (realRemove) {
+        removeMock.mockImplementation(realRemove);
+      }
+    }
+  });
+
+  test("list wraps SDK-thrown errors in a FilesError", async () => {
+    const realList = listMock.getMockImplementation();
+    listMock.mockImplementation(() =>
+      Promise.reject(new Error("Unauthorized access to storage zone: uploads"))
+    );
+    try {
+      const files = new Files({
+        adapter: bunnyStorage({
+          accessKey: "key",
+          region: "de",
+          zone: "uploads",
+        }),
+      });
+      const promise = files.list();
+      await expect(promise).rejects.toBeInstanceOf(FilesError);
+      await expect(promise).rejects.toMatchObject({ code: "Unauthorized" });
+    } finally {
+      if (realList) {
+        listMock.mockImplementation(realList);
+      }
+    }
   });
 });
