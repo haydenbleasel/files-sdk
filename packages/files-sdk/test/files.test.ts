@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
+import type { OperationOptions } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 describe("Files class", () => {
@@ -133,6 +134,359 @@ describe("Files class", () => {
     await files.upload("b/3.txt", "3");
     const { items } = await files.list({ prefix: "a/" });
     expect(items.map((i) => i.key).toSorted()).toEqual(["a/1.txt", "a/2.txt"]);
+  });
+
+  test("constructor retries Provider failures", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts < 3) {
+            throw new TypeError("temporary");
+          }
+          return adapter.head(key, opts);
+        },
+      },
+      retries: 2,
+    });
+
+    await files.upload("retry.txt", "ok");
+    const info = await files.head("retry.txt");
+
+    expect(info.key).toBe("retry.txt");
+    expect(attempts).toBe(3);
+  });
+
+  test("retry backoff receives attempt and wrapped error", async () => {
+    const adapter = fakeAdapter();
+    const backoffCalls: { attempt: number; message: string }[] = [];
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        exists(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("network");
+          }
+          return adapter.exists(key, opts);
+        },
+      },
+      retries: {
+        backoff: ({ attempt, error }) => {
+          backoffCalls.push({ attempt, message: error.message });
+          return 0;
+        },
+        max: 1,
+      },
+    });
+
+    await files.upload("exists.txt", "ok");
+
+    expect(await files.exists("exists.txt")).toBe(true);
+    expect(backoffCalls).toEqual([{ attempt: 1, message: "network" }]);
+  });
+
+  test("per-call retries override constructor retries", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("temporary");
+          }
+          return adapter.head(key, opts);
+        },
+      },
+      retries: 0,
+    });
+
+    await files.upload("override.txt", "ok");
+    await files.head("override.txt", { retries: { backoff: () => 0, max: 1 } });
+
+    expect(attempts).toBe(2);
+  });
+
+  test("NotFound errors are not retried", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head() {
+          attempts += 1;
+          throw new FilesError("NotFound", "missing");
+        },
+      },
+      retries: { backoff: () => 0, max: 3 },
+    });
+
+    try {
+      await files.head("missing.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("NotFound");
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("Unauthorized and Conflict errors are not retried", async () => {
+    for (const code of ["Unauthorized", "Conflict"] as const) {
+      let attempts = 0;
+      const files = new Files({
+        adapter: {
+          ...fakeAdapter(),
+          head() {
+            attempts += 1;
+            throw new FilesError(code, code);
+          },
+        },
+        retries: { backoff: () => 0, max: 3 },
+      });
+
+      try {
+        await files.head(`${code}.txt`);
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect((error as FilesError).code).toBe(code);
+        expect(attempts).toBe(1);
+      }
+    }
+  });
+
+  test("retries stop at the configured max", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        exists() {
+          attempts += 1;
+          throw new Error("still broken");
+        },
+      },
+      retries: { backoff: () => 0, max: 2 },
+    });
+
+    try {
+      await files.exists("cap.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("still broken");
+      expect(attempts).toBe(3);
+    }
+  });
+
+  test("ReadableStream uploads are not retried", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        upload() {
+          attempts += 1;
+          throw new Error("stream upload failed");
+        },
+      },
+      retries: { backoff: () => 0, max: 3 },
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("payload"));
+        controller.close();
+      },
+    });
+
+    try {
+      await files.upload("stream.txt", stream);
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("stream upload failed");
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("timeout aborts an operation, passes signal to the adapter, and is not retried", async () => {
+    let attempts = 0;
+    let seenSignal: AbortSignal | undefined;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
+          seenSignal = opts?.signal;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(opts.signal?.reason);
+            });
+          });
+        },
+      },
+      retries: 3,
+      timeout: 1,
+    });
+
+    try {
+      await files.head("slow.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).message).toBe(
+        "Operation timed out after 1ms"
+      );
+      expect(attempts).toBe(1);
+      expect(seenSignal).toBeDefined();
+      expect(seenSignal?.aborted).toBe(true);
+    }
+  });
+
+  test("aborted caller signal fails before the adapter is called", async () => {
+    let attempts = 0;
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        exists() {
+          attempts += 1;
+          return Promise.resolve(true);
+        },
+      },
+      retries: 3,
+    });
+
+    try {
+      await files.exists("x.txt", { signal: controller.signal });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("Operation aborted: stop");
+      expect(attempts).toBe(0);
+    }
+  });
+
+  test("constructor signal aborts a pending operation", async () => {
+    const controller = new AbortController();
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: controller.signal,
+    });
+
+    const pending = files.head("constructor-abort.txt");
+    controller.abort(new Error("constructor stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: constructor stop"
+      );
+    }
+  });
+
+  test("per-call signal aborts a pending operation even with a constructor signal", async () => {
+    const constructorController = new AbortController();
+    const callController = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          seenSignal = opts?.signal;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: constructorController.signal,
+    });
+
+    const pending = files.head("call-abort.txt", {
+      signal: callController.signal,
+    });
+    callController.abort(new Error("call stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(seenSignal).toBeDefined();
+      expect(seenSignal).not.toBe(constructorController.signal);
+      expect(seenSignal).not.toBe(callController.signal);
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: call stop"
+      );
+    }
+  });
+
+  test("per-call timeout overrides the constructor timeout", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(opts.signal?.reason);
+            });
+          });
+        },
+      },
+      retries: 2,
+      timeout: 50,
+    });
+
+    try {
+      await files.head("override-timeout.txt", { timeout: 1 });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation timed out after 1ms"
+      );
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("file handles forward per-call operation options", async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const adapter = fakeAdapter();
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        delete(key: string, opts?: OperationOptions) {
+          seenSignal = opts?.signal;
+          return adapter.delete(key, opts);
+        },
+      },
+    });
+
+    await files.upload("handle-options.txt", "ok");
+    await files
+      .file("handle-options.txt")
+      .delete({ signal: controller.signal });
+
+    expect(seenSignal).toBe(controller.signal);
   });
 
   test("error normalization wraps adapter errors as FilesError with code", async () => {

@@ -6,6 +6,7 @@ export type FilesErrorCode =
 
 export class FilesError extends Error {
   readonly code: FilesErrorCode;
+  readonly aborted: boolean;
   /**
    * The original provider error, preserved for debugging.
    *
@@ -17,10 +18,16 @@ export class FilesError extends Error {
    */
   override readonly cause?: unknown;
 
-  constructor(code: FilesErrorCode, message: string, cause?: unknown) {
+  constructor(
+    code: FilesErrorCode,
+    message: string,
+    cause?: unknown,
+    opts?: { aborted?: boolean }
+  ) {
     super(message);
     this.name = "FilesError";
     this.code = code;
+    this.aborted = opts?.aborted === true;
     this.cause = cause;
   }
 

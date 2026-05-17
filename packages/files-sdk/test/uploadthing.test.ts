@@ -241,6 +241,16 @@ describe("uploadthing adapter", () => {
     expect((firstCall?.[1] as { acl: string })?.acl).toBe("private");
   });
 
+  test("upload forwards signals to utapi.uploadFiles", async () => {
+    const { signal } = new AbortController();
+    const files = new Files({ adapter: uploadthing() });
+
+    await files.upload("a.txt", "hi", { signal });
+
+    const [firstCall] = uploadFilesMock.mock.calls;
+    expect((firstCall?.[1] as { signal?: AbortSignal })?.signal).toBe(signal);
+  });
+
   test("upload surfaces UploadThing's per-file error", async () => {
     uploadFilesMock.mockImplementationOnce(() =>
       Promise.resolve({
@@ -256,6 +266,33 @@ describe("uploadthing adapter", () => {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).message).toMatch(/boom/u);
     }
+  });
+
+  test("download forwards signals to fetch", async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      void url;
+      seenSignal = init?.signal ?? undefined;
+      return Promise.resolve(
+        new Response("hello", {
+          headers: {
+            "content-length": "5",
+            "content-type": "text/plain",
+            etag: '"abc123"',
+          },
+          status: 200,
+        })
+      );
+    }) as typeof fetch;
+    const files = new Files({ adapter: uploadthing() });
+
+    await files.download("a.txt", { signal: controller.signal });
+
+    expect(seenSignal).toBeDefined();
+    expect(seenSignal).not.toBe(controller.signal);
+    controller.abort(new Error("stop"));
+    expect(seenSignal?.aborted).toBe(true);
   });
 
   test("download fetches the public CDN URL by default", async () => {

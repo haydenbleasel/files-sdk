@@ -143,6 +143,23 @@ describe("s3 adapter", () => {
     expect(input.CopySource).toBe("test-bucket/foo%20bar.txt");
   });
 
+  test("operation signals are forwarded to the AWS client", async () => {
+    const { signal } = new AbortController();
+    s3Mock.on(HeadObjectCommand).resolves({});
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+
+    await files.head("a.txt", { signal });
+
+    const call = firstCall(s3Mock.commandCalls(HeadObjectCommand));
+    const [, options] = call.args as [
+      HeadObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    expect(options).toEqual({ abortSignal: signal });
+  });
+
   test("list maps Contents into StoredFile items", async () => {
     s3Mock.on(ListObjectsV2Command).resolves({
       Contents: [

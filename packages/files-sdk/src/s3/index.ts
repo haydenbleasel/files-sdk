@@ -202,7 +202,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
 
   return {
     bucket,
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
         // CopySource must be URL-encoded per
         // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
@@ -215,16 +215,22 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             Bucket: bucket,
             CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
             Key: to,
-          })
+          }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
       } catch (error) {
         throw wrapErr(error);
       }
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       try {
         await client.send(
-          new DeleteObjectCommand({ Bucket: bucket, Key: key })
+          new DeleteObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
       } catch (error) {
         throw wrapErr(error);
@@ -233,7 +239,10 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     async download(key, downloadOpts) {
       try {
         const result = await client.send(
-          new GetObjectCommand({ Bucket: bucket, Key: key })
+          new GetObjectCommand({ Bucket: bucket, Key: key }),
+          downloadOpts?.signal
+            ? { abortSignal: downloadOpts.signal }
+            : undefined
         );
         const baseMeta = {
           etag: stripEtag(result.ETag),
@@ -266,16 +275,25 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
-    exists(key) {
+    exists(key, operationOpts) {
       return existsByProbe(
-        () => client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })),
+        () =>
+          client.send(
+            new HeadObjectCommand({ Bucket: bucket, Key: key }),
+            operationOpts?.signal
+              ? { abortSignal: operationOpts.signal }
+              : undefined
+          ),
         wrapErr
       );
     },
-    async head(key) {
+    async head(key, operationOpts) {
       try {
         const result = await client.send(
-          new HeadObjectCommand({ Bucket: bucket, Key: key })
+          new HeadObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
         return createStoredFile(
           {
@@ -310,7 +328,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             ...(options?.prefix && { Prefix: options.prefix }),
             ...(options?.limit !== undefined && { MaxKeys: options.limit }),
             ...(options?.cursor && { ContinuationToken: options.cursor }),
-          })
+          }),
+          options?.signal ? { abortSignal: options.signal } : undefined
         );
         const items: StoredFile[] = (result.Contents ?? []).map((obj) => {
           const objKey = obj.Key ?? "";
@@ -408,7 +427,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             ...(contentLength !== undefined && {
               ContentLength: contentLength,
             }),
-          })
+          }),
+          options?.signal ? { abortSignal: options.signal } : undefined
         );
         let size = contentLength;
         let lastModified: number | undefined;
@@ -418,7 +438,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         if (size === undefined) {
           try {
             const head = await client.send(
-              new HeadObjectCommand({ Bucket: bucket, Key: key })
+              new HeadObjectCommand({ Bucket: bucket, Key: key }),
+              options?.signal ? { abortSignal: options.signal } : undefined
             );
             size = Number(head.ContentLength ?? 0);
             lastModified = head.LastModified?.getTime();
