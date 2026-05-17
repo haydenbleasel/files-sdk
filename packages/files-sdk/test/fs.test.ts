@@ -497,6 +497,51 @@ describe("fs adapter", () => {
         code: "Provider",
       });
     });
+
+    test("rejects keys ending in the reserved sidecar suffix", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      // Otherwise upload("x.txt.meta.json", ...) would silently overwrite the
+      // sidecar of "x.txt" (its contentType / etag / metadata), the key
+      // would be hidden from list() because walk() filters .meta.json,
+      // and delete("x.txt.meta.json") would wipe x.txt's sidecar. Reject
+      // at the boundary instead.
+      await expect(
+        files.upload("x.txt.meta.json", "x")
+      ).rejects.toMatchObject({ code: "Provider" });
+      await expect(files.download("x.txt.meta.json")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.head("x.txt.meta.json")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.exists("x.txt.meta.json")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.delete("x.txt.meta.json")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(
+        files.copy("a.txt", "a.txt.meta.json")
+      ).rejects.toMatchObject({ code: "Provider" });
+      await expect(files.url("x.txt.meta.json")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(
+        files.signedUploadUrl("x.txt.meta.json", { expiresIn: 60 })
+      ).rejects.toMatchObject({ code: "Provider" });
+    });
+
+    test("keys with .meta.json elsewhere in the path are allowed", async () => {
+      // The collision is at the sidecar path only — a key whose final
+      // segment is not `*.meta.json` is safe. e.g. a folder named
+      // `drafts.meta.json/` containing `note.txt` round-trips fine.
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("drafts.meta.json/note.txt", "hi");
+      const got = await files.download("drafts.meta.json/note.txt");
+      expect(await got.text()).toBe("hi");
+    });
   });
 
   describe("url", () => {
