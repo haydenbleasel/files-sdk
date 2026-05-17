@@ -152,6 +152,19 @@ const sha1Etag = (bytes: Uint8Array): string => {
 // this check, `download("../../../etc/passwd")` would happily exfiltrate
 // from the host filesystem.
 const resolveKeyPath = (root: string, key: string): string => {
+  // The adapter stores per-object metadata in a sidecar at
+  // `${bodyPath}${SIDECAR_SUFFIX}`. A key ending in `SIDECAR_SUFFIX`
+  // therefore resolves to the sidecar path of another key — uploading it
+  // silently rewrites that key's stored contentType / etag / metadata,
+  // deleting it wipes them, and the key itself never surfaces in
+  // `list()` because `walk()` filters the suffix. Reject the suffix at
+  // the boundary so the namespace stays unambiguous.
+  if (key.endsWith(SIDECAR_SUFFIX)) {
+    throw new FilesError(
+      "Provider",
+      `fs: keys ending in ${SIDECAR_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
+    );
+  }
   const resolved = path.resolve(root, key);
   const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(rootWithSep)) {
