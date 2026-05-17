@@ -506,9 +506,9 @@ describe("fs adapter", () => {
       // would be hidden from list() because walk() filters .meta.json,
       // and delete("x.txt.meta.json") would wipe x.txt's sidecar. Reject
       // at the boundary instead.
-      await expect(
-        files.upload("x.txt.meta.json", "x")
-      ).rejects.toMatchObject({ code: "Provider" });
+      await expect(files.upload("x.txt.meta.json", "x")).rejects.toMatchObject({
+        code: "Provider",
+      });
       await expect(files.download("x.txt.meta.json")).rejects.toMatchObject({
         code: "Provider",
       });
