@@ -17,6 +17,7 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
@@ -354,6 +355,16 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       } catch (error) {
         throw mapAzureError(error);
       }
+    },
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(
+        keys,
+        async (key) => {
+          await containerClient.getBlobClient(key).deleteIfExists();
+        },
+        deleteOpts,
+        mapAzureError
+      );
     },
     async download(key, downloadOpts) {
       try {

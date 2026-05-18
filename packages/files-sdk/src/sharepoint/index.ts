@@ -334,6 +334,12 @@ export const sharepoint = (
   return {
     copy: (from: string, to: string) => call((inner) => inner.copy(from, to)),
     delete: (key: string) => call((inner) => inner.delete(key)),
+    deleteMany: (keys, deleteOpts) =>
+      call(
+        (inner) =>
+          inner.deleteMany?.(keys, deleteOpts) ??
+          Promise.resolve({ delete: [] })
+      ),
     download: (key: string, downloadOpts?: DownloadOptions) =>
       call((inner) => inner.download(key, downloadOpts)),
     exists: (key: string) => call((inner) => inner.exists(key)),

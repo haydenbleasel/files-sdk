@@ -354,6 +354,14 @@ describe("uploadthing adapter", () => {
     expect(deleteFilesMock.mock.calls[0]?.[0]).toBe("a.txt");
   });
 
+  test("deleteMany delegates to utapi.deleteFiles with the keys", async () => {
+    const files = new Files({ adapter: uploadthing() });
+    const result = await files.deleteMany(["a.txt", "b.txt"]);
+    expect(result).toEqual({ delete: ["a.txt", "b.txt"] });
+    expect(deleteFilesMock).toHaveBeenCalledTimes(1);
+    expect(deleteFilesMock.mock.calls[0]?.[0]).toEqual(["a.txt", "b.txt"]);
+  });
+
   test("copy streams source through a re-upload", async () => {
     const files = new Files({ adapter: uploadthing() });
     await files.copy("a.txt", "b.txt");

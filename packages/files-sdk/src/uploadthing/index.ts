@@ -8,7 +8,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, existsByProbe } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
+  existsByProbe,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -366,6 +370,29 @@ export const uploadthing = (
         await utapi.deleteFiles(key);
       } catch (error) {
         throw mapUploadThingError(error);
+      }
+    },
+    async deleteMany(keys, deleteOpts) {
+      if (keys.length === 0) {
+        return { delete: [] };
+      }
+      if (deleteOpts?.stopOnError) {
+        return deleteManyWithFallback(
+          keys,
+          (key) => adapter.delete(key),
+          deleteOpts,
+          mapUploadThingError
+        );
+      }
+      try {
+        await utapi.deleteFiles(keys);
+        return { delete: [...keys] };
+      } catch (error) {
+        const mapped = mapUploadThingError(error);
+        return {
+          delete: [],
+          errors: keys.map((key) => ({ error: mapped, key })),
+        };
       }
     },
     async download(key, downloadOpts) {

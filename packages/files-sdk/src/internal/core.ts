@@ -6,7 +6,12 @@
 // adapter and codifies the security-relevant invariants (notably "asking
 // for `responseContentDisposition` forces signing") in one place.
 
-import type { Body } from "../index.js";
+import type {
+  Body,
+  DeleteManyError,
+  DeleteManyOptions,
+  DeleteManyResult,
+} from "../index.js";
 import { FilesError } from "./errors.js";
 import type { FilesErrorCode } from "./errors.js";
 
@@ -299,4 +304,76 @@ export const collectStream = async (
     offset += chunk.byteLength;
   }
   return out;
+};
+
+export const deleteManyWithFallback = async (
+  keys: string[],
+  remove: (key: string) => Promise<void>,
+  opts?: DeleteManyOptions,
+  mapError: (error: unknown) => FilesError = FilesError.wrap
+): Promise<DeleteManyResult> => {
+  const deleted: string[] = [];
+  const errors: DeleteManyError[] = [];
+
+  if (keys.length === 0) {
+    return { delete: deleted };
+  }
+
+  if (opts?.stopOnError) {
+    for (const key of keys) {
+      try {
+        await remove(key);
+        deleted.push(key);
+      } catch (error) {
+        errors.push({ error: mapError(error), key });
+        return { delete: deleted, errors };
+      }
+    }
+    return { delete: deleted };
+  }
+
+  const concurrency =
+    Number.isInteger(opts?.concurrency) && (opts?.concurrency ?? 0) > 0
+      ? (opts?.concurrency as number)
+      : 8;
+  const success = Array.from<boolean>({ length: keys.length }).fill(false);
+  const failed = Array.from<DeleteManyError | undefined>({
+    length: keys.length,
+  });
+  let index = 0;
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, keys.length) }, async () => {
+      while (index < keys.length) {
+        const current = index;
+        index += 1;
+        const key = keys[current];
+        if (key === undefined) {
+          return;
+        }
+        try {
+          await remove(key);
+          success[current] = true;
+        } catch (error) {
+          failed[current] = { error: mapError(error), key };
+        }
+      }
+    })
+  );
+
+  for (const [current, key] of keys.entries()) {
+    if (success[current]) {
+      deleted.push(key);
+      continue;
+    }
+    if (failed[current]) {
+      errors.push(failed[current]);
+    }
+  }
+
+  if (errors.length === 0) {
+    return { delete: deleted };
+  }
+
+  return { delete: deleted, errors };
 };

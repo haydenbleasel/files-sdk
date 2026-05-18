@@ -74,6 +74,70 @@ describe("Files class", () => {
     expect(adapter.has("d.txt")).toBe(false);
   });
 
+  test("deleteMany removes multiple objects", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    await files.upload("c.txt", "c");
+
+    const result = await files.deleteMany(["a.txt", "b.txt", "c.txt"]);
+
+    expect(result).toEqual({ delete: ["a.txt", "b.txt", "c.txt"] });
+    expect(adapter.has("a.txt")).toBe(false);
+    expect(adapter.has("b.txt")).toBe(false);
+    expect(adapter.has("c.txt")).toBe(false);
+  });
+
+  test("deleteMany returns per-key errors and continues when stopOnError is false", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok-1.txt", "1");
+    await files.upload("ok-2.txt", "2");
+
+    const result = await files.deleteMany(
+      ["ok-1.txt", "fail/a.txt", "ok-2.txt", "fail/b.txt"],
+      { stopOnError: false }
+    );
+
+    expect(result.delete).toEqual(["ok-1.txt", "ok-2.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/a.txt",
+      "fail/b.txt",
+    ]);
+    expect(adapter.has("ok-1.txt")).toBe(false);
+    expect(adapter.has("ok-2.txt")).toBe(false);
+  });
+
+  test("deleteMany stops on the first error when stopOnError is true", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok-1.txt", "1");
+    await files.upload("ok-2.txt", "2");
+
+    const result = await files.deleteMany(
+      ["ok-1.txt", "fail/a.txt", "ok-2.txt"],
+      { stopOnError: true }
+    );
+
+    expect(result.delete).toEqual(["ok-1.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual(["fail/a.txt"]);
+    expect(adapter.has("ok-2.txt")).toBe(true);
+  });
+
+  test("deleteMany returns validation errors without skipping valid keys", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+
+    const result = await files.deleteMany(["", "ok.txt", "foo\0bar"], {
+      stopOnError: false,
+    });
+
+    expect(result.delete).toEqual(["ok.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual(["", "foo\0bar"]);
+  });
+
   test("copy duplicates an object", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("from.txt", "payload");

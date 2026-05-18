@@ -62,9 +62,51 @@ await avatar.delete();
 
 File handles are a thin layer over the same adapter methods, so adapters do not need to implement anything extra.
 
+## Bulk delete
+
+Use `deleteMany()` when you need to remove multiple keys in one call:
+
+```ts
+const result = await files.deleteMany(
+  ["avatars/user-1.png", "avatars/user-2.png", "avatars/user-3.png"],
+  {
+    concurrency: 8,
+    stopOnError: false,
+  }
+);
+
+console.log(result.delete);
+console.log(result.errors);
+```
+
+`deleteMany()` always returns:
+
+```ts
+{
+  delete: string[];
+  errors?: Array<{
+    key: string;
+    error: FilesError;
+  }>;
+}
+```
+
+Options:
+
+- `concurrency` controls how many deletes run in parallel when the adapter falls back to per-key deletion. Adapters with native bulk delete may ignore it.
+- `stopOnError` changes failure behavior:
+  - `false` (default): process every key and collect per-key failures in `errors`
+  - `true`: stop at the first failure and return immediately with the keys deleted so far plus that first error
+
+Caveats:
+
+- Bulk delete is idempotent at the SDK level in the same way as `delete()` — adapters that already treat missing keys as success keep that behavior here too.
+- Some adapters use a provider-native bulk primitive, while others fan out to repeated `delete()` calls with bounded concurrency.
+- On native bulk-delete providers, an adapter may only know that the batch failed as a whole rather than receiving per-key failure details. In that case, the SDK returns the provider error for each affected key.
+
 ## What you get
 
-- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `list`, `url`, `signedUploadUrl`, plus `file(key)` for a key-scoped handle. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox. `exists` returns `false` only when the provider reports `NotFound`; auth, permission, and transport failures still throw.
+- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `deleteMany`, `copy`, `list`, `url`, `signedUploadUrl`, plus `file(key)` for a key-scoped handle. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox. `exists` returns `false` only when the provider reports `NotFound`; auth, permission, and transport failures still throw.
 - **Web-standard I/O** — bodies are `Blob`, `File`, `ReadableStream`, `Uint8Array`, `ArrayBuffer`, or `string`. No provider-specific types leak into your code.
 - **Escape hatch** — every adapter exposes its native client at `files.raw`, so provider-specific features are one property access away.
 - **Tree-shakeable** — each adapter is a separate entry point. You only bundle what you import.

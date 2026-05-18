@@ -13,7 +13,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { existsByProbe } from "../internal/core.js";
+import { deleteManyWithFallback, existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -479,6 +479,30 @@ export const googleDrive = (
     return toUint8(res.data as unknown);
   };
 
+  const deleteOne = async (key: string): Promise<void> => {
+    let fileId: string;
+    try {
+      fileId = await resolveFileId(key);
+    } catch (error) {
+      // Idempotent: a missing file is not an error on delete.
+      if (error instanceof FilesError && error.code === "NotFound") {
+        return;
+      }
+      throw error;
+    }
+    try {
+      await driveClient.files.delete({ ...sharedDriveParams, fileId });
+      fileIdCache.delete(key);
+    } catch (error) {
+      const mapped = mapDriveError(error);
+      if (mapped.code === "NotFound") {
+        fileIdCache.delete(key);
+        return;
+      }
+      throw mapped;
+    }
+  };
+
   return {
     async copy(from, to) {
       try {
@@ -501,28 +525,9 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
-    async delete(key) {
-      let fileId: string;
-      try {
-        fileId = await resolveFileId(key);
-      } catch (error) {
-        // Idempotent: a missing file is not an error on delete.
-        if (error instanceof FilesError && error.code === "NotFound") {
-          return;
-        }
-        throw error;
-      }
-      try {
-        await driveClient.files.delete({ ...sharedDriveParams, fileId });
-        fileIdCache.delete(key);
-      } catch (error) {
-        const mapped = mapDriveError(error);
-        if (mapped.code === "NotFound") {
-          fileIdCache.delete(key);
-          return;
-        }
-        throw mapped;
-      }
+    delete: deleteOne,
+    deleteMany(keys, deleteOpts) {
+      return deleteManyWithFallback(keys, deleteOne, deleteOpts, mapDriveError);
     },
     async download(key, downloadOpts) {
       try {

@@ -13,6 +13,7 @@ import type {
 } from "../index.js";
 import {
   collectStream,
+  deleteManyWithFallback,
   existsByProbe,
   makeErrorMapper,
   normalizeBody as coreNormalizeBody,
@@ -212,6 +213,15 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         throw mapAppwriteError(error);
       }
     },
+    deleteMany: (keys, deleteOpts) =>
+      deleteManyWithFallback(
+        keys,
+        async (key) => {
+          await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
+        },
+        deleteOpts,
+        mapAppwriteError
+      ),
     download: async (key: string, _opts?: DownloadOptions) => {
       try {
         const [stat, buffer] = await Promise.all([

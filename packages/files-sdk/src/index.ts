@@ -1,8 +1,9 @@
+import { deleteManyWithFallback } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
+export type { BodySource, StoredFileMeta } from "./internal/stored-file.js";
 export { createStoredFile } from "./internal/stored-file.js";
-export type { StoredFileMeta, BodySource } from "./internal/stored-file.js";
 
 export type Body =
   | Blob
@@ -54,6 +55,21 @@ export interface ListOptions {
 export interface ListResult {
   items: StoredFile[];
   cursor?: string;
+}
+
+export interface DeleteManyOptions {
+  concurrency?: number;
+  stopOnError?: boolean;
+}
+
+export interface DeleteManyError {
+  key: string;
+  error: FilesError;
+}
+
+export interface DeleteManyResult {
+  delete: string[];
+  errors?: DeleteManyError[];
 }
 
 export interface UrlOptions {
@@ -160,6 +176,10 @@ export interface Adapter<Raw = unknown> {
    */
   exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
+  deleteMany?(
+    keys: string[],
+    opts?: DeleteManyOptions
+  ): Promise<DeleteManyResult>;
   copy(from: string, to: string): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
   /**
@@ -299,6 +319,49 @@ export class Files<A extends Adapter = Adapter> {
   delete(key: string): Promise<void> {
     assertValidKey(key);
     return run(() => this.#adapter.delete(key));
+  }
+
+  async deleteMany(
+    keys: string[],
+    opts?: DeleteManyOptions
+  ): Promise<DeleteManyResult> {
+    if (!Array.isArray(keys)) {
+      throw new FilesError("Provider", "keys must be an array");
+    }
+
+    const validKeys: string[] = [];
+    const errors: DeleteManyError[] = [];
+
+    for (const key of keys) {
+      try {
+        assertValidKey(key);
+        validKeys.push(key);
+      } catch (error) {
+        errors.push({
+          error: FilesError.wrap(error),
+          key: String(key),
+        });
+
+        if (opts?.stopOnError) {
+          return { delete: [], errors };
+        }
+      }
+    }
+
+    const result = this.#adapter.deleteMany
+      ? await this.#adapter.deleteMany(validKeys, opts)
+      : await deleteManyWithFallback(validKeys, (key) =>
+          this.#adapter.delete(key)
+        );
+
+    if (errors.length === 0) {
+      return result;
+    }
+
+    return {
+      delete: result.delete,
+      errors: [...errors, ...(result.errors ?? [])],
+    };
   }
 
   copy(from: string, to: string): Promise<void> {
