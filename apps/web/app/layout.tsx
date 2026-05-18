@@ -77,6 +77,7 @@ const RootLayout = ({ children }: RootLayoutProps) => (
       geistSans.variable,
       geistMono.variable
     )}
+    suppressHydrationWarning
   >
     <body className="flex min-h-full flex-col">
       <script

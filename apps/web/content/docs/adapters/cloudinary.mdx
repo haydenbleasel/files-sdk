@@ -7,6 +7,8 @@ peerDeps:
 
 <AdapterInstallation peerDeps={["cloudinary"]} />
 
+## Usage
+
 Cloudinary asset CDN via the official `cloudinary` Node SDK. Defaults to `resource_type: "raw"` for arbitrary-bytes storage so keys round-trip cleanly through the adapter; switch to `"image"` or `"video"` if you want Cloudinary's transformation features. Falls back to `CLOUDINARY_URL` or individual env vars when no explicit credentials are passed.
 
 ```ts

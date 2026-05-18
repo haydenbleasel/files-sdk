@@ -7,6 +7,8 @@ peerDeps:
 
 <AdapterInstallation peerDeps={["uploadthing"]} />
 
+## Usage
+
 UploadThing via the official `uploadthing/server` SDK. UploadThing generates its own internal file keys, so the adapter maps the user-supplied key onto UploadThing's `customId` with `defaultKeyType: "customId"` - every subsequent operation routes by your key, not the auto-generated one.
 
 ```ts

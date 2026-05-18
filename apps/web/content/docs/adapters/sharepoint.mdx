@@ -10,6 +10,8 @@ peerDeps:
   peerDeps={["@azure/identity", "@microsoft/microsoft-graph-client"]}
 />
 
+## Usage
+
 SharePoint document libraries via Microsoft Graph. Wraps the `onedrive` adapter and adds SharePoint-shaped resolution - `siteUrl` parsing, named `documentLibrary` lookup, and `SHAREPOINT_*` env-var fallbacks. Resolution is lazy: the first method call triggers Graph traffic to convert names into drive IDs, then subsequent calls reuse the resolved drive.
 
 ```ts

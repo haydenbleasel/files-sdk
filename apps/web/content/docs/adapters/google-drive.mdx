@@ -8,6 +8,8 @@ peerDeps:
 
 <AdapterInstallation peerDeps={["@googleapis/drive", "google-auth-library"]} />
 
+## Usage
+
 Google Drive via the official `@googleapis/drive` v3 client. Drive is a document manager rather than object storage - files have opaque `fileId`s and names can collide, so the adapter maps a unified string key onto Drive's `appProperties` (`fsdkKey`), with a per-instance LRU so reads after the first don't re-issue a lookup. Four auth modes: service-account credentials (inline or via key file), an OAuth refresh token, a pre-built Drive client (the escape hatch), or env-var fallback.
 
 ```ts

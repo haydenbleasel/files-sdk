@@ -7,6 +7,8 @@ peerDeps:
 
 <AdapterInstallation peerDeps={["@bunny.net/storage-sdk"]} />
 
+## Usage
+
 Bunny Storage via the official `@bunny.net/storage-sdk`. The adapter connects to a Storage Zone with its zone password / API access key and uses Bunny's HTTP Storage API for reads, writes, listing, and deletes. Auto-loads from `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_ACCESS_KEY`, and `BUNNY_STORAGE_REGION`; also accepts `STORAGE_ZONE`, `STORAGE_ACCESS_KEY`, and `STORAGE_REGION` as aliases (the names used in the Bunny SDK's README example).
 
 ```ts
