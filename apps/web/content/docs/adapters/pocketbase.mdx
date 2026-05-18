@@ -1,0 +1,39 @@
+---
+title: PocketBase
+description: PocketBase via the official JS SDK. Maps the unified key/blob API onto a dedicated collection with a unique key field and a single-file body field.
+peerDeps:
+  - "pocketbase"
+---
+
+<AdapterInstallation peerDeps={["pocketbase"]} />
+
+PocketBase via the official `pocketbase` JS SDK. PocketBase has no object-store primitive - files live as field values on records inside collections. The adapter maps the unified key/blob API onto a dedicated collection: each upload becomes (or updates) a record whose configurable _key field_ holds the user-facing string key and whose configurable _file field_ holds the body.
+
+```ts
+import { Files } from "files-sdk";
+import { pocketbase } from "files-sdk/pocketbase";
+
+const files = new Files({
+  adapter: pocketbase({
+    collection: "files",
+    // Auto-loads url + auth from POCKETBASE_URL,
+    // POCKETBASE_ADMIN_EMAIL + POCKETBASE_ADMIN_PASSWORD, or
+    // POCKETBASE_AUTH_TOKEN. Or pass an existing PocketBase client.
+    //
+    // Collection must already exist with a unique-indexed text `key`
+    // field and a single-value `file` field. Field names are
+    // configurable via `keyField` / `fileField`.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/pocketbase/index.ts"
+  name="PocketBaseAdapterOptions"
+/>
+
+## Limitations
+
+`signedUploadUrl()` throws - PocketBase has no presigned upload primitive; writes always go through the authenticated API. `copy()` is read-then-write (no server-side copy) - costs an egress + an ingest and isn't atomic. `list()` uses PocketBase's offset/limit API; the adapter encodes the page number as a numeric cursor string so the unified API works unchanged. `UploadOptions` `cacheControl` and `metadata` throw - PocketBase has no per-file HTTP cache headers and no arbitrary-metadata field on the file; add extra typed columns to the collection and write to them via `raw` if you need them. `responseContentDisposition` on `url()` throws - PocketBase has no per-URL Content-Disposition override; reach for `raw` and the `?download=true` query string instead.

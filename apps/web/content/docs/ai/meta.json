@@ -1,0 +1,5 @@
+{
+  "title": "AI",
+  "defaultOpen": false,
+  "pages": ["index", "openai", "vercel", "claude"]
+}

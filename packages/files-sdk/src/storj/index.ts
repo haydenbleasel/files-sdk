@@ -8,6 +8,7 @@ import { s3 } from "../s3/index.js";
 const STORJ_GATEWAY_MT_ENDPOINT = "https://gateway.storjshare.io";
 
 export interface StorjAdapterOptions {
+  /** Storj bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Storj S3 gateway URL. Defaults to `https://gateway.storjshare.io`
@@ -15,9 +16,28 @@ export interface StorjAdapterOptions {
    * self-hosted Gateway ST URL if you run your own.
    */
   endpoint?: string;
+  /**
+   * Static access key ID. Falls back to `STORJ_ACCESS_KEY_ID`; required if
+   * that env var isn't set. This is an S3-style gateway key, not your Storj
+   * access grant — the gateway translates it server-side.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Falls back to `STORJ_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
+  /**
+   * SigV4 region used for signing. Defaults to `us-east-1`. SigV4 requires
+   * some region in the signature; the Storj gateway ignores it for routing,
+   * so leave the default unless you have a reason to change it.
+   */
   region?: string;
+  /**
+   * Use path-style addressing (`/<bucket>/<key>`). Defaults to `true` for
+   * Storj — the gateway routes path-style. Flip off only if you've fronted
+   * the gateway with subdomain routing.
+   */
   forcePathStyle?: boolean;
   /**
    * Origin used to build URLs from `url()`. When set, `url(key)` returns

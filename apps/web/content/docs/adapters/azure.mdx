@@ -1,0 +1,35 @@
+---
+title: Azure Blob Storage
+description: Azure Blob Storage via @azure/storage-blob. Four credential modes - connection string, account key, SAS token, or anonymous.
+peerDeps:
+  - "@azure/storage-blob"
+---
+
+<AdapterInstallation peerDeps={["@azure/storage-blob"]} />
+
+Azure Blob Storage via the official `@azure/storage-blob` SDK. Four credential modes: connection string, account name + account key, account name + SAS token, or anonymous (public-read containers only). Connection-string parsing recovers the account name + key so signing methods keep working.
+
+```ts
+import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+
+const files = new Files({
+  adapter: azure({
+    container: "uploads",
+    // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
+    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
+    // Pass connectionString / accountKey / sasToken explicitly to override.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/azure/index.ts"
+  name="AzureAdapterOptions"
+/>
+
+## Limitations
+
+`signedUploadUrl()` issues PUT-only - Azure SAS has no POST-policy equivalent. `maxSize` throws because Azure can't enforce upload caps at the URL level; enforce them at your application gateway. `copy()` uses `syncCopyFromURL`, which caps at 256 MB source size; larger blobs need `beginCopyFromURL` via `adapter.raw`. `@azure/identity` / Managed Identity is not supported in v1 - drop down to `adapter.raw` or wait for a future `client` option.

@@ -1,0 +1,37 @@
+---
+title: MinIO
+description: MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { minio } from "files-sdk/minio";
+
+const files = new Files({
+  adapter: minio({
+    bucket: "uploads",
+    endpoint: "http://localhost:9000",
+    // accessKeyId / secretAccessKey auto-loaded from
+    // MINIO_ACCESS_KEY_ID / MINIO_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/minio/index.ts"
+  name="MinioAdapterOptions"
+/>

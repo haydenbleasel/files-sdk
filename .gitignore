@@ -141,3 +141,6 @@ dist
 # Remotion
 out
 .DS_Store
+
+# Fumadocs
+.source

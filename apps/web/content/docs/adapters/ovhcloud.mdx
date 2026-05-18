@@ -1,0 +1,39 @@
+---
+title: OVHcloud Object Storage
+description: OVHcloud Object Storage (High Performance S3) via the S3-compatible API. Endpoint derived from the region code.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { ovhcloud } from "files-sdk/ovhcloud";
+
+const files = new Files({
+  adapter: ovhcloud({
+    bucket: "uploads",
+    region: "gra", // or "sbg", "de", "uk", "waw", "sgp", "syd"
+    // accessKeyId / secretAccessKey auto-loaded from
+    // OVH_ACCESS_KEY_ID / OVH_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+OVHcloud Object Storage (High Performance S3) via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`gra`, `sbg`, `bhs`, `de`, `uk`, `waw`, `sgp`, `syd`), virtual-hosted-style addressing, errors relabelled. For the Standard (Swift-backed) tier, pass `https://s3.<region>.cloud.ovh.net` as the explicit `endpoint`. Auto-loads from `OVH_ACCESS_KEY_ID` and `OVH_SECRET_ACCESS_KEY`. Generate S3 credentials in the OVHcloud Control Panel under Public Cloud -> Object Storage -> S3 users.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/ovhcloud/index.ts"
+  name="OvhcloudAdapterOptions"
+/>

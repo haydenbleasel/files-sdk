@@ -1,0 +1,45 @@
+---
+title: OneDrive
+description: OneDrive and SharePoint document libraries via Microsoft Graph. Path-addressable, no virtual-key bookkeeping.
+peerDeps:
+  - "@azure/identity"
+  - "@microsoft/microsoft-graph-client"
+---
+
+<AdapterInstallation
+  peerDeps={["@azure/identity", "@microsoft/microsoft-graph-client"]}
+/>
+
+OneDrive and SharePoint document libraries via the official `@microsoft/microsoft-graph-client` SDK. Microsoft Graph is path-addressable (`/drive/root:/folder/file.txt`), so the adapter maps virtual keys onto real OneDrive paths - no virtual-key cache, no `fsdkKey` bookkeeping. Five auth shapes (app-only, OAuth refresh token, raw access token, pre-built Graph client, or env-var fallback) and four drive targets (`/me/drive`, `driveId`, `siteId`, `userId`) cover the personal-OneDrive, OneDrive-for-Business, and SharePoint-site-library cases.
+
+```ts
+import { Files } from "files-sdk";
+import { onedrive } from "files-sdk/onedrive";
+
+// App-only auth (client credentials) into a SharePoint site library.
+// Cannot use /me/drive - pass driveId, siteId, or userId instead.
+const files = new Files({
+  adapter: onedrive({
+    clientCredentials: {
+      tenantId: process.env.ONEDRIVE_TENANT_ID!,
+      clientId: process.env.ONEDRIVE_CLIENT_ID!,
+      clientSecret: process.env.ONEDRIVE_CLIENT_SECRET!,
+    },
+    siteId: process.env.ONEDRIVE_SITE_ID!,
+    rootFolderPath: "Uploads",
+    // publicByDefault: true → upload() also creates an anonymous-view
+    //                       sharing link and url() returns its webUrl.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/onedrive/index.ts"
+  name="OneDriveAdapterOptions"
+/>
+
+## Limitations
+
+`url()` throws unless the adapter is constructed with `publicByDefault: true` - Graph has no signed URL primitive. With `publicByDefault`, the returned share link has no expiry by Graph's default policy (`expiresIn` is silently ignored) and `responseContentDisposition` always throws - Graph has no Content-Disposition override. `signedUploadUrl()` initiates an upload session via `createUploadSession` and returns the session URL as a one-shot PUT; `maxSize` and `minSize` are advisory - Graph does not enforce a server-side `content-length-range` policy on upload sessions. Direct `upload()` is capped at OneDrive's 250 MB simple-upload limit; larger bodies must use `signedUploadUrl()` or drop to `raw` for chunked sessions. Drive items have no native arbitrary-metadata field, so user `metadata` and `cacheControl` on `upload()` throw - use `raw` to set Open Extensions if you need them. `copy()` is async on Graph (202 + monitor URL); the adapter polls the monitor and resolves when status is `"completed"`, with a configurable `copyTimeoutMs` ceiling. `list()` returns immediate-children files only at `rootFolderPath` - no recursion; subfolders are filtered out.

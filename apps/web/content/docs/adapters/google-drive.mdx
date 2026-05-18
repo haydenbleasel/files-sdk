@@ -1,0 +1,45 @@
+---
+title: Google Drive
+description: Google Drive via the official Drive v3 client. Maps unified string keys onto Drive's appProperties with a per-instance LRU cache.
+peerDeps:
+  - "@googleapis/drive"
+  - "google-auth-library"
+---
+
+<AdapterInstallation peerDeps={["@googleapis/drive", "google-auth-library"]} />
+
+Google Drive via the official `@googleapis/drive` v3 client. Drive is a document manager rather than object storage - files have opaque `fileId`s and names can collide, so the adapter maps a unified string key onto Drive's `appProperties` (`fsdkKey`), with a per-instance LRU so reads after the first don't re-issue a lookup. Four auth modes: service-account credentials (inline or via key file), an OAuth refresh token, a pre-built Drive client (the escape hatch), or env-var fallback.
+
+```ts
+import { Files } from "files-sdk";
+import { googleDrive } from "files-sdk/google-drive";
+
+// Service account into a Shared Drive (recommended - the default
+// service-account quota is 15 GB and not really intended for storage).
+// Add the service account as a member of the Shared Drive in the
+// Google Workspace admin console first.
+const files = new Files({
+  adapter: googleDrive({
+    credentials: {
+      client_email: process.env.GOOGLE_DRIVE_CLIENT_EMAIL!,
+      private_key: process.env.GOOGLE_DRIVE_PRIVATE_KEY!,
+    },
+    driveId: process.env.GOOGLE_DRIVE_ID!,
+    // Shared Drive root id, or a sub-folder id to scope the "bucket".
+    rootFolderId: process.env.GOOGLE_DRIVE_ID!,
+    // publicByDefault: true → grants anyone-with-link reader on upload
+    //                       and url() returns the Drive download URL.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/google-drive/index.ts"
+  name="GoogleDriveAdapterOptions"
+/>
+
+## Limitations
+
+`url()` throws unless the adapter is constructed with `publicByDefault: true` - Drive has no signed URL primitive. With `publicByDefault`, the returned URL is permanent (`expiresIn` is silently ignored) and `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override. `signedUploadUrl()` initiates a Drive resumable session and returns the session URL as a one-shot PUT; `maxSize` is forwarded as `X-Upload-Content-Length` (advisory, not server-side enforced) and `minSize` is ignored. `list()` scopes by parent folder and filters client-side to files that carry the adapter's `fsdkKey` - files written into the same folder out-of-band are excluded; `prefix` filtering is page-local and can under-return when the prefix isn't satisfied within a single page. Two files with the same virtual key (created out-of-band) make resolution throw `Conflict` rather than picking one silently. User `metadata` keys starting with `fsdk` are reserved (the adapter uses that prefix on `appProperties` for bookkeeping).

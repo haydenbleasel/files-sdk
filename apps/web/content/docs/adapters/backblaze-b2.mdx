@@ -1,0 +1,39 @@
+---
+title: Backblaze B2
+description: Backblaze B2 via the S3-compatible API. Endpoint derived from the cluster code (us-west-002, us-east-005, eu-central-003, ...).
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { backblazeB2 } from "files-sdk/backblaze-b2";
+
+const files = new Files({
+  adapter: backblazeB2({
+    bucket: "uploads",
+    region: "us-west-002", // or "us-east-005", "eu-central-003", ...
+    // accessKeyId / secretAccessKey auto-loaded from
+    // B2_APPLICATION_KEY_ID / B2_APPLICATION_KEY
+  }),
+});
+```
+
+Backblaze B2 via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the cluster code (`us-west-002`, `us-east-005`, `eu-central-003`, ...), virtual-hosted-style addressing, errors relabelled. Auto-loads from `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY`. Generate an application key in the Backblaze console under Account -> Application Keys; the bucket's cluster is shown next to its endpoint.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/backblaze-b2/index.ts"
+  name="BackblazeB2AdapterOptions"
+/>

@@ -1,0 +1,36 @@
+---
+title: Supabase Storage
+description: Supabase Storage via @supabase/storage-js. Pass an existing SupabaseClient to share auth/postgrest with the rest of your app.
+peerDeps:
+  - "@supabase/storage-js"
+---
+
+<AdapterInstallation peerDeps={["@supabase/storage-js"]} />
+
+Supabase Storage via the official `@supabase/storage-js` SDK. Auto-loads the project URL and an API key from the standard env vars; pass `client` to share an existing `SupabaseClient` with the rest of your app (auth, postgrest).
+
+```ts
+import { Files } from "files-sdk";
+import { supabase } from "files-sdk/supabase";
+
+const files = new Files({
+  adapter: supabase({
+    bucket: "uploads",
+    // Auto-loads url + key from SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL
+    // and SUPABASE_SERVICE_ROLE_KEY / SUPABASE_KEY /
+    // NEXT_PUBLIC_SUPABASE_ANON_KEY. Or pass an existing SupabaseClient
+    // via `client` to share with auth/postgrest.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/supabase/index.ts"
+  name="SupabaseAdapterOptions"
+/>
+
+## Limitations
+
+`signedUploadUrl()` issues PUT-only. `maxSize` throws - Supabase signed upload URLs have no `content-length-range` equivalent; set the bucket-level file size limit in the Supabase dashboard or enforce caps at your application gateway. `expiresIn` on `signedUploadUrl()` is ignored - Supabase fixes the TTL at 2 hours server-side. `list()` uses Supabase's V1 offset/limit API; the adapter encodes `offset` as a numeric cursor string so it threads through the unified API.

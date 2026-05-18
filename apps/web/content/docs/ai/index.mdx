@@ -1,0 +1,19 @@
+---
+title: AI tools
+description: First-class tool factories for OpenAI, the Vercel AI SDK, and the Claude Agent SDK - same eight operations, Zod-validated, approval-gated by default.
+---
+
+Files SDK ships first-class tool factories for the three major agent runtimes. Each one exposes the same eight file operations - four read, four write - validated with Zod and approval-gated by default.
+
+- **[OpenAI](/ai/openai)** - factories for the Responses API and the OpenAI Agents SDK.
+- **[Vercel AI SDK](/ai/vercel)** - drop the tools straight into `generateText`, `streamText`, or any agent.
+- **[Claude Agent SDK](/ai/claude)** - in-process MCP server with `allowedTools` and `canUseTool` wired up.
+
+## Shared surface
+
+Eight tools are returned by default - four read, four write. Each one is a thin wrapper around a `Files` method, so they share the SDK's key validation, normalized errors, and adapter portability.
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/ai-sdk/index.ts"
+  name="FileTools"
+/>

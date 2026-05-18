@@ -1,0 +1,39 @@
+---
+title: Wasabi
+description: Wasabi Hot Cloud Storage via the S3-compatible API. AWS-style region names, Wasabi's own endpoints.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { wasabi } from "files-sdk/wasabi";
+
+const files = new Files({
+  adapter: wasabi({
+    bucket: "uploads",
+    region: "us-east-1", // or "eu-central-1", "ap-northeast-1", ...
+    // accessKeyId / secretAccessKey auto-loaded from
+    // WASABI_ACCESS_KEY_ID / WASABI_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+Wasabi Hot Cloud Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`us-east-1`, `eu-central-1`, `ap-northeast-1`, ...), virtual-hosted-style addressing, errors relabelled. Region names mirror AWS but the endpoints are Wasabi's own. Auto-loads from `WASABI_ACCESS_KEY_ID` and `WASABI_SECRET_ACCESS_KEY`. Generate access keys in the Wasabi console under Access Keys.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/wasabi/index.ts"
+  name="WasabiAdapterOptions"
+/>

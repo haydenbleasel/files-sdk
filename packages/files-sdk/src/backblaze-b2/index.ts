@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface BackblazeB2AdapterOptions {
+  /** B2 bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Backblaze B2 cluster code, e.g. `"us-west-000"`, `"us-west-001"`,
@@ -22,7 +23,15 @@ export interface BackblazeB2AdapterOptions {
    * SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static credentials — B2 application key ID. Falls back to
+   * `B2_APPLICATION_KEY_ID`; required if that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials — B2 application key. Falls back to
+   * `B2_APPLICATION_KEY`; required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

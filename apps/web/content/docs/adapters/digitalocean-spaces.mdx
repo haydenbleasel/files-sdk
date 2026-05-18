@@ -1,0 +1,37 @@
+---
+title: DigitalOcean Spaces
+description: DigitalOcean Spaces via the S3-compatible API. Endpoint derived from the region, virtual-hosted addressing.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { digitaloceanSpaces } from "files-sdk/digitalocean-spaces";
+
+const files = new Files({
+  adapter: digitaloceanSpaces({
+    bucket: "uploads",
+    region: "nyc3",
+    // accessKeyId / secretAccessKey auto-loaded from
+    // DO_SPACES_KEY / DO_SPACES_SECRET
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/digitalocean-spaces/index.ts"
+  name="DigitalOceanSpacesAdapterOptions"
+/>

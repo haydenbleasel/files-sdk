@@ -8,6 +8,7 @@ import { s3 } from "../s3/index.js";
 const FILEBASE_ENDPOINT = "https://s3.filebase.com";
 
 export interface FilebaseAdapterOptions {
+  /** Filebase bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Filebase S3 endpoint. Defaults to `https://s3.filebase.com` — Filebase
@@ -16,7 +17,15 @@ export interface FilebaseAdapterOptions {
    * dashboard, not per-request).
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `FILEBASE_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `FILEBASE_SECRET_ACCESS_KEY`; required
+   * if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * SigV4 region. Defaults to `"us-east-1"`. Filebase ignores it for routing

@@ -1,4 +1,10 @@
-import { CodeTabs } from "./code-tabs";
+import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "fumadocs-ui/components/tabs";
 
 const ADAPTERS = [
   {
@@ -47,11 +53,19 @@ const meta = await files.head("hello.txt");
 const items = await files.list();
 await files.delete("hello.txt");`;
 
-const TABS = ADAPTERS.map((adapter) => ({
-  code: buildCode(adapter),
-  id: adapter.id,
-  label: adapter.label,
-  lang: "tsx" as const,
-}));
-
-export const Demo = () => <CodeTabs tabs={TABS} />;
+export const Demo = () => (
+  <Tabs defaultValue="s3">
+    <TabsList>
+      {ADAPTERS.map(({ id, label }) => (
+        <TabsTrigger key={id} value={id}>
+          {label}
+        </TabsTrigger>
+      ))}
+    </TabsList>
+    {ADAPTERS.map((adapter) => (
+      <TabsContent key={adapter.id} value={adapter.id}>
+        <DynamicCodeBlock code={buildCode(adapter)} lang="tsx" />
+      </TabsContent>
+    ))}
+  </Tabs>
+);

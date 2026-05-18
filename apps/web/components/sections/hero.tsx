@@ -1,102 +1,122 @@
 "use client";
 
+import { ArrowRight, Star } from "lucide-react";
 import { motion } from "motion/react";
+import Link from "next/link";
 
-import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import * as icons from "./icons";
 
 const EASE = [0.16, 1, 0.3, 1] as const;
-
-const iconLabels: Record<keyof typeof icons, string> = {
-  AzureBlobStorage: "Azure Blob Storage",
-  Box: "Box",
-  DigitalOcean: "DigitalOcean Spaces",
-  Dropbox: "Dropbox",
-  GoogleCloudStorage: "Google Cloud Storage",
-  GoogleDrive: "Google Drive",
-  Minio: "MinIO",
-  NetlifyBlobs: "Netlify Blobs",
-  OneDrive: "OneDrive",
-  R2: "Cloudflare R2",
-  S3: "Amazon S3",
-  Supabase: "Supabase Storage",
-  UploadThing: "UploadThing",
-  Vercel: "Vercel Blob",
-};
 
 const iconList = Object.entries(icons) as [
   keyof typeof icons,
   (typeof icons)[keyof typeof icons],
 ][];
 
+const marqueeList = [...iconList, ...iconList];
+
 export const Hero = () => (
-  <section className="hero mt-16">
-    <motion.div
-      className="flex items-center gap-3"
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, ease: EASE }}
-    >
-      <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-foreground">
-        Files SDK
-      </h1>
-    </motion.div>
-    <motion.p
-      className="text-muted-foreground text-balance leading-relaxed"
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.12, duration: 0.6, ease: EASE }}
-    >
-      A unified storage SDK for object and blob backends. One small, honest API.
-      Web-standards I/O. An escape hatch when you need the native client.
-    </motion.p>
-    <div className="flex items-center -space-x-2 sm:-space-x-1">
-      {iconList.map(([name, Icon], index) => {
-        const restRotate = index % 2 === 0 ? 3 : -3;
-        return (
-          <Tooltip key={name}>
-            <TooltipTrigger asChild>
-              <motion.div
-                initial={{ opacity: 0, scale: 0.6, y: -10 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                transition={{
-                  delay: 0.05 * index,
-                  duration: 0.5,
-                  ease: EASE,
-                }}
-              >
-                <motion.div
-                  initial={{ rotate: 0 }}
-                  animate={{ rotate: restRotate }}
-                  transition={{ duration: 0.3, ease: EASE }}
-                  whileHover={{ rotate: restRotate, scale: 1.05, y: -4 }}
-                >
-                  <Icon
-                    className={cn(
-                      "size-6 rounded-sm ring-2 ring-background block"
-                    )}
-                  />
-                </motion.div>
-              </motion.div>
-            </TooltipTrigger>
-            <TooltipContent>{iconLabels[name]}</TooltipContent>
-          </Tooltip>
-        );
-      })}
-      <motion.span
-        className="text-muted-foreground text-xs ml-3"
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{
-          delay: 0.05 * iconList.length,
-          duration: 0.5,
-          ease: EASE,
-        }}
+  <section className="relative overflow-hidden">
+    <div className="mx-auto flex max-w-5xl flex-col items-center px-6 pt-24 pb-20 text-center sm:pt-32 sm:pb-24 lg:pt-40 lg:pb-28">
+      <motion.p
+        className="font-mono text-xs text-muted-foreground"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.4, ease: EASE }}
       >
-        + 26 more
-      </motion.span>
+        <span className="mr-1.5 inline-block size-1.5 translate-y-[-1px] rounded-full bg-emerald-500 align-middle" />
+        v1.4
+      </motion.p>
+
+      <motion.h1
+        className="mt-8 max-w-[18ch] text-5xl font-medium tracking-tight text-balance text-foreground sm:text-7xl lg:text-8xl"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.08, duration: 0.7, ease: EASE }}
+      >
+        One SDK. Every storage.
+      </motion.h1>
+
+      <motion.p
+        className="mt-7 max-w-[48ch] text-lg leading-relaxed text-pretty text-muted-foreground sm:text-xl"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.18, duration: 0.6, ease: EASE }}
+      >
+        A unified storage SDK for object and blob backends. One small API, web
+        standards, and an escape hatch when you need the native client.
+      </motion.p>
+
+      <motion.div
+        className="mt-10 flex flex-wrap items-center justify-center gap-3"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.26, duration: 0.6, ease: EASE }}
+      >
+        <Button asChild size="lg">
+          <Link href="/docs">
+            Get started
+            <ArrowRight data-icon="inline-end" />
+          </Link>
+        </Button>
+        <Button asChild size="lg" variant="ghost">
+          <a
+            href="https://github.com/haydenbleasel/files-sdk"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Star data-icon="inline-start" />
+            Star on GitHub
+          </a>
+        </Button>
+      </motion.div>
+
+      <motion.code
+        className="mt-8 inline-flex items-center gap-2 font-mono text-sm text-muted-foreground"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.34, duration: 0.5, ease: EASE }}
+      >
+        <span className="text-muted-foreground/60">$</span>
+        npm install files-sdk
+      </motion.code>
     </div>
+
+    <motion.div
+      className="relative mx-auto max-w-6xl px-6 pb-24 sm:pb-32"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ delay: 0.4, duration: 0.7, ease: EASE }}
+    >
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-background to-transparent"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 right-0 z-10 w-16 bg-gradient-to-l from-background to-transparent"
+      />
+      <div className="overflow-hidden">
+        <div className="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-10">
+          {marqueeList.map(([name, Icon], i) => (
+            <Icon
+              key={`${name}-${i}`}
+              className="size-9 shrink-0 rounded opacity-50 grayscale transition hover:opacity-100 hover:grayscale-0"
+            />
+          ))}
+        </div>
+      </div>
+      <p className="mt-8 text-center font-mono text-xs text-muted-foreground">
+        and 26 more —{" "}
+        <Link
+          href="/adapters"
+          className="text-foreground underline-offset-4 hover:underline"
+        >
+          see every adapter →
+        </Link>
+      </p>
+    </motion.div>
   </section>
 );

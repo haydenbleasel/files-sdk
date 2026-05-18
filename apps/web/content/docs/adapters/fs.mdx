@@ -1,0 +1,41 @@
+---
+title: Filesystem
+description: Local filesystem - the dev/test adapter. Uses node:fs/promises with a sidecar .meta.json per file. Not for production.
+---
+
+<AdapterInstallation peerDeps={[]} />
+
+Local filesystem. The dev/test adapter - point it at a directory and it implements the same `Adapter` contract as the cloud adapters using `node:fs/promises`. Each upload writes the body and a sidecar `.meta.json` file alongside it (Content-Type, ETag, user metadata) so reads round-trip cleanly. Not for production: there's no replication, no signing, no auth.
+
+```ts
+import { Files } from "files-sdk";
+import { fs } from "files-sdk/fs";
+
+// Writes objects under `./.uploads` with a sidecar `.meta.json`
+// per file for Content-Type, ETag, and user metadata. Designed for
+// dev and CI - same Adapter contract as the cloud adapters, so swap
+// it in via env without changing call sites.
+const files = new Files({
+  adapter: fs({
+    root: "./.uploads",
+    // Optional: configure if a dev server exposes the same root over
+    // HTTP, so url() returns a browser-friendly URL instead of file://.
+    // urlBaseUrl: "http://localhost:3000/files",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/fs/index.ts"
+  name="FsAdapterOptions"
+/>
+
+## Storage layout
+
+Body at `` `${root}/${key}` ``; sidecar at `` `${root}/${key}.meta.json` ``. Sidecars survive `cp -r` / `git mv` / partial-tree deletion. `list()` hides them. ETag is a SHA-1-derived stable hash computed at upload time.
+
+## Limitations
+
+`signedUploadUrl()` throws without `urlBaseUrl` - there's no upload server to sign against. `url()` throws on `responseContentDisposition` without `urlBaseUrl`: `file://` has no signature in which to bind the override. Files written by hand into `root` without a sidecar are still readable - `contentType` falls back to `application/octet-stream` and `etag` is absent.

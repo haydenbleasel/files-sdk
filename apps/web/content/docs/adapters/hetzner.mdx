@@ -1,0 +1,37 @@
+---
+title: Hetzner Object Storage
+description: Hetzner Object Storage via the S3-compatible API. Endpoint derived from the location code (fsn1, nbg1, hel1).
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { hetzner } from "files-sdk/hetzner";
+
+const files = new Files({
+  adapter: hetzner({
+    bucket: "uploads",
+    region: "fsn1", // or "nbg1", "hel1"
+    // accessKeyId / secretAccessKey auto-loaded from
+    // HCLOUD_ACCESS_KEY_ID / HCLOUD_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/hetzner/index.ts"
+  name="HetznerAdapterOptions"
+/>

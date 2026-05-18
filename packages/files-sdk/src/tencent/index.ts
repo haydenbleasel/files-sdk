@@ -26,7 +26,15 @@ export interface TencentAdapterOptions {
    * SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static access key ID. Falls back to `TENCENT_SECRET_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Falls back to `TENCENT_SECRET_KEY`; required
+   * if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

@@ -1,0 +1,38 @@
+---
+title: UploadThing
+description: UploadThing via uploadthing/server. Maps user-supplied keys onto UploadThing's customId.
+peerDeps:
+  - "uploadthing"
+---
+
+<AdapterInstallation peerDeps={["uploadthing"]} />
+
+UploadThing via the official `uploadthing/server` SDK. UploadThing generates its own internal file keys, so the adapter maps the user-supplied key onto UploadThing's `customId` with `defaultKeyType: "customId"` - every subsequent operation routes by your key, not the auto-generated one.
+
+```ts
+import { Files } from "files-sdk";
+import { uploadthing } from "files-sdk/uploadthing";
+
+// UPLOADTHING_TOKEN is auto-loaded from env. The token is a base64
+// JSON of { apiKey, appId, regions[] } - the adapter decodes it at
+// construction so url() can synthesize the public CDN URL and
+// signedUploadUrl() can sign a UFS PUT URL without an API round trip.
+const files = new Files({
+  adapter: uploadthing({
+    // acl: "public-read",       // default; switch to "private" to mint
+    //                            // signed URLs through generateSignedURL
+    // slug: "mediaUploader",    // required only for signedUploadUrl()
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/uploadthing/index.ts"
+  name="UploadThingAdapterOptions"
+/>
+
+## Limitations
+
+`copy()` is a read-then-write - UploadThing has no server-side copy primitive, so the source is downloaded and re-uploaded; not atomic and pays both an egress and an ingest cost. `head()` falls back to a HEAD request against the resolved file URL because UploadThing has no metadata endpoint - fields come from response headers, and user `metadata` isn't supported by the underlying API. `list()` uses UploadThing's offset/limit API; the adapter encodes `offset` as a numeric cursor string, and `prefix` is filtered client-side over each page (it can under-return when the prefix isn't satisfied within a single page). `signedUploadUrl()` issues PUT URLs against the UFS ingest endpoint - `maxSize` is advisory (UploadThing enforces caps via the file-router config tied to `slug`, not via the URL signature) and `minSize` is ignored. `url()` throws on `responseContentDisposition` - UploadThing has no Content-Disposition override on signed or CDN URLs.

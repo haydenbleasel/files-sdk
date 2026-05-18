@@ -1,0 +1,39 @@
+---
+title: Alibaba Cloud OSS
+description: Alibaba Cloud Object Storage Service (OSS) via the S3-compatible API. Endpoint derived from the region code (cn-hangzhou, ap-southeast-1, ...).
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+```ts
+import { Files } from "files-sdk";
+import { alibaba } from "files-sdk/alibaba";
+
+const files = new Files({
+  adapter: alibaba({
+    bucket: "uploads",
+    region: "cn-hangzhou", // or "cn-shanghai", "ap-southeast-1", ...
+    // accessKeyId / secretAccessKey auto-loaded from
+    // ALIBABA_ACCESS_KEY_ID / ALIBABA_ACCESS_KEY_SECRET
+  }),
+});
+```
+
+Alibaba Cloud Object Storage Service (OSS) via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`cn-hangzhou`, `cn-shanghai`, `ap-southeast-1`, ...), virtual-hosted-style addressing, errors relabelled. Auto-loads from `ALIBABA_ACCESS_KEY_ID` and `ALIBABA_ACCESS_KEY_SECRET`. Generate AccessKey pairs in the Alibaba Cloud console under RAM -> Users.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/alibaba/index.ts"
+  name="AlibabaAdapterOptions"
+/>
