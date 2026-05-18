@@ -1,6 +1,8 @@
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
+import { Button } from "@/components/ui/button";
+
 import * as icons from "./icons";
 
 const ICON_META: Record<keyof typeof icons, { label: string; slug: string }> = {
@@ -28,22 +30,11 @@ const adapters = Object.entries(icons) as [
 export const AdapterCloud = () => (
   <section>
     <div className="mx-auto max-w-6xl px-6 py-24 sm:py-32">
-      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-8">
-        <div>
-          <p className="font-mono text-xs text-muted-foreground">
-            40+ adapters
-          </p>
-          <h2 className="mt-3 max-w-[24ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">
-            Bring whatever storage you already have.
-          </h2>
-        </div>
-        <Link
-          href="/adapters"
-          className="group inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-foreground transition-colors hover:text-muted-foreground"
-        >
-          See all adapters
-          <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" />
-        </Link>
+      <div>
+        <p className="font-mono text-xs text-muted-foreground">40+ adapters</p>
+        <h2 className="mt-3 max-w-[24ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">
+          Bring whatever storage you already have.
+        </h2>
       </div>
       <ul
         className="mt-14 grid grid-cols-2 gap-x-8 gap-y-5 sm:grid-cols-3 lg:grid-cols-4"
@@ -65,16 +56,15 @@ export const AdapterCloud = () => (
             </li>
           );
         })}
-        <li className="hidden lg:block">
-          <Link
-            href="/adapters"
-            className="group inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            + 26 more
-            <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
-          </Link>
-        </li>
       </ul>
+      <div className="mt-14 flex justify-center">
+        <Button asChild size="lg" variant="outline">
+          <Link href="/adapters">
+            See all adapters
+            <ArrowRight data-icon="inline-end" />
+          </Link>
+        </Button>
+      </div>
     </div>
   </section>
 );

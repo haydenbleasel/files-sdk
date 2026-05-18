@@ -1,9 +1,10 @@
 "use client";
 
-import { ArrowRight, Star } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { motion } from "motion/react";
 import Link from "next/link";
 
+import { InstallCommand } from "@/components/install-command";
 import { Button } from "@/components/ui/button";
 
 import * as icons from "./icons";
@@ -17,18 +18,28 @@ const iconList = Object.entries(icons) as [
 
 const marqueeList = [...iconList, ...iconList];
 
-export const Hero = () => (
+interface HeroProps {
+  latestVersion: string;
+  latestSlug: string;
+}
+
+export const Hero = ({ latestVersion, latestSlug }: HeroProps) => (
   <section className="relative overflow-hidden">
     <div className="mx-auto flex max-w-5xl flex-col items-center px-6 pt-24 pb-20 text-center sm:pt-32 sm:pb-24 lg:pt-40 lg:pb-28">
-      <motion.p
-        className="font-mono text-xs text-muted-foreground"
+      <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.4, ease: EASE }}
       >
-        <span className="mr-1.5 inline-block size-1.5 translate-y-[-1px] rounded-full bg-emerald-500 align-middle" />
-        v1.4
-      </motion.p>
+        <Link
+          href={`/updates/${latestSlug}`}
+          className="group inline-flex items-center gap-2 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+          Latest update — v{latestVersion} released
+          <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
+        </Link>
+      </motion.div>
 
       <motion.h1
         className="mt-8 max-w-[18ch] text-5xl font-medium tracking-tight text-balance text-foreground sm:text-7xl lg:text-8xl"
@@ -36,7 +47,7 @@ export const Hero = () => (
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.08, duration: 0.7, ease: EASE }}
       >
-        One SDK. Every storage.
+        Write once. Store anywhere.
       </motion.h1>
 
       <motion.p
@@ -45,8 +56,9 @@ export const Hero = () => (
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.18, duration: 0.6, ease: EASE }}
       >
-        A unified storage SDK for object and blob backends. One small API, web
-        standards, and an escape hatch when you need the native client.
+        A unified SDK for S3, R2, GCS, Azure, and every other object or blob
+        store. One small API, web standards, and an escape hatch when you need
+        the native client.
       </motion.p>
 
       <motion.div
@@ -55,33 +67,14 @@ export const Hero = () => (
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.26, duration: 0.6, ease: EASE }}
       >
-        <Button asChild size="lg">
-          <Link href="/docs">
-            Get started
+        <InstallCommand />
+        <Button asChild size="lg" variant="ghost">
+          <Link href="/api">
+            Read the docs
             <ArrowRight data-icon="inline-end" />
           </Link>
         </Button>
-        <Button asChild size="lg" variant="ghost">
-          <a
-            href="https://github.com/haydenbleasel/files-sdk"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Star data-icon="inline-start" />
-            Star on GitHub
-          </a>
-        </Button>
       </motion.div>
-
-      <motion.code
-        className="mt-8 inline-flex items-center gap-2 font-mono text-sm text-muted-foreground"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.34, duration: 0.5, ease: EASE }}
-      >
-        <span className="text-muted-foreground/60">$</span>
-        npm install files-sdk
-      </motion.code>
     </div>
 
     <motion.div
@@ -103,7 +96,7 @@ export const Hero = () => (
           {marqueeList.map(([name, Icon], i) => (
             <Icon
               key={`${name}-${i}`}
-              className="size-9 shrink-0 rounded opacity-50 grayscale transition hover:opacity-100 hover:grayscale-0"
+              className="size-9 shrink-0 rounded transition hover:scale-110"
             />
           ))}
         </div>

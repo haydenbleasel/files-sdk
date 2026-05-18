@@ -1,6 +1,7 @@
-import { ArrowRight, Star } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
+import { InstallCommand } from "@/components/install-command";
 import { Button } from "@/components/ui/button";
 
 export const FinalCta = () => (
@@ -14,27 +15,14 @@ export const FinalCta = () => (
         adapter and forget the difference.
       </p>
       <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-        <Button asChild size="lg">
-          <Link href="/docs">
+        <InstallCommand />
+        <Button asChild size="lg" variant="ghost">
+          <Link href="/api">
             Read the docs
             <ArrowRight data-icon="inline-end" />
           </Link>
         </Button>
-        <Button asChild size="lg" variant="ghost">
-          <a
-            href="https://github.com/haydenbleasel/files-sdk"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Star data-icon="inline-start" />
-            Star on GitHub
-          </a>
-        </Button>
       </div>
-      <code className="mt-10 inline-flex items-center gap-2 font-mono text-sm text-muted-foreground">
-        <span className="text-muted-foreground/60">$</span>
-        npm install files-sdk
-      </code>
     </div>
   </section>
 );
