@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 
+import type { TokenCredential } from "@azure/core-auth";
 import {
   BlobSASPermissions,
   BlobServiceClient,
@@ -8,6 +9,7 @@ import {
   SASProtocol,
   StorageSharedKeyCredential,
 } from "@azure/storage-blob";
+import type { UserDelegationKey } from "@azure/storage-blob";
 
 import type {
   Adapter,
@@ -55,6 +57,22 @@ export interface AzureAdapterOptions {
    */
   accountKey?: string;
   /**
+   * Microsoft Entra credential used for Azure AD / Managed Identity workloads.
+   * When supplied without a shared key, reads/writes/listing use token-based
+   * auth and `url()` / `signedUploadUrl()` mint User Delegation SAS URLs.
+   *
+   * The principal must be allowed to access blob data and call
+   * `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action`
+   * (for example via Storage Blob Delegator at the account scope).
+   */
+  credential?: TokenCredential;
+  /**
+   * Controls whether `credential`-backed adapters mint User Delegation SAS
+   * URLs. Defaults to true when `credential` is supplied. Set false only when
+   * you want token-authenticated SDK operations but no signed URL support.
+   */
+  useUserDelegationSas?: boolean;
+  /**
    * Pre-issued SAS token (with or without leading `?`). When set without
    * `accountKey`, `url()` and `signedUploadUrl()` cannot mint new SAS — they
    * throw a Provider error. Reading/writing/listing still works as long as
@@ -88,6 +106,7 @@ export type AzureAdapter = Adapter<BlobServiceClient> & {
 };
 
 const COPY_SOURCE_SAS_SECONDS = 300;
+const USER_DELEGATION_KEY_SLACK_MS = 5 * 60 * 1000;
 
 const AZURE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "BlobNotFound",
@@ -186,10 +205,19 @@ const defaultEndpoint = (accountName: string): string =>
 interface AzureClientBundle {
   client: BlobServiceClient;
   sharedKey?: StorageSharedKeyCredential;
+  signer?: AzureSasSigner;
   accountName?: string;
   endpoint: string;
   sasToken?: string;
 }
+
+type AzureSasSigner =
+  | { kind: "sharedKey"; credential: StorageSharedKeyCredential }
+  | {
+      kind: "userDelegation";
+      client: BlobServiceClient;
+      cachedKey?: { key: UserDelegationKey; expiresOn: Date };
+    };
 
 const buildFromConnectionString = (
   connectionString: string,
@@ -212,6 +240,12 @@ const buildFromConnectionString = (
     endpoint,
     ...(accountName && { accountName }),
     ...(sharedKey && { sharedKey }),
+    ...(sharedKey && {
+      signer: {
+        credential: sharedKey,
+        kind: "sharedKey",
+      } satisfies AzureSasSigner,
+    }),
   };
 };
 
@@ -249,6 +283,19 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
       client: new BlobServiceClient(endpoint, sharedKey),
       endpoint,
       sharedKey,
+      signer: { credential: sharedKey, kind: "sharedKey" },
+    };
+  }
+
+  if (opts.credential) {
+    const client = new BlobServiceClient(endpoint, opts.credential);
+    return {
+      accountName,
+      client,
+      endpoint,
+      ...(opts.useUserDelegationSas !== false && {
+        signer: { client, kind: "userDelegation" } satisfies AzureSasSigner,
+      }),
     };
   }
 
@@ -272,16 +319,38 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
   };
 };
 
-const requireSharedKey = (
-  sharedKey: StorageSharedKeyCredential | undefined
-): StorageSharedKeyCredential => {
-  if (!sharedKey) {
+const requireSigner = (signer: AzureSasSigner | undefined): AzureSasSigner => {
+  if (!signer) {
     throw new FilesError(
       "Provider",
-      "azure: cannot sign URLs without a shared key. Construct the adapter with `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
+      "azure: cannot sign URLs without a shared key or User Delegation SAS credential. Construct the adapter with `accountKey` + `accountName`, a `connectionString` that contains an account key, or `credential` + `accountName`; or set `publicBaseUrl` for a public container."
     );
   }
-  return sharedKey;
+  return signer;
+};
+
+const getUserDelegationKey = async (
+  signer: Extract<AzureSasSigner, { kind: "userDelegation" }>,
+  startsOn: Date,
+  sasExpiresOn: Date
+): Promise<UserDelegationKey> => {
+  const keyExpiresOn = new Date(
+    Math.max(
+      sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS,
+      Date.now() + DEFAULT_URL_EXPIRES_IN * 1000 + USER_DELEGATION_KEY_SLACK_MS
+    )
+  );
+  if (
+    !signer.cachedKey ||
+    signer.cachedKey.expiresOn.getTime() <=
+      sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS
+  ) {
+    signer.cachedKey = {
+      expiresOn: keyExpiresOn,
+      key: await signer.client.getUserDelegationKey(startsOn, keyExpiresOn),
+    };
+  }
+  return signer.cachedKey.key;
 };
 
 export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
@@ -293,52 +362,79 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     );
   }
 
-  const { client, sharedKey, sasToken } = buildClient(opts);
+  const { client, sasToken, signer } = buildClient(opts);
   const containerClient = client.getContainerClient(container);
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
-  const buildReadSas = (key: string, expiresIn: number, disposition?: string) =>
-    generateBlobSASQueryParameters(
-      {
-        blobName: key,
-        containerName: container,
-        ...(disposition && { contentDisposition: disposition }),
-        expiresOn: new Date(Date.now() + expiresIn * 1000),
-        permissions: BlobSASPermissions.parse("r"),
-        protocol: SASProtocol.Https,
-      },
-      requireSharedKey(sharedKey)
-    );
+  const buildSasUrl = async ({
+    contentDisposition,
+    expiresIn,
+    key,
+    permissions,
+  }: {
+    contentDisposition?: string;
+    expiresIn: number;
+    key: string;
+    permissions: "r" | "cw";
+  }): Promise<string> => {
+    const resolvedSigner = requireSigner(signer);
+    const blobClient = containerClient.getBlobClient(key);
+    const startsOn = new Date(Date.now() - 60_000);
+    const expiresOn = new Date(Date.now() + expiresIn * 1000);
+    const sasOptions = {
+      ...(contentDisposition && { contentDisposition }),
+      expiresOn,
+      permissions: BlobSASPermissions.parse(permissions),
+      protocol: SASProtocol.Https,
+      startsOn,
+    };
 
-  const buildCopySource = (fromKey: string): string => {
-    const baseUrl = containerClient.getBlobClient(fromKey).url;
-    if (sharedKey) {
+    if (resolvedSigner.kind === "sharedKey") {
       const sas = generateBlobSASQueryParameters(
         {
-          blobName: fromKey,
+          ...sasOptions,
+          blobName: key,
           containerName: container,
-          expiresOn: new Date(Date.now() + COPY_SOURCE_SAS_SECONDS * 1000),
-          permissions: BlobSASPermissions.parse("r"),
-          protocol: SASProtocol.Https,
         },
-        sharedKey
+        resolvedSigner.credential
       );
-      return `${baseUrl}?${sas.toString()}`;
+      return `${blobClient.url}?${sas.toString()}`;
+    }
+
+    const userDelegationKey = await getUserDelegationKey(
+      resolvedSigner,
+      startsOn,
+      expiresOn
+    );
+    return blobClient.generateUserDelegationSasUrl(
+      sasOptions,
+      userDelegationKey
+    );
+  };
+
+  const buildCopySource = (fromKey: string): Promise<string> => {
+    const baseUrl = containerClient.getBlobClient(fromKey).url;
+    if (signer) {
+      return buildSasUrl({
+        expiresIn: COPY_SOURCE_SAS_SECONDS,
+        key: fromKey,
+        permissions: "r",
+      });
     }
     if (sasToken) {
-      return `${baseUrl}?${sasToken}`;
+      return Promise.resolve(`${baseUrl}?${sasToken}`);
     }
     // Anonymous mode — only succeeds against public containers. Let Azure
     // return the natural error if it doesn't.
-    return baseUrl;
+    return Promise.resolve(baseUrl);
   };
 
   return {
     bucket: container,
     async copy(from, to) {
       try {
-        const sourceUrl = buildCopySource(from);
+        const sourceUrl = await buildCopySource(from);
         await containerClient.getBlobClient(to).syncCopyFromURL(sourceUrl);
       } catch (error) {
         throw mapAzureError(error);
@@ -504,7 +600,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     name: "azure",
     raw: client,
-    signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+    async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Azure SAS has no `content-length-range` policy equivalent — there's
       // no way to enforce a max upload size at the URL level. Throw rather
       // than silently no-op, so callers don't ship a "limit" that does
@@ -517,18 +613,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         );
       }
       try {
-        const sas = generateBlobSASQueryParameters(
-          {
-            blobName: key,
-            containerName: container,
-            expiresOn: new Date(Date.now() + signOpts.expiresIn * 1000),
-            permissions: BlobSASPermissions.parse("cw"),
-            protocol: SASProtocol.Https,
-          },
-          requireSharedKey(sharedKey)
-        );
-        const blobUrl = containerClient.getBlobClient(key).url;
-        return Promise.resolve({
+        const url = await buildSasUrl({
+          expiresIn: signOpts.expiresIn,
+          key,
+          permissions: "cw",
+        });
+        return {
           headers: {
             "x-ms-blob-type": "BlockBlob",
             ...(signOpts.contentType && {
@@ -536,8 +626,8 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
             }),
           },
           method: "PUT",
-          url: `${blobUrl}?${sas.toString()}`,
-        });
+          url,
+        };
       } catch (error) {
         throw mapAzureError(error);
       }
@@ -610,13 +700,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       try {
-        const sas = buildReadSas(
+        return buildSasUrl({
+          contentDisposition: urlOpts?.responseContentDisposition,
+          expiresIn: urlOpts?.expiresIn ?? defaultUrlExpiresIn,
           key,
-          urlOpts?.expiresIn ?? defaultUrlExpiresIn,
-          urlOpts?.responseContentDisposition
-        );
-        const blobUrl = containerClient.getBlobClient(key).url;
-        return Promise.resolve(`${blobUrl}?${sas.toString()}`);
+          permissions: "r",
+        });
       } catch (error) {
         throw mapAzureError(error);
       }

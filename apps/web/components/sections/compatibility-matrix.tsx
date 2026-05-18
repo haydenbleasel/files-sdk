@@ -517,7 +517,7 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
         "Throws by default because Appwrite SDKs cannot mint presigned reading URLs with keys. Set `public: true` at construction to return the constructed Appwrite public CDN URL. `expiresIn` and `responseContentDisposition` are ignored."
       ),
       azure: warn(
-        "Signs a SAS read URL. Throws when constructed in SAS-only or anonymous mode (no shared key available to sign). Pass `accountKey` + `accountName` or a `connectionString` that contains an account key, or set `publicBaseUrl` for a public container."
+        "Signs a SAS read URL. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). Pass `accountKey` + `accountName`, a connection string with an account key, `credential` + `accountName`, or set `publicBaseUrl` for a public container."
       ),
       b2: ok,
       box: warn(
@@ -598,7 +598,7 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
         "No presigned upload primitive in Appwrite. Use JWTs or client SDKs for direct uploads."
       ),
       azure: warn(
-        "PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Throws in SAS-only or anonymous mode (no shared key to sign). The returned headers include the required `x-ms-blob-type: BlockBlob`."
+        "PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy; enforce upload caps at your application gateway instead. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). The returned headers include the required `x-ms-blob-type: BlockBlob`."
       ),
       b2: ok,
       box: no(

@@ -110,6 +110,7 @@ Notes:
 
 ```ts
 import { azure } from "files-sdk/azure";
+import { DefaultAzureCredential } from "@azure/identity";
 
 const adapter = azure({
   container: "uploads", // (Azure calls it "container", surfaced as bucket)
@@ -118,6 +119,9 @@ const adapter = azure({
   // Or:
   accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
   accountKey: process.env.AZURE_STORAGE_ACCOUNT_KEY,
+  // Or for Azure AD / Managed Identity:
+  // accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
+  // credential: new DefaultAzureCredential(),
   // sasToken: "?sv=...&sig=...",                // alternative to accountKey
   // endpoint: "http://127.0.0.1:10000/devstoreaccount1", // Azurite / sovereign clouds
   // publicBaseUrl: "https://uploads.azureedge.net",
@@ -127,6 +131,7 @@ const adapter = azure({
 Notes:
 
 - A SAS-token-only adapter (no `accountKey`) **cannot mint new SAS** — `url()` and `signedUploadUrl()` throw `Provider`. Reads/writes/list still work as long as the SAS has those permissions.
+- A `credential` adapter uses Azure AD / Managed Identity for SDK calls and mints User Delegation SAS URLs for `url()` and `signedUploadUrl()`. The principal needs blob data permissions plus permission to call `generateUserDelegationKey`.
 - `connectionString` is the highest-precedence credential source.
 
 ## MinIO — `files-sdk/minio`
