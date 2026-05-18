@@ -5,13 +5,16 @@ import { Accordion } from "@/components/ui/accordion";
 
 const AZURE_EXAMPLE = `import { Files } from "files-sdk";
 import { azure } from "files-sdk/azure";
+import { DefaultAzureCredential } from "@azure/identity";
 
 const files = new Files({
   adapter: azure({
     container: "uploads",
     // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
     // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
-    // Pass connectionString / accountKey / sasToken explicitly to override.
+    // Pass connectionString / accountKey / credential / sasToken to override.
+    // accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
+    // credential: new DefaultAzureCredential(), // Azure AD / Managed Identity
   }),
 });`;
 
@@ -19,10 +22,10 @@ export const Azure = () => (
   <section>
     <p>
       Azure Blob Storage via the official <code>@azure/storage-blob</code> SDK.
-      Four credential modes: connection string, account name + account key,
-      account name + SAS token, or anonymous (public-read containers only).
-      Connection-string parsing recovers the account name + key so signing
-      methods keep working.
+      Five credential modes: connection string, account name + account key,
+      account name + token credential, account name + SAS token, or anonymous
+      (public-read containers only). Connection-string parsing recovers the
+      account name + key so signing methods keep working.
     </p>
     <CodeBlock code={AZURE_EXAMPLE} lang="ts" />
     <section>
@@ -73,8 +76,34 @@ export const Azure = () => (
             Shared-key (account key) for signing. Falls back to{" "}
             <code>AZURE_STORAGE_ACCOUNT_KEY</code> then{" "}
             <code>AZURE_STORAGE_KEY</code>. Required if you want{" "}
-            <code>url()</code> or <code>signedUploadUrl()</code> to mint new SAS
-            tokens - without it those methods throw.
+            <code>url()</code> or <code>signedUploadUrl()</code> to mint shared
+            key SAS tokens. Token credentials can mint User Delegation SAS
+            instead.
+          </p>
+        </PropAccordionItem>
+        <PropAccordionItem
+          name="credential"
+          status="optional"
+          value="credential"
+        >
+          <p>
+            Azure AD / Managed Identity credential, such as{" "}
+            <code>new DefaultAzureCredential()</code>. SDK calls use token auth;
+            <code>url()</code>, <code>signedUploadUrl()</code>, and{" "}
+            <code>copy()</code> mint User Delegation SAS URLs. The principal
+            needs blob data access and permission to call{" "}
+            <code>generateUserDelegationKey</code>.
+          </p>
+        </PropAccordionItem>
+        <PropAccordionItem
+          name="useUserDelegationSas"
+          status="optional"
+          value="useUserDelegationSas"
+        >
+          <p>
+            Defaults to <code>true</code> when <code>credential</code> is set.
+            Set to <code>false</code> if you only want token-authenticated SDK
+            operations and no signed URL support.
           </p>
         </PropAccordionItem>
         <PropAccordionItem name="sasToken" status="optional" value="sasToken">
@@ -120,10 +149,7 @@ export const Azure = () => (
         enforce upload caps at the URL level; enforce them at your application
         gateway. <code>copy()</code> uses <code>syncCopyFromURL</code>, which
         caps at 256 MB source size; larger blobs need{" "}
-        <code>beginCopyFromURL</code> via <code>adapter.raw</code>.{" "}
-        <code>@azure/identity</code> / Managed Identity is not supported in v1 -
-        drop down to <code>adapter.raw</code> or wait for a future{" "}
-        <code>client</code> option.
+        <code>beginCopyFromURL</code> via <code>adapter.raw</code>.
       </p>
     </section>
   </section>

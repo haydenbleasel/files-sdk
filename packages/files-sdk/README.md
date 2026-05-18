@@ -18,7 +18,7 @@ npm install files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-
 npm install files-sdk @google-cloud/storage google-auth-library
 
 # Azure Blob Storage
-npm install files-sdk @azure/storage-blob @azure/identity
+npm install files-sdk @azure/storage-blob @azure/core-auth @azure/identity
 
 # Vercel Blob
 npm install files-sdk @vercel/blob
