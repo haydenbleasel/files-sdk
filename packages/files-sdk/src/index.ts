@@ -193,6 +193,7 @@ export interface Adapter<Raw = unknown> {
 
 export interface FilesOptions<A extends Adapter> {
   adapter: A;
+  prefix?: string;
 }
 
 export interface FileHandle {
@@ -230,11 +231,25 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+const normalizePrefix = (prefix: string | undefined): string => {
+  if (prefix === undefined) {
+    return "";
+  }
+  if (typeof prefix !== "string") {
+    throw new FilesError("Provider", "prefix must be a non-empty string");
+  }
+  const normalized = prefix.replace(/\/+$/u, "");
+  assertValidKey(normalized, "prefix");
+  return normalized;
+};
+
 export class Files<A extends Adapter = Adapter> {
   readonly #adapter: A;
+  readonly #prefix: string;
 
   constructor(opts: FilesOptions<A>) {
     this.#adapter = opts.adapter;
+    this.#prefix = normalizePrefix(opts.prefix);
   }
 
   get raw(): A["raw"] {
@@ -246,7 +261,7 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   file(key: string): FileHandle {
-    assertValidKey(key);
+    this.#path(key);
     return {
       copyFrom: (sourceKey) => this.copy(sourceKey, key),
       copyTo: (destinationKey) => this.copy(key, destinationKey),
@@ -262,13 +277,17 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult> {
-    assertValidKey(key);
-    return run(() => this.#adapter.upload(key, body, opts));
+    return run(async () =>
+      this.#uploadResult(
+        await this.#adapter.upload(this.#path(key), body, opts)
+      )
+    );
   }
 
   download(key: string, opts?: DownloadOptions): Promise<StoredFile> {
-    assertValidKey(key);
-    return run(() => this.#adapter.download(key, opts));
+    return run(async () =>
+      this.#storedFile(await this.#adapter.download(this.#path(key), opts))
+    );
   }
 
   /**
@@ -280,8 +299,9 @@ export class Files<A extends Adapter = Adapter> {
    * the body accessors. They are not free.
    */
   head(key: string): Promise<StoredFile> {
-    assertValidKey(key);
-    return run(() => this.#adapter.head(key));
+    return run(async () =>
+      this.#storedFile(await this.#adapter.head(this.#path(key)))
+    );
   }
 
   /**
@@ -292,23 +312,36 @@ export class Files<A extends Adapter = Adapter> {
    * accidentally treat auth or transport errors as "missing file".
    */
   exists(key: string): Promise<boolean> {
-    assertValidKey(key);
-    return run(() => this.#adapter.exists(key));
+    return run(() => this.#adapter.exists(this.#path(key)));
   }
 
   delete(key: string): Promise<void> {
-    assertValidKey(key);
-    return run(() => this.#adapter.delete(key));
+    return run(() => this.#adapter.delete(this.#path(key)));
   }
 
   copy(from: string, to: string): Promise<void> {
-    assertValidKey(from, "copy source");
-    assertValidKey(to, "copy destination");
-    return run(() => this.#adapter.copy(from, to));
+    return run(() =>
+      this.#adapter.copy(
+        this.#path(from, "copy source"),
+        this.#path(to, "copy destination")
+      )
+    );
   }
 
   list(opts?: ListOptions): Promise<ListResult> {
-    return run(() => this.#adapter.list(opts));
+    if (!this.#prefix) {
+      return run(() => this.#adapter.list(opts));
+    }
+    const prefix = opts?.prefix
+      ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
+      : `${this.#prefix}/`;
+    return run(async () => {
+      const result = await this.#adapter.list({ ...opts, prefix });
+      return {
+        ...result,
+        items: result.items.map((item) => this.#storedFile(item)),
+      };
+    });
   }
 
   /**
@@ -328,12 +361,31 @@ export class Files<A extends Adapter = Adapter> {
    * from untrusted input, callers should validate or escape it.
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
-    assertValidKey(key);
-    return run(() => this.#adapter.url(key, opts));
+    return run(() => this.#adapter.url(this.#path(key), opts));
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
-    assertValidKey(key);
-    return run(() => this.#adapter.signedUploadUrl(key, opts));
+    return run(() => this.#adapter.signedUploadUrl(this.#path(key), opts));
+  }
+
+  #path(key: string, label = "key"): string {
+    assertValidKey(key, label);
+    return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+  }
+
+  #storedFile(file: StoredFile): StoredFile {
+    return this.#prefix ? { ...file, key: this.#stripPrefix(file.key) } : file;
+  }
+
+  #uploadResult(result: UploadResult): UploadResult {
+    return this.#prefix
+      ? { ...result, key: this.#stripPrefix(result.key) }
+      : result;
+  }
+
+  #stripPrefix(key: string): string {
+    return key.startsWith(`${this.#prefix}/`)
+      ? key.slice(this.#prefix.length)
+      : key;
   }
 }
