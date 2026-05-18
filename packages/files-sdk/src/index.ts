@@ -14,8 +14,26 @@ export type Body =
   | string;
 
 export interface UploadOptions {
+  /**
+   * MIME type stored alongside the object and returned to readers in the
+   * `Content-Type` response header. Inferred from `File` / `Blob` `type`
+   * when not set; falls back to `application/octet-stream`.
+   */
   contentType?: string;
+  /**
+   * `Cache-Control` header stored on the object. Sent verbatim to the
+   * provider; controls how downstream caches and browsers cache reads of
+   * this key.
+   */
   cacheControl?: string;
+  /**
+   * Arbitrary user metadata stored alongside the object. Returned by
+   * `head()` and `list()` where the provider supports it. Vercel Blob and
+   * UploadThing have no user-metadata primitive, so it round-trips as
+   * `undefined` there. Bunny Storage, Appwrite, and PocketBase have no
+   * arbitrary metadata primitive, so those adapters throw when this option
+   * is passed.
+   */
   metadata?: Record<string, string>;
 }
 
@@ -46,8 +64,20 @@ export interface DownloadOptions {
 }
 
 export interface ListOptions {
+  /**
+   * Filter results to keys that start with this string. Omit to list
+   * everything in the bucket.
+   */
   prefix?: string;
+  /**
+   * Continuation token from a prior result. Pass the `cursor` field of the
+   * previous page back in to fetch the next page; omit on the first call.
+   */
   cursor?: string;
+  /**
+   * Maximum number of items to return per page. Capped per-provider (most
+   * providers max around 1000). Defaults to 1000.
+   */
   limit?: number;
 }
 
@@ -102,7 +132,15 @@ export interface UrlOptions {
 }
 
 export interface SignUploadOptions {
+  /**
+   * How long the signed URL stays valid, in seconds. After it elapses, the
+   * URL stops working and the client must request a new one.
+   */
   expiresIn: number;
+  /**
+   * MIME type bound into the signature. The browser's PUT/POST must send a
+   * matching `Content-Type` header or the provider rejects the upload.
+   */
   contentType?: string;
   /**
    * Maximum upload size in bytes, enforced server-side.

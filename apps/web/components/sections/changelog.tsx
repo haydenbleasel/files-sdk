@@ -1,6 +1,6 @@
+import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 import type { BundledLanguage } from "shiki";
 
-import { CodeBlock } from "@/components/code-block";
 import type {
   ChangeKind,
   ChangelogBlock,
@@ -83,7 +83,11 @@ const renderBlock = (block: ChangelogBlock, key: string) => {
     );
   }
   return (
-    <CodeBlock key={key} code={block.code} lang={normalizeLang(block.lang)} />
+    <DynamicCodeBlock
+      key={key}
+      code={block.code}
+      lang={normalizeLang(block.lang)}
+    />
   );
 };
 

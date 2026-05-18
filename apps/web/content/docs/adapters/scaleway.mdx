@@ -1,0 +1,41 @@
+---
+title: Scaleway Object Storage
+description: Scaleway Object Storage via the S3-compatible API. Endpoint derived from the region code (fr-par, nl-ams, pl-waw).
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+## Usage
+
+```ts
+import { Files } from "files-sdk";
+import { scaleway } from "files-sdk/scaleway";
+
+const files = new Files({
+  adapter: scaleway({
+    bucket: "uploads",
+    region: "fr-par", // or "nl-ams", "pl-waw"
+    // accessKeyId / secretAccessKey auto-loaded from
+    // SCW_ACCESS_KEY / SCW_SECRET_KEY
+  }),
+});
+```
+
+Scaleway Object Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`fr-par`, `nl-ams`, `pl-waw`), virtual-hosted-style addressing, errors relabelled. Auto-loads from `SCW_ACCESS_KEY` and `SCW_SECRET_KEY`. Generate access keys in the Scaleway console under Identity and Access Management -> API Keys.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/scaleway/index.ts"
+  name="ScalewayAdapterOptions"
+/>

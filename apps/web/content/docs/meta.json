@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "---Overview---",
+    "api",
+    "cli",
+    "---AI Tools---",
+    "...ai",
+    "---Adapters---",
+    "...adapters"
+  ]
+}

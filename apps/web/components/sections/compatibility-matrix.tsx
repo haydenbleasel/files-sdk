@@ -3,11 +3,9 @@
 import { Check, TriangleAlert, X } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 
-import { Heading } from "@/components/heading";
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -724,76 +722,68 @@ const Legend = ({
 );
 
 export const CompatibilityMatrix = () => (
-  <section>
-    <Heading as="h2">Compatibility matrix</Heading>
-    <p>
-      Every adapter implements the same ten-method surface, but the URL methods
-      and a couple of edge cases vary by provider. Hover the warning and error
-      icons for the why behind each one.
-    </p>
-    <TooltipProvider delayDuration={150}>
-      <div className="overflow-x-auto rounded-md border border-dotted">
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-dotted">
+  <div className="grid gap-4 not-prose">
+    <div className="mt-10 overflow-x-auto rounded-md border border-dotted">
+      <table className="w-full border-collapse text-xs">
+        <thead>
+          <tr className="border-b border-dotted">
+            <th
+              className="px-3 py-2 text-left font-medium text-muted-foreground"
+              colSpan={2}
+            >
+              Adapter
+            </th>
+            {ROWS.map((row) => (
               <th
-                className="px-3 py-2 text-left font-medium text-muted-foreground"
-                colSpan={2}
+                className="px-2 py-2 text-center font-mono font-normal text-muted-foreground whitespace-nowrap"
+                key={row.method}
               >
-                Adapter
+                {row.method}
               </th>
-              {ROWS.map((row) => (
-                <th
-                  className="px-2 py-2 text-center font-mono font-normal text-muted-foreground whitespace-nowrap"
-                  key={row.method}
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {ADAPTER_GROUPS.map((group) =>
+            group.variants.map((adapter, i) => {
+              const isFirstInGroup = i === 0;
+              const isLastInGroup = i === group.variants.length - 1;
+              const isSingle = group.variants.length === 1;
+              return (
+                <tr
+                  className={cn(
+                    "border-dotted",
+                    isLastInGroup && "border-b last:border-b-0"
+                  )}
+                  key={adapter.key}
                 >
-                  {row.method}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {ADAPTER_GROUPS.map((group) =>
-              group.variants.map((adapter, i) => {
-                const isFirstInGroup = i === 0;
-                const isLastInGroup = i === group.variants.length - 1;
-                const isSingle = group.variants.length === 1;
-                return (
-                  <tr
-                    className={cn(
-                      "border-dotted",
-                      isLastInGroup && "border-b last:border-b-0"
-                    )}
-                    key={adapter.key}
-                  >
-                    {isFirstInGroup && (
-                      <th
-                        className="px-3 py-2 text-left font-medium text-foreground whitespace-nowrap align-top"
-                        colSpan={isSingle ? 2 : 1}
-                        rowSpan={group.variants.length}
-                      >
-                        {group.parent}
-                      </th>
-                    )}
-                    {!isSingle && (
-                      <th className="pr-3 py-2 text-left font-normal text-muted-foreground whitespace-nowrap align-top">
-                        {adapter.label}
-                      </th>
-                    )}
-                    {ROWS.map((row) => (
-                      <td className="px-2 py-2 text-center" key={row.method}>
-                        <StatusIcon cell={row.cells[adapter.key]} />
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-    </TooltipProvider>
-    <p className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                  {isFirstInGroup && (
+                    <th
+                      className="px-3 py-2 text-left font-medium text-foreground whitespace-nowrap align-top"
+                      colSpan={isSingle ? 2 : 1}
+                      rowSpan={group.variants.length}
+                    >
+                      {group.parent}
+                    </th>
+                  )}
+                  {!isSingle && (
+                    <th className="pr-3 py-2 text-left font-normal text-muted-foreground whitespace-nowrap align-top">
+                      {adapter.label}
+                    </th>
+                  )}
+                  {ROWS.map((row) => (
+                    <td className="px-2 py-2 text-center" key={row.method}>
+                      <StatusIcon cell={row.cells[adapter.key]} />
+                    </td>
+                  ))}
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+    </div>
+    <p className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       <Legend icon={Check} cls="text-emerald-500">
         Supported
       </Legend>
@@ -804,5 +794,5 @@ export const CompatibilityMatrix = () => (
         Throws
       </Legend>
     </p>
-  </section>
+  </div>
 );

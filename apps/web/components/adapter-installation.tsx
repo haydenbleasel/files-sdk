@@ -1,7 +1,11 @@
+import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "fumadocs-ui/components/tabs";
 import { Fragment } from "react";
-
-import { CodeTabs } from "@/components/code-tabs";
-import { Heading } from "@/components/heading";
 
 interface AdapterInstallationProps {
   peerDeps: readonly string[];
@@ -29,10 +33,10 @@ const buildPeerDepSegments = (peerDeps: readonly string[]) => {
 const buildTabs = (peerDeps: readonly string[]) => {
   const packages = ["files-sdk", ...peerDeps].join(" ");
   return [
-    { code: `npm install ${packages}`, id: "npm", label: "npm", lang: "bash" },
-    { code: `pnpm add ${packages}`, id: "pnpm", label: "pnpm", lang: "bash" },
-    { code: `bun add ${packages}`, id: "bun", label: "bun", lang: "bash" },
-    { code: `yarn add ${packages}`, id: "yarn", label: "yarn", lang: "bash" },
+    { code: `npm install ${packages}`, id: "npm", label: "npm" },
+    { code: `pnpm add ${packages}`, id: "pnpm", label: "pnpm" },
+    { code: `bun add ${packages}`, id: "bun", label: "bun" },
+    { code: `yarn add ${packages}`, id: "yarn", label: "yarn" },
   ] as const;
 };
 
@@ -41,9 +45,7 @@ export const AdapterInstallation = ({ peerDeps }: AdapterInstallationProps) => {
 
   return (
     <section>
-      <Heading as="h2" id="installation">
-        Installation
-      </Heading>
+      <h2 id="installation">Installation</h2>
       {peerDeps.length === 0 ? (
         <p>
           This adapter has no extra peer dependencies - the runtime (Node or
@@ -63,7 +65,20 @@ export const AdapterInstallation = ({ peerDeps }: AdapterInstallationProps) => {
           imports resolve at runtime.
         </p>
       )}
-      <CodeTabs tabs={tabs} />
+      <Tabs defaultValue="npm">
+        <TabsList>
+          {tabs.map(({ id, label }) => (
+            <TabsTrigger key={id} value={id}>
+              {label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {tabs.map(({ id, code }) => (
+          <TabsContent key={id} value={id}>
+            <DynamicCodeBlock code={code} lang="bash" />
+          </TabsContent>
+        ))}
+      </Tabs>
     </section>
   );
 };

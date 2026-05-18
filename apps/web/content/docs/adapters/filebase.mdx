@@ -1,0 +1,40 @@
+---
+title: Filebase
+description: Filebase via the S3-compatible API. Fronts decentralized networks (IPFS, Sia, Storj) chosen per-bucket.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+<AdapterInstallation
+  peerDeps={[
+    "@aws-sdk/client-s3",
+    "@aws-sdk/s3-presigned-post",
+    "@aws-sdk/s3-request-presigner",
+  ]}
+/>
+
+## Usage
+
+```ts
+import { Files } from "files-sdk";
+import { filebase } from "files-sdk/filebase";
+
+const files = new Files({
+  adapter: filebase({
+    bucket: "uploads",
+    // accessKeyId / secretAccessKey auto-loaded from
+    // FILEBASE_ACCESS_KEY_ID / FILEBASE_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+Filebase via its S3-compatible API. Filebase fronts decentralized storage networks (IPFS, Sia, Storj) behind a standard S3 gateway - the network is chosen per-bucket in the dashboard, not per-request. A thin wrapper around the S3 adapter pointed at `https://s3.filebase.com`, with errors relabelled. Auto-loads from `FILEBASE_ACCESS_KEY_ID` and `FILEBASE_SECRET_ACCESS_KEY`. Generate access keys in the Filebase console under Access Keys.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/filebase/index.ts"
+  name="FilebaseAdapterOptions"
+/>

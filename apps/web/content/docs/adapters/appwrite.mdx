@@ -1,0 +1,38 @@
+---
+title: Appwrite
+description: Appwrite Storage via the official Node.js SDK. Auto-loads configuration from environment variables.
+peerDeps:
+  - "node-appwrite"
+---
+
+<AdapterInstallation peerDeps={["node-appwrite"]} />
+
+## Usage
+
+```ts
+import { Files } from "files-sdk";
+import { appwrite } from "files-sdk/appwrite";
+
+const files = new Files({
+  adapter: appwrite({
+    bucket: "uploads",
+    // Auto-loads from APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID,
+    // and APPWRITE_API_KEY. Or pass an existing node-appwrite
+    // Client or Storage instance via `client`.
+    //
+    // Note: Appwrite keys (IDs) must be alphanumeric/dashes
+    // and max 36 chars. Slashes (/) are not supported.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/appwrite/index.ts"
+  name="AppwriteAdapterOptions"
+/>
+
+## Limitations
+
+`signedUploadUrl()` throws - Appwrite does not support S3-style presigned upload URLs. `url()` throws by default (Appwrite cannot mint presigned read URLs with API keys); set `public: true` for public buckets. `copy()` is read-then-write (no native server-side copy). File IDs (keys) must start with an alphanumeric and use only `[a-zA-Z0-9._-]`, max 36 characters (no slashes) - invalid keys are rejected before the API call. `UploadOptions` `cacheControl` and `metadata` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and exposes no override. `list({ prefix })` queries `startsWith("$id", ...)` against the canonical file ID; files created outside the adapter where the display `name` differs from `$id` won't be matched by prefix.

@@ -1,0 +1,32 @@
+---
+title: Google Cloud Storage
+description: Google Cloud Storage via the official @google-cloud/storage SDK. Application Default Credentials by default.
+peerDeps:
+  - "@google-cloud/storage"
+---
+
+<AdapterInstallation peerDeps={["@google-cloud/storage"]} />
+
+## Usage
+
+```ts
+import { Files } from "files-sdk";
+import { gcs } from "files-sdk/gcs";
+
+const files = new Files({
+  adapter: gcs({
+    bucket: "uploads",
+    // No credentials needed in most setups - the @google-cloud/storage
+    // SDK auto-discovers Application Default Credentials from
+    // GOOGLE_APPLICATION_CREDENTIALS, gcloud auth, or the runtime
+    // service account on Cloud Run / GKE / GCE.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/gcs/index.ts"
+  name="GCSAdapterOptions"
+/>

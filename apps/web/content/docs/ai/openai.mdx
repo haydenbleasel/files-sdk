@@ -1,0 +1,97 @@
+---
+title: OpenAI
+description: Factories for the OpenAI Responses API and the OpenAI Agents SDK - same eight operations, Zod-validated, approval-gated by default.
+---
+
+The `files-sdk/openai` subpath ships two factories targeting OpenAI directly - one for the native [Responses API](https://developers.openai.com/api/reference/responses/overview) and one for the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) (`@openai/agents`). Both wrap the same eight file operations as the Vercel subpath, with the same approval-gating defaults.
+
+`openai` and `@openai/agents` are optional peer dependencies - install only the one(s) you use. The subpath requires **Zod 4**: `@openai/agents` peer-requires it, and Zod 4's built-in `toJSONSchema` powers the Responses tool definitions.
+
+## Responses API
+
+`createResponsesFileTools` returns `{ definitions, execute, needsApproval }`. Pass `definitions` straight to `openai.responses.create({ tools })`, then call `execute(call)` on each `function_call` item in the response output to get a `function_call_output` ready to push into the next turn's input.
+
+```package-install
+openai zod
+```
+
+```tsx
+import OpenAI from "openai";
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createResponsesFileTools } from "files-sdk/openai";
+
+const client = new OpenAI();
+const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+const ft = createResponsesFileTools({ files });
+
+const input: any[] = [{ role: "user", content: "List my files." }];
+while (true) {
+  const res = await client.responses.create({
+    model: "gpt-4.1",
+    input,
+    tools: ft.definitions,
+  });
+
+  const calls = res.output.filter((o) => o.type === "function_call");
+  if (calls.length === 0) {
+    console.log(res.output_text);
+    break;
+  }
+
+  for (const call of calls) {
+    if (ft.needsApproval(call.name)) {
+      // surface approval UX, then continue or break
+    }
+    input.push(call, await ft.execute(call));
+  }
+}
+```
+
+`execute` returns JSON parse failures and Zod validation errors _as the tool's output_, so the model can self-correct on the next turn. `FilesError` from the underlying SDK is rethrown - you decide how to surface it. `needsApproval(name)` is informational; checking it is the caller's responsibility.
+
+## Agents SDK
+
+`createAgentsFileTools` returns a record of `tool()` outputs keyed by tool name - spread `Object.values()` into `new Agent({ tools })`. Write tools default to `needsApproval: true`; the Agents SDK runner surfaces an `interruption` that your program resolves by approving or rejecting the call.
+
+```package-install
+@openai/agents zod
+```
+
+```tsx
+import { Agent, run } from "@openai/agents";
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createAgentsFileTools } from "files-sdk/openai";
+
+const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+const tools = createAgentsFileTools({ files });
+
+const agent = new Agent({
+  instructions: "Help the user manage their files.",
+  name: "Files agent",
+  tools: Object.values(tools),
+});
+
+const result = await run(agent, "List my files.");
+```
+
+Errors thrown from `execute()` are wrapped by the Agents SDK's default `errorFunction` into a model-visible string - the model sees the message and can self-correct on the next turn. This is the standard Agents-SDK pattern, and differs from the Responses flow where `FilesError` rethrows.
+
+## Approval, read-only, overrides
+
+Both factories accept the same options shape as the Vercel `createFileTools`: `requireApproval` (boolean or per-tool record), `readOnly` (strips writes entirely), and `overrides` (description, plus `strict` for Responses or `needsApproval` for Agents).
+
+```ts
+// Same shape across both factories.
+
+createResponsesFileTools({ files }); // all writes gated (default)
+createResponsesFileTools({ files, requireApproval: false }); // disabled
+createResponsesFileTools({
+  files,
+  requireApproval: { deleteFile: true, uploadFile: false },
+});
+
+createAgentsFileTools({ files, readOnly: true });
+// → only listFiles, getFileMetadata, downloadFile, getFileUrl
+```

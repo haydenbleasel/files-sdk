@@ -64,13 +64,53 @@ export interface FileToolsOptions {
 }
 
 export interface FileTools {
+  /**
+   * Paginated list of objects with optional `prefix`, `cursor`, and `limit`.
+   * Returns metadata-only entries (`key`, `size`, `type`, `lastModified`,
+   * `etag`) plus a continuation cursor.
+   */
   listFiles: ReturnType<typeof listFiles>;
+  /**
+   * Fetch metadata for a single key without transferring the body. Wraps
+   * `files.head(key)`; returns size, content type, etag, and any custom
+   * metadata.
+   */
   getFileMetadata: ReturnType<typeof getFileMetadata>;
+  /**
+   * Download an object and return its contents. Accepts a `maxBytes` guard
+   * (default 1 MiB) checked via `head()` _before_ any transfer — JSON tool
+   * boundaries don't love multi-megabyte payloads. Returns UTF-8 text by
+   * default; pass `binary: true` to receive base64-encoded bytes for
+   * non-text files.
+   */
   downloadFile: ReturnType<typeof downloadFile>;
+  /**
+   * Build a URL for the object. Forwards `expiresIn` and
+   * `responseContentDisposition` straight to `files.url()` — handy for
+   * letting the model hand the user a download link instead of streaming
+   * bytes back through the tool boundary.
+   */
   getFileUrl: ReturnType<typeof getFileUrl>;
+  /**
+   * Upload a file. Accepts `content: string` plus an optional
+   * `encoding: "text" | "base64"` — base64 is decoded before upload so
+   * binary payloads stay JSON-safe at the tool boundary. Forwards
+   * `contentType`, `cacheControl`, and `metadata`. **Approval-gated.**
+   */
   uploadFile: ReturnType<typeof uploadFile>;
+  /** Permanently delete an object. **Approval-gated.** */
   deleteFile: ReturnType<typeof deleteFile>;
+  /**
+   * Copy an object to a new key within the same bucket. The source remains
+   * intact. **Approval-gated.**
+   */
   copyFile: ReturnType<typeof copyFile>;
+  /**
+   * Issue a presigned URL the model can hand back to the client for a
+   * direct upload. Approval-gated by default — even though no bytes move
+   * during the tool call itself, issuing the URL grants upload permission
+   * until `expiresIn` elapses.
+   */
   signUploadUrl: ReturnType<typeof signUploadUrl>;
 }
 

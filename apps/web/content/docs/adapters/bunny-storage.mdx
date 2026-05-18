@@ -1,0 +1,37 @@
+---
+title: Bunny Storage
+description: Bunny Storage via @bunny.net/storage-sdk. Connects to a Storage Zone with its zone password / access key; auto-loads BUNNY_STORAGE_* env vars (STORAGE_* as aliases).
+peerDeps:
+  - "@bunny.net/storage-sdk"
+---
+
+<AdapterInstallation peerDeps={["@bunny.net/storage-sdk"]} />
+
+## Usage
+
+Bunny Storage via the official `@bunny.net/storage-sdk`. The adapter connects to a Storage Zone with its zone password / API access key and uses Bunny's HTTP Storage API for reads, writes, listing, and deletes. Auto-loads from `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_ACCESS_KEY`, and `BUNNY_STORAGE_REGION`; also accepts `STORAGE_ZONE`, `STORAGE_ACCESS_KEY`, and `STORAGE_REGION` as aliases (the names used in the Bunny SDK's README example).
+
+```ts
+import { Files } from "files-sdk";
+import { bunnyStorage } from "files-sdk/bunny-storage";
+
+const files = new Files({
+  adapter: bunnyStorage({
+    zone: "uploads",
+    region: "de",
+    // accessKey auto-loaded from BUNNY_STORAGE_ACCESS_KEY
+    // publicBaseUrl: "https://files.example.com",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/bunny-storage/index.ts"
+  name="BunnyStorageAdapterOptions"
+/>
+
+## Limitations
+
+`copy()` is a read-then-write because Bunny Storage has no server-side copy primitive in the TypeScript SDK; it is not atomic. `signedUploadUrl()` throws because Bunny Storage has no presigned upload primitive. `url()` requires `publicBaseUrl` and returns a permanent CDN URL; `expiresIn` is ignored and `responseContentDisposition` throws because there is no signature where that override can be bound. Custom `metadata` and `cacheControl` on upload are not supported by the Storage SDK.
