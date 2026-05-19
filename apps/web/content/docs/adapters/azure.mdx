@@ -5,7 +5,13 @@ peerDeps:
   - "@azure/storage-blob"
 ---
 
-<AdapterInstallation peerDeps={["@azure/storage-blob"]} />
+## Installation
+
+`@azure/storage-blob` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @azure/storage-blob
+```
 
 ## Usage
 

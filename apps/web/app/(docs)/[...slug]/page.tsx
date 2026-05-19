@@ -25,9 +25,11 @@ const Page = async ({ params }: PageProps) => {
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
-      <DocsTitle>{page.data.title}</DocsTitle>
+      <DocsTitle className="font-semibold tracking-tight">
+        {page.data.title}
+      </DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
-      <DocsBody>
+      <DocsBody className="[&_h2]:tracking-tight [&_h3]:tracking-tight [&_h4]:tracking-tight">
         <MDX components={getMDXComponents()} />
       </DocsBody>
     </DocsPage>

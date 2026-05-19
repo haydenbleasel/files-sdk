@@ -8,7 +8,6 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { MDXComponents } from "mdx/types";
 
-import { AdapterInstallation } from "@/components/adapter-installation";
 import { AdaptersIndexServer } from "@/components/adapters-index-server";
 import { CompatibilityMatrix } from "@/components/sections/compatibility-matrix";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +53,6 @@ export const getMDXComponents = (
   components?: MDXComponents
 ): MDXComponents => ({
   ...defaultMdxComponents,
-  AdapterInstallation,
   AdaptersIndexServer,
   AutoTypeTable: (props: Partial<AutoTypeTableProps>) => (
     <AutoTypeTable

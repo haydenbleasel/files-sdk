@@ -51,7 +51,7 @@ export const Hero = ({ latestVersion, latestSlug }: HeroProps) => (
       </motion.h1>
 
       <motion.p
-        className="mt-7 max-w-[48ch] text-lg leading-relaxed text-pretty text-muted-foreground sm:text-xl"
+        className="mt-7 max-w-[56ch] text-lg leading-relaxed text-pretty text-muted-foreground sm:text-xl"
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.18, duration: 0.6, ease: EASE }}

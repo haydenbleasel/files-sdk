@@ -723,7 +723,7 @@ const Legend = ({
 
 export const CompatibilityMatrix = () => (
   <div className="grid gap-4 not-prose">
-    <div className="mt-10 overflow-x-auto rounded-md border border-dotted">
+    <div className="overflow-x-auto rounded-md border border-dotted">
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="border-b border-dotted">
