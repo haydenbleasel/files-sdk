@@ -9,7 +9,7 @@ description: The full Files SDK API - eight unified methods, the StoredFile type
 
 Writes a body to `key`. Accepts native `File`, `Blob`, `ReadableStream`, `ArrayBuffer`, or `string`. Content type is inferred from the input when possible.
 
-```ts
+```ts lineNumbers
 await files.upload("avatars/abc.png", file, {
   contentType: "image/png",
   cacheControl: "public, max-age=31536000",
@@ -29,7 +29,7 @@ await files.upload("avatars/abc.png", file, {
 
 Reads an object. Returns a `StoredFile` by default (Blob-backed). Pass `{ as: "stream" }` to opt into a `ReadableStream` for large objects.
 
-```ts
+```ts lineNumbers
 const file = await files.download("avatars/abc.png");
 // → StoredFile (Blob-backed)
 
@@ -41,7 +41,7 @@ const stream = await files.download("avatars/abc.png", { as: "stream" });
 
 Returns the same `StoredFile` shape as `download`, without materializing the body. Calling a body accessor on the result lazy-fetches.
 
-```ts
+```ts lineNumbers
 const info = await files.head("avatars/abc.png");
 // → StoredFile with no body materialized
 ```
@@ -50,7 +50,7 @@ const info = await files.head("avatars/abc.png");
 
 Checks whether an object exists without fetching its body. Returns `true` when the key exists and `false` when the provider reports `NotFound`. Permission, auth, and transport failures still throw so callers do not accidentally treat them as a missing file.
 
-```ts
+```ts lineNumbers
 const present = await files.exists("avatars/abc.png");
 const missing = await files.exists("avatars/missing.png");
 // → true / false
@@ -60,7 +60,7 @@ const missing = await files.exists("avatars/missing.png");
 
 Removes an object. No-op friendly: a missing key resolves successfully on providers that treat delete as idempotent, and throws `FilesError` with `code: "NotFound"` on ones that don't.
 
-```ts
+```ts lineNumbers
 await files.delete("avatars/abc.png");
 ```
 
@@ -68,7 +68,7 @@ await files.delete("avatars/abc.png");
 
 Server-side copy where the provider supports it; falls back to read + write otherwise.
 
-```ts
+```ts lineNumbers
 await files.copy("avatars/abc.png", "avatars/abc.bak.png");
 ```
 
@@ -76,7 +76,7 @@ await files.copy("avatars/abc.png", "avatars/abc.bak.png");
 
 Cursor-paginated listing with prefix filter. Each item is a `StoredFile` with a lazy body accessor.
 
-```ts
+```ts lineNumbers
 const { items, cursor } = await files.list({
   prefix: "avatars/",
   limit: 100,
@@ -100,7 +100,7 @@ Returns a URL the caller can use to fetch `key`. Every adapter returns the most 
 
 Three configurations have no URL primitive and throw: Vercel Blob in `access: "private"` mode, an R2 Workers binding without either `publicBaseUrl` or HTTP credentials, and Bunny Storage without `publicBaseUrl` because the Storage API URL requires an `AccessKey` header.
 
-```ts
+```ts lineNumbers
 // One call, every adapter. S3 and the S3-compatible catalog (R2 over HTTP,
 // GCS via S3 interop, plus every regional / budget / decentralised wrapper)
 // sign a GetObject (1h default, override with { expiresIn }); Azure signs a
@@ -133,7 +133,7 @@ Without `maxSize`, the adapter returns a presigned PUT URL - simpler, but with n
 
 Vercel Blob, Bunny Storage, Appwrite, and PocketBase throw here - Vercel's upload model goes through `handleUpload()` from `@vercel/blob/client` instead of presigned URLs, Bunny Storage writes require the Storage API `AccessKey` header, and Appwrite/PocketBase have no presigned upload primitive at all (mint a short-lived auth token for the client instead). The R2 Workers binding throws unless you've configured hybrid mode (binding + HTTP credentials). Azure, Supabase, and UploadThing return PUT URLs but treat `maxSize` as advisory rather than enforced — Azure and Supabase have no `content-length-range` equivalent (Azure throws on the option, Supabase throws too), and UploadThing enforces caps via the file-router config tied to the adapter's `slug` instead of via the URL signature. Enforce upload caps at your application gateway (or at the provider's dashboard-level bucket/route setting).
 
-```ts
+```ts lineNumbers
 // On your server: hand back an upload contract that lets the browser
 // PUT/POST the file directly to the bucket. Bytes never touch your server.
 const upload = await files.signedUploadUrl("avatars/abc.png", {
@@ -169,7 +169,7 @@ await fetch(upload.url, { method: "POST", body: form });
 
 Returns a `FileHandle` bound to `key`: a thin wrapper that exposes `upload`, `download`, `head`, `exists`, `delete`, `url`, `signedUploadUrl`, `copyTo`, and `copyFrom` without re-passing the key each time. Useful when application code works with the same object repeatedly. The key is validated at construction; every method routes through the same `Files` entry points, so adapters do not implement anything extra.
 
-```ts
+```ts lineNumbers
 const avatar = files.file("avatars/abc.png");
 
 await avatar.upload(file, { contentType: "image/png" });
@@ -187,7 +187,7 @@ await avatar.delete();
 
 Native `File` covers `name`, `size`, `type`, and `lastModified`, but storage adds three things it doesn't carry: a full `key`, an `etag` for cache validation, and user-defined `metadata`. `StoredFile` mirrors `File`'s shape and adds those.
 
-```ts
+```ts lineNumbers
 interface StoredFile {
   // File-shaped:
   name: string; // = key
@@ -212,7 +212,7 @@ interface StoredFile {
 
 All methods throw a single `FilesError` with a normalized `code`. The original provider error is attached as `cause`.
 
-```ts
+```ts lineNumbers
 import { FilesError } from "files-sdk";
 
 try {
@@ -236,7 +236,7 @@ try {
 
 When you need a feature outside the unified surface - S3 versioning, lifecycle rules, ACLs, multipart, anything - drop down to the native client. The `raw` property is typed per adapter, so you keep autocomplete.
 
-```ts
+```ts lineNumbers
 // Typed per adapter - S3Client, R2Bucket, VercelBlobClient, ...
 const s3 = files.raw;
 

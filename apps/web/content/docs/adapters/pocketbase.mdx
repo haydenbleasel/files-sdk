@@ -11,7 +11,7 @@ peerDeps:
 
 PocketBase via the official `pocketbase` JS SDK. PocketBase has no object-store primitive - files live as field values on records inside collections. The adapter maps the unified key/blob API onto a dedicated collection: each upload becomes (or updates) a record whose configurable _key field_ holds the user-facing string key and whose configurable _file field_ holds the body.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { pocketbase } from "files-sdk/pocketbase";
 

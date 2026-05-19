@@ -1,8 +1,9 @@
 {
   "pages": [
-    "---Overview---",
+    "overview",
     "api",
     "cli",
+    "troubleshooting",
     "---AI Tools---",
     "...ai",
     "---Adapters---",

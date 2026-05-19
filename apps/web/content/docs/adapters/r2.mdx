@@ -19,7 +19,7 @@ peerDeps:
 
 Cloudflare R2 over the S3-compatible HTTP API. Auto-loads from `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Inside Cloudflare Workers you can pass an `R2Bucket` binding directly instead.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { r2 } from "files-sdk/r2";
 
@@ -57,7 +57,7 @@ const files = new Files({
 
 Inside a Worker, you can pass _both_ a binding and HTTP credentials. Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through the HTTP signer because a Worker binding has no signing primitive. The S3 client is lazy-loaded - bindings-only Workers don't pull `@aws-sdk/client-s3` into their bundle.
 
-```ts
+```ts lineNumbers
 // Inside a Cloudflare Worker. The binding handles uploads/downloads
 // (intra-Worker, no egress fees). The HTTP credentials let url() and
 // signedUploadUrl() sign presigned URLs the binding alone can't produce.

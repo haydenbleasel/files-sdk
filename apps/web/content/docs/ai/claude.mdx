@@ -17,7 +17,7 @@ The `files-sdk/claude` subpath exposes a configured `Files` instance to the [Cla
 
 `createClaudeFileTools` returns `{ mcpServers, allowedTools, canUseTool, needsApproval, server, serverName }`. The first three slot directly into `query()`'s options; the rest are escape hatches for callers that want to compose with existing MCP servers or wire their own approval UX.
 
-```tsx
+```tsx lineNumbers
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
@@ -42,7 +42,7 @@ for await (const message of query({
 
 The bundled `canUseTool` denies any tool whose `needsApproval` resolves to `true` with a `"requires approval"` message, and allows everything else. `requireApproval` accepts a boolean for the all-or-nothing case, or an object keyed by write tool name for fine-grained control.
 
-```ts
+```ts lineNumbers
 // All writes require approval (default) - denied by the bundled canUseTool.
 createClaudeFileTools({ files });
 
@@ -63,7 +63,7 @@ createClaudeFileTools({
 
 For real human-in-the-loop UX, compose your own `canUseTool` on top of `tools.needsApproval()`. The helper accepts both bare names (`"uploadFile"`) and the MCP-prefixed form (`"mcp__files__uploadFile"`) that the SDK passes in, so the callback is symmetric whichever shape you receive.
 
-```ts
+```ts lineNumbers
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
 const tools = createClaudeFileTools({ files });
@@ -85,7 +85,7 @@ const canUseTool: CanUseTool = async (name, input) => {
 
 Pass `readOnly: true` to drop every write tool from the bundled MCP server. The model cannot mutate the bucket regardless of how `requireApproval` is configured.
 
-```ts
+```ts lineNumbers
 // Strip every write tool. The model can browse but cannot mutate
 // the bucket regardless of approval configuration.
 createClaudeFileTools({ files, readOnly: true });
@@ -97,7 +97,7 @@ createClaudeFileTools({ files, readOnly: true });
 
 Claude addresses each MCP tool as `mcp__<server-name>__<tool-name>`. The default server name is `"files"`; override it via `serverName` when you need to namespace alongside another MCP server or just prefer a different label in transcripts.
 
-```ts
+```ts lineNumbers
 // Override the MCP server name - affects the mcp__<server>__<tool>
 // prefix the model sees, and the mcpServers map key.
 const tools = createClaudeFileTools({ files, serverName: "storage" });
@@ -109,7 +109,7 @@ const tools = createClaudeFileTools({ files, serverName: "storage" });
 
 Each tool factory is exported individually as a `SdkMcpToolDefinition` - bundle them into your own `createSdkMcpServer` call when you want full control over the MCP server shape or want to mix files-sdk tools with your own.
 
-```ts
+```ts lineNumbers
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { Files } from "files-sdk";
 import {

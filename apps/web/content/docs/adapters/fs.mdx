@@ -9,7 +9,7 @@ description: Local filesystem - the dev/test adapter. Uses node:fs/promises with
 
 Local filesystem. The dev/test adapter - point it at a directory and it implements the same `Adapter` contract as the cloud adapters using `node:fs/promises`. Each upload writes the body and a sidecar `.meta.json` file alongside it (Content-Type, ETag, user metadata) so reads round-trip cleanly. Not for production: there's no replication, no signing, no auth.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { fs } from "files-sdk/fs";
 

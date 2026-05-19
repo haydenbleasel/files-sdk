@@ -11,7 +11,7 @@ peerDeps:
 
 Dropbox via the official `dropbox` SDK. Path-addressable like OneDrive (`/folder/file.txt`), so virtual keys map directly to Dropbox paths - no virtual-key cache, no bookkeeping. Four auth shapes (pre-built client, static or dynamic access token, OAuth refresh token + app key, or env-var fallback) cover personal Dropbox, Dropbox Business, and team-space deployments.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { dropbox } from "files-sdk/dropbox";
 

@@ -7,6 +7,10 @@
 
 @custom-variant dark (&:is(.dark *));
 
+figure.shiki {
+  box-shadow: none;
+}
+
 @keyframes marquee {
   from {
     transform: translateX(0);

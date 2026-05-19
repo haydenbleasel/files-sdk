@@ -64,7 +64,7 @@ Common short flags cover the obvious fields (`--bucket`, `--region`, `--endpoint
 
 Each command maps 1:1 to an `Adapter` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
 
-```bash
+```bash lineNumbers
 # Upload from a file (or pipe stdin)
 files --provider s3 --bucket uploads \
   upload reports/2026-q1.pdf --file ./report.pdf --content-type application/pdf
@@ -97,7 +97,7 @@ files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
 
 Every command emits one JSON line on success. Errors go to `stderr` with a stable `{ error: { code, message } }` envelope, never mixed with the success channel — so a JSON parser downstream sees either a clean record or nothing.
 
-```bash
+```bash lineNumbers
 # JSON output is the default — pipe straight to jq.
 $ files --provider fs --root /tmp/store head reports/q1.pdf
 {"key":"reports/q1.pdf","name":"q1.pdf","size":48213,"type":"application/pdf","lastModified":1778881504647,"etag":"\"9feb94ca37e5d155\""}
@@ -122,7 +122,7 @@ Use `--pretty` for indented JSON when reading manually, or `--no-json` for plain
 
 `--dry-run` resolves the provider and prints the operation it _would_ run, without making a network call. Handy as a sanity check inside an agent loop before letting it execute writes.
 
-```bash
+```bash lineNumbers
 # Stream binary in/out without temp files
 ffmpeg -i talk.mov -c copy -f mp4 - \
   | files --provider r2 --bucket talks upload 2026/q1/keynote.mp4 --stdin --content-type video/mp4
@@ -142,12 +142,12 @@ files --provider s3 --bucket uploads --verbose head missing.txt
 
 `files ... mcp` boots an [MCP server](https://modelcontextprotocol.io) on stdio that exposes every CLI command as a tool — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `list`, `url`, `sign-upload`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
 
-```bash
+```bash lineNumbers
 # Start the MCP server on stdio
 files --provider s3 --bucket uploads mcp
 ```
 
-```jsonc
+```jsonc lineNumbers
 // Wire it into Claude Code (~/.claude.json or .claude/mcp.json)
 {
   "mcpServers": {
@@ -169,7 +169,7 @@ Binary payloads are roundtripped as base64 over MCP, so binary downloads (`downl
 
 Three patterns, ordered by how much trust you're extending to the agent.
 
-```bash
+```bash lineNumbers
 # 1. Quick exploration — let an agent inspect a bucket without writing code
 files --provider s3 --bucket uploads list --prefix invoices/ --limit 20 | jq '.items[].key'
 

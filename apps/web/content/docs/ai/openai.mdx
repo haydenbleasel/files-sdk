@@ -15,7 +15,7 @@ The `files-sdk/openai` subpath ships two factories targeting OpenAI directly - o
 openai zod
 ```
 
-```tsx
+```tsx lineNumbers
 import OpenAI from "openai";
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
@@ -58,7 +58,7 @@ while (true) {
 @openai/agents zod
 ```
 
-```tsx
+```tsx lineNumbers
 import { Agent, run } from "@openai/agents";
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
@@ -82,7 +82,7 @@ Errors thrown from `execute()` are wrapped by the Agents SDK's default `errorFun
 
 Both factories accept the same options shape as the Vercel `createFileTools`: `requireApproval` (boolean or per-tool record), `readOnly` (strips writes entirely), and `overrides` (description, plus `strict` for Responses or `needsApproval` for Agents).
 
-```ts
+```ts lineNumbers
 // Same shape across both factories.
 
 createResponsesFileTools({ files }); // all writes gated (default)

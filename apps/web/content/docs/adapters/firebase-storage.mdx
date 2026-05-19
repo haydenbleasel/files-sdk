@@ -11,7 +11,7 @@ peerDeps:
 
 Firebase Cloud Storage via the official `firebase-admin` SDK. The Admin SDK's `getStorage().bucket()` returns a `@google-cloud/storage` `Bucket` under the hood, so every primitive (server-side copy, V4 signed URLs, POST policy uploads) maps onto the GCS surface - with Firebase-flavoured credential conventions and a default bucket name derived from your project ID.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { firebaseStorage } from "files-sdk/firebase-storage";
 

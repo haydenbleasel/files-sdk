@@ -11,7 +11,7 @@ peerDeps:
 
 Box via the official `box-typescript-sdk-gen` SDK. Box files live by ID, not by path, so the adapter walks `rootFolderId` and translates virtual keys (`docs/a.txt`) into nested Box subfolders, auto-creating intermediate folders on `upload()`. Five auth shapes (pre-built client, developer token, OAuth refresh-token, Client Credentials Grant, JWT server auth) cover scripts, user apps, and enterprise installs - token lifecycle is handled by the SDK's built-in `Authentication` classes.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { box } from "files-sdk/box";
 

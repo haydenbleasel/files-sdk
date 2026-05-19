@@ -19,7 +19,7 @@ ai zod
 
 Construct a `Files` instance the same way you would anywhere else, then pass it to `createFileTools`. The returned object plugs straight into the AI SDK's `tools` field.
 
-```tsx
+```tsx lineNumbers
 import { Files } from "files-sdk";
 import { s3 } from "files-sdk/s3";
 import { createFileTools } from "files-sdk/ai-sdk";
@@ -40,7 +40,7 @@ const result = await generateText({
 
 `requireApproval` accepts a boolean for the all-or-nothing case, or an object keyed by write tool name for fine-grained control. Unspecified entries in the object form default to `true`, so it's safe to opt-in only the cases you trust.
 
-```ts
+```ts lineNumbers
 // All writes require approval (default).
 createFileTools({ files });
 
@@ -63,7 +63,7 @@ createFileTools({
 
 Pass `readOnly: true` to drop every write tool. The model cannot mutate the bucket regardless of how `requireApproval` is configured - useful for retrieval-style agents that only need to browse, summarize, or hand the user a download URL.
 
-```ts
+```ts lineNumbers
 // Strip every write tool. The model can browse but cannot mutate
 // the bucket regardless of approval configuration.
 createFileTools({ files, readOnly: true });
@@ -74,7 +74,7 @@ createFileTools({ files, readOnly: true });
 
 Patch any safe `tool()` field on a per-tool basis without touching the underlying implementation. Useful for tightening descriptions to your domain, flipping an individual `needsApproval`, or adding provider-specific `providerOptions`. `execute`, `inputSchema`, and `outputSchema` are intentionally not overridable.
 
-```ts
+```ts lineNumbers
 createFileTools({
   files,
   overrides: {
@@ -88,7 +88,7 @@ createFileTools({
 
 Each tool factory is also exported individually for fully custom setups - useful when you want to mix AI SDK tools across multiple domains and need full control over the returned object's shape.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { listFiles, downloadFile, uploadFile } from "files-sdk/ai-sdk";
 

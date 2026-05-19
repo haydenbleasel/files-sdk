@@ -14,7 +14,7 @@ peerDeps:
 
 OneDrive and SharePoint document libraries via the official `@microsoft/microsoft-graph-client` SDK. Microsoft Graph is path-addressable (`/drive/root:/folder/file.txt`), so the adapter maps virtual keys onto real OneDrive paths - no virtual-key cache, no `fsdkKey` bookkeeping. Five auth shapes (app-only, OAuth refresh token, raw access token, pre-built Graph client, or env-var fallback) and four drive targets (`/me/drive`, `driveId`, `siteId`, `userId`) cover the personal-OneDrive, OneDrive-for-Business, and SharePoint-site-library cases.
 
-```ts
+```ts lineNumbers
 import { Files } from "files-sdk";
 import { onedrive } from "files-sdk/onedrive";
 
