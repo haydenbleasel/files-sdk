@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "fumadocs-mdx",
     "dev": "next dev",
+    "prebuild": "fumadocs-mdx",
     "build": "next build",
     "start": "next start",
+    "pretypes": "fumadocs-mdx",
     "types": "tsgo --noEmit",
     "test": "echo 'no tests'"
   },

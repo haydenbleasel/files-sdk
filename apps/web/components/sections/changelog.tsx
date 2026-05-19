@@ -1,5 +1,4 @@
 import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
-import type { BundledLanguage } from "shiki";
 
 import type {
   ChangeKind,
@@ -32,10 +31,10 @@ const SUPPORTED_LANGS: ReadonlySet<string> = new Set([
   "yaml",
 ]);
 
-const normalizeLang = (lang: string): BundledLanguage => {
+const normalizeLang = (lang: string): string => {
   const candidate = lang.toLowerCase();
   if (SUPPORTED_LANGS.has(candidate)) {
-    return candidate as BundledLanguage;
+    return candidate;
   }
   return "ts";
 };
