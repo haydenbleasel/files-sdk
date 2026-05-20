@@ -83,20 +83,12 @@ export const Hero = ({ latestVersion, latestSlug }: HeroProps) => (
       animate={{ opacity: 1 }}
       transition={{ delay: 0.4, duration: 0.7, ease: EASE }}
     >
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-background to-transparent"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 right-0 z-10 w-16 bg-gradient-to-l from-background to-transparent"
-      />
-      <div className="overflow-hidden">
+      <div className="overflow-x-clip py-2 [-webkit-mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)] [mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)]">
         <div className="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-10">
           {marqueeList.map(([name, Icon], i) => (
             <Icon
               key={`${name}-${i}`}
-              className="size-9 shrink-0 rounded transition hover:scale-110"
+              className="size-14 shrink-0 rounded transition-transform duration-200 hover:-translate-y-1"
             />
           ))}
         </div>

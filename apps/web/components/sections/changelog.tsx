@@ -107,7 +107,9 @@ export const Release = ({ release }: { release: ChangelogRelease }) => (
       >
         {release.groups.length > 1 ? (
           <div className="flex items-center gap-2">
-            <KindBadge kind={group.kind} />
+            <h2 className="text-2xl font-semibold tracking-tight capitalize">
+              {group.kind} Updates
+            </h2>
           </div>
         ) : null}
         <ul className="flex list-none flex-col gap-6 pl-0">

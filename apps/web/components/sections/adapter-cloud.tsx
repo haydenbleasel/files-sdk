@@ -57,8 +57,8 @@ export const AdapterCloud = () => (
           );
         })}
       </ul>
-      <div className="mt-14 flex justify-center">
-        <Button asChild size="lg" variant="outline">
+      <div className="mt-14 flex justify-start">
+        <Button asChild size="lg">
           <Link href="/adapters">
             See all adapters
             <ArrowRight data-icon="inline-end" />

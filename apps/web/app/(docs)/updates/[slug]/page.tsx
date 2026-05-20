@@ -1,14 +1,9 @@
-import {
-  DocsBody,
-  DocsDescription,
-  DocsPage,
-  DocsTitle,
-} from "fumadocs-ui/page";
+import { DocsBody, DocsPage, DocsTitle } from "fumadocs-ui/page";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { Release } from "@/components/sections/changelog";
-import { getChangelog, getRelease, getReleaseSummary } from "@/lib/changelog";
+import { getChangelog, getRelease } from "@/lib/changelog";
 
 interface ReleasePageProps {
   params: Promise<{ slug: string }>;
@@ -27,14 +22,9 @@ export const generateMetadata = async ({
     return {};
   }
 
-  const { headline } = getReleaseSummary(release);
-  const description =
-    headline.length > 200 ? `${headline.slice(0, 197)}...` : headline;
-
   return {
     alternates: { canonical: `/updates/${release.slug}` },
-    description:
-      description || `Release notes for files-sdk v${release.version}.`,
+    description: `Release notes for files-sdk v${release.version}.`,
     openGraph: { url: `/updates/${release.slug}` },
     title: `v${release.version}`,
   };
@@ -48,12 +38,9 @@ const ReleasePage = async ({ params }: ReleasePageProps) => {
     notFound();
   }
 
-  const { headline } = getReleaseSummary(release);
-
   return (
     <DocsPage>
       <DocsTitle>v{release.version}</DocsTitle>
-      {headline && <DocsDescription>{headline}</DocsDescription>}
       <DocsBody>
         <Release release={release} />
       </DocsBody>

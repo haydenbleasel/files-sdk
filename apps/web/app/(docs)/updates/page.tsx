@@ -28,7 +28,7 @@ const UpdatesPage = () => {
         from the package CHANGELOG.md, so this page is whatever the registry
         has.
       </DocsDescription>
-      <DocsBody>
+      <DocsBody className="not-prose">
         <UpdatesIndex releases={releases} />
       </DocsBody>
     </DocsPage>
