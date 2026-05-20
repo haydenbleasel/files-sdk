@@ -1,5 +1,5 @@
 ---
-"files-sdk": minor
+"files-sdk": patch
 ---
 
 Add a `prefix` option to the `Files` constructor. When set, every key is resolved relative to the prefix - reads, writes, copies, listings, URLs, and signed uploads - and the prefix is stripped back off the keys (and `name`) returned in results, so your application code works in its own namespace:
