@@ -11,6 +11,20 @@ figure.shiki {
   box-shadow: none;
 }
 
+/* Geist Mono ships ligatures/contextual alternates/kerning that shape across
+   shiki's per-token <span> boundaries, collapsing glyphs (e.g. `=== 0`
+   overlapping on /ai#openai-tools-responses). Disable them in code blocks;
+   these properties inherit, so setting them on the figure covers pre/code. */
+figure.shiki,
+figure.shiki code,
+figure.shiki pre {
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
 @keyframes marquee {
   from {
     transform: translateX(0);
