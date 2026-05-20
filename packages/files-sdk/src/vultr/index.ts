@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface VultrAdapterOptions {
+  /** Vultr bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Vultr Object Storage region code, e.g. `"ewr"` (New Jersey),
@@ -21,7 +22,15 @@ export interface VultrAdapterOptions {
    * the SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static access key ID. Falls back to `VULTR_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Falls back to `VULTR_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

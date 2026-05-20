@@ -1,0 +1,181 @@
+---
+title: Troubleshooting
+description: Common errors, adapter-specific gotchas, and debugging tips for Files SDK.
+---
+
+## The error model
+
+Every method throws a single `FilesError` with a normalized `code` and the original error preserved on `cause`. Match on `code` for control flow; reach into `cause` for the provider-specific detail.
+
+```ts lineNumbers
+import { FilesError } from "files-sdk";
+
+try {
+  await files.download("missing.png");
+} catch (err) {
+  if (err instanceof FilesError) {
+    switch (err.code) {
+      case "NotFound":
+        return null;
+      case "Unauthorized":
+        /* re-auth */ break;
+      case "Conflict":
+        /* retry */ break;
+      case "Provider":
+        console.error(err.cause);
+        break;
+    }
+  }
+  throw err;
+}
+```
+
+> **Logging note:** `cause` can carry request IDs, response headers, and partial request metadata from `@aws-sdk` and friends. If you forward `FilesError` to logs that cross a trust boundary, strip or whitelist `cause` rather than `JSON.stringify`-ing the whole thing.
+
+### `NotFound`
+
+The key does not exist (or the bucket / container does not exist on providers that don't distinguish).
+
+- `download`, `head`, `copy` (source key), and `delete` on strict providers will throw this.
+- `exists` returns `false` instead of throwing. If you're seeing `NotFound` from `exists`, the underlying error wasn't actually a missing-key signal - check `cause`.
+- `delete` is idempotent on providers that treat it that way (S3, R2, Vercel Blob); strict providers (FS, some BaaS) throw `NotFound` for missing keys.
+
+### `Unauthorized`
+
+Credentials are missing, expired, or insufficient for the operation.
+
+- Missing env vars (`AWS_ACCESS_KEY_ID`, `BLOB_READ_WRITE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, ...).
+- IAM policy doesn't grant the action (`s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, ...).
+- Token expired (Dropbox, Box, Google Drive, OneDrive, SharePoint - OAuth tokens need refresh).
+- Bucket region mismatch on S3 - the request is signed for one region and rejected by another.
+
+### `Conflict`
+
+A precondition failed - usually a conditional write losing a race, or an object existing when the call required it to be absent.
+
+### `Provider`
+
+The catch-all. Network errors, malformed responses, provider outages, and anything that doesn't map cleanly to the codes above. `cause` has the original.
+
+## Adapter-specific gotchas
+
+The unified API only covers what every adapter can do; a handful of operations are surfaced but throw on adapters that can't honor them. These are the ones worth knowing.
+
+### `url()` throws on three configurations
+
+`url()` returns the most direct URL each adapter can produce - a signed `GetObject`, a SAS read URL, a CDN URL when `publicBaseUrl` is configured, etc. Three setups have no URL primitive and will throw:
+
+- **Vercel Blob with `access: "private"`** - private blobs are fetched through `@vercel/blob`, not via URL.
+- **R2 Workers binding with no `publicBaseUrl` and no HTTP credentials** - the binding API has no URL primitive. Either configure `publicBaseUrl` (custom domain or `r2.dev`) or pass HTTP credentials alongside the binding to enable signing.
+- **Bunny Storage without `publicBaseUrl`** - the Storage API requires an `AccessKey` header on every request, so there's nothing to hand to a browser. Configure your Pull Zone as `publicBaseUrl`.
+
+`responseContentDisposition: "attachment"` forces signing even when `publicBaseUrl` is set - a permanent CDN URL has no signature to bind the override into, so the alternative would be silently dropping a security ask.
+
+### `signedUploadUrl()` throws on five
+
+`signedUploadUrl()` returns a discriminated PUT-or-POST contract so a browser can upload directly to the bucket. These adapters throw:
+
+- **Vercel Blob** - uploads go through `handleUpload()` from `@vercel/blob/client`, not presigned URLs.
+- **Bunny Storage** - writes require the `AccessKey` header.
+- **Appwrite** and **PocketBase** - no presigned upload primitive. Mint a short-lived auth token for the client instead.
+- **R2 Workers binding without hybrid mode** - configure the binding _and_ HTTP credentials to enable signing.
+
+### `maxSize` is advisory on three
+
+`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Three adapters don't honor it the same way:
+
+- **Azure** and **Supabase** throw on `maxSize` - neither has a `content-length-range` equivalent.
+- **UploadThing** caps via the file-router config bound to the adapter's `slug`, not the URL signature.
+
+For these, enforce upload caps at your application gateway, or set the bucket / route limit at the provider's dashboard.
+
+> **Always pass `maxSize`** on the providers that do support it. Without it, anyone with the URL can DoS your storage costs until `expiresIn` elapses.
+
+### S3-compatible adapters are S3 wrappers
+
+R2 (HTTP), MinIO, DigitalOcean Spaces, Backblaze B2, Wasabi, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive E2, Vultr, IBM COS, Oracle Cloud, and Exoscale all wrap the `s3()` adapter with provider-specific defaults (endpoint, path-style, region quirks). If you hit an obscure failure on one of them, reproduce against `s3()` with the same options - if it repros, it's an S3 wire issue; if it doesn't, the wrapper's defaults are the culprit.
+
+### `copy` falls back to read+write
+
+Server-side copy is used where the provider supports it; otherwise the adapter reads the source and writes the destination. For very large objects on adapters without server-side copy, this means bytes flow through your process - plan accordingly.
+
+### Lazy bodies in `head` and `list`
+
+Body accessors (`arrayBuffer`, `text`, `stream`, `blob`) on results from `head` and `list` lazy-fetch on call. A loop over `items` that touches `.arrayBuffer()` issues one GET per item. If you only want the metadata, don't touch the accessors.
+
+## Debugging tips
+
+### Inspect the underlying error
+
+```ts lineNumbers
+try {
+  await files.upload("a.png", file);
+} catch (err) {
+  if (err instanceof FilesError) {
+    console.error(err.code, err.message);
+    console.error(err.cause); // the original provider error
+  }
+}
+```
+
+For `@aws-sdk` errors, `cause` carries `$metadata` (request ID, HTTP status, attempts) and a typed `name` (`NoSuchKey`, `AccessDenied`, `SlowDown`, ...) that's more specific than the normalized `code`.
+
+### Drop to the raw client
+
+When you need a feature outside the unified surface, `files.raw` is typed per adapter and gives you the native client:
+
+```ts lineNumbers
+const s3 = files.raw; // typed as S3Client
+await s3.send(
+  new PutObjectAclCommand({
+    Bucket: "uploads",
+    Key: "a.png",
+    ACL: "public-read",
+  })
+);
+```
+
+### CLI: `--verbose` and `--dry-run`
+
+The CLI mirrors SDK semantics and is often the fastest way to confirm credentials and bucket layout:
+
+```bash lineNumbers
+files --provider s3 --bucket uploads --verbose head missing.txt
+# adds stack traces to the error envelope
+
+files --provider s3 --bucket uploads --dry-run delete reports/q1.pdf
+# → {"dryRun":true,"provider":"s3","action":"delete","key":"reports/q1.pdf"}
+```
+
+Exit codes are stable: `0` ok, `1` `NotFound` (or `exists → false`), `2` `Provider`, `3` `Unauthorized`, `4` `Conflict`.
+
+### Swap to the `fs` adapter
+
+When you suspect the problem is wiring rather than the provider, swap to `files-sdk/fs` against a temp directory. The same call sites that work against `fs` will tell you whether the bug is in your code or in adapter / credential setup.
+
+```ts lineNumbers
+import { fs } from "files-sdk/fs";
+const files = new Files({ adapter: fs({ root: "/tmp/store" }) });
+```
+
+## FAQ
+
+### "Cannot find module '@aws-sdk/client-s3'"
+
+Provider SDKs are peer dependencies - install only the ones for adapters you use. The per-adapter docs list the exact packages.
+
+### Why is `contentType` `application/octet-stream`?
+
+When `upload` can't infer the type from the input (raw `ArrayBuffer`, `ReadableStream`, or a string with no extension hint), it defaults to `application/octet-stream`. Pass `contentType` explicitly.
+
+### Why does the body come back empty from `head` / `list`?
+
+Body accessors on `head` and `list` results are lazy - they fetch on call. If you serialize a `StoredFile` without invoking the accessor, you get the metadata only. That's the intent; call `.arrayBuffer()` / `.text()` / `.blob()` / `.stream()` to materialize.
+
+### Does `delete` throw on a missing key?
+
+Depends on the provider. S3, R2, and Vercel Blob treat delete as idempotent and resolve successfully. Strict providers throw `FilesError` with `code: "NotFound"`. If you need consistent behavior, gate on `await files.exists(key)` first.
+
+### Can I use Files SDK in the browser?
+
+The core class and `StoredFile` type are isomorphic, but most adapters wrap server SDKs that aren't browser-safe. Use `signedUploadUrl()` from the server, hand the contract to the browser, and have the browser `fetch` directly to the provider. The CLI's [Wiring agents](/docs/cli#wiring-agents) section shows the same pattern from a shell.

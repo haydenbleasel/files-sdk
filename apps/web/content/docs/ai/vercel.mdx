@@ -1,0 +1,102 @@
+---
+title: Vercel AI SDK
+description: Drop the files-sdk tools straight into generateText, streamText, or any Vercel AI SDK agent - same eight operations, Zod-validated, approval-gated by default.
+---
+
+The `files-sdk/ai-sdk` subpath exposes a configured `Files` instance to the [Vercel AI SDK](https://ai-sdk.dev) as a set of ready-to-use tools - drop them into `generateText`, `streamText`, or any agent and the model can browse, read, and mutate your bucket through the same unified surface as your application code.
+
+Write tools (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) require user approval by default - designed for human-in-the-loop agents. Read tools (`listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl`) never require approval.
+
+## Installation
+
+`ai` and `zod` are optional peer dependencies - only install them if you're consuming the `files-sdk/ai-sdk` subpath.
+
+```package-install
+ai zod
+```
+
+## Quick start
+
+Construct a `Files` instance the same way you would anywhere else, then pass it to `createFileTools`. The returned object plugs straight into the AI SDK's `tools` field.
+
+```tsx lineNumbers
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFileTools } from "files-sdk/ai-sdk";
+import { generateText } from "ai";
+
+const files = new Files({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+const result = await generateText({
+  model: yourModel,
+  tools: createFileTools({ files }),
+  prompt: "Find every CSV under reports/ and summarize the latest one.",
+});
+```
+
+## Approval control
+
+`requireApproval` accepts a boolean for the all-or-nothing case, or an object keyed by write tool name for fine-grained control. Unspecified entries in the object form default to `true`, so it's safe to opt-in only the cases you trust.
+
+```ts lineNumbers
+// All writes require approval (default).
+createFileTools({ files });
+
+// Drop the approval gate entirely.
+createFileTools({ files, requireApproval: false });
+
+// Granular: only the destructive operations need approval.
+createFileTools({
+  files,
+  requireApproval: {
+    deleteFile: true,
+    signUploadUrl: true,
+    uploadFile: false,
+    copyFile: false,
+  },
+});
+```
+
+## Read-only mode
+
+Pass `readOnly: true` to drop every write tool. The model cannot mutate the bucket regardless of how `requireApproval` is configured - useful for retrieval-style agents that only need to browse, summarize, or hand the user a download URL.
+
+```ts lineNumbers
+// Strip every write tool. The model can browse but cannot mutate
+// the bucket regardless of approval configuration.
+createFileTools({ files, readOnly: true });
+// → { listFiles, getFileMetadata, downloadFile, getFileUrl }
+```
+
+## Overrides
+
+Patch any safe `tool()` field on a per-tool basis without touching the underlying implementation. Useful for tightening descriptions to your domain, flipping an individual `needsApproval`, or adding provider-specific `providerOptions`. `execute`, `inputSchema`, and `outputSchema` are intentionally not overridable.
+
+```ts lineNumbers
+createFileTools({
+  files,
+  overrides: {
+    listFiles: { description: "List files in the current tenant's bucket" },
+    deleteFile: { needsApproval: false, title: "Remove file" },
+  },
+});
+```
+
+## Cherry-picking tools
+
+Each tool factory is also exported individually for fully custom setups - useful when you want to mix AI SDK tools across multiple domains and need full control over the returned object's shape.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { listFiles, downloadFile, uploadFile } from "files-sdk/ai-sdk";
+
+const files = new Files({ adapter });
+
+const tools = {
+  listFiles: listFiles(files),
+  downloadFile: downloadFile(files),
+  uploadFile: uploadFile(files),
+};
+```
