@@ -86,7 +86,7 @@
     },
     "packages/files-sdk": {
       "name": "files-sdk",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "bin": {
         "files": "./dist/cli/index.js",
       },
@@ -112,7 +112,7 @@
         "@types/bun": "^1.1.0",
         "@types/node": "^25.6.2",
         "@typescript/native-preview": "^7.0.0-dev.20250101.1",
-        "@vercel/blob": "^2.3",
+        "@vercel/blob": "^2.4.0",
         "ai": "^6.0.97",
         "aws-sdk-client-mock": "^4.1.0",
         "box-typescript-sdk-gen": "^1.19.1",
@@ -145,7 +145,7 @@
         "@netlify/blobs": "^10.7.4",
         "@openai/agents": "^0.11.0",
         "@supabase/storage-js": "^2.105.4",
-        "@vercel/blob": "^2.3",
+        "@vercel/blob": "^2.4.0",
         "ai": "^6.0.0",
         "box-typescript-sdk-gen": "^1.19.1",
         "cloudinary": "^2.10.0",
@@ -1372,7 +1372,7 @@
 
     "@uploadthing/shared": ["@uploadthing/shared@7.1.10", "", { "dependencies": { "@uploadthing/mime-types": "0.3.6", "effect": "3.17.7", "sqids": "^0.3.0" } }, "sha512-R/XSA3SfCVnLIzFpXyGaKPfbwlYlWYSTuGjTFHuJhdAomuBuhopAHLh2Ois5fJibAHzi02uP1QCKbgTAdmArqg=="],
 
-    "@vercel/blob": ["@vercel/blob@2.3.3", "", { "dependencies": { "async-retry": "^1.3.3", "is-buffer": "^2.0.5", "is-node-process": "^1.2.0", "throttleit": "^2.1.0", "undici": "^6.23.0" } }, "sha512-MtD7VLo6hU07eHR7bmk5SIMD290q574UaNYTe46qeyRT+hWrCy26CoAqfd7PnIefVXvRehRZBzukxuTO9iGTVg=="],
+    "@vercel/blob": ["@vercel/blob@2.4.0", "", { "dependencies": { "async-retry": "^1.3.3", "is-buffer": "^2.0.5", "is-node-process": "^1.2.0", "throttleit": "^2.1.0", "undici": "^6.23.0" } }, "sha512-ncQ8CRb6XoEAYJwjOTRGpACRT6h/AeY+/33gLyeVxG5BIes27OPm1jmqreF+JHjcTmGhClTP+kBpmyLfbV0xew=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.2.0", "", {}, "sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug=="],
 
