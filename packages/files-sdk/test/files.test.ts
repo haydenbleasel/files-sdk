@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ListOptions } from "../src/index.js";
 import { Files, FilesError } from "../src/index.js";
-import type { OperationOptions } from "../src/index.js";
+import type { ListOptions, OperationOptions } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 describe("Files class", () => {

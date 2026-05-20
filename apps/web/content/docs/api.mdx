@@ -205,6 +205,49 @@ Leading and trailing slashes are normalized: `"/users/"`, `"users/"`, and `"user
 
 `list()` scopes the underlying provider query to the prefix and matches on a path boundary, so a `Files` constructed with `prefix: "users"` lists objects under `users/` but never the sibling `users-archive/`. Cursor pagination and the per-call `list({ prefix })` filter compose with the constructor prefix.
 
+## Timeouts, retries, and cancellation
+
+Every method accepts `signal`, `timeout`, and `retries`. Set them once on the constructor as defaults, then override per call - a per-call value wins over the constructor default for that operation.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  timeout: 10_000, // default per-attempt timeout for every call
+  retries: { max: 3, backoff: ({ attempt }) => attempt * 500 },
+});
+
+// Tighter timeout for a single metadata read.
+await files.head("avatars/abc.png", { timeout: 2_000 });
+
+// Opt a write out of retries and bind it to a caller-controlled signal.
+const controller = new AbortController();
+await files.upload("avatars/abc.png", file, {
+  signal: controller.signal,
+  retries: 0,
+});
+```
+
+#### Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="OperationOptions"
+/>
+
+### Retries
+
+`retries` is either a number (shorthand for `{ max }`) or `{ max, backoff }`. Only `Provider` failures are retried - `NotFound`, `Unauthorized`, and `Conflict` are returned to you immediately, and so are aborts and timeouts (retrying a cancelled call would defeat the cancellation). Uploads from a `ReadableStream` are never retried either, because a consumed stream can't be safely replayed; buffered bodies (`File`, `Blob`, `ArrayBuffer`, `string`) retry normally.
+
+The default backoff is exponential - `100 * 2 ** (attempt - 1)` ms - capped at 30s, with no jitter. For high-fanout callers, pass your own `backoff({ attempt, error })` to add jitter or a different curve; a caller-supplied function is used verbatim (no cap).
+
+### Timeouts
+
+`timeout` is applied to each attempt. When it fires, the operation is aborted with a `Provider` `FilesError` (`Operation timed out after Nms`) and is **not** retried - a timeout ends the call rather than triggering another attempt. Pass `0` (or a negative value) to disable it. Adapters with their own download timeout (Vercel Blob, UploadThing) still apply it; the two signals are merged, so whichever fires first wins.
+
+### Cancellation coverage
+
+A `signal` always fails fast at the `Files` layer for **every** adapter: once it aborts, the in-flight call rejects immediately with an aborted `FilesError`. What differs is whether the underlying provider request is also cancelled. Adapters whose SDK exposes cancellation forward the signal directly - the S3 adapter and the whole S3-compatible catalog (R2 over HTTP, MinIO, Spaces, and every regional / budget / decentralised wrapper), Vercel Blob, and UploadThing's fetch-backed reads. Calls whose SDK has no cancellation primitive (for example UploadThing's `delete`) still reject at the `Files` layer the instant the signal aborts, but the provider request may run to completion in the background.
+
 ## The StoredFile type
 
 Native `File` covers `name`, `size`, `type`, and `lastModified`, but storage adds three things it doesn't carry: a full `key`, an `etag` for cache validation, and user-defined `metadata`. `StoredFile` mirrors `File`'s shape and adds those.

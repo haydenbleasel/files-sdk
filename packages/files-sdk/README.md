@@ -43,42 +43,6 @@ const exists = await files.exists("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
-## Timeouts, aborts, and retries
-
-Configure defaults on the `Files` instance, then override per operation when
-needed:
-
-```ts
-const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
-  timeout: 10_000,
-  retries: {
-    max: 3,
-    backoff: ({ attempt }) => attempt * 500,
-  },
-});
-
-await files.head("avatars/abc.png", { timeout: 2_000 });
-
-const controller = new AbortController();
-await files.upload("avatars/abc.png", file, {
-  signal: controller.signal,
-  retries: 0,
-});
-```
-
-You can also pass a number for `retries`, e.g. `retries: 3`. Retries apply to
-provider-level failures; `NotFound`, `Unauthorized`, `Conflict`, and explicit
-abort signals and timeouts are not retried. The default backoff is
-`100 * 2 ** (attempt - 1)` with no jitter; for high-fanout callers, pass your
-own `backoff` function. Upload retries are disabled for `ReadableStream`
-bodies because a consumed stream cannot be safely replayed.
-
-The merged `signal` is forwarded to every adapter call. Adapters whose
-underlying SDK exposes cancellation honor it directly; adapters backed by SDKs
-with no signal primitive still fail fast at the `Files` layer, but the provider
-request may continue cooperatively in the background.
-
 ## File handles
 
 Use `files.file(key)` when your application code works with the same object repeatedly:

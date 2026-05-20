@@ -282,6 +282,10 @@ export interface FileHandle {
 }
 
 const DEFAULT_RETRY_BACKOFF_MS = 100;
+// Cap the built-in exponential backoff so a large `retries` count can't
+// schedule an absurd sleep (and `2 ** attempt` can't overflow to Infinity).
+// Only applies to the default curve — a caller-supplied `backoff` is theirs.
+const MAX_DEFAULT_RETRY_BACKOFF_MS = 30_000;
 
 const timeoutError = (timeout: number): FilesError =>
   new FilesError(
@@ -436,11 +440,11 @@ const retryBackoff = (
   attempt: number,
   error: FilesError
 ): number => {
-  const backoff =
-    typeof retries === "object" && retries.backoff
-      ? retries.backoff({ attempt, error })
-      : DEFAULT_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
-  return Math.max(0, backoff);
+  if (typeof retries === "object" && retries.backoff) {
+    return Math.max(0, retries.backoff({ attempt, error }));
+  }
+  const backoff = DEFAULT_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
+  return Math.min(MAX_DEFAULT_RETRY_BACKOFF_MS, backoff);
 };
 
 const canRetry = (
@@ -612,7 +616,9 @@ export class Files<A extends Adapter = Adapter> {
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
     const path = this.#path(key);
-    return this.#run(opts, (attemptOpts) => this.#adapter.url(path, attemptOpts));
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.url(path, attemptOpts)
+    );
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
