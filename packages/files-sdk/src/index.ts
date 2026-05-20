@@ -14,9 +14,61 @@ export type Body =
   | Uint8Array
   | string;
 
-export interface UploadOptions {
+export interface RetryBackoffContext {
+  /**
+   * Retry attempt number, starting at 1 for the first retry after the
+   * initial failed call.
+   */
+  attempt: number;
+  error: FilesError;
+}
+
+export type RetryOptions =
+  | number
+  | {
+      max: number;
+      backoff?: (ctx: RetryBackoffContext) => number;
+    };
+
+export interface OperationOptions {
+  /**
+   * Abort the operation when this signal is aborted. When both constructor
+   * and per-call signals are provided, either one can abort the call.
+   */
+  signal?: AbortSignal;
+  /**
+   * Overall timeout in milliseconds, applied to each attempt. A timeout
+   * aborts the operation and is not retried. `0` or a negative value
+   * disables timeout handling.
+   */
+  timeout?: number;
+  /**
+   * Retry provider failures. A number is treated as `{ max: number }`.
+   */
+  retries?: RetryOptions;
+}
+
+export interface UploadOptions extends OperationOptions {
+  /**
+   * MIME type stored alongside the object and returned to readers in the
+   * `Content-Type` response header. Inferred from `File` / `Blob` `type`
+   * when not set; falls back to `application/octet-stream`.
+   */
   contentType?: string;
+  /**
+   * `Cache-Control` header stored on the object. Sent verbatim to the
+   * provider; controls how downstream caches and browsers cache reads of
+   * this key.
+   */
   cacheControl?: string;
+  /**
+   * Arbitrary user metadata stored alongside the object. Returned by
+   * `head()` and `list()` where the provider supports it. Vercel Blob and
+   * UploadThing have no user-metadata primitive, so it round-trips as
+   * `undefined` there. Bunny Storage, Appwrite, and PocketBase have no
+   * arbitrary metadata primitive, so those adapters throw when this option
+   * is passed.
+   */
   metadata?: Record<string, string>;
 }
 
@@ -42,13 +94,25 @@ export interface StoredFile {
   metadata?: Record<string, string>;
 }
 
-export interface DownloadOptions {
+export interface DownloadOptions extends OperationOptions {
   as?: "blob" | "stream";
 }
 
-export interface ListOptions {
+export interface ListOptions extends OperationOptions {
+  /**
+   * Filter results to keys that start with this string. Omit to list
+   * everything in the bucket.
+   */
   prefix?: string;
+  /**
+   * Continuation token from a prior result. Pass the `cursor` field of the
+   * previous page back in to fetch the next page; omit on the first call.
+   */
   cursor?: string;
+  /**
+   * Maximum number of items to return per page. Capped per-provider (most
+   * providers max around 1000). Defaults to 1000.
+   */
   limit?: number;
 }
 
@@ -58,7 +122,18 @@ export interface ListResult {
 }
 
 export interface DeleteManyOptions {
+  /**
+   * How many per-key deletes run in parallel when an adapter falls back to
+   * repeated `delete()` calls. Defaults to `8`. Adapters with a native bulk
+   * primitive (S3, Supabase, UploadThing) ignore this — they delete in one
+   * request.
+   */
   concurrency?: number;
+  /**
+   * When `true`, stop at the first failure and return immediately with the
+   * keys deleted so far plus that error. When `false` (default), process
+   * every key and collect per-key failures in `errors`.
+   */
   stopOnError?: boolean;
 }
 
@@ -68,11 +143,13 @@ export interface DeleteManyError {
 }
 
 export interface DeleteManyResult {
-  delete: string[];
+  /** Keys that were deleted, in the order they were supplied. */
+  deleted: string[];
+  /** Per-key failures. Omitted entirely when every key succeeded. */
   errors?: DeleteManyError[];
 }
 
-export interface UrlOptions {
+export interface UrlOptions extends OperationOptions {
   /**
    * Override the adapter's default URL expiry, in seconds.
    *
@@ -117,8 +194,16 @@ export interface UrlOptions {
   responseContentDisposition?: string;
 }
 
-export interface SignUploadOptions {
+export interface SignUploadOptions extends OperationOptions {
+  /**
+   * How long the signed URL stays valid, in seconds. After it elapses, the
+   * URL stops working and the client must request a new one.
+   */
   expiresIn: number;
+  /**
+   * MIME type bound into the signature. The browser's PUT/POST must send a
+   * matching `Content-Type` header or the provider rejects the upload.
+   */
   contentType?: string;
   /**
    * Maximum upload size in bytes, enforced server-side.
@@ -166,7 +251,7 @@ export interface Adapter<Raw = unknown> {
    * issue a full GET on first use. If you only want metadata, don't call
    * the body accessors. They are not free.
    */
-  head(key: string): Promise<StoredFile>;
+  head(key: string, opts?: OperationOptions): Promise<StoredFile>;
   /**
    * Check whether `key` exists without fetching its body.
    *
@@ -174,13 +259,18 @@ export interface Adapter<Raw = unknown> {
    * `NotFound`, and rethrows every other error (permissions, transport
    * failures, bad credentials, etc.).
    */
-  exists(key: string): Promise<boolean>;
-  delete(key: string): Promise<void>;
+  exists(key: string, opts?: OperationOptions): Promise<boolean>;
+  delete(key: string, opts?: OperationOptions): Promise<void>;
+  /**
+   * Delete many keys in one call. Optional: when an adapter omits it, the
+   * SDK fans out to `delete()` with bounded concurrency. Adapters that
+   * implement it should use a native bulk primitive where one exists.
+   */
   deleteMany?(
     keys: string[],
     opts?: DeleteManyOptions
   ): Promise<DeleteManyResult>;
-  copy(from: string, to: string): Promise<void>;
+  copy(from: string, to: string, opts?: OperationOptions): Promise<void>;
   list(opts?: ListOptions): Promise<ListResult>;
   /**
    * Return a URL the caller can use to fetch `key`.
@@ -211,30 +301,196 @@ export interface Adapter<Raw = unknown> {
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
 }
 
-export interface FilesOptions<A extends Adapter> {
+export interface FilesOptions<A extends Adapter> extends OperationOptions {
   adapter: A;
+  prefix?: string;
 }
 
 export interface FileHandle {
   readonly key: string;
   upload(body: Body, opts?: UploadOptions): Promise<UploadResult>;
   download(opts?: DownloadOptions): Promise<StoredFile>;
-  head(): Promise<StoredFile>;
-  exists(): Promise<boolean>;
-  delete(): Promise<void>;
+  head(opts?: OperationOptions): Promise<StoredFile>;
+  exists(opts?: OperationOptions): Promise<boolean>;
+  delete(opts?: OperationOptions): Promise<void>;
   url(opts?: UrlOptions): Promise<string>;
   signedUploadUrl(opts: SignUploadOptions): Promise<SignedUpload>;
-  copyTo(destinationKey: string): Promise<void>;
-  copyFrom(sourceKey: string): Promise<void>;
+  copyTo(destinationKey: string, opts?: OperationOptions): Promise<void>;
+  copyFrom(sourceKey: string, opts?: OperationOptions): Promise<void>;
 }
 
-const run = async <T>(fn: () => Promise<T>): Promise<T> => {
-  try {
+const DEFAULT_RETRY_BACKOFF_MS = 100;
+// Cap the built-in exponential backoff so a large `retries` count can't
+// schedule an absurd sleep (and `2 ** attempt` can't overflow to Infinity).
+// Only applies to the default curve — a caller-supplied `backoff` is theirs.
+const MAX_DEFAULT_RETRY_BACKOFF_MS = 30_000;
+
+const timeoutError = (timeout: number): FilesError =>
+  new FilesError(
+    "Provider",
+    `Operation timed out after ${timeout}ms`,
+    undefined,
+    {
+      aborted: true,
+    }
+  );
+
+const mergeSignals = (
+  signals: AbortSignal[],
+  timeout?: number
+): { signal?: AbortSignal; cleanup?: () => void } => {
+  if (signals.length === 0 && (timeout ?? 0) <= 0) {
+    return {};
+  }
+  if (signals.length === 1 && (timeout ?? 0) <= 0) {
+    return { signal: signals[0] };
+  }
+
+  const controller = new AbortController();
+  const listeners: (() => void)[] = [];
+  const abort = (reason: unknown) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+    }
+  };
+
+  for (const signal of signals) {
+    if (signal.aborted) {
+      abort(signal.reason);
+    } else {
+      const onAbort = () => abort(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      listeners.push(() => signal.removeEventListener("abort", onAbort));
+    }
+  }
+
+  const timer =
+    timeout !== undefined && timeout > 0
+      ? setTimeout(() => {
+          abort(timeoutError(timeout));
+        }, timeout)
+      : undefined;
+
+  return {
+    cleanup: () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      for (const cleanup of listeners) {
+        cleanup();
+      }
+    },
+    signal: controller.signal,
+  };
+};
+
+const abortError = (reason: unknown): FilesError => {
+  if (reason instanceof FilesError) {
+    return reason;
+  }
+  if (reason instanceof Error) {
+    return new FilesError(
+      "Provider",
+      `Operation aborted: ${reason.message}`,
+      reason,
+      { aborted: true }
+    );
+  }
+  return new FilesError(
+    "Provider",
+    reason === undefined
+      ? "Operation aborted"
+      : `Operation aborted: ${String(reason)}`,
+    reason,
+    { aborted: true }
+  );
+};
+
+const runWithSignal = async <T>(
+  signal: AbortSignal | undefined,
+  fn: () => Promise<T>
+): Promise<T> => {
+  if (!signal) {
     return await fn();
-  } catch (error) {
-    throw FilesError.wrap(error);
+  }
+  if (signal.aborted) {
+    throw abortError(signal.reason);
+  }
+
+  // oxlint-disable-next-line promise/avoid-new -- AbortSignal needs callback interop.
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+    fn()
+      .then(resolve, reject)
+      .finally(() => {
+        signal.removeEventListener("abort", onAbort);
+      });
+  });
+};
+
+const sleep = async (
+  ms: number,
+  signal: AbortSignal | undefined
+): Promise<void> => {
+  if (ms <= 0) {
+    return;
+  }
+  if (signal?.aborted) {
+    throw abortError(signal.reason);
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    // oxlint-disable-next-line promise/avoid-new -- setTimeout and AbortSignal are callback APIs.
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(resolve, ms);
+      onAbort = () => {
+        clearTimeout(timer);
+        reject(abortError(signal?.reason));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (signal && onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 };
+
+const maxRetries = (
+  retries: RetryOptions | undefined,
+  retryable: boolean
+): number => {
+  if (!retryable) {
+    return 0;
+  }
+  const max = typeof retries === "number" ? retries : retries?.max;
+  return Math.max(0, Math.floor(max ?? 0));
+};
+
+const retryBackoff = (
+  retries: RetryOptions | undefined,
+  attempt: number,
+  error: FilesError
+): number => {
+  if (typeof retries === "object" && retries.backoff) {
+    return Math.max(0, retries.backoff({ attempt, error }));
+  }
+  const backoff = DEFAULT_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
+  return Math.min(MAX_DEFAULT_RETRY_BACKOFF_MS, backoff);
+};
+
+const canRetry = (
+  error: FilesError,
+  attempt: number,
+  maxAttempts: number
+): boolean =>
+  attempt < maxAttempts && error.code === "Provider" && !error.aborted;
 
 // Catch the obviously-broken cases at the SDK boundary so callers get a
 // useful error from us instead of an opaque provider 400. We deliberately
@@ -250,11 +506,33 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+// Normalize the prefix the same way the rest of the SDK treats keys: no
+// leading slash (S3/R2 store `/users/x` under a literal empty-named folder,
+// which is never what callers want), and no trailing slash so we control the
+// single separator when joining. `"/users/"`, `"users/"`, and `"users"` all
+// collapse to `"users"`.
+const normalizePrefix = (prefix: string | undefined): string => {
+  if (prefix === undefined) {
+    return "";
+  }
+  if (typeof prefix !== "string") {
+    throw new FilesError("Provider", "prefix must be a string");
+  }
+  const normalized = prefix.replaceAll(/^\/+|\/+$/gu, "");
+  assertValidKey(normalized, "prefix");
+  return normalized;
+};
+
 export class Files<A extends Adapter = Adapter> {
   readonly #adapter: A;
+  readonly #defaults: OperationOptions;
+  readonly #prefix: string;
 
   constructor(opts: FilesOptions<A>) {
-    this.#adapter = opts.adapter;
+    const { adapter, prefix, ...defaults } = opts;
+    this.#adapter = adapter;
+    this.#prefix = normalizePrefix(prefix);
+    this.#defaults = defaults;
   }
 
   get raw(): A["raw"] {
@@ -268,12 +546,12 @@ export class Files<A extends Adapter = Adapter> {
   file(key: string): FileHandle {
     assertValidKey(key);
     return {
-      copyFrom: (sourceKey) => this.copy(sourceKey, key),
-      copyTo: (destinationKey) => this.copy(key, destinationKey),
-      delete: () => this.delete(key),
+      copyFrom: (sourceKey, opts) => this.copy(sourceKey, key, opts),
+      copyTo: (destinationKey, opts) => this.copy(key, destinationKey, opts),
+      delete: (opts) => this.delete(key, opts),
       download: (opts) => this.download(key, opts),
-      exists: () => this.exists(key),
-      head: () => this.head(key),
+      exists: (opts) => this.exists(key, opts),
+      head: (opts) => this.head(key, opts),
       key,
       signedUploadUrl: (opts) => this.signedUploadUrl(key, opts),
       upload: (body, opts) => this.upload(key, body, opts),
@@ -282,13 +560,20 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult> {
-    assertValidKey(key);
-    return run(() => this.#adapter.upload(key, body, opts));
+    const path = this.#path(key);
+    return this.#run(
+      opts,
+      async (attemptOpts) =>
+        this.#uploadResult(await this.#adapter.upload(path, body, attemptOpts)),
+      !(body instanceof ReadableStream)
+    );
   }
 
   download(key: string, opts?: DownloadOptions): Promise<StoredFile> {
-    assertValidKey(key);
-    return run(() => this.#adapter.download(key, opts));
+    const path = this.#path(key);
+    return this.#run(opts, async (attemptOpts) =>
+      this.#storedFile(await this.#adapter.download(path, attemptOpts))
+    );
   }
 
   /**
@@ -299,9 +584,11 @@ export class Files<A extends Adapter = Adapter> {
    * issue a full GET on first use. If you only want metadata, don't call
    * the body accessors. They are not free.
    */
-  head(key: string): Promise<StoredFile> {
-    assertValidKey(key);
-    return run(() => this.#adapter.head(key));
+  head(key: string, opts?: OperationOptions): Promise<StoredFile> {
+    const path = this.#path(key);
+    return this.#run(opts, async (attemptOpts) =>
+      this.#storedFile(await this.#adapter.head(path, attemptOpts))
+    );
   }
 
   /**
@@ -311,16 +598,28 @@ export class Files<A extends Adapter = Adapter> {
    * reports `NotFound`. Other failures still propagate so callers do not
    * accidentally treat auth or transport errors as "missing file".
    */
-  exists(key: string): Promise<boolean> {
-    assertValidKey(key);
-    return run(() => this.#adapter.exists(key));
+  exists(key: string, opts?: OperationOptions): Promise<boolean> {
+    const path = this.#path(key);
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.exists(path, attemptOpts)
+    );
   }
 
-  delete(key: string): Promise<void> {
-    assertValidKey(key);
-    return run(() => this.#adapter.delete(key));
+  delete(key: string, opts?: OperationOptions): Promise<void> {
+    const path = this.#path(key);
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.delete(path, attemptOpts)
+    );
   }
 
+  /**
+   * Delete many keys in one call, returning a structured result rather than
+   * throwing on partial failure. Uses the adapter's native bulk primitive
+   * when available, otherwise fans out to `delete()` with bounded
+   * concurrency. Invalid keys are reported in `errors` alongside provider
+   * failures; with `stopOnError`, the first invalid key short-circuits
+   * before any delete is attempted.
+   */
   async deleteMany(
     keys: string[],
     opts?: DeleteManyOptions
@@ -329,49 +628,71 @@ export class Files<A extends Adapter = Adapter> {
       throw new FilesError("Provider", "keys must be an array");
     }
 
-    const validKeys: string[] = [];
     const errors: DeleteManyError[] = [];
+    // Adapters operate on prefixed paths; map each back so the result
+    // reflects the keys the caller passed, not the internal path.
+    const paths: string[] = [];
+    const keyByPath = new Map<string, string>();
 
     for (const key of keys) {
+      let path: string;
       try {
-        assertValidKey(key);
-        validKeys.push(key);
+        path = this.#path(key);
       } catch (error) {
-        errors.push({
-          error: FilesError.wrap(error),
-          key: String(key),
-        });
-
+        errors.push({ error: FilesError.wrap(error), key: String(key) });
         if (opts?.stopOnError) {
-          return { delete: [], errors };
+          return { deleted: [], errors };
         }
+        continue;
       }
+      paths.push(path);
+      keyByPath.set(path, key);
     }
+
+    const toKey = (path: string): string => keyByPath.get(path) ?? path;
 
     const result = this.#adapter.deleteMany
-      ? await this.#adapter.deleteMany(validKeys, opts)
-      : await deleteManyWithFallback(validKeys, (key) =>
-          this.#adapter.delete(key)
+      ? await this.#adapter.deleteMany(paths, opts)
+      : await deleteManyWithFallback(
+          paths,
+          (path) => this.#adapter.delete(path),
+          opts
         );
 
-    if (errors.length === 0) {
-      return result;
-    }
+    const deleted = result.deleted.map(toKey);
+    const adapterErrors = (result.errors ?? []).map((entry) => ({
+      error: entry.error,
+      key: toKey(entry.key),
+    }));
 
-    return {
-      delete: result.delete,
-      errors: [...errors, ...(result.errors ?? [])],
-    };
+    if (errors.length === 0 && adapterErrors.length === 0) {
+      return { deleted };
+    }
+    return { deleted, errors: [...errors, ...adapterErrors] };
   }
 
-  copy(from: string, to: string): Promise<void> {
-    assertValidKey(from, "copy source");
-    assertValidKey(to, "copy destination");
-    return run(() => this.#adapter.copy(from, to));
+  copy(from: string, to: string, opts?: OperationOptions): Promise<void> {
+    const fromPath = this.#path(from, "copy source");
+    const toPath = this.#path(to, "copy destination");
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.copy(fromPath, toPath, attemptOpts)
+    );
   }
 
   list(opts?: ListOptions): Promise<ListResult> {
-    return run(() => this.#adapter.list(opts));
+    if (!this.#prefix) {
+      return this.#run(opts, (attemptOpts) => this.#adapter.list(attemptOpts));
+    }
+    const prefix = opts?.prefix
+      ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
+      : `${this.#prefix}/`;
+    return this.#run(opts, async (attemptOpts) => {
+      const result = await this.#adapter.list({ ...attemptOpts, prefix });
+      return {
+        ...result,
+        items: result.items.map((item) => this.#storedFile(item)),
+      };
+    });
   }
 
   /**
@@ -391,12 +712,90 @@ export class Files<A extends Adapter = Adapter> {
    * from untrusted input, callers should validate or escape it.
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
-    assertValidKey(key);
-    return run(() => this.#adapter.url(key, opts));
+    const path = this.#path(key);
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.url(path, attemptOpts)
+    );
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
-    assertValidKey(key);
-    return run(() => this.#adapter.signedUploadUrl(key, opts));
+    const path = this.#path(key);
+    return this.#run(opts, (attemptOpts) =>
+      this.#adapter.signedUploadUrl(path, attemptOpts as SignUploadOptions)
+    );
+  }
+
+  async #run<O extends OperationOptions, T>(
+    opts: O | undefined,
+    fn: (opts: O | undefined) => Promise<T>,
+    retryable = true
+  ): Promise<T> {
+    const { retries: _retries, timeout: _timeout, ...adapterOpts } = opts ?? {};
+    const baseOpts = opts ? (adapterOpts as O) : undefined;
+    const retryOptions = opts?.retries ?? this.#defaults.retries;
+    const maxAttempts = maxRetries(retryOptions, retryable);
+    const signals = [this.#defaults.signal, opts?.signal].filter(
+      (signal): signal is AbortSignal => signal !== undefined
+    );
+
+    for (let attempt = 0; ; attempt += 1) {
+      const runtime = mergeSignals(
+        signals,
+        opts?.timeout ?? this.#defaults.timeout
+      );
+      const attemptOpts = runtime.signal
+        ? ({ ...baseOpts, signal: runtime.signal } as O)
+        : baseOpts;
+      try {
+        return await runWithSignal(runtime.signal, () => fn(attemptOpts));
+      } catch (error) {
+        const wrapped = runtime.signal?.aborted
+          ? abortError(runtime.signal.reason)
+          : FilesError.wrap(error);
+        if (!canRetry(wrapped, attempt, maxAttempts)) {
+          throw wrapped;
+        }
+        const wait = mergeSignals(signals);
+        try {
+          await sleep(
+            retryBackoff(retryOptions, attempt + 1, wrapped),
+            wait.signal
+          );
+        } finally {
+          wait.cleanup?.();
+        }
+      } finally {
+        runtime.cleanup?.();
+      }
+    }
+  }
+
+  #path(key: string, label = "key"): string {
+    assertValidKey(key, label);
+    return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+  }
+
+  #storedFile(file: StoredFile): StoredFile {
+    if (!this.#prefix) {
+      return file;
+    }
+    // `name` is an alias for the full key (see createStoredFile), so strip it
+    // alongside `key` — otherwise the result is internally inconsistent.
+    return {
+      ...file,
+      key: this.#stripPrefix(file.key),
+      name: this.#stripPrefix(file.name),
+    };
+  }
+
+  #uploadResult(result: UploadResult): UploadResult {
+    return this.#prefix
+      ? { ...result, key: this.#stripPrefix(result.key) }
+      : result;
+  }
+
+  #stripPrefix(key: string): string {
+    const scoped = `${this.#prefix}/`;
+    return key.startsWith(scoped) ? key.slice(scoped.length) : key;
   }
 }

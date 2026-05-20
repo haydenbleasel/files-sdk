@@ -42,4 +42,22 @@ export const NEW_ADAPTERS: AdapterEntry[] = [
     label: "Bun S3",
     name: "bunS3",
   },
+  {
+    color: "#FF7B00",
+    importPath: "files-sdk/bunny-storage",
+    label: "Bunny Storage",
+    name: "bunnyStorage",
+  },
+  {
+    color: "#FFCA28",
+    importPath: "files-sdk/firebase-storage",
+    label: "Firebase Storage",
+    name: "firebaseStorage",
+  },
+  {
+    color: "#B8DBE4",
+    importPath: "files-sdk/pocketbase",
+    label: "PocketBase",
+    name: "pocketbase",
+  },
 ];

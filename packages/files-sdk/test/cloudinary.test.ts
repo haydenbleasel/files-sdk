@@ -819,4 +819,23 @@ describe("cloudinary adapter", () => {
     const expected = Math.floor(Date.now() / 1000) + 120;
     expect(Math.abs(expiresAt - expected)).toBeLessThan(5);
   });
+
+  test("download forwards the signal to the delivery fetch", async () => {
+    let seenSignal: AbortSignal | undefined;
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      seenSignal = init?.signal ?? undefined;
+      return Promise.resolve(
+        new Response("hello", {
+          headers: { "content-type": "text/plain" },
+          status: 200,
+        })
+      );
+    }) as typeof fetch;
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+    });
+    const { signal } = new AbortController();
+    await files.download("test-file", { signal });
+    expect(seenSignal).toBe(signal);
+  });
 });

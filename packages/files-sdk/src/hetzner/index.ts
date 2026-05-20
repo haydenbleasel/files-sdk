@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface HetznerAdapterOptions {
+  /** Hetzner bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Hetzner Object Storage location code, e.g. `"fsn1"` (Falkenstein),
@@ -20,7 +21,15 @@ export interface HetznerAdapterOptions {
    * — the SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `HCLOUD_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `HCLOUD_SECRET_ACCESS_KEY`; required
+   * if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

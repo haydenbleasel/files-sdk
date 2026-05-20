@@ -316,7 +316,7 @@ export const deleteManyWithFallback = async (
   const errors: DeleteManyError[] = [];
 
   if (keys.length === 0) {
-    return { delete: deleted };
+    return { deleted };
   }
 
   if (opts?.stopOnError) {
@@ -326,10 +326,10 @@ export const deleteManyWithFallback = async (
         deleted.push(key);
       } catch (error) {
         errors.push({ error: mapError(error), key });
-        return { delete: deleted, errors };
+        return { deleted, errors };
       }
     }
-    return { delete: deleted };
+    return { deleted };
   }
 
   const concurrency =
@@ -372,8 +372,8 @@ export const deleteManyWithFallback = async (
   }
 
   if (errors.length === 0) {
-    return { delete: deleted };
+    return { deleted };
   }
 
-  return { delete: deleted, errors };
+  return { deleted, errors };
 };

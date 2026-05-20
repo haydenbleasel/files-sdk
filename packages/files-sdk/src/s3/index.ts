@@ -34,10 +34,28 @@ import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface S3AdapterOptions {
+  /** S3 bucket name. The adapter scopes all operations to it. */
   bucket: string;
+  /**
+   * AWS region the bucket lives in (e.g. `us-east-1`). Falls back to
+   * `AWS_REGION`; required if no env var is set.
+   */
   region?: string;
+  /**
+   * Override the S3 service endpoint. Use this to point at S3-compatible
+   * services (DigitalOcean Spaces, Wasabi, Backblaze B2, LocalStack, etc.).
+   */
   endpoint?: string;
+  /**
+   * Use path-style addressing (`https://endpoint/bucket/key`) instead of
+   * virtual-hosted style (`https://bucket.endpoint/key`). Required by some
+   * S3-compatible services and by LocalStack.
+   */
   forcePathStyle?: boolean;
+  /**
+   * Static credentials. Skip to use the AWS credential chain (env vars,
+   * IAM role, shared profile, EC2/ECS/EKS instance metadata).
+   */
   credentials?: {
     accessKeyId: string;
     secretAccessKey: string;
@@ -94,6 +112,9 @@ const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
 ]);
 const S3_UNAUTH_CODES: ReadonlySet<string> = new Set(["AccessDenied"]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
+// `DeleteObjects` rejects requests with more than 1000 keys, so the bulk path
+// has to chunk longer key lists into separate requests.
+const S3_DELETE_BATCH_LIMIT = 1000;
 
 const extractS3Error = (
   err: unknown
@@ -205,7 +226,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
 
   return {
     bucket,
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
         // CopySource must be URL-encoded per
         // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
@@ -218,16 +239,22 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             Bucket: bucket,
             CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
             Key: to,
-          })
+          }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
       } catch (error) {
         throw wrapErr(error);
       }
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       try {
         await client.send(
-          new DeleteObjectCommand({ Bucket: bucket, Key: key })
+          new DeleteObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
       } catch (error) {
         throw wrapErr(error);
@@ -238,7 +265,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
       deleteOpts?: DeleteManyOptions
     ): Promise<DeleteManyResult> {
       if (keys.length === 0) {
-        return { delete: [] };
+        return { deleted: [] };
       }
       if (deleteOpts?.stopOnError) {
         const deleted: string[] = [];
@@ -251,50 +278,61 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             deleted.push(key);
           } catch (error) {
             errors.push({ error: wrapErr(error), key });
-            return { delete: deleted, errors };
+            return { deleted, errors };
           }
         }
-        return { delete: deleted };
+        return { deleted };
       }
-      try {
-        const result = await client.send(
-          new DeleteObjectsCommand({
-            Bucket: bucket,
-            Delete: { Objects: keys.map((key) => ({ Key: key })) },
-          })
-        );
-        const deleted = new Set(
-          (result.Deleted ?? [])
-            .map((item) => item.Key)
-            .filter((key): key is string => key !== undefined)
-        );
-        const errors = (result.Errors ?? []).map((item) => ({
-          error: wrapErr({
-            Code: item.Code,
-            message: item.Message ?? item.Code ?? "Delete failed",
-            name: item.Code,
-          }),
-          key: item.Key ?? "",
-        }));
-        if (errors.length === 0) {
-          return { delete: keys.filter((key) => deleted.has(key)) };
+      const deletedKeys = new Set<string>();
+      const errors: NonNullable<DeleteManyResult["errors"]> = [];
+      // `DeleteObjects` caps each request at 1000 keys; send in chunks and
+      // merge the per-key results so callers see one combined result.
+      for (let start = 0; start < keys.length; start += S3_DELETE_BATCH_LIMIT) {
+        const batch = keys.slice(start, start + S3_DELETE_BATCH_LIMIT);
+        try {
+          const result = await client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: { Objects: batch.map((key) => ({ Key: key })) },
+            })
+          );
+          for (const item of result.Deleted ?? []) {
+            if (item.Key !== undefined) {
+              deletedKeys.add(item.Key);
+            }
+          }
+          for (const item of result.Errors ?? []) {
+            errors.push({
+              error: wrapErr({
+                Code: item.Code,
+                message: item.Message ?? item.Code ?? "Delete failed",
+                name: item.Code,
+              }),
+              key: item.Key ?? "",
+            });
+          }
+        } catch (error) {
+          // The whole batch failed — S3 doesn't tell us which keys, so map
+          // the error onto every key in this batch and keep going.
+          const mapped = wrapErr(error);
+          for (const key of batch) {
+            errors.push({ error: mapped, key });
+          }
         }
-        return {
-          delete: keys.filter((key) => deleted.has(key)),
-          errors,
-        };
-      } catch (error) {
-        const mapped = wrapErr(error);
-        return {
-          delete: [],
-          errors: keys.map((key) => ({ error: mapped, key })),
-        };
       }
+      const deleted = keys.filter((key) => deletedKeys.has(key));
+      if (errors.length === 0) {
+        return { deleted };
+      }
+      return { deleted, errors };
     },
     async download(key, downloadOpts) {
       try {
         const result = await client.send(
-          new GetObjectCommand({ Bucket: bucket, Key: key })
+          new GetObjectCommand({ Bucket: bucket, Key: key }),
+          downloadOpts?.signal
+            ? { abortSignal: downloadOpts.signal }
+            : undefined
         );
         const baseMeta = {
           etag: stripEtag(result.ETag),
@@ -327,16 +365,25 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
-    exists(key) {
+    exists(key, operationOpts) {
       return existsByProbe(
-        () => client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })),
+        () =>
+          client.send(
+            new HeadObjectCommand({ Bucket: bucket, Key: key }),
+            operationOpts?.signal
+              ? { abortSignal: operationOpts.signal }
+              : undefined
+          ),
         wrapErr
       );
     },
-    async head(key) {
+    async head(key, operationOpts) {
       try {
         const result = await client.send(
-          new HeadObjectCommand({ Bucket: bucket, Key: key })
+          new HeadObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
         );
         return createStoredFile(
           {
@@ -371,7 +418,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             ...(options?.prefix && { Prefix: options.prefix }),
             ...(options?.limit !== undefined && { MaxKeys: options.limit }),
             ...(options?.cursor && { ContinuationToken: options.cursor }),
-          })
+          }),
+          options?.signal ? { abortSignal: options.signal } : undefined
         );
         const items: StoredFile[] = (result.Contents ?? []).map((obj) => {
           const objKey = obj.Key ?? "";
@@ -469,7 +517,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             ...(contentLength !== undefined && {
               ContentLength: contentLength,
             }),
-          })
+          }),
+          options?.signal ? { abortSignal: options.signal } : undefined
         );
         let size = contentLength;
         let lastModified: number | undefined;
@@ -479,7 +528,8 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         if (size === undefined) {
           try {
             const head = await client.send(
-              new HeadObjectCommand({ Bucket: bucket, Key: key })
+              new HeadObjectCommand({ Bucket: bucket, Key: key }),
+              options?.signal ? { abortSignal: options.signal } : undefined
             );
             size = Number(head.ContentLength ?? 0);
             lastModified = head.LastModified?.getTime();

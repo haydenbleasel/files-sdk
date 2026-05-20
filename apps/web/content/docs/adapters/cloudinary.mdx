@@ -1,0 +1,47 @@
+---
+title: Cloudinary
+description: "Cloudinary asset CDN via the official Node SDK. Defaults to resource_type: raw for arbitrary-bytes storage; switch to image/video for transforms."
+peerDeps:
+  - "cloudinary"
+---
+
+## Installation
+
+`cloudinary` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk cloudinary
+```
+
+## Usage
+
+Cloudinary asset CDN via the official `cloudinary` Node SDK. Defaults to `resource_type: "raw"` for arbitrary-bytes storage so keys round-trip cleanly through the adapter; switch to `"image"` or `"video"` if you want Cloudinary's transformation features. Falls back to `CLOUDINARY_URL` or individual env vars when no explicit credentials are passed.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { cloudinary } from "files-sdk/cloudinary";
+
+const files = new Files({
+  adapter: cloudinary({
+    // Auto-loads from CLOUDINARY_URL (cloudinary://key:secret@cloud)
+    // or CLOUDINARY_CLOUD_NAME + CLOUDINARY_API_KEY + CLOUDINARY_API_SECRET.
+    //
+    // Defaults to resource_type: "raw" - closest to S3-style
+    // arbitrary-bytes storage. Switch to "image" / "video" if the
+    // bucket holds those types and you want transforms.
+    resourceType: "raw",
+    type: "upload",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/cloudinary/index.ts"
+  name="CloudinaryAdapterOptions"
+/>
+
+## Limitations
+
+Cloudinary's SDK keeps configuration as module-level global state, so mounting multiple `cloudinary()` adapters in the same process with different credentials will see only the last config win - use the `client` escape hatch with separately configured SDK instances if you need that. `signedUploadUrl()` returns a Cloudinary form-POST shape (`method: "POST"` with `fields`), not a single presigned URL. `expiresIn` on signed-upload URLs is informational - Cloudinary signatures are fixed at 1h. `maxSize` and `minSize` are not enforced server-side; use an upload preset with `max_file_size` if you need that. `UploadOptions` `cacheControl` and `metadata` throw - Cloudinary doesn't expose HTTP cache headers per-asset and has no arbitrary-metadata field on the upload call (use `raw` for `context`). `responseContentDisposition` on `url()` throws - Cloudinary has no per-request Content-Disposition override. `copy()` re-uploads from the source delivery URL - copies produce new `asset_id`/`etag`, not byte-identical references. `list({ limit })` is clamped to 500 (Cloudinary Admin API ceiling).

@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface IbmCosAdapterOptions {
+  /** IBM COS bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * IBM Cloud Object Storage region code, e.g. `"us-south"`, `"us-east"`,
@@ -26,9 +27,14 @@ export interface IbmCosAdapterOptions {
   /**
    * HMAC access key ID. Generate HMAC credentials when creating the IBM COS
    * service credential (Advanced options → "Include HMAC Credential") —
-   * separate from IBM Cloud IAM API keys.
+   * separate from IBM Cloud IAM API keys. Falls back to
+   * `IBM_COS_ACCESS_KEY_ID`; required if that env var isn't set.
    */
   accessKeyId?: string;
+  /**
+   * HMAC secret access key. Falls back to `IBM_COS_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

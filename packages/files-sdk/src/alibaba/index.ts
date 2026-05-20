@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface AlibabaAdapterOptions {
+  /** Alibaba OSS bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Alibaba Cloud OSS region, e.g. `"cn-hangzhou"`, `"cn-shanghai"`,
@@ -22,7 +23,15 @@ export interface AlibabaAdapterOptions {
    * SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `ALIBABA_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `ALIBABA_ACCESS_KEY_SECRET`; required
+   * if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

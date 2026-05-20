@@ -1,0 +1,40 @@
+---
+title: Bun S3
+description: AWS S3 (and any S3-compatible bucket) via Bun's native Bun.S3Client instead of @aws-sdk/client-s3. Bun-only.
+---
+
+## Installation
+
+This adapter has no extra peer dependencies - the runtime (Node or Bun) provides everything it needs.
+
+```package-install
+files-sdk
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { bunS3 } from "files-sdk/bun-s3";
+
+const files = new Files({
+  adapter: bunS3({
+    bucket: "uploads",
+    region: "us-east-1",
+    // accessKeyId / secretAccessKey auto-loaded by Bun from
+    // S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY (or AWS_* equivalents)
+  }),
+});
+
+// Or hand it the singleton Bun.s3 client directly:
+new Files({ adapter: bunS3({ client: Bun.s3 }) });
+```
+
+Three things differ from `files-sdk/s3`: `copy()` streams bytes through your process because Bun doesn't expose a server-side `CopyObject` primitive; `upload()` throws on `metadata` and `cacheControl` because `Bun.S3Client.write()` has no equivalent options; and `signedUploadUrl()` throws on `maxSize` because Bun exposes presigned URLs only - not S3 POST policy fields. Reach for `files-sdk/s3` on the same bucket when you need any of those.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/bun-s3/index.ts"
+  name="BunS3AdapterOptions"
+/>

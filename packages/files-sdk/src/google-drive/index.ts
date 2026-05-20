@@ -269,6 +269,15 @@ const normalizeBody = async (
   };
 };
 
+// Thread the operation's AbortSignal into a googleapis method-options arg.
+// `MethodOptions` extends gaxios `GaxiosOptions`, whose `signal` is typed
+// `any`, so a web `AbortSignal` passes through unchanged. Returns `undefined`
+// when there's no signal so we don't alter the call when cancellation isn't
+// requested.
+const signalOpts = (
+  signal: AbortSignal | undefined
+): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
+
 const toUint8 = (data: unknown): Uint8Array => {
   if (data instanceof Uint8Array) {
     return data;
@@ -433,7 +442,10 @@ export const googleDrive = (
     ...(driveId && { corpora: "drive", driveId }),
   };
 
-  const resolveFileId = async (key: string): Promise<string> => {
+  const resolveFileId = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<string> => {
     const cached = fileIdCache.get(key);
     if (cached) {
       return cached;
@@ -441,12 +453,15 @@ export const googleDrive = (
     const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and trashed=false`;
     let res: { data: drive_v3.Schema$FileList };
     try {
-      res = (await driveClient.files.list({
-        ...sharedDriveParams,
-        fields: "files(id)",
-        pageSize: 2,
-        q,
-      })) as { data: drive_v3.Schema$FileList };
+      res = (await driveClient.files.list(
+        {
+          ...sharedDriveParams,
+          fields: "files(id)",
+          pageSize: 2,
+          q,
+        },
+        signalOpts(signal)
+      )) as { data: drive_v3.Schema$FileList };
     } catch (error) {
       throw mapDriveError(error);
     }
@@ -479,10 +494,13 @@ export const googleDrive = (
     return toUint8(res.data as unknown);
   };
 
-  const deleteOne = async (key: string): Promise<void> => {
+  const deleteOne = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<void> => {
     let fileId: string;
     try {
-      fileId = await resolveFileId(key);
+      fileId = await resolveFileId(key, signal);
     } catch (error) {
       // Idempotent: a missing file is not an error on delete.
       if (error instanceof FilesError && error.code === "NotFound") {
@@ -491,7 +509,10 @@ export const googleDrive = (
       throw error;
     }
     try {
-      await driveClient.files.delete({ ...sharedDriveParams, fileId });
+      await driveClient.files.delete(
+        { ...sharedDriveParams, fileId },
+        signalOpts(signal)
+      );
       fileIdCache.delete(key);
     } catch (error) {
       const mapped = mapDriveError(error);
@@ -504,19 +525,22 @@ export const googleDrive = (
   };
 
   return {
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
-        const fromId = await resolveFileId(from);
-        const copied = await driveClient.files.copy({
-          ...sharedDriveParams,
-          fields: "id",
-          fileId: fromId,
-          requestBody: {
-            appProperties: { [KEY_PROP]: to },
-            name: basename(to),
-            parents: [rootFolderId],
+        const fromId = await resolveFileId(from, operationOpts?.signal);
+        const copied = await driveClient.files.copy(
+          {
+            ...sharedDriveParams,
+            fields: "id",
+            fileId: fromId,
+            requestBody: {
+              appProperties: { [KEY_PROP]: to },
+              name: basename(to),
+              parents: [rootFolderId],
+            },
           },
-        });
+          signalOpts(operationOpts?.signal)
+        );
         const newId = copied.data.id;
         if (newId) {
           fileIdCache.set(to, newId);
@@ -525,23 +549,29 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
-    delete: deleteOne,
+    delete: (key, operationOpts) => deleteOne(key, operationOpts?.signal),
     deleteMany(keys, deleteOpts) {
       return deleteManyWithFallback(keys, deleteOne, deleteOpts, mapDriveError);
     },
     async download(key, downloadOpts) {
       try {
-        const fileId = await resolveFileId(key);
+        const fileId = await resolveFileId(key, downloadOpts?.signal);
         if (downloadOpts?.as === "stream") {
           const [metaRes, mediaRes] = await Promise.all([
-            driveClient.files.get({
-              ...sharedDriveParams,
-              fields: FILE_FIELDS,
-              fileId,
-            }),
+            driveClient.files.get(
+              {
+                ...sharedDriveParams,
+                fields: FILE_FIELDS,
+                fileId,
+              },
+              signalOpts(downloadOpts?.signal)
+            ),
             driveClient.files.get(
               { ...sharedDriveParams, alt: "media", fileId },
-              { responseType: "stream" }
+              {
+                responseType: "stream",
+                ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+              }
             ),
           ]);
           const m = fileToStoredMeta(metaRes.data);
@@ -556,14 +586,20 @@ export const googleDrive = (
           );
         }
         const [metaRes, mediaRes] = await Promise.all([
-          driveClient.files.get({
-            ...sharedDriveParams,
-            fields: FILE_FIELDS,
-            fileId,
-          }),
+          driveClient.files.get(
+            {
+              ...sharedDriveParams,
+              fields: FILE_FIELDS,
+              fileId,
+            },
+            signalOpts(downloadOpts?.signal)
+          ),
           driveClient.files.get(
             { ...sharedDriveParams, alt: "media", fileId },
-            { responseType: "arraybuffer" }
+            {
+              responseType: "arraybuffer",
+              ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+            }
           ),
         ]);
         const m = fileToStoredMeta(metaRes.data);
@@ -576,24 +612,30 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
-    exists(key) {
+    exists(key, operationOpts) {
       return existsByProbe(async () => {
-        const fileId = await resolveFileId(key);
-        await driveClient.files.get({
-          ...sharedDriveParams,
-          fields: "id",
-          fileId,
-        });
+        const fileId = await resolveFileId(key, operationOpts?.signal);
+        await driveClient.files.get(
+          {
+            ...sharedDriveParams,
+            fields: "id",
+            fileId,
+          },
+          signalOpts(operationOpts?.signal)
+        );
       }, mapDriveError);
     },
-    async head(key) {
+    async head(key, operationOpts) {
       try {
-        const fileId = await resolveFileId(key);
-        const res = await driveClient.files.get({
-          ...sharedDriveParams,
-          fields: FILE_FIELDS,
-          fileId,
-        });
+        const fileId = await resolveFileId(key, operationOpts?.signal);
+        const res = await driveClient.files.get(
+          {
+            ...sharedDriveParams,
+            fields: FILE_FIELDS,
+            fileId,
+          },
+          signalOpts(operationOpts?.signal)
+        );
         const m = fileToStoredMeta(res.data);
         return createStoredFile(
           { key, ...m },
@@ -606,13 +648,16 @@ export const googleDrive = (
     async list(options): Promise<ListResult> {
       try {
         const q = `'${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
-        const res = (await driveClient.files.list({
-          ...sharedDriveParams,
-          fields: `nextPageToken, files(${FILE_FIELDS})`,
-          ...(options?.limit !== undefined && { pageSize: options.limit }),
-          ...(options?.cursor && { pageToken: options.cursor }),
-          q,
-        })) as { data: drive_v3.Schema$FileList };
+        const res = (await driveClient.files.list(
+          {
+            ...sharedDriveParams,
+            fields: `nextPageToken, files(${FILE_FIELDS})`,
+            ...(options?.limit !== undefined && { pageSize: options.limit }),
+            ...(options?.cursor && { pageToken: options.cursor }),
+            q,
+          },
+          signalOpts(options?.signal)
+        )) as { data: drive_v3.Schema$FileList };
         const driveFiles = res.data.files ?? [];
         const items: StoredFile[] = [];
         for (const f of driveFiles) {
@@ -693,6 +738,7 @@ export const googleDrive = (
           body: JSON.stringify(initBody),
           headers,
           method: "POST",
+          ...(signOpts.signal && { signal: signOpts.signal }),
         });
       } catch (error) {
         throw mapDriveError(error);
@@ -733,31 +779,37 @@ export const googleDrive = (
           }),
           ...options?.metadata,
         };
-        const res = await driveClient.files.create({
-          ...sharedDriveParams,
-          fields: "id, size, mimeType, md5Checksum, modifiedTime",
-          media: {
-            body: normalized.stream,
-            mimeType: normalized.contentType,
+        const res = await driveClient.files.create(
+          {
+            ...sharedDriveParams,
+            fields: "id, size, mimeType, md5Checksum, modifiedTime",
+            media: {
+              body: normalized.stream,
+              mimeType: normalized.contentType,
+            },
+            requestBody: {
+              appProperties,
+              mimeType: normalized.contentType,
+              name: basename(key),
+              parents: [rootFolderId],
+            },
           },
-          requestBody: {
-            appProperties,
-            mimeType: normalized.contentType,
-            name: basename(key),
-            parents: [rootFolderId],
-          },
-        });
+          signalOpts(options?.signal)
+        );
         const { data } = res;
         const fileId = data.id;
         if (fileId) {
           fileIdCache.set(key, fileId);
         }
         if (publicByDefault && fileId) {
-          await driveClient.permissions.create({
-            ...sharedDriveParams,
-            fileId,
-            requestBody: { role: "reader", type: "anyone" },
-          });
+          await driveClient.permissions.create(
+            {
+              ...sharedDriveParams,
+              fileId,
+              requestBody: { role: "reader", type: "anyone" },
+            },
+            signalOpts(options?.signal)
+          );
         }
         return {
           contentType: normalized.contentType,
@@ -786,7 +838,7 @@ export const googleDrive = (
         );
       }
       try {
-        const fileId = await resolveFileId(key);
+        const fileId = await resolveFileId(key, urlOpts?.signal);
         return `https://drive.google.com/uc?export=download&id=${fileId}`;
       } catch (error) {
         throw mapDriveError(error);

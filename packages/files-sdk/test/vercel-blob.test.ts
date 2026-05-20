@@ -13,7 +13,7 @@ const putMock = mock((pathname: string, _body: unknown, _opts?: unknown) =>
     url: `https://blob.test/${pathname}`,
   })
 );
-const headMock = mock((pathname: string) =>
+const headMock = mock((pathname: string, _opts?: unknown) =>
   Promise.resolve({
     cacheControl: "",
     contentDisposition: "",
@@ -168,6 +168,18 @@ describe("vercel-blob adapter", () => {
     expect(o.contentType).toBe("text/plain");
   });
 
+  test("upload forwards signals to blob.put", async () => {
+    const { signal } = new AbortController();
+    const files = new Files({ adapter: vercelBlob() });
+
+    await files.upload("a.txt", "hello", { signal });
+
+    const [call] = putMock.mock.calls;
+    expect(call).toBeDefined();
+    const opts = call?.[2] as { abortSignal?: AbortSignal } | undefined;
+    expect(opts?.abortSignal).toBe(signal);
+  });
+
   test("head returns metadata without polluting it with adapter URLs", async () => {
     const files = new Files({ adapter: vercelBlob() });
     const info = await files.head("a.txt");
@@ -175,6 +187,18 @@ describe("vercel-blob adapter", () => {
     expect(info.size).toBe(5);
     expect(info.etag).toBe('"etag-a.txt"');
     expect(info.metadata).toBeUndefined();
+  });
+
+  test("head forwards signals to blob.head", async () => {
+    const { signal } = new AbortController();
+    const files = new Files({ adapter: vercelBlob() });
+
+    await files.head("a.txt", { signal });
+
+    const [call] = headMock.mock.calls;
+    expect(call).toBeDefined();
+    const opts = call?.[1] as { abortSignal?: AbortSignal } | undefined;
+    expect(opts?.abortSignal).toBe(signal);
   });
 
   test("delete delegates to blob.del", async () => {
@@ -206,6 +230,24 @@ describe("vercel-blob adapter", () => {
     const files = new Files({ adapter: vercelBlob() });
     const out = await files.list({ prefix: "a/" });
     expect(out.items.map((i) => i.key)).toEqual(["a/1.txt"]);
+  });
+
+  test("download forwards signals to fetch on public blobs", async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      void url;
+      seenSignal = init?.signal ?? undefined;
+      return Promise.resolve(new Response("hello", { status: 200 }));
+    }) as typeof fetch;
+    const files = new Files({ adapter: vercelBlob() });
+
+    await files.download("a.txt", { signal: controller.signal });
+
+    expect(seenSignal).toBeDefined();
+    expect(seenSignal).not.toBe(controller.signal);
+    controller.abort(new Error("stop"));
+    expect(seenSignal?.aborted).toBe(true);
   });
 
   test("url returns the blob's public URL via head() when token has no storeId", async () => {

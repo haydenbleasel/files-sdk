@@ -134,9 +134,9 @@ export const fakeAdapter = (): FakeAdapter => {
         deleted.push(key);
       }
       if (errors.length === 0) {
-        return Promise.resolve({ delete: deleted });
+        return Promise.resolve({ deleted });
       }
-      return Promise.resolve({ delete: deleted, errors });
+      return Promise.resolve({ deleted, errors });
     },
     download(key: string, _opts?: DownloadOptions): Promise<StoredFile> {
       const entry = store.get(key);

@@ -8,13 +8,15 @@ import type { AdapterEntry } from "./adapters";
 const { fontFamily: geist } = loadGeist();
 const { fontFamily: geistMono } = loadGeistMono();
 
-const COLS = 3;
+const ROW_ONE_COUNT = 3;
+const CHIP_WIDTH = 360;
+const CHIP_GAP = 18;
 const CHIP_DELAY = 7;
 const FIRST_CHIP_AT = 16;
-const EXIT_START = 120;
-const EXIT_END = 140;
+const EXIT_START = 127;
+const EXIT_END = 147;
 
-export const ADAPTERS_SCENE_DURATION = 140;
+export const ADAPTERS_SCENE_DURATION = 147;
 
 const AdapterChip: React.FC<{
   entry: AdapterEntry;
@@ -177,7 +179,7 @@ export const AdaptersScene: React.FC = () => {
               textTransform: "uppercase",
             }}
           >
-            6 more adapters
+            9 more adapters
           </div>
           <div
             style={{
@@ -195,15 +197,16 @@ export const AdaptersScene: React.FC = () => {
         </div>
         <div
           style={{
-            display: "grid",
-            gap: 18,
-            gridTemplateColumns: `repeat(${COLS}, 360px)`,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: CHIP_GAP,
+            justifyContent: "center",
+            maxWidth:
+              ROW_ONE_COUNT * CHIP_WIDTH + (ROW_ONE_COUNT - 1) * CHIP_GAP,
           }}
         >
           {NEW_ADAPTERS.map((entry, i) => {
-            const row = Math.floor(i / COLS);
-            const col = i % COLS;
-            const appearFrame = FIRST_CHIP_AT + (row * COLS + col) * CHIP_DELAY;
+            const appearFrame = FIRST_CHIP_AT + i * CHIP_DELAY;
             return (
               <AdapterChip
                 key={entry.name}

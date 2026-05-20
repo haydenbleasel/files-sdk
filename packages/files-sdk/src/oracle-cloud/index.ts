@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface OracleCloudAdapterOptions {
+  /** OCI bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * OCI tenancy Object Storage namespace — a tenancy-scoped string assigned
@@ -31,9 +32,14 @@ export interface OracleCloudAdapterOptions {
    * Customer secret key access key ID. Generate one in the OCI console
    * under Profile → User Settings → Customer Secret Keys (these are the
    * HMAC keys used for S3-compatible access, distinct from API signing
-   * keys).
+   * keys). Falls back to `OCI_ACCESS_KEY_ID`; required if that env var
+   * isn't set.
    */
   accessKeyId?: string;
+  /**
+   * Customer Secret Key secret. Falls back to `OCI_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted
