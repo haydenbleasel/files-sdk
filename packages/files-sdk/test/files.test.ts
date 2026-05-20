@@ -138,43 +138,55 @@ describe("Files class", () => {
 
   test("constructor prefix round-trips upload, head, download, and exists keys", async () => {
     const adapter = fakeAdapter();
-    const files = new Files({ adapter, prefix: "/users" });
+    const files = new Files({ adapter, prefix: "users" });
 
-    const uploaded = await files.upload("/123", "avatar");
-    expect(uploaded.key).toBe("/123");
-    expect(adapter.has("/users/123")).toBe(true);
+    const uploaded = await files.upload("123", "avatar");
+    expect(uploaded.key).toBe("123");
+    expect(adapter.has("users/123")).toBe(true);
 
     const head = await files.head(uploaded.key);
-    expect(head.key).toBe("/123");
+    expect(head.key).toBe("123");
+    // `name` aliases the key and must be stripped alongside it.
+    expect(head.name).toBe("123");
     expect(await files.exists(uploaded.key)).toBe(true);
 
     const downloaded = await files.download(uploaded.key);
-    expect(downloaded.key).toBe("/123");
+    expect(downloaded.key).toBe("123");
+    expect(downloaded.name).toBe("123");
     expect(await downloaded.text()).toBe("avatar");
+  });
+
+  test("constructor prefix normalizes leading and trailing slashes on prefix and key", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "/users/" });
+
+    const uploaded = await files.upload("/123", "avatar");
+    expect(uploaded.key).toBe("123");
+    expect(adapter.has("users/123")).toBe(true);
   });
 
   test("constructor prefix keeps file handle keys consistent", async () => {
     const adapter = fakeAdapter();
-    const files = new Files({ adapter, prefix: "/users" });
-    const avatar = files.file("/123");
+    const files = new Files({ adapter, prefix: "users" });
+    const avatar = files.file("123");
 
-    expect(avatar.key).toBe("/123");
+    expect(avatar.key).toBe("123");
     await avatar.upload("avatar");
     const head = await avatar.head();
     const downloaded = await avatar.download();
-    expect(head.key).toBe("/123");
-    expect(downloaded.key).toBe("/123");
+    expect(head.key).toBe("123");
+    expect(downloaded.key).toBe("123");
   });
 
   test("constructor prefix lets listed keys round-trip into delete", async () => {
     const adapter = fakeAdapter();
-    const files = new Files({ adapter, prefix: "/users" });
+    const files = new Files({ adapter, prefix: "users" });
 
-    await files.upload("/123", "one");
-    await files.upload("/456", "two");
+    await files.upload("123", "one");
+    await files.upload("456", "two");
 
     const { items } = await files.list();
-    expect(items.map((item) => item.key).toSorted()).toEqual(["/123", "/456"]);
+    expect(items.map((item) => item.key).toSorted()).toEqual(["123", "456"]);
 
     const [firstItem] = items;
     if (!firstItem) {
@@ -182,7 +194,7 @@ describe("Files class", () => {
     }
 
     await files.delete(firstItem.key);
-    expect(adapter.has("/users/123")).toBe(false);
+    expect(adapter.has("users/123")).toBe(false);
   });
 
   test("constructor prefix scopes list queries and strips listed item keys", async () => {
@@ -195,63 +207,63 @@ describe("Files class", () => {
         return base.list(opts);
       },
     };
-    const files = new Files({ adapter, prefix: "/users" });
+    const files = new Files({ adapter, prefix: "users" });
 
-    await files.upload("/avatars/1.png", "one");
-    await files.upload("/avatars/2.png", "two");
-    await files.upload("/docs/1.txt", "doc");
+    await files.upload("avatars/1.png", "one");
+    await files.upload("avatars/2.png", "two");
+    await files.upload("docs/1.txt", "doc");
 
-    const first = await files.list({ limit: 1, prefix: "/avatars" });
-    expect(seenPrefix).toBe("/users/avatars");
-    expect(first.items.map((item) => item.key)).toEqual(["/avatars/1.png"]);
+    const first = await files.list({ limit: 1, prefix: "avatars" });
+    expect(seenPrefix).toBe("users/avatars");
+    expect(first.items.map((item) => item.key)).toEqual(["avatars/1.png"]);
 
     const second = await files.list({
       cursor: first.cursor,
       limit: 1,
-      prefix: "/avatars",
+      prefix: "avatars",
     });
-    expect(second.items.map((item) => item.key)).toEqual(["/avatars/2.png"]);
+    expect(second.items.map((item) => item.key)).toEqual(["avatars/2.png"]);
   });
 
   test("constructor prefix list without explicit prefix does not match sibling paths", async () => {
     const adapter = fakeAdapter();
-    await adapter.upload("/users/123", "user");
-    await adapter.upload("/users-archive/123", "archive");
-    const files = new Files({ adapter, prefix: "/users" });
+    await adapter.upload("users/123", "user");
+    await adapter.upload("users-archive/123", "archive");
+    const files = new Files({ adapter, prefix: "users" });
 
     const { items } = await files.list();
-    expect(items.map((item) => item.key)).toEqual(["/123"]);
+    expect(items.map((item) => item.key)).toEqual(["123"]);
   });
 
   test("constructor prefix applies to urls, signed uploads, copy, and handle helpers", async () => {
     const adapter = fakeAdapter();
-    const files = new Files({ adapter, prefix: "/users" });
-    const avatar = files.file("/123");
+    const files = new Files({ adapter, prefix: "users" });
+    const avatar = files.file("123");
 
     await avatar.upload("avatar");
     const url = await avatar.url({ expiresIn: 60 });
-    expect(url).toContain(encodeURIComponent("/users/123"));
+    expect(url).toContain(encodeURIComponent("users/123"));
 
-    await avatar.copyTo("/456");
-    const copied = await files.download("/456");
+    await avatar.copyTo("456");
+    const copied = await files.download("456");
     expect(await copied.text()).toBe("avatar");
 
-    const mirror = files.file("/789");
-    await mirror.copyFrom("/456");
+    const mirror = files.file("789");
+    await mirror.copyFrom("456");
     const mirrored = await mirror.download();
     expect(await mirrored.text()).toBe("avatar");
 
-    const signed = await files.signedUploadUrl("/999", { expiresIn: 60 });
-    expect(signed.url).toContain(encodeURIComponent("/users/999"));
+    const signed = await files.signedUploadUrl("999", { expiresIn: 60 });
+    expect(signed.url).toContain(encodeURIComponent("users/999"));
 
     await avatar.delete();
-    expect(adapter.has("/users/123")).toBe(false);
+    expect(adapter.has("users/123")).toBe(false);
   });
 
   test("constructor prefix validation rejects non-string, empty-after-trim, and null bytes", () => {
     expect(
       () => new Files({ adapter: fakeAdapter(), prefix: 123 as never })
-    ).toThrow(/prefix must be a non-empty string/u);
+    ).toThrow(/prefix must be a string/u);
     expect(() => new Files({ adapter: fakeAdapter(), prefix: "///" })).toThrow(
       /prefix must be a non-empty string/u
     );
@@ -262,20 +274,20 @@ describe("Files class", () => {
 
   test("constructor prefix only strips exact path prefixes from adapter keys", async () => {
     const base = fakeAdapter();
-    await base.upload("/users/123", "avatar");
+    await base.upload("users/123", "avatar");
     const files = new Files({
       adapter: {
         ...base,
         async head(key) {
           const file = await base.head(key);
-          return { ...file, key: "/users-archive/123" };
+          return { ...file, key: "users-archive/123" };
         },
       },
-      prefix: "/users",
+      prefix: "users",
     });
 
-    const head = await files.head("/123");
-    expect(head.key).toBe("/users-archive/123");
+    const head = await files.head("123");
+    expect(head.key).toBe("users-archive/123");
   });
 
   test("error normalization wraps adapter errors as FilesError with code", async () => {

@@ -269,14 +269,19 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+// Normalize the prefix the same way the rest of the SDK treats keys: no
+// leading slash (S3/R2 store `/users/x` under a literal empty-named folder,
+// which is never what callers want), and no trailing slash so we control the
+// single separator when joining. `"/users/"`, `"users/"`, and `"users"` all
+// collapse to `"users"`.
 const normalizePrefix = (prefix: string | undefined): string => {
   if (prefix === undefined) {
     return "";
   }
   if (typeof prefix !== "string") {
-    throw new FilesError("Provider", "prefix must be a non-empty string");
+    throw new FilesError("Provider", "prefix must be a string");
   }
-  const normalized = prefix.replace(/\/+$/u, "");
+  const normalized = prefix.replaceAll(/^\/+|\/+$/gu, "");
   assertValidKey(normalized, "prefix");
   return normalized;
 };
@@ -299,7 +304,7 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   file(key: string): FileHandle {
-    this.#path(key);
+    assertValidKey(key);
     return {
       copyFrom: (sourceKey) => this.copy(sourceKey, key),
       copyTo: (destinationKey) => this.copy(key, destinationKey),
@@ -412,7 +417,16 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   #storedFile(file: StoredFile): StoredFile {
-    return this.#prefix ? { ...file, key: this.#stripPrefix(file.key) } : file;
+    if (!this.#prefix) {
+      return file;
+    }
+    // `name` is an alias for the full key (see createStoredFile), so strip it
+    // alongside `key` — otherwise the result is internally inconsistent.
+    return {
+      ...file,
+      key: this.#stripPrefix(file.key),
+      name: this.#stripPrefix(file.name),
+    };
   }
 
   #uploadResult(result: UploadResult): UploadResult {
@@ -422,8 +436,7 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   #stripPrefix(key: string): string {
-    return key.startsWith(`${this.#prefix}/`)
-      ? key.slice(this.#prefix.length)
-      : key;
+    const scoped = `${this.#prefix}/`;
+    return key.startsWith(scoped) ? key.slice(scoped.length) : key;
   }
 }
