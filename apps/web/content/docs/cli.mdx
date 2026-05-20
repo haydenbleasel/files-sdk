@@ -1,0 +1,193 @@
+---
+title: CLI
+description: Agent-friendly CLI for files-sdk. One binary, every provider, JSON-by-default output, stdin/stdout streaming, and a built-in MCP server.
+---
+
+## Install
+
+The CLI ships with the `files-sdk` package — install it globally to get a `files` binary on your `PATH`, or invoke it via `npx` / `bunx` for one-off commands.
+
+```package-install
+npm install -g files-sdk
+```
+
+One-shot, no install:
+
+```package-install
+npx -p files-sdk files --provider fs --root ./uploads list
+```
+
+Adapter SDKs (AWS, GCP, Azure, Dropbox, etc.) are loaded lazily on first use, so cold-start cost matches whichever single provider you select — not the union of all of them. Those SDKs are optional peer dependencies of `files-sdk`, so install the one for the provider you intend to use alongside the CLI — for example `npm install -g files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner` for S3. See the per-adapter docs for the exact package list.
+
+## Pick a provider
+
+Pass `--provider <name>` on every call, or set `FILES_SDK_PROVIDER` once. Provider-specific credentials come from the adapter's standard env vars (`AWS_ACCESS_KEY_ID`, `BLOB_READ_WRITE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, etc.), so the same environment that works with the SDK works with the CLI.
+
+<div className="rounded-lg border border-dotted p-4 text-sm flex flex-wrap gap-x-3 gap-y-1.5 font-mono text-muted-foreground">
+  <span>s3</span>
+  <span>r2</span>
+  <span>gcs</span>
+  <span>azure</span>
+  <span>vercel-blob</span>
+  <span>netlify-blobs</span>
+  <span>supabase</span>
+  <span>minio</span>
+  <span>digitalocean-spaces</span>
+  <span>backblaze-b2</span>
+  <span>wasabi</span>
+  <span>scaleway</span>
+  <span>ovhcloud</span>
+  <span>hetzner</span>
+  <span>tigris</span>
+  <span>storj</span>
+  <span>filebase</span>
+  <span>akamai</span>
+  <span>idrive-e2</span>
+  <span>vultr</span>
+  <span>ibm-cos</span>
+  <span>oracle-cloud</span>
+  <span>exoscale</span>
+  <span>uploadthing</span>
+  <span>dropbox</span>
+  <span>box</span>
+  <span>google-drive</span>
+  <span>onedrive</span>
+  <span>sharepoint</span>
+  <span>appwrite</span>
+  <span>cloudinary</span>
+  <span>fs</span>
+</div>
+
+Common short flags cover the obvious fields (`--bucket`, `--region`, `--endpoint`, `--root`, `--container`, `--token`, etc.). For the long tail, `--config-json '{...}'` accepts the raw adapter options blob — anything the SDK factory accepts, the CLI can pass through.
+
+## Commands
+
+Each command maps 1:1 to an `Adapter` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
+
+```bash lineNumbers
+# Upload from a file (or pipe stdin)
+files --provider s3 --bucket uploads \
+  upload reports/2026-q1.pdf --file ./report.pdf --content-type application/pdf
+
+cat report.pdf | files --provider s3 --bucket uploads \
+  upload reports/2026-q1.pdf --stdin --content-type application/pdf
+
+# Download to disk or stream to stdout
+files --provider s3 --bucket uploads download reports/2026-q1.pdf --out ./report.pdf
+files --provider s3 --bucket uploads download reports/2026-q1.pdf --stdout > report.pdf
+
+# Metadata, existence, listing
+files --provider s3 --bucket uploads head reports/2026-q1.pdf
+files --provider s3 --bucket uploads exists reports/2026-q1.pdf   # exit 0 = exists, 1 = missing
+files --provider s3 --bucket uploads list --prefix reports/ --limit 50
+
+# Server-side copy + delete
+files --provider s3 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1.pdf
+files --provider s3 --bucket uploads delete reports/archive/q1.pdf
+
+# URLs (presigned on signing adapters, public for CDN-backed providers)
+files --provider s3 --bucket uploads url reports/2026-q1.pdf --expires-in 600
+
+# Browser uploads via presigned POST policy (enforces size server-side)
+files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
+  --expires-in 600 --max-size 5242880 --content-type image/png
+```
+
+## JSON output & exit codes
+
+Every command emits one JSON line on success. Errors go to `stderr` with a stable `{ error: { code, message } }` envelope, never mixed with the success channel — so a JSON parser downstream sees either a clean record or nothing.
+
+```bash lineNumbers
+# JSON output is the default — pipe straight to jq.
+$ files --provider fs --root /tmp/store head reports/q1.pdf
+{"key":"reports/q1.pdf","name":"q1.pdf","size":48213,"type":"application/pdf","lastModified":1778881504647,"etag":"\"9feb94ca37e5d155\""}
+
+# Errors go to stderr with a stable error code. Exit codes:
+#   0  ok
+#   1  NotFound (or exists → false)
+#   2  Provider / unknown error
+#   3  Unauthorized
+#   4  Conflict
+$ files --provider fs --root /tmp/store head nope.txt
+{"error":{"code":"NotFound","message":"ENOENT: no such file or directory, stat '/tmp/store/nope.txt'"}}
+$ echo $?
+1
+```
+
+Use `--pretty` for indented JSON when reading manually, or `--no-json` for plain-text output (still suitable for `grep`, just not for parsing).
+
+## Streaming & dry-run
+
+`upload --stdin` reads the body from `stdin`; `download --stdout` writes it to `stdout`. No intermediate file, no extra copy. Metadata for stdout downloads is suppressed by default and only emitted to `stderr` when `--verbose` is set, so the byte stream stays clean.
+
+`--dry-run` resolves the provider and prints the operation it _would_ run, without making a network call. Handy as a sanity check inside an agent loop before letting it execute writes.
+
+```bash lineNumbers
+# Stream binary in/out without temp files
+ffmpeg -i talk.mov -c copy -f mp4 - \
+  | files --provider r2 --bucket talks upload 2026/q1/keynote.mp4 --stdin --content-type video/mp4
+
+files --provider r2 --bucket talks download 2026/q1/keynote.mp4 --stdout \
+  | ffprobe -i - 2>&1
+
+# Plan before doing — useful as a sanity check inside an agent loop
+files --provider s3 --bucket uploads --dry-run delete reports/q1.pdf
+# → {"dryRun":true,"provider":"s3","action":"delete","key":"reports/q1.pdf"}
+
+# Verbose adds stack traces to error output
+files --provider s3 --bucket uploads --verbose head missing.txt
+```
+
+## MCP server
+
+`files ... mcp` boots an [MCP server](https://modelcontextprotocol.io) on stdio that exposes every CLI command as a tool — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `list`, `url`, `sign-upload`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
+
+```bash lineNumbers
+# Start the MCP server on stdio
+files --provider s3 --bucket uploads mcp
+```
+
+```jsonc lineNumbers
+// Wire it into Claude Code (~/.claude.json or .claude/mcp.json)
+{
+  "mcpServers": {
+    "files-sdk": {
+      "command": "files",
+      "args": ["--provider", "s3", "--bucket", "uploads", "mcp"],
+      "env": {
+        "AWS_ACCESS_KEY_ID": "...",
+        "AWS_SECRET_ACCESS_KEY": "...",
+      },
+    },
+  },
+}
+```
+
+Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and uploads (`upload` with a `base64` body) survive intact.
+
+## Wiring agents
+
+Three patterns, ordered by how much trust you're extending to the agent.
+
+```bash lineNumbers
+# 1. Quick exploration — let an agent inspect a bucket without writing code
+files --provider s3 --bucket uploads list --prefix invoices/ --limit 20 | jq '.items[].key'
+
+# 2. Programmatic loop — feed JSON straight to the next step
+cursor=""
+while :; do
+  page=$(files --provider s3 --bucket uploads list --prefix logs/ --limit 100 \
+    ${cursor:+--cursor "$cursor"})
+  echo "$page" | jq -r '.items[].key' | while read key; do
+    files --provider s3 --bucket uploads download "$key" --stdout | gunzip | grep ERROR
+  done
+  cursor=$(echo "$page" | jq -r '.cursor // empty')
+  [ -z "$cursor" ] && break
+done
+
+# 3. Provider override via env — agents don't need to thread --provider everywhere
+export FILES_SDK_PROVIDER=fs
+files --root ./sandbox list
+```
+
+For read-only investigation, the JSON output piped through `jq` is usually enough. For multi-step workflows, the MCP server keeps tool calls structured and avoids quoting bugs in shell composition. For everything in between, the plain CLI with `--dry-run` gates is the path of least surprise.

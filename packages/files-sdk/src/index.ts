@@ -36,8 +36,9 @@ export interface OperationOptions {
    */
   signal?: AbortSignal;
   /**
-   * Per-attempt timeout in milliseconds. `0` or a negative value disables
-   * timeout handling.
+   * Overall timeout in milliseconds, applied to each attempt. A timeout
+   * aborts the operation and is not retried. `0` or a negative value
+   * disables timeout handling.
    */
   timeout?: number;
   /**
@@ -47,8 +48,26 @@ export interface OperationOptions {
 }
 
 export interface UploadOptions extends OperationOptions {
+  /**
+   * MIME type stored alongside the object and returned to readers in the
+   * `Content-Type` response header. Inferred from `File` / `Blob` `type`
+   * when not set; falls back to `application/octet-stream`.
+   */
   contentType?: string;
+  /**
+   * `Cache-Control` header stored on the object. Sent verbatim to the
+   * provider; controls how downstream caches and browsers cache reads of
+   * this key.
+   */
   cacheControl?: string;
+  /**
+   * Arbitrary user metadata stored alongside the object. Returned by
+   * `head()` and `list()` where the provider supports it. Vercel Blob and
+   * UploadThing have no user-metadata primitive, so it round-trips as
+   * `undefined` there. Bunny Storage, Appwrite, and PocketBase have no
+   * arbitrary metadata primitive, so those adapters throw when this option
+   * is passed.
+   */
   metadata?: Record<string, string>;
 }
 
@@ -79,8 +98,20 @@ export interface DownloadOptions extends OperationOptions {
 }
 
 export interface ListOptions extends OperationOptions {
+  /**
+   * Filter results to keys that start with this string. Omit to list
+   * everything in the bucket.
+   */
   prefix?: string;
+  /**
+   * Continuation token from a prior result. Pass the `cursor` field of the
+   * previous page back in to fetch the next page; omit on the first call.
+   */
   cursor?: string;
+  /**
+   * Maximum number of items to return per page. Capped per-provider (most
+   * providers max around 1000). Defaults to 1000.
+   */
   limit?: number;
 }
 
@@ -135,7 +166,15 @@ export interface UrlOptions extends OperationOptions {
 }
 
 export interface SignUploadOptions extends OperationOptions {
+  /**
+   * How long the signed URL stays valid, in seconds. After it elapses, the
+   * URL stops working and the client must request a new one.
+   */
   expiresIn: number;
+  /**
+   * MIME type bound into the signature. The browser's PUT/POST must send a
+   * matching `Content-Type` header or the provider rejects the upload.
+   */
   contentType?: string;
   /**
    * Maximum upload size in bytes, enforced server-side.
@@ -226,6 +265,7 @@ export interface Adapter<Raw = unknown> {
 
 export interface FilesOptions<A extends Adapter> extends OperationOptions {
   adapter: A;
+  prefix?: string;
 }
 
 export interface FileHandle {
@@ -424,13 +464,32 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+// Normalize the prefix the same way the rest of the SDK treats keys: no
+// leading slash (S3/R2 store `/users/x` under a literal empty-named folder,
+// which is never what callers want), and no trailing slash so we control the
+// single separator when joining. `"/users/"`, `"users/"`, and `"users"` all
+// collapse to `"users"`.
+const normalizePrefix = (prefix: string | undefined): string => {
+  if (prefix === undefined) {
+    return "";
+  }
+  if (typeof prefix !== "string") {
+    throw new FilesError("Provider", "prefix must be a string");
+  }
+  const normalized = prefix.replaceAll(/^\/+|\/+$/gu, "");
+  assertValidKey(normalized, "prefix");
+  return normalized;
+};
+
 export class Files<A extends Adapter = Adapter> {
   readonly #adapter: A;
   readonly #defaults: OperationOptions;
+  readonly #prefix: string;
 
   constructor(opts: FilesOptions<A>) {
-    const { adapter, ...defaults } = opts;
+    const { adapter, prefix, ...defaults } = opts;
     this.#adapter = adapter;
+    this.#prefix = normalizePrefix(prefix);
     this.#defaults = defaults;
   }
 
@@ -459,18 +518,19 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult> {
-    assertValidKey(key);
+    const path = this.#path(key);
     return this.#run(
       opts,
-      (attemptOpts) => this.#adapter.upload(key, body, attemptOpts),
+      async (attemptOpts) =>
+        this.#uploadResult(await this.#adapter.upload(path, body, attemptOpts)),
       !(body instanceof ReadableStream)
     );
   }
 
   download(key: string, opts?: DownloadOptions): Promise<StoredFile> {
-    assertValidKey(key);
-    return this.#run(opts, (attemptOpts) =>
-      this.#adapter.download(key, attemptOpts)
+    const path = this.#path(key);
+    return this.#run(opts, async (attemptOpts) =>
+      this.#storedFile(await this.#adapter.download(path, attemptOpts))
     );
   }
 
@@ -483,9 +543,9 @@ export class Files<A extends Adapter = Adapter> {
    * the body accessors. They are not free.
    */
   head(key: string, opts?: OperationOptions): Promise<StoredFile> {
-    assertValidKey(key);
-    return this.#run(opts, (attemptOpts) =>
-      this.#adapter.head(key, attemptOpts)
+    const path = this.#path(key);
+    return this.#run(opts, async (attemptOpts) =>
+      this.#storedFile(await this.#adapter.head(path, attemptOpts))
     );
   }
 
@@ -497,29 +557,41 @@ export class Files<A extends Adapter = Adapter> {
    * accidentally treat auth or transport errors as "missing file".
    */
   exists(key: string, opts?: OperationOptions): Promise<boolean> {
-    assertValidKey(key);
+    const path = this.#path(key);
     return this.#run(opts, (attemptOpts) =>
-      this.#adapter.exists(key, attemptOpts)
+      this.#adapter.exists(path, attemptOpts)
     );
   }
 
   delete(key: string, opts?: OperationOptions): Promise<void> {
-    assertValidKey(key);
+    const path = this.#path(key);
     return this.#run(opts, (attemptOpts) =>
-      this.#adapter.delete(key, attemptOpts)
+      this.#adapter.delete(path, attemptOpts)
     );
   }
 
   copy(from: string, to: string, opts?: OperationOptions): Promise<void> {
-    assertValidKey(from, "copy source");
-    assertValidKey(to, "copy destination");
+    const fromPath = this.#path(from, "copy source");
+    const toPath = this.#path(to, "copy destination");
     return this.#run(opts, (attemptOpts) =>
-      this.#adapter.copy(from, to, attemptOpts)
+      this.#adapter.copy(fromPath, toPath, attemptOpts)
     );
   }
 
   list(opts?: ListOptions): Promise<ListResult> {
-    return this.#run(opts, (attemptOpts) => this.#adapter.list(attemptOpts));
+    if (!this.#prefix) {
+      return this.#run(opts, (attemptOpts) => this.#adapter.list(attemptOpts));
+    }
+    const prefix = opts?.prefix
+      ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
+      : `${this.#prefix}/`;
+    return this.#run(opts, async (attemptOpts) => {
+      const result = await this.#adapter.list({ ...attemptOpts, prefix });
+      return {
+        ...result,
+        items: result.items.map((item) => this.#storedFile(item)),
+      };
+    });
   }
 
   /**
@@ -539,16 +611,14 @@ export class Files<A extends Adapter = Adapter> {
    * from untrusted input, callers should validate or escape it.
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
-    assertValidKey(key);
-    return this.#run(opts, (attemptOpts) =>
-      this.#adapter.url(key, attemptOpts)
-    );
+    const path = this.#path(key);
+    return this.#run(opts, (attemptOpts) => this.#adapter.url(path, attemptOpts));
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
-    assertValidKey(key);
+    const path = this.#path(key);
     return this.#run(opts, (attemptOpts) =>
-      this.#adapter.signedUploadUrl(key, attemptOpts as SignUploadOptions)
+      this.#adapter.signedUploadUrl(path, attemptOpts as SignUploadOptions)
     );
   }
 
@@ -595,5 +665,34 @@ export class Files<A extends Adapter = Adapter> {
         runtime.cleanup?.();
       }
     }
+  }
+
+  #path(key: string, label = "key"): string {
+    assertValidKey(key, label);
+    return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+  }
+
+  #storedFile(file: StoredFile): StoredFile {
+    if (!this.#prefix) {
+      return file;
+    }
+    // `name` is an alias for the full key (see createStoredFile), so strip it
+    // alongside `key` — otherwise the result is internally inconsistent.
+    return {
+      ...file,
+      key: this.#stripPrefix(file.key),
+      name: this.#stripPrefix(file.name),
+    };
+  }
+
+  #uploadResult(result: UploadResult): UploadResult {
+    return this.#prefix
+      ? { ...result, key: this.#stripPrefix(result.key) }
+      : result;
+  }
+
+  #stripPrefix(key: string): string {
+    const scoped = `${this.#prefix}/`;
+    return key.startsWith(scoped) ? key.slice(scoped.length) : key;
   }
 }

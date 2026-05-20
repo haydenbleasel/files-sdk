@@ -8,6 +8,7 @@ import { s3 } from "../s3/index.js";
 const YANDEX_DEFAULT_ENDPOINT = "https://storage.yandexcloud.net";
 
 export interface YandexAdapterOptions {
+  /** Yandex Object Storage bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Override the Yandex Object Storage endpoint. Defaults to
@@ -16,7 +17,15 @@ export interface YandexAdapterOptions {
    * proxy.
    */
   endpoint?: string;
+  /**
+   * Static access key ID. Falls back to `YANDEX_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Falls back to `YANDEX_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * SigV4 region used for signing. Defaults to `"ru-central1"` — Yandex's

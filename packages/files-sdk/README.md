@@ -8,6 +8,24 @@ A unified storage SDK for object and blob backends. One small, honest API. Web-s
 npm install files-sdk
 ```
 
+Each provider's native SDK is an **optional peer dependency** — install only the ones you actually use, alongside `files-sdk` itself. A few examples:
+
+```sh
+# S3 (and any S3-compatible: R2, MinIO, DigitalOcean Spaces, Backblaze B2, Wasabi, …)
+npm install files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+
+# Google Cloud Storage
+npm install files-sdk @google-cloud/storage google-auth-library
+
+# Azure Blob Storage
+npm install files-sdk @azure/storage-blob @azure/identity
+
+# Vercel Blob
+npm install files-sdk @vercel/blob
+```
+
+See [files-sdk.dev](https://files-sdk.dev) for the per-adapter install command. If you import an adapter without its peer installed, Node will throw `ERR_MODULE_NOT_FOUND` naming the missing package.
+
 ## Quick start
 
 ```ts

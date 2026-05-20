@@ -31,10 +31,28 @@ import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface S3AdapterOptions {
+  /** S3 bucket name. The adapter scopes all operations to it. */
   bucket: string;
+  /**
+   * AWS region the bucket lives in (e.g. `us-east-1`). Falls back to
+   * `AWS_REGION`; required if no env var is set.
+   */
   region?: string;
+  /**
+   * Override the S3 service endpoint. Use this to point at S3-compatible
+   * services (DigitalOcean Spaces, Wasabi, Backblaze B2, LocalStack, etc.).
+   */
   endpoint?: string;
+  /**
+   * Use path-style addressing (`https://endpoint/bucket/key`) instead of
+   * virtual-hosted style (`https://bucket.endpoint/key`). Required by some
+   * S3-compatible services and by LocalStack.
+   */
   forcePathStyle?: boolean;
+  /**
+   * Static credentials. Skip to use the AWS credential chain (env vars,
+   * IAM role, shared profile, EC2/ECS/EKS instance metadata).
+   */
   credentials?: {
     accessKeyId: string;
     secretAccessKey: string;

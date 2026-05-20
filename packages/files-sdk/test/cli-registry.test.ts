@@ -76,6 +76,15 @@ const cases: Record<string, Case> = {
     // Filebase has no region requirement of its own (defaults to us-east-1).
     opts: { ...baseS3, region: undefined },
   },
+  "firebase-storage": {
+    expectedName: "firebase-storage",
+    // The firebase-admin SDK doesn't validate credentials at construction;
+    // a projectId + bucket are enough to drive initializeApp() to completion.
+    opts: {
+      bucket: "fb-test.firebasestorage.app",
+      projectId: "fb-test",
+    },
+  },
   fs: { expectedName: "fs", opts: { root: "/tmp/files-sdk-registry-test" } },
   gcs: {
     expectedName: "gcs",
@@ -125,6 +134,15 @@ const cases: Record<string, Case> = {
     opts: { ...baseS3, configJson: { namespace: "ns" } },
   },
   ovhcloud: { expectedName: "ovhcloud", opts: baseS3 },
+  pocketbase: {
+    expectedName: "pocketbase",
+    // The collection name must be threaded via --config-json; url is enough
+    // to construct the underlying client without a network call.
+    opts: {
+      configJson: { collection: "files" },
+      url: "http://pb.test",
+    },
+  },
   // The r2 factory routes to r2-http when no Workers binding is present.
   r2: {
     expectedName: "r2-http",

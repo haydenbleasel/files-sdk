@@ -15,6 +15,11 @@ import type { FilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
+  /**
+   * Vercel Blob read/write token. Falls back to `BLOB_READ_WRITE_TOKEN`,
+   * which is auto-injected on Vercel; pass `token` manually for local dev or
+   * other hosts.
+   */
   token?: string;
   /**
    * Whether blobs uploaded by this adapter are public or private.

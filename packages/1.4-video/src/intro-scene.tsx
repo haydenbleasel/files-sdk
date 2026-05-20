@@ -149,7 +149,7 @@ export const IntroScene: React.FC = () => {
         >
           v1.4
         </span>
-        <span>6 new adapters · a CLI · a Claude skill</span>
+        <span>9 new adapters · a CLI · agent skill file</span>
       </div>
     </AbsoluteFill>
   );
