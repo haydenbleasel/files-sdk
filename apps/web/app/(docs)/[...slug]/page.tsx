@@ -7,8 +7,17 @@ import {
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
+import { PageActions } from "@/components/page-actions";
+import { getLLMText } from "@/lib/get-llm-text";
 import { source } from "@/lib/source";
 import { getMDXComponents } from "@/mdx-components";
+
+const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
+const origin = process.env.VERCEL_PROJECT_PRODUCTION_URL ?? "localhost:3000";
+const baseUrl = `${protocol}://${origin}`;
+
+const githubContentBase =
+  "https://github.com/haydenbleasel/files-sdk/blob/main/apps/web/content/docs";
 
 interface PageProps {
   params: Promise<{ slug: string[] }>;
@@ -22,6 +31,8 @@ const Page = async ({ params }: PageProps) => {
   }
 
   const MDX = page.data.body;
+  const markdown = await getLLMText(page);
+  const markdownUrl = `${page.url}.md`;
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
@@ -29,6 +40,12 @@ const Page = async ({ params }: PageProps) => {
         {page.data.title}
       </DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
+      <PageActions
+        githubUrl={`${githubContentBase}/${page.path}`}
+        markdown={markdown}
+        markdownAbsoluteUrl={`${baseUrl}${markdownUrl}`}
+        markdownUrl={markdownUrl}
+      />
       <DocsBody className="[&_h2]:tracking-tight [&_h3]:tracking-tight [&_h4]:tracking-tight">
         <MDX components={getMDXComponents()} />
       </DocsBody>

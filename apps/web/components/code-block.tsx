@@ -20,6 +20,9 @@ export const CodeBlock = ({ code, lang }: CodeBlockProps) =>
         </Container>
       ),
     },
+    // Emit only --shiki-light / --shiki-dark CSS vars (no inline color), so
+    // fumadocs-ui's CSS can swap to the dark theme under `.dark`.
+    defaultColor: false,
     lang,
     themes: {
       dark: "vitesse-dark",
