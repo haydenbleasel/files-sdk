@@ -5,7 +5,6 @@ const PROJECT_LINKS = [
   { href: "/adapters", label: "Adapters" },
   { href: "/api", label: "API" },
   { href: "/cli", label: "CLI" },
-  { href: "/updates", label: "Updates" },
 ];
 
 const RESOURCE_LINKS = [

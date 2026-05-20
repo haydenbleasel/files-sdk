@@ -20,10 +20,9 @@ const marqueeList = [...iconList, ...iconList];
 
 interface HeroProps {
   latestVersion: string;
-  latestSlug: string;
 }
 
-export const Hero = ({ latestVersion, latestSlug }: HeroProps) => (
+export const Hero = ({ latestVersion }: HeroProps) => (
   <section className="relative overflow-hidden">
     <div className="mx-auto flex max-w-5xl flex-col items-center px-6 pt-24 pb-20 text-center sm:pt-32 sm:pb-24 lg:pt-40 lg:pb-28">
       <motion.div
@@ -31,14 +30,18 @@ export const Hero = ({ latestVersion, latestSlug }: HeroProps) => (
         animate={{ opacity: 1 }}
         transition={{ duration: 0.4, ease: EASE }}
       >
-        <Link
-          href={`/updates/${latestSlug}`}
+        <a
+          href={`https://github.com/haydenbleasel/files-sdk/releases/tag/${encodeURIComponent(
+            `files-sdk@${latestVersion}`
+          )}`}
+          rel="noreferrer"
+          target="_blank"
           className="group inline-flex items-center gap-2 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
           Latest update — v{latestVersion} released
           <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" />
-        </Link>
+        </a>
       </motion.div>
 
       <motion.h1

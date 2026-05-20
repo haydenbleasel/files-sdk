@@ -1,10 +1,11 @@
-import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "fumadocs-ui/components/tabs";
+
+import { CodeBlock } from "@/components/code-block";
 
 const ADAPTERS = [
   {
@@ -64,7 +65,7 @@ export const Demo = () => (
     </TabsList>
     {ADAPTERS.map((adapter) => (
       <TabsContent key={adapter.id} value={adapter.id}>
-        <DynamicCodeBlock code={buildCode(adapter)} lang="tsx" />
+        <CodeBlock code={buildCode(adapter)} lang="tsx" />
       </TabsContent>
     ))}
   </Tabs>

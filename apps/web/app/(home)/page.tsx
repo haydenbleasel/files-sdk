@@ -5,14 +5,14 @@ import { Features } from "@/components/sections/features";
 import { FinalCta } from "@/components/sections/final-cta";
 import { GetStarted } from "@/components/sections/get-started";
 import { Hero } from "@/components/sections/hero";
-import { getChangelog } from "@/lib/changelog";
+import { getLatestVersion } from "@/lib/version";
 
 const Home = () => {
-  const [latest] = getChangelog();
+  const latestVersion = getLatestVersion();
 
   return (
     <>
-      <Hero latestVersion={latest.version} latestSlug={latest.slug} />
+      <Hero latestVersion={latestVersion} />
       <FadeIn>
         <AdapterCloud />
       </FadeIn>

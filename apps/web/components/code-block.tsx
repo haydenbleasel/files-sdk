@@ -1,0 +1,28 @@
+import { highlight } from "fumadocs-core/highlight";
+import { CodeBlock as Container, Pre } from "fumadocs-ui/components/codeblock";
+import type { ComponentProps } from "react";
+
+interface CodeBlockProps {
+  code: string;
+  lang: string;
+}
+
+// Highlights server-side with the same shiki path and vitesse themes as the
+// docs (see source.config.ts), so there's no client-side flash and the theme
+// matches. Replaces fumadocs' DynamicCodeBlock, which highlights in the browser
+// and defaults to the github themes.
+export const CodeBlock = ({ code, lang }: CodeBlockProps) =>
+  highlight(code, {
+    components: {
+      pre: (props: ComponentProps<"pre">) => (
+        <Container {...props}>
+          <Pre>{props.children}</Pre>
+        </Container>
+      ),
+    },
+    lang,
+    themes: {
+      dark: "vitesse-dark",
+      light: "vitesse-light",
+    },
+  });

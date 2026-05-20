@@ -4,9 +4,6 @@ import type { NextConfig } from "next";
 const withMDX = createMDX();
 
 const nextConfig: NextConfig = {
-  outputFileTracingIncludes: {
-    "/updates": ["../../packages/files-sdk/CHANGELOG.md"],
-  },
   redirects: () => [
     {
       destination: "/adapters/s3",
@@ -17,6 +14,12 @@ const nextConfig: NextConfig = {
       destination: "/ai/openai",
       permanent: false,
       source: "/ai",
+    },
+  ],
+  rewrites: () => [
+    {
+      destination: "/llms.mdx/:path*",
+      source: "/:path*.md",
     },
   ],
 };

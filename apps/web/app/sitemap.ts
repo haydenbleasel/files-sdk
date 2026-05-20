@@ -1,6 +1,5 @@
 import type { MetadataRoute } from "next";
 
-import { getChangelog } from "@/lib/changelog";
 import { source } from "@/lib/source";
 
 const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
@@ -9,7 +8,6 @@ const baseUrl = `${protocol}://${origin}`;
 
 const STATIC_ROUTES: { path: string; priority: number }[] = [
   { path: "/", priority: 1 },
-  { path: "/updates", priority: 0.7 },
 ];
 
 const priorityForDocsUrl = (url: string): number => {
@@ -33,19 +31,12 @@ const sitemap = (): MetadataRoute.Sitemap => {
     priority: priorityForDocsUrl(page.url),
   }));
 
-  const releaseRoutes = getChangelog().map(({ slug }) => ({
-    path: `/updates/${slug}`,
-    priority: 0.5,
+  return [...STATIC_ROUTES, ...docsRoutes].map(({ path, priority }) => ({
+    changeFrequency: "weekly" as const,
+    lastModified: new Date(),
+    priority,
+    url: `${baseUrl}${path}`,
   }));
-
-  return [...STATIC_ROUTES, ...docsRoutes, ...releaseRoutes].map(
-    ({ path, priority }) => ({
-      changeFrequency: "weekly" as const,
-      lastModified: new Date(),
-      priority,
-      url: `${baseUrl}${path}`,
-    })
-  );
 };
 
 export default sitemap;

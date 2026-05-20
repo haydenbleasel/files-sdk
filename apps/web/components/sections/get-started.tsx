@@ -1,10 +1,11 @@
-import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 import {
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from "fumadocs-ui/components/tabs";
+
+import { CodeBlock } from "@/components/code-block";
 
 const INSTALL = [
   { code: "npm install files-sdk", id: "npm", label: "npm" },
@@ -50,7 +51,7 @@ export const GetStarted = () => (
             </TabsList>
             {INSTALL.map(({ code, id }) => (
               <TabsContent key={id} value={id}>
-                <DynamicCodeBlock code={code} lang="bash" />
+                <CodeBlock code={code} lang="bash" />
               </TabsContent>
             ))}
           </Tabs>
@@ -63,7 +64,7 @@ export const GetStarted = () => (
           <h3 className="font-mono text-xs text-muted-foreground">
             2. Make your first call
           </h3>
-          <DynamicCodeBlock code={FIRST_CALL} lang="tsx" />
+          <CodeBlock code={FIRST_CALL} lang="tsx" />
           <p className="text-base leading-relaxed text-pretty text-muted-foreground sm:text-sm">
             Construct a Files instance with your provider's adapter, then call
             upload, download, list, delete on it.
