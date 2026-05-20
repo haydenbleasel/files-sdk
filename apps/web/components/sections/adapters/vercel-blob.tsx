@@ -4,17 +4,39 @@ import { Heading } from "@/components/heading";
 const VERCEL_BLOB_EXAMPLE = `import { Files } from "files-sdk";
 import { vercelBlob } from "files-sdk/vercel-blob";
 
-// BLOB_READ_WRITE_TOKEN is auto-injected on Vercel.
+// On Vercel: VERCEL_OIDC_TOKEN + BLOB_STORE_ID are auto-injected when the
+// Blob store is connected to the project (OIDC, recommended). Off Vercel,
+// or as a fallback, BLOB_READ_WRITE_TOKEN is used.
 const files = new Files({ adapter: vercelBlob() });`;
+
+const VERCEL_BLOB_EXPLICIT_OIDC_EXAMPLE = `// Frameworks that don't load .env.local into process.env (Vite, etc.)
+// need OIDC credentials passed explicitly.
+const files = new Files({
+  adapter: vercelBlob({
+    oidcToken: loadOidcToken(),
+    storeId: loadStoreId(),
+  }),
+});`;
 
 export const VercelBlob = () => (
   <section>
     <p>
-      Vercel Blob. The <code>BLOB_READ_WRITE_TOKEN</code> is auto-injected when
-      deployed on Vercel; pass <code>token</code> manually for local dev or
-      other hosts.
+      Vercel Blob. On Vercel, the adapter prefers Vercel's{" "}
+      <strong>OIDC authentication</strong> when <code>VERCEL_OIDC_TOKEN</code>{" "}
+      and <code>BLOB_STORE_ID</code> are present (both are auto-injected when
+      the Blob store is connected to the project). OIDC tokens rotate
+      automatically, so they remove the risk that a long-lived secret leaks from
+      the codebase or environment. Off Vercel - or if OIDC isn't configured -
+      the adapter falls back to <code>BLOB_READ_WRITE_TOKEN</code>. An explicit{" "}
+      <code>token</code> option always wins.
     </p>
     <CodeBlock code={VERCEL_BLOB_EXAMPLE} lang="ts" />
+    <p>
+      Pass <code>oidcToken</code> and <code>storeId</code> directly for runtimes
+      that don't expose <code>process.env</code>, or to bypass env detection
+      entirely:
+    </p>
+    <CodeBlock code={VERCEL_BLOB_EXPLICIT_OIDC_EXAMPLE} lang="ts" />
     <p>
       <code>downloadTimeoutMs</code> bounds the public-URL fetches issued by{" "}
       <code>download()</code> and the lazy bodies returned from{" "}
@@ -26,8 +48,9 @@ export const VercelBlob = () => (
       <code>access</code> selects public or private blobs and is fixed at
       construction. Default <code>"public"</code> matches the existing behavior.
       With <code>access: "private"</code>, uploads use Vercel's private mode and
-      reads route through <code>blob.get()</code> with the token instead of a
-      public URL fetch - there is no permanent public URL for private blobs, so{" "}
+      reads route through <code>blob.get()</code> with whichever credentials the
+      adapter resolved (OIDC or read-write token) instead of a public URL fetch
+      - there is no permanent public URL for private blobs, so{" "}
       <code>url()</code> throws. Need both? Use two adapters.
     </p>
     <section>
