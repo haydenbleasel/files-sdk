@@ -345,7 +345,7 @@ export const sharepoint = (
     get rootFolderPath(): string {
       // The inner adapter normalizes the path; surface it once resolution
       // has happened. Before resolution, fall back to the raw input.
-      return opts.rootFolderPath?.replaceAll(/^\/+|\/+$/gu, "") ?? "";
+      return opts.rootFolderPath?.replaceAll(/^\/+|(?<!\/)\/+$/gu, "") ?? "";
     },
     signedUploadUrl: (
       key: string,

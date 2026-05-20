@@ -8,6 +8,7 @@ import { s3 } from "../s3/index.js";
 const TIGRIS_DEFAULT_ENDPOINT = "https://fly.storage.tigris.dev";
 
 export interface TigrisAdapterOptions {
+  /** Tigris bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Override the Tigris endpoint. Defaults to
@@ -16,7 +17,15 @@ export interface TigrisAdapterOptions {
    * pinned-region testing or a private deployment.
    */
   endpoint?: string;
+  /**
+   * Static access key ID. Falls back to `TIGRIS_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Falls back to `TIGRIS_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * SigV4 region used for signing. Defaults to `"auto"` — Tigris is a

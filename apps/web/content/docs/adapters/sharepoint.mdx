@@ -1,0 +1,48 @@
+---
+title: SharePoint
+description: SharePoint document libraries via Microsoft Graph. Resolves siteUrl and library names; delegates to the OneDrive adapter for the file operations.
+peerDeps:
+  - "@azure/identity"
+  - "@microsoft/microsoft-graph-client"
+---
+
+## Installation
+
+`@azure/identity` and `@microsoft/microsoft-graph-client` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @azure/identity @microsoft/microsoft-graph-client
+```
+
+## Usage
+
+SharePoint document libraries via Microsoft Graph. Wraps the `onedrive` adapter and adds SharePoint-shaped resolution - `siteUrl` parsing, named `documentLibrary` lookup, and `SHAREPOINT_*` env-var fallbacks. Resolution is lazy: the first method call triggers Graph traffic to convert names into drive IDs, then subsequent calls reuse the resolved drive.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { sharepoint } from "files-sdk/sharepoint";
+
+const files = new Files({
+  adapter: sharepoint({
+    siteUrl: "https://contoso.sharepoint.com/sites/marketing",
+    documentLibrary: "Reports", // optional, omit for default library
+    clientCredentials: {
+      tenantId: process.env.SHAREPOINT_TENANT_ID!,
+      clientId: process.env.SHAREPOINT_CLIENT_ID!,
+      clientSecret: process.env.SHAREPOINT_CLIENT_SECRET!,
+    },
+    rootFolderPath: "Uploads",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/sharepoint/index.ts"
+  name="SharePointAdapterOptions"
+/>
+
+## Limitations
+
+The SharePoint adapter delegates to `onedrive` after resolution, so every OneDrive limitation applies: `url()` throws without `publicByDefault: true`; `signedUploadUrl()` initiates a chunked upload session (not a single-PUT presigned URL); `upload()` is capped at the 250 MB simple-upload limit; `delete()` moves items to the recycle bin (soft delete); `copy()` is async; user `cacheControl` and `metadata` on `upload()` throw; `list()` is non-recursive. SharePoint-specific: `siteUrl` parsing errors and missing `documentLibrary` names throw `Provider` at first call (resolution is lazy, so construction never fails for these). Resolution makes 1-2 extra Graph round-trips on first use; the result is cached for the adapter's lifetime.

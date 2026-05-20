@@ -85,15 +85,67 @@ export interface BunS3ClientLike {
 }
 
 export interface BunS3AdapterOptions {
+  /**
+   * A pre-configured `Bun.S3Client`-shaped instance — for example the global
+   * `Bun.s3`, or one constructed with specific credentials elsewhere in your
+   * app. When set, the adapter uses it as-is and rejects any of `bucket`,
+   * `region`, `endpoint`, `virtualHostedStyle`, `accessKeyId`,
+   * `secretAccessKey`, `sessionToken` at construction (they would be silently
+   * ignored otherwise). When unset, the adapter constructs its own client
+   * from the options below.
+   */
   client?: BunS3ClientLike;
+  /**
+   * S3 bucket name. Scopes operations and is exposed as `adapter.bucket`.
+   * Falls back to `S3_BUCKET` / `AWS_BUCKET` via Bun's built-in resolution.
+   */
   bucket?: string;
+  /**
+   * AWS region (e.g. `us-east-1`). Falls back to `S3_REGION` / `AWS_REGION`
+   * via Bun's resolution.
+   */
   region?: string;
+  /**
+   * Override the S3 service endpoint. Use this to point at S3-compatible
+   * services (R2, DigitalOcean Spaces, Wasabi, MinIO, ...).
+   */
   endpoint?: string;
+  /**
+   * Use virtual-hosted-style addressing (`https://<bucket>.<endpoint>`)
+   * instead of path-style. Defaults to `false` — flip on for endpoints that
+   * require it.
+   */
   virtualHostedStyle?: boolean;
+  /**
+   * Static access key ID. Skip to let Bun resolve it from
+   * `S3_ACCESS_KEY_ID` / `AWS_ACCESS_KEY_ID`.
+   */
   accessKeyId?: string;
+  /**
+   * Static secret access key. Skip to let Bun resolve it from
+   * `S3_SECRET_ACCESS_KEY` / `AWS_SECRET_ACCESS_KEY`.
+   */
   secretAccessKey?: string;
+  /**
+   * Static session token for temporary credentials. Skip to let Bun resolve
+   * it from `S3_SESSION_TOKEN` / `AWS_SESSION_TOKEN`.
+   */
   sessionToken?: string;
+  /**
+   * Origin used to build URLs from `url()`. When set, `url(key)` returns
+   * `${publicBaseUrl}/${key}` and skips signing — use this if your bucket is
+   * fronted by a CDN or has a public-read policy. Passing
+   * `responseContentDisposition` still forces a signed URL even when this is
+   * set, because a permanent CDN URL has no signature in which to bind the
+   * override. When unset, `url()` returns a presigned GetObject (1-hour
+   * default).
+   */
   publicBaseUrl?: string;
+  /**
+   * Default expiry, in seconds, for the presigned URLs returned by `url()`
+   * when `publicBaseUrl` isn't set. Defaults to 3600 (1 hour). Per-call
+   * `url(key, { expiresIn })` overrides.
+   */
   defaultUrlExpiresIn?: number;
 }
 

@@ -230,6 +230,27 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     },
     required: ["--bucket"],
   },
+  "firebase-storage": {
+    load: async (opts) => {
+      const { firebaseStorage } = await import("../firebase-storage/index.js");
+      return cast(
+        firebaseStorage,
+        merge(
+          stripUndefined({
+            bucket: opts.bucket,
+            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+            projectId: opts.projectId,
+            publicBaseUrl: opts.publicBaseUrl,
+            serviceAccountPath: opts.keyFilename,
+          }),
+          opts.extra
+        )
+      );
+    },
+    notes:
+      "Service-account credentials — pass --key-filename for a JSON file, or use --config-json for inline credentials / FIREBASE_* env vars",
+    required: [],
+  },
   fs: {
     load: async (opts) => {
       const { fs } = await import("../fs/index.js");
@@ -342,6 +363,24 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       return cast(ovhcloud, merge(s3LikeOpts(opts), opts.extra));
     },
     required: ["--bucket", "--region"],
+  },
+  pocketbase: {
+    load: async (opts) => {
+      const { pocketbase } = await import("../pocketbase/index.js");
+      return cast(
+        pocketbase,
+        merge(
+          stripUndefined({
+            publicBaseUrl: opts.publicBaseUrl,
+            url: opts.url,
+          }),
+          opts.extra
+        )
+      );
+    },
+    notes:
+      "configure via --config-json (collection, adminEmail, adminPassword, authToken, keyField, fileField) or POCKETBASE_* env vars; --url sets the backend URL",
+    required: [],
   },
   r2: {
     load: async (opts) => {
