@@ -4,6 +4,9 @@ import { Readable } from "node:stream";
 
 import { Files, FilesError } from "../src/index.js";
 
+const reqOptsOf = (m: { mock: { calls: unknown[][] } }) =>
+  m.mock.calls.at(-1)?.[1] as { signal?: AbortSignal } | undefined;
+
 interface FakeFile {
   id: string;
   name: string;
@@ -592,5 +595,92 @@ describe("google-drive adapter", () => {
     expect(err).toBeInstanceOf(FilesError);
     expect((err as FilesError).code).toBe("Unauthorized");
     expect((err as FilesError).message).toBe("Permission denied on file");
+  });
+
+  describe("signal forwarding", () => {
+    test("upload forwards the signal to files.create", async () => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      const { signal } = new AbortController();
+      await files.upload("a.txt", "hello", { signal });
+      expect(reqOptsOf(filesCreateMock)?.signal).toBe(signal);
+    });
+
+    test("upload forwards the signal to permissions.create when public", async () => {
+      const files = new Files({
+        adapter: googleDrive({ ...baseOpts, publicByDefault: true }),
+      });
+      const { signal } = new AbortController();
+      await files.upload("a.txt", "hello", { signal });
+      expect(reqOptsOf(permissionsCreateMock)?.signal).toBe(signal);
+    });
+
+    test("download forwards the signal to files.get (meta + media)", async () => {
+      const seed = new Files({ adapter: googleDrive(baseOpts) });
+      await seed.upload("a.txt", "hello");
+      filesGetMock.mockClear();
+      const { signal } = new AbortController();
+      await new Files({ adapter: googleDrive(baseOpts) }).download("a.txt", {
+        signal,
+      });
+      expect(filesGetMock.mock.calls.length).toBeGreaterThan(0);
+      expect(
+        filesGetMock.mock.calls.every(
+          (c) =>
+            (c[1] as { signal?: AbortSignal } | undefined)?.signal === signal
+        )
+      ).toBe(true);
+    });
+
+    test("head forwards the signal to files.get", async () => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      await files.upload("a.txt", "hello");
+      filesGetMock.mockClear();
+      const { signal } = new AbortController();
+      await files.head("a.txt", { signal });
+      expect(reqOptsOf(filesGetMock)?.signal).toBe(signal);
+    });
+
+    test("delete forwards the signal to files.delete", async () => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.delete("a.txt", { signal });
+      expect(reqOptsOf(filesDeleteMock)?.signal).toBe(signal);
+    });
+
+    test("copy forwards the signal to files.copy", async () => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.copy("a.txt", "b.txt", { signal });
+      expect(reqOptsOf(filesCopyMock)?.signal).toBe(signal);
+    });
+
+    test("list forwards the signal to files.list", async () => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      const { signal } = new AbortController();
+      await files.list({ signal });
+      expect(reqOptsOf(filesListMock)?.signal).toBe(signal);
+    });
+
+    test("signedUploadUrl forwards the signal to the resumable fetch", async () => {
+      let seenSignal: AbortSignal | undefined;
+      globalThis.fetch = ((
+        _input: string | URL | Request,
+        init?: RequestInit
+      ) => {
+        seenSignal = init?.signal ?? undefined;
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://upload.example.com/session/abc" },
+            status: 200,
+          })
+        );
+      }) as typeof fetch;
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      const { signal } = new AbortController();
+      await files.signedUploadUrl("a.txt", { expiresIn: 60, signal });
+      expect(seenSignal).toBe(signal);
+    });
   });
 });

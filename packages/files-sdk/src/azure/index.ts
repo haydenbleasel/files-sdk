@@ -145,6 +145,16 @@ const stripEtag = (etag: string | undefined): string | undefined => {
   return etag.replaceAll(/^"+|"+$/gu, "");
 };
 
+// Forward the operation's AbortSignal to the Azure SDK. The SDK types this as
+// `AbortSignalLike` (from @azure/abort-controller); a web `AbortSignal`
+// satisfies that interface, so it passes through unchanged. Returns `undefined`
+// when there's no signal so callers can hand it straight to an optional
+// options arg without inventing an empty object.
+const abortOpts = (
+  signal: AbortSignal | undefined
+): { abortSignal: AbortSignal } | undefined =>
+  signal ? { abortSignal: signal } : undefined;
+
 const uint8ToBuffer = (u8: Uint8Array): Buffer =>
   Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
 
@@ -336,21 +346,25 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
 
   return {
     bucket: container,
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
         const sourceUrl = buildCopySource(from);
-        await containerClient.getBlobClient(to).syncCopyFromURL(sourceUrl);
+        await containerClient
+          .getBlobClient(to)
+          .syncCopyFromURL(sourceUrl, abortOpts(operationOpts?.signal));
       } catch (error) {
         throw mapAzureError(error);
       }
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       try {
         // `deleteIfExists` keeps `delete()` idempotent across adapters —
         // matches S3's silent-on-missing behavior. Callers who care about
         // the difference between "didn't exist" and "deleted now" should
         // call `head()` first.
-        await containerClient.getBlobClient(key).deleteIfExists();
+        await containerClient
+          .getBlobClient(key)
+          .deleteIfExists(abortOpts(operationOpts?.signal));
       } catch (error) {
         throw mapAzureError(error);
       }
@@ -358,7 +372,11 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     async download(key, downloadOpts) {
       try {
         const blobClient = containerClient.getBlobClient(key);
-        const result = await blobClient.download();
+        const result = await blobClient.download(
+          0,
+          undefined,
+          abortOpts(downloadOpts?.signal)
+        );
         const etag = stripEtag(result.etag);
         const baseMeta = {
           ...(etag && { etag }),
@@ -397,7 +415,11 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         // stream we already opened — `download()` returned a stream we'd have
         // to manually pipe + buffer, and the SDK's helper does it more
         // efficiently with parallel range requests for large blobs.
-        const buf = await blobClient.downloadToBuffer();
+        const buf = await blobClient.downloadToBuffer(
+          0,
+          undefined,
+          abortOpts(downloadOpts?.signal)
+        );
         const bytes = bufferToUint8(buf);
         return createStoredFile(
           { ...baseMeta, size: bytes.byteLength },
@@ -407,9 +429,11 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
-    async exists(key) {
+    async exists(key, operationOpts) {
       try {
-        return await containerClient.getBlobClient(key).exists();
+        return await containerClient
+          .getBlobClient(key)
+          .exists(abortOpts(operationOpts?.signal));
       } catch (error) {
         const mapped = mapAzureError(error);
         if (mapped.code === "NotFound") {
@@ -418,10 +442,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapped;
       }
     },
-    async head(key) {
+    async head(key, operationOpts) {
       try {
         const blobClient = containerClient.getBlobClient(key);
-        const props = await blobClient.getProperties();
+        const props = await blobClient.getProperties(
+          abortOpts(operationOpts?.signal)
+        );
         const etag = stripEtag(props.etag);
         return createStoredFile(
           {
@@ -453,6 +479,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         const iterator = containerClient
           .listBlobsFlat({
             ...(options?.prefix && { prefix: options.prefix }),
+            ...(options?.signal && { abortSignal: options.signal }),
           })
           .byPage({
             ...(options?.cursor && { continuationToken: options.cursor }),
@@ -556,6 +583,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
           }),
         },
         ...(options?.metadata && { metadata: options.metadata }),
+        ...(options?.signal && { abortSignal: options.signal }),
       };
       try {
         let etag: string | undefined;
@@ -584,7 +612,9 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         // to surface the authoritative size instead of returning 0.
         if (size === undefined) {
           try {
-            const props = await blockBlob.getProperties();
+            const props = await blockBlob.getProperties(
+              abortOpts(options?.signal)
+            );
             size = Number(props.contentLength ?? 0);
           } catch {
             size = 0;

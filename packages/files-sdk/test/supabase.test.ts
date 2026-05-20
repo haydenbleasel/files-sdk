@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
 
+const sigOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
+  m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
+
 const STABLE_LAST_MODIFIED = "2024-01-02T03:04:05.000Z";
 const STABLE_LAST_MODIFIED_MS = new Date(STABLE_LAST_MODIFIED).getTime();
 const PROJECT_URL = "https://abc.supabase.co";
@@ -74,10 +77,10 @@ const drainStream = async (
 const uploadMock = mock((_path: string, _body: unknown, _opts: unknown) =>
   Promise.resolve(ok({ fullPath: `${BUCKET}/file`, id: "id", path: "file" }))
 );
-const downloadResolveMock = mock((_path: string) =>
+const downloadResolveMock = mock((_path: string, _parameters?: unknown) =>
   Promise.resolve(ok(new Blob(["hello"], { type: "text/plain" })))
 );
-const downloadStreamMock = mock(() =>
+const downloadStreamMock = mock((_parameters?: unknown) =>
   Promise.resolve(
     ok(
       new ReadableStream<Uint8Array>({
@@ -140,16 +143,17 @@ const createSignedUploadUrlMock = mock(
     )
 );
 
-const downloadBuilder = (path: string) =>
-  Object.assign(downloadResolveMock(path), {
-    asStream: () => downloadStreamMock(),
+const downloadBuilder = (path: string, parameters?: unknown) =>
+  Object.assign(downloadResolveMock(path, parameters), {
+    asStream: () => downloadStreamMock(parameters),
   });
 
 const bucketRef = {
   copy: copyMock,
   createSignedUploadUrl: createSignedUploadUrlMock,
   createSignedUrl: createSignedUrlMock,
-  download: (path: string) => downloadBuilder(path),
+  download: (path: string, _options?: unknown, parameters?: unknown) =>
+    downloadBuilder(path, parameters),
   getPublicUrl: getPublicUrlMock,
   info: infoMock,
   list: listMock,
@@ -974,6 +978,31 @@ describe("supabase adapter", () => {
       } catch (error) {
         expect((error as FilesError).code).toBe("Unauthorized");
       }
+    });
+  });
+
+  describe("signal forwarding", () => {
+    test("buffer download forwards the signal as FetchParameters", async () => {
+      const { signal } = new AbortController();
+      await new Files({ adapter: makeAdapter() }).download("a.txt", { signal });
+      // download(path, options, parameters) — parameters is the 3rd arg.
+      expect(sigOf(downloadResolveMock, 1)?.signal).toBe(signal);
+    });
+
+    test("stream download forwards the signal as FetchParameters", async () => {
+      const { signal } = new AbortController();
+      await new Files({ adapter: makeAdapter() }).download("a.txt", {
+        as: "stream",
+        signal,
+      });
+      expect(sigOf(downloadStreamMock, 0)?.signal).toBe(signal);
+    });
+
+    test("list forwards the signal as FetchParameters", async () => {
+      const { signal } = new AbortController();
+      await new Files({ adapter: makeAdapter() }).list({ signal });
+      // list(path, options, parameters) — parameters is the 3rd arg.
+      expect(sigOf(listMock, 2)?.signal).toBe(signal);
     });
   });
 });

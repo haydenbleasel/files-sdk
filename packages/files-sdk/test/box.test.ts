@@ -7,6 +7,13 @@ import type { BoxClient } from "box-typescript-sdk-gen";
 import { box, mapBoxError } from "../src/box/index.js";
 import { Files, FilesError } from "../src/index.js";
 
+const stubFetchCapturing = (sink: { signal?: AbortSignal }) => {
+  globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+    sink.signal = init?.signal ?? undefined;
+    return Promise.resolve(new Response("hi", { status: 200 }));
+  }) as typeof fetch;
+};
+
 interface FakeFile {
   type: "file";
   id: string;
@@ -1294,6 +1301,28 @@ describe("box adapter", () => {
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.upload("collide.txt", "hi")).rejects.toMatchObject({
       code: "Conflict",
+    });
+  });
+
+  describe("signal forwarding", () => {
+    test("buffer download forwards the signal to fetch", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "hi");
+      const sink: { signal?: AbortSignal } = {};
+      stubFetchCapturing(sink);
+      const { signal } = new AbortController();
+      await files.download("a.txt", { signal });
+      expect(sink.signal).toBe(signal);
+    });
+
+    test("stream download forwards the signal to fetch", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "hi");
+      const sink: { signal?: AbortSignal } = {};
+      stubFetchCapturing(sink);
+      const { signal } = new AbortController();
+      await files.download("a.txt", { as: "stream", signal });
+      expect(sink.signal).toBe(signal);
     });
   });
 });

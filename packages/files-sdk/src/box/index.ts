@@ -851,7 +851,10 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
 
         if (downloadOpts?.as === "stream") {
           const url = await client.downloads.getDownloadFileUrl(fileId);
-          const res = await fetch(url);
+          const res = await fetch(
+            url,
+            downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
+          );
           if (!res.ok || !res.body) {
             throw new FilesError(
               "Provider",
@@ -866,7 +869,10 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         }
 
         const url = await client.downloads.getDownloadFileUrl(fileId);
-        const res = await fetch(url);
+        const res = await fetch(
+          url,
+          downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
+        );
         if (!res.ok) {
           throw new FilesError(
             "Provider",

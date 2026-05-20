@@ -139,6 +139,14 @@ const stripEtag = (etag: string | undefined): string | undefined => {
   return etag.replaceAll(/^"+|"+$/gu, "");
 };
 
+// `@supabase/storage-js` accepts a trailing `FetchParameters` (which carries
+// `signal`) on `download` and `list` — and only those. Forward the
+// operation's AbortSignal there; return `undefined` when there's no signal so
+// the call is unchanged.
+const fetchParams = (
+  signal: AbortSignal | undefined
+): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
+
 const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
@@ -344,8 +352,13 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     return blobToUint8(data as Blob);
   };
 
-  const downloadAsStreamFile = async (key: string): Promise<StoredFile> => {
-    const { data, error } = await bucketRef.download(key).asStream();
+  const downloadAsStreamFile = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<StoredFile> => {
+    const { data, error } = await bucketRef
+      .download(key, undefined, fetchParams(signal))
+      .asStream();
     if (error) {
       throw mapSupabaseError(error);
     }
@@ -376,8 +389,15 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     );
   };
 
-  const downloadAsBufferFile = async (key: string): Promise<StoredFile> => {
-    const { data, error } = await bucketRef.download(key);
+  const downloadAsBufferFile = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<StoredFile> => {
+    const { data, error } = await bucketRef.download(
+      key,
+      undefined,
+      fetchParams(signal)
+    );
     if (error) {
       throw mapSupabaseError(error);
     }
@@ -428,9 +448,9 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     },
     download(key, downloadOpts) {
       if (downloadOpts?.as === "stream") {
-        return downloadAsStreamFile(key);
+        return downloadAsStreamFile(key, downloadOpts?.signal);
       }
-      return downloadAsBufferFile(key);
+      return downloadAsBufferFile(key, downloadOpts?.signal);
     },
     async exists(key) {
       const { error } = await bucketRef.info(key);
@@ -477,10 +497,14 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           `supabase: invalid list cursor "${options?.cursor}" — expected a non-negative integer.`
         );
       }
-      const { data, error } = await bucketRef.list(options?.prefix ?? "", {
-        limit,
-        offset,
-      });
+      const { data, error } = await bucketRef.list(
+        options?.prefix ?? "",
+        {
+          limit,
+          offset,
+        },
+        fetchParams(options?.signal)
+      );
       if (error) {
         throw mapSupabaseError(error);
       }

@@ -436,6 +436,24 @@ describe("dropbox adapter", () => {
     }
   });
 
+  test("download (stream) forwards the signal to the temporary-link fetch", async () => {
+    const originalFetch = globalThis.fetch;
+    let seenSignal: AbortSignal | undefined;
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      seenSignal = init?.signal ?? undefined;
+      return Promise.resolve(new Response("hi", { status: 200 }));
+    }) as typeof fetch;
+    try {
+      const files = new Files({ adapter: dropbox(baseOpts) });
+      await files.upload("a.txt", "hi");
+      const { signal } = new AbortController();
+      await files.download("a.txt", { as: "stream", signal });
+      expect(seenSignal).toBe(signal);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("head returns metadata with lazy body factory", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });
