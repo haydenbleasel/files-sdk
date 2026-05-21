@@ -763,7 +763,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           });
           const tmpResult = tmp.result;
           const meta = fileMetaFromDropbox(tmpResult.metadata);
-          const linkRes = await fetch(tmpResult.link);
+          // The buffer path below goes through the Dropbox SDK's own
+          // transport, which exposes no cancellation; only this temporary-link
+          // fetch can carry the signal.
+          const linkRes = await fetch(
+            tmpResult.link,
+            downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
+          );
           if (!linkRes.ok || !linkRes.body) {
             throw new FilesError(
               "Provider",

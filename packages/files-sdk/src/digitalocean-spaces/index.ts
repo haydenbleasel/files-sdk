@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface DigitalOceanSpacesAdapterOptions {
+  /** Spaces name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Spaces datacenter region, e.g. `"nyc3"`, `"sfo3"`, `"ams3"`, `"fra1"`,
@@ -19,7 +20,15 @@ export interface DigitalOceanSpacesAdapterOptions {
    * — the SDK prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `DO_SPACES_KEY`; required if that env
+   * var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `DO_SPACES_SECRET`; required if that
+   * env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

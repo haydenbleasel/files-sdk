@@ -4,6 +4,9 @@ import { Readable } from "node:stream";
 
 import { Files, FilesError } from "../src/index.js";
 
+const lastOptsOf = (m: { mock: { calls: unknown[][] } }) =>
+  m.mock.calls.at(-1)?.at(-1) as { abortSignal?: AbortSignal } | undefined;
+
 const STABLE_LAST_MODIFIED = "2024-01-02T03:04:05.000Z";
 const STABLE_LAST_MODIFIED_MS = new Date(STABLE_LAST_MODIFIED).getTime();
 const ACCOUNT = "acct";
@@ -1394,6 +1397,63 @@ describe("azure adapter", () => {
       } catch (error) {
         expect((error as FilesError).code).toBe("Provider");
       }
+    });
+  });
+
+  describe("signal forwarding", () => {
+    const makeFiles = () =>
+      new Files({
+        adapter: azure({
+          accountKey: "secret",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+
+    test("upload forwards the signal to uploadData", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().upload("a.txt", "hello", { signal });
+      expect(lastOptsOf(uploadDataMock)?.abortSignal).toBe(signal);
+    });
+
+    test("download forwards the signal to download/downloadToBuffer", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().download("a.txt", { signal });
+      expect(lastOptsOf(downloadMock)?.abortSignal).toBe(signal);
+      expect(lastOptsOf(downloadToBufferMock)?.abortSignal).toBe(signal);
+    });
+
+    test("head forwards the signal to getProperties", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().head("a.txt", { signal });
+      expect(lastOptsOf(getPropertiesMock)?.abortSignal).toBe(signal);
+    });
+
+    test("delete forwards the signal to deleteIfExists", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().delete("a.txt", { signal });
+      expect(lastOptsOf(deleteIfExistsMock)?.abortSignal).toBe(signal);
+    });
+
+    test("exists forwards the signal to exists", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().exists("a.txt", { signal });
+      expect(lastOptsOf(existsMock)?.abortSignal).toBe(signal);
+    });
+
+    test("copy forwards the signal to syncCopyFromURL", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().copy("a.txt", "b.txt", { signal });
+      expect(lastOptsOf(syncCopyFromURLMock)?.abortSignal).toBe(signal);
+    });
+
+    test("list forwards the signal to listBlobsFlat", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().list({ signal });
+      expect(
+        (listBlobsFlatMock.lastOpts as { abortSignal?: AbortSignal })
+          ?.abortSignal
+      ).toBe(signal);
     });
   });
 });

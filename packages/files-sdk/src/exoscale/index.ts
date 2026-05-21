@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface ExoscaleAdapterOptions {
+  /** Exoscale bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * Exoscale zone code (Exoscale calls these zones rather than regions),
@@ -22,7 +23,15 @@ export interface ExoscaleAdapterOptions {
    * prepends the bucket subdomain for virtual-hosted style.
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `EXOSCALE_API_KEY`; required if that
+   * env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `EXOSCALE_API_SECRET`; required if
+   * that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

@@ -180,6 +180,13 @@ const prefixFilter = (
   prefix: string
 ): string => pb.filter(`${keyField} ~ {:p}`, { p: `${prefix}%` });
 
+// PocketBase's `SendOptions` extends `RequestInit`, so it carries `signal`
+// directly. Forward the operation's AbortSignal as a `SendOptions` arg; return
+// `undefined` when there's no signal so we leave the call untouched.
+const sendOpts = (
+  signal: AbortSignal | undefined
+): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
+
 export const pocketbase = (
   opts: PocketBaseAdapterOptions
 ): PocketBaseAdapter => {
@@ -237,9 +244,15 @@ export const pocketbase = (
     await authPromise;
   };
 
-  const findRecord = async (key: string): Promise<FileRecord> => {
+  const findRecord = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<FileRecord> => {
     await ensureAuth();
-    return records().getFirstListItem(keyFilter(pb, keyField, key));
+    return records().getFirstListItem(
+      keyFilter(pb, keyField, key),
+      sendOpts(signal)
+    );
   };
 
   const filenameOf = (record: FileRecord): string => {
@@ -253,7 +266,10 @@ export const pocketbase = (
     return raw;
   };
 
-  const downloadBytes = async (record: FileRecord): Promise<Uint8Array> => {
+  const downloadBytes = async (
+    record: FileRecord,
+    signal?: AbortSignal
+  ): Promise<Uint8Array> => {
     const filename = filenameOf(record);
     // Pre-fetch a file token so private collections work. PocketBase's file
     // token endpoint requires auth; for fully-public collections an
@@ -262,7 +278,7 @@ export const pocketbase = (
     let token: string | undefined;
     if (pb.authStore.isValid) {
       try {
-        token = await pb.files.getToken();
+        token = await pb.files.getToken(sendOpts(signal));
       } catch {
         // Token issuance failed — the collection may be fully public, in
         // which case the unsigned URL is sufficient. If not, the fetch
@@ -270,7 +286,7 @@ export const pocketbase = (
       }
     }
     const url = pb.files.getURL(record, filename, token ? { token } : {});
-    const res = await fetch(url);
+    const res = await fetch(url, signal ? { signal } : undefined);
     if (!res.ok) {
       throw new FilesError(
         res.status === 404 ? "NotFound" : "Provider",
@@ -322,10 +338,10 @@ export const pocketbase = (
 
   return {
     collection,
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
-        const source = await findRecord(from);
-        const bytes = await downloadBytes(source);
+        const source = await findRecord(from, operationOpts?.signal);
+        const bytes = await downloadBytes(source, operationOpts?.signal);
         const filename = filenameOf(source);
         const formData = new FormData();
         formData.append(keyField, to);
@@ -337,15 +353,15 @@ export const pocketbase = (
           filename
         );
         await ensureAuth();
-        await records().create(formData);
+        await records().create(formData, sendOpts(operationOpts?.signal));
       } catch (error) {
         throw mapPocketBaseError(error);
       }
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       try {
-        const record = await findRecord(key);
-        await records().delete(record.id);
+        const record = await findRecord(key, operationOpts?.signal);
+        await records().delete(record.id, sendOpts(operationOpts?.signal));
       } catch (error) {
         const mapped = mapPocketBaseError(error);
         // Delete is idempotent in the rest of the SDK; mirror that behavior
@@ -356,10 +372,10 @@ export const pocketbase = (
         throw mapped;
       }
     },
-    async download(key, _downloadOpts) {
+    async download(key, downloadOpts) {
       try {
-        const record = await findRecord(key);
-        const bytes = await downloadBytes(record);
+        const record = await findRecord(key, downloadOpts?.signal);
+        const bytes = await downloadBytes(record, downloadOpts?.signal);
         const updated =
           typeof record.updated === "string"
             ? new Date(record.updated).getTime()
@@ -382,12 +398,15 @@ export const pocketbase = (
         throw mapPocketBaseError(error);
       }
     },
-    exists(key) {
-      return existsByProbe(() => findRecord(key), mapPocketBaseError);
+    exists(key, operationOpts) {
+      return existsByProbe(
+        () => findRecord(key, operationOpts?.signal),
+        mapPocketBaseError
+      );
     },
-    async head(key) {
+    async head(key, operationOpts) {
       try {
-        const record = await findRecord(key);
+        const record = await findRecord(key, operationOpts?.signal);
         return recordToStored(record, key);
       } catch (error) {
         throw mapPocketBaseError(error);
@@ -415,6 +434,7 @@ export const pocketbase = (
           {
             sort: keyField,
             ...(filter && { filter }),
+            ...(listOpts?.signal && { signal: listOpts.signal }),
           }
         );
         const items = response.items.map((record) =>
@@ -467,7 +487,8 @@ export const pocketbase = (
         let existing: FileRecord | undefined;
         try {
           existing = await records().getFirstListItem(
-            keyFilter(pb, keyField, key)
+            keyFilter(pb, keyField, key),
+            sendOpts(uploadOpts?.signal)
           );
         } catch (error) {
           if (!(error instanceof ClientResponseError) || error.status !== 404) {
@@ -479,12 +500,19 @@ export const pocketbase = (
         if (existing) {
           const formData = new FormData();
           formData.append(fileField, blob, filename);
-          record = await records().update(existing.id, formData);
+          record = await records().update(
+            existing.id,
+            formData,
+            sendOpts(uploadOpts?.signal)
+          );
         } else {
           const formData = new FormData();
           formData.append(keyField, key);
           formData.append(fileField, blob, filename);
-          record = await records().create(formData);
+          record = await records().create(
+            formData,
+            sendOpts(uploadOpts?.signal)
+          );
         }
 
         const lastModified = record.updated
@@ -515,12 +543,12 @@ export const pocketbase = (
         return `${trimmed}/${encodeURIComponent(key)}`;
       }
       try {
-        const record = await findRecord(key);
+        const record = await findRecord(key, urlOpts?.signal);
         const filename = filenameOf(record);
         let token: string | undefined;
         if (pb.authStore.isValid) {
           try {
-            token = await pb.files.getToken();
+            token = await pb.files.getToken(sendOpts(urlOpts?.signal));
           } catch {
             // Token issuance failed — fall back to unsigned URL. If the
             // collection requires auth, the URL will 4xx when fetched.

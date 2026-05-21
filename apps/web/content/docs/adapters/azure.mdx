@@ -1,0 +1,46 @@
+---
+title: Azure Blob Storage
+description: Azure Blob Storage via @azure/storage-blob. Five credential modes - connection string, account key, token credential, SAS token, or anonymous.
+peerDeps:
+  - "@azure/storage-blob"
+---
+
+## Installation
+
+`@azure/storage-blob` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @azure/storage-blob
+```
+
+## Usage
+
+Azure Blob Storage via the official `@azure/storage-blob` SDK. Five credential modes: connection string, account name + account key, account name + token credential, account name + SAS token, or anonymous (public-read containers only). Connection-string parsing recovers the account name + key so signing methods keep working.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+import { DefaultAzureCredential } from "@azure/identity";
+
+const files = new Files({
+  adapter: azure({
+    container: "uploads",
+    // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
+    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
+    // Pass connectionString / accountKey / credential / sasToken to override.
+    // accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
+    // credential: new DefaultAzureCredential(), // Azure AD / Managed Identity
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/azure/index.ts"
+  name="AzureAdapterOptions"
+/>
+
+## Limitations
+
+`signedUploadUrl()` issues PUT-only - Azure SAS has no POST-policy equivalent. `maxSize` throws because Azure can't enforce upload caps at the URL level; enforce them at your application gateway. `copy()` uses `syncCopyFromURL`, which caps at 256 MB source size; larger blobs need `beginCopyFromURL` via `adapter.raw`. Azure AD / Managed Identity is supported via the `credential` option (install `@azure/identity`); it authenticates SDK calls and mints User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and `copy()`. The principal needs blob data access plus permission to call `generateUserDelegationKey`.

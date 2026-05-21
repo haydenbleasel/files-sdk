@@ -1,8 +1,38 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "fumadocs-ui/css/shadcn.css";
+@import "fumadocs-ui/css/preset.css";
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
 
 @custom-variant dark (&:is(.dark *));
+
+figure.shiki {
+  box-shadow: none;
+}
+
+/* Geist Mono ships ligatures/contextual alternates/kerning that shape across
+   shiki's per-token <span> boundaries, collapsing glyphs (e.g. `=== 0`
+   overlapping on /ai#openai-tools-responses). Disable them in code blocks;
+   these properties inherit, so setting them on the figure covers pre/code. */
+figure.shiki,
+figure.shiki code,
+figure.shiki pre {
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
 
 @theme inline {
   --color-background: var(--background);
@@ -115,109 +145,4 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
-}
-
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-
-  body {
-    @apply bg-background text-foreground;
-  }
-
-  main {
-    @apply flex flex-col gap-12;
-  }
-
-  main section {
-    @apply flex flex-col gap-3;
-  }
-
-  main section section {
-    @apply flex flex-col gap-3 pt-6;
-  }
-
-  section.hero {
-    @apply gap-4;
-  }
-
-  h1,
-  h2 {
-    @apply text-base;
-  }
-
-  h3 {
-    @apply font-mono;
-    font-size: 0.8125rem;
-  }
-
-  h4 {
-    @apply font-mono uppercase tracking-wider text-muted-foreground;
-    font-size: 0.6875rem;
-  }
-
-  h1,
-  h2,
-  h3,
-  h4 {
-    @apply font-medium tracking-tight text-foreground;
-  }
-
-  :is(h1, h2, h3, h4) > a {
-    @apply text-inherit no-underline border-b border-dotted inline-block transition-colors;
-  }
-
-  :is(h1, h2, h3, h4) > a:hover {
-    @apply border-muted-foreground/50;
-  }
-
-  p {
-    @apply text-pretty text-muted-foreground text-base leading-relaxed sm:text-sm;
-    overflow-wrap: anywhere;
-  }
-
-  section.hero > p {
-    @apply text-base text-foreground;
-  }
-
-  ul,
-  ol {
-    @apply flex text-base leading-relaxed flex-col gap-2 pl-5 list-disc text-muted-foreground sm:text-sm;
-    overflow-wrap: anywhere;
-  }
-
-  li::marker {
-    color: --alpha(var(--color-muted-foreground) / 40%);
-  }
-
-  :not(pre) > code {
-    @apply px-1 rounded-sm bg-muted font-mono text-foreground;
-    overflow-wrap: anywhere;
-    /* Geist Mono's contextual alternates collapse `--` against adjacent
-       text (and across DOM boundaries with Shiki). See code-block.tsx for
-       the matching reset on syntax-highlighted blocks. */
-    font-feature-settings:
-      "liga" 0,
-      "calt" 0;
-    font-variant-ligatures: none;
-  }
-}
-
-.dark .shiki,
-.dark .shiki span {
-  color: var(--shiki-dark) !important;
-  background-color: var(--shiki-dark-bg) !important;
-  font-style: var(--shiki-dark-font-style) !important;
-  font-weight: var(--shiki-dark-font-weight) !important;
-  text-decoration: var(--shiki-dark-text-decoration) !important;
-}
-
-@utility scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
 }

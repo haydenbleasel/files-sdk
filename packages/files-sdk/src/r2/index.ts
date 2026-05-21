@@ -15,7 +15,11 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
-import { DEFAULT_URL_EXPIRES_IN, joinPublicUrl } from "../internal/core.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
+  joinPublicUrl,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -26,9 +30,22 @@ import { createStoredFile } from "../internal/stored-file.js";
 import type { S3Adapter, S3AdapterOptions } from "../s3/index.js";
 
 export interface R2HttpOptions {
+  /** R2 bucket name. */
   bucket: string;
+  /**
+   * Cloudflare account ID. Falls back to `R2_ACCOUNT_ID` env var; required
+   * if no env var is set.
+   */
   accountId?: string;
+  /**
+   * R2 access key ID. Falls back to `R2_ACCESS_KEY_ID` env var; required if
+   * no env var is set.
+   */
   accessKeyId?: string;
+  /**
+   * R2 secret access key. Falls back to `R2_SECRET_ACCESS_KEY` env var;
+   * required if no env var is set.
+   */
   secretAccessKey?: string;
   /**
    * Origin used to build URLs from `url()` — typically an `r2.dev`
@@ -45,7 +62,9 @@ export interface R2HttpOptions {
 }
 
 export interface R2BindingOptions {
+  /** Workers `R2Bucket` binding. Reads and writes go through the binding. */
   binding: R2Bucket;
+  /** R2 bucket name. Only used to label errors when reading via the binding. */
   bucket?: string;
   /**
    * Origin used to build URLs from `url()` — typically an `r2.dev`
@@ -55,17 +74,17 @@ export interface R2BindingOptions {
    */
   publicBaseUrl?: string;
   /**
-   * Hybrid mode: provide HTTP credentials alongside a Workers binding.
-   * When all three are set, `url()` (when no `publicBaseUrl` is
-   * configured, or when `responseContentDisposition` is requested) and
-   * `signedUploadUrl()` route through the S3-compatible HTTP signer
-   * instead of throwing. Reads and writes still go through
-   * the binding so they stay intra-Worker (no egress fees, no extra
-   * round trip). Useful for Workers that need browser-facing presigned
-   * URLs without giving up the binding's I/O performance.
+   * Hybrid mode: Cloudflare account ID, used alongside `accessKeyId` +
+   * `secretAccessKey` so `url()` and `signedUploadUrl()` can fall back to
+   * the S3-compatible HTTP signer instead of throwing. Reads and writes
+   * still go through the binding so they stay intra-Worker (no egress
+   * fees). Useful for Workers that need browser-facing presigned URLs
+   * without giving up the binding's I/O performance.
    */
   accountId?: string;
+  /** Hybrid mode: R2 access key ID. See `accountId`. */
   accessKeyId?: string;
+  /** Hybrid mode: R2 secret access key. See `accountId`. */
   secretAccessKey?: string;
   /**
    * Default expiry, in seconds, for `url()` when it falls back to HTTP
@@ -492,6 +511,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     async delete(key) {
       const adapter = await ensure();
       return adapter.delete(key);
+    },
+    async deleteMany(keys, deleteOpts) {
+      const adapter = await ensure();
+      return (
+        adapter.deleteMany?.(keys, deleteOpts) ??
+        deleteManyWithFallback(keys, (key) => adapter.delete(key), deleteOpts)
+      );
     },
     async download(key, downloadOpts) {
       const adapter = await ensure();

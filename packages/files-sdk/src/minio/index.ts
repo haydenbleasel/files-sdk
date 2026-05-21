@@ -6,11 +6,34 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface MinioAdapterOptions {
+  /** MinIO bucket name. The adapter scopes all operations to it. */
   bucket: string;
+  /**
+   * MinIO server URL, e.g. `http://localhost:9000`. Include the scheme —
+   * `http://` for local dev, `https://` in production.
+   */
   endpoint: string;
+  /**
+   * Static credentials. Falls back to `MINIO_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `MINIO_SECRET_ACCESS_KEY`; required if
+   * that env var isn't set.
+   */
   secretAccessKey?: string;
+  /**
+   * SigV4 region used for signing. Defaults to `us-east-1`. SigV4 requires
+   * some region in the signature, but MinIO ignores it for routing — leave
+   * the default unless you've configured per-region buckets.
+   */
   region?: string;
+  /**
+   * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted
+   * style. Defaults to `true` for MinIO; flip off only if you've set up
+   * per-bucket subdomain routing in front of your server.
+   */
   forcePathStyle?: boolean;
   /**
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
