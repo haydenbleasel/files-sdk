@@ -185,6 +185,10 @@
       "types": "./dist/cloudinary/index.d.ts",
       "import": "./dist/cloudinary/index.js"
     },
+    "./convex": {
+      "types": "./dist/convex/index.d.ts",
+      "import": "./dist/convex/index.js"
+    },
     "./sharepoint": {
       "types": "./dist/sharepoint/index.d.ts",
       "import": "./dist/sharepoint/index.js"
@@ -238,6 +242,7 @@
     "aws-sdk-client-mock": "^4.1.0",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
+    "convex": "^1.16.0",
     "dropbox": "^10.34.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^9.15.1",
@@ -268,6 +273,7 @@
     "ai": "^6.0.0",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
+    "convex": "^1.16.0",
     "dropbox": "^10.34.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^9.15.1",
@@ -330,6 +336,9 @@
       "optional": true
     },
     "cloudinary": {
+      "optional": true
+    },
+    "convex": {
       "optional": true
     },
     "dropbox": {

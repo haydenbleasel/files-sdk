@@ -45,6 +45,7 @@ export default defineConfig({
     "src/claude/index.ts",
     "src/appwrite/index.ts",
     "src/cloudinary/index.ts",
+    "src/convex/index.ts",
     "src/sharepoint/index.ts",
     "src/firebase-storage/index.ts",
     "src/pocketbase/index.ts",

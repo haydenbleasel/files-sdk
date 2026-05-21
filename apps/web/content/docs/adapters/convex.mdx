@@ -1,0 +1,73 @@
+---
+title: Convex
+description: Convex file storage via the function context (ctx.storage). Runs inside Convex actions/mutations/queries; the Convex-assigned storage id is the key.
+peerDeps:
+  - "convex"
+---
+
+## Installation
+
+`convex` is already in your project if you're using Convex. It's declared as an optional peer dependency so the adapter's types resolve.
+
+```package-install
+files-sdk convex
+```
+
+## Usage
+
+Convex file storage is only reachable from inside a Convex function — there's no external REST API. So this adapter wraps the function context (`ctx`) and is constructed **per request**, inside your `action`, `mutation`, or `query` handlers.
+
+Convex assigns an opaque storage id (`Id<"_storage">`) on upload — you don't choose it. The adapter therefore treats that id as the unified `key`: `upload()` ignores the key you pass and returns the assigned id as `UploadResult.key`, and `download`/`head`/`delete`/`url` take that id as the key.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { convex } from "files-sdk/convex";
+import { action, query } from "./_generated/server";
+import { v } from "convex/values";
+
+// Upload + download need an *action* (Convex exposes ctx.storage.store /
+// ctx.storage.get only there). The returned key is the Convex storage id —
+// persist it in your own table to reference the file later.
+export const saveFile = action({
+  args: { bytes: v.bytes() },
+  handler: async (ctx, { bytes }) => {
+    const files = new Files({ adapter: convex({ ctx }) });
+    const { key, size } = await files.upload("ignored", new Uint8Array(bytes));
+    return { size, storageId: key };
+  },
+});
+
+// list() needs a *query* or *mutation* (it reads the _storage system table
+// via ctx.db). url() works in any context.
+export const listFiles = query({
+  handler: async (ctx) => {
+    const files = new Files({ adapter: convex({ ctx }) });
+    const { items } = await files.list({ limit: 100 });
+    return items.map((f) => ({ key: f.key, size: f.size, type: f.type }));
+  },
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/convex/index.ts"
+  name="ConvexAdapterOptions"
+/>
+
+## Storage layout
+
+Files live in Convex storage, tracked by the built-in `_storage` system table. Each file's `key` is its `Id<"_storage">`. Metadata maps from that table: `size` → `size`, `contentType` → `type`, `sha256` → `etag`, `_creationTime` → `lastModified`. Convex has no user-metadata field, so `metadata` is always `undefined`.
+
+## Limitations
+
+The available operations depend on the context Convex gives you, and the adapter throws a descriptive error when a primitive is missing:
+
+- **`upload()` / `download()` require an action** — `ctx.storage.store` / `ctx.storage.get` don't exist in queries or mutations.
+- **`list()` requires a query or mutation** — it reads the `_storage` system table via `ctx.db`, which actions don't have. `prefix` filters by literal id prefix and is rarely meaningful for opaque ids.
+- **`delete()` / `signedUploadUrl()` require a writer** (mutation or action). `delete()` is idempotent.
+- **The key is the Convex storage id.** The key passed to `upload()` is ignored; `UploadResult.key` is the assigned id. Don't set `prefix` on `Files` with this adapter — it would corrupt the id.
+- **`copy()` is not supported** — Convex assigns immutable ids and can't copy to a chosen key. `download()` then `upload()` and track the new id.
+- **`metadata` and `cacheControl` are not supported** — the `_storage` table has no fields for them. Store extra data in your own table keyed by the storage id.
+- **`url()` returns a permanent serving URL** (it stays valid while the file exists), so `expiresIn` is ignored. `responseContentDisposition` throws — serve untrusted content through your own HTTP action.
+- **`signedUploadUrl()` returns a raw-body `POST` target** (`{ method: "POST", url, fields: {} }`). The browser POSTs the file as the request body (not multipart form data); the response JSON `{ storageId }` is the file's key. Convex controls the ~1-hour expiry, so `expiresIn` / `maxSize` / `minSize` / `contentType` are ignored.

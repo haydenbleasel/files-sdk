@@ -488,6 +488,18 @@ export const PROVIDERS = {
     peerDeps: ["cloudinary"],
     slug: "cloudinary",
   },
+  convex: {
+    description:
+      "Convex file storage via the function context (ctx.storage). Used inside Convex actions/mutations/queries; the Convex-assigned storage id is the key.",
+    env: {
+      config: ["ctx (Convex function context)"],
+      notes:
+        "No credentials — constructed with the live ctx inside a Convex function. upload/download need an action; list needs a query/mutation.",
+    },
+    name: "Convex",
+    peerDeps: ["convex"],
+    slug: "convex",
+  },
   "digitalocean-spaces": {
     description:
       "DigitalOcean Spaces via the S3-compatible API. Endpoint derived from the region, virtual-hosted addressing.",

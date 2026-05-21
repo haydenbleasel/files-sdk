@@ -72,6 +72,7 @@ const ADAPTERS = [
     parent: "Firebase Storage",
   },
   { key: "pocketbase", label: "PocketBase", parent: "PocketBase" },
+  { key: "convex", label: "Convex", parent: "Convex" },
 ] as const;
 
 type AdapterKey = (typeof ADAPTERS)[number]["key"];
@@ -108,6 +109,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       ),
       cloudinary: warn(
         "Bodies are buffered into memory and handed to `upload_stream` - Cloudinary's SDK has no streaming form. User `metadata` and `cacheControl` throw - Cloudinary has no per-asset HTTP cache header and no arbitrary-metadata field on upload; drop to `raw` for `context`. Uploads are scoped to the adapter's `resourceType`/`type` and overwrite (`invalidate: true`)."
+      ),
+      convex: warn(
+        "Requires an action context — `ctx.storage.store` exists only in actions, so calling `upload` from a mutation or query throws. The caller-supplied key is ignored: Convex assigns the storage id, which is returned as the key. Stream bodies are buffered up-front since `store` takes a Blob. User `metadata` and `cacheControl` throw — the `_storage` table is fixed to contentType/sha256/size."
       ),
       dropbox: warn(
         "Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw - Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it."
@@ -170,6 +174,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       cloudinary: warn(
         "No streaming primitive - the adapter fetches the delivery URL with `fetch()` to read bytes, so streamed downloads still buffer the body in memory. Metadata comes from a parallel `api.resource` call."
       ),
+      convex: warn(
+        "Requires an action context — `ctx.storage.get` exists only in actions, so calling `download` from a mutation or query throws. The body is buffered into memory: Convex returns a Blob, not a stream."
+      ),
       dropbox: warn(
         "`filesDownload` buffers the full body - the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body."
       ),
@@ -221,6 +228,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       "bun-s3": ok,
       bunny: ok,
       cloudinary: ok,
+      convex: warn(
+        "Requires a writer context (mutation or action); throws in queries. Idempotent — deleting a missing id is a no-op."
+      ),
       dropbox: ok,
       exoscale: ok,
       filebase: ok,
@@ -273,6 +283,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       ),
       cloudinary: warn(
         "Page size clamped to 500 (Cloudinary Admin API ceiling). Resources are scoped by `resource_type` and `type` at adapter construction, so mixed-type buckets need separate adapters. Pagination uses Cloudinary's opaque `next_cursor`."
+      ),
+      convex: warn(
+        "Requires a query or mutation context — it reads the `_storage` system table via `ctx.db`, which actions don't have. `prefix` filters by literal storage-id prefix and is rarely meaningful for opaque ids. Pagination uses Convex's `paginate` cursor. List items expose lazy bodies, so reading them needs an action context."
       ),
       dropbox: warn(
         "Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`."
@@ -339,6 +352,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       "bun-s3": ok,
       bunny: ok,
       cloudinary: ok,
+      convex: warn(
+        "Reads metadata from the `_storage` system table (`ctx.db.system`) in queries/mutations, or the deprecated `ctx.storage.getMetadata` in actions. The returned body is lazy — reading it calls `ctx.storage.get`, which requires an action context."
+      ),
       dropbox: warn(
         "Dropbox doesn't store user-supplied content types - `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field."
       ),
@@ -394,6 +410,7 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       "bun-s3": ok,
       bunny: ok,
       cloudinary: ok,
+      convex: ok,
       dropbox: warn(
         "Resolves via `filesGetMetadata` and returns `false` for folder or deleted entries at the path - matches Dropbox's semantics where the same path can hold a folder or a tombstone. Only true file entries return `true`."
       ),
@@ -456,6 +473,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       ),
       cloudinary: warn(
         "Re-upload by URL - Cloudinary has no native copy and `rename` is move-only. The adapter fetches the source delivery URL and ingests it as a new asset under `to`. Produces a new `asset_id`/`etag`, not a byte-identical reference. Costs an egress + an ingest; not atomic."
+      ),
+      convex: no(
+        "Throws — Convex assigns immutable storage ids and can't copy to a caller-chosen key. Download the source and `upload()` a new file, then track the new id."
       ),
       dropbox: ok,
       exoscale: ok,
@@ -527,6 +547,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       ),
       cloudinary: warn(
         "Public delivery URLs by default (`type: 'upload'`). For `private`/`authenticated` types, mints a signed delivery URL via `private_download_url` (requires `apiSecret` and the asset's stored format - costs a HEAD round-trip per call). `responseContentDisposition` always throws - Cloudinary has no per-request Content-Disposition override (drop to `raw` for the `attachment` flag)."
+      ),
+      convex: warn(
+        "Returns Convex's permanent serving URL (`getUrl`) — it stays valid while the file exists, so `expiresIn` is ignored. `responseContentDisposition` throws: Convex serving URLs have no Content-Disposition override; serve untrusted content through your own HTTP action."
       ),
       dropbox: warn(
         "Default mints a 4-hour temporary link via `filesGetTemporaryLink` - `expiresIn` is honored up to Dropbox's 14400s (4h) cap; values above throw. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Dropbox links have no Content-Disposition override."
@@ -610,6 +633,9 @@ const ROWS: { method: string; cells: Record<AdapterKey, Cell> }[] = [
       ),
       cloudinary: warn(
         "Form-POST shape with `fields` (`method: 'POST'`), not a single presigned PUT URL - signs Cloudinary's `api_sign_request` payload. Requires `apiSecret`. `maxSize` and `minSize` aren't enforced server-side - use an upload preset with `max_file_size` if you need a cap. `expiresIn` is informational - Cloudinary signatures are fixed at 1h."
+      ),
+      convex: warn(
+        "Returns Convex's `generateUploadUrl` as a raw-body POST: the client POSTs the file as the request body (not multipart form-data) and the response `{ storageId }` is the key. Requires a writer context (mutation or action). `expiresIn`/`maxSize`/`minSize`/`contentType` are ignored — Convex fixes the ~1h expiry and binds no size or content-type."
       ),
       dropbox: no(
         "Throws - Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads."
