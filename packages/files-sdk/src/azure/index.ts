@@ -107,6 +107,13 @@ export type AzureAdapter = Adapter<BlobServiceClient> & {
 
 const COPY_SOURCE_SAS_SECONDS = 300;
 const USER_DELEGATION_KEY_SLACK_MS = 5 * 60 * 1000;
+// How long a freshly minted key stays reusable beyond the SAS it was first
+// requested for, so back-to-back url()/signedUploadUrl() calls share one key
+// instead of fetching one per URL.
+const USER_DELEGATION_KEY_TTL_MS = 60 * 60 * 1000;
+// Azure rejects user delegation keys whose lifetime exceeds 7 days from
+// `startsOn`; clamp our requested expiry so we never ask for an invalid key.
+const USER_DELEGATION_KEY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 
 const AZURE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "BlobNotFound",
@@ -334,17 +341,22 @@ const getUserDelegationKey = async (
   startsOn: Date,
   sasExpiresOn: Date
 ): Promise<UserDelegationKey> => {
-  const keyExpiresOn = new Date(
-    Math.max(
-      sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS,
-      Date.now() + DEFAULT_URL_EXPIRES_IN * 1000 + USER_DELEGATION_KEY_SLACK_MS
-    )
-  );
+  // The cached key must outlive every SAS it signs, with slack for clock skew.
+  const requiredUntil = sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS;
   if (
     !signer.cachedKey ||
-    signer.cachedKey.expiresOn.getTime() <=
-      sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS
+    signer.cachedKey.expiresOn.getTime() <= requiredUntil
   ) {
+    // Mint the key with a reuse window *beyond* what this SAS needs (capped at
+    // Azure's 7-day max) so subsequent calls reuse it rather than refetching
+    // one key per URL — the previous expiry tracked the SAS exactly, so the
+    // common default-expiry path never hit the cache.
+    const keyExpiresOn = new Date(
+      Math.min(
+        requiredUntil + USER_DELEGATION_KEY_TTL_MS,
+        startsOn.getTime() + USER_DELEGATION_KEY_MAX_MS
+      )
+    );
     signer.cachedKey = {
       expiresOn: keyExpiresOn,
       key: await signer.client.getUserDelegationKey(startsOn, keyExpiresOn),

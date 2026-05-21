@@ -1040,6 +1040,27 @@ describe("azure adapter", () => {
       expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(2);
     });
 
+    test("TokenCredential mode reuses the cached key across default-expiry URLs", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      // Default expiry (no expiresIn) — the key's reuse window must extend
+      // beyond the SAS expiry, otherwise every call refetches the key.
+      await adapter.url("a.txt");
+      await adapter.url("b.txt");
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(2);
+    });
+
     test("TokenCredential mode can disable user delegation SAS signing", async () => {
       const adapter = azure({
         accountName: ACCOUNT,
