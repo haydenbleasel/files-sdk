@@ -399,6 +399,9 @@ export const uploadthing = (
         );
       }
       try {
+        // No documented per-request key cap, so send the whole list in one
+        // call. `deleteFiles` reports only whole-request failure, not per-key,
+        // so on error the mapped error is attributed to every key.
         await utapi.deleteFiles(keys);
         return { deleted: [...keys] };
       } catch (error) {

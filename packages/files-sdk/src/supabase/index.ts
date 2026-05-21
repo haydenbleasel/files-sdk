@@ -461,10 +461,15 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           mapSupabaseError
         );
       }
+      // Supabase has no documented per-request key cap, so the whole list is
+      // sent in one `remove()`. On success it doesn't report which keys
+      // actually existed; like `delete()`, a missing key counts as deleted.
       const { error } = await bucketRef.remove(keys);
       if (!error) {
         return { deleted: [...keys] };
       }
+      // `remove()` surfaces a single batch-level error rather than per-key
+      // failures, so map it onto every key.
       const mapped = mapSupabaseError(error);
       return {
         deleted: [],

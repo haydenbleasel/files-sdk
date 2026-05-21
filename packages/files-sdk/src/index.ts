@@ -628,25 +628,36 @@ export class Files<A extends Adapter = Adapter> {
       throw new FilesError("Provider", "keys must be an array");
     }
 
-    const errors: DeleteManyError[] = [];
+    // Track each error's position in the caller's array so the final
+    // `errors` list stays in input order, even when invalid keys (caught
+    // here) interleave with provider failures (reported by the adapter).
+    const errors: (DeleteManyError & { index: number })[] = [];
     // Adapters operate on prefixed paths; map each back so the result
     // reflects the keys the caller passed, not the internal path.
     const paths: string[] = [];
     const keyByPath = new Map<string, string>();
+    const indexByPath = new Map<string, number>();
 
-    for (const key of keys) {
+    for (const [index, key] of keys.entries()) {
       let path: string;
       try {
         path = this.#path(key);
       } catch (error) {
-        errors.push({ error: FilesError.wrap(error), key: String(key) });
         if (opts?.stopOnError) {
-          return { deleted: [], errors };
+          // Short-circuit before any delete is attempted.
+          return {
+            deleted: [],
+            errors: [{ error: FilesError.wrap(error), key: String(key) }],
+          };
         }
+        errors.push({ error: FilesError.wrap(error), index, key: String(key) });
         continue;
       }
       paths.push(path);
-      keyByPath.set(path, key);
+      if (!keyByPath.has(path)) {
+        keyByPath.set(path, key);
+        indexByPath.set(path, index);
+      }
     }
 
     const toKey = (path: string): string => keyByPath.get(path) ?? path;
@@ -660,15 +671,22 @@ export class Files<A extends Adapter = Adapter> {
         );
 
     const deleted = result.deleted.map(toKey);
-    const adapterErrors = (result.errors ?? []).map((entry) => ({
-      error: entry.error,
-      key: toKey(entry.key),
-    }));
+    for (const entry of result.errors ?? []) {
+      errors.push({
+        error: entry.error,
+        index: indexByPath.get(entry.key) ?? Number.MAX_SAFE_INTEGER,
+        key: toKey(entry.key),
+      });
+    }
 
-    if (errors.length === 0 && adapterErrors.length === 0) {
+    if (errors.length === 0) {
       return { deleted };
     }
-    return { deleted, errors: [...errors, ...adapterErrors] };
+    errors.sort((a, b) => a.index - b.index);
+    return {
+      deleted,
+      errors: errors.map(({ error, key }) => ({ error, key })),
+    };
   }
 
   copy(from: string, to: string, opts?: OperationOptions): Promise<void> {

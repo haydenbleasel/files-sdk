@@ -13,7 +13,6 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
-  deleteManyWithFallback,
   existsByProbe,
   joinPublicUrl,
 } from "../internal/core.js";
@@ -750,14 +749,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         }
         throw mapped;
       }
-    },
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(
-        keys,
-        (key) => adapter.delete(key),
-        deleteOpts,
-        mapDropboxError
-      );
     },
     async download(key, downloadOpts) {
       try {

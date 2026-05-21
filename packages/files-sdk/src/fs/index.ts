@@ -16,7 +16,6 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
-  deleteManyWithFallback,
   existsByProbe,
   joinPublicUrl,
 } from "../internal/core.js";
@@ -347,18 +346,6 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     });
   };
 
-  const deleteOne = async (key: string): Promise<void> => {
-    const bodyPath = resolveKeyPath(root, key);
-    try {
-      // `force: true` makes both unlinks idempotent — matches the
-      // silent-on-missing behavior of S3/Azure.
-      await fsp.rm(bodyPath, { force: true });
-      await fsp.rm(sidecarPathOf(bodyPath), { force: true });
-    } catch (error) {
-      throw mapFsError(error);
-    }
-  };
-
   return {
     async copy(from, to) {
       const fromPath = resolveKeyPath(root, from);
@@ -378,9 +365,16 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         throw mapFsError(error);
       }
     },
-    delete: deleteOne,
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(keys, deleteOne, deleteOpts, mapFsError);
+    async delete(key) {
+      const bodyPath = resolveKeyPath(root, key);
+      try {
+        // `force: true` makes both unlinks idempotent — matches the
+        // silent-on-missing behavior of S3/Azure.
+        await fsp.rm(bodyPath, { force: true });
+        await fsp.rm(sidecarPathOf(bodyPath), { force: true });
+      } catch (error) {
+        throw mapFsError(error);
+      }
     },
     async download(key, downloadOpts) {
       const bodyPath = resolveKeyPath(root, key);

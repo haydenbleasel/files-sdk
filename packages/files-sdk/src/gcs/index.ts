@@ -17,7 +17,6 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
-  deleteManyWithFallback,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
@@ -174,16 +173,6 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
       } catch (error) {
         throw mapGCSError(error);
       }
-    },
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(
-        keys,
-        async (key) => {
-          await bucket.file(key).delete();
-        },
-        deleteOpts,
-        mapGCSError
-      );
     },
     async download(key, downloadOpts) {
       try {

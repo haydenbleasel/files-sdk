@@ -304,14 +304,6 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         throw mapR2Error(error);
       }
     },
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(
-        keys,
-        (key) => bucket.delete(key),
-        deleteOpts,
-        mapR2Error
-      );
-    },
     async download(key, downloadOpts) {
       let obj: Awaited<ReturnType<typeof bucket.get>>;
       try {

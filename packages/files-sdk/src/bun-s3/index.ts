@@ -1,7 +1,6 @@
 import type { Adapter, StoredFile } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
-  deleteManyWithFallback,
   joinPublicUrl,
   makeErrorMapper,
   resolveUrlStrategy,
@@ -297,14 +296,6 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       } catch (error) {
         throw mapBunS3Error(error);
       }
-    },
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(
-        keys,
-        (key) => client.delete(key),
-        deleteOpts,
-        mapBunS3Error
-      );
     },
     async download(key, downloadOpts) {
       try {

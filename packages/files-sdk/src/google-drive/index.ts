@@ -13,7 +13,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { deleteManyWithFallback, existsByProbe } from "../internal/core.js";
+import { existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -494,36 +494,6 @@ export const googleDrive = (
     return toUint8(res.data as unknown);
   };
 
-  const deleteOne = async (
-    key: string,
-    signal?: AbortSignal
-  ): Promise<void> => {
-    let fileId: string;
-    try {
-      fileId = await resolveFileId(key, signal);
-    } catch (error) {
-      // Idempotent: a missing file is not an error on delete.
-      if (error instanceof FilesError && error.code === "NotFound") {
-        return;
-      }
-      throw error;
-    }
-    try {
-      await driveClient.files.delete(
-        { ...sharedDriveParams, fileId },
-        signalOpts(signal)
-      );
-      fileIdCache.delete(key);
-    } catch (error) {
-      const mapped = mapDriveError(error);
-      if (mapped.code === "NotFound") {
-        fileIdCache.delete(key);
-        return;
-      }
-      throw mapped;
-    }
-  };
-
   return {
     async copy(from, to, operationOpts) {
       try {
@@ -549,9 +519,31 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
-    delete: (key, operationOpts) => deleteOne(key, operationOpts?.signal),
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(keys, deleteOne, deleteOpts, mapDriveError);
+    async delete(key, operationOpts) {
+      let fileId: string;
+      try {
+        fileId = await resolveFileId(key, operationOpts?.signal);
+      } catch (error) {
+        // Idempotent: a missing file is not an error on delete.
+        if (error instanceof FilesError && error.code === "NotFound") {
+          return;
+        }
+        throw error;
+      }
+      try {
+        await driveClient.files.delete(
+          { ...sharedDriveParams, fileId },
+          signalOpts(operationOpts?.signal)
+        );
+        fileIdCache.delete(key);
+      } catch (error) {
+        const mapped = mapDriveError(error);
+        if (mapped.code === "NotFound") {
+          fileIdCache.delete(key);
+          return;
+        }
+        throw mapped;
+      }
     },
     async download(key, downloadOpts) {
       try {

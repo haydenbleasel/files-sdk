@@ -12,7 +12,6 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
-import { deleteManyWithFallback } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { buildAuthProvider, onedrive } from "../onedrive/index.js";
@@ -335,12 +334,6 @@ export const sharepoint = (
   return {
     copy: (from: string, to: string) => call((inner) => inner.copy(from, to)),
     delete: (key: string) => call((inner) => inner.delete(key)),
-    deleteMany: (keys, deleteOpts) =>
-      call((inner) =>
-        inner.deleteMany
-          ? inner.deleteMany(keys, deleteOpts)
-          : deleteManyWithFallback(keys, (key) => inner.delete(key), deleteOpts)
-      ),
     download: (key: string, downloadOpts?: DownloadOptions) =>
       call((inner) => inner.download(key, downloadOpts)),
     exists: (key: string) => call((inner) => inner.exists(key)),

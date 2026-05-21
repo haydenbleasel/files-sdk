@@ -27,7 +27,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { deleteManyWithFallback, existsByProbe } from "../internal/core.js";
+import { existsByProbe } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -653,19 +653,6 @@ export const onedrive = (
     return url;
   };
 
-  const deleteOne = async (key: string): Promise<void> => {
-    try {
-      await client.api(itemApiPath(key)).delete();
-    } catch (error) {
-      const mapped = mapGraphError(error);
-      // Idempotent: missing item is not an error.
-      if (mapped.code === "NotFound") {
-        return;
-      }
-      throw mapped;
-    }
-  };
-
   return {
     basePath,
     async copy(from, to) {
@@ -715,9 +702,17 @@ export const onedrive = (
         throw mapGraphError(error);
       }
     },
-    delete: deleteOne,
-    deleteMany(keys, deleteOpts) {
-      return deleteManyWithFallback(keys, deleteOne, deleteOpts, mapGraphError);
+    async delete(key) {
+      try {
+        await client.api(itemApiPath(key)).delete();
+      } catch (error) {
+        const mapped = mapGraphError(error);
+        // Idempotent: missing item is not an error.
+        if (mapped.code === "NotFound") {
+          return;
+        }
+        throw mapped;
+      }
     },
     async download(key, downloadOpts) {
       try {

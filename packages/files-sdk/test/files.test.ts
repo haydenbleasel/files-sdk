@@ -181,6 +181,71 @@ describe("Files class", () => {
     expect(attempted).toEqual(["ok-1.txt", "fail/x.txt"]);
   });
 
+  test("deleteMany fallback bounds concurrency and preserves order", async () => {
+    const base = fakeAdapter();
+    // Drop the native bulk path so Files.deleteMany uses the worker pool.
+    const { deleteMany: _omitted, ...rest } = base;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const adapter: Adapter = {
+      ...rest,
+      async delete(key: string) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // Yield so overlapping workers pile up before any settles.
+        await Promise.resolve();
+        await Promise.resolve();
+        inFlight -= 1;
+        if (key.startsWith("fail/")) {
+          throw new FilesError("Provider", `nope: ${key}`);
+        }
+        await base.delete(key);
+      },
+    };
+    const files = new Files({ adapter });
+    const keys = [
+      "a.txt",
+      "fail/b.txt",
+      "c.txt",
+      "d.txt",
+      "fail/e.txt",
+      "f.txt",
+    ];
+
+    const result = await files.deleteMany(keys, { concurrency: 2 });
+
+    expect(result.deleted).toEqual(["a.txt", "c.txt", "d.txt", "f.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/b.txt",
+      "fail/e.txt",
+    ]);
+    // Never more than the configured limit in flight, but it did run > 1 at
+    // once (otherwise concurrency would be meaningless).
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  test("deleteMany orders errors by input position across validation and provider failures", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+
+    const result = await files.deleteMany(
+      ["fail/a.txt", "", "ok.txt", "fail/b.txt", "x\0y"],
+      { stopOnError: false }
+    );
+
+    expect(result.deleted).toEqual(["ok.txt"]);
+    // A provider failure, two invalid keys, and another provider failure —
+    // all reported in the original input order, not grouped by source.
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/a.txt",
+      "",
+      "fail/b.txt",
+      "x\0y",
+    ]);
+  });
+
   test("copy duplicates an object", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("from.txt", "payload");
