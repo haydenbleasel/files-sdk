@@ -100,14 +100,24 @@ export interface VercelBlobAdapterOptions {
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
 
+const withTimeoutSignal = (
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): AbortSignal | undefined => {
+  if (timeoutMs <= 0) {
+    return signal;
+  }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+};
+
 const fetchWithTimeout = (
   url: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<Response> => {
-  if (timeoutMs <= 0) {
-    return fetch(url);
-  }
-  return fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const mergedSignal = withTimeoutSignal(signal, timeoutMs);
+  return mergedSignal ? fetch(url, { signal: mergedSignal }) : fetch(url);
 };
 
 export type VercelBlobClient = typeof blob;
@@ -224,12 +234,12 @@ interface BlobAuthOptions {
 }
 
 export const vercelBlob = (
-  opts: VercelBlobAdapterOptions = {}
+  config: VercelBlobAdapterOptions = {}
 ): VercelBlobAdapter => {
-  const explicitToken = opts.token;
+  const explicitToken = config.token;
   const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
-  const oidcToken = opts.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
-  const explicitStoreId = opts.storeId ?? readEnv("BLOB_STORE_ID");
+  const oidcToken = config.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
+  const explicitStoreId = config.storeId ?? readEnv("BLOB_STORE_ID");
 
   // Mirrors the upstream SDK's resolution order:
   //   1. explicit `token` (RW or client token) — wins over OIDC
@@ -253,11 +263,11 @@ export const vercelBlob = (
     );
   }
 
-  const access = opts.access ?? "public";
-  const addRandomSuffix = opts.addRandomSuffix ?? false;
-  const allowOverwrite = opts.allowOverwrite ?? true;
+  const access = config.access ?? "public";
+  const addRandomSuffix = config.addRandomSuffix ?? false;
+  const allowOverwrite = config.allowOverwrite ?? true;
   const downloadTimeoutMs =
-    opts.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
+    config.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
 
   // For private blobs the public URL field returned by head()/list() requires
   // authentication to fetch — a plain `fetch(url)` would 401. Route body reads
@@ -265,20 +275,18 @@ export const vercelBlob = (
   // adapter resolved. Returns a stream and a content type; callers can buffer
   // or pipe it.
   const getPrivateBody = async (
-    key: string
+    key: string,
+    signal?: AbortSignal
   ): Promise<{
     contentType: string | undefined;
     size: number | undefined;
     stream: ReadableStream<Uint8Array>;
   }> => {
-    const signal =
-      downloadTimeoutMs > 0
-        ? AbortSignal.timeout(downloadTimeoutMs)
-        : undefined;
+    const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
     const got = await blob.get(key, {
       access: "private",
       ...auth,
-      ...(signal && { abortSignal: signal }),
+      ...(abortSignal && { abortSignal }),
     });
     if (!got || got.statusCode !== 200) {
       throw new FilesError(
@@ -308,36 +316,47 @@ export const vercelBlob = (
     }
   }
 
-  const headRaw = async (key: string) => {
+  const headRaw = async (key: string, signal?: AbortSignal) => {
     try {
-      return await blob.head(key, { ...auth });
+      return await blob.head(key, {
+        ...(signal && { abortSignal: signal }),
+        ...auth,
+      });
     } catch (error) {
       throw mapBlobError(error);
     }
   };
 
   return {
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       try {
         await blob.copy(from, to, {
           access,
           addRandomSuffix,
           allowOverwrite,
+          ...(operationOpts?.signal && {
+            abortSignal: operationOpts.signal,
+          }),
           ...auth,
         });
       } catch (error) {
         throw mapBlobError(error);
       }
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       try {
-        await blob.del(key, { ...auth });
+        await blob.del(key, {
+          ...(operationOpts?.signal && {
+            abortSignal: operationOpts.signal,
+          }),
+          ...auth,
+        });
       } catch (error) {
         throw mapBlobError(error);
       }
     },
     async download(key, downloadOpts) {
-      const result = await headRaw(key);
+      const result = await headRaw(key, downloadOpts?.signal);
       try {
         const meta = {
           etag: result.etag,
@@ -346,7 +365,7 @@ export const vercelBlob = (
           type: result.contentType ?? "application/octet-stream",
         };
         if (access === "private") {
-          const got = await getPrivateBody(key);
+          const got = await getPrivateBody(key, downloadOpts?.signal);
           if (downloadOpts?.as === "stream") {
             return createStoredFile(
               { ...meta, size: result.size },
@@ -361,7 +380,11 @@ export const vercelBlob = (
             { data: bytes, kind: "buffer" }
           );
         }
-        const res = await fetchWithTimeout(result.url, downloadTimeoutMs);
+        const res = await fetchWithTimeout(
+          result.url,
+          downloadTimeoutMs,
+          downloadOpts?.signal
+        );
         if (!res.ok) {
           throw new FilesError(
             res.status === 404 ? "NotFound" : "Provider",
@@ -384,11 +407,14 @@ export const vercelBlob = (
         throw mapBlobError(error);
       }
     },
-    exists(key) {
-      return existsByProbe(() => headRaw(key), mapBlobError);
+    exists(key, operationOpts) {
+      return existsByProbe(
+        () => headRaw(key, operationOpts?.signal),
+        mapBlobError
+      );
     },
-    async head(key) {
-      const result = await headRaw(key);
+    async head(key, operationOpts) {
+      const result = await headRaw(key, operationOpts?.signal);
       return createStoredFile(
         {
           etag: result.etag,
@@ -415,6 +441,7 @@ export const vercelBlob = (
     async list(options): Promise<ListResult> {
       try {
         const result = await blob.list({
+          ...(options?.signal && { abortSignal: options.signal }),
           ...auth,
           ...(options?.prefix && { prefix: options.prefix }),
           ...(options?.limit !== undefined && { limit: options.limit }),
@@ -466,6 +493,7 @@ export const vercelBlob = (
           access,
           addRandomSuffix,
           allowOverwrite,
+          ...(options?.signal && { abortSignal: options.signal }),
           ...auth,
           ...(options?.contentType && { contentType: options.contentType }),
           ...(options?.cacheControl && {
@@ -480,6 +508,7 @@ export const vercelBlob = (
         let lastModified = Date.now();
         if (size === undefined) {
           const { size: headSize, uploadedAt } = await blob.head(result.url, {
+            ...(options?.signal && { abortSignal: options.signal }),
             ...auth,
           });
           size = headSize;
@@ -534,7 +563,7 @@ export const vercelBlob = (
           key
         );
       }
-      const result = await headRaw(key);
+      const result = await headRaw(key, urlOpts?.signal);
       if (!result.url) {
         throw new FilesError("Provider", "vercel-blob: missing public URL");
       }

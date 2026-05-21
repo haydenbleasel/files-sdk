@@ -4,6 +4,9 @@ import { Readable } from "node:stream";
 
 import { Files, FilesError } from "../src/index.js";
 
+const lastOptsOf = (m: { mock: { calls: unknown[][] } }) =>
+  m.mock.calls.at(-1)?.at(-1) as { abortSignal?: AbortSignal } | undefined;
+
 const STABLE_LAST_MODIFIED = "2024-01-02T03:04:05.000Z";
 const STABLE_LAST_MODIFIED_MS = new Date(STABLE_LAST_MODIFIED).getTime();
 const ACCOUNT = "acct";
@@ -77,12 +80,39 @@ const syncCopyFromURLMock = mock((_source: string) =>
 
 const blobUrlOf = (key: string): string => `${BLOB_BASE}/${key}`;
 
+const generateUserDelegationSasUrlMock = mock(
+  (
+    key: string,
+    opts: {
+      contentDisposition?: string;
+      expiresOn: Date;
+      permissions: { toString(): string };
+    },
+    _delegationKey: unknown
+  ) => {
+    const params = new URLSearchParams({
+      se: opts.expiresOn.toISOString(),
+      sig: "delegated",
+      sp: opts.permissions.toString(),
+    });
+    if (opts.contentDisposition) {
+      params.set("rscd", opts.contentDisposition);
+    }
+    return Promise.resolve(`${blobUrlOf(key)}?${params.toString()}`);
+  }
+);
+const getUserDelegationKeyMock = mock((_startsOn: Date, expiresOn: Date) =>
+  Promise.resolve({ signedExpiresOn: expiresOn, value: "delegation-key" })
+);
+
 const makeBlobClient = (key: string) => ({
   delete: deleteIfExistsMock,
   deleteIfExists: deleteIfExistsMock,
   download: downloadMock,
   downloadToBuffer: downloadToBufferMock,
   exists: existsMock,
+  generateUserDelegationSasUrl: (opts: unknown, delegationKey: unknown) =>
+    generateUserDelegationSasUrlMock(key, opts as never, delegationKey),
   getProperties: getPropertiesMock,
   syncCopyFromURL: syncCopyFromURLMock,
   url: blobUrlOf(key),
@@ -144,7 +174,11 @@ const getContainerClientMock = mock((_name: string) => ({
 const sharedKeyInstances: { accountName: string; accountKey: string }[] = [];
 
 class BlobServiceClientStub {
-  static lastInit?: { kind: "fromConnectionString" | "ctor"; arg: unknown };
+  static lastInit?: {
+    kind: "fromConnectionString" | "ctor";
+    arg: unknown;
+    credential?: unknown;
+  };
 
   url: string;
 
@@ -156,8 +190,17 @@ class BlobServiceClientStub {
   }
 
   constructor(url: string, _credential?: unknown) {
-    BlobServiceClientStub.lastInit ??= { arg: url, kind: "ctor" };
+    BlobServiceClientStub.lastInit ??= {
+      arg: url,
+      credential: _credential,
+      kind: "ctor",
+    };
     this.url = url;
+  }
+
+  // oxlint-disable-next-line class-methods-use-this
+  getUserDelegationKey(startsOn: Date, expiresOn: Date) {
+    return getUserDelegationKeyMock(startsOn, expiresOn);
   }
 
   // oxlint-disable-next-line class-methods-use-this
@@ -233,6 +276,8 @@ beforeEach(() => {
   getContainerClientMock.mockClear();
   listBlobsFlatMock.mockClear();
   generateBlobSASQueryParametersMock.mockClear();
+  generateUserDelegationSasUrlMock.mockClear();
+  getUserDelegationKeyMock.mockClear();
 
   uploadDataMock.mockImplementation(() =>
     Promise.resolve(uploadDataResponse())
@@ -328,6 +373,29 @@ describe("azure adapter", () => {
     test("anonymous construction (accountName only) succeeds for public-read containers", () => {
       const adapter = azure({ accountName: ACCOUNT, container: CONTAINER });
       expect(adapter.name).toBe("azure");
+      expect(sharedKeyInstances).toHaveLength(0);
+    });
+
+    test("accountName + TokenCredential constructs a token-authenticated client", () => {
+      const credential = {
+        getToken: mock(() =>
+          Promise.resolve({
+            expiresOnTimestamp: Date.now() + 60_000,
+            token: "t",
+          })
+        ),
+      };
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential,
+      });
+      expect(adapter.name).toBe("azure");
+      expect(BlobServiceClientStub.lastInit?.kind).toBe("ctor");
+      expect(BlobServiceClientStub.lastInit?.arg).toBe(
+        `https://${ACCOUNT}.blob.core.windows.net`
+      );
+      expect(BlobServiceClientStub.lastInit?.credential).toBe(credential);
       expect(sharedKeyInstances).toHaveLength(0);
     });
   });
@@ -692,6 +760,32 @@ describe("azure adapter", () => {
       expect(generateBlobSASQueryParametersMock).toHaveBeenCalled();
     });
 
+    test("TokenCredential mode signs the copy source with a user delegation SAS", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      await adapter.copy("a.txt", "b.txt");
+      const [copyCall] = syncCopyFromURLMock.mock.calls;
+      if (!copyCall) {
+        throw new Error("expected syncCopyFromURL to have been called");
+      }
+      const [source] = copyCall;
+      expect(source).toContain(`${BLOB_BASE}/a.txt?`);
+      expect(source).toContain("sig=delegated");
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(1);
+      expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+    });
+
     test("anonymous mode (no key, no SAS) uses the bare blob URL as the copy source", async () => {
       const adapter = azure({ accountName: ACCOUNT, container: CONTAINER });
       await adapter.copy("a.txt", "b.txt");
@@ -897,6 +991,101 @@ describe("azure adapter", () => {
         expect((error as FilesError).message).toMatch(/shared key/u);
       }
     });
+
+    test("TokenCredential mode returns a user delegation SAS URL", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      const url = await adapter.url("a.txt", {
+        responseContentDisposition: "attachment",
+      });
+      expect(url).toContain(`${BLOB_BASE}/a.txt?`);
+      expect(url).toContain("sig=delegated");
+      expect(url).toContain("sp=r");
+      expect(url).toContain("rscd=attachment");
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      const [signCall] = generateUserDelegationSasUrlMock.mock.calls;
+      if (!signCall) {
+        throw new Error(
+          "expected generateUserDelegationSasUrl to have been called"
+        );
+      }
+      const [, opts] = signCall;
+      expect(opts.permissions.toString()).toBe("r");
+      expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+    });
+
+    test("TokenCredential mode reuses a cached user delegation key while valid", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      await adapter.url("a.txt", { expiresIn: 60 });
+      await adapter.url("b.txt", { expiresIn: 60 });
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(2);
+    });
+
+    test("TokenCredential mode reuses the cached key across default-expiry URLs", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      // Default expiry (no expiresIn) — the key's reuse window must extend
+      // beyond the SAS expiry, otherwise every call refetches the key.
+      await adapter.url("a.txt");
+      await adapter.url("b.txt");
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(2);
+    });
+
+    test("TokenCredential mode can disable user delegation SAS signing", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+        useUserDelegationSas: false,
+      });
+      try {
+        await adapter.url("a.txt");
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).message).toMatch(/User Delegation/u);
+      }
+    });
   });
 
   describe("signedUploadUrl", () => {
@@ -937,6 +1126,42 @@ describe("azure adapter", () => {
       }
       expect(out.headers?.["Content-Type"]).toBe("image/png");
       expect(out.headers?.["x-ms-blob-type"]).toBe("BlockBlob");
+    });
+
+    test("TokenCredential mode signs upload URLs with a user delegation SAS", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      const out = await adapter.signedUploadUrl("a.png", {
+        contentType: "image/png",
+        expiresIn: 60,
+      });
+      if (out.method !== "PUT") {
+        throw new Error("expected PUT");
+      }
+      expect(out.url).toContain(`${BLOB_BASE}/a.png?`);
+      expect(out.url).toContain("sig=delegated");
+      expect(out.headers?.["Content-Type"]).toBe("image/png");
+      expect(out.headers?.["x-ms-blob-type"]).toBe("BlockBlob");
+      const [signCall] = generateUserDelegationSasUrlMock.mock.calls;
+      if (!signCall) {
+        throw new Error(
+          "expected generateUserDelegationSasUrl to have been called"
+        );
+      }
+      const [, opts] = signCall;
+      expect(opts.permissions.toString()).toBe("cw");
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
+      expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
     });
 
     test("throws NotSupported when maxSize is set", async () => {
@@ -1172,6 +1397,63 @@ describe("azure adapter", () => {
       } catch (error) {
         expect((error as FilesError).code).toBe("Provider");
       }
+    });
+  });
+
+  describe("signal forwarding", () => {
+    const makeFiles = () =>
+      new Files({
+        adapter: azure({
+          accountKey: "secret",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+
+    test("upload forwards the signal to uploadData", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().upload("a.txt", "hello", { signal });
+      expect(lastOptsOf(uploadDataMock)?.abortSignal).toBe(signal);
+    });
+
+    test("download forwards the signal to download/downloadToBuffer", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().download("a.txt", { signal });
+      expect(lastOptsOf(downloadMock)?.abortSignal).toBe(signal);
+      expect(lastOptsOf(downloadToBufferMock)?.abortSignal).toBe(signal);
+    });
+
+    test("head forwards the signal to getProperties", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().head("a.txt", { signal });
+      expect(lastOptsOf(getPropertiesMock)?.abortSignal).toBe(signal);
+    });
+
+    test("delete forwards the signal to deleteIfExists", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().delete("a.txt", { signal });
+      expect(lastOptsOf(deleteIfExistsMock)?.abortSignal).toBe(signal);
+    });
+
+    test("exists forwards the signal to exists", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().exists("a.txt", { signal });
+      expect(lastOptsOf(existsMock)?.abortSignal).toBe(signal);
+    });
+
+    test("copy forwards the signal to syncCopyFromURL", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().copy("a.txt", "b.txt", { signal });
+      expect(lastOptsOf(syncCopyFromURLMock)?.abortSignal).toBe(signal);
+    });
+
+    test("list forwards the signal to listBlobsFlat", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().list({ signal });
+      expect(
+        (listBlobsFlatMock.lastOpts as { abortSignal?: AbortSignal })
+          ?.abortSignal
+      ).toBe(signal);
     });
   });
 });

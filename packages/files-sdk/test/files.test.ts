@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
+import type { Adapter, ListOptions, OperationOptions } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 describe("Files class", () => {
@@ -74,6 +75,177 @@ describe("Files class", () => {
     expect(adapter.has("d.txt")).toBe(false);
   });
 
+  test("deleteMany removes multiple objects", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    await files.upload("c.txt", "c");
+
+    const result = await files.deleteMany(["a.txt", "b.txt", "c.txt"]);
+
+    expect(result).toEqual({ deleted: ["a.txt", "b.txt", "c.txt"] });
+    expect(adapter.has("a.txt")).toBe(false);
+    expect(adapter.has("b.txt")).toBe(false);
+    expect(adapter.has("c.txt")).toBe(false);
+  });
+
+  test("deleteMany returns per-key errors and continues when stopOnError is false", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok-1.txt", "1");
+    await files.upload("ok-2.txt", "2");
+
+    const result = await files.deleteMany(
+      ["ok-1.txt", "fail/a.txt", "ok-2.txt", "fail/b.txt"],
+      { stopOnError: false }
+    );
+
+    expect(result.deleted).toEqual(["ok-1.txt", "ok-2.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/a.txt",
+      "fail/b.txt",
+    ]);
+    expect(adapter.has("ok-1.txt")).toBe(false);
+    expect(adapter.has("ok-2.txt")).toBe(false);
+  });
+
+  test("deleteMany stops on the first error when stopOnError is true", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok-1.txt", "1");
+    await files.upload("ok-2.txt", "2");
+
+    const result = await files.deleteMany(
+      ["ok-1.txt", "fail/a.txt", "ok-2.txt"],
+      { stopOnError: true }
+    );
+
+    expect(result.deleted).toEqual(["ok-1.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual(["fail/a.txt"]);
+    expect(adapter.has("ok-2.txt")).toBe(true);
+  });
+
+  test("deleteMany returns validation errors without skipping valid keys", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+
+    const result = await files.deleteMany(["", "ok.txt", "foo\0bar"], {
+      stopOnError: false,
+    });
+
+    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual(["", "foo\0bar"]);
+  });
+
+  test("deleteMany applies the configured prefix but reports caller keys", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "uploads" });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+
+    const result = await files.deleteMany(["a.txt", "b.txt"]);
+
+    // Result reflects the keys the caller passed, not the prefixed paths.
+    expect(result).toEqual({ deleted: ["a.txt", "b.txt"] });
+    expect(adapter.has("uploads/a.txt")).toBe(false);
+    expect(adapter.has("uploads/b.txt")).toBe(false);
+  });
+
+  test("deleteMany falls back to per-key delete and forwards stopOnError", async () => {
+    const base = fakeAdapter();
+    // Drop the native bulk path so Files.deleteMany uses the fallback.
+    const { deleteMany: _omitted, ...rest } = base;
+    const attempted: string[] = [];
+    const adapter: Adapter = {
+      ...rest,
+      delete(key: string) {
+        attempted.push(key);
+        if (key.startsWith("fail/")) {
+          return Promise.reject(new FilesError("Provider", `nope: ${key}`));
+        }
+        return base.delete(key);
+      },
+    };
+    const files = new Files({ adapter });
+
+    const result = await files.deleteMany(
+      ["ok-1.txt", "fail/x.txt", "ok-2.txt"],
+      { stopOnError: true }
+    );
+
+    expect(result.deleted).toEqual(["ok-1.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual(["fail/x.txt"]);
+    // stopOnError must short-circuit the fallback: ok-2.txt is never attempted.
+    expect(attempted).toEqual(["ok-1.txt", "fail/x.txt"]);
+  });
+
+  test("deleteMany fallback bounds concurrency and preserves order", async () => {
+    const base = fakeAdapter();
+    // Drop the native bulk path so Files.deleteMany uses the worker pool.
+    const { deleteMany: _omitted, ...rest } = base;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const adapter: Adapter = {
+      ...rest,
+      async delete(key: string) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // Yield so overlapping workers pile up before any settles.
+        await Promise.resolve();
+        await Promise.resolve();
+        inFlight -= 1;
+        if (key.startsWith("fail/")) {
+          throw new FilesError("Provider", `nope: ${key}`);
+        }
+        await base.delete(key);
+      },
+    };
+    const files = new Files({ adapter });
+    const keys = [
+      "a.txt",
+      "fail/b.txt",
+      "c.txt",
+      "d.txt",
+      "fail/e.txt",
+      "f.txt",
+    ];
+
+    const result = await files.deleteMany(keys, { concurrency: 2 });
+
+    expect(result.deleted).toEqual(["a.txt", "c.txt", "d.txt", "f.txt"]);
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/b.txt",
+      "fail/e.txt",
+    ]);
+    // Never more than the configured limit in flight, but it did run > 1 at
+    // once (otherwise concurrency would be meaningless).
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  test("deleteMany orders errors by input position across validation and provider failures", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+
+    const result = await files.deleteMany(
+      ["fail/a.txt", "", "ok.txt", "fail/b.txt", "x\0y"],
+      { stopOnError: false }
+    );
+
+    expect(result.deleted).toEqual(["ok.txt"]);
+    // A provider failure, two invalid keys, and another provider failure —
+    // all reported in the original input order, not grouped by source.
+    expect(result.errors?.map((item) => item.key)).toEqual([
+      "fail/a.txt",
+      "",
+      "fail/b.txt",
+      "x\0y",
+    ]);
+  });
+
   test("copy duplicates an object", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("from.txt", "payload");
@@ -133,6 +305,513 @@ describe("Files class", () => {
     await files.upload("b/3.txt", "3");
     const { items } = await files.list({ prefix: "a/" });
     expect(items.map((i) => i.key).toSorted()).toEqual(["a/1.txt", "a/2.txt"]);
+  });
+
+  test("constructor retries Provider failures", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts < 3) {
+            throw new TypeError("temporary");
+          }
+          return adapter.head(key, opts);
+        },
+      },
+      retries: 2,
+    });
+
+    await files.upload("retry.txt", "ok");
+    const info = await files.head("retry.txt");
+
+    expect(info.key).toBe("retry.txt");
+    expect(attempts).toBe(3);
+  });
+
+  test("retry backoff receives attempt and wrapped error", async () => {
+    const adapter = fakeAdapter();
+    const backoffCalls: { attempt: number; message: string }[] = [];
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        exists(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("network");
+          }
+          return adapter.exists(key, opts);
+        },
+      },
+      retries: {
+        backoff: ({ attempt, error }) => {
+          backoffCalls.push({ attempt, message: error.message });
+          return 0;
+        },
+        max: 1,
+      },
+    });
+
+    await files.upload("exists.txt", "ok");
+
+    expect(await files.exists("exists.txt")).toBe(true);
+    expect(backoffCalls).toEqual([{ attempt: 1, message: "network" }]);
+  });
+
+  test("per-call retries override constructor retries", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("temporary");
+          }
+          return adapter.head(key, opts);
+        },
+      },
+      retries: 0,
+    });
+
+    await files.upload("override.txt", "ok");
+    await files.head("override.txt", { retries: { backoff: () => 0, max: 1 } });
+
+    expect(attempts).toBe(2);
+  });
+
+  test("NotFound errors are not retried", async () => {
+    const adapter = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        head() {
+          attempts += 1;
+          throw new FilesError("NotFound", "missing");
+        },
+      },
+      retries: { backoff: () => 0, max: 3 },
+    });
+
+    try {
+      await files.head("missing.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("NotFound");
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("Unauthorized and Conflict errors are not retried", async () => {
+    for (const code of ["Unauthorized", "Conflict"] as const) {
+      let attempts = 0;
+      const files = new Files({
+        adapter: {
+          ...fakeAdapter(),
+          head() {
+            attempts += 1;
+            throw new FilesError(code, code);
+          },
+        },
+        retries: { backoff: () => 0, max: 3 },
+      });
+
+      try {
+        await files.head(`${code}.txt`);
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect((error as FilesError).code).toBe(code);
+        expect(attempts).toBe(1);
+      }
+    }
+  });
+
+  test("retries stop at the configured max", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        exists() {
+          attempts += 1;
+          throw new Error("still broken");
+        },
+      },
+      retries: { backoff: () => 0, max: 2 },
+    });
+
+    try {
+      await files.exists("cap.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("still broken");
+      expect(attempts).toBe(3);
+    }
+  });
+
+  test("ReadableStream uploads are not retried", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        upload() {
+          attempts += 1;
+          throw new Error("stream upload failed");
+        },
+      },
+      retries: { backoff: () => 0, max: 3 },
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("payload"));
+        controller.close();
+      },
+    });
+
+    try {
+      await files.upload("stream.txt", stream);
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("stream upload failed");
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("timeout aborts an operation, passes signal to the adapter, and is not retried", async () => {
+    let attempts = 0;
+    let seenSignal: AbortSignal | undefined;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
+          seenSignal = opts?.signal;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(opts.signal?.reason);
+            });
+          });
+        },
+      },
+      retries: 3,
+      timeout: 1,
+    });
+
+    try {
+      await files.head("slow.txt");
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).message).toBe(
+        "Operation timed out after 1ms"
+      );
+      expect(attempts).toBe(1);
+      expect(seenSignal).toBeDefined();
+      expect(seenSignal?.aborted).toBe(true);
+    }
+  });
+
+  test("aborted caller signal fails before the adapter is called", async () => {
+    let attempts = 0;
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        exists() {
+          attempts += 1;
+          return Promise.resolve(true);
+        },
+      },
+      retries: 3,
+    });
+
+    try {
+      await files.exists("x.txt", { signal: controller.signal });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe("Operation aborted: stop");
+      expect(attempts).toBe(0);
+    }
+  });
+
+  test("constructor signal aborts a pending operation", async () => {
+    const controller = new AbortController();
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: controller.signal,
+    });
+
+    const pending = files.head("constructor-abort.txt");
+    controller.abort(new Error("constructor stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: constructor stop"
+      );
+    }
+  });
+
+  test("per-call signal aborts a pending operation even with a constructor signal", async () => {
+    const constructorController = new AbortController();
+    const callController = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          seenSignal = opts?.signal;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(new Error("adapter saw abort"));
+            });
+          });
+        },
+      },
+      signal: constructorController.signal,
+    });
+
+    const pending = files.head("call-abort.txt", {
+      signal: callController.signal,
+    });
+    callController.abort(new Error("call stop"));
+
+    try {
+      await pending;
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(seenSignal).toBeDefined();
+      expect(seenSignal).not.toBe(constructorController.signal);
+      expect(seenSignal).not.toBe(callController.signal);
+      expect((error as FilesError).message).toBe(
+        "Operation aborted: call stop"
+      );
+    }
+  });
+
+  test("per-call timeout overrides the constructor timeout", async () => {
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        head(_key: string, opts?: OperationOptions): Promise<never> {
+          attempts += 1;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener("abort", () => {
+              reject(opts.signal?.reason);
+            });
+          });
+        },
+      },
+      retries: 2,
+      timeout: 50,
+    });
+
+    try {
+      await files.head("override-timeout.txt", { timeout: 1 });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect((error as FilesError).message).toBe(
+        "Operation timed out after 1ms"
+      );
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("file handles forward per-call operation options", async () => {
+    const controller = new AbortController();
+    let seenSignal: AbortSignal | undefined;
+    const adapter = fakeAdapter();
+    const files = new Files({
+      adapter: {
+        ...adapter,
+        delete(key: string, opts?: OperationOptions) {
+          seenSignal = opts?.signal;
+          return adapter.delete(key, opts);
+        },
+      },
+    });
+
+    await files.upload("handle-options.txt", "ok");
+    await files
+      .file("handle-options.txt")
+      .delete({ signal: controller.signal });
+
+    expect(seenSignal).toBe(controller.signal);
+  });
+
+  test("constructor prefix round-trips upload, head, download, and exists keys", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "users" });
+
+    const uploaded = await files.upload("123", "avatar");
+    expect(uploaded.key).toBe("123");
+    expect(adapter.has("users/123")).toBe(true);
+
+    const head = await files.head(uploaded.key);
+    expect(head.key).toBe("123");
+    // `name` aliases the key and must be stripped alongside it.
+    expect(head.name).toBe("123");
+    expect(await files.exists(uploaded.key)).toBe(true);
+
+    const downloaded = await files.download(uploaded.key);
+    expect(downloaded.key).toBe("123");
+    expect(downloaded.name).toBe("123");
+    expect(await downloaded.text()).toBe("avatar");
+  });
+
+  test("constructor prefix normalizes leading and trailing slashes on prefix and key", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "/users/" });
+
+    const uploaded = await files.upload("/123", "avatar");
+    expect(uploaded.key).toBe("123");
+    expect(adapter.has("users/123")).toBe(true);
+  });
+
+  test("constructor prefix keeps file handle keys consistent", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "users" });
+    const avatar = files.file("123");
+
+    expect(avatar.key).toBe("123");
+    await avatar.upload("avatar");
+    const head = await avatar.head();
+    const downloaded = await avatar.download();
+    expect(head.key).toBe("123");
+    expect(downloaded.key).toBe("123");
+  });
+
+  test("constructor prefix lets listed keys round-trip into delete", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "users" });
+
+    await files.upload("123", "one");
+    await files.upload("456", "two");
+
+    const { items } = await files.list();
+    expect(items.map((item) => item.key).toSorted()).toEqual(["123", "456"]);
+
+    const [firstItem] = items;
+    if (!firstItem) {
+      throw new Error("expected a listed item");
+    }
+
+    await files.delete(firstItem.key);
+    expect(adapter.has("users/123")).toBe(false);
+  });
+
+  test("constructor prefix scopes list queries and strips listed item keys", async () => {
+    const base = fakeAdapter();
+    let seenPrefix: string | undefined;
+    const adapter = {
+      ...base,
+      list(opts?: ListOptions) {
+        seenPrefix = opts?.prefix;
+        return base.list(opts);
+      },
+    };
+    const files = new Files({ adapter, prefix: "users" });
+
+    await files.upload("avatars/1.png", "one");
+    await files.upload("avatars/2.png", "two");
+    await files.upload("docs/1.txt", "doc");
+
+    const first = await files.list({ limit: 1, prefix: "avatars" });
+    expect(seenPrefix).toBe("users/avatars");
+    expect(first.items.map((item) => item.key)).toEqual(["avatars/1.png"]);
+
+    const second = await files.list({
+      cursor: first.cursor,
+      limit: 1,
+      prefix: "avatars",
+    });
+    expect(second.items.map((item) => item.key)).toEqual(["avatars/2.png"]);
+  });
+
+  test("constructor prefix list without explicit prefix does not match sibling paths", async () => {
+    const adapter = fakeAdapter();
+    await adapter.upload("users/123", "user");
+    await adapter.upload("users-archive/123", "archive");
+    const files = new Files({ adapter, prefix: "users" });
+
+    const { items } = await files.list();
+    expect(items.map((item) => item.key)).toEqual(["123"]);
+  });
+
+  test("constructor prefix applies to urls, signed uploads, copy, and handle helpers", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "users" });
+    const avatar = files.file("123");
+
+    await avatar.upload("avatar");
+    const url = await avatar.url({ expiresIn: 60 });
+    expect(url).toContain(encodeURIComponent("users/123"));
+
+    await avatar.copyTo("456");
+    const copied = await files.download("456");
+    expect(await copied.text()).toBe("avatar");
+
+    const mirror = files.file("789");
+    await mirror.copyFrom("456");
+    const mirrored = await mirror.download();
+    expect(await mirrored.text()).toBe("avatar");
+
+    const signed = await files.signedUploadUrl("999", { expiresIn: 60 });
+    expect(signed.url).toContain(encodeURIComponent("users/999"));
+
+    await avatar.delete();
+    expect(adapter.has("users/123")).toBe(false);
+  });
+
+  test("constructor prefix validation rejects non-string, empty-after-trim, and null bytes", () => {
+    expect(
+      () => new Files({ adapter: fakeAdapter(), prefix: 123 as never })
+    ).toThrow(/prefix must be a string/u);
+    expect(() => new Files({ adapter: fakeAdapter(), prefix: "///" })).toThrow(
+      /prefix must be a non-empty string/u
+    );
+    expect(
+      () => new Files({ adapter: fakeAdapter(), prefix: "users\0bad" })
+    ).toThrow(/prefix must not contain null bytes/u);
+  });
+
+  test("constructor prefix only strips exact path prefixes from adapter keys", async () => {
+    const base = fakeAdapter();
+    await base.upload("users/123", "avatar");
+    const files = new Files({
+      adapter: {
+        ...base,
+        async head(key) {
+          const file = await base.head(key);
+          return { ...file, key: "users-archive/123" };
+        },
+      },
+      prefix: "users",
+    });
+
+    const head = await files.head("123");
+    expect(head.key).toBe("users-archive/123");
   });
 
   test("error normalization wraps adapter errors as FilesError with code", async () => {

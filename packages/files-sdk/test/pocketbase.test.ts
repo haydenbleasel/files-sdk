@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
 
+const lastArgOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
+  m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
+
 interface StoredEntry {
   bytes: Uint8Array;
   contentType: string;
@@ -959,6 +962,67 @@ describe("pocketbase adapter", () => {
       await adapter.upload("b.txt", "world");
       expect(authWithPasswordMock).toHaveBeenCalledTimes(2);
       expect(backing.has("b.txt")).toBe(true);
+    });
+  });
+
+  describe("signal forwarding", () => {
+    const makeFiles = () =>
+      new Files({
+        adapter: pocketbase({ collection: "files", url: "http://pb.test" }),
+      });
+
+    test("upload forwards the signal to create", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().upload("a.txt", "hello", { signal });
+      expect(lastArgOf(createMock, 1)?.signal).toBe(signal);
+    });
+
+    test("upload forwards the signal to update on an existing key", async () => {
+      const files = makeFiles();
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.upload("a.txt", "world", { signal });
+      expect(lastArgOf(updateMock, 2)?.signal).toBe(signal);
+    });
+
+    test("download forwards the signal to getFirstListItem and fetch", async () => {
+      const files = makeFiles();
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.download("a.txt", { signal });
+      expect(lastArgOf(getFirstListItemMock, 1)?.signal).toBe(signal);
+      expect(lastArgOf(fetchMock, 1)?.signal).toBe(signal);
+    });
+
+    test("head forwards the signal to getFirstListItem", async () => {
+      const files = makeFiles();
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.head("a.txt", { signal });
+      expect(lastArgOf(getFirstListItemMock, 1)?.signal).toBe(signal);
+    });
+
+    test("delete forwards the signal to delete", async () => {
+      const files = makeFiles();
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.delete("a.txt", { signal });
+      expect(lastArgOf(deleteMock, 1)?.signal).toBe(signal);
+    });
+
+    test("copy forwards the signal to create and the download fetch", async () => {
+      const files = makeFiles();
+      await files.upload("a.txt", "hello");
+      const { signal } = new AbortController();
+      await files.copy("a.txt", "b.txt", { signal });
+      expect(lastArgOf(createMock, 1)?.signal).toBe(signal);
+      expect(lastArgOf(fetchMock, 1)?.signal).toBe(signal);
+    });
+
+    test("list forwards the signal to getList", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().list({ signal });
+      expect(lastArgOf(getListMock, 2)?.signal).toBe(signal);
     });
   });
 });

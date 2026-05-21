@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface OvhcloudAdapterOptions {
+  /** OVHcloud bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * OVHcloud Object Storage region code, e.g. `"gra"` (Gravelines),
@@ -25,7 +26,15 @@ export interface OvhcloudAdapterOptions {
    * style.
    */
   endpoint?: string;
+  /**
+   * Static credentials. Falls back to `OVH_ACCESS_KEY_ID`; required if that
+   * env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `OVH_SECRET_ACCESS_KEY`; required if
+   * that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * Use path-style addressing (`/<bucket>/<key>`) rather than virtual-hosted

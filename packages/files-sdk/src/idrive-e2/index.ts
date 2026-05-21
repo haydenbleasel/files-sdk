@@ -6,6 +6,7 @@ import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
 
 export interface IdriveE2AdapterOptions {
+  /** iDrive e2 bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
    * iDrive e2 endpoint URL. Required — iDrive e2 hostnames are tied to the
@@ -14,7 +15,15 @@ export interface IdriveE2AdapterOptions {
    * (Access Keys → Endpoint). Example: `https://q9z7.va.idrivee2-NN.com`.
    */
   endpoint: string;
+  /**
+   * Static credentials. Falls back to `IDRIVE_E2_ACCESS_KEY_ID`; required if
+   * that env var isn't set.
+   */
   accessKeyId?: string;
+  /**
+   * Static credentials. Falls back to `IDRIVE_E2_SECRET_ACCESS_KEY`;
+   * required if that env var isn't set.
+   */
   secretAccessKey?: string;
   /**
    * SigV4 region. Defaults to `"us-east-1"`. iDrive e2 ignores it for

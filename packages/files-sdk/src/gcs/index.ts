@@ -27,6 +27,9 @@ import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface GCSAdapterOptions {
+  /**
+   * GCS bucket name. The adapter scopes all operations to it.
+   */
   bucket: string;
   /**
    * GCP project ID. Falls back to `GOOGLE_CLOUD_PROJECT` then

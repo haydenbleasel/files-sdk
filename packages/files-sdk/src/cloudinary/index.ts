@@ -253,18 +253,22 @@ export const cloudinaryAdapter = (
       type,
     });
 
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    const url = buildDeliveryUrl(key);
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new FilesError(
-        res.status === 404 ? "NotFound" : "Provider",
-        `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
-      );
-    }
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
-  };
+  // `signal` is only threaded when `download()` calls this inline; the
+  // head()/list() factories invoke it lazily (outside any operation scope) and
+  // pass none, matching how the other adapters leave deferred bodies unsigned.
+  const lazyDownload =
+    (key: string, signal?: AbortSignal) => async (): Promise<Uint8Array> => {
+      const url = buildDeliveryUrl(key);
+      const res = await fetch(url, signal ? { signal } : undefined);
+      if (!res.ok) {
+        throw new FilesError(
+          res.status === 404 ? "NotFound" : "Provider",
+          `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
+        );
+      }
+      const buf = await res.arrayBuffer();
+      return new Uint8Array(buf);
+    };
 
   return {
     cloudName,
@@ -296,7 +300,7 @@ export const cloudinaryAdapter = (
         throw mapCloudinaryError(error);
       }
     },
-    async download(key) {
+    async download(key, downloadOpts) {
       try {
         const [resource, bytes] = await Promise.all([
           sdk.api.resource(key, {
@@ -309,7 +313,7 @@ export const cloudinaryAdapter = (
             etag?: string;
             created_at?: string;
           }>,
-          lazyDownload(key)(),
+          lazyDownload(key, downloadOpts?.signal)(),
         ]);
         return createStoredFile(
           {

@@ -1,3 +1,4 @@
+import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
@@ -5,8 +6,6 @@ import "./globals.css";
 import type { ReactNode } from "react";
 
 import { MotionProvider } from "@/components/motion-provider";
-import { Footer } from "@/components/sections/footer";
-import { Header } from "@/components/sections/header";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
@@ -67,10 +66,9 @@ const jsonLd = {
 
 interface RootLayoutProps {
   children: ReactNode;
-  toc: ReactNode;
 }
 
-const RootLayout = ({ children, toc }: RootLayoutProps) => (
+const RootLayout = ({ children }: RootLayoutProps) => (
   <html
     lang="en"
     data-scroll-behavior="smooth"
@@ -79,6 +77,7 @@ const RootLayout = ({ children, toc }: RootLayoutProps) => (
       geistSans.variable,
       geistMono.variable
     )}
+    suppressHydrationWarning
   >
     <body className="flex min-h-full flex-col">
       <script
@@ -86,23 +85,11 @@ const RootLayout = ({ children, toc }: RootLayoutProps) => (
         // biome-ignore lint/security/noDangerouslySetInnerHtml: JSON-LD is the standard pattern for structured data
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-      <TooltipProvider>
-        <MotionProvider>
-          <div className="relative isolate flex min-h-dvh flex-col bg-background">
-            <div className="mx-auto w-full max-w-7xl flex-1 lg:grid lg:grid-cols-[1fr_42rem_1fr]">
-              <div aria-hidden className="hidden lg:block" />
-              <main className="mx-auto w-full max-w-2xl sm:border-x border-dotted px-4 sm:px-8 pt-8 pb-8 flex flex-col gap-12">
-                <Header />
-                <div className="flex flex-1 flex-col gap-12">{children}</div>
-                <Footer />
-              </main>
-              <aside className="hidden lg:block pr-8 pt-44">
-                <div className="sticky top-8">{toc}</div>
-              </aside>
-            </div>
-          </div>
-        </MotionProvider>
-      </TooltipProvider>
+      <RootProvider>
+        <TooltipProvider>
+          <MotionProvider>{children}</MotionProvider>
+        </TooltipProvider>
+      </RootProvider>
     </body>
   </html>
 );
