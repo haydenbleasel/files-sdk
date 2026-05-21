@@ -146,25 +146,31 @@ const sha1Etag = (bytes: Uint8Array): string => {
   return `"${hex.slice(0, ETAG_HEX_LEN)}"`;
 };
 
+// Windows ignores trailing dots and spaces in a path segment, so
+// `x.meta.json.` and `x.meta.json ` open the same file as `x.meta.json`.
+const FS_TRAILING_NOISE = /[. ]+$/u;
+
+// True when `resolved`'s final segment lands on a reserved sidecar path.
+// We compare the basename the way the filesystem resolves names — folded
+// to lower case for case-insensitive volumes (APFS, NTFS — the macOS /
+// Windows machines this dev-oriented adapter mostly runs on) and with
+// trailing dots/spaces stripped for Windows — so re-cased or dot-padded
+// variants like `x.META.JSON` or `x.meta.json.` can't slip a body onto
+// another key's sidecar. Operating on the resolved basename (not the raw
+// key) also folds away `..` and trailing-slash dodges like `x.meta.json/`.
+const aliasesSidecarPath = (resolved: string): boolean =>
+  path
+    .basename(resolved)
+    .replace(FS_TRAILING_NOISE, "")
+    .toLowerCase()
+    .endsWith(SIDECAR_SUFFIX);
+
 // `path.resolve` collapses `..` segments, so a key like
 // `../../etc/passwd` resolves outside `root`. We compare the resolved path
 // against `root` to reject those before any fs operation runs. Without
 // this check, `download("../../../etc/passwd")` would happily exfiltrate
 // from the host filesystem.
 const resolveKeyPath = (root: string, key: string): string => {
-  // The adapter stores per-object metadata in a sidecar at
-  // `${bodyPath}${SIDECAR_SUFFIX}`. A key ending in `SIDECAR_SUFFIX`
-  // therefore resolves to the sidecar path of another key — uploading it
-  // silently rewrites that key's stored contentType / etag / metadata,
-  // deleting it wipes them, and the key itself never surfaces in
-  // `list()` because `walk()` filters the suffix. Reject the suffix at
-  // the boundary so the namespace stays unambiguous.
-  if (key.endsWith(SIDECAR_SUFFIX)) {
-    throw new FilesError(
-      "Provider",
-      `fs: keys ending in ${SIDECAR_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
-    );
-  }
   const resolved = path.resolve(root, key);
   const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(rootWithSep)) {
@@ -179,6 +185,18 @@ const resolveKeyPath = (root: string, key: string): string => {
     throw new FilesError(
       "Provider",
       "fs: key resolves to the adapter root directory"
+    );
+  }
+  // The adapter stores per-object metadata in a sidecar at
+  // `${bodyPath}${SIDECAR_SUFFIX}`. A key whose body path lands on another
+  // key's sidecar lets a same-root caller silently rewrite that key's
+  // stored contentType / etag / metadata (upload), wipe them (delete), or
+  // hide bytes from `list()` (walk() filters the suffix). Reject anything
+  // that resolves to a sidecar path so the namespace stays unambiguous.
+  if (aliasesSidecarPath(resolved)) {
+    throw new FilesError(
+      "Provider",
+      `fs: keys ending in ${SIDECAR_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
     );
   }
   return resolved;

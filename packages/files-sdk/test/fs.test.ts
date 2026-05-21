@@ -532,6 +532,33 @@ describe("fs adapter", () => {
       ).rejects.toMatchObject({ code: "Provider" });
     });
 
+    test("rejects sidecar-suffix variants that alias on the host filesystem", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      // A literal `endsWith(".meta.json")` check leaves the namespace open
+      // on the platforms this dev adapter mostly runs on: case-insensitive
+      // volumes (APFS/NTFS) alias `x.txt.META.JSON` onto `x.txt.meta.json`,
+      // Windows strips trailing dots/spaces (`x.txt.meta.json.`), and
+      // path.resolve folds a trailing slash (`x.txt.meta.json/`) back onto
+      // the sidecar. All of these would let an upload overwrite another
+      // key's sidecar, so every variant must reject.
+      const variants = [
+        "x.txt.META.JSON",
+        "x.txt.Meta.Json",
+        "x.txt.meta.json.",
+        "x.txt.meta.json ",
+        "x.txt.meta.json/",
+      ];
+      for (const variant of variants) {
+        await expect(files.upload(variant, "x")).rejects.toMatchObject({
+          code: "Provider",
+        });
+        await expect(files.delete(variant)).rejects.toMatchObject({
+          code: "Provider",
+        });
+      }
+    });
+
     test("keys with .meta.json elsewhere in the path are allowed", async () => {
       // The collision is at the sidecar path only — a key whose final
       // segment is not `*.meta.json` is safe. e.g. a folder named
