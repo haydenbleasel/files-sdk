@@ -861,6 +861,16 @@ describe("vercel-blob adapter", () => {
       expect(opts.storeId).toBe("abc123store");
     });
 
+    test("explicit oidcToken without storeId throws — no silent RW-token fallback", () => {
+      // A caller who explicitly passes `oidcToken` is asking for OIDC. With
+      // no resolvable storeId, the adapter must not quietly fall back to the
+      // RW token sitting in the env (set by beforeEach) — that would swap the
+      // auth scheme out from under them. Mirrors upstream, which throws here.
+      expect(() => vercelBlob({ oidcToken: "explicit-oidc" })).toThrow(
+        /storeId/iu
+      );
+    });
+
     test("explicit oidcToken + storeId options work without any env vars", async () => {
       delete process.env.BLOB_READ_WRITE_TOKEN;
       const files = new Files({

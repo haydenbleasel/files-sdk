@@ -254,6 +254,16 @@ export const vercelBlob = (
   } else if (oidcToken && explicitStoreId) {
     auth.oidcToken = oidcToken;
     auth.storeId = explicitStoreId;
+  } else if (config.oidcToken) {
+    // An explicit `oidcToken` option (vs one picked up from the env) is an
+    // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
+    // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
+    // scheme out from under the caller. Upstream `resolveBlobAuth` throws here
+    // too, ahead of its own read-write-token fallback.
+    throw new FilesError(
+      "Provider",
+      "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
+    );
   } else if (envToken) {
     auth.token = envToken;
   } else {
