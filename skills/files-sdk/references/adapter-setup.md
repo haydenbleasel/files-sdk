@@ -74,15 +74,25 @@ Gotchas:
 import { vercelBlob } from "files-sdk/vercel-blob";
 
 const adapter = vercelBlob({
-  token: process.env.BLOB_READ_WRITE_TOKEN, // optional; defaults to env
+  // Credentials are optional — the adapter resolves them in the same order
+  // the upstream SDK does:
+  //   1. explicit `token` (RW or client token) — always wins
+  //   2. OIDC pair (`oidcToken` + `storeId`, option or env)
+  //   3. `BLOB_READ_WRITE_TOKEN` env
+  // token: process.env.BLOB_READ_WRITE_TOKEN,
+  // oidcToken: loadOidcToken(),
+  // storeId: loadStoreId(),
   access: "public", // or "private" — fixed at construction
   addRandomSuffix: false, // default false (predictable keys, S3-style)
   allowOverwrite: true, // default true so predictable keys actually work
 });
 ```
 
-Two important non-defaults to know about:
+A few things to know:
 
+- **OIDC is preferred on Vercel.** When the Blob store is connected to a project, Vercel auto-injects `VERCEL_OIDC_TOKEN` (short-lived, auto-rotated) and `BLOB_STORE_ID`. The adapter uses both automatically — no `BLOB_READ_WRITE_TOKEN` required. Off Vercel, or if OIDC isn't configured, the RW token still works as before.
+- **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either).
+- **Explicit `token` always wins** over OIDC env vars, mirroring the SDK. Set it only when you actually want to override.
 - **`access` is fixed at construction.** A single `Files` instance is unambiguously public or private. Need both? Instantiate two adapters.
 - **`access: "private"` makes `url()` throw.** Private blobs have no permanent public URL. Use `download()` instead. `signedUploadUrl` does still work.
 - **`allowOverwrite: true` is the default** so `addRandomSuffix: false` works at all — Vercel rejects same-pathname uploads otherwise. If you want create-only semantics, set `allowOverwrite: false` and handle the resulting `Conflict`.

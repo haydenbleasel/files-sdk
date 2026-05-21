@@ -1,0 +1,5 @@
+---
+"files-sdk": minor
+---
+
+Add Vercel OIDC authentication to the Vercel Blob adapter (`files-sdk/vercel-blob`). When the Blob store is connected to a Vercel project, the adapter now automatically picks up `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID` and uses OIDC instead of the long-lived `BLOB_READ_WRITE_TOKEN` — OIDC tokens rotate automatically, which removes the risk that a static secret leaks from your codebase or environment. Two new options, `oidcToken` and `storeId`, let you pass OIDC credentials explicitly for runtimes (e.g. Vite) that don't load `.env.local` into `process.env`. Credential resolution mirrors the upstream SDK exactly: an explicit `token` always wins, then OIDC (option or env), then `BLOB_READ_WRITE_TOKEN`. The `url()` fast path now uses `storeId` (option or `BLOB_STORE_ID` env) when present so OIDC users keep the no-round-trip behavior, and `BLOB_STORE_ID` is accepted in either `store_<id>` or `<id>` form. Bumps the `@vercel/blob` peer dep floor to `^2.4.0`, which is the first version that ships the OIDC options.

@@ -16,11 +16,39 @@ import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
   /**
-   * Vercel Blob read/write token. Falls back to `BLOB_READ_WRITE_TOKEN`,
-   * which is auto-injected on Vercel; pass `token` manually for local dev or
-   * other hosts.
+   * Long-lived read-write token. Defaults to `process.env.BLOB_READ_WRITE_TOKEN`.
+   *
+   * Takes priority over OIDC even when both are present (mirrors the
+   * upstream `@vercel/blob` resolution order). For code running on
+   * Vercel, prefer leaving this unset and using OIDC instead.
    */
   token?: string;
+  /**
+   * Vercel OIDC token. Defaults to `process.env.VERCEL_OIDC_TOKEN`, which
+   * Vercel populates automatically on every deployment when a Blob store
+   * is connected to the project.
+   *
+   * OIDC tokens are short-lived and auto-rotated, so they remove the risk
+   * that a long-lived `BLOB_READ_WRITE_TOKEN` leaks from your codebase
+   * or environment. To activate OIDC, **both** `oidcToken` and `storeId`
+   * must be available (option or env) and `token` must be unset — that
+   * matches the upstream SDK's resolution order.
+   *
+   * Pass `oidcToken` explicitly when your framework doesn't load
+   * `.env.local` into `process.env` automatically (Vite, etc.) — the
+   * adapter would otherwise silently fall back to the read-write token.
+   */
+  oidcToken?: string;
+  /**
+   * Blob store id, used with OIDC. Defaults to `process.env.BLOB_STORE_ID`.
+   * Accepted in either `store_<id>` or `<id>` form (mirrors the SDK).
+   *
+   * Independently powers the `url()` fast path: when a `storeId` is known
+   * (from option, env, or derived from a `vercel_blob_rw_<storeId>_…`
+   * token), public URLs are synthesized without a round trip if
+   * `addRandomSuffix: false`.
+   */
+  storeId?: string;
   /**
    * Whether blobs uploaded by this adapter are public or private.
    *
@@ -30,8 +58,9 @@ export interface VercelBlobAdapterOptions {
    * - `"private"`: blobs are uploaded with `access: "private"`. They cannot
    *   be fetched by URL — `download()` and the lazy bodies returned from
    *   `head()` / `list()` instead route through `blob.get(key, { access:
-   *   "private" })`, which uses the token. `url()` throws because there is
-   *   no permanent public URL for private blobs.
+   *   "private" })`, which uses whichever credentials the adapter resolved
+   *   (read-write token or OIDC). `url()` throws because there is no
+   *   permanent public URL for private blobs.
    *
    * The setting is fixed at construction so a single `Files` instance is
    * unambiguously one or the other. If you need both, instantiate two
@@ -160,14 +189,87 @@ const mapBlobError = (err: unknown): FilesError => {
   return new FilesError(code, e?.message ?? DEFAULT_BLOB_MESSAGES[code], err);
 };
 
+// `BLOB_READ_WRITE_TOKEN` format is `vercel_blob_rw_<storeId>_<random>`.
+// We use the storeId to synthesize public URLs without a round trip when
+// the pathname is predictable (i.e. `addRandomSuffix: false`).
+//
+// Parse defensively: require the exact `vercel_blob_rw_` prefix and a
+// segment shaped like a real storeId (alphanumeric, ≥8 chars — real ones
+// are ~24). If Vercel ever inserts a version segment (e.g.
+// `vercel_blob_rw_v2_<storeId>_<random>`), changes separators, or
+// shortens the storeId, the candidate fails the shape check and we fall
+// through to `undefined` — `url()` then does a real head() call instead
+// of building a URL pointing at the wrong (or someone else's) store.
+const TOKEN_PREFIX = "vercel_blob_rw_";
+const STORE_ID_PREFIX = "store_";
+const STORE_ID_RE = /^[A-Za-z0-9]{8,}$/u;
+
+const deriveStoreIdFromToken = (rwToken: string): string | undefined => {
+  if (!rwToken.startsWith(TOKEN_PREFIX)) {
+    return undefined;
+  }
+  const afterPrefix = rwToken.slice(TOKEN_PREFIX.length);
+  const sep = afterPrefix.indexOf("_");
+  const candidate = sep === -1 ? afterPrefix : afterPrefix.slice(0, sep);
+  return candidate && STORE_ID_RE.test(candidate) ? candidate : undefined;
+};
+
+// `BLOB_STORE_ID` is documented as accepting either `store_<id>` or
+// `<id>` form. The CDN URL uses the bare id, so strip the prefix if
+// present before validating shape.
+const normalizeExplicitStoreId = (id: string): string | undefined => {
+  const candidate = id.startsWith(STORE_ID_PREFIX)
+    ? id.slice(STORE_ID_PREFIX.length)
+    : id;
+  return STORE_ID_RE.test(candidate) ? candidate : undefined;
+};
+
+// Credentials passed to every `@vercel/blob` call. Mirrors `BlobCommandOptions`
+// (the upstream interface shared across put/get/head/del/copy/list) so a
+// single resolved object can be spread into every call site.
+interface BlobAuthOptions {
+  token?: string;
+  oidcToken?: string;
+  storeId?: string;
+}
+
 export const vercelBlob = (
   config: VercelBlobAdapterOptions = {}
 ): VercelBlobAdapter => {
-  const token = config.token ?? readEnv("BLOB_READ_WRITE_TOKEN");
-  if (!token) {
+  const explicitToken = config.token;
+  const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
+  const oidcToken = config.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
+  const explicitStoreId = config.storeId ?? readEnv("BLOB_STORE_ID");
+
+  // Mirrors the upstream SDK's resolution order:
+  //   1. explicit `token` (RW or client token) — wins over OIDC
+  //   2. OIDC pair (`oidcToken` + `storeId`, either option or env)
+  //   3. `BLOB_READ_WRITE_TOKEN` env
+  // Anything else is a construction-time error so OIDC misconfigurations
+  // (e.g. only one of the two env vars set) surface immediately rather
+  // than silently falling back to anonymous calls.
+  const auth: BlobAuthOptions = {};
+  if (explicitToken) {
+    auth.token = explicitToken;
+  } else if (oidcToken && explicitStoreId) {
+    auth.oidcToken = oidcToken;
+    auth.storeId = explicitStoreId;
+  } else if (config.oidcToken) {
+    // An explicit `oidcToken` option (vs one picked up from the env) is an
+    // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
+    // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
+    // scheme out from under the caller. Upstream `resolveBlobAuth` throws here
+    // too, ahead of its own read-write-token fallback.
     throw new FilesError(
       "Provider",
-      "vercelBlob adapter: missing token. Pass `token` or set BLOB_READ_WRITE_TOKEN."
+      "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
+    );
+  } else if (envToken) {
+    auth.token = envToken;
+  } else {
+    throw new FilesError(
+      "Provider",
+      "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set both VERCEL_OIDC_TOKEN and BLOB_STORE_ID."
     );
   }
 
@@ -179,8 +281,9 @@ export const vercelBlob = (
 
   // For private blobs the public URL field returned by head()/list() requires
   // authentication to fetch — a plain `fetch(url)` would 401. Route body reads
-  // through `blob.get(...)` instead, which uses the token. Returns a stream
-  // and a content type; callers can buffer or pipe it.
+  // through `blob.get(...)` instead, which uses whichever credentials the
+  // adapter resolved. Returns a stream and a content type; callers can buffer
+  // or pipe it.
   const getPrivateBody = async (
     key: string,
     signal?: AbortSignal
@@ -192,7 +295,7 @@ export const vercelBlob = (
     const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
     const got = await blob.get(key, {
       access: "private",
-      token,
+      ...auth,
       ...(abortSignal && { abortSignal }),
     });
     if (!got || got.statusCode !== 200) {
@@ -208,26 +311,18 @@ export const vercelBlob = (
     };
   };
 
-  // BLOB_READ_WRITE_TOKEN format is `vercel_blob_rw_<storeId>_<random>`.
-  // We use the storeId to synthesize public URLs without a round trip when
-  // the pathname is predictable (i.e. `addRandomSuffix: false`).
-  //
-  // Parse defensively: require the exact `vercel_blob_rw_` prefix and a
-  // segment shaped like a real storeId (alphanumeric, ≥8 chars — real ones
-  // are ~24). If Vercel ever inserts a version segment (e.g.
-  // `vercel_blob_rw_v2_<storeId>_<random>`), changes separators, or
-  // shortens the storeId, the candidate fails the shape check and we fall
-  // through to `undefined` — `url()` then does a real head() call instead
-  // of building a URL pointing at the wrong (or someone else's) store.
-  const TOKEN_PREFIX = "vercel_blob_rw_";
-  const STORE_ID_RE = /^[A-Za-z0-9]{8,}$/u;
+  // Prefer the explicit storeId (option or `BLOB_STORE_ID` env) since it
+  // works for OIDC and any future credential shape. Fall back to deriving
+  // from a read-write token (the only credential shape that embeds the
+  // storeId) so existing setups keep their no-round-trip URL fast path.
   let storeId: string | undefined;
-  if (token.startsWith(TOKEN_PREFIX)) {
-    const afterPrefix = token.slice(TOKEN_PREFIX.length);
-    const sep = afterPrefix.indexOf("_");
-    const candidate = sep === -1 ? afterPrefix : afterPrefix.slice(0, sep);
-    if (candidate && STORE_ID_RE.test(candidate)) {
-      storeId = candidate;
+  if (explicitStoreId) {
+    storeId = normalizeExplicitStoreId(explicitStoreId);
+  }
+  if (!storeId) {
+    const rwToken = explicitToken ?? envToken;
+    if (rwToken) {
+      storeId = deriveStoreIdFromToken(rwToken);
     }
   }
 
@@ -235,7 +330,7 @@ export const vercelBlob = (
     try {
       return await blob.head(key, {
         ...(signal && { abortSignal: signal }),
-        token,
+        ...auth,
       });
     } catch (error) {
       throw mapBlobError(error);
@@ -252,7 +347,7 @@ export const vercelBlob = (
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
           }),
-          token,
+          ...auth,
         });
       } catch (error) {
         throw mapBlobError(error);
@@ -264,7 +359,7 @@ export const vercelBlob = (
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
           }),
-          token,
+          ...auth,
         });
       } catch (error) {
         throw mapBlobError(error);
@@ -357,7 +452,7 @@ export const vercelBlob = (
       try {
         const result = await blob.list({
           ...(options?.signal && { abortSignal: options.signal }),
-          token,
+          ...auth,
           ...(options?.prefix && { prefix: options.prefix }),
           ...(options?.limit !== undefined && { limit: options.limit }),
           ...(options?.cursor && { cursor: options.cursor }),
@@ -409,7 +504,7 @@ export const vercelBlob = (
           addRandomSuffix,
           allowOverwrite,
           ...(options?.signal && { abortSignal: options.signal }),
-          token,
+          ...auth,
           ...(options?.contentType && { contentType: options.contentType }),
           ...(options?.cacheControl && {
             cacheControlMaxAge: parseCacheControlMaxAge(options.cacheControl),
@@ -424,7 +519,7 @@ export const vercelBlob = (
         if (size === undefined) {
           const { size: headSize, uploadedAt } = await blob.head(result.url, {
             ...(options?.signal && { abortSignal: options.signal }),
-            token,
+            ...auth,
           });
           size = headSize;
           lastModified = uploadedAt?.getTime() ?? lastModified;

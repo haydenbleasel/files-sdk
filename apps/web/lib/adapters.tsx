@@ -40,7 +40,7 @@ export const ADAPTERS: Adapter[] = [
   },
   {
     description:
-      "Vercel Blob. BLOB_READ_WRITE_TOKEN is auto-injected on Vercel; pass token manually for local dev or other hosts.",
+      "Vercel Blob. Prefers Vercel OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID, auto-rotating) and falls back to BLOB_READ_WRITE_TOKEN; pass token, oidcToken, or storeId manually for local dev or other hosts.",
     name: "Vercel Blob",
     peerDeps: ["@vercel/blob"],
     slug: "vercel-blob",
