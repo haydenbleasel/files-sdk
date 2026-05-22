@@ -1,5 +1,89 @@
 # files-sdk
 
+## 1.5.0
+
+### Minor Changes
+
+- c6b4df1: `upload`, `download`, `head`, and `exists` now accept an array for bulk operations, mirroring `delete`. Pass the usual single argument for the original behavior (resolves to one result, throws on failure); pass an array to operate on many in one call and get back a structured result instead of throwing on partial failure — so you can see exactly which keys succeeded and which failed:
+
+  ```ts
+  const up = await files.upload(
+    [
+      { key: "avatars/a.png", body: a, contentType: "image/png" },
+      { key: "avatars/b.png", body: b },
+    ],
+    { concurrency: 8, stopOnError: false }
+  );
+  up.uploaded; // UploadResult[] — successes, in the order supplied
+  up.errors; // undefined when every item succeeded
+
+  const down = await files.download(["a.png", "b.png"]); // { downloaded, errors? }
+  const meta = await files.head(["a.png", "b.png"]); // { files, errors? }
+  const there = await files.exists(["a.png", "b.png"]); // { existing, missing, errors? }
+  ```
+
+  `upload`'s array items are flat — each carries its own `key`, `body`, and optional `contentType` / `cacheControl` / `metadata`. No provider exposes a native batch primitive for these operations, so the SDK always fans out to per-key calls with bounded `concurrency` (default 8); `stopOnError: false` (default) attempts every item and collects per-key failures in `errors`, while `stopOnError: true` stops at the first failure. All array forms honor the client's `prefix` and report the keys the caller passed, not the internal prefixed paths. Invalid keys are reported in `errors` rather than thrown. `exists` splits results into `existing` / `missing` and only routes hard errors (auth, transport) to `errors`. The `files` CLI's `head` and `exists` commands and the MCP `head` / `exists` tools accept multiple keys too.
+
+- ed72daf: Add a Convex storage adapter (`files-sdk/convex`). Convex file storage is only reachable from inside a Convex function, so the adapter wraps the function context — `convex({ ctx })`, constructed per request inside an action, mutation, or query — and maps the unified `Adapter` surface onto `ctx.storage` / `ctx.db.system`. Because Convex assigns the storage id (`Id<"_storage">`) and exposes no writable metadata, the storage id is the key: `upload()` returns the assigned id, and `download`/`head`/`delete`/`url` take it back. Available operations follow Convex's context rules — `upload`/`download` need an action, `list` needs a query/mutation — and the adapter throws a descriptive error when a primitive is unavailable. `copy`, custom `metadata`, and `cacheControl` are unsupported; `url()` returns a permanent serving URL; `signedUploadUrl()` returns Convex's raw-body POST upload URL. `convex` is an optional peer dependency.
+- bad4a80: `delete()` now accepts an array of keys for bulk deletion. Pass a string to remove one object (resolves to `void`, throws on failure as before); pass an array to remove many in one call and get back a structured `{ deleted, errors? }` result instead of throwing on partial failure — so you can see exactly which keys failed:
+
+  ```ts
+  const result = await files.delete(
+    ["avatars/a.png", "avatars/b.png", "avatars/c.png"],
+    { concurrency: 8, stopOnError: false }
+  );
+
+  result.deleted; // string[] — keys removed, in the order supplied
+  result.errors; // undefined when every key succeeded
+  ```
+
+  Adapters with a native bulk primitive use it — S3 sends `DeleteObjects` (chunked into batches of 1000, the provider limit), Supabase uses `remove(keys)`, and UploadThing uses `deleteFiles(keys)` — while every other adapter fans out to single deletes with bounded `concurrency` (default 8). `stopOnError: false` (default) attempts every key and collects per-key failures in `errors`; `stopOnError: true` stops at the first failure. Invalid keys are reported in `errors` rather than thrown, and the array form honors the client's `prefix` and is no-op friendly on providers that treat a missing key as success. The `files` CLI's `delete` command and the MCP `delete` tool accept multiple keys too.
+
+- 9e9fa13: Add FTP and SFTP adapters (`files-sdk/ftp`, `files-sdk/sftp`) for on-prem and legacy file servers. Both expose the standard unified surface, so they're interchangeable with the cloud adapters:
+
+  ```ts
+  import { Files } from "files-sdk";
+  import { sftp } from "files-sdk/sftp";
+
+  const files = new Files({
+    adapter: sftp({
+      host: "files.example.com",
+      username: process.env.SFTP_USERNAME!,
+      privateKey: process.env.SFTP_PRIVATE_KEY!,
+      root: "/uploads",
+    }),
+  });
+
+  await files.upload("reports/q1.csv", csv, { contentType: "text/csv" });
+  ```
+
+  FTP uses [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) (with FTPS via `secure: true`); SFTP uses [`ssh2-sftp-client`](https://www.npmjs.com/package/ssh2-sftp-client). Both are optional peer dependencies. These adapters are **Node-only** (raw sockets — no edge/browser/Workers support) and connect per operation by default; pass a pre-connected `client` to reuse one connection for batch work. Keys resolve under a configurable `root` with a `..` traversal guard, `list` walks the tree recursively with cursor pagination, and `deleteMany` reuses a single connection. These protocols store no MIME type (inferred from the file extension), no arbitrary `metadata`/`cacheControl` (both throw), and serve no HTTP — `url()` requires a `publicBaseUrl` pointing at an HTTP server fronting the same tree, and `signedUploadUrl()` throws. `copy` round-trips the bytes through the client since neither protocol has a portable server-side copy.
+
+- 1eb1dfc: Add a `files-sdk/providers` export: a zero-dependency catalog of every storage provider and the environment variables each one reads. `PROVIDERS` maps each slug to its display name, description, optional peer dependencies, and a structured env spec — `required` vars, mutually exclusive `credentialModes` (so Azure's connection-string-or-key-or-SAS choice is expressible), `optional` tuning vars, and non-env `config`. Every variable is tagged `secret` and `readBy` (`"files-sdk"` vs the underlying SDK's `"sdk-chain"`, so AWS/GCS credential-chain vars aren't mislabeled as required). Helpers: `getProvider`, `listEnvVars`, `getSecretEnvVars`. `PROVIDER_NAMES` and the `Provider`/`ProviderSlug` types are also re-exported from the package root. Useful for sync engines, config UIs, and onboarding flows that need to enumerate providers and their required configuration up front.
+
+### Patch Changes
+
+- e80e922: Add `signal`, `timeout`, and `retries` to every operation. Set them on the `Files` constructor as defaults and override per call (a per-call value wins). `retries` is a number or `{ max, backoff }`; only `Provider` failures are retried — `NotFound`, `Unauthorized`, `Conflict`, aborts, and timeouts are returned immediately, and `ReadableStream` uploads are never retried because a consumed stream can't be replayed. The default backoff is exponential (`100 * 2 ** (attempt - 1)` ms, capped at 30s, no jitter); pass your own `backoff({ attempt, error })` for jitter or a different curve. `timeout` is applied per attempt and aborts the operation rather than triggering a retry. A `signal` always fails fast at the `Files` layer for every adapter; the underlying provider request is also cancelled on the S3 adapter and the S3-compatible catalog, Vercel Blob and UploadThing's fetch-backed reads, Azure, Google Drive, and PocketBase (across their operations), Supabase (`download` and `list` — the only methods its SDK lets a signal through), and the fetch-backed downloads of Box, Cloudinary, and Dropbox. Adapters whose SDK exposes no cancellation (GCS, Firebase Storage, Netlify Blobs, Appwrite, Bunny, Bun S3, and the R2 binding path) still fail fast at the `Files` layer but leave the in-flight request running.
+- f774aa2: Add Azure AD / Managed Identity support to the Azure adapter via a `credential` (`TokenCredential`) option. Token-authenticated adapters mint User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and same-container `copy()`, so signed URLs keep working without a storage account key. Set `useUserDelegationSas: false` to opt out of SAS signing for token-only setups.
+- dbda237: Add a `prefix` option to the `Files` constructor. When set, every key is resolved relative to the prefix - reads, writes, copies, listings, URLs, and signed uploads - and the prefix is stripped back off the keys (and `name`) returned in results, so your application code works in its own namespace:
+
+  ```ts
+  const users = new Files({
+    adapter: s3({ bucket: "uploads" }),
+    prefix: "users",
+  });
+
+  await users.upload("123/avatar.png", file); // writes users/123/avatar.png
+  const stored = await users.head("123/avatar.png");
+  stored.key; // "123/avatar.png" - prefix stripped
+  ```
+
+  Leading and trailing slashes on the prefix are normalized (`"/users/"` and `"users"` behave identically), and `list()` scopes the underlying query on a path boundary so a `prefix: "users"` instance never matches the sibling `users-archive/`.
+
+- d921741: Harden three internal regexes against polynomial ReDoS. The trailing-slash/`[. ]`-stripping patterns in `normalizePrefix` (core, used by every adapter's prefix handling), the `fs` adapter's Windows trailing-noise check, and the `bunny-storage` key parser each anchor with a `(?<!…)` lookbehind so the engine can't re-attempt the match at every character of a long trailing run (e.g. `"users////…"` or `"x.meta.json....    "`). Behavior is unchanged; only the worst-case matching cost is fixed.
+- ff39a2e: fs adapter: reject keys that resolve to a `.meta.json` sidecar path — the adapter reserves that suffix for its per-object metadata sidecar, and accepting it as a regular key let a same-root caller silently overwrite, hide, or delete another key's sidecar (flipping the served `Content-Type`, mutating arbitrary `metadata` fields, or stripping the etag). The check runs on the resolved basename and folds case plus Windows trailing dots/spaces, so re-cased or normalized variants (`x.META.JSON`, `x.meta.json.`, `x.meta.json/`) that alias the sidecar on case-insensitive (APFS/NTFS) or Windows volumes are rejected too.
+- 979cd00: Add Vercel OIDC authentication to the Vercel Blob adapter (`files-sdk/vercel-blob`). When the Blob store is connected to a Vercel project, the adapter now automatically picks up `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID` and uses OIDC instead of the long-lived `BLOB_READ_WRITE_TOKEN` — OIDC tokens rotate automatically, which removes the risk that a static secret leaks from your codebase or environment. Two new options, `oidcToken` and `storeId`, let you pass OIDC credentials explicitly for runtimes (e.g. Vite) that don't load `.env.local` into `process.env`. Credential resolution mirrors the upstream SDK exactly: an explicit `token` always wins, then OIDC (option or env), then `BLOB_READ_WRITE_TOKEN`. The `url()` fast path now uses `storeId` (option or `BLOB_STORE_ID` env) when present so OIDC users keep the no-round-trip behavior, and `BLOB_STORE_ID` is accepted in either `store_<id>` or `<id>` form. Bumps the `@vercel/blob` peer dep floor to `^2.4.0`, which is the first version that ships the OIDC options.
+
 ## 1.4.0
 
 ### Minor Changes
