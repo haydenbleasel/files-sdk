@@ -91,6 +91,10 @@ const cases: Record<string, Case> = {
     },
   },
   fs: { expectedName: "fs", opts: { root: "/tmp/files-sdk-registry-test" } },
+  ftp: {
+    expectedName: "ftp",
+    opts: { configJson: { host: "localhost" } },
+  },
   gcs: {
     expectedName: "gcs",
     // GCS construction calls into the storage SDK but doesn't validate
@@ -160,6 +164,10 @@ const cases: Record<string, Case> = {
   },
   s3: { expectedName: "s3", opts: baseS3 },
   scaleway: { expectedName: "scaleway", opts: baseS3 },
+  sftp: {
+    expectedName: "sftp",
+    opts: { configJson: { host: "localhost", username: "user" } },
+  },
   sharepoint: {
     expectedName: "sharepoint",
     opts: { configJson: { accessToken: "tok" } },

@@ -149,6 +149,14 @@
       "types": "./dist/fs/index.d.ts",
       "import": "./dist/fs/index.js"
     },
+    "./ftp": {
+      "types": "./dist/ftp/index.d.ts",
+      "import": "./dist/ftp/index.js"
+    },
+    "./sftp": {
+      "types": "./dist/sftp/index.d.ts",
+      "import": "./dist/sftp/index.js"
+    },
     "./uploadthing": {
       "types": "./dist/uploadthing/index.d.ts",
       "import": "./dist/uploadthing/index.js"
@@ -236,10 +244,12 @@
     "@supabase/storage-js": "^2.105.4",
     "@types/bun": "^1.1.0",
     "@types/node": "^25.6.2",
+    "@types/ssh2-sftp-client": "^9.0.6",
     "@typescript/native-preview": "^7.0.0-dev.20250101.1",
     "@vercel/blob": "^2.4.0",
     "ai": "^6.0.97",
     "aws-sdk-client-mock": "^4.1.0",
+    "basic-ftp": "^6.0.1",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.16.0",
@@ -249,6 +259,7 @@
     "node-appwrite": "^24.1.0",
     "openai": "^6.37.0",
     "pocketbase": "^0.26.9",
+    "ssh2-sftp-client": "^12.1.1",
     "tsup": "^8.3.0",
     "typescript": "^6",
     "uploadthing": "^7",
@@ -271,6 +282,7 @@
     "@supabase/storage-js": "^2.105.4",
     "@vercel/blob": "^2.4.0",
     "ai": "^6.0.0",
+    "basic-ftp": "^6.0.1",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.16.0",
@@ -280,6 +292,7 @@
     "node-appwrite": "^24.1.0",
     "openai": "^6.0.0",
     "pocketbase": "^0.26.9",
+    "ssh2-sftp-client": "^12.1.1",
     "uploadthing": "^7",
     "zod": "^3.23.0 || ^4.0.0"
   },
@@ -332,6 +345,9 @@
     "ai": {
       "optional": true
     },
+    "basic-ftp": {
+      "optional": true
+    },
     "box-typescript-sdk-gen": {
       "optional": true
     },
@@ -357,6 +373,9 @@
       "optional": true
     },
     "pocketbase": {
+      "optional": true
+    },
+    "ssh2-sftp-client": {
       "optional": true
     },
     "uploadthing": {

@@ -19,6 +19,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface DropboxAdapterOptions {
@@ -283,38 +284,9 @@ const normalizeBody = async (
 };
 
 // Dropbox doesn't store user-supplied MIME types — `filesUpload` accepts
-// no Content-Type. Approximate by extension on the way out so callers
-// don't get `application/octet-stream` for everything.
-const TYPE_BY_EXT: Readonly<Record<string, string>> = {
-  css: "text/css; charset=utf-8",
-  csv: "text/csv; charset=utf-8",
-  gif: "image/gif",
-  htm: "text/html; charset=utf-8",
-  html: "text/html; charset=utf-8",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  js: "text/javascript; charset=utf-8",
-  json: "application/json",
-  mjs: "text/javascript; charset=utf-8",
-  mp3: "audio/mpeg",
-  mp4: "video/mp4",
-  pdf: "application/pdf",
-  png: "image/png",
-  svg: "image/svg+xml",
-  txt: "text/plain; charset=utf-8",
-  webp: "image/webp",
-  xml: "application/xml",
-  zip: "application/zip",
-};
-
-const inferTypeFromName = (name: string): string => {
-  const idx = name.lastIndexOf(".");
-  if (idx === -1) {
-    return "application/octet-stream";
-  }
-  const ext = name.slice(idx + 1).toLowerCase();
-  return TYPE_BY_EXT[ext] ?? "application/octet-stream";
-};
+// no Content-Type. Approximate by extension on the way out (shared with the
+// FTP/SFTP adapters, which have the same gap) so callers don't get
+// `application/octet-stream` for everything.
 
 interface FileMeta {
   size: number;

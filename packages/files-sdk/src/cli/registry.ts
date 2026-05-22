@@ -284,6 +284,18 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     },
     required: ["--root"],
   },
+  ftp: {
+    load: async (opts) => {
+      const { ftp } = await import("../ftp/index.js");
+      return cast(
+        ftp,
+        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
+      );
+    },
+    notes:
+      "connection via --config-json (host, port, user, password, secure, root) or FTP_* env vars",
+    required: [],
+  },
   gcs: {
     load: async (opts) => {
       const { gcs } = await import("../gcs/index.js");
@@ -431,6 +443,18 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       return cast(scaleway, merge(s3LikeOpts(opts), opts.extra));
     },
     required: ["--bucket", "--region"],
+  },
+  sftp: {
+    load: async (opts) => {
+      const { sftp } = await import("../sftp/index.js");
+      return cast(
+        sftp,
+        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
+      );
+    },
+    notes:
+      "connection via --config-json (host, port, username, password, privateKey, root) or SFTP_* env vars",
+    required: [],
   },
   sharepoint: {
     load: async (opts) => {

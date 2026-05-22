@@ -644,6 +644,60 @@ export const PROVIDERS = {
     peerDeps: [],
     slug: "fs",
   },
+  ftp: {
+    description:
+      "FTP / FTPS via basic-ftp. Node-only. Connect-per-operation with an injectable client for batch work; url() needs an HTTP front (publicBaseUrl).",
+    env: {
+      config: ["host", "port", "root"],
+      credentialModes: [
+        {
+          label: "Username + password",
+          vars: [
+            {
+              aliases: ["FTP_USER"],
+              description: "FTP username (default anonymous)",
+              key: "FTP_USERNAME",
+              readBy: "files-sdk",
+              secret: false,
+            },
+            {
+              description: "FTP password",
+              key: "FTP_PASSWORD",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "Node-only (raw sockets). Plain FTP transmits credentials in cleartext — set FTP_SECURE=true for FTPS. Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` and `signedUploadUrl()` require `publicBaseUrl` — FTP serves no HTTP.",
+      optional: [
+        {
+          description: "Port (default 21)",
+          key: "FTP_PORT",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          description: 'FTPS over TLS — "true" (explicit) or "implicit"',
+          key: "FTP_SECURE",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+      required: [
+        {
+          description: "FTP host",
+          key: "FTP_HOST",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "FTP",
+    peerDeps: ["basic-ftp"],
+    slug: "ftp",
+  },
   gcs: {
     description:
       "Google Cloud Storage via the official @google-cloud/storage SDK. Application Default Credentials by default.",
@@ -1068,6 +1122,76 @@ export const PROVIDERS = {
     name: "Scaleway Object Storage",
     peerDeps: AWS_S3_PEERS,
     slug: "scaleway",
+  },
+  sftp: {
+    description:
+      "SFTP (SSH File Transfer Protocol) via ssh2-sftp-client. Node-only. Connect-per-operation with an injectable client for batch work; url() needs an HTTP front (publicBaseUrl).",
+    env: {
+      config: ["host", "port", "root"],
+      credentialModes: [
+        {
+          label: "Password",
+          vars: [
+            {
+              description: "SSH username",
+              key: "SFTP_USERNAME",
+              readBy: "files-sdk",
+              secret: false,
+            },
+            {
+              description: "SSH password",
+              key: "SFTP_PASSWORD",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+        {
+          label: "Private key",
+          vars: [
+            {
+              description: "SSH username",
+              key: "SFTP_USERNAME",
+              readBy: "files-sdk",
+              secret: false,
+            },
+            {
+              description: "Private key (PEM)",
+              key: "SFTP_PRIVATE_KEY",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "Node-only (raw sockets). Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` and `signedUploadUrl()` require `publicBaseUrl` — SFTP serves no HTTP.",
+      optional: [
+        {
+          description: "Passphrase for an encrypted private key",
+          key: "SFTP_PASSPHRASE",
+          readBy: "files-sdk",
+          secret: true,
+        },
+        {
+          description: "Port (default 22)",
+          key: "SFTP_PORT",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+      required: [
+        {
+          description: "SFTP host",
+          key: "SFTP_HOST",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "SFTP",
+    peerDeps: ["ssh2-sftp-client"],
+    slug: "sftp",
   },
   sharepoint: {
     description:

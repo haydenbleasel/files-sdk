@@ -36,6 +36,8 @@ export default defineConfig({
     "src/azure/index.ts",
     "src/supabase/index.ts",
     "src/fs/index.ts",
+    "src/ftp/index.ts",
+    "src/sftp/index.ts",
     "src/uploadthing/index.ts",
     "src/onedrive/index.ts",
     "src/dropbox/index.ts",

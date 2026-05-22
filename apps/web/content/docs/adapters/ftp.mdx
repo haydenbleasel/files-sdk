@@ -1,0 +1,53 @@
+---
+title: FTP
+description: FTP / FTPS via basic-ftp. Node-only. Connect-per-operation with an injectable client for batch work; url() needs an HTTP front.
+peerDeps:
+  - "basic-ftp"
+---
+
+## Installation
+
+`basic-ftp` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk basic-ftp
+```
+
+## Usage
+
+FTP and FTPS via the [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) library. Virtual keys map to paths under a configurable `root` on the server, with a `..` traversal guard. **Node-only** — FTP uses raw sockets, so this adapter does not run on edge/browser/Workers runtimes.
+
+By default the adapter opens a fresh connection per operation and closes it afterwards. For batch work, connect once and pass the `client` so every call reuses the same connection — you own its lifecycle.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { ftp } from "files-sdk/ftp";
+
+const files = new Files({
+  adapter: ftp({
+    host: "ftp.example.com",
+    user: process.env.FTP_USERNAME!,
+    password: process.env.FTP_PASSWORD!,
+    secure: true, // FTPS over explicit TLS — strongly recommended
+    root: "/uploads", // virtual keys resolve under here; defaults to "."
+  }),
+});
+
+await files.upload("reports/q1.csv", csv, { contentType: "text/csv" });
+const file = await files.download("reports/q1.csv");
+```
+
+Auth falls back to `FTP_HOST`, `FTP_USERNAME` (alias `FTP_USER`), `FTP_PASSWORD`, `FTP_SECURE` (`"true"` or `"implicit"`), and `FTP_PORT` (default `21`) when the matching option is omitted.
+
+> **Plain FTP is cleartext.** Without `secure`, credentials and file contents are transmitted unencrypted. Prefer `secure: true` (explicit TLS / AUTH TLS); use `"implicit"` only for legacy servers.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/ftp/index.ts"
+  name="FtpAdapterOptions"
+/>
+
+## Limitations
+
+`url()` requires `publicBaseUrl` — FTP serves no HTTP and has no signing primitive, so without an HTTP server fronting the same tree there is no URL to return (it throws; use `download()` instead). `signedUploadUrl()` throws for the same reason. `responseContentDisposition` requires `publicBaseUrl`. User `metadata` and `cacheControl` on `upload()` throw — FTP has no metadata or cache-header fields; content type is inferred from the key's extension on read, and `lastModified` depends on the server supporting `MDTM`. `copy()` round-trips the bytes through the client (download then re-upload) since FTP has no server-side copy — large objects are buffered in memory. `list()` walks the tree recursively and skips symlinks. Connect-per-operation means a high call rate becomes a high connection rate; FTP servers commonly cap connections per IP, so reach for an injected `client` for batch jobs.
