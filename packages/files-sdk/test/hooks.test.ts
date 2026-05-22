@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { Files, FilesError } from "../src/index.js";
 import type {
   Adapter,
+  BulkOptions,
   FilesActionEvent,
   FilesErrorEvent,
   FilesHooks,
@@ -66,7 +67,10 @@ describe("Files hooks", () => {
       adapter: fakeAdapter(),
       hooks: recorder.hooks,
       prefix: "uploads",
-      retries: 2,
+      retries: {
+        backoff: () => 0,
+        max: 2,
+      },
       signal: defaultsSignal.signal,
       timeout: 1_000,
     });
@@ -89,7 +93,7 @@ describe("Files hooks", () => {
       options: {
         contentType: "text/plain",
         metadata: { user: "1" },
-        retries: 2,
+        retries: { max: 2 },
         timeout: 250,
       },
       path: "uploads/avatar.txt",
@@ -110,6 +114,24 @@ describe("Files hooks", () => {
       key: "avatar.txt",
       size: 5,
     });
+  });
+
+  test("bulk calls skip hook instrumentation when no hooks are configured", async () => {
+    let reads = 0;
+    const opts = {} as BulkOptions;
+    Object.defineProperty(opts, "custom", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return "noop";
+      },
+    });
+    const files = new Files({ adapter: fakeAdapter() });
+
+    const result = await files.upload([{ body: "ok", key: "a.txt" }], opts);
+
+    expect(result.uploaded.map((item) => item.key)).toEqual(["a.txt"]);
+    expect(reads).toBe(0);
   });
 
   test("bulk upload emits one action with aggregated result and never emits onError for partial failures", async () => {
