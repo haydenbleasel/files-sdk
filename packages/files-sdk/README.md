@@ -68,7 +68,9 @@ const files = new Files({
 - `onError` runs only when the public call rejects. Partial failures returned inside bulk `errors[]` do not trigger it.
 - `onRetry` runs every time the SDK schedules a retry for a single-operation call.
 
-Each hook receives a structured object with the action `type`, public `key`/`keys`, internal `path`/`paths`, sanitized options, timing data, and the final `result` or `error` where applicable.
+Hooks may be async. The SDK awaits them, so a slow hook delays operation completion (and `onRetry` also delays the retry sleep starting), but hook failures are swallowed and do not fail the operation.
+
+Each hook receives a structured object with the action `type`, public `key`/`keys`, internal `path`/`paths`, options with the abort signal and function-valued fields stripped, timing data, and the final `result` or `error` where applicable.
 
 ## File handles
 
