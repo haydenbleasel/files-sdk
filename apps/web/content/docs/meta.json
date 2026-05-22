@@ -7,7 +7,11 @@
     "troubleshooting",
     "---AI Tools---",
     "...ai",
-    "---Adapters---",
+    "---System Adapters---",
+    "adapters/fs",
+    "adapters/ftp",
+    "adapters/sftp",
+    "---Vendor Adapters---",
     "...adapters"
   ]
 }
