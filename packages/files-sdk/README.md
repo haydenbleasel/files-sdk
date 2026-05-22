@@ -43,6 +43,33 @@ const exists = await files.exists("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
+## Hooks
+
+Observe high-level file operations by passing `hooks` to the constructor:
+
+```ts
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  hooks: {
+    onAction(event) {
+      console.log(event.type, event.status, event.key ?? event.keys);
+    },
+    onError(event) {
+      console.error(event.type, event.error.code, event.error.message);
+    },
+    onRetry(event) {
+      console.warn(event.type, event.attempt, event.delayMs);
+    },
+  },
+});
+```
+
+- `onAction` runs once when a public SDK action finishes. Bulk calls emit a single event with `bulk: true` and the aggregated result.
+- `onError` runs only when the public call rejects. Partial failures returned inside bulk `errors[]` do not trigger it.
+- `onRetry` runs every time the SDK schedules a retry for a single-operation call.
+
+Each hook receives a structured object with the action `type`, public `key`/`keys`, internal `path`/`paths`, sanitized options, timing data, and the final `result` or `error` where applicable.
+
 ## File handles
 
 Use `files.file(key)` when your application code works with the same object repeatedly:
