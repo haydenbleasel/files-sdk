@@ -401,6 +401,32 @@ describe("azure adapter", () => {
   });
 
   describe("upload", () => {
+    test("forwards uploadData progress to onProgress with total", async () => {
+      uploadDataMock.mockImplementationOnce((_data: unknown, opts: unknown) => {
+        const { onProgress } = opts as {
+          onProgress?: (e: { loadedBytes: number }) => void;
+        };
+        onProgress?.({ loadedBytes: 3 });
+        onProgress?.({ loadedBytes: 5 });
+        return Promise.resolve(uploadDataResponse());
+      });
+      const files = new Files({
+        adapter: azure({
+          accountKey: "secret",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const events: { loaded: number; total?: number }[] = [];
+      await files.upload("a.txt", "hello", {
+        onProgress: (p) => events.push(p),
+      });
+      expect(events).toEqual([
+        { loaded: 3, total: 5 },
+        { loaded: 5, total: 5 },
+      ]);
+    });
+
     test("buffer body returns metadata from uploadData response", async () => {
       const files = new Files({
         adapter: azure({
@@ -434,6 +460,49 @@ describe("azure adapter", () => {
       expect(o.blobHTTPHeaders.blobContentType).toBe("text/plain");
       expect(o.blobHTTPHeaders.blobCacheControl).toBe("public, max-age=60");
       expect(o.metadata).toEqual({ author: "me" });
+    });
+
+    test("multipart maps partSize/concurrency to uploadData blockSize/concurrency", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      await adapter.upload("a.bin", new Uint8Array([1, 2, 3, 4]), {
+        multipart: { concurrency: 6, partSize: 8 * 1024 * 1024 },
+      });
+      const [uploadCall] = uploadDataMock.mock.calls;
+      if (!uploadCall) {
+        throw new Error("expected uploadData to have been called");
+      }
+      const [, opts] = uploadCall;
+      const o = opts as { blockSize?: number; concurrency?: number };
+      expect(o.blockSize).toBe(8 * 1024 * 1024);
+      expect(o.concurrency).toBe(6);
+    });
+
+    test("multipart maps partSize/concurrency to uploadStream positional args", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode("hello"));
+          c.close();
+        },
+      });
+      await adapter.upload("s.bin", stream, {
+        multipart: { concurrency: 6, partSize: 8 * 1024 * 1024 },
+      });
+      const [streamCall] = uploadStreamMock.mock.calls;
+      if (!streamCall) {
+        throw new Error("expected uploadStream to have been called");
+      }
+      const [, bufferSize, maxConcurrency] = streamCall;
+      expect(bufferSize).toBe(8 * 1024 * 1024);
+      expect(maxConcurrency).toBe(6);
     });
 
     test("Uint8Array passes a Buffer to uploadData", async () => {

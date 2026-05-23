@@ -1,4 +1,9 @@
-import { deleteManyWithFallback, mapMany } from "./internal/core.js";
+import {
+  byteLengthOf,
+  countingStream,
+  deleteManyWithFallback,
+  mapMany,
+} from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
@@ -57,6 +62,41 @@ export interface OperationOptions {
   retries?: RetryOptions;
 }
 
+/**
+ * A single upload-progress report. Passed to {@link UploadOptions.onProgress}
+ * (and {@link UploadManyOptions.onProgress}, which also carries the item `key`).
+ */
+export interface UploadProgress {
+  /** Cumulative bytes sent so far. */
+  loaded: number;
+  /**
+   * Total bytes to send, when known. Present for buffered bodies (`File`,
+   * `Blob`, `ArrayBuffer`, `Uint8Array`, `string`); omitted for
+   * `ReadableStream` bodies of unknown length, where only `loaded` can be
+   * reported.
+   */
+  total?: number;
+}
+
+/**
+ * Tuning for multipart uploads. Pass `multipart: true` for sensible defaults,
+ * or an object to override them. See {@link UploadOptions.multipart}.
+ */
+export interface MultipartOptions {
+  /**
+   * Size of each uploaded part, in bytes. Defaults to 5 MiB
+   * (`5 * 1024 * 1024`) — also the S3-enforced minimum for every part except
+   * the last. Adapters that chunk natively round this to their own valid
+   * granularity (OneDrive to a 320-KiB multiple, GCS/Firebase to 256 KiB).
+   */
+  partSize?: number;
+  /**
+   * How many parts upload in parallel. Defaults to `4`. Higher values trade
+   * memory (up to `partSize * concurrency` buffered at once) for throughput.
+   */
+  concurrency?: number;
+}
+
 export interface UploadOptions extends OperationOptions {
   /**
    * MIME type stored alongside the object and returned to readers in the
@@ -79,6 +119,39 @@ export interface UploadOptions extends OperationOptions {
    * is passed.
    */
   metadata?: Record<string, string>;
+  /**
+   * Called as the upload makes progress, for driving a progress bar.
+   *
+   * Granularity depends on the body and the adapter:
+   * - A `ReadableStream` body is reported byte-by-byte as the adapter
+   *   consumes it (`total` is omitted unless the length is known).
+   * - A buffered body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`)
+   *   is handed to the provider whole, so it reports `{ loaded: 0, total }`
+   *   then `{ loaded: total, total }` — unless the adapter reports true
+   *   progress itself (see below).
+   * - **S3 and the S3-compatible adapters** report true byte-level progress
+   *   for every body type (including multipart for large files). This path
+   *   uses `@aws-sdk/lib-storage`, an optional peer dependency that must be
+   *   installed when `onProgress` is used with those adapters.
+   *
+   * Only fires while the upload is in flight and on success; a failed upload
+   * does not emit a final event. On retry, progress restarts.
+   */
+  onProgress?: (progress: UploadProgress) => void;
+  /**
+   * Upload the body in parallel parts instead of a single request. Pass `true`
+   * for sensible defaults (5 MiB parts, 4 in flight), or an object to tune
+   * `partSize` / `concurrency`. Multipart is the robust path for large objects
+   * and for `ReadableStream` bodies of unknown length: a single PUT must buffer
+   * or know the length up front, while multipart streams part-by-part.
+   *
+   * On S3-family adapters this routes through `@aws-sdk/lib-storage` (an
+   * optional peer dependency) and is **auto-engaged for unknown-length
+   * streams** even when this flag is unset. OneDrive, GCS, Firebase, and Azure
+   * map it to their native chunking; other adapters already stream or chunk
+   * transparently and ignore it.
+   */
+  multipart?: boolean | MultipartOptions;
 }
 
 export interface UploadResult {
@@ -193,6 +266,8 @@ export interface UploadManyItem {
   cacheControl?: string;
   /** Per-item user metadata. See {@link UploadOptions.metadata}. */
   metadata?: Record<string, string>;
+  /** Per-item multipart toggle/tuning. See {@link UploadOptions.multipart}. */
+  multipart?: boolean | MultipartOptions;
 }
 
 export interface UploadManyResult {
@@ -200,6 +275,15 @@ export interface UploadManyResult {
   uploaded: UploadResult[];
   /** Per-item failures. Omitted entirely when every item succeeded. */
   errors?: BulkError[];
+}
+
+export interface UploadManyOptions extends BulkOptions {
+  /**
+   * Called as each item makes progress. Same semantics as
+   * {@link UploadOptions.onProgress}, with the item's `key` added so callers
+   * can attribute the report to a file when several upload concurrently.
+   */
+  onProgress?: (progress: UploadProgress & { key: string }) => void;
 }
 
 export interface DownloadManyOptions extends BulkOptions {
@@ -322,141 +406,17 @@ export type SignedUpload =
       fields: Record<string, string>;
     };
 
-export type FilesActionType =
-  | "upload"
-  | "download"
-  | "head"
-  | "exists"
-  | "delete"
-  | "copy"
-  | "list"
-  | "url"
-  | "signedUploadUrl";
-
-type HookOptionSources = OperationOptions &
-  UploadOptions &
-  DownloadOptions &
-  BulkOptions &
-  DeleteManyOptions &
-  DownloadManyOptions &
-  ListOptions &
-  UrlOptions &
-  SignUploadOptions;
-
-type FilesHookRetryOptions = number | { max: number };
-
-type StripHookOptionValue<T> = T extends AbortSignal
-  ? never
-  : T extends (...args: any[]) => any
-    ? never
-    : T;
-
-// Derived from the public option types so new fields stay in sync here too.
-// Function-valued fields and AbortSignals are stripped before hook emission.
-export type FilesHookOptions = {
-  [K in keyof HookOptionSources as StripHookOptionValue<
-    HookOptionSources[K]
-  > extends never
-    ? never
-    : K]?: K extends "retries"
-    ? FilesHookRetryOptions
-    : StripHookOptionValue<HookOptionSources[K]>;
-};
-
-export interface FilesBodySummary {
-  kind:
-    | "arrayBuffer"
-    | "arrayBufferView"
-    | "blob"
-    | "file"
-    | "stream"
-    | "string"
-    | "uint8Array";
-  contentType?: string;
-  name?: string;
-  size?: number;
-}
-
-export interface FilesUploadItemSummary {
-  body: FilesBodySummary;
-  cacheControl?: string;
-  contentType?: string;
-  key: string;
-  metadata?: Record<string, string>;
-  path?: string;
-}
-
-export type FilesActionInput =
-  | {
-      body: FilesBodySummary;
-    }
-  | {
-      items: FilesUploadItemSummary[];
-    };
-
-export interface FilesHookEventBase {
-  adapter: string;
-  attemptCount: number;
-  bulk: boolean;
-  durationMs: number;
-  effectivePrefix?: string;
-  endedAt: number;
-  from?: string;
-  fromPath?: string;
-  input?: FilesActionInput;
-  key?: string;
-  keys?: string[];
-  options?: FilesHookOptions;
-  path?: string;
-  paths?: (string | undefined)[];
-  requestedPrefix?: string;
-  startedAt: number;
-  to?: string;
-  toPath?: string;
-  type: FilesActionType;
-}
-
-export interface FilesActionEvent extends FilesHookEventBase {
-  error?: FilesError;
-  result?: unknown;
-  status: "error" | "success";
-}
-
-export interface FilesErrorEvent extends FilesHookEventBase {
-  error: FilesError;
-}
-
-export interface FilesRetryEvent {
-  adapter: string;
-  attempt: number;
-  bulk: boolean;
-  delayMs: number;
-  effectivePrefix?: string;
-  error: FilesError;
-  from?: string;
-  fromPath?: string;
-  input?: FilesActionInput;
-  key?: string;
-  keys?: string[];
-  maxRetries: number;
-  options?: FilesHookOptions;
-  path?: string;
-  paths?: (string | undefined)[];
-  requestedPrefix?: string;
-  to?: string;
-  toPath?: string;
-  type: FilesActionType;
-}
-
-export interface FilesHooks {
-  onAction?: (event: FilesActionEvent) => void | Promise<void>;
-  onError?: (event: FilesErrorEvent) => void | Promise<void>;
-  onRetry?: (event: FilesRetryEvent) => void | Promise<void>;
-}
-
 export interface Adapter<Raw = unknown> {
   readonly name: string;
   readonly raw: Raw;
+  /**
+   * Set `true` when `upload` reports byte-level progress by calling
+   * `opts.onProgress` itself (e.g. via a provider's native upload-progress
+   * hook). The {@link Files} wrapper then defers progress entirely to the
+   * adapter. When unset, the wrapper handles `onProgress` generically:
+   * byte-level for `ReadableStream` bodies, start/finish for buffered ones.
+   */
+  readonly reportsUploadProgress?: boolean;
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
   /**
@@ -517,10 +477,99 @@ export interface Adapter<Raw = unknown> {
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
 }
 
+/** The public {@link Files} method a hook event describes. */
+export type FilesActionType =
+  | "upload"
+  | "download"
+  | "head"
+  | "exists"
+  | "delete"
+  | "copy"
+  | "list"
+  | "url"
+  | "signedUploadUrl";
+
+/**
+ * Delivered to {@link FilesHooks.onAction} once when a public operation
+ * settles — on success and on failure. The array form of an operation reports
+ * the caller's `keys` and emits a single event carrying the aggregated
+ * `result` (any per-item failures live in that result's `errors`); the single
+ * form reports `key`, or `from` / `to` for `copy`. Keys are always the ones
+ * the caller passed, never the internal prefixed path.
+ */
+export interface FilesActionEvent {
+  type: FilesActionType;
+  /** Caller-facing key, for single-key operations. */
+  key?: string;
+  /** Caller-facing keys, for the array form. */
+  keys?: string[];
+  /** `copy` source / destination, as passed by the caller. */
+  from?: string;
+  to?: string;
+  status: "success" | "error";
+  /** The resolved value, on success. */
+  result?: unknown;
+  /** The error, on failure — also delivered to {@link FilesHooks.onError}. */
+  error?: FilesError;
+  /** Wall-clock duration of the public call, in milliseconds. */
+  durationMs: number;
+}
+
+/**
+ * Delivered to {@link FilesHooks.onError} when a public call rejects, just
+ * before the matching `onAction({ status: "error" })`. Partial failures
+ * collected in a bulk result's `errors[]` are not rejections and do not fire
+ * it.
+ */
+export interface FilesErrorEvent {
+  type: FilesActionType;
+  key?: string;
+  keys?: string[];
+  from?: string;
+  to?: string;
+  error: FilesError;
+  durationMs: number;
+}
+
+/**
+ * Delivered to {@link FilesHooks.onRetry} each time the SDK schedules a retry
+ * for a single-operation call. Not fired on the first attempt, for
+ * non-retryable errors, or for stream uploads (which never retry); bulk calls
+ * do not retry, so they never fire it either.
+ */
+export interface FilesRetryEvent {
+  type: FilesActionType;
+  key?: string;
+  from?: string;
+  to?: string;
+  /** The retry about to be scheduled — `1` is the first retry. */
+  attempt: number;
+  /** Total retries allowed for this call. */
+  maxRetries: number;
+  /** Milliseconds the SDK will wait before that attempt. */
+  delayMs: number;
+  /** The error that triggered the retry. */
+  error: FilesError;
+}
+
+/**
+ * Observability callbacks for a {@link Files} instance, passed as
+ * `new Files({ hooks })`. Each mirrors the lightweight
+ * {@link UploadOptions.onProgress} style — caller-facing payloads, no internal
+ * adapter detail — and is fire-and-forget: the SDK calls it but does not await
+ * it, and a hook that throws can never fail the operation it observes.
+ */
+export interface FilesHooks {
+  onAction?: (event: FilesActionEvent) => void;
+  onError?: (event: FilesErrorEvent) => void;
+  onRetry?: (event: FilesRetryEvent) => void;
+}
+
 export interface FilesOptions<A extends Adapter> extends OperationOptions {
   adapter: A;
-  hooks?: FilesHooks;
   prefix?: string;
+  /** Observability callbacks — see {@link FilesHooks}. */
+  hooks?: FilesHooks;
 }
 
 export interface FileHandle {
@@ -744,71 +793,36 @@ const normalizePrefix = (prefix: string | undefined): string => {
   return normalized;
 };
 
-type LazyContextValue<T> = T | (() => T);
-
-interface HookContext {
-  attemptCount?: number;
-  bulk: boolean;
-  effectivePrefix?: LazyContextValue<string | undefined>;
-  from?: string;
-  fromPath?: string;
-  input?: LazyContextValue<FilesActionInput | undefined>;
+/**
+ * The caller-facing identity of an operation, shared by the action wrapper
+ * (for `onAction` / `onError`) and {@link Files.#run} (for `onRetry`). Holds
+ * only what the hook payloads expose — public keys, never internal paths.
+ */
+interface ActionContext {
+  type: FilesActionType;
   key?: string;
   keys?: string[];
-  options?: LazyContextValue<FilesHookOptions | undefined>;
-  path?: LazyContextValue<string | undefined>;
-  paths?: LazyContextValue<(string | undefined)[]>;
-  requestedPrefix?: string;
+  from?: string;
   to?: string;
-  toPath?: string;
-  type: FilesActionType;
 }
 
-const sanitizeRetryOptions = (
-  retries: RetryOptions | undefined
-): FilesHookRetryOptions | undefined => {
-  if (retries === undefined) {
-    return undefined;
+/**
+ * Invoke a hook without letting it affect the operation it observes: a thrown
+ * error is swallowed, and the return value is ignored — hooks are
+ * fire-and-forget, like {@link UploadOptions.onProgress}.
+ */
+const emitHook = <E>(
+  hook: ((event: E) => void) | undefined,
+  event: E
+): void => {
+  if (!hook) {
+    return;
   }
-  if (typeof retries === "number") {
-    return retries;
+  try {
+    hook(event);
+  } catch {
+    // Observability must not break the operation.
   }
-  return { max: retries.max };
-};
-
-const summarizeBody = (body: Body): FilesBodySummary => {
-  if (typeof body === "string") {
-    return {
-      contentType: "text/plain; charset=utf-8",
-      kind: "string",
-      size: new TextEncoder().encode(body).byteLength,
-    };
-  }
-  if (body instanceof Uint8Array) {
-    return { kind: "uint8Array", size: body.byteLength };
-  }
-  if (body instanceof ArrayBuffer) {
-    return { kind: "arrayBuffer", size: body.byteLength };
-  }
-  if (ArrayBuffer.isView(body)) {
-    return { kind: "arrayBufferView", size: body.byteLength };
-  }
-  if (typeof File !== "undefined" && body instanceof File) {
-    return {
-      contentType: body.type || undefined,
-      kind: "file",
-      name: body.name,
-      size: body.size,
-    };
-  }
-  if (body instanceof Blob) {
-    return {
-      contentType: body.type || undefined,
-      kind: "blob",
-      size: body.size,
-    };
-  }
-  return { kind: "stream" };
 };
 
 export class Files<A extends Adapter = Adapter> {
@@ -825,16 +839,39 @@ export class Files<A extends Adapter = Adapter> {
     this.#defaults = defaults;
   }
 
-  get #hasActionHooks(): boolean {
-    return this.#hooks?.onAction !== undefined || this.#hooks?.onError !== undefined;
-  }
-
-  get #hasRetryHook(): boolean {
-    return this.#hooks?.onRetry !== undefined;
-  }
-
-  get #hasHooks(): boolean {
-    return this.#hasActionHooks || this.#hasRetryHook;
+  /**
+   * Wrap a public operation so it reports a single `onAction` event when it
+   * settles, plus `onError` when it rejects. Short-circuits to the bare call
+   * when neither hook is set, so the no-hooks path stays cheap. `onRetry` is
+   * emitted separately, from {@link Files.#run}.
+   */
+  async #action<T>(ctx: ActionContext, fn: () => Promise<T>): Promise<T> {
+    const hooks = this.#hooks;
+    if (!(hooks?.onAction || hooks?.onError)) {
+      return fn();
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await fn();
+      emitHook(hooks.onAction, {
+        ...ctx,
+        durationMs: Date.now() - startedAt,
+        result,
+        status: "success",
+      });
+      return result;
+    } catch (error) {
+      const wrapped = FilesError.wrap(error);
+      const durationMs = Date.now() - startedAt;
+      emitHook(hooks.onError, { ...ctx, durationMs, error: wrapped });
+      emitHook(hooks.onAction, {
+        ...ctx,
+        durationMs,
+        error: wrapped,
+        status: "error",
+      });
+      throw wrapped;
+    }
   }
 
   get raw(): A["raw"] {
@@ -880,89 +917,115 @@ export class Files<A extends Adapter = Adapter> {
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   upload(
     items: UploadManyItem[],
-    opts?: BulkOptions
+    opts?: UploadManyOptions
   ): Promise<UploadManyResult>;
   upload(
     keyOrItems: string | UploadManyItem[],
-    bodyOrOpts?: Body | BulkOptions,
+    bodyOrOpts?: Body | UploadManyOptions,
     opts?: UploadOptions
   ): Promise<UploadResult | UploadManyResult> {
     if (Array.isArray(keyOrItems)) {
-      const bulkOpts = bodyOrOpts as BulkOptions | undefined;
-      if (!this.#hasHooks) {
-        return this.#uploadMany(keyOrItems, bulkOpts);
-      }
-      return this.#withAction(
-        {
-          bulk: true,
-          input: () => ({
-            items: keyOrItems.map((item) => ({
-              body: summarizeBody(item.body),
-              cacheControl: item.cacheControl,
-              contentType: item.contentType,
-              key: item.key,
-              metadata: item.metadata,
-              path: this.#safePath(item.key),
-            })),
-          }),
-          keys: keyOrItems.map((item) => item.key),
-          options: () => this.#sanitizeOptions(bulkOpts),
-          paths: () => keyOrItems.map((item) => this.#safePath(item.key)),
-          type: "upload",
-        },
-        () => this.#uploadMany(keyOrItems, bulkOpts)
+      const items = keyOrItems;
+      const bulkOpts = bodyOrOpts as UploadManyOptions | undefined;
+      return this.#action(
+        { keys: items.map((item) => item.key), type: "upload" },
+        () => this.#uploadMany(items, bulkOpts)
       );
     }
     const body = bodyOrOpts as Body;
-    if (!this.#hasHooks) {
-      const path = this.#path(keyOrItems);
+    const ctx: ActionContext = { key: keyOrItems, type: "upload" };
+    return this.#action(ctx, () =>
+      this.#runUpload(keyOrItems, body, opts, ctx)
+    );
+  }
+
+  /**
+   * Run a single upload, threading {@link UploadOptions.onProgress} through.
+   *
+   * When the adapter reports progress itself
+   * ({@link Adapter.reportsUploadProgress}) the callback is passed straight to
+   * it. Otherwise the wrapper reports generically: a `ReadableStream` body is
+   * wrapped so bytes are counted as the adapter drains it; a buffered body
+   * brackets the call with a `0` and a final event.
+   */
+  #runUpload(
+    key: string,
+    body: Body,
+    opts?: UploadOptions,
+    ctx?: ActionContext
+  ): Promise<UploadResult> {
+    const path = this.#path(key);
+    const isStream = body instanceof ReadableStream;
+    const onProgress = opts?.onProgress;
+
+    if (!onProgress || this.#adapter.reportsUploadProgress) {
       return this.#run(
-        undefined,
         opts,
         async (attemptOpts) =>
-          this.#uploadResult(await this.#adapter.upload(path, body, attemptOpts)),
-        !(body instanceof ReadableStream)
+          this.#uploadResult(
+            await this.#adapter.upload(path, body, attemptOpts)
+          ),
+        !isStream,
+        ctx
       );
     }
-    return this.#withAction(
-      {
-        bulk: false,
-        input: () => ({ body: summarizeBody(body) }),
-        key: keyOrItems,
-        options: () => this.#operationOptions(opts),
-        type: "upload",
-      },
-      async (ctx) => {
-        const path = this.#path(keyOrItems);
-        ctx.path = path;
-        return await this.#run(
-          ctx,
-          opts,
-          async (attemptOpts) =>
-            this.#uploadResult(
-              await this.#adapter.upload(path, body, attemptOpts)
-            ),
-          !(body instanceof ReadableStream)
+
+    // Generic progress: the adapter does not report it, so the wrapper does.
+    // Strip `onProgress` from the options the adapter sees — it would ignore
+    // it anyway, and dropping it keeps `total` ownership here.
+    const { onProgress: _onProgress, ...rest } = opts ?? {};
+    const total = byteLengthOf(body);
+
+    if (isStream) {
+      const tracked = countingStream(body, (loaded) =>
+        onProgress(total === undefined ? { loaded } : { loaded, total })
+      );
+      return this.#run(
+        rest,
+        async (attemptOpts) =>
+          this.#uploadResult(
+            await this.#adapter.upload(path, tracked, attemptOpts)
+          ),
+        false,
+        ctx
+      );
+    }
+
+    onProgress(total === undefined ? { loaded: 0 } : { loaded: 0, total });
+    return this.#run(
+      rest,
+      async (attemptOpts) => {
+        const result = this.#uploadResult(
+          await this.#adapter.upload(path, body, attemptOpts)
         );
-      }
+        const done = total ?? result.size;
+        onProgress({ loaded: done, total: done });
+        return result;
+      },
+      true,
+      ctx
     );
   }
 
   async #uploadMany(
     items: UploadManyItem[],
-    opts?: BulkOptions
+    opts?: UploadManyOptions
   ): Promise<UploadManyResult> {
+    const onProgress = opts?.onProgress;
     const { errors, results } = await mapMany(
       items,
       (item) => item.key,
-      async (item) =>
-        this.#uploadResult(
-          await this.#adapter.upload(this.#path(item.key), item.body, {
-            cacheControl: item.cacheControl,
-            contentType: item.contentType,
-            metadata: item.metadata,
-          })
-        ),
+      (item) =>
+        this.#runUpload(item.key, item.body, {
+          cacheControl: item.cacheControl,
+          contentType: item.contentType,
+          metadata: item.metadata,
+          ...(item.multipart !== undefined && { multipart: item.multipart }),
+          ...(onProgress && {
+            onProgress: (progress: UploadProgress) =>
+              onProgress({ ...progress, key: item.key }),
+          }),
+        }),
       opts
     );
     return errors.length === 0
@@ -993,49 +1056,22 @@ export class Files<A extends Adapter = Adapter> {
     opts?: DownloadOptions | DownloadManyOptions
   ): Promise<StoredFile | DownloadManyResult> {
     if (Array.isArray(keyOrKeys)) {
-      const bulkOpts = opts as DownloadManyOptions | undefined;
-      if (!this.#hasHooks) {
-        return this.#downloadMany(keyOrKeys, bulkOpts);
-      }
-      return this.#withAction(
-        {
-          bulk: true,
-          keys: keyOrKeys,
-          options: () => this.#sanitizeOptions(bulkOpts),
-          paths: () => this.#safePaths(keyOrKeys),
-          type: "download",
-        },
-        () => this.#downloadMany(keyOrKeys, bulkOpts)
+      const keys = keyOrKeys;
+      return this.#action({ keys, type: "download" }, () =>
+        this.#downloadMany(keys, opts as DownloadManyOptions | undefined)
       );
     }
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key: keyOrKeys, type: "download" };
+    return this.#action(ctx, () => {
       const path = this.#path(keyOrKeys);
       return this.#run(
-        undefined,
         opts as DownloadOptions | undefined,
         async (attemptOpts) =>
-          this.#storedFile(await this.#adapter.download(path, attemptOpts))
+          this.#storedFile(await this.#adapter.download(path, attemptOpts)),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key: keyOrKeys,
-        options: () =>
-          this.#operationOptions(opts as DownloadOptions | undefined),
-        type: "download",
-      },
-      async (ctx) => {
-        const path = this.#path(keyOrKeys);
-        ctx.path = path;
-        return await this.#run(
-          ctx,
-          opts as DownloadOptions | undefined,
-          async (attemptOpts) =>
-            this.#storedFile(await this.#adapter.download(path, attemptOpts))
-        );
-      }
-    );
+    });
   }
 
   async #downloadMany(
@@ -1075,49 +1111,22 @@ export class Files<A extends Adapter = Adapter> {
     opts?: OperationOptions | BulkOptions
   ): Promise<StoredFile | HeadManyResult> {
     if (Array.isArray(keyOrKeys)) {
-      const bulkOpts = opts as BulkOptions | undefined;
-      if (!this.#hasHooks) {
-        return this.#headMany(keyOrKeys, bulkOpts);
-      }
-      return this.#withAction(
-        {
-          bulk: true,
-          keys: keyOrKeys,
-          options: () => this.#sanitizeOptions(bulkOpts),
-          paths: () => this.#safePaths(keyOrKeys),
-          type: "head",
-        },
-        () => this.#headMany(keyOrKeys, bulkOpts)
+      const keys = keyOrKeys;
+      return this.#action({ keys, type: "head" }, () =>
+        this.#headMany(keys, opts as BulkOptions | undefined)
       );
     }
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key: keyOrKeys, type: "head" };
+    return this.#action(ctx, () => {
       const path = this.#path(keyOrKeys);
       return this.#run(
-        undefined,
         opts as OperationOptions | undefined,
         async (attemptOpts) =>
-          this.#storedFile(await this.#adapter.head(path, attemptOpts))
+          this.#storedFile(await this.#adapter.head(path, attemptOpts)),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key: keyOrKeys,
-        options: () =>
-          this.#operationOptions(opts as OperationOptions | undefined),
-        type: "head",
-      },
-      async (ctx) => {
-        const path = this.#path(keyOrKeys);
-        ctx.path = path;
-        return await this.#run(
-          ctx,
-          opts as OperationOptions | undefined,
-          async (attemptOpts) =>
-            this.#storedFile(await this.#adapter.head(path, attemptOpts))
-        );
-      }
-    );
+    });
   }
 
   async #headMany(keys: string[], opts?: BulkOptions): Promise<HeadManyResult> {
@@ -1152,47 +1161,21 @@ export class Files<A extends Adapter = Adapter> {
     opts?: OperationOptions | BulkOptions
   ): Promise<boolean | ExistsManyResult> {
     if (Array.isArray(keyOrKeys)) {
-      const bulkOpts = opts as BulkOptions | undefined;
-      if (!this.#hasHooks) {
-        return this.#existsMany(keyOrKeys, bulkOpts);
-      }
-      return this.#withAction(
-        {
-          bulk: true,
-          keys: keyOrKeys,
-          options: () => this.#sanitizeOptions(bulkOpts),
-          paths: () => this.#safePaths(keyOrKeys),
-          type: "exists",
-        },
-        () => this.#existsMany(keyOrKeys, bulkOpts)
+      const keys = keyOrKeys;
+      return this.#action({ keys, type: "exists" }, () =>
+        this.#existsMany(keys, opts as BulkOptions | undefined)
       );
     }
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key: keyOrKeys, type: "exists" };
+    return this.#action(ctx, () => {
       const path = this.#path(keyOrKeys);
       return this.#run(
-        undefined,
         opts as OperationOptions | undefined,
-        (attemptOpts) => this.#adapter.exists(path, attemptOpts)
+        (attemptOpts) => this.#adapter.exists(path, attemptOpts),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key: keyOrKeys,
-        options: () =>
-          this.#operationOptions(opts as OperationOptions | undefined),
-        type: "exists",
-      },
-      async (ctx) => {
-        const path = this.#path(keyOrKeys);
-        ctx.path = path;
-        return await this.#run(
-          ctx,
-          opts as OperationOptions | undefined,
-          (attemptOpts) => this.#adapter.exists(path, attemptOpts)
-        );
-      }
-    );
+    });
   }
 
   async #existsMany(
@@ -1243,47 +1226,21 @@ export class Files<A extends Adapter = Adapter> {
     opts?: OperationOptions | DeleteManyOptions
   ): Promise<void | DeleteManyResult> {
     if (Array.isArray(key)) {
-      const bulkOpts = opts as DeleteManyOptions | undefined;
-      if (!this.#hasHooks) {
-        return this.#deleteMany(key, bulkOpts);
-      }
-      return this.#withAction(
-        {
-          bulk: true,
-          keys: key,
-          options: () => this.#sanitizeOptions(bulkOpts),
-          paths: () => this.#safePaths(key),
-          type: "delete",
-        },
-        () => this.#deleteMany(key, bulkOpts)
+      const keys = key;
+      return this.#action({ keys, type: "delete" }, () =>
+        this.#deleteMany(keys, opts as DeleteManyOptions | undefined)
       );
     }
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key, type: "delete" };
+    return this.#action(ctx, () => {
       const path = this.#path(key);
       return this.#run(
-        undefined,
         opts as OperationOptions | undefined,
-        (attemptOpts) => this.#adapter.delete(path, attemptOpts)
+        (attemptOpts) => this.#adapter.delete(path, attemptOpts),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key,
-        options: () =>
-          this.#operationOptions(opts as OperationOptions | undefined),
-        type: "delete",
-      },
-      async (ctx) => {
-        const path = this.#path(key);
-        ctx.path = path;
-        return await this.#run(
-          ctx,
-          opts as OperationOptions | undefined,
-          (attemptOpts) => this.#adapter.delete(path, attemptOpts)
-        );
-      }
-    );
+    });
   }
 
   async #deleteMany(
@@ -1352,70 +1309,46 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   copy(from: string, to: string, opts?: OperationOptions): Promise<void> {
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { from, to, type: "copy" };
+    return this.#action(ctx, () => {
       const fromPath = this.#path(from, "copy source");
       const toPath = this.#path(to, "copy destination");
-      return this.#run(undefined, opts, (attemptOpts) =>
-        this.#adapter.copy(fromPath, toPath, attemptOpts)
+      return this.#run(
+        opts,
+        (attemptOpts) => this.#adapter.copy(fromPath, toPath, attemptOpts),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        from,
-        options: () => this.#operationOptions(opts),
-        to,
-        type: "copy",
-      },
-      async (ctx) => {
-        const fromPath = this.#path(from, "copy source");
-        const toPath = this.#path(to, "copy destination");
-        ctx.fromPath = fromPath;
-        ctx.toPath = toPath;
-        return await this.#run(ctx, opts, (attemptOpts) =>
-          this.#adapter.copy(fromPath, toPath, attemptOpts)
-        );
-      }
-    );
+    });
   }
 
   list(opts?: ListOptions): Promise<ListResult> {
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { type: "list" };
+    return this.#action(ctx, () => {
       if (!this.#prefix) {
-        return this.#run(undefined, opts, (attemptOpts) =>
-          this.#adapter.list(attemptOpts)
+        return this.#run(
+          opts,
+          (attemptOpts) => this.#adapter.list(attemptOpts),
+          true,
+          ctx
         );
       }
-      const prefix = this.#listPrefix(opts);
-      return this.#run(undefined, opts, async (attemptOpts) => {
-        const result = await this.#adapter.list({ ...attemptOpts, prefix });
-        return {
-          ...result,
-          items: result.items.map((item) => this.#storedFile(item)),
-        };
-      });
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        effectivePrefix: () => this.#listPrefix(opts),
-        options: () => this.#operationOptions(opts),
-        requestedPrefix: opts?.prefix,
-        type: "list",
-      },
-      (ctx) =>
-        this.#run(ctx, opts, async (attemptOpts) => {
-          if (!this.#prefix) {
-            return await this.#adapter.list(attemptOpts);
-          }
-          const prefix = this.#listPrefix(opts);
+      const prefix = opts?.prefix
+        ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
+        : `${this.#prefix}/`;
+      return this.#run(
+        opts,
+        async (attemptOpts) => {
           const result = await this.#adapter.list({ ...attemptOpts, prefix });
           return {
             ...result,
             items: result.items.map((item) => this.#storedFile(item)),
           };
-        })
-    );
+        },
+        true,
+        ctx
+      );
+    });
   }
 
   /**
@@ -1435,71 +1368,47 @@ export class Files<A extends Adapter = Adapter> {
    * from untrusted input, callers should validate or escape it.
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key, type: "url" };
+    return this.#action(ctx, () => {
       const path = this.#path(key);
-      return this.#run(undefined, opts, (attemptOpts) =>
-        this.#adapter.url(path, attemptOpts)
+      return this.#run(
+        opts,
+        (attemptOpts) => this.#adapter.url(path, attemptOpts),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key,
-        options: () => this.#operationOptions(opts),
-        type: "url",
-      },
-      async (ctx) => {
-        const path = this.#path(key);
-        ctx.path = path;
-        return await this.#run(ctx, opts, (attemptOpts) =>
-          this.#adapter.url(path, attemptOpts)
-        );
-      }
-    );
+    });
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
-    if (!this.#hasHooks) {
+    const ctx: ActionContext = { key, type: "signedUploadUrl" };
+    return this.#action(ctx, () => {
       const path = this.#path(key);
-      return this.#run(undefined, opts, (attemptOpts) =>
-        this.#adapter.signedUploadUrl(path, attemptOpts as SignUploadOptions)
+      return this.#run(
+        opts,
+        (attemptOpts) =>
+          this.#adapter.signedUploadUrl(path, attemptOpts as SignUploadOptions),
+        true,
+        ctx
       );
-    }
-    return this.#withAction(
-      {
-        bulk: false,
-        key,
-        options: () => this.#operationOptions(opts),
-        type: "signedUploadUrl",
-      },
-      async (ctx) => {
-        const path = this.#path(key);
-        ctx.path = path;
-        return await this.#run(ctx, opts, (attemptOpts) =>
-          this.#adapter.signedUploadUrl(path, attemptOpts as SignUploadOptions)
-        );
-      }
-    );
+    });
   }
 
   async #run<O extends OperationOptions, T>(
-    ctx: HookContext | undefined,
     opts: O | undefined,
     fn: (opts: O | undefined) => Promise<T>,
-    retryable = true
+    retryable = true,
+    ctx?: ActionContext
   ): Promise<T> {
     const { retries: _retries, timeout: _timeout, ...adapterOpts } = opts ?? {};
     const baseOpts = opts ? (adapterOpts as O) : undefined;
     const retryOptions = opts?.retries ?? this.#defaults.retries;
-    const retryCount = maxRetries(retryOptions, retryable);
+    const maxAttempts = maxRetries(retryOptions, retryable);
     const signals = [this.#defaults.signal, opts?.signal].filter(
       (signal): signal is AbortSignal => signal !== undefined
     );
 
     for (let attempt = 0; ; attempt += 1) {
-      if (ctx) {
-        ctx.attemptCount = attempt + 1;
-      }
       const runtime = mergeSignals(
         signals,
         opts?.timeout ?? this.#defaults.timeout
@@ -1513,31 +1422,19 @@ export class Files<A extends Adapter = Adapter> {
         const wrapped = runtime.signal?.aborted
           ? abortError(runtime.signal.reason)
           : FilesError.wrap(error);
-        if (!canRetry(wrapped, attempt, retryCount)) {
+        if (!canRetry(wrapped, attempt, maxAttempts)) {
           throw wrapped;
         }
         const delayMs = retryBackoff(retryOptions, attempt + 1, wrapped);
-        if (ctx) {
-          this.#materializeContext(ctx);
-          await this.#runHook(this.#hooks?.onRetry, {
-            adapter: this.#adapter.name,
+        if (ctx && this.#hooks?.onRetry) {
+          emitHook(this.#hooks.onRetry, {
             attempt: attempt + 1,
-            bulk: ctx.bulk,
             delayMs,
-            effectivePrefix: ctx.effectivePrefix,
             error: wrapped,
             from: ctx.from,
-            fromPath: ctx.fromPath,
-            input: ctx.input,
             key: ctx.key,
-            keys: ctx.keys,
-            maxRetries: retryCount,
-            options: ctx.options,
-            path: ctx.path,
-            paths: ctx.paths,
-            requestedPrefix: ctx.requestedPrefix,
+            maxRetries: maxAttempts,
             to: ctx.to,
-            toPath: ctx.toPath,
             type: ctx.type,
           });
         }
@@ -1553,162 +1450,9 @@ export class Files<A extends Adapter = Adapter> {
     }
   }
 
-  async #withAction<T>(
-    ctx: HookContext,
-    fn: (ctx: HookContext) => Promise<T>
-  ): Promise<T> {
-    if (!this.#hasActionHooks) {
-      return await fn(ctx);
-    }
-    const startedAt = Date.now();
-    try {
-      const result = await fn(ctx);
-      const endedAt = Date.now();
-      await this.#runHook(this.#hooks?.onAction, {
-        ...this.#eventBase(ctx, startedAt, endedAt),
-        result,
-        status: "success",
-      });
-      return result;
-    } catch (error) {
-      const wrapped = FilesError.wrap(error);
-      const endedAt = Date.now();
-      const base = this.#eventBase(ctx, startedAt, endedAt);
-      await this.#runHook(this.#hooks?.onError, { ...base, error: wrapped });
-      await this.#runHook(this.#hooks?.onAction, {
-        ...base,
-        error: wrapped,
-        status: "error",
-      });
-      throw wrapped;
-    }
-  }
-
   #path(key: string, label = "key"): string {
     assertValidKey(key, label);
     return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
-  }
-
-  #safePath(key: string): string | undefined {
-    try {
-      return this.#path(key);
-    } catch {
-      return undefined;
-    }
-  }
-
-  #safePaths(keys: string[]): (string | undefined)[] {
-    return keys.map((key) => this.#safePath(key));
-  }
-
-  #listPrefix(opts?: ListOptions): string | undefined {
-    if (!this.#prefix) {
-      return opts?.prefix;
-    }
-    return opts?.prefix
-      ? `${this.#prefix}/${opts.prefix.replace(/^\/+/u, "")}`
-      : `${this.#prefix}/`;
-  }
-
-  #sanitizeOptions(opts: object | undefined): FilesHookOptions | undefined {
-    if (!opts) {
-      return undefined;
-    }
-    const { signal: _signal, ...rest } = opts as {
-      signal?: AbortSignal;
-      [key: string]: unknown;
-    };
-    const sanitized: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(rest)) {
-      if (value === undefined || typeof value === "function") {
-        continue;
-      }
-      if (key === "retries") {
-        const retries = sanitizeRetryOptions(value as RetryOptions | undefined);
-        if (retries !== undefined) {
-          sanitized.retries = retries;
-        }
-        continue;
-      }
-      sanitized[key] = value;
-    }
-    if (Object.keys(sanitized).length === 0) {
-      return undefined;
-    }
-    return sanitized as FilesHookOptions;
-  }
-
-  #operationOptions(opts: object | undefined): FilesHookOptions | undefined {
-    const defaults = this.#sanitizeOptions(this.#defaults);
-    const call = this.#sanitizeOptions(opts);
-    if (!defaults && !call) {
-      return undefined;
-    }
-    return {
-      ...(defaults ?? {}),
-      ...(call ?? {}),
-    };
-  }
-
-  #eventBase(
-    ctx: HookContext,
-    startedAt: number,
-    endedAt: number
-  ): FilesHookEventBase {
-    this.#materializeContext(ctx);
-    return {
-      adapter: this.#adapter.name,
-      attemptCount: ctx.attemptCount ?? 1,
-      bulk: ctx.bulk,
-      durationMs: endedAt - startedAt,
-      effectivePrefix: ctx.effectivePrefix,
-      endedAt,
-      from: ctx.from,
-      fromPath: ctx.fromPath,
-      input: ctx.input,
-      key: ctx.key,
-      keys: ctx.keys,
-      options: ctx.options,
-      path: ctx.path,
-      paths: ctx.paths,
-      requestedPrefix: ctx.requestedPrefix,
-      startedAt,
-      to: ctx.to,
-      toPath: ctx.toPath,
-      type: ctx.type,
-    };
-  }
-
-  #materializeContext(ctx: HookContext): void {
-    if (typeof ctx.effectivePrefix === "function") {
-      ctx.effectivePrefix = ctx.effectivePrefix();
-    }
-    if (typeof ctx.input === "function") {
-      ctx.input = ctx.input();
-    }
-    if (typeof ctx.options === "function") {
-      ctx.options = ctx.options();
-    }
-    if (typeof ctx.path === "function") {
-      ctx.path = ctx.path();
-    }
-    if (typeof ctx.paths === "function") {
-      ctx.paths = ctx.paths();
-    }
-  }
-
-  async #runHook<Event>(
-    hook: ((event: Event) => void | Promise<void>) | undefined,
-    event: Event
-  ): Promise<void> {
-    if (!hook) {
-      return;
-    }
-    try {
-      await hook(event);
-    } catch {
-      // Hook failures are intentionally isolated from the main operation.
-    }
   }
 
   #storedFile(file: StoredFile): StoredFile {

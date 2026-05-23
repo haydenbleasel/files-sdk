@@ -384,6 +384,50 @@ describe("firebase-storage adapter", () => {
     expect(result.etag).toBe("etag-a.txt");
   });
 
+  test("forwards resumable-upload progress to onProgress", async () => {
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const pt = new PassThrough();
+      let written = 0;
+      pt.on("data", (chunk: Buffer) => {
+        written += chunk.length;
+        pt.emit("progress", { bytesWritten: written });
+      });
+      return pt;
+    });
+    const adapter = firebaseStorage({ projectId: "p" });
+    const events: { loaded: number; total?: number }[] = [];
+    await adapter.upload("a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(events).toEqual([{ loaded: 5, total: 5 }]);
+  });
+
+  test("multipart: true uploads via a resumable createWriteStream", async () => {
+    const adapter = firebaseStorage({ projectId: "p" });
+    const result = await adapter.upload("a.txt", "hello", { multipart: true });
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).not.toHaveBeenCalled();
+    const opts = (createWriteStreamMock.mock.calls as unknown[][])[0]?.[0] as
+      | { resumable: boolean; chunkSize?: number }
+      | undefined;
+    expect(opts?.resumable).toBe(true);
+    expect(result.size).toBe(5);
+  });
+
+  test("multipart partSize sets a 256 KiB-aligned chunkSize", async () => {
+    const adapter = firebaseStorage({ projectId: "p" });
+    await adapter.upload("a.txt", "hello", {
+      multipart: { partSize: 700 * 1024 },
+    });
+    const opts = (createWriteStreamMock.mock.calls as unknown[][])[0]?.[0] as
+      | { chunkSize?: number }
+      | undefined;
+    // 700 KiB rounds down to the nearest 256 KiB multiple → 512 KiB.
+    expect(opts?.chunkSize).toBe(512 * 1024);
+  });
+
   test("download returns a buffered StoredFile whose text matches the body", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),

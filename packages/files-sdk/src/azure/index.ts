@@ -9,7 +9,11 @@ import {
   SASProtocol,
   StorageSharedKeyCredential,
 } from "@azure/storage-blob";
-import type { UserDelegationKey } from "@azure/storage-blob";
+import type {
+  BlockBlobClient,
+  BlockBlobParallelUploadOptions,
+  UserDelegationKey,
+} from "@azure/storage-blob";
 
 import type {
   Adapter,
@@ -186,6 +190,43 @@ const uint8ToBuffer = (u8: Uint8Array): Buffer =>
 
 const bufferToUint8 = (buf: Buffer): Uint8Array =>
   new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+
+/**
+ * Upload a body via the block-blob client. Streams go through `uploadStream`
+ * (bufferSize/maxConcurrency are positional); buffered bodies through
+ * `uploadData`, where `multipart` maps to `blockSize`/`concurrency`. Both
+ * already split large bodies into parallel blocks.
+ */
+const runAzureUpload = async (
+  blockBlob: BlockBlobClient,
+  data: Uint8Array | ReadableStream<Uint8Array>,
+  writeOpts: BlockBlobParallelUploadOptions,
+  blockSize: number | undefined,
+  concurrency: number | undefined
+): Promise<{ etag?: string; lastModified?: number }> => {
+  if (data instanceof ReadableStream) {
+    const node = Readable.fromWeb(data as never);
+    const streamed = await blockBlob.uploadStream(
+      node,
+      blockSize,
+      concurrency,
+      writeOpts
+    );
+    return {
+      etag: stripEtag(streamed.etag),
+      lastModified: streamed.lastModified?.getTime(),
+    };
+  }
+  const uploaded = await blockBlob.uploadData(uint8ToBuffer(data), {
+    ...writeOpts,
+    ...(blockSize !== undefined && { blockSize }),
+    ...(concurrency !== undefined && { concurrency }),
+  });
+  return {
+    etag: stripEtag(uploaded.etag),
+    lastModified: uploaded.lastModified?.getTime(),
+  };
+};
 
 interface ConnectionStringParts {
   accountName?: string;
@@ -639,6 +680,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     name: "azure",
     raw: client,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Azure SAS has no `content-length-range` policy equivalent — there's
       // no way to enforce a max upload size at the URL level. Throw rather
@@ -672,43 +714,45 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       }
     },
     async upload(key, body, options) {
+      const { cacheControl, metadata, multipart, onProgress, signal } =
+        options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(
         body,
         options?.contentType
       );
       const blockBlob = containerClient.getBlockBlobClient(key);
+      // Azure already splits large bodies into parallel blocks; `multipart`
+      // only tunes that — block size and how many blocks upload at once.
+      const mp = typeof multipart === "object" ? multipart : undefined;
+      const blockSize = mp?.partSize;
+      const concurrency = mp?.concurrency;
       const writeOpts = {
         blobHTTPHeaders: {
           blobContentType: contentType,
-          ...(options?.cacheControl && {
-            blobCacheControl: options.cacheControl,
-          }),
+          ...(cacheControl && { blobCacheControl: cacheControl }),
         },
-        ...(options?.metadata && { metadata: options.metadata }),
-        ...(options?.signal && { abortSignal: options.signal }),
+        ...(metadata && { metadata }),
+        ...(signal && { abortSignal: signal }),
+        // `loadedBytes` is cumulative; surface it as `loaded`, pairing it with
+        // the known length when we have one. Works for both upload paths below.
+        ...(onProgress && {
+          onProgress: ({ loadedBytes }: { loadedBytes: number }) =>
+            onProgress(
+              contentLength === undefined
+                ? { loaded: loadedBytes }
+                : { loaded: loadedBytes, total: contentLength }
+            ),
+        }),
       };
       try {
-        let etag: string | undefined;
-        let lastModified: number | undefined;
+        const { etag, lastModified } = await runAzureUpload(
+          blockBlob,
+          data,
+          writeOpts,
+          blockSize,
+          concurrency
+        );
         let size = contentLength;
-        if (data instanceof ReadableStream) {
-          const node = Readable.fromWeb(data as never);
-          const result = await blockBlob.uploadStream(
-            node,
-            undefined,
-            undefined,
-            writeOpts
-          );
-          etag = stripEtag(result.etag);
-          lastModified = result.lastModified?.getTime();
-        } else {
-          const result = await blockBlob.uploadData(
-            uint8ToBuffer(data),
-            writeOpts
-          );
-          etag = stripEtag(result.etag);
-          lastModified = result.lastModified?.getTime();
-        }
         // Stream bodies have no locally computed length; uploadStream's
         // response doesn't carry one either. Do a follow-up getProperties
         // to surface the authoritative size instead of returning 0.

@@ -7,6 +7,7 @@ import type {
   Adapter,
   Body,
   ListResult,
+  MultipartOptions,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -88,6 +89,89 @@ const MAX_TEMPORARY_LINK_DURATION = 14_400;
 const REFRESH_LEEWAY_MS = 60_000;
 const SIMPLE_UPLOAD_LIMIT_BYTES = 150 * 1024 * 1024;
 const UPLOAD_SESSION_CHUNK_BYTES = 8 * 1024 * 1024;
+// Dropbox requires every non-final session chunk to be a multiple of 4 MiB.
+const UPLOAD_SESSION_CHUNK_MULTIPLE = 4 * 1024 * 1024;
+
+/**
+ * Resolve the session chunk size from `multipart.partSize`, rounded down to a
+ * 4 MiB multiple (Dropbox's requirement) and never below one unit. Defaults to
+ * 8 MiB when no `partSize` is given.
+ */
+const resolveChunkBytes = (
+  multipart: boolean | MultipartOptions | undefined
+): number => {
+  const partSize =
+    typeof multipart === "object" ? multipart.partSize : undefined;
+  if (partSize === undefined) {
+    return UPLOAD_SESSION_CHUNK_BYTES;
+  }
+  const rounded =
+    Math.floor(partSize / UPLOAD_SESSION_CHUNK_MULTIPLE) *
+    UPLOAD_SESSION_CHUNK_MULTIPLE;
+  return Math.max(rounded, UPLOAD_SESSION_CHUNK_MULTIPLE);
+};
+
+/**
+ * Pull fixed-size chunks from a web `ReadableStream`, coalescing the stream's
+ * arbitrary-sized reads. `next()` returns exactly `chunkBytes` until the stream
+ * is exhausted, then the final (smaller) remainder, then `null`. Peak memory is
+ * ~one chunk, so large streams upload without buffering the whole body.
+ */
+const makeStreamChunker = (
+  stream: ReadableStream<Uint8Array>,
+  chunkBytes: number
+) => {
+  const reader = stream.getReader();
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  let done = false;
+
+  const fill = async (): Promise<void> => {
+    while (pendingBytes < chunkBytes && !done) {
+      const { value, done: d } = await reader.read();
+      if (d) {
+        done = true;
+        break;
+      }
+      if (value && value.byteLength > 0) {
+        pending.push(value);
+        pendingBytes += value.byteLength;
+      }
+    }
+  };
+
+  const take = (): Buffer | null => {
+    if (pendingBytes === 0) {
+      return null;
+    }
+    const want = Math.min(chunkBytes, pendingBytes);
+    const out = Buffer.allocUnsafe(want);
+    let filled = 0;
+    while (filled < want) {
+      const head = pending[0] as Uint8Array;
+      const need = want - filled;
+      if (head.byteLength <= need) {
+        out.set(head, filled);
+        filled += head.byteLength;
+        pendingBytes -= head.byteLength;
+        pending = pending.slice(1);
+      } else {
+        out.set(head.subarray(0, need), filled);
+        pending[0] = head.subarray(need);
+        pendingBytes -= need;
+        filled += need;
+      }
+    }
+    return out;
+  };
+
+  return {
+    async next(): Promise<Buffer | null> {
+      await fill();
+      return take();
+    },
+  };
+};
 
 const NOT_FOUND_TAGS = new Set([
   "not_found",
@@ -654,40 +738,39 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     return res.result;
   };
 
-  const uploadSession = async (
-    path: string,
-    data: Buffer
-  ): Promise<files.FileMetadata> => {
-    const total = data.byteLength;
-    let offset = 0;
+  const sessionStart = async (contents: Buffer): Promise<string> => {
     const start = await client.filesUploadSessionStart({
       close: false,
-      contents: data.subarray(
-        offset,
-        Math.min(offset + UPLOAD_SESSION_CHUNK_BYTES, total)
-      ),
+      contents,
     } as { close: boolean; contents: Buffer });
-    const sessionId = (start.result as { session_id: string }).session_id;
-    offset = Math.min(offset + UPLOAD_SESSION_CHUNK_BYTES, total);
+    return (start.result as { session_id: string }).session_id;
+  };
 
-    while (total - offset > UPLOAD_SESSION_CHUNK_BYTES) {
-      const chunk = data.subarray(offset, offset + UPLOAD_SESSION_CHUNK_BYTES);
-      // eslint-disable-next-line no-await-in-loop -- chunks must be sequential to honor Dropbox session offset.
-      await client.filesUploadSessionAppendV2({
-        close: false,
-        contents: chunk,
-        cursor: { offset, session_id: sessionId },
-      } as {
-        close: boolean;
-        contents: Buffer;
-        cursor: { offset: number; session_id: string };
-      });
-      offset += UPLOAD_SESSION_CHUNK_BYTES;
-    }
-    const tail = data.subarray(offset, total);
+  const sessionAppend = async (
+    sessionId: string,
+    offset: number,
+    contents: Buffer
+  ): Promise<void> => {
+    await client.filesUploadSessionAppendV2({
+      close: false,
+      contents,
+      cursor: { offset, session_id: sessionId },
+    } as {
+      close: boolean;
+      contents: Buffer;
+      cursor: { offset: number; session_id: string };
+    });
+  };
+
+  const sessionFinish = async (
+    path: string,
+    sessionId: string,
+    offset: number,
+    contents: Buffer
+  ): Promise<files.FileMetadata> => {
     const finish = await client.filesUploadSessionFinish({
       commit: { mode: { ".tag": "overwrite" }, mute: true, path },
-      contents: tail,
+      contents,
       cursor: { offset, session_id: sessionId },
     } as {
       commit: files.CommitInfo;
@@ -695,6 +778,71 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       cursor: { offset: number; session_id: string };
     });
     return finish.result;
+  };
+
+  const uploadSession = async (
+    path: string,
+    data: Buffer,
+    chunkBytes: number
+  ): Promise<files.FileMetadata> => {
+    const total = data.byteLength;
+    let offset = Math.min(chunkBytes, total);
+    const sessionId = await sessionStart(data.subarray(0, offset));
+
+    while (total - offset > chunkBytes) {
+      // eslint-disable-next-line no-await-in-loop -- chunks must be sequential to honor Dropbox session offset.
+      await sessionAppend(
+        sessionId,
+        offset,
+        data.subarray(offset, offset + chunkBytes)
+      );
+      offset += chunkBytes;
+    }
+    return await sessionFinish(
+      path,
+      sessionId,
+      offset,
+      data.subarray(offset, total)
+    );
+  };
+
+  // Stream a body through an upload session, pulling `chunkBytes`-sized pieces
+  // so peak memory is ~one chunk rather than the whole body. The final (smaller)
+  // piece is sent in `finish`; every appended piece is a full `chunkBytes` so it
+  // satisfies Dropbox's "non-final chunks must be a 4 MiB multiple" rule.
+  const uploadSessionFromStream = async (
+    path: string,
+    stream: ReadableStream<Uint8Array>,
+    chunkBytes: number
+  ): Promise<{ item: files.FileMetadata; size: number }> => {
+    const chunker = makeStreamChunker(stream, chunkBytes);
+    const first = await chunker.next();
+    // Empty stream, or one that fits in a single chunk: a plain upload is
+    // cheaper than a 3-call session and still memory-bounded.
+    if (first === null) {
+      return { item: await uploadSimple(path, Buffer.alloc(0)), size: 0 };
+    }
+    if (first.byteLength < chunkBytes) {
+      return { item: await uploadSimple(path, first), size: first.byteLength };
+    }
+    const sessionId = await sessionStart(first);
+    let offset = first.byteLength;
+    let chunk = await chunker.next();
+    while (chunk !== null) {
+      // eslint-disable-next-line no-await-in-loop -- chunks must be sequential to honor Dropbox session offset.
+      const next = await chunker.next();
+      if (next === null) {
+        // `chunk` is the final piece — send it in finish below.
+        break;
+      }
+      // eslint-disable-next-line no-await-in-loop -- sequential session offsets.
+      await sessionAppend(sessionId, offset, chunk);
+      offset += chunk.byteLength;
+      chunk = next;
+    }
+    const tail = chunk ?? Buffer.alloc(0);
+    const item = await sessionFinish(path, sessionId, offset, tail);
+    return { item, size: offset + tail.byteLength };
   };
 
   const adapter: DropboxAdapter = {
@@ -880,12 +1028,30 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       }
       try {
         await authHandle.ensureAccessToken();
-        const normalized = await normalizeBody(body, options?.contentType);
         const path = keyToPath(key);
-        const item =
-          normalized.data.byteLength <= SIMPLE_UPLOAD_LIMIT_BYTES
-            ? await uploadSimple(path, normalized.data)
-            : await uploadSession(path, normalized.data);
+        const chunkBytes = resolveChunkBytes(options?.multipart);
+        // Stream bodies upload chunk-by-chunk so a multi-GB file never has to
+        // be held in memory all at once. Buffered bodies are already resident,
+        // so they keep the simple-vs-session-by-size path.
+        let item: files.FileMetadata;
+        let size: number;
+        let contentType: string;
+        if (body instanceof ReadableStream) {
+          contentType = options?.contentType ?? "application/octet-stream";
+          ({ item, size } = await uploadSessionFromStream(
+            path,
+            body,
+            chunkBytes
+          ));
+        } else {
+          const normalized = await normalizeBody(body, options?.contentType);
+          ({ contentType } = normalized);
+          size = normalized.data.byteLength;
+          item =
+            size <= SIMPLE_UPLOAD_LIMIT_BYTES
+              ? await uploadSimple(path, normalized.data)
+              : await uploadSession(path, normalized.data, chunkBytes);
+        }
         if (publicByDefault) {
           // Idempotent: if the link already exists, createPublicSharedLink
           // pulls the existing URL from the error body.
@@ -893,13 +1059,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         }
         const meta = fileMetaFromDropbox(item);
         return {
-          contentType: normalized.contentType,
+          contentType,
           ...(meta.etag && { etag: meta.etag }),
           key,
           ...(meta.lastModified !== undefined && {
             lastModified: meta.lastModified,
           }),
-          size: normalized.data.byteLength,
+          size,
         };
       } catch (error) {
         throw mapDropboxError(error);

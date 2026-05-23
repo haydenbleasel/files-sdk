@@ -1,6 +1,6 @@
 {
   "name": "files-sdk",
-  "version": "1.5.0",
+  "version": "1.4.0",
   "description": "Unified storage SDK for object/blob backends.",
   "homepage": "https://github.com/haydenbleasel/files-sdk#readme",
   "bugs": {
@@ -17,7 +17,8 @@
     "files": "./dist/cli/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "type": "module",
   "sideEffects": false,
@@ -228,6 +229,7 @@
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.138",
     "@aws-sdk/client-s3": "^3.700.0",
+    "@aws-sdk/lib-storage": "^3.700.0",
     "@aws-sdk/s3-presigned-post": "^3.700.0",
     "@aws-sdk/s3-request-presigner": "^3.700.0",
     "@azure/core-auth": "^1.9.0",
@@ -268,6 +270,7 @@
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
     "@aws-sdk/client-s3": "^3.700.0",
+    "@aws-sdk/lib-storage": "^3.700.0",
     "@aws-sdk/s3-presigned-post": "^3.700.0",
     "@aws-sdk/s3-request-presigner": "^3.700.0",
     "@azure/core-auth": "^1.9.0",
@@ -301,6 +304,9 @@
       "optional": true
     },
     "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@aws-sdk/lib-storage": {
       "optional": true
     },
     "@aws-sdk/s3-presigned-post": {

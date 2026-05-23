@@ -1149,4 +1149,49 @@ describe("dropbox adapter", () => {
       expect((offsets[i] ?? 0) - (offsets[i - 1] ?? 0)).toBe(8 * 1024 * 1024);
     }
   });
+
+  test("streams a large body through the session chunk-by-chunk (no full buffer)", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    const MB = 1024 * 1024;
+    // Five 2 MiB reads = 10 MiB, coalesced into 4 MiB session chunks.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 5; i += 1) {
+          controller.enqueue(new Uint8Array(2 * MB));
+        }
+        controller.close();
+      },
+    });
+    const r = await files.upload("streamed-big.bin", stream, {
+      multipart: { partSize: 4 * MB },
+    });
+
+    expect(r.size).toBe(10 * MB);
+    // Never falls back to the buffered simple upload.
+    expect(filesUploadMock).not.toHaveBeenCalled();
+    expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
+    // start(0–4) → append(4–8) → finish(8–10) handles the 2 MiB tail.
+    expect(filesUploadSessionAppendV2Mock).toHaveBeenCalledTimes(1);
+    const appendArg = filesUploadSessionAppendV2Mock.mock.calls[0]?.[0];
+    expect(appendArg?.cursor.offset).toBe(4 * MB);
+    expect(appendArg?.contents.byteLength).toBe(4 * MB);
+    const finishArg = filesUploadSessionFinishMock.mock.calls[0]?.[0];
+    expect(finishArg?.cursor.offset).toBe(8 * MB);
+    expect(finishArg?.contents.byteLength).toBe(2 * MB);
+  });
+
+  test("a small stream uses a single simple upload, not a session", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("tiny stream body"));
+        controller.close();
+      },
+    });
+    const r = await files.upload("small-stream.txt", stream);
+
+    expect(r.size).toBe("tiny stream body".length);
+    expect(filesUploadMock).toHaveBeenCalledTimes(1);
+    expect(filesUploadSessionStartMock).not.toHaveBeenCalled();
+  });
 });

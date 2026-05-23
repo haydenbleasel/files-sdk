@@ -1,0 +1,35 @@
+---
+title: url
+description: Return a URL to fetch a key - a signed GetObject where the adapter can sign, or a direct CDN/public URL where one is configured.
+---
+
+`files.url(key, options?)`
+
+Returns a URL the caller can use to fetch `key`. Every adapter returns the most direct URL it can produce. Signing adapters (S3 and the S3-compatible catalog — R2 over HTTP, GCS via S3 interop, plus every regional / budget / decentralised wrapper — alongside Azure with shared key, Supabase, UploadThing in `private` mode, and R2 binding when HTTP credentials are also configured) sign a `GetObject` - defaulting to a 1-hour expiry, override per-call via `{ expiresIn }` or per-adapter via `defaultUrlExpiresIn`. If the adapter is constructed with a `publicBaseUrl` (CDN, custom domain, `r2.dev`, Bunny Pull Zone) or UploadThing's `public-read` ACL, that wins and the URL is built without signing.
+
+Three configurations have no URL primitive and throw: Vercel Blob in `access: "private"` mode, an R2 Workers binding without either `publicBaseUrl` or HTTP credentials, and Bunny Storage without `publicBaseUrl` because the Storage API URL requires an `AccessKey` header.
+
+```ts lineNumbers
+// One call, every adapter. S3 and the S3-compatible catalog (R2 over HTTP,
+// GCS via S3 interop, plus every regional / budget / decentralised wrapper)
+// sign a GetObject (1h default, override with { expiresIn }); Azure signs a
+// SAS read URL with the same default; Supabase signs via createSignedUrl
+// (or returns the public URL when constructed with public:true); Vercel Blob
+// (public), UploadThing (public-read), and Bunny Storage with publicBaseUrl
+// return their CDN URLs. If you configured `publicBaseUrl` on the adapter, that
+// wins and signing is skipped.
+const url = await files.url("avatars/abc.png");
+const short = await files.url("avatars/abc.png", { expiresIn: 60 });
+
+// Force download (defeat stored XSS from user-uploaded HTML/SVG).
+// Forces signing even if `publicBaseUrl` is configured - a permanent
+// CDN URL has no signature to bind the override into, and silently
+// dropping a security ask would be a regression.
+const safe = await files.url("avatars/abc.png", {
+  responseContentDisposition: "attachment",
+});
+```
+
+## Options
+
+<AutoTypeTable path="../../packages/files-sdk/src/index.ts" name="UrlOptions" />

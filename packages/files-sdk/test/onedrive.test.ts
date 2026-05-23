@@ -428,14 +428,71 @@ describe("onedrive adapter", () => {
     expect(body.type).toBe("view");
   });
 
-  test("upload throws when body exceeds 250 MiB simple-upload limit", async () => {
-    const files = new Files({ adapter: onedrive(baseOpts) });
-    // 251 MiB of zero-fill is too much to allocate gratuitously; use a
-    // typed-array view that reports oversized byteLength via spec.
-    const big = new Uint8Array(251 * 1024 * 1024);
-    await expect(files.upload("big.bin", big)).rejects.toThrow(
-      /simple-upload limit/iu
-    );
+  test("upload over the 250 MiB simple-upload limit uses a chunked session", async () => {
+    const originalFetch = globalThis.fetch;
+    let chunks = 0;
+    globalThis.fetch = ((_input: string | URL | Request) => {
+      chunks += 1;
+      return Promise.resolve(
+        Response.json(
+          { eTag: '"big-etag"', name: "big.bin", size: 251 * 1024 * 1024 },
+          { status: 200 }
+        )
+      );
+    }) as typeof fetch;
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      const big = new Uint8Array(251 * 1024 * 1024);
+      const r = await files.upload("big.bin", big);
+      expect(r.etag).toBe("big-etag");
+      expect(r.size).toBe(251 * 1024 * 1024);
+      // 251 MiB at the default 10 MiB range = 26 chunked PUTs via fetch.
+      expect(chunks).toBe(Math.ceil((251 * 1024 * 1024) / (10 * 1024 * 1024)));
+      // The single-request content PUT path is not used for sessions.
+      expect(dispatchPut.mock.calls.length).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("multipart: true forces a chunked upload session for small bodies", async () => {
+    const originalFetch = globalThis.fetch;
+    const ranges: (string | undefined)[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      ranges.push(headers["Content-Range"]);
+      return Promise.resolve(
+        Response.json(
+          {
+            eTag: '"session-etag"',
+            lastModifiedDateTime: new Date(STABLE_MODIFIED_MS).toISOString(),
+            name: "doc.bin",
+            size: 5,
+          },
+          { status: 201 }
+        )
+      );
+    }) as typeof fetch;
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      const r = await files.upload("doc.bin", "hello", { multipart: true });
+      const sessionCall = dispatchPost.mock.calls.find(
+        (c) =>
+          typeof c[0] === "string" &&
+          (c[0] as string).endsWith("/createUploadSession")
+      );
+      expect(sessionCall).toBeDefined();
+      expect(dispatchPut.mock.calls.length).toBe(0);
+      expect(r.etag).toBe("session-etag");
+      expect(r.size).toBe(5);
+      // A 5-byte body fits in one chunk spanning the whole range.
+      expect(ranges).toEqual(["bytes 0-4/5"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("upload uses default content-type for binary bodies", async () => {

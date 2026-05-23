@@ -1,0 +1,27 @@
+---
+title: download
+description: Read an object - a Blob-backed StoredFile by default, or a ReadableStream for large objects - one key or many.
+---
+
+`files.download(key, options?)` · `files.download(keys)`
+
+Reads an object. Returns a [`StoredFile`](/api#the-storedfile-type) by default (Blob-backed). Pass `{ as: "stream" }` to opt into a `ReadableStream` for large objects.
+
+```ts lineNumbers
+const file = await files.download("avatars/abc.png");
+// → StoredFile (Blob-backed)
+
+const stream = await files.download("avatars/abc.png", { as: "stream" });
+// → ReadableStream
+```
+
+## Many keys
+
+Pass an array to download many in one call. Returns `{ downloaded, errors? }` instead of throwing on partial failure; a missing key lands in `errors`. `as` applies to every download, and the call fans out with bounded `concurrency` (default 8) / `stopOnError`.
+
+```ts lineNumbers
+const result = await files.download(["avatars/a.png", "avatars/b.png"]);
+
+result.downloaded; // StoredFile[] — successes, in the order supplied
+result.errors; // undefined when every key succeeded
+```

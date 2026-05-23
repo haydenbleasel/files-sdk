@@ -491,6 +491,7 @@ export const vercelBlob = (
     },
     name: "vercel-blob",
     raw: blob,
+    reportsUploadProgress: true,
     signedUploadUrl(_key, _opts): Promise<SignedUpload> {
       throw new FilesError(
         "Provider",
@@ -508,6 +509,11 @@ export const vercelBlob = (
           ...(options?.contentType && { contentType: options.contentType }),
           ...(options?.cacheControl && {
             cacheControlMaxAge: parseCacheControlMaxAge(options.cacheControl),
+          }),
+          // Vercel's event already carries both loaded and total.
+          ...(options?.onProgress && {
+            onUploadProgress: (e: { loaded: number; total: number }) =>
+              options.onProgress?.({ loaded: e.loaded, total: e.total }),
           }),
         });
         // Vercel's PutBlobResult has no size; for stream bodies we can't compute

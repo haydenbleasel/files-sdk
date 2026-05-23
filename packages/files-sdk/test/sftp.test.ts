@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 
 import type SftpClient from "ssh2-sftp-client";
 
 import { Files, FilesError } from "../src/index.js";
-import { mapSftpError, sftp } from "../src/sftp/index.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z").getTime();
 
@@ -62,6 +61,12 @@ const makeFakeClient = () =>
       return Readable.from(entry.bytes);
     },
     delete(remote: string, noErrorOK?: boolean) {
+      if (remote.includes("boom")) {
+        // Transport failure that noErrorOK doesn't swallow.
+        return Promise.reject(
+          Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
+        );
+      }
       if (!store.has(remote) && !noErrorOK) {
         return Promise.reject(sftpError(2, "No such file"));
       }
@@ -154,6 +159,31 @@ const makeFakeClient = () =>
       });
     },
   }) as unknown as SftpClient;
+
+// Connect-per-op path: mock ssh2-sftp-client so a non-injected adapter can
+// "connect" without a socket. Each instance is a fresh fake (sharing the
+// module-level store) plus connect()/end() to model the connection lifecycle.
+let sftpConnectConfigs: unknown[] = [];
+let sftpEndCount = 0;
+// oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new SftpClient()`, so the stub must be constructable.
+class MockSftpClient {
+  constructor() {
+    Object.assign(this, makeFakeClient(), {
+      connect: (config: unknown) => {
+        sftpConnectConfigs.push(config);
+        return Promise.resolve();
+      },
+      end: () => {
+        sftpEndCount += 1;
+        return Promise.resolve(true);
+      },
+    });
+  }
+}
+
+mock.module("ssh2-sftp-client", () => ({ default: MockSftpClient }));
+
+const { mapSftpError, sftp } = await import("../src/sftp/index.js");
 
 const newFiles = (opts?: { publicBaseUrl?: string }) =>
   new Files({
@@ -325,6 +355,107 @@ describe("sftp adapter", () => {
     const adapter = sftp({ client });
     expect(adapter.raw).toBe(client);
     expect(adapter.name).toBe("sftp");
+  });
+});
+
+describe("sftp connect-per-op (mocked ssh2-sftp-client)", () => {
+  beforeEach(() => {
+    sftpConnectConfigs = [];
+    sftpEndCount = 0;
+  });
+
+  test("connects and ends the connection for each operation", async () => {
+    const files = new Files({
+      adapter: sftp({ host: "sftp.example.com", password: "p", username: "u" }),
+    });
+    await files.upload("a.txt", "hello");
+    const got = await files.download("a.txt");
+    expect(await got.text()).toBe("hello");
+    expect(sftpConnectConfigs).toHaveLength(2);
+    expect(sftpConnectConfigs[0]).toMatchObject({
+      host: "sftp.example.com",
+      password: "p",
+      port: 22,
+      username: "u",
+    });
+    expect(sftpEndCount).toBe(2);
+  });
+
+  test("SFTP_PORT env is used in the connect config", async () => {
+    process.env.SFTP_PORT = "2222";
+    try {
+      const files = new Files({
+        adapter: sftp({ host: "h", username: "u" }),
+      });
+      await files.exists("missing.txt");
+      expect(sftpConnectConfigs[0]).toMatchObject({ port: 2222 });
+    } finally {
+      delete process.env.SFTP_PORT;
+    }
+  });
+
+  test("raw exposes a connect() factory and root when not injected", async () => {
+    const adapter = sftp({ host: "h", root: "/srv", username: "u" });
+    expect(adapter.root).toBe("/srv");
+    const raw = adapter.raw as { connect: () => Promise<unknown> };
+    expect(typeof raw.connect).toBe("function");
+    expect(await raw.connect()).toBeDefined();
+  });
+});
+
+describe("sftp edge cases (injected client)", () => {
+  test("an absolute root resolves the list start directory", () => {
+    // Exercises the remoteRoot computation for an absolute root.
+    const adapter = sftp({ client: makeFakeClient(), root: "/" });
+    expect(adapter.root).toBe("/");
+  });
+
+  test("deleteMany with no keys returns early", async () => {
+    const files = newFiles();
+    const result = await files.delete([]);
+    expect(result.deleted).toEqual([]);
+    expect(result.errors).toBeUndefined();
+  });
+
+  test("deleteMany collects a transport error and stops on stopOnError", async () => {
+    const files = newFiles();
+    await files.upload("ok.txt", "1");
+    const result = await files.delete(["ok.txt", "boom.txt", "after.txt"], {
+      stopOnError: true,
+    });
+    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+  });
+
+  test("stream download of a missing key releases and throws NotFound", async () => {
+    const files = newFiles();
+    await expect(
+      files.download("nope.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "NotFound" });
+  });
+
+  test("stream download wires an abort signal", async () => {
+    const files = newFiles();
+    await files.upload("s.txt", "streamed");
+    const controller = new AbortController();
+    const got = await files.download("s.txt", {
+      as: "stream",
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(got.size).toBe(8);
+  });
+
+  test("uploading a ReadableStream looks up the size via stat", async () => {
+    const files = newFiles();
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("streamy"));
+        c.close();
+      },
+    });
+    const result = await files.upload("s.bin", stream);
+    expect(result.size).toBe(7);
   });
 });
 

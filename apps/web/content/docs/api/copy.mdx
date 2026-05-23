@@ -1,0 +1,12 @@
+---
+title: copy
+description: Copy an object from one key to another - server-side where the provider supports it, with a read + write fallback otherwise.
+---
+
+`files.copy(from, to)`
+
+Server-side copy where the provider supports it; falls back to read + write otherwise.
+
+```ts lineNumbers
+await files.copy("avatars/abc.png", "avatars/abc.bak.png");
+```

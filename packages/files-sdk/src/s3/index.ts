@@ -8,7 +8,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { S3ClientConfig } from "@aws-sdk/client-s3";
+import type { PutObjectCommandInput, S3ClientConfig } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -16,13 +16,16 @@ import type {
   Adapter,
   DeleteManyOptions,
   DeleteManyResult,
+  MultipartOptions,
   SignedUpload,
   StoredFile,
+  UploadProgress,
   UploadResult,
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
+  isMultipartRequested,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
@@ -97,6 +100,76 @@ const stripEtag = (etag: string | undefined): string | undefined => {
     return;
   }
   return etag.replaceAll(/^"+|"+$/gu, "");
+};
+
+// `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
+// upload needs the multipart/progress path. Loaded lazily (the return type is
+// inferred from the dynamic import) so it isn't required by callers who only do
+// plain single-request PutObject uploads; surfaces a clear error when missing.
+const loadLibStorage = async () => {
+  try {
+    return await import("@aws-sdk/lib-storage");
+  } catch {
+    throw new FilesError(
+      "Provider",
+      "Multipart and progress uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options."
+    );
+  }
+};
+
+// Default parts in flight, mirroring lib-storage's own `queueSize` default.
+const MULTIPART_DEFAULT_CONCURRENCY = 4;
+
+/**
+ * Translate our {@link MultipartOptions} into the lib-storage `Upload` knobs.
+ * `partSize` is omitted when unset so lib-storage's 5 MiB default applies.
+ */
+const resolveMultipart = (
+  multipart: boolean | MultipartOptions | undefined
+): { partSize?: number; queueSize: number } => {
+  const opts = typeof multipart === "object" ? multipart : {};
+  return {
+    ...(opts.partSize !== undefined && { partSize: opts.partSize }),
+    queueSize: opts.concurrency ?? MULTIPART_DEFAULT_CONCURRENCY,
+  };
+};
+
+/**
+ * Upload via `@aws-sdk/lib-storage`'s `Upload`, which transparently switches to
+ * multipart for large bodies and falls back to a single PutObject for small
+ * ones. Used for explicit `multipart`, for progress reporting, and for
+ * unknown-length streams. Returns the (quote-stripped) ETag.
+ */
+const runLibStorageUpload = async (
+  client: S3Client,
+  params: PutObjectCommandInput,
+  multipart: boolean | MultipartOptions | undefined,
+  onProgress: ((progress: UploadProgress) => void) | undefined,
+  signal: AbortSignal | undefined
+): Promise<string | undefined> => {
+  const { Upload } = await loadLibStorage();
+  const { partSize, queueSize } = resolveMultipart(multipart);
+  const upload = new Upload({
+    client,
+    params,
+    queueSize,
+    ...(partSize !== undefined && { partSize }),
+    // Abort cleanly on failure so we don't leave dangling parts behind.
+    leavePartsOnError: false,
+  });
+  if (onProgress) {
+    upload.on("httpUploadProgress", (progress) => {
+      onProgress({
+        loaded: progress.loaded ?? 0,
+        ...(progress.total !== undefined && { total: progress.total }),
+      });
+    });
+  }
+  // The Upload runs its own requests, so wire the abort signal to its abort()
+  // rather than relying on a per-command abortSignal.
+  signal?.addEventListener("abort", () => void upload.abort(), { once: true });
+  const result = await upload.done();
+  return stripEtag(result.ETag);
 };
 
 const emptyStream = (): ReadableStream<Uint8Array> =>
@@ -454,6 +527,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     },
     name: "s3",
     raw: client,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         if (signOpts.maxSize !== undefined) {
@@ -499,27 +573,48 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
       }
     },
     async upload(key, body, options) {
+      const { cacheControl, metadata, multipart, onProgress, signal } =
+        options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(
         body,
         options?.contentType
       );
+      const params = {
+        Body: data,
+        Bucket: bucket,
+        ContentType: contentType,
+        Key: key,
+        ...(cacheControl && { CacheControl: cacheControl }),
+        ...(metadata && { Metadata: metadata }),
+        ...(contentLength !== undefined && { ContentLength: contentLength }),
+      };
+      // lib-storage's Upload is the path for explicit multipart, for progress
+      // reporting, and for unknown-length streams — a single PutObject can't
+      // reliably send a stream without a Content-Length, so auto-engage there.
+      const isUnsizedStream =
+        data instanceof ReadableStream && contentLength === undefined;
+      const useUpload =
+        Boolean(onProgress) ||
+        isMultipartRequested(multipart) ||
+        isUnsizedStream;
+      const abortOpt = signal ? { abortSignal: signal } : undefined;
       try {
-        const result = await client.send(
-          new PutObjectCommand({
-            Body: data,
-            Bucket: bucket,
-            ContentType: contentType,
-            Key: key,
-            ...(options?.cacheControl && {
-              CacheControl: options.cacheControl,
-            }),
-            ...(options?.metadata && { Metadata: options.metadata }),
-            ...(contentLength !== undefined && {
-              ContentLength: contentLength,
-            }),
-          }),
-          options?.signal ? { abortSignal: options.signal } : undefined
-        );
+        let etag: string | undefined;
+        if (useUpload) {
+          etag = await runLibStorageUpload(
+            client,
+            params,
+            multipart,
+            onProgress,
+            signal
+          );
+        } else {
+          const result = await client.send(
+            new PutObjectCommand(params),
+            abortOpt
+          );
+          etag = stripEtag(result.ETag);
+        }
         let size = contentLength;
         let lastModified: number | undefined;
         // Stream bodies have no locally computed length; PutObject's response
@@ -529,7 +624,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
           try {
             const head = await client.send(
               new HeadObjectCommand({ Bucket: bucket, Key: key }),
-              options?.signal ? { abortSignal: options.signal } : undefined
+              abortOpt
             );
             size = Number(head.ContentLength ?? 0);
             lastModified = head.LastModified?.getTime();
@@ -539,7 +634,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         }
         return {
           contentType,
-          etag: stripEtag(result.ETag),
+          etag,
           key,
           lastModified,
           size,

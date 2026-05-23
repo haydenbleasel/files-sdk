@@ -3,7 +3,6 @@ import { describe, expect, test } from "bun:test";
 import { Files, FilesError } from "../src/index.js";
 import type {
   Adapter,
-  BulkOptions,
   FilesActionEvent,
   FilesErrorEvent,
   FilesHooks,
@@ -59,82 +58,58 @@ const streamOf = (value: string): ReadableStream<Uint8Array> => {
 };
 
 describe("Files hooks", () => {
-  test("single actions expose merged options, sanitized inputs, and public/internal keys", async () => {
+  test("a successful single action reports only the caller-facing fields", async () => {
     const recorder = createHookRecorder();
-    const defaultsSignal = new AbortController();
-    const callSignal = new AbortController();
     const files = new Files({
       adapter: fakeAdapter(),
       hooks: recorder.hooks,
       prefix: "uploads",
-      retries: {
-        backoff: () => 0,
-        max: 2,
-      },
-      signal: defaultsSignal.signal,
-      timeout: 1_000,
     });
 
     await files.upload("avatar.txt", "hello", {
       contentType: "text/plain",
       metadata: { user: "1" },
-      signal: callSignal.signal,
-      timeout: 250,
     });
 
     expect(recorder.errors).toHaveLength(0);
     expect(recorder.retries).toHaveLength(0);
     expect(recorder.actions).toHaveLength(1);
-    expect(recorder.actions[0]).toMatchObject({
-      adapter: "fake",
-      attemptCount: 1,
-      bulk: false,
+
+    const [event] = recorder.actions;
+    expect(event).toMatchObject({
+      // The caller's key, never the internal "uploads/avatar.txt" path.
       key: "avatar.txt",
-      options: {
-        contentType: "text/plain",
-        metadata: { user: "1" },
-        retries: { max: 2 },
-        timeout: 250,
-      },
-      path: "uploads/avatar.txt",
       status: "success",
       type: "upload",
     });
-    expect(recorder.actions[0]?.durationMs).toBeGreaterThanOrEqual(0);
-    expect("signal" in (recorder.actions[0]?.options ?? {})).toBe(false);
-    expect(recorder.actions[0]?.input).toEqual({
-      body: {
-        contentType: "text/plain; charset=utf-8",
-        kind: "string",
-        size: 5,
-      },
-    });
-    expect(recorder.actions[0]?.result).toMatchObject({
-      contentType: "text/plain",
-      key: "avatar.txt",
-      size: 5,
-    });
+    expect(event?.result).toMatchObject({ key: "avatar.txt", size: 5 });
+    expect(event?.durationMs).toBeGreaterThanOrEqual(0);
+    // Lock the minimal shape: no internal path, options, body summary, etc.
+    expect(Object.keys(event ?? {}).toSorted()).toEqual([
+      "durationMs",
+      "key",
+      "result",
+      "status",
+      "type",
+    ]);
   });
 
-  test("bulk calls skip hook instrumentation when no hooks are configured", async () => {
-    let reads = 0;
-    const opts = {} as BulkOptions;
-    Object.defineProperty(opts, "custom", {
-      enumerable: true,
-      get() {
-        reads += 1;
-        return "noop";
-      },
+  test("operations run normally when no hooks (or only some) are configured", async () => {
+    const noHooks = new Files({ adapter: fakeAdapter() });
+    const uploaded = await noHooks.upload("a.txt", "ok");
+    expect(uploaded.key).toBe("a.txt");
+
+    // Only onAction set — the missing onError / onRetry must not throw.
+    const seen: string[] = [];
+    const partial = new Files({
+      adapter: fakeAdapter(),
+      hooks: { onAction: (event) => seen.push(event.type) },
     });
-    const files = new Files({ adapter: fakeAdapter() });
-
-    const result = await files.upload([{ body: "ok", key: "a.txt" }], opts);
-
-    expect(result.uploaded.map((item) => item.key)).toEqual(["a.txt"]);
-    expect(reads).toBe(0);
+    await partial.upload("b.txt", "ok");
+    expect(seen).toEqual(["upload"]);
   });
 
-  test("bulk upload emits one action with aggregated result and never emits onError for partial failures", async () => {
+  test("bulk upload emits one aggregated action and no onError for partial failures", async () => {
     const recorder = createHookRecorder();
     const files = new Files({
       adapter: fakeAdapter(),
@@ -156,51 +131,21 @@ describe("Files hooks", () => {
       "bin.dat",
     ]);
     expect(result.errors?.map((item) => item.key)).toEqual([""]);
+
     expect(recorder.errors).toHaveLength(0);
     expect(recorder.retries).toHaveLength(0);
     expect(recorder.actions).toHaveLength(1);
     expect(recorder.actions[0]).toMatchObject({
-      bulk: true,
+      // The caller's keys, in input order — including the invalid one.
       keys: ["ok.txt", "bin.dat", ""],
-      options: { concurrency: 2, stopOnError: false },
-      paths: ["uploads/ok.txt", "uploads/bin.dat", undefined],
       status: "success",
       type: "upload",
     });
-    expect(recorder.actions[0]?.input).toMatchObject({
-      items: [
-        {
-          body: {
-            contentType: "text/plain; charset=utf-8",
-            kind: "string",
-            size: 2,
-          },
-          key: "ok.txt",
-          path: "uploads/ok.txt",
-        },
-        {
-          body: {
-            kind: "uint8Array",
-            size: 2,
-          },
-          key: "bin.dat",
-          path: "uploads/bin.dat",
-        },
-        {
-          body: {
-            contentType: "text/plain; charset=utf-8",
-            kind: "string",
-            size: 3,
-          },
-          key: "",
-          path: undefined,
-        },
-      ],
-    });
+    // The aggregated result (with its per-item errors) rides on the event.
     expect(recorder.actions[0]?.result).toEqual(result);
   });
 
-  test("validation failures emit onError before the final error action", async () => {
+  test("a validation failure emits onError before the final error action", async () => {
     const recorder = createHookRecorder();
     const files = new Files({
       adapter: fakeAdapter(),
@@ -213,35 +158,24 @@ describe("Files hooks", () => {
       message: "key must be a non-empty string",
     });
 
-    expect(recorder.order).toEqual([
-      "error:download",
-      "action:download:error",
-    ]);
-    expect(recorder.errors).toHaveLength(1);
-    expect(recorder.actions).toHaveLength(1);
+    expect(recorder.order).toEqual(["error:download", "action:download:error"]);
     expect(recorder.errors[0]).toMatchObject({
-      attemptCount: 1,
       error: expect.objectContaining({
         code: "Provider",
         message: "key must be a non-empty string",
       }),
       key: "",
-      path: undefined,
       type: "download",
     });
     expect(recorder.actions[0]).toMatchObject({
-      error: expect.objectContaining({
-        code: "Provider",
-        message: "key must be a non-empty string",
-      }),
+      error: expect.objectContaining({ code: "Provider" }),
       key: "",
-      path: undefined,
       status: "error",
       type: "download",
     });
   });
 
-  test("retryable failures emit onRetry and update the final attempt count", async () => {
+  test("a retryable failure emits onRetry, then the operation succeeds", async () => {
     const base = fakeAdapter();
     let attempts = 0;
     const recorder = createHookRecorder();
@@ -263,32 +197,24 @@ describe("Files hooks", () => {
     await files.upload("exists.txt", "ok");
     expect(await files.exists("exists.txt")).toBe(true);
 
-    expect(recorder.retries).toEqual([
-      expect.objectContaining({
-        adapter: "fake",
-        attempt: 1,
-        delayMs: 0,
-        error: expect.objectContaining({ message: "temporary" }),
-        key: "exists.txt",
-        maxRetries: 1,
-        options: expect.objectContaining({
-          retries: expect.objectContaining({ max: 1 }),
-        }),
-        path: "exists.txt",
-        type: "exists",
-      }),
-    ]);
-    expect(recorder.actions.at(-1)).toMatchObject({
-      attemptCount: 2,
+    expect(recorder.retries).toHaveLength(1);
+    expect(recorder.retries[0]).toMatchObject({
+      attempt: 1,
+      delayMs: 0,
+      error: expect.objectContaining({ message: "temporary" }),
       key: "exists.txt",
-      path: "exists.txt",
+      maxRetries: 1,
+      type: "exists",
+    });
+    expect(recorder.actions.at(-1)).toMatchObject({
+      key: "exists.txt",
       result: true,
       status: "success",
       type: "exists",
     });
   });
 
-  test("non-retryable failures never emit onRetry", async () => {
+  test("a non-retryable failure never emits onRetry", async () => {
     const base = fakeAdapter();
     const recorder = createHookRecorder();
     const files = new Files({
@@ -310,7 +236,6 @@ describe("Files hooks", () => {
     expect(recorder.errors).toHaveLength(1);
     expect(recorder.actions).toHaveLength(1);
     expect(recorder.actions[0]).toMatchObject({
-      attemptCount: 1,
       status: "error",
       type: "head",
     });
@@ -321,8 +246,8 @@ describe("Files hooks", () => {
     const recorder = createHookRecorder();
     const adapter: Adapter = {
       ...base,
-      async upload(_key, _body, _opts) {
-        throw new Error("stream upload failed");
+      upload(_key, _body, _opts) {
+        return Promise.reject(new Error("stream upload failed"));
       },
     };
     const files = new Files({
@@ -331,17 +256,16 @@ describe("Files hooks", () => {
       retries: { backoff: () => 0, max: 5 },
     });
 
-    await expect(files.upload("stream.txt", streamOf("payload"))).rejects.toMatchObject(
-      {
-        code: "Provider",
-        message: "stream upload failed",
-      }
-    );
+    await expect(
+      files.upload("stream.txt", streamOf("payload"))
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "stream upload failed",
+    });
 
     expect(recorder.retries).toHaveLength(0);
     expect(recorder.errors).toHaveLength(1);
     expect(recorder.actions[0]).toMatchObject({
-      attemptCount: 1,
       error: expect.objectContaining({ message: "stream upload failed" }),
       key: "stream.txt",
       status: "error",
@@ -349,7 +273,7 @@ describe("Files hooks", () => {
     });
   });
 
-  test("copy, list, url, and signedUploadUrl include the expected hook payload fields", async () => {
+  test("copy, list, url, and signedUploadUrl carry their identifying fields", async () => {
     const recorder = createHookRecorder();
     const files = new Files({
       adapter: fakeAdapter(),
@@ -366,40 +290,24 @@ describe("Files hooks", () => {
       expiresIn: 60,
     });
 
-    const copyEvent = recorder.actions.find((event) => event.type === "copy");
-    const listEvent = recorder.actions.find((event) => event.type === "list");
-    const urlEvent = recorder.actions.find((event) => event.type === "url");
-    const signedEvent = recorder.actions.find(
-      (event) => event.type === "signedUploadUrl"
-    );
+    const find = (type: FilesActionEvent["type"]) =>
+      recorder.actions.find((event) => event.type === type);
 
-    expect(copyEvent).toMatchObject({
+    expect(find("copy")).toMatchObject({
       from: "docs/a.txt",
-      fromPath: "scope/docs/a.txt",
       status: "success",
       to: "docs/b.txt",
-      toPath: "scope/docs/b.txt",
       type: "copy",
     });
-    expect(listEvent).toMatchObject({
-      effectivePrefix: "scope/docs/",
-      options: { limit: 10, prefix: "docs/" },
-      requestedPrefix: "docs/",
-      status: "success",
-      type: "list",
-    });
-    expect(urlEvent).toMatchObject({
+    expect(find("list")).toMatchObject({ status: "success", type: "list" });
+    expect(find("url")).toMatchObject({
       key: "docs/a.txt",
-      options: { expiresIn: 30 },
-      path: "scope/docs/a.txt",
       result: url,
       status: "success",
       type: "url",
     });
-    expect(signedEvent).toMatchObject({
+    expect(find("signedUploadUrl")).toMatchObject({
       key: "docs/c.txt",
-      options: { contentType: "text/plain", expiresIn: 60 },
-      path: "scope/docs/c.txt",
       result: signed,
       status: "success",
       type: "signedUploadUrl",
@@ -419,17 +327,15 @@ describe("Files hooks", () => {
     await files.upload("a.txt", "a");
     await files.upload("b.txt", "b");
 
-    const download = await files.download(["a.txt", "missing.txt"]);
-    const head = await files.head(["a.txt", "missing.txt"]);
-    const exists = await files.exists(["a.txt", "missing.txt"]);
-    const deleted = await files.delete(["a.txt", "missing.txt"]);
+    await files.download(["a.txt", "missing.txt"]);
+    await files.head(["a.txt", "missing.txt"]);
+    await files.exists(["a.txt", "missing.txt"]);
+    await files.delete(["a.txt", "missing.txt"]);
 
-    expect(download.errors?.map((item) => item.key)).toEqual(["missing.txt"]);
-    expect(head.errors?.map((item) => item.key)).toEqual(["missing.txt"]);
-    expect(exists).toEqual({ existing: ["a.txt"], missing: ["missing.txt"] });
-    expect(deleted).toEqual({ deleted: ["a.txt", "missing.txt"] });
-
-    const bulkActions = recorder.actions.filter((event) => event.bulk);
+    // Bulk events carry `keys`; single events carry `key`.
+    const bulkActions = recorder.actions.filter(
+      (event) => event.keys !== undefined
+    );
     expect(bulkActions.map((event) => event.type)).toEqual([
       "download",
       "head",
@@ -438,22 +344,17 @@ describe("Files hooks", () => {
     ]);
     for (const event of bulkActions) {
       expect(event.status).toBe("success");
-      expect(event.attemptCount).toBe(1);
       expect(event.keys).toEqual(["a.txt", "missing.txt"]);
-      expect(event.paths).toEqual(["bulk/a.txt", "bulk/missing.txt"]);
     }
     expect(recorder.errors).toHaveLength(0);
   });
 
-  test("hook failures are swallowed and do not cascade into onError", async () => {
-    let settled = false;
+  test("a throwing hook is swallowed and does not fail the operation", async () => {
     const errorEvents: FilesErrorEvent[] = [];
     const files = new Files({
       adapter: fakeAdapter(),
       hooks: {
-        async onAction() {
-          await Promise.resolve();
-          settled = true;
+        onAction() {
           throw new Error("hook failed");
         },
         onError(event) {
@@ -462,17 +363,17 @@ describe("Files hooks", () => {
       },
     });
 
-    const result = await files.upload("awaited.txt", "ok");
+    const result = await files.upload("safe.txt", "ok");
 
-    expect(result.key).toBe("awaited.txt");
-    expect(settled).toBe(true);
+    expect(result.key).toBe("safe.txt");
+    // The hook threw on success — that must not surface as an operation error.
     expect(errorEvents).toHaveLength(0);
-    expect(await files.download("awaited.txt").then((file) => file.text())).toBe(
+    expect(await files.download("safe.txt").then((file) => file.text())).toBe(
       "ok"
     );
   });
 
-  test("file handles emit the same hook payloads as direct Files calls", async () => {
+  test("file handles emit the same hook events as direct Files calls", async () => {
     const recorder = createHookRecorder();
     const files = new Files({
       adapter: fakeAdapter(),
@@ -486,11 +387,11 @@ describe("Files hooks", () => {
     await file.delete();
 
     expect(
-      recorder.actions.map((event) => [event.type, event.key, event.path, event.status])
+      recorder.actions.map((event) => [event.type, event.key, event.status])
     ).toEqual([
-      ["upload", "handle.txt", "nested/handle.txt", "success"],
-      ["url", "handle.txt", "nested/handle.txt", "success"],
-      ["delete", "handle.txt", "nested/handle.txt", "success"],
+      ["upload", "handle.txt", "success"],
+      ["url", "handle.txt", "success"],
+      ["delete", "handle.txt", "success"],
     ]);
   });
 });

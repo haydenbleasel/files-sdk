@@ -23,6 +23,7 @@ import type {
   Adapter,
   Body,
   ListResult,
+  MultipartOptions,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -122,6 +123,24 @@ const GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
 const SIMPLE_UPLOAD_LIMIT_BYTES = 250 * 1024 * 1024;
 const DEFAULT_COPY_TIMEOUT_MS = 60_000;
 const COPY_POLL_INTERVAL_MS = 500;
+// Graph requires every upload-session fragment except the last to be a multiple
+// of 320 KiB. Default to ~10 MiB (already a clean multiple) and round any
+// caller-supplied `partSize` down to a valid multiple (never below one unit).
+const GRAPH_FRAGMENT_MULTIPLE = 320 * 1024;
+const DEFAULT_UPLOAD_SESSION_RANGE_BYTES = 10 * 1024 * 1024;
+
+const resolveRangeSize = (
+  multipart: boolean | MultipartOptions | undefined
+): number => {
+  const requested =
+    typeof multipart === "object" ? multipart.partSize : undefined;
+  if (requested === undefined) {
+    return DEFAULT_UPLOAD_SESSION_RANGE_BYTES;
+  }
+  const rounded =
+    Math.floor(requested / GRAPH_FRAGMENT_MULTIPLE) * GRAPH_FRAGMENT_MULTIPLE;
+  return Math.max(rounded, GRAPH_FRAGMENT_MULTIPLE);
+};
 
 const NOT_FOUND_CODES = new Set(["itemNotFound"]);
 const UNAUTH_CODES = new Set([
@@ -637,6 +656,68 @@ export const onedrive = (
     }
   };
 
+  // Large files (and any `multipart` upload) go through a Graph upload session:
+  // create the session, then PUT the buffered body in `Content-Range` chunks.
+  // The session `uploadUrl` is pre-authenticated, so the chunk PUTs use plain
+  // fetch. The final chunk's 200/201 response carries the created DriveItem.
+  const uploadViaSession = async (
+    key: string,
+    data: Buffer,
+    rangeSize: number,
+    signal?: AbortSignal
+  ): Promise<DriveItem> => {
+    const session = (await client
+      .api(`${itemApiPath(key)}/createUploadSession`)
+      .post({
+        item: {
+          "@microsoft.graph.conflictBehavior": "replace",
+          name: basename(key),
+        },
+      })) as { uploadUrl?: string };
+    const { uploadUrl } = session;
+    if (!uploadUrl) {
+      throw new FilesError(
+        "Provider",
+        "onedrive: createUploadSession response missing uploadUrl"
+      );
+    }
+    const total = data.byteLength;
+    let offset = 0;
+    let item: DriveItem | undefined;
+    while (offset < total) {
+      const end = Math.min(offset + rangeSize, total);
+      const chunk = data.subarray(offset, end);
+      const res = await fetch(uploadUrl, {
+        // A Node Buffer is a valid fetch body at runtime (undici), but its
+        // generic ArrayBufferLike backing doesn't satisfy the DOM BodyInit type.
+        body: chunk as unknown as BodyInit,
+        headers: { "Content-Range": `bytes ${offset}-${end - 1}/${total}` },
+        method: "PUT",
+        ...(signal && { signal }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new FilesError(
+          "Provider",
+          `onedrive: upload session chunk failed (${res.status}): ${text || res.statusText}`
+        );
+      }
+      // 202 = accepted, more chunks expected; 200/201 = final chunk, body is
+      // the DriveItem. Read it on completion and ignore the interim ranges.
+      if (res.status === 200 || res.status === 201) {
+        item = (await res.json()) as DriveItem;
+      }
+      offset = end;
+    }
+    if (!item) {
+      throw new FilesError(
+        "Provider",
+        "onedrive: upload session completed without returning a drive item"
+      );
+    }
+    return item;
+  };
+
   const createAnonymousLink = async (key: string): Promise<string> => {
     const res = (await client
       .api(`${itemApiPath(key)}/createLink`)
@@ -852,16 +933,25 @@ export const onedrive = (
       }
       try {
         const normalized = await normalizeBody(body, options?.contentType);
-        if (normalized.data.byteLength > SIMPLE_UPLOAD_LIMIT_BYTES) {
-          throw new FilesError(
-            "Provider",
-            `onedrive: upload exceeds the ${SIMPLE_UPLOAD_LIMIT_BYTES}-byte simple-upload limit. Use signedUploadUrl() (chunked upload session) or raw client for large files.`
-          );
-        }
-        const item = (await client
-          .api(`${itemApiPath(key)}/content`)
-          .header("Content-Type", normalized.contentType)
-          .put(normalized.data)) as DriveItem;
+        const total = normalized.data.byteLength;
+        const wantsMultipart =
+          options?.multipart !== undefined && options.multipart !== false;
+        // Use a chunked upload session above Graph's simple-upload limit, or
+        // whenever the caller forces multipart on a non-empty body. A 0-byte
+        // body always takes the simple PUT (sessions need at least one chunk).
+        const useSession =
+          total > SIMPLE_UPLOAD_LIMIT_BYTES || (wantsMultipart && total > 0);
+        const item: DriveItem = useSession
+          ? await uploadViaSession(
+              key,
+              normalized.data,
+              resolveRangeSize(options?.multipart),
+              options?.signal
+            )
+          : ((await client
+              .api(`${itemApiPath(key)}/content`)
+              .header("Content-Type", normalized.contentType)
+              .put(normalized.data)) as DriveItem);
         if (publicByDefault) {
           // createLink is idempotent for the same scope+type — repeat calls
           // return the existing link rather than creating duplicates.
@@ -874,7 +964,7 @@ export const onedrive = (
           ...(item.lastModifiedDateTime && {
             lastModified: new Date(item.lastModifiedDateTime).getTime(),
           }),
-          size: normalized.data.byteLength,
+          size: total,
         };
       } catch (error) {
         throw mapGraphError(error);

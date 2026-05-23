@@ -191,6 +191,39 @@ describe("vercel-blob adapter", () => {
     expect(o.contentType).toBe("text/plain");
   });
 
+  test("forwards blob.put progress to onProgress", async () => {
+    putMock.mockImplementationOnce(
+      (pathname: string, _body: unknown, opts: unknown) => {
+        const { onUploadProgress } = opts as {
+          onUploadProgress?: (e: {
+            loaded: number;
+            total: number;
+            percentage: number;
+          }) => void;
+        };
+        onUploadProgress?.({ loaded: 2, percentage: 40, total: 5 });
+        onUploadProgress?.({ loaded: 5, percentage: 100, total: 5 });
+        return Promise.resolve({
+          contentDisposition: "",
+          contentType: "text/plain",
+          downloadUrl: `https://blob.test/${pathname}?download=1`,
+          etag: `"etag-${pathname}"`,
+          pathname,
+          url: `https://blob.test/${pathname}`,
+        });
+      }
+    );
+    const files = new Files({ adapter: vercelBlob() });
+    const events: { loaded: number; total?: number }[] = [];
+    await files.upload("a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    expect(events).toEqual([
+      { loaded: 2, total: 5 },
+      { loaded: 5, total: 5 },
+    ]);
+  });
+
   test("upload forwards signals to blob.put", async () => {
     const { signal } = new AbortController();
     const files = new Files({ adapter: vercelBlob() });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Readable } from "node:stream";
 
 import {
@@ -19,8 +19,53 @@ import { mapS3Error, s3 } from "../src/s3/index.js";
 
 const s3Mock = mockClient(S3Client);
 
+// Stub @aws-sdk/lib-storage so the multipart/progress path is deterministic
+// without a real multipart upload. Imported lazily by the adapter, so it's only
+// pulled in when an upload needs progress, multipart, or an unsized stream. The
+// static fields let tests assert how the adapter constructed the Upload.
+type ProgressListener = (p: { loaded?: number; total?: number }) => void;
+interface UploadOpts {
+  params?: { Body?: unknown };
+  partSize?: number;
+  queueSize?: number;
+}
+class FakeUpload {
+  static instances = 0;
+  static lastOptions: UploadOpts | undefined;
+  static aborted = 0;
+  static reset(): void {
+    FakeUpload.instances = 0;
+    FakeUpload.lastOptions = undefined;
+    FakeUpload.aborted = 0;
+  }
+  #listeners: ProgressListener[] = [];
+  constructor(options: UploadOpts) {
+    FakeUpload.instances += 1;
+    FakeUpload.lastOptions = options;
+  }
+  on(event: string, listener: ProgressListener): void {
+    if (event === "httpUploadProgress") {
+      this.#listeners.push(listener);
+    }
+  }
+  done(): Promise<{ ETag: string }> {
+    for (const notify of this.#listeners) {
+      notify({ loaded: 5, total: 10 });
+      notify({ loaded: 10, total: 10 });
+    }
+    return Promise.resolve({ ETag: '"progress-etag"' });
+  }
+  abort(): Promise<void> {
+    FakeUpload.aborted += 1;
+    this.#listeners = [];
+    return Promise.resolve();
+  }
+}
+mock.module("@aws-sdk/lib-storage", () => ({ Upload: FakeUpload }));
+
 beforeEach(() => {
   s3Mock.reset();
+  FakeUpload.reset();
 });
 
 afterEach(() => {
@@ -64,6 +109,94 @@ describe("s3 adapter", () => {
     expect(input.ContentType).toBe("text/plain");
     expect(input.Metadata).toEqual({ x: "y" });
     expect(input.CacheControl).toBe("public, max-age=60");
+  });
+
+  test("upload forwards lib-storage progress to onProgress", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const events: { loaded: number; total?: number }[] = [];
+    const result = await files.upload("big.bin", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events).toEqual([
+      { loaded: 5, total: 10 },
+      { loaded: 10, total: 10 },
+    ]);
+    expect(result.etag).toBe("progress-etag");
+    // The progress path goes through lib-storage's Upload, not PutObjectCommand.
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+  });
+
+  test("multipart: true routes through lib-storage Upload, not PutObject", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const result = await files.upload("big.bin", "hello", { multipart: true });
+
+    expect(FakeUpload.instances).toBe(1);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    expect(result.etag).toBe("progress-etag");
+    // Size is known locally (string body), so no follow-up head is needed.
+    expect(result.size).toBe(5);
+  });
+
+  test("multipart object forwards partSize and concurrency to Upload", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    await files.upload("big.bin", "hello", {
+      multipart: { concurrency: 8, partSize: 5 * 1024 * 1024 },
+    });
+
+    expect(FakeUpload.lastOptions?.partSize).toBe(5 * 1024 * 1024);
+    expect(FakeUpload.lastOptions?.queueSize).toBe(8);
+  });
+
+  test("multipart defaults queueSize to 4 and omits partSize", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    await files.upload("big.bin", "hello", { multipart: true });
+
+    expect(FakeUpload.lastOptions?.queueSize).toBe(4);
+    expect(FakeUpload.lastOptions?.partSize).toBeUndefined();
+  });
+
+  test("unknown-length stream auto-engages Upload without the multipart flag", async () => {
+    s3Mock.on(HeadObjectCommand).resolves({
+      ContentLength: 11,
+      LastModified: new Date(1000),
+    });
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello world"));
+        controller.close();
+      },
+    });
+    const result = await files.upload("stream.bin", stream);
+
+    expect(FakeUpload.instances).toBe(1);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    // CompleteMultipartUpload carries no size, so the unsized stream falls back
+    // to a follow-up head() for the authoritative size and lastModified.
+    expect(result.size).toBe(11);
+    expect(result.lastModified).toBe(1000);
+  });
+
+  test("plain sized upload still uses PutObject (Upload not loaded)", async () => {
+    s3Mock.on(PutObjectCommand).resolves({ ETag: '"plain"' });
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    await files.upload("a.txt", "hello");
+
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
+    expect(FakeUpload.instances).toBe(0);
   });
 
   test("download returns a StoredFile with body bytes", async () => {
@@ -394,8 +527,7 @@ describe("s3 adapter", () => {
     expect(result.size).toBe(2);
   });
 
-  test("upload accepts ReadableStream bodies (no contentLength)", async () => {
-    s3Mock.on(PutObjectCommand).resolves({});
+  test("upload accepts ReadableStream bodies (auto-engages Upload)", async () => {
     s3Mock.on(HeadObjectCommand).resolves({
       ContentLength: 2,
       LastModified: new Date(1_700_000_000_000),
@@ -408,9 +540,11 @@ describe("s3 adapter", () => {
       },
     });
     const result = await adapter.upload("k", stream);
-    const [{ input }] = firstCall(s3Mock.commandCalls(PutObjectCommand)).args;
-    expect(input.ContentLength).toBeUndefined();
-    expect(input.Body).toBe(stream);
+    // Unknown-length streams can't be sent in a single PutObject, so they
+    // auto-route to lib-storage's Upload, which streams the body part-by-part.
+    expect(FakeUpload.instances).toBe(1);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+    expect(FakeUpload.lastOptions?.params?.Body).toBe(stream);
     expect(result.size).toBe(2);
     expect(result.lastModified).toBe(1_700_000_000_000);
   });

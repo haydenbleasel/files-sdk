@@ -30,6 +30,8 @@ const files = new Files({
 });
 ```
 
+`upload` reports true byte-level [progress](/api/upload#progress-tracking) via `onProgress`. Uploads default to a single simple request; when `onProgress` is passed, the adapter switches to a **resumable** upload (the only path that emits progress), which adds one round trip.
+
 ## Options
 
 <AutoTypeTable

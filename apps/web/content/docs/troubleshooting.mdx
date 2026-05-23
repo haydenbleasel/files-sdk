@@ -178,4 +178,4 @@ Depends on the provider. S3, R2, and Vercel Blob treat delete as idempotent and 
 
 ### Can I use Files SDK in the browser?
 
-The core class and `StoredFile` type are isomorphic, but most adapters wrap server SDKs that aren't browser-safe. Use `signedUploadUrl()` from the server, hand the contract to the browser, and have the browser `fetch` directly to the provider. The CLI's [Wiring agents](/docs/cli#wiring-agents) section shows the same pattern from a shell.
+The core class and `StoredFile` type are isomorphic, but most adapters wrap server SDKs that aren't browser-safe. Use `signedUploadUrl()` from the server, hand the contract to the browser, and have the browser `fetch` directly to the provider. The CLI's [Wiring agents](/cli#wiring-agents) section shows the same pattern from a shell.

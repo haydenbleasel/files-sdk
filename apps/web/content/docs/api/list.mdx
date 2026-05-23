@@ -1,0 +1,26 @@
+---
+title: list
+description: Cursor-paginated listing with a prefix filter. Each item is a StoredFile with a lazy body accessor.
+---
+
+`files.list(options?)`
+
+Cursor-paginated listing with prefix filter. Each item is a [`StoredFile`](/api#the-storedfile-type) with a lazy body accessor.
+
+```ts lineNumbers
+const { items, cursor } = await files.list({
+  prefix: "avatars/",
+  limit: 100,
+});
+
+if (cursor) {
+  const next = await files.list({ prefix: "avatars/", cursor });
+}
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="ListOptions"
+/>

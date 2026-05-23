@@ -54,6 +54,9 @@ export default defineConfig({
     "src/providers/index.ts",
   ],
   format: ["esm"],
+  // Mirror apps/web/content/docs into the package root so the docs ship in the
+  // published tarball (see the "docs" entry in package.json "files").
+  onSuccess: "bun scripts/copy-docs.ts",
   sourcemap: true,
   splitting: false,
   target: "es2022",

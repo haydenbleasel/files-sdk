@@ -1,0 +1,26 @@
+---
+title: exists
+description: Check whether an object exists without fetching its body - one key returns a boolean, an array splits into existing and missing.
+---
+
+`files.exists(key)` · `files.exists(keys)`
+
+Checks whether an object exists without fetching its body. Returns `true` when the key exists and `false` when the provider reports `NotFound`. Permission, auth, and transport failures still throw so callers do not accidentally treat them as a missing file.
+
+```ts lineNumbers
+const present = await files.exists("avatars/abc.png");
+const missing = await files.exists("avatars/missing.png");
+// → true / false
+```
+
+## Many keys
+
+Pass an array to check many in one call. Returns `{ existing, missing, errors? }`: keys split into `existing` / `missing` (both in input order), with hard errors (auth, transport) collected in `errors` rather than thrown. Fans out with bounded `concurrency` (default 8) / `stopOnError`.
+
+```ts lineNumbers
+const result = await files.exists(["avatars/a.png", "avatars/b.png"]);
+
+result.existing; // string[] — keys that exist
+result.missing; // string[] — keys the provider reports as absent
+result.errors; // undefined unless a key hard-errored
+```

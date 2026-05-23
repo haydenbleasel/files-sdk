@@ -1,11 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { once } from "node:events";
 import type { Readable, Writable } from "node:stream";
 
 import type { Client } from "basic-ftp";
 
-import { ftp, mapFtpError } from "../src/ftp/index.js";
 import { Files, FilesError } from "../src/index.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z");
@@ -38,6 +37,7 @@ const parentDir = (path: string): string => {
 
 const makeFakeClient = () => {
   let cwd = "";
+  let progress: ((info: { bytesOverall: number }) => void) | undefined;
   const resolve = (path: string): string => (cwd ? `${cwd}/${path}` : path);
   return {
     cd(path: string) {
@@ -110,6 +110,12 @@ const makeFakeClient = () => {
     },
     remove(path: string, ignoreErrorCodes?: boolean) {
       const target = resolve(path);
+      if (target.includes("boom")) {
+        // Transport failure that ignoreErrorCodes doesn't swallow.
+        return Promise.reject(
+          Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
+        );
+      }
       if (!store.has(target)) {
         if (ignoreErrorCodes) {
           return Promise.resolve({ code: 250 });
@@ -126,16 +132,47 @@ const makeFakeClient = () => {
       }
       return Promise.resolve(entry.length);
     },
+    trackProgress(handler?: (info: { bytesOverall: number }) => void) {
+      progress = handler;
+    },
     async uploadFrom(source: Readable, path: string) {
       const chunks: Buffer[] = [];
+      let bytesOverall = 0;
       for await (const chunk of source) {
-        chunks.push(Buffer.from(chunk as Buffer));
+        const buf = Buffer.from(chunk as Buffer);
+        chunks.push(buf);
+        bytesOverall += buf.length;
+        progress?.({ bytesOverall });
       }
       store.set(resolve(path), Buffer.concat(chunks));
       return { code: 226 };
     },
   } as unknown as Client;
 };
+
+// Connect-per-op path: mock basic-ftp's Client so a non-injected adapter can
+// "connect" without a socket. Each instance is a fresh fake (sharing the
+// module-level store) plus access()/close() to model the connection lifecycle.
+let ftpAccessConfigs: unknown[] = [];
+let ftpCloseCount = 0;
+// oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new Client()`, so the stub must be constructable.
+class MockBasicFtpClient {
+  constructor(_timeout?: number) {
+    Object.assign(this, makeFakeClient(), {
+      access: (config: unknown) => {
+        ftpAccessConfigs.push(config);
+        return Promise.resolve({ code: 220 });
+      },
+      close: () => {
+        ftpCloseCount += 1;
+      },
+    });
+  }
+}
+
+mock.module("basic-ftp", () => ({ Client: MockBasicFtpClient }));
+
+const { ftp, mapFtpError } = await import("../src/ftp/index.js");
 
 const newFiles = (opts?: { publicBaseUrl?: string }) =>
   new Files({ adapter: ftp({ client: makeFakeClient(), ...opts }) });
@@ -153,6 +190,16 @@ describe("ftp adapter", () => {
     expect(result.size).toBe(5);
     const got = await files.download("docs/a.txt");
     expect(await got.text()).toBe("hello");
+  });
+
+  test("upload reports progress via trackProgress", async () => {
+    const files = newFiles();
+    const events: { loaded: number; total?: number }[] = [];
+    await files.upload("docs/a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    // The buffer is sent as one chunk, so one cumulative report with total.
+    expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
   test("upload to root and a nested path coexist (cwd is restored)", async () => {
@@ -294,6 +341,139 @@ describe("ftp adapter", () => {
     const adapter = ftp({ client });
     expect(adapter.raw).toBe(client);
     expect(adapter.name).toBe("ftp");
+  });
+});
+
+describe("ftp connect-per-op (mocked basic-ftp)", () => {
+  beforeEach(() => {
+    ftpAccessConfigs = [];
+    ftpCloseCount = 0;
+  });
+
+  test("connects and closes the connection for each operation", async () => {
+    const files = new Files({
+      adapter: ftp({ host: "ftp.example.com", password: "p", user: "u" }),
+    });
+    await files.upload("a.txt", "hello");
+    const got = await files.download("a.txt");
+    expect(await got.text()).toBe("hello");
+    expect(ftpAccessConfigs).toHaveLength(2);
+    expect(ftpAccessConfigs[0]).toMatchObject({
+      host: "ftp.example.com",
+      password: "p",
+      port: 21,
+      user: "u",
+    });
+    expect(ftpCloseCount).toBe(2);
+  });
+
+  test("FTP_SECURE=implicit reaches the access config", async () => {
+    process.env.FTP_SECURE = "implicit";
+    try {
+      const files = new Files({ adapter: ftp({ host: "h", user: "u" }) });
+      await files.exists("missing.txt");
+      expect(ftpAccessConfigs[0]).toMatchObject({ secure: "implicit" });
+    } finally {
+      delete process.env.FTP_SECURE;
+    }
+  });
+
+  test("FTP_SECURE=true reaches the access config", async () => {
+    process.env.FTP_SECURE = "true";
+    try {
+      const files = new Files({ adapter: ftp({ host: "h", user: "u" }) });
+      await files.exists("missing.txt");
+      expect(ftpAccessConfigs[0]).toMatchObject({ secure: true });
+    } finally {
+      delete process.env.FTP_SECURE;
+    }
+  });
+
+  test("raw exposes a connect() factory when not injected", async () => {
+    const adapter = ftp({ host: "h", user: "u" });
+    const raw = adapter.raw as { connect: () => Promise<unknown> };
+    expect(typeof raw.connect).toBe("function");
+    expect(await raw.connect()).toBeDefined();
+  });
+});
+
+describe("ftp edge cases (injected client)", () => {
+  test("url appends responseContentDisposition when publicBaseUrl is set", async () => {
+    const files = newFiles({ publicBaseUrl: "https://cdn.example.com" });
+    const url = await files.url("a.txt", {
+      responseContentDisposition: "attachment",
+    });
+    expect(url).toContain("response-content-disposition=attachment");
+  });
+
+  test("url with responseContentDisposition but no publicBaseUrl throws", async () => {
+    const files = newFiles();
+    await expect(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    ).rejects.toThrow(/responseContentDisposition/iu);
+  });
+
+  test("deleteMany collects a transport error and continues", async () => {
+    const files = newFiles();
+    await files.upload("ok.txt", "1");
+    await files.upload("after.txt", "2");
+    const result = await files.delete(["ok.txt", "boom.txt", "after.txt"]);
+    expect(result.deleted).toEqual(["ok.txt", "after.txt"]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+  });
+
+  test("deleteMany stops at the first error when stopOnError is set", async () => {
+    const files = newFiles();
+    await files.upload("ok.txt", "1");
+    const result = await files.delete(["ok.txt", "boom.txt", "after.txt"], {
+      stopOnError: true,
+    });
+    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+  });
+
+  test("uploading a ReadableStream looks up the size after transfer", async () => {
+    const files = newFiles();
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("streamy"));
+        c.close();
+      },
+    });
+    const result = await files.upload("s.bin", stream);
+    expect(result.size).toBe(7);
+  });
+
+  test("deleteMany with no keys returns early", async () => {
+    const files = newFiles();
+    const result = await files.delete([]);
+    expect(result.deleted).toEqual([]);
+    expect(result.errors).toBeUndefined();
+  });
+
+  test("an absolute root is exposed and resolves the list start dir", () => {
+    const adapter = ftp({ client: makeFakeClient(), root: "/" });
+    expect(adapter.root).toBe("/");
+  });
+
+  test("stream download of a missing key releases and throws NotFound", async () => {
+    const files = newFiles();
+    await expect(
+      files.download("nope.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "NotFound" });
+  });
+
+  test("stream download wires an abort signal", async () => {
+    const files = newFiles();
+    await files.upload("s.txt", "streamed");
+    const controller = new AbortController();
+    const got = await files.download("s.txt", {
+      as: "stream",
+      signal: controller.signal,
+    });
+    expect(got.size).toBe(8);
+    // Aborting runs the registered handler (destroy + release).
+    controller.abort();
   });
 });
 

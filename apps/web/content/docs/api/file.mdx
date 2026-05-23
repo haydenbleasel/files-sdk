@@ -1,0 +1,22 @@
+---
+title: file
+description: A FileHandle bound to one key - upload, download, head, exists, delete, url, signedUploadUrl, copyTo, and copyFrom without re-passing the key.
+---
+
+`files.file(key)`
+
+Returns a `FileHandle` bound to `key`: a thin wrapper that exposes `upload`, `download`, `head`, `exists`, `delete`, `url`, `signedUploadUrl`, `copyTo`, and `copyFrom` without re-passing the key each time. Useful when application code works with the same object repeatedly. The key is validated at construction; every method routes through the same `Files` entry points, so adapters do not implement anything extra.
+
+```ts lineNumbers
+const avatar = files.file("avatars/abc.png");
+
+await avatar.upload(file, { contentType: "image/png" });
+
+if (await avatar.exists()) {
+  const meta = await avatar.head();
+  const url = await avatar.url({ expiresIn: 300 });
+}
+
+await avatar.copyTo("avatars/abc.bak.png");
+await avatar.delete();
+```

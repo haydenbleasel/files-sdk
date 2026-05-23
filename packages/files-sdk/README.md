@@ -64,13 +64,13 @@ const files = new Files({
 });
 ```
 
-- `onAction` runs once when a public SDK action finishes. Bulk calls emit a single event with `bulk: true` and the aggregated result.
-- `onError` runs only when the public call rejects. Partial failures returned inside bulk `errors[]` do not trigger it.
+- `onAction` runs once when a public SDK action finishes. The array form of an operation emits a single event carrying the caller's `keys` and the aggregated `result`.
+- `onError` runs only when the public call rejects. Partial failures returned inside a bulk `errors[]` do not trigger it.
 - `onRetry` runs every time the SDK schedules a retry for a single-operation call.
 
-Hooks may be async. The SDK awaits them, so a slow hook delays operation completion (and `onRetry` also delays the retry sleep starting), but hook failures are swallowed and do not fail the operation.
+Hooks are fire-and-forget, like `onProgress`: the SDK calls them but does not await them, and a hook that throws can never fail the operation it observes.
 
-Each hook receives a structured object with the action `type`, public `key`/`keys`, internal `path`/`paths`, options with the abort signal and function-valued fields stripped, timing data, and the final `result` or `error` where applicable.
+Each event is a small, caller-facing object — the action `type`, the public `key` / `keys` (or `from` / `to` for `copy`), timing, and the final `result` or `error`. Internal prefixed paths are never exposed.
 
 ## File handles
 

@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 
 import type {
   Bucket,
+  File,
   FileMetadata,
   GenerateSignedPostPolicyV4Options,
 } from "@google-cloud/storage";
@@ -20,14 +21,17 @@ import type {
   Adapter,
   SignedUpload,
   StoredFile,
+  UploadProgress,
   UploadResult,
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  isMultipartRequested,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
   resolveUrlStrategy,
+  resumableChunkSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -140,6 +144,33 @@ const pipeWebToNode = async (
   node: NodeJS.WritableStream
 ): Promise<void> => {
   await pipeline(Readable.fromWeb(web as never), node);
+};
+
+/**
+ * Write a body through a resumable `createWriteStream` — the path used for
+ * streams, progress reporting, and multipart. Wires `progress` events to
+ * `report` and pipes either the web stream or the buffered body in.
+ */
+const writeViaResumableStream = async (
+  file: File,
+  data: Uint8Array | ReadableStream<Uint8Array>,
+  writeOpts: Parameters<File["createWriteStream"]>[0],
+  report: ((progress: UploadProgress) => void) | undefined,
+  contentLength: number | undefined
+): Promise<void> => {
+  const writeStream = file.createWriteStream(writeOpts);
+  if (report) {
+    writeStream.on("progress", (evt: { bytesWritten?: number }) =>
+      report(
+        contentLength === undefined
+          ? { loaded: evt.bytesWritten ?? 0 }
+          : { loaded: evt.bytesWritten ?? 0, total: contentLength }
+      )
+    );
+  }
+  await (data instanceof ReadableStream
+    ? pipeWebToNode(data, writeStream)
+    : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
 };
 
 const metaToStored = (
@@ -391,6 +422,7 @@ export const firebaseStorage = (
     },
     name: "firebase-storage",
     raw: bucket,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);
@@ -430,26 +462,40 @@ export const firebaseStorage = (
       }
     },
     async upload(key, body, options) {
+      const { cacheControl, metadata, multipart, onProgress } = options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(
         body,
         options?.contentType
       );
       const file = bucket.file(key);
+      const wantsMultipart = isMultipartRequested(multipart);
+      const chunkSize = resumableChunkSize(multipart);
       const writeOpts = {
         contentType,
         metadata: {
-          ...(options?.cacheControl && { cacheControl: options.cacheControl }),
-          ...(options?.metadata && { metadata: options.metadata }),
+          ...(cacheControl && { cacheControl }),
+          ...(metadata && { metadata }),
         },
-        resumable: false,
+        // Only the resumable path emits `progress` events and chunks large
+        // uploads, so opt into it when the caller wants progress or multipart;
+        // otherwise keep the simple upload.
+        resumable: Boolean(onProgress) || wantsMultipart,
+        ...(chunkSize !== undefined && { chunkSize }),
       };
       try {
-        if (data instanceof ReadableStream) {
-          const writeStream = file.createWriteStream(writeOpts);
-          await pipeWebToNode(data, writeStream);
-        } else {
-          await file.save(uint8ToBuffer(data), writeOpts);
-        }
+        const viaStream =
+          data instanceof ReadableStream ||
+          Boolean(onProgress) ||
+          wantsMultipart;
+        await (viaStream
+          ? writeViaResumableStream(
+              file,
+              data,
+              writeOpts,
+              onProgress,
+              contentLength
+            )
+          : file.save(uint8ToBuffer(data), writeOpts));
         const [meta] = await file.getMetadata();
         const updated = meta?.updated as string | undefined;
         return {

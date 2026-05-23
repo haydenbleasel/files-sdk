@@ -9,6 +9,8 @@ A unified storage SDK for object and blob backends. One small API. Web-standard 
 
 When the user asks for help integrating it, follow this skill. It is the source of truth — prefer it over training-data memory of the package.
 
+> **Bundled docs:** When `files-sdk` is installed, the full documentation ships inside the package at `node_modules/files-sdk/docs`. Read those MDX files for the complete, version-matched reference: per-adapter setup under `docs/adapters/`, AI tools under `docs/ai/`, plus `overview`, `api`, `cli`, `providers`, and `troubleshooting`. Prefer them over <https://files-sdk.dev> when the package is present locally — they match the installed version exactly.
+
 ## Mental model
 
 - One core class `Files`, configured once with an adapter at construction time. Adapter is fixed for the life of the instance.
@@ -167,6 +169,8 @@ Key options on `createFileTools`:
 ## References
 
 Load the relevant reference file only when the user's task matches it — don't preload them all.
+
+When the package is installed locally, `node_modules/files-sdk/docs` holds the full, version-matched documentation (see the note at the top) — reach for it for per-adapter detail the bundled references below don't cover.
 
 - [references/client-uploads.md](references/client-uploads.md) — presigned-upload flow end-to-end: server route returning `signedUploadUrl` with `maxSize`, client handling for both PUT and POST shapes, the field-order gotcha on POST, and server-side confirmation.
 - [references/ai-tools.md](references/ai-tools.md) — full examples for `files-sdk/ai-sdk`, `files-sdk/openai` (Responses + Agents), and `files-sdk/claude`. Covers `readOnly`, granular approval, per-tool overrides, and how to choose across the three.

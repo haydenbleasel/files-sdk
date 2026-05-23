@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import type {
+  File,
   FileMetadata,
   GenerateSignedPostPolicyV4Options,
   Storage as StorageClient,
@@ -13,14 +14,17 @@ import type {
   Adapter,
   SignedUpload,
   StoredFile,
+  UploadProgress,
   UploadResult,
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  isMultipartRequested,
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
   resolveUrlStrategy,
+  resumableChunkSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -114,6 +118,33 @@ const pipeWebToNode = async (
   node: NodeJS.WritableStream
 ): Promise<void> => {
   await pipeline(Readable.fromWeb(web as never), node);
+};
+
+/**
+ * Write a body through a resumable `createWriteStream` — the path used for
+ * streams, progress reporting, and multipart. Wires `progress` events to
+ * `report` and pipes either the web stream or the buffered body in.
+ */
+const writeViaResumableStream = async (
+  file: File,
+  data: Uint8Array | ReadableStream<Uint8Array>,
+  writeOpts: Parameters<File["createWriteStream"]>[0],
+  report: ((progress: UploadProgress) => void) | undefined,
+  contentLength: number | undefined
+): Promise<void> => {
+  const writeStream = file.createWriteStream(writeOpts);
+  if (report) {
+    writeStream.on("progress", (evt: { bytesWritten?: number }) =>
+      report(
+        contentLength === undefined
+          ? { loaded: evt.bytesWritten ?? 0 }
+          : { loaded: evt.bytesWritten ?? 0, total: contentLength }
+      )
+    );
+  }
+  await (data instanceof ReadableStream
+    ? pipeWebToNode(data, writeStream)
+    : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
 };
 
 const metaToStored = (
@@ -273,6 +304,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     },
     name: "gcs",
     raw: storage,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);
@@ -312,31 +344,43 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
       }
     },
     async upload(key, body, options) {
+      const { cacheControl, metadata, multipart, onProgress } = options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(
         body,
         options?.contentType
       );
       const file = bucket.file(key);
+      const wantsMultipart = isMultipartRequested(multipart);
+      const chunkSize = resumableChunkSize(multipart);
       const writeOpts = {
         contentType,
         metadata: {
-          ...(options?.cacheControl && { cacheControl: options.cacheControl }),
-          ...(options?.metadata && { metadata: options.metadata }),
+          ...(cacheControl && { cacheControl }),
+          ...(metadata && { metadata }),
         },
         // Single-request uploads — the SDK chunks small bodies and uses
         // resumable for large ones by default, but we don't know the body
         // size for streams here and the simple-upload code path is what we
-        // want for the v1 surface. Users with multi-GB needs can drop down
-        // to `raw` for a resumable upload.
-        resumable: false,
+        // want for the v1 surface. Two exceptions opt into the resumable
+        // path: progress (only it emits `progress` events) and an explicit
+        // `multipart` request (chunked/resumable upload for large files).
+        resumable: Boolean(onProgress) || wantsMultipart,
+        ...(chunkSize !== undefined && { chunkSize }),
       };
       try {
-        if (data instanceof ReadableStream) {
-          const writeStream = file.createWriteStream(writeOpts);
-          await pipeWebToNode(data, writeStream);
-        } else {
-          await file.save(uint8ToBuffer(data), writeOpts);
-        }
+        const viaStream =
+          data instanceof ReadableStream ||
+          Boolean(onProgress) ||
+          wantsMultipart;
+        await (viaStream
+          ? writeViaResumableStream(
+              file,
+              data,
+              writeOpts,
+              onProgress,
+              contentLength
+            )
+          : file.save(uint8ToBuffer(data), writeOpts));
         // GCS doesn't return etag/size from save() — pull authoritative
         // values from a follow-up getMetadata. One extra round trip but
         // simpler than relying on `file.metadata` side effects, which the
