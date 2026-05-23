@@ -394,4 +394,140 @@ describe("Files hooks", () => {
       ["delete", "handle.txt", "success"],
     ]);
   });
+
+  test("onRetry fires once per scheduled retry with an incrementing attempt", async () => {
+    const base = fakeAdapter();
+    let attempts = 0;
+    const recorder = createHookRecorder();
+    const files = new Files({
+      adapter: {
+        ...base,
+        exists(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts <= 2) {
+            throw new Error(`fail ${attempts}`);
+          }
+          return base.exists(key, opts);
+        },
+      },
+      hooks: recorder.hooks,
+      retries: { backoff: () => 0, max: 2 },
+    });
+
+    await files.upload("k.txt", "ok");
+    expect(await files.exists("k.txt")).toBe(true);
+
+    // Two failures then success: one onRetry per scheduled retry.
+    expect(recorder.retries.map((event) => event.attempt)).toEqual([1, 2]);
+    expect(
+      recorder.retries.every(
+        (event) => event.maxRetries === 2 && event.type === "exists"
+      )
+    ).toBe(true);
+  });
+
+  test("onRetry carries copy's from/to identity", async () => {
+    const base = fakeAdapter();
+    let attempts = 0;
+    const recorder = createHookRecorder();
+    const files = new Files({
+      adapter: {
+        ...base,
+        copy(from: string, to: string) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("transient");
+          }
+          return base.copy(from, to);
+        },
+      },
+      hooks: recorder.hooks,
+      retries: { backoff: () => 0, max: 1 },
+    });
+
+    await files.upload("a.txt", "a");
+    await files.copy("a.txt", "b.txt");
+
+    expect(recorder.retries[0]).toMatchObject({
+      attempt: 1,
+      from: "a.txt",
+      to: "b.txt",
+      type: "copy",
+    });
+  });
+
+  test("a bulk operation that hard-throws emits onError and an error action", async () => {
+    const base = fakeAdapter();
+    const recorder = createHookRecorder();
+    const files = new Files({
+      adapter: {
+        ...base,
+        deleteMany() {
+          // A total failure (e.g. the bucket is unreachable), not a partial
+          // one — this rejects rather than returning per-key `errors`.
+          return Promise.reject(new Error("bucket offline"));
+        },
+      },
+      hooks: recorder.hooks,
+    });
+
+    await expect(files.delete(["a.txt", "b.txt"])).rejects.toMatchObject({
+      code: "Provider",
+      message: "bucket offline",
+    });
+
+    expect(recorder.order).toEqual(["error:delete", "action:delete:error"]);
+    expect(recorder.errors[0]).toMatchObject({
+      error: expect.objectContaining({ message: "bucket offline" }),
+      keys: ["a.txt", "b.txt"],
+      type: "delete",
+    });
+    expect(recorder.actions[0]).toMatchObject({
+      keys: ["a.txt", "b.txt"],
+      status: "error",
+      type: "delete",
+    });
+  });
+
+  test("throwing onError and onRetry hooks are swallowed without changing the outcome", async () => {
+    const base = fakeAdapter();
+    let attempts = 0;
+    const files = new Files({
+      adapter: {
+        ...base,
+        exists(key: string, opts?: OperationOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("temporary");
+          }
+          return base.exists(key, opts);
+        },
+        head(_key: string, _opts?: OperationOptions): Promise<never> {
+          throw new FilesError("NotFound", "missing");
+        },
+      },
+      // onError is set but onAction is not — the action wrapper must still
+      // run, and a throwing onError must not mask the original rejection.
+      hooks: {
+        onError() {
+          throw new Error("onError boom");
+        },
+        onRetry() {
+          throw new Error("onRetry boom");
+        },
+      },
+      retries: { backoff: () => 0, max: 1 },
+    });
+
+    await files.upload("k.txt", "ok");
+
+    // A throwing onRetry must not prevent the retry from succeeding.
+    expect(await files.exists("k.txt")).toBe(true);
+
+    // A throwing onError must not mask the original NotFound rejection.
+    await expect(files.head("missing.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: "missing",
+    });
+  });
 });
