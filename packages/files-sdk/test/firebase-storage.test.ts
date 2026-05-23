@@ -384,6 +384,26 @@ describe("firebase-storage adapter", () => {
     expect(result.etag).toBe("etag-a.txt");
   });
 
+  test("forwards resumable-upload progress to onProgress", async () => {
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const pt = new PassThrough();
+      let written = 0;
+      pt.on("data", (chunk: Buffer) => {
+        written += chunk.length;
+        pt.emit("progress", { bytesWritten: written });
+      });
+      return pt;
+    });
+    const adapter = firebaseStorage({ projectId: "p" });
+    const events: { loaded: number; total?: number }[] = [];
+    await adapter.upload("a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(events).toEqual([{ loaded: 5, total: 5 }]);
+  });
+
   test("download returns a buffered StoredFile whose text matches the body", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),

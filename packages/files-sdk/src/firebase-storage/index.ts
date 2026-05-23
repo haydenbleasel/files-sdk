@@ -391,6 +391,7 @@ export const firebaseStorage = (
     },
     name: "firebase-storage",
     raw: bucket,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);
@@ -435,18 +436,32 @@ export const firebaseStorage = (
         options?.contentType
       );
       const file = bucket.file(key);
+      const report = options?.onProgress;
       const writeOpts = {
         contentType,
         metadata: {
           ...(options?.cacheControl && { cacheControl: options.cacheControl }),
           ...(options?.metadata && { metadata: options.metadata }),
         },
-        resumable: false,
+        // Only the resumable path emits `progress` events, so opt into it when
+        // the caller wants progress; otherwise keep the simple upload.
+        resumable: Boolean(report),
       };
       try {
-        if (data instanceof ReadableStream) {
+        if (data instanceof ReadableStream || report) {
           const writeStream = file.createWriteStream(writeOpts);
-          await pipeWebToNode(data, writeStream);
+          if (report) {
+            writeStream.on("progress", (evt: { bytesWritten?: number }) =>
+              report(
+                contentLength === undefined
+                  ? { loaded: evt.bytesWritten ?? 0 }
+                  : { loaded: evt.bytesWritten ?? 0, total: contentLength }
+              )
+            );
+          }
+          await (data instanceof ReadableStream
+            ? pipeWebToNode(data, writeStream)
+            : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
         } else {
           await file.save(uint8ToBuffer(data), writeOpts);
         }

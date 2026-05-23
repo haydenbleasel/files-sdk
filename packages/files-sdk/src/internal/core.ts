@@ -308,6 +308,62 @@ export const collectStream = async (
   return out;
 };
 
+/**
+ * Synchronously determine a body's byte length when it's cheap to know.
+ * Returns `undefined` for a `ReadableStream`, whose length is unknown until
+ * drained. Used to surface a `total` in upload-progress reports without
+ * consuming the body.
+ */
+export const byteLengthOf = (body: Body): number | undefined => {
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body).byteLength;
+  }
+  if (body instanceof ArrayBuffer) {
+    return body.byteLength;
+  }
+  if (ArrayBuffer.isView(body)) {
+    return body.byteLength;
+  }
+  if (body instanceof Blob) {
+    return body.size;
+  }
+  return undefined;
+};
+
+/**
+ * Wrap a byte stream so it reports cumulative progress as it's consumed. The
+ * returned stream yields the same chunks in the same order; `onChunk` is
+ * called with the running byte total after each chunk is forwarded. Pulls
+ * lazily, so the total tracks what the downstream reader (the adapter) has
+ * actually drained — which approximates upload progress for streaming
+ * adapters. Used to drive `onProgress` for `ReadableStream` bodies without
+ * buffering them.
+ */
+export const countingStream = (
+  stream: ReadableStream<Uint8Array>,
+  onChunk: (loaded: number) => void
+): ReadableStream<Uint8Array> => {
+  const reader = stream.getReader();
+  let loaded = 0;
+  return new ReadableStream<Uint8Array>({
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      if (value) {
+        loaded += value.byteLength;
+        controller.enqueue(value);
+        onChunk(loaded);
+      }
+    },
+  });
+};
+
 export const deleteManyWithFallback = async (
   keys: string[],
   remove: (key: string) => Promise<void>,

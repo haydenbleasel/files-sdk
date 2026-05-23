@@ -33,6 +33,8 @@ const files = new Files({
 });
 ```
 
+`upload` reports true byte-level [progress](/docs/api#progress-tracking) via `onProgress`. As with GCS, passing `onProgress` switches the upload to a **resumable** request (the only path that emits progress), which adds one round trip.
+
 ## Options
 
 <AutoTypeTable

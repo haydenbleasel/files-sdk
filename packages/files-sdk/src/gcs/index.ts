@@ -273,6 +273,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     },
     name: "gcs",
     raw: storage,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);
@@ -317,6 +318,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         options?.contentType
       );
       const file = bucket.file(key);
+      const report = options?.onProgress;
       const writeOpts = {
         contentType,
         metadata: {
@@ -327,13 +329,26 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         // resumable for large ones by default, but we don't know the body
         // size for streams here and the simple-upload code path is what we
         // want for the v1 surface. Users with multi-GB needs can drop down
-        // to `raw` for a resumable upload.
-        resumable: false,
+        // to `raw` for a resumable upload. The exception is progress: only
+        // the resumable path emits `progress` events, so opt into it when the
+        // caller passes `onProgress`.
+        resumable: Boolean(report),
       };
       try {
-        if (data instanceof ReadableStream) {
+        if (data instanceof ReadableStream || report) {
           const writeStream = file.createWriteStream(writeOpts);
-          await pipeWebToNode(data, writeStream);
+          if (report) {
+            writeStream.on("progress", (evt: { bytesWritten?: number }) =>
+              report(
+                contentLength === undefined
+                  ? { loaded: evt.bytesWritten ?? 0 }
+                  : { loaded: evt.bytesWritten ?? 0, total: contentLength }
+              )
+            );
+          }
+          await (data instanceof ReadableStream
+            ? pipeWebToNode(data, writeStream)
+            : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
         } else {
           await file.save(uint8ToBuffer(data), writeOpts);
         }

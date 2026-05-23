@@ -99,6 +99,21 @@ const stripEtag = (etag: string | undefined): string | undefined => {
   return etag.replaceAll(/^"+|"+$/gu, "");
 };
 
+// `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
+// upload requests progress. Loaded lazily (the return type is inferred from the
+// dynamic import) so it isn't required by callers who never pass `onProgress`;
+// surfaces a clear error when it's missing.
+const loadLibStorage = async () => {
+  try {
+    return await import("@aws-sdk/lib-storage");
+  } catch {
+    throw new FilesError(
+      "Provider",
+      "Upload progress on S3 requires the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the onProgress option."
+    );
+  }
+};
+
 const emptyStream = (): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
     start(controller) {
@@ -454,6 +469,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     },
     name: "s3",
     raw: client,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         if (signOpts.maxSize !== undefined) {
@@ -503,23 +519,44 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         body,
         options?.contentType
       );
+      const params = {
+        Body: data,
+        Bucket: bucket,
+        ContentType: contentType,
+        Key: key,
+        ...(options?.cacheControl && { CacheControl: options.cacheControl }),
+        ...(options?.metadata && { Metadata: options.metadata }),
+        ...(contentLength !== undefined && { ContentLength: contentLength }),
+      };
       try {
-        const result = await client.send(
-          new PutObjectCommand({
-            Body: data,
-            Bucket: bucket,
-            ContentType: contentType,
-            Key: key,
-            ...(options?.cacheControl && {
-              CacheControl: options.cacheControl,
-            }),
-            ...(options?.metadata && { Metadata: options.metadata }),
-            ...(contentLength !== undefined && {
-              ContentLength: contentLength,
-            }),
-          }),
-          options?.signal ? { abortSignal: options.signal } : undefined
-        );
+        let etag: string | undefined;
+        if (options?.onProgress) {
+          // lib-storage's Upload exposes per-byte progress (and transparently
+          // switches to multipart for large bodies). Imported lazily so the
+          // dependency is only required when progress is actually requested.
+          const { Upload } = await loadLibStorage();
+          const report = options.onProgress;
+          const upload = new Upload({ client, params });
+          upload.on("httpUploadProgress", (progress) => {
+            report({
+              loaded: progress.loaded ?? 0,
+              ...(progress.total !== undefined && { total: progress.total }),
+            });
+          });
+          // The Upload runs its own requests, so wire the abort signal to its
+          // abort() rather than relying on a per-command abortSignal.
+          options.signal?.addEventListener("abort", () => void upload.abort(), {
+            once: true,
+          });
+          const result = await upload.done();
+          etag = stripEtag(result.ETag);
+        } else {
+          const result = await client.send(
+            new PutObjectCommand(params),
+            options?.signal ? { abortSignal: options.signal } : undefined
+          );
+          etag = stripEtag(result.ETag);
+        }
         let size = contentLength;
         let lastModified: number | undefined;
         // Stream bodies have no locally computed length; PutObject's response
@@ -539,7 +576,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         }
         return {
           contentType,
-          etag: stripEtag(result.ETag),
+          etag,
           key,
           lastModified,
           size,

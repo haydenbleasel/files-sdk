@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Readable } from "node:stream";
 
 import {
@@ -18,6 +18,30 @@ import { Files, FilesError } from "../src/index.js";
 import { mapS3Error, s3 } from "../src/s3/index.js";
 
 const s3Mock = mockClient(S3Client);
+
+// Stub @aws-sdk/lib-storage so the progress path is deterministic without a
+// real multipart upload. Only an upload that passes `onProgress` imports it.
+type ProgressListener = (p: { loaded?: number; total?: number }) => void;
+class FakeUpload {
+  #listeners: ProgressListener[] = [];
+  on(event: string, listener: ProgressListener): void {
+    if (event === "httpUploadProgress") {
+      this.#listeners.push(listener);
+    }
+  }
+  done(): Promise<{ ETag: string }> {
+    for (const notify of this.#listeners) {
+      notify({ loaded: 5, total: 10 });
+      notify({ loaded: 10, total: 10 });
+    }
+    return Promise.resolve({ ETag: '"progress-etag"' });
+  }
+  abort(): Promise<void> {
+    this.#listeners = [];
+    return Promise.resolve();
+  }
+}
+mock.module("@aws-sdk/lib-storage", () => ({ Upload: FakeUpload }));
 
 beforeEach(() => {
   s3Mock.reset();
@@ -64,6 +88,24 @@ describe("s3 adapter", () => {
     expect(input.ContentType).toBe("text/plain");
     expect(input.Metadata).toEqual({ x: "y" });
     expect(input.CacheControl).toBe("public, max-age=60");
+  });
+
+  test("upload forwards lib-storage progress to onProgress", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const events: { loaded: number; total?: number }[] = [];
+    const result = await files.upload("big.bin", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events).toEqual([
+      { loaded: 5, total: 10 },
+      { loaded: 10, total: 10 },
+    ]);
+    expect(result.etag).toBe("progress-etag");
+    // The progress path goes through lib-storage's Upload, not PutObjectCommand.
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
   });
 
   test("download returns a StoredFile with body bytes", async () => {

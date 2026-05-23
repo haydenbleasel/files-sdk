@@ -543,6 +543,9 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     get raw(): S3Client {
       return cachedRaw as S3Client;
     },
+    // `upload` delegates to the underlying S3 adapter, which reports
+    // byte-level progress via @aws-sdk/lib-storage when onProgress is set.
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts) {
       const adapter = await ensure();
       return adapter.signedUploadUrl(key, signOpts);

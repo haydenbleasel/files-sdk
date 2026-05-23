@@ -38,6 +38,7 @@ const parentDir = (path: string): string => {
 
 const makeFakeClient = () => {
   let cwd = "";
+  let progress: ((info: { bytesOverall: number }) => void) | undefined;
   const resolve = (path: string): string => (cwd ? `${cwd}/${path}` : path);
   return {
     cd(path: string) {
@@ -126,10 +127,17 @@ const makeFakeClient = () => {
       }
       return Promise.resolve(entry.length);
     },
+    trackProgress(handler?: (info: { bytesOverall: number }) => void) {
+      progress = handler;
+    },
     async uploadFrom(source: Readable, path: string) {
       const chunks: Buffer[] = [];
+      let bytesOverall = 0;
       for await (const chunk of source) {
-        chunks.push(Buffer.from(chunk as Buffer));
+        const buf = Buffer.from(chunk as Buffer);
+        chunks.push(buf);
+        bytesOverall += buf.length;
+        progress?.({ bytesOverall });
       }
       store.set(resolve(path), Buffer.concat(chunks));
       return { code: 226 };
@@ -153,6 +161,16 @@ describe("ftp adapter", () => {
     expect(result.size).toBe(5);
     const got = await files.download("docs/a.txt");
     expect(await got.text()).toBe("hello");
+  });
+
+  test("upload reports progress via trackProgress", async () => {
+    const files = newFiles();
+    const events: { loaded: number; total?: number }[] = [];
+    await files.upload("docs/a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    // The buffer is sent as one chunk, so one cumulative report with total.
+    expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
   test("upload to root and a nested path coexist (cwd is restored)", async () => {

@@ -244,6 +244,27 @@ describe("gcs adapter", () => {
     expect(result.etag).toBe("etag-a.txt");
   });
 
+  test("forwards resumable-upload progress to onProgress", async () => {
+    // The resumable write stream emits 'progress' with cumulative bytesWritten.
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const pt = new PassThrough();
+      let written = 0;
+      pt.on("data", (chunk: Buffer) => {
+        written += chunk.length;
+        pt.emit("progress", { bytesWritten: written });
+      });
+      return pt;
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const events: { loaded: number; total?: number }[] = [];
+    await files.upload("a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(events).toEqual([{ loaded: 5, total: 5 }]);
+  });
+
   test("download returns a buffered StoredFile whose text matches the body", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const got = await files.download("a.txt");

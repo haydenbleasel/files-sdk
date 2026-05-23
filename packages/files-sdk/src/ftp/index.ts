@@ -506,6 +506,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       }
       return { connect: resolved.access };
     },
+    reportsUploadProgress: true,
     get root() {
       return root;
     },
@@ -540,7 +541,25 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           data instanceof ReadableStream
             ? Readable.fromWeb(data as never)
             : Readable.from(uint8ToBuffer(data));
-        await uploadInto(client, remote, source);
+        const report = options?.onProgress;
+        if (report) {
+          // trackProgress is client-wide and resets its byte counter on each
+          // call; scope it to this transfer and stop tracking afterwards.
+          client.trackProgress((info: { bytesOverall: number }) =>
+            report(
+              contentLength === undefined
+                ? { loaded: info.bytesOverall }
+                : { loaded: info.bytesOverall, total: contentLength }
+            )
+          );
+        }
+        try {
+          await uploadInto(client, remote, source);
+        } finally {
+          if (report) {
+            client.trackProgress();
+          }
+        }
         let size = contentLength;
         if (size === undefined) {
           // Unknown-length stream: ask the server for the authoritative size.

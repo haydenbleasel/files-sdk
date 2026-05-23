@@ -639,6 +639,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     name: "azure",
     raw: client,
+    reportsUploadProgress: true,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Azure SAS has no `content-length-range` policy equivalent — there's
       // no way to enforce a max upload size at the URL level. Throw rather
@@ -677,6 +678,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         options?.contentType
       );
       const blockBlob = containerClient.getBlockBlobClient(key);
+      const report = options?.onProgress;
       const writeOpts = {
         blobHTTPHeaders: {
           blobContentType: contentType,
@@ -686,6 +688,16 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         },
         ...(options?.metadata && { metadata: options.metadata }),
         ...(options?.signal && { abortSignal: options.signal }),
+        // `loadedBytes` is cumulative; surface it as `loaded`, pairing it with
+        // the known length when we have one. Works for both upload paths below.
+        ...(report && {
+          onProgress: ({ loadedBytes }: { loadedBytes: number }) =>
+            report(
+              contentLength === undefined
+                ? { loaded: loadedBytes }
+                : { loaded: loadedBytes, total: contentLength }
+            ),
+        }),
       };
       try {
         let etag: string | undefined;

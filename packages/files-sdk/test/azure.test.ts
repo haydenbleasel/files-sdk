@@ -401,6 +401,32 @@ describe("azure adapter", () => {
   });
 
   describe("upload", () => {
+    test("forwards uploadData progress to onProgress with total", async () => {
+      uploadDataMock.mockImplementationOnce((_data: unknown, opts: unknown) => {
+        const { onProgress } = opts as {
+          onProgress?: (e: { loadedBytes: number }) => void;
+        };
+        onProgress?.({ loadedBytes: 3 });
+        onProgress?.({ loadedBytes: 5 });
+        return Promise.resolve(uploadDataResponse());
+      });
+      const files = new Files({
+        adapter: azure({
+          accountKey: "secret",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const events: { loaded: number; total?: number }[] = [];
+      await files.upload("a.txt", "hello", {
+        onProgress: (p) => events.push(p),
+      });
+      expect(events).toEqual([
+        { loaded: 3, total: 5 },
+        { loaded: 5, total: 5 },
+      ]);
+    });
+
     test("buffer body returns metadata from uploadData response", async () => {
       const files = new Files({
         adapter: azure({

@@ -1,8 +1,23 @@
 import { describe, expect, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
-import type { Adapter, ListOptions, OperationOptions } from "../src/index.js";
+import type {
+  Adapter,
+  ListOptions,
+  OperationOptions,
+  UploadProgress,
+} from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
+
+const streamOf = (chunks: Uint8Array[]): ReadableStream<Uint8Array> =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
 
 describe("Files class", () => {
   test("upload + download round-trip", async () => {
@@ -1125,5 +1140,110 @@ describe("Files class", () => {
     } catch (error) {
       expect((error as FilesError).message).toMatch(/non-empty/u);
     }
+  });
+});
+
+describe("upload progress", () => {
+  test("buffered body brackets the upload with a 0 and a final event", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const events: UploadProgress[] = [];
+
+    await files.upload("a.txt", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+
+    expect(events).toEqual([
+      { loaded: 0, total: 5 },
+      { loaded: 5, total: 5 },
+    ]);
+  });
+
+  test("stream body reports byte-level progress as it's consumed", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const events: UploadProgress[] = [];
+
+    await files.upload(
+      "s.bin",
+      streamOf([
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([4, 5]),
+        new Uint8Array([6]),
+      ]),
+      { onProgress: (p) => events.push(p) }
+    );
+
+    // Cumulative loaded after each chunk; total is unknown for a stream.
+    expect(events.map((e) => e.loaded)).toEqual([3, 5, 6]);
+    expect(events.every((e) => e.total === undefined)).toBe(true);
+  });
+
+  test("the wrapped stream still uploads the original bytes", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await files.upload("s.bin", streamOf([new Uint8Array([1, 2, 3, 4])]), {
+      onProgress: () => {
+        // no-op
+      },
+    });
+    const got = await files.download("s.bin");
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3, 4])
+    );
+  });
+
+  test("no progress events fire without an onProgress callback", async () => {
+    // A throwing reporter would surface if the wrapper called it unbidden.
+    const adapter: Adapter = {
+      ...fakeAdapter(),
+    };
+    const files = new Files({ adapter });
+    const result = await files.upload("a.txt", "hello");
+    expect(result.size).toBe(5);
+  });
+
+  test("defers entirely to a self-reporting adapter", async () => {
+    const base = fakeAdapter();
+    const adapter: Adapter = {
+      ...base,
+      reportsUploadProgress: true,
+      upload(key, body, opts) {
+        opts?.onProgress?.({ loaded: 10, total: 20 });
+        opts?.onProgress?.({ loaded: 20, total: 20 });
+        return base.upload(key, body, opts);
+      },
+    };
+    const files = new Files({ adapter });
+    const events: UploadProgress[] = [];
+
+    await files.upload("x.bin", "hello", {
+      onProgress: (p) => events.push(p),
+    });
+
+    // No 0/total bracketing from the wrapper — the adapter owns the reports.
+    expect(events).toEqual([
+      { loaded: 10, total: 20 },
+      { loaded: 20, total: 20 },
+    ]);
+  });
+
+  test("bulk upload tags each item's progress with its key", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const events: (UploadProgress & { key: string })[] = [];
+
+    await files.upload(
+      [
+        { body: "aa", key: "a.txt" },
+        { body: "bbbb", key: "b.txt" },
+      ],
+      { onProgress: (p) => events.push(p) }
+    );
+
+    expect(events.filter((e) => e.key === "a.txt")).toEqual([
+      { key: "a.txt", loaded: 0, total: 2 },
+      { key: "a.txt", loaded: 2, total: 2 },
+    ]);
+    expect(events.filter((e) => e.key === "b.txt")).toEqual([
+      { key: "b.txt", loaded: 0, total: 4 },
+      { key: "b.txt", loaded: 4, total: 4 },
+    ]);
   });
 });

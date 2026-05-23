@@ -1,4 +1,9 @@
-import { deleteManyWithFallback, mapMany } from "./internal/core.js";
+import {
+  byteLengthOf,
+  countingStream,
+  deleteManyWithFallback,
+  mapMany,
+} from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
@@ -57,6 +62,22 @@ export interface OperationOptions {
   retries?: RetryOptions;
 }
 
+/**
+ * A single upload-progress report. Passed to {@link UploadOptions.onProgress}
+ * (and {@link UploadManyOptions.onProgress}, which also carries the item `key`).
+ */
+export interface UploadProgress {
+  /** Cumulative bytes sent so far. */
+  loaded: number;
+  /**
+   * Total bytes to send, when known. Present for buffered bodies (`File`,
+   * `Blob`, `ArrayBuffer`, `Uint8Array`, `string`); omitted for
+   * `ReadableStream` bodies of unknown length, where only `loaded` can be
+   * reported.
+   */
+  total?: number;
+}
+
 export interface UploadOptions extends OperationOptions {
   /**
    * MIME type stored alongside the object and returned to readers in the
@@ -79,6 +100,25 @@ export interface UploadOptions extends OperationOptions {
    * is passed.
    */
   metadata?: Record<string, string>;
+  /**
+   * Called as the upload makes progress, for driving a progress bar.
+   *
+   * Granularity depends on the body and the adapter:
+   * - A `ReadableStream` body is reported byte-by-byte as the adapter
+   *   consumes it (`total` is omitted unless the length is known).
+   * - A buffered body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`)
+   *   is handed to the provider whole, so it reports `{ loaded: 0, total }`
+   *   then `{ loaded: total, total }` — unless the adapter reports true
+   *   progress itself (see below).
+   * - **S3 and the S3-compatible adapters** report true byte-level progress
+   *   for every body type (including multipart for large files). This path
+   *   uses `@aws-sdk/lib-storage`, an optional peer dependency that must be
+   *   installed when `onProgress` is used with those adapters.
+   *
+   * Only fires while the upload is in flight and on success; a failed upload
+   * does not emit a final event. On retry, progress restarts.
+   */
+  onProgress?: (progress: UploadProgress) => void;
 }
 
 export interface UploadResult {
@@ -200,6 +240,15 @@ export interface UploadManyResult {
   uploaded: UploadResult[];
   /** Per-item failures. Omitted entirely when every item succeeded. */
   errors?: BulkError[];
+}
+
+export interface UploadManyOptions extends BulkOptions {
+  /**
+   * Called as each item makes progress. Same semantics as
+   * {@link UploadOptions.onProgress}, with the item's `key` added so callers
+   * can attribute the report to a file when several upload concurrently.
+   */
+  onProgress?: (progress: UploadProgress & { key: string }) => void;
 }
 
 export interface DownloadManyOptions extends BulkOptions {
@@ -325,6 +374,14 @@ export type SignedUpload =
 export interface Adapter<Raw = unknown> {
   readonly name: string;
   readonly raw: Raw;
+  /**
+   * Set `true` when `upload` reports byte-level progress by calling
+   * `opts.onProgress` itself (e.g. via a provider's native upload-progress
+   * hook). The {@link Files} wrapper then defers progress entirely to the
+   * adapter. When unset, the wrapper handles `onProgress` generically:
+   * byte-level for `ReadableStream` bodies, start/finish for buffered ones.
+   */
+  readonly reportsUploadProgress?: boolean;
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
   /**
@@ -666,44 +723,101 @@ export class Files<A extends Adapter = Adapter> {
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   upload(
     items: UploadManyItem[],
-    opts?: BulkOptions
+    opts?: UploadManyOptions
   ): Promise<UploadManyResult>;
   upload(
     keyOrItems: string | UploadManyItem[],
-    bodyOrOpts?: Body | BulkOptions,
+    bodyOrOpts?: Body | UploadManyOptions,
     opts?: UploadOptions
   ): Promise<UploadResult | UploadManyResult> {
     if (Array.isArray(keyOrItems)) {
       return this.#uploadMany(
         keyOrItems,
-        bodyOrOpts as BulkOptions | undefined
+        bodyOrOpts as UploadManyOptions | undefined
       );
     }
     const body = bodyOrOpts as Body;
-    const path = this.#path(keyOrItems);
-    return this.#run(
-      opts,
-      async (attemptOpts) =>
-        this.#uploadResult(await this.#adapter.upload(path, body, attemptOpts)),
-      !(body instanceof ReadableStream)
-    );
+    return this.#runUpload(keyOrItems, body, opts);
+  }
+
+  /**
+   * Run a single upload, threading {@link UploadOptions.onProgress} through.
+   *
+   * When the adapter reports progress itself
+   * ({@link Adapter.reportsUploadProgress}) the callback is passed straight to
+   * it. Otherwise the wrapper reports generically: a `ReadableStream` body is
+   * wrapped so bytes are counted as the adapter drains it; a buffered body
+   * brackets the call with a `0` and a final event.
+   */
+  #runUpload(
+    key: string,
+    body: Body,
+    opts?: UploadOptions
+  ): Promise<UploadResult> {
+    const path = this.#path(key);
+    const isStream = body instanceof ReadableStream;
+    const onProgress = opts?.onProgress;
+
+    if (!onProgress || this.#adapter.reportsUploadProgress) {
+      return this.#run(
+        opts,
+        async (attemptOpts) =>
+          this.#uploadResult(
+            await this.#adapter.upload(path, body, attemptOpts)
+          ),
+        !isStream
+      );
+    }
+
+    // Generic progress: the adapter does not report it, so the wrapper does.
+    // Strip `onProgress` from the options the adapter sees — it would ignore
+    // it anyway, and dropping it keeps `total` ownership here.
+    const { onProgress: _onProgress, ...rest } = opts ?? {};
+    const total = byteLengthOf(body);
+
+    if (isStream) {
+      const tracked = countingStream(body, (loaded) =>
+        onProgress(total === undefined ? { loaded } : { loaded, total })
+      );
+      return this.#run(
+        rest,
+        async (attemptOpts) =>
+          this.#uploadResult(
+            await this.#adapter.upload(path, tracked, attemptOpts)
+          ),
+        false
+      );
+    }
+
+    onProgress(total === undefined ? { loaded: 0 } : { loaded: 0, total });
+    return this.#run(rest, async (attemptOpts) => {
+      const result = this.#uploadResult(
+        await this.#adapter.upload(path, body, attemptOpts)
+      );
+      const done = total ?? result.size;
+      onProgress({ loaded: done, total: done });
+      return result;
+    });
   }
 
   async #uploadMany(
     items: UploadManyItem[],
-    opts?: BulkOptions
+    opts?: UploadManyOptions
   ): Promise<UploadManyResult> {
+    const onProgress = opts?.onProgress;
     const { errors, results } = await mapMany(
       items,
       (item) => item.key,
-      async (item) =>
-        this.#uploadResult(
-          await this.#adapter.upload(this.#path(item.key), item.body, {
-            cacheControl: item.cacheControl,
-            contentType: item.contentType,
-            metadata: item.metadata,
-          })
-        ),
+      (item) =>
+        this.#runUpload(item.key, item.body, {
+          cacheControl: item.cacheControl,
+          contentType: item.contentType,
+          metadata: item.metadata,
+          ...(onProgress && {
+            onProgress: (progress: UploadProgress) =>
+              onProgress({ ...progress, key: item.key }),
+          }),
+        }),
       opts
     );
     return errors.length === 0
