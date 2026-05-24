@@ -91,6 +91,21 @@ if (await avatar.exists()) {
 await avatar.delete();
 ```
 
+## Read-only instances
+
+Pass `readonly: true` to the constructor, or derive a locked view from an existing client with `files.readonly()`, when a caller should be able to read but never mutate storage:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  readonly: true,
+});
+
+const readOnlyFiles = files.readonly();
+```
+
+Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/api/errors) with `code: "ReadOnly"`. The [`raw`](/features/escape-hatch) escape hatch stays unchanged.
+
 ## Working in bulk
 
 `upload`, `download`, `head`, and `exists` each take a single key or an array, and `delete` takes one key or many. The array form fans out with bounded concurrency and returns a structured result that keeps successes and failures separate, in input order - so one bad key never sinks the whole batch.

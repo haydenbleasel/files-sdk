@@ -23,6 +23,10 @@ The surface is small: a `Files` instance with nine methods, plus `files.file(key
 
 Pass `prefix` to the constructor and every key is resolved relative to it — prepended on the way in, stripped on the way out — so application code works in its own namespace. See [Prefixes](/features/prefixes) for the full behavior, including slash normalization and how `list()` scopes to a path boundary.
 
+## Read-only instances
+
+Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create a view that still allows reads (`download`, `head`, `exists`, `list`, `listAll`, `url`) but rejects writes (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`) with `FilesError { code: "ReadOnly" }`.
+
 ## Per-operation options
 
 Every method accepts `signal`, `timeout`, and `retries`. Set them once on the constructor as defaults, then override per call - a per-call value wins over the constructor default for that operation.
