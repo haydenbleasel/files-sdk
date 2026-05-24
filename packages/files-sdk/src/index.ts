@@ -9,6 +9,12 @@ import { FilesError } from "./internal/errors.js";
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
 export type { BodySource, StoredFileMeta } from "./internal/stored-file.js";
 export { createStoredFile } from "./internal/stored-file.js";
+export {
+  transfer,
+  type TransferOptions,
+  type TransferProgress,
+  type TransferResult,
+} from "./internal/transfer.js";
 // Provider catalog. The full data, per-provider env specs, and helpers live in
 // the zero-dependency `files-sdk/providers` subpath; the name list and core
 // types are surfaced here too so callers can discover providers without a
