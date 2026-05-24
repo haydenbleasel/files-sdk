@@ -1,0 +1,163 @@
+---
+title: Provider gaps
+description: A per-adapter reference of unified-API options that throw, get silently ignored, or behave differently from the common case - so you know what to expect before you call.
+---
+
+The unified API is a common subset: every method exists on every adapter, but some options or operations have no equivalent on a given provider. The adapter then throws a `FilesError` (most cases) or silently no-ops (a few documented cases) rather than pretending.
+
+This page is the catalog. It lists, per adapter, the options and operations that diverge from the common case. For task-oriented guidance ("I hit this error - what now?"), see [Troubleshooting](/docs/troubleshooting). For per-adapter setup, see the [Adapters](/docs/adapters) section.
+
+> A capability-matrix API (`files.capabilities`) that surfaces some of this at runtime is tracked separately - this page is the documentation half.
+
+## `appwrite`
+
+- `url()` throws unless the adapter is constructed with `{ public: true }`. Appwrite SDKs cannot mint signed read URLs with API keys.
+- `signedUploadUrl()` throws. Appwrite has no presigned upload primitive - use a JWT or the client SDK for direct uploads.
+- `cacheControl` upload option throws. Appwrite does not expose HTTP cache headers on file content.
+- `metadata` upload option throws. Appwrite's `createFile` has no arbitrary-metadata field.
+- `InputFile.fromBuffer` has no streaming form, so streamed bodies are buffered before upload.
+
+## `azure`
+
+- When using User Delegation SAS (the default credential mode), `expiresIn` on `url()` and `signedUploadUrl()` cannot exceed 7 days. The adapter caches the delegation key, and Azure rejects keys whose lifetime exceeds 7 days from `startsOn` - requests for a longer-lived signature will fail. Shared-key SAS (configured via `accountKey` or a `connectionString` that contains an account key) is not bound by this limit.
+- `url()` and `signedUploadUrl()` throw when no signing credential is configured (no shared key, no User Delegation credential). Anonymous and SAS-token-only adapters can read but cannot mint new signatures.
+- `maxSize` on `signedUploadUrl()` throws. Azure SAS has no server-enforced size limit equivalent to S3's `content-length-range` policy - enforce at your application gateway, or omit `maxSize` and accept the unbounded PUT.
+
+## `box`
+
+- `signedUploadUrl()` throws. Box uploads require a multipart POST with an `attributes` JSON part, which doesn't fit the SDK's PUT-or-POST-form contract. Use `upload()` server-side or the Box UI Elements / Content Uploader for browser flows.
+- `responseContentDisposition` throws. Box's `getDownloadFileUrl` and shared-link URLs have no `Content-Disposition` override.
+- `metadata` upload option throws. Box exposes file metadata via classifications and templates - use `raw` with `client.fileMetadata.*` if you need it.
+- `cacheControl` upload option throws. Box does not expose HTTP cache headers on file content.
+
+## `bun-s3`
+
+- `maxSize` on `signedUploadUrl()` throws. `Bun.s3` exposes presigned URLs, not S3 POST policy fields - enforce at the bucket or gateway level instead.
+- `cacheControl` and `metadata` upload options throw. `Bun.s3` does not currently surface these. Drop to `raw` if Bun adds them.
+
+## `bunny-storage`
+
+- `url()` throws unless `publicBaseUrl` is configured (typically a Pull Zone or custom CDN hostname). The Storage API itself requires an `AccessKey` header on every request, so there's nothing to hand to a browser.
+- `signedUploadUrl()` throws. Bunny Storage writes go through the Storage API with an `AccessKey` header - upload server-side via the SDK or proxy through your application.
+- `responseContentDisposition` throws. Bunny Storage has no signed-read URL primitive in which to bind a `Content-Disposition` override.
+- `cacheControl` and `metadata` upload options throw. Configure cache behavior on the Pull Zone instead.
+
+## `cloudinary`
+
+- `copy()` has no native server-side equivalent - `rename` is move-only. The adapter falls back to re-upload (read source, upload to destination), so bytes flow through your process for large assets.
+- `responseContentDisposition` throws. Cloudinary has no per-request `Content-Disposition` override - set the `attachment` flag on the asset URL via `raw` if you need it.
+- `cacheControl` and `metadata` upload options throw. Configure cache policies at the cloud level; use `raw` with `context`/`metadata` parameters for structured metadata.
+- `url()` for a `raw` resource throws if the resource has no format. Raw assets must store their extension in the `public_id`.
+
+## `convex`
+
+- The adapter is constructed per-call with the Convex function context (`convex({ ctx })`), and the available operations depend on the context kind:
+  - **action / httpAction**: `upload`, `download`, `delete`, `url`, `head`, `exists`, `signedUploadUrl`. `list` throws (no `ctx.db`).
+  - **mutation**: `delete`, `url`, `head`, `exists`, `list`, `signedUploadUrl`. `upload` and `download` throw (no `ctx.storage.store` / `get` outside actions).
+  - **query**: `url`, `head`, `exists`, `list` (read-only).
+- `copy()` throws. Convex assigns immutable storage ids and cannot copy to a caller-chosen key - `download()` the source and `upload()` it back, then track the new id.
+- `responseContentDisposition` throws. Convex serving URLs have no signature in which to bind the override - serve untrusted content through your own HTTP action.
+- `cacheControl` upload option throws. Convex storage has no cache-header field; cache behavior is controlled by the URL it serves.
+- `metadata` upload option throws. The `_storage` table is fixed to `contentType`/`sha256`/`size` - store extra fields in your own table keyed by the storage id.
+
+## `dropbox`
+
+- `signedUploadUrl()` throws. Dropbox's temporary upload link uses POST with a raw body, which doesn't fit the SDK's PUT-or-POST-form contract. Use `upload()` or `adapter.raw.filesGetTemporaryUploadLink(...)` directly.
+- `responseContentDisposition` throws. Dropbox temporary links and shared links have no `Content-Disposition` override.
+- `cacheControl` and `metadata` upload options throw. Use `raw` with `property_groups` (requires a registered template) for metadata; cache headers aren't exposed.
+
+## `ftp`
+
+- `url()` throws unless `publicBaseUrl` is set. FTP serves no HTTP and has no signing primitive - configure `publicBaseUrl` to point at an HTTP server fronting the same tree, or use `download()`.
+- `signedUploadUrl()` throws. FTP has no presigned-upload concept - use `upload()` or inject a pre-connected `client` for batch transfers.
+- `copy()` has no server-side equivalent - the adapter downloads the source and re-uploads it.
+- `responseContentDisposition` requires `publicBaseUrl`; FTP has no signature in which to bind the override.
+- `cacheControl` and `metadata` upload options throw. FTP files have no arbitrary-metadata field and no HTTP cache headers.
+
+## `google-drive`
+
+- `url()` throws unless the adapter is constructed with `{ publicByDefault: true }`. Drive has no signed URL primitive - use `download()` for private files, or set `publicByDefault: true` to return Drive's public `webContentLink`.
+- `responseContentDisposition` throws. Drive's `webContentLink` has no `Content-Disposition` override.
+- `metadata` round-trips through Drive's `appProperties` field (string-keyed string values). See Google's [Drive API documentation](https://developers.google.com/drive/api/reference/rest/v3/files#File) for the per-file size limits.
+
+## `netlify-blobs`
+
+- `url()` throws. Netlify Blobs has no public URL primitive - use `download()` to read the body via the SDK with the token.
+- `signedUploadUrl()` throws. Netlify Blobs has no presigned upload primitive - upload via the SDK or proxy through your application.
+- `head()` and `list()` results have no native size or content-type - the adapter computes these from the body where possible, and they may be absent for some entries.
+
+## `onedrive`
+
+- `url()` throws unless the adapter is constructed with `{ publicByDefault: true }`. Microsoft Graph has no signed URL primitive - use `download()` for private files, or set `publicByDefault: true` to publish a shared link.
+- `metadata` upload option throws. Drive items have no native arbitrary-metadata field - use `raw` to set Open Extensions if you need it.
+- `cacheControl` upload option throws. Graph does not expose HTTP cache headers on drive items.
+- `clientCredentials` auth mode requires explicit `driveId` / `siteId` / `userId` - `/me/drive` is not available without an interactive user.
+
+## `pocketbase`
+
+- `signedUploadUrl()` throws. PocketBase has no presigned upload primitive - uploads go through the authenticated API. Mint a short-lived auth token for the client instead.
+- `responseContentDisposition` throws. PocketBase has no per-URL override - use `?download=true` on the URL itself (via `adapter.raw`) for forced-download behavior.
+- `cacheControl` upload option throws. PocketBase does not expose HTTP cache headers on file content.
+- `metadata` upload option throws. PocketBase record fields are typed and not arbitrary - drop to `raw` if you need additional fields on the record.
+- Streaming is not supported on uploads; streamed bodies are buffered.
+
+## `r2` (Workers binding mode)
+
+- `url()` throws when neither `publicBaseUrl` nor HTTP credentials are configured. The Workers binding API has no signing primitive on its own - configure `publicBaseUrl` (custom domain or `r2.dev`) or pass HTTP credentials alongside the binding to enable hybrid signing.
+- `responseContentDisposition` requires hybrid mode. The binding alone cannot sign - pass `accountId` + `accessKeyId` + `secretAccessKey` + `bucket` alongside the binding.
+
+## `s3` (and all S3-compatible wrappers)
+
+- `expiresIn` on `url()` and `signedUploadUrl()` caps at 604,800 seconds (7 days). This is the SigV4 protocol limit, not a files-sdk choice - AWS rejects longer-lived presigned URLs.
+
+All S3-compatible wrappers inherit this cap: Akamai, Alibaba Cloud OSS, Backblaze B2, DigitalOcean Spaces, Exoscale, Filebase, Hetzner, IBM COS, IDrive E2, MinIO, Oracle Cloud, OVH, R2 (HTTP and hybrid modes), Scaleway, Storj, Tencent COS, Tigris, Vultr, Wasabi, Yandex Object Storage.
+
+## `sftp`
+
+- `url()` throws unless `publicBaseUrl` is set. SFTP serves no HTTP and has no signing primitive - configure `publicBaseUrl` to point at an HTTP server fronting the same tree, or use `download()`.
+- `signedUploadUrl()` throws. SFTP has no presigned-upload concept - use `upload()` or inject a pre-connected `client` for batch transfers.
+- `copy()` has no portable server-side equivalent - bytes round-trip through your process.
+- `cacheControl` and `metadata` upload options throw. SFTP files have no arbitrary-metadata field and no HTTP cache headers.
+
+## `sharepoint`
+
+The SharePoint adapter wraps `onedrive()`, so the OneDrive gaps above apply (`metadata`, `cacheControl`, `clientCredentials` driveId requirement). Additionally:
+
+- `url()` throws unless the adapter is constructed with `{ publicByDefault: true }`. SharePoint has no signed URL primitive; with `publicByDefault: true`, `url()` mints an anonymous-view sharing link on upload. This is subject to your tenant's link-sharing policy.
+
+## `supabase`
+
+- `maxSize` on `signedUploadUrl()` throws. Supabase signed upload URLs have no server-enforced size limit equivalent to S3's `content-length-range` policy. Set the bucket-level file size limit in the Supabase dashboard, or enforce at your application gateway before issuing the signed URL.
+
+## `uploadthing`
+
+- `copy()` has no native server-side equivalent - the adapter streams the source through a fresh upload.
+- `responseContentDisposition` throws. UploadThing's CDN has no `Content-Disposition` override on signed or public URLs.
+- `list()` has no server-side prefix filter - the adapter applies the filter client-side after listing.
+- `maxSize` is enforced via the file-router config bound to the adapter's `slug`, not the URL signature - set it at route definition time.
+
+## `vercel-blob`
+
+- `signedUploadUrl()` throws. Use Vercel's `handleUpload()` route handler with the `@vercel/blob/client` package for browser uploads.
+- `url()` throws for private blobs. Use `download()` to read the body via the SDK with the token.
+- `responseContentDisposition` throws. Vercel Blob has no signing primitive, so the override that prevents stored XSS on user-uploaded HTML/SVG cannot be applied. Use a different provider for buckets with untrusted content.
+- `expiresIn` on `url()` is silently ignored. Public blob URLs are permanent CDN URLs with no signature, so there is nothing to expire.
+- `download()` `range` option throws for private blobs - the private read path has no range primitive.
+
+## Cross-cutting notes
+
+### `maxSize` is advisory on adapters that don't enforce it
+
+The unified API treats `maxSize` as a server-enforced upload cap (via S3 `content-length-range`, where supported). On adapters that have no equivalent, the option throws rather than silently no-opping - because silently allowing an unbounded PUT after the caller asked for a cap would be a regression. The adapters that throw on `maxSize` are listed individually above.
+
+### `responseContentDisposition` forces signing
+
+Asking for `responseContentDisposition` forces the adapter to return a signed URL even when `publicBaseUrl` is configured - a permanent CDN URL has no signature in which to bind the `Content-Disposition` override, and silently dropping a security ask isn't an option. On adapters with no signing primitive at all (Vercel Blob, Bunny Storage, Cloudinary, Box, Convex, Dropbox, Google Drive, OneDrive, PocketBase, UploadThing), the option throws.
+
+### Server-side `copy` falls back to read-then-write
+
+`copy()` uses the provider's native server-side copy where one exists; otherwise the adapter reads the source and writes the destination. The fallback applies on Cloudinary, FTP, SFTP, and UploadThing - bytes flow through your process, so plan accordingly for very large objects. Convex is different: it throws rather than falling back, because its storage ids are immutable and a caller-chosen destination key has no equivalent.
+
+### `metadata` and `cacheControl` aren't universal
+
+A handful of providers (Appwrite, Box, Bunny Storage, Cloudinary, Convex, Dropbox, FTP, OneDrive, PocketBase, SFTP, bun-s3) have no native equivalent for arbitrary user metadata or HTTP cache-control headers on stored objects. The corresponding upload options throw on those adapters - drop to `raw` for provider-specific alternatives.
