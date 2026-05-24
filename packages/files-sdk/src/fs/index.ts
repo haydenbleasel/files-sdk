@@ -22,7 +22,7 @@ import {
   rangedSize,
 } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
-import type { FilesErrorCode } from "../internal/errors.js";
+import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface FsAdapterOptions {
@@ -75,7 +75,9 @@ const errorCode = (err: unknown): string | undefined => {
   return undefined;
 };
 
-const classifyFsError = (code: string | undefined): FilesErrorCode => {
+const classifyFsError = (
+  code: string | undefined
+): ProviderFilesErrorCode => {
   if (code === "ENOENT" || code === "ENOTDIR") {
     return "NotFound";
   }
@@ -88,7 +90,7 @@ const classifyFsError = (code: string | undefined): FilesErrorCode => {
   return "Provider";
 };
 
-const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
+const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Conflict: "Conflict",
   NotFound: "Not found",
   Provider: "fs error",

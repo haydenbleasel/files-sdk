@@ -556,6 +556,11 @@ export type FilesActionType =
   | "url"
   | "signedUploadUrl";
 
+type WriteActionType = Extract<
+  FilesActionType,
+  "upload" | "delete" | "copy" | "move" | "signedUploadUrl"
+>;
+
 /**
  * Delivered to {@link FilesHooks.onAction} once when a public operation
  * settles — on success and on failure. The array form of an operation reports
@@ -635,6 +640,12 @@ export interface FilesHooks {
 export interface FilesOptions<A extends Adapter> extends OperationOptions {
   adapter: A;
   prefix?: string;
+  /**
+   * When `true`, block every write surface on this instance (`upload`,
+   * `delete`, `copy`, `move`, `signedUploadUrl`, and the write helpers on
+   * `file(key)`) with `FilesError("ReadOnly", ...)`.
+   */
+  "readonly"?: boolean;
   /** Observability callbacks — see {@link FilesHooks}. */
   hooks?: FilesHooks;
 }
@@ -900,12 +911,14 @@ export class Files<A extends Adapter = Adapter> {
   readonly #adapter: A;
   readonly #defaults: OperationOptions;
   readonly #hooks: FilesHooks | undefined;
+  readonly #isReadOnly: boolean;
   readonly #prefix: string;
 
   constructor(opts: FilesOptions<A>) {
-    const { adapter, hooks, prefix, ...defaults } = opts;
+    const { adapter, hooks, prefix, readonly: readOnly, ...defaults } = opts;
     this.#adapter = adapter;
     this.#hooks = hooks;
+    this.#isReadOnly = readOnly === true;
     this.#prefix = normalizePrefix(prefix);
     this.#defaults = defaults;
   }
@@ -953,6 +966,16 @@ export class Files<A extends Adapter = Adapter> {
     return this.#adapter;
   }
 
+  readonly(): Files<A> {
+    return new Files({
+      ...this.#defaults,
+      adapter: this.#adapter,
+      hooks: this.#hooks,
+      prefix: this.#prefix || undefined,
+      readonly: true,
+    });
+  }
+
   file(key: string): FileHandle {
     assertValidKey(key);
     return {
@@ -969,6 +992,16 @@ export class Files<A extends Adapter = Adapter> {
       upload: (body, opts) => this.upload(key, body, opts),
       url: (opts) => this.url(key, opts),
     };
+  }
+
+  #writeAction<T>(
+    ctx: ActionContext & { type: WriteActionType },
+    fn: () => Promise<T>
+  ): Promise<T> {
+    return this.#action(ctx, () => {
+      this.#assertWritable(ctx.type);
+      return fn();
+    });
   }
 
   /**
@@ -1000,14 +1033,17 @@ export class Files<A extends Adapter = Adapter> {
     if (Array.isArray(keyOrItems)) {
       const items = keyOrItems;
       const bulkOpts = bodyOrOpts as UploadManyOptions | undefined;
-      return this.#action(
+      return this.#writeAction(
         { keys: items.map((item) => item.key), type: "upload" },
         () => this.#uploadMany(items, bulkOpts)
       );
     }
     const body = bodyOrOpts as Body;
-    const ctx: ActionContext = { key: keyOrItems, type: "upload" };
-    return this.#action(ctx, () =>
+    const ctx: ActionContext & { type: "upload" } = {
+      key: keyOrItems,
+      type: "upload",
+    };
+    return this.#writeAction(ctx, () =>
       this.#runUpload(keyOrItems, body, opts, ctx)
     );
   }
@@ -1334,12 +1370,12 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<void | DeleteManyResult> {
     if (Array.isArray(key)) {
       const keys = key;
-      return this.#action({ keys, type: "delete" }, () =>
+      return this.#writeAction({ keys, type: "delete" }, () =>
         this.#deleteMany(keys, opts as DeleteManyOptions | undefined)
       );
     }
-    const ctx: ActionContext = { key, type: "delete" };
-    return this.#action(ctx, () => {
+    const ctx: ActionContext & { type: "delete" } = { key, type: "delete" };
+    return this.#writeAction(ctx, () => {
       const path = this.#path(key);
       return this.#run(
         opts as OperationOptions | undefined,
@@ -1416,8 +1452,12 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   copy(from: string, to: string, opts?: OperationOptions): Promise<void> {
-    const ctx: ActionContext = { from, to, type: "copy" };
-    return this.#action(ctx, () => {
+    const ctx: ActionContext & { type: "copy" } = {
+      from,
+      to,
+      type: "copy",
+    };
+    return this.#writeAction(ctx, () => {
       const fromPath = this.#path(from, "copy source");
       const toPath = this.#path(to, "copy destination");
       return this.#run(
@@ -1447,8 +1487,12 @@ export class Files<A extends Adapter = Adapter> {
    * passed, not the internal prefixed paths.
    */
   move(from: string, to: string, opts?: OperationOptions): Promise<void> {
-    const ctx: ActionContext = { from, to, type: "move" };
-    return this.#action(ctx, () => {
+    const ctx: ActionContext & { type: "move" } = {
+      from,
+      to,
+      type: "move",
+    };
+    return this.#writeAction(ctx, () => {
       const fromPath = this.#path(from, "move source");
       const toPath = this.#path(to, "move destination");
       return this.#run(
@@ -1566,8 +1610,11 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload> {
-    const ctx: ActionContext = { key, type: "signedUploadUrl" };
-    return this.#action(ctx, () => {
+    const ctx: ActionContext & { type: "signedUploadUrl" } = {
+      key,
+      type: "signedUploadUrl",
+    };
+    return this.#writeAction(ctx, () => {
       const path = this.#path(key);
       return this.#run(
         opts,
@@ -1638,6 +1685,18 @@ export class Files<A extends Adapter = Adapter> {
   #path(key: string, label = "key"): string {
     assertValidKey(key, label);
     return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+  }
+
+  #assertWritable(
+    operation: WriteActionType
+  ): void {
+    if (!this.#isReadOnly) {
+      return;
+    }
+    throw new FilesError(
+      "ReadOnly",
+      `Cannot call ${operation}() on a read-only Files instance.`
+    );
   }
 
   #storedFile(file: StoredFile): StoredFile {

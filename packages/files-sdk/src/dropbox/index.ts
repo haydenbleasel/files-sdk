@@ -22,7 +22,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
-import type { FilesErrorCode } from "../internal/errors.js";
+import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -196,7 +196,7 @@ const CONFLICT_TAGS = new Set([
   "shared_link_already_exists",
 ]);
 
-const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
+const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Conflict: "Conflict",
   NotFound: "Not found",
   Provider: "Dropbox error",
@@ -228,7 +228,7 @@ const collectErrorTags = (err: unknown, depth = 0): string[] => {
 const classifyByTags = (
   tags: readonly string[],
   status: number | undefined
-): FilesErrorCode => {
+): ProviderFilesErrorCode => {
   for (const t of tags) {
     if (NOT_FOUND_TAGS.has(t)) {
       return "NotFound";

@@ -31,7 +31,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
-import type { FilesErrorCode } from "../internal/errors.js";
+import type { FilesErrorCode, ProviderFilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface BoxOAuthOptions {
@@ -142,7 +142,7 @@ const CONFLICT_CODES = new Set([
   "name_temporarily_reserved",
 ]);
 
-const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
+const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Conflict: "Conflict",
   NotFound: "Not found",
   Provider: "Box error",
@@ -169,7 +169,7 @@ const isBoxApiErrorLike = (err: unknown): err is BoxApiErrorLike => {
 const classifyBox = (
   code: string | undefined,
   status: number | undefined
-): FilesErrorCode => {
+): ProviderFilesErrorCode => {
   if (code && NOT_FOUND_CODES.has(code)) {
     return "NotFound";
   }

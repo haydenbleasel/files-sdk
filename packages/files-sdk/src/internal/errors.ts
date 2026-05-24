@@ -2,7 +2,10 @@ export type FilesErrorCode =
   | "NotFound"
   | "Unauthorized"
   | "Conflict"
+  | "ReadOnly"
   | "Provider";
+
+export type ProviderFilesErrorCode = Exclude<FilesErrorCode, "ReadOnly">;
 
 export class FilesError extends Error {
   readonly code: FilesErrorCode;

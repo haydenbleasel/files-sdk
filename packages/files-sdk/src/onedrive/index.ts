@@ -35,7 +35,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
-import type { FilesErrorCode } from "../internal/errors.js";
+import type { FilesErrorCode, ProviderFilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface OneDriveAdapterOptions {
@@ -154,7 +154,7 @@ const UNAUTH_CODES = new Set([
 ]);
 const CONFLICT_CODES = new Set(["nameAlreadyExists", "resourceModified"]);
 
-const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
+const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Conflict: "Conflict",
   NotFound: "Not found",
   Provider: "OneDrive error",
@@ -164,7 +164,7 @@ const DEFAULT_MESSAGES: Record<FilesErrorCode, string> = {
 const classifyGraphError = (
   status: number | undefined,
   code: string | null | undefined
-): FilesErrorCode => {
+): ProviderFilesErrorCode => {
   if (status === 404 || (code && NOT_FOUND_CODES.has(code))) {
     return "NotFound";
   }

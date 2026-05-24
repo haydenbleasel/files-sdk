@@ -34,7 +34,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
-import type { FilesErrorCode } from "../internal/errors.js";
+import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface S3AdapterOptions {
@@ -230,7 +230,7 @@ const _defaultMapS3Error = buildMapS3Error();
  */
 export const mapS3Error = (
   err: unknown,
-  messages?: Record<FilesErrorCode, string>
+  messages?: Partial<Record<ProviderFilesErrorCode, string>>
 ): FilesError => {
   if (!messages) {
     return _defaultMapS3Error(err);
@@ -238,7 +238,7 @@ export const mapS3Error = (
   if (err instanceof FilesError) {
     return err;
   }
-  // 2-arg form: the caller has provided a full per-code fallback table.
+  // 2-arg form: the caller has provided per-code fallback strings.
   // Re-derive code/status, then prefer the original error's own message
   // (so server-side reasons surface) and fall back to the caller's table.
   const e = err as { name?: string; Code?: string; message?: string };
@@ -246,9 +246,10 @@ export const mapS3Error = (
     ...(typeof err === "object" && err ? err : {}),
     message: undefined,
   });
+  const code = wrapped.code as ProviderFilesErrorCode;
   return new FilesError(
-    wrapped.code,
-    e?.message ?? messages[wrapped.code],
+    code,
+    e?.message ?? messages[code] ?? wrapped.message,
     err
   );
 };

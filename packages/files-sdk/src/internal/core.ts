@@ -17,7 +17,7 @@ import type {
   MultipartOptions,
 } from "../index.js";
 import { FilesError } from "./errors.js";
-import type { FilesErrorCode } from "./errors.js";
+import type { FilesErrorCode, ProviderFilesErrorCode } from "./errors.js";
 
 // =============================================================================
 // URL helpers
@@ -276,7 +276,7 @@ const classify = (
   config: ErrorMapperConfig,
   code: string | undefined,
   status: number | undefined
-): FilesErrorCode => {
+): ProviderFilesErrorCode => {
   if (
     (code && config.codes.notFound.has(code)) ||
     NOT_FOUND_STATUS.has(status ?? 0)
@@ -312,7 +312,7 @@ const classify = (
 export const makeErrorMapper = (
   config: ErrorMapperConfig
 ): ((err: unknown) => FilesError) => {
-  const fallback: Record<FilesErrorCode, string> = {
+  const fallback: Record<ProviderFilesErrorCode, string> = {
     Conflict: "Conflict",
     NotFound: "Not found",
     Provider: config.providerLabel,
