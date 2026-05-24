@@ -1,0 +1,64 @@
+---
+title: Read-only
+description: Lock a Files instance to reads only with `readonly: true` or `files.readonly()`, and make every write surface fail consistently with `FilesError { code: "ReadOnly" }`.
+---
+
+When a caller should be able to inspect storage but never mutate it, lock the client at construction:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  readonly: true,
+});
+```
+
+Or derive a read-only view from an existing configured client:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  prefix: "users",
+  timeout: 10_000,
+});
+
+const readOnlyFiles = files.readonly();
+```
+
+The derived view reuses the same adapter, prefix, timeout, retries, and hooks. It does not clone storage state or create a second provider client.
+
+## What is still allowed
+
+Read-only instances still support every read surface:
+
+- `download`
+- `head`
+- `exists`
+- `list`
+- `listAll`
+- `url`
+- `file(key)` for a key-scoped read handle
+
+## What is blocked
+
+Every write surface throws [`FilesError`](/api/errors) with `code: "ReadOnly"`:
+
+- `upload`
+- `delete`
+- `copy`
+- `move`
+- `signedUploadUrl`
+- The equivalent `file(key)` helpers: `upload`, `delete`, `copyTo`, `copyFrom`, `moveTo`, `moveFrom`, `signedUploadUrl`
+
+```ts lineNumbers
+try {
+  await readOnlyFiles.upload("avatars/123.png", file);
+} catch (err) {
+  if (err instanceof FilesError && err.code === "ReadOnly") {
+    // switch to a writable Files instance
+  }
+}
+```
+
+## What it does not lock down
+
+Read-only applies to the unified `Files` API only. The [`raw`](/features/escape-hatch) escape hatch still exposes the underlying provider client unchanged, so code that writes through `files.raw` bypasses the guard by design.
