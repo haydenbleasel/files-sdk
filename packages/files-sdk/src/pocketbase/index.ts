@@ -4,6 +4,7 @@ import type { ListResult as PBListResult } from "pocketbase";
 import type {
   Adapter,
   Body,
+  ByteRange,
   ListOptions,
   ListResult,
   SignedUpload,
@@ -14,10 +15,12 @@ import type {
   UrlOptions,
 } from "../index.js";
 import {
+  assertRangeHonored,
   collectStream,
   existsByProbe,
   makeErrorMapper,
   normalizeBody as coreNormalizeBody,
+  rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -268,7 +271,8 @@ export const pocketbase = (
 
   const downloadBytes = async (
     record: FileRecord,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    range?: ByteRange
   ): Promise<Uint8Array> => {
     const filename = filenameOf(record);
     // Pre-fetch a file token so private collections work. PocketBase's file
@@ -286,13 +290,19 @@ export const pocketbase = (
       }
     }
     const url = pb.files.getURL(record, filename, token ? { token } : {});
-    const res = await fetch(url, signal ? { signal } : undefined);
+    const res = await fetch(url, {
+      ...(signal && { signal }),
+      ...(range && { headers: rangeRequestHeaders(range) }),
+    });
     if (!res.ok) {
       throw new FilesError(
         res.status === 404 ? "NotFound" : "Provider",
         `pocketbase: failed to download file "${filename}" — HTTP ${res.status}`,
         res
       );
+    }
+    if (range) {
+      assertRangeHonored(res.status, "pocketbase");
     }
     return new Uint8Array(await res.arrayBuffer());
   };
@@ -375,7 +385,11 @@ export const pocketbase = (
     async download(key, downloadOpts) {
       try {
         const record = await findRecord(key, downloadOpts?.signal);
-        const bytes = await downloadBytes(record, downloadOpts?.signal);
+        const bytes = await downloadBytes(
+          record,
+          downloadOpts?.signal,
+          downloadOpts?.range
+        );
         const updated =
           typeof record.updated === "string"
             ? new Date(record.updated).getTime()
@@ -465,6 +479,7 @@ export const pocketbase = (
         )
       );
     },
+    supportsRange: true,
     async upload(
       key: string,
       body: Body,

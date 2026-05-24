@@ -306,6 +306,43 @@ describe("vercel-blob adapter", () => {
     expect(seenSignal?.aborted).toBe(true);
   });
 
+  test("download forwards a Range header and reports the slice on public blobs", async () => {
+    let seenRange: string | null | undefined;
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      void url;
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("234", {
+          headers: { "content-length": "3" },
+          status: 206,
+        })
+      );
+    }) as typeof fetch;
+    const files = new Files({ adapter: vercelBlob() });
+    const got = await files.download("a.txt", { range: { end: 4, start: 2 } });
+    expect(seenRange).toBe("bytes=2-4");
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+  });
+
+  test("download (stream) with a range reports the slice length", async () => {
+    globalThis.fetch = ((_url: string | URL | Request) =>
+      Promise.resolve(
+        new Response("789", { headers: { "content-length": "3" }, status: 206 })
+      )) as typeof fetch;
+    const files = new Files({ adapter: vercelBlob() });
+    const got = await files.download("a.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    expect(got.size).toBe(3);
+  });
+
+  test("public adapter advertises range support; private does not", () => {
+    expect(vercelBlob().supportsRange).toBe(true);
+    expect(vercelBlob({ access: "private" }).supportsRange).toBeUndefined();
+  });
+
   test("url returns the blob's public URL via head() when token has no storeId", async () => {
     const files = new Files({ adapter: vercelBlob() });
     headMock.mockClear();

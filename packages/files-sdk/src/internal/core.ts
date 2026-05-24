@@ -10,6 +10,7 @@ import type {
   Body,
   BulkError,
   BulkOptions,
+  ByteRange,
   DeleteManyError,
   DeleteManyOptions,
   DeleteManyResult,
@@ -70,6 +71,79 @@ export const resolveUrlStrategy = (
     return "public";
   }
   return "sign";
+};
+
+// =============================================================================
+// Range helpers
+// =============================================================================
+//
+// Shared by the adapters that honor `DownloadOptions.range`. The SDK validates
+// the range shape centrally (see `Files.#assertRangeSupported`), so these
+// helpers can trust `start`/`end` are sane integers with `end >= start`.
+
+/**
+ * Render a {@link ByteRange} as an HTTP `Range` header value — `bytes=0-99`,
+ * or `bytes=100-` when no `end` was given (read to EOF). Suitable for the S3
+ * `Range` request parameter and for any `fetch`-based adapter's headers.
+ */
+export const httpRangeHeader = (range: ByteRange): string =>
+  `bytes=${range.start}-${range.end ?? ""}`;
+
+/**
+ * Number of bytes a range covers against a known full object size, clamped so
+ * an `end` past EOF (or a `start` at/after EOF) can't report a negative or
+ * oversized length. Used by the stream paths, which surface a `size` up front
+ * without reading the body.
+ */
+export const rangedSize = (fullSize: number, range: ByteRange): number => {
+  const lastByte =
+    range.end === undefined ? fullSize - 1 : Math.min(range.end, fullSize - 1);
+  return Math.max(0, lastByte - range.start + 1);
+};
+
+/**
+ * Headers carrying an HTTP `Range` request for `range`, or `undefined` when no
+ * range was asked for. Spread into a `fetch` init (or any SDK that forwards
+ * request headers).
+ */
+export const rangeRequestHeaders = (
+  range: ByteRange | undefined
+): { Range: string } | undefined =>
+  range ? { Range: httpRangeHeader(range) } : undefined;
+
+/**
+ * Size to report for a streamed, ranged fetch. Prefers the `Content-Length` of
+ * the `206` response (the exact slice length the server sent), falling back to
+ * computing it from the known full object size when the header is absent.
+ */
+export const rangedResponseSize = (
+  contentLength: string | null,
+  fullSize: number,
+  range: ByteRange
+): number =>
+  contentLength ? Number(contentLength) : rangedSize(fullSize, range);
+
+/**
+ * Confirm a response to a ranged request actually returned the slice
+ * (`206 Partial Content`) rather than the whole object (`200`, what a server
+ * sends when it ignores `Range`). Throws so a caller asking for a slice never
+ * silently receives — and pays to transfer — the entire object.
+ *
+ * Only for adapters fetching an arbitrary URL (CDN / presigned / temporary
+ * link), where range support isn't guaranteed. Provider-native range APIs
+ * (S3, GCS, Azure, the Graph/Drive content endpoints, the R2 binding) honor it
+ * by contract and skip this check.
+ */
+export const assertRangeHonored = (
+  status: number,
+  providerLabel: string
+): void => {
+  if (status !== 206) {
+    throw new FilesError(
+      "Provider",
+      `${providerLabel}: the server ignored the requested byte range (HTTP ${status}, expected 206 Partial Content). The object's host does not support range requests.`
+    );
+  }
 };
 
 // =============================================================================

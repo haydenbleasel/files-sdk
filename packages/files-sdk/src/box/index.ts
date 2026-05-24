@@ -22,9 +22,12 @@ import type {
   UploadResult,
 } from "../index.js";
 import {
+  assertRangeHonored,
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
+  rangeRequestHeaders,
+  rangedResponseSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -848,14 +851,28 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         const fileId = await resolveFileId(key);
         const file = (await client.files.getFileById(fileId)) as BoxFileLike;
         const meta = fileMetaFromBox(file);
+        const range = downloadOpts?.range;
+
+        // Both buffered and streaming reads go through the same standard-HTTP
+        // download URL, so a single fetch (with the Range header when asked)
+        // serves both.
+        const url = await client.downloads.getDownloadFileUrl(fileId);
+        const res = await fetch(url, {
+          ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+          ...(range && { headers: rangeRequestHeaders(range) }),
+        });
+        if (!res.ok) {
+          throw new FilesError(
+            "Provider",
+            `box: download fetch failed (${res.status})`
+          );
+        }
+        if (range) {
+          assertRangeHonored(res.status, "box");
+        }
 
         if (downloadOpts?.as === "stream") {
-          const url = await client.downloads.getDownloadFileUrl(fileId);
-          const res = await fetch(
-            url,
-            downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
-          );
-          if (!res.ok || !res.body) {
+          if (!res.body) {
             throw new FilesError(
               "Provider",
               `box: download fetch failed (${res.status})`
@@ -863,22 +880,21 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
           }
           const stream = res.body as ReadableStream<Uint8Array>;
           return createStoredFile(
-            { key, ...meta },
+            {
+              key,
+              ...meta,
+              ...(range && {
+                size: rangedResponseSize(
+                  res.headers.get("content-length"),
+                  meta.size,
+                  range
+                ),
+              }),
+            },
             { factory: () => stream, kind: "stream" }
           );
         }
 
-        const url = await client.downloads.getDownloadFileUrl(fileId);
-        const res = await fetch(
-          url,
-          downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
-        );
-        if (!res.ok) {
-          throw new FilesError(
-            "Provider",
-            `box: download fetch failed (${res.status})`
-          );
-        }
         const ab = await res.arrayBuffer();
         const bytes = new Uint8Array(ab);
         return createStoredFile(
@@ -988,6 +1004,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         )
       );
     },
+    supportsRange: true,
     upload(key, body, options): Promise<UploadResult> {
       return runUpload(key, body, options);
     },

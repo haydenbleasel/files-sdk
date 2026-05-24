@@ -3,6 +3,7 @@ import {
   DEFAULT_URL_EXPIRES_IN,
   joinPublicUrl,
   makeErrorMapper,
+  rangedSize,
   resolveUrlStrategy,
 } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
@@ -66,6 +67,12 @@ export interface BunS3FileLike {
   arrayBuffer(): Promise<ArrayBuffer>;
   stream(): ReadableStream<Uint8Array>;
   stat(): Promise<BunS3Stats>;
+  /**
+   * Bun's `S3File.slice(begin, end)` — `Blob`-style, so `end` is exclusive.
+   * Returns a handle that fetches only that byte range when read. Used to
+   * honor {@link DownloadOptions.range}.
+   */
+  slice(begin?: number, end?: number, contentType?: string): BunS3FileLike;
 }
 
 export interface BunS3ClientLike {
@@ -301,16 +308,30 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       try {
         const file = client.file(key);
         const stat = await file.stat();
+        const range = downloadOpts?.range;
+        // Bun's slice() is Blob-style (exclusive end), so an inclusive
+        // ByteRange.end maps to end + 1; the sliced handle issues a ranged GET
+        // when read. stat() already happened, so derive the slice length from
+        // it rather than a second round trip.
+        const target = range
+          ? file.slice(
+              range.start,
+              range.end === undefined ? undefined : range.end + 1
+            )
+          : file;
         if (downloadOpts?.as === "stream") {
-          return storedFromStat(key, stat, {
-            factory: () => file.stream(),
-            kind: "stream",
-          });
+          return storedFromStat(
+            key,
+            range ? { ...stat, size: rangedSize(stat.size, range) } : stat,
+            { factory: () => target.stream(), kind: "stream" }
+          );
         }
-        return storedFromStat(key, stat, {
-          data: await bytesFromFile(file),
-          kind: "buffer",
-        });
+        const bytes = await bytesFromFile(target);
+        return storedFromStat(
+          key,
+          range ? { ...stat, size: bytes.byteLength } : stat,
+          { data: bytes, kind: "buffer" }
+        );
       } catch (error) {
         throw mapBunS3Error(error);
       }
@@ -400,6 +421,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         return Promise.reject(mapBunS3Error(error));
       }
     },
+    supportsRange: true,
     async upload(key, body, options) {
       if (options?.cacheControl) {
         throw new FilesError(

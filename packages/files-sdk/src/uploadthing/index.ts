@@ -9,9 +9,11 @@ import type {
   UploadResult,
 } from "../index.js";
 import {
+  assertRangeHonored,
   DEFAULT_URL_EXPIRES_IN,
   deleteManyWithFallback,
   existsByProbe,
+  rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -414,11 +416,15 @@ export const uploadthing = (
     },
     async download(key, downloadOpts) {
       const url = await resolveFetchUrl(key);
+      const range = downloadOpts?.range;
       let res: Response;
       try {
         res = await fetchWithTimeout(
           url,
-          downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined,
+          {
+            ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+            ...(range && { headers: rangeRequestHeaders(range) }),
+          },
           downloadTimeoutMs
         );
       } catch (error) {
@@ -430,6 +436,13 @@ export const uploadthing = (
           `uploadthing download failed: ${res.status} ${res.statusText} for ${key}`
         );
       }
+      if (range) {
+        // 206 means the CDN honored the slice; a 200 here would be the whole
+        // object masquerading as a range.
+        assertRangeHonored(res.status, "uploadthing");
+      }
+      // On a 206 the content-length header is the slice length, so the stream
+      // path's size below is already correct for ranged reads.
       const lengthHeader = res.headers.get("content-length");
       const lastModifiedHeader = res.headers.get("last-modified");
       const meta = {
@@ -592,6 +605,7 @@ export const uploadthing = (
         url: url.toString(),
       };
     },
+    supportsRange: true,
     async upload(key, body, options): Promise<UploadResult> {
       const contentType = options?.contentType;
       const blob = await bodyToBlob(body, contentType);

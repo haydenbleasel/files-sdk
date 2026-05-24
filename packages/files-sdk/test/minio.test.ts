@@ -15,6 +15,9 @@ describe("minio adapter", () => {
       secretAccessKey: "SECRET",
     });
     expect(adapter.name).toBe("minio");
+    // The s3() spread carries its capability flags through the wrapper, so
+    // range downloads work on MinIO (and every other s3-compatible adapter).
+    expect(adapter.supportsRange).toBe(true);
     const client = adapter.raw as S3Client;
     expect(await client.config.region()).toBe("us-east-1");
     const endpoint = await client.config.endpoint?.();

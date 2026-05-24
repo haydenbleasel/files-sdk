@@ -521,9 +521,17 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     async download(key, downloadOpts) {
       try {
         const blobClient = containerClient.getBlobClient(key);
+        const range = downloadOpts?.range;
+        // Azure takes a byte offset + count rather than an HTTP range string;
+        // an omitted `end` maps to an undefined count (read to EOF). The
+        // partial response reports the slice length in contentLength, so the
+        // size handling below needs no special casing.
+        const offset = range?.start ?? 0;
+        const count =
+          range?.end === undefined ? undefined : range.end - range.start + 1;
         const result = await blobClient.download(
-          0,
-          undefined,
+          offset,
+          count,
           abortOpts(downloadOpts?.signal)
         );
         const etag = stripEtag(result.etag);
@@ -565,8 +573,8 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         // to manually pipe + buffer, and the SDK's helper does it more
         // efficiently with parallel range requests for large blobs.
         const buf = await blobClient.downloadToBuffer(
-          0,
-          undefined,
+          offset,
+          count,
           abortOpts(downloadOpts?.signal)
         );
         const bytes = bufferToUint8(buf);
@@ -713,6 +721,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const { cacheControl, metadata, multipart, onProgress, signal } =
         options ?? {};

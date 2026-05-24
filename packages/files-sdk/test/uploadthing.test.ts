@@ -335,6 +335,39 @@ describe("uploadthing adapter", () => {
     expect(total).toBe(5);
   });
 
+  test("download forwards a Range header and reports the slice length", async () => {
+    let seenRange: string | null | undefined;
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      void url;
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("234", {
+          headers: { "content-length": "3", "content-type": "text/plain" },
+          status: 206,
+        })
+      );
+    }) as typeof fetch;
+    const files = new Files({ adapter: uploadthing() });
+    const got = await files.download("a.txt", { range: { end: 4, start: 2 } });
+    expect(seenRange).toBe("bytes=2-4");
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+  });
+
+  test("download throws when the server ignores the Range (returns 200)", async () => {
+    globalThis.fetch = ((_url: string | URL | Request) =>
+      Promise.resolve(
+        new Response("0123456789", {
+          headers: { "content-length": "10" },
+          status: 200,
+        })
+      )) as typeof fetch;
+    const files = new Files({ adapter: uploadthing() });
+    await expect(
+      files.download("a.txt", { range: { end: 4, start: 2 } })
+    ).rejects.toThrow(/ignored the requested byte range/u);
+  });
+
   test("download maps 404 to NotFound", async () => {
     globalThis.fetch = (() =>
       Promise.resolve(

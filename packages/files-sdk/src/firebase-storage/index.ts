@@ -30,6 +30,7 @@ import {
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
+  rangedSize,
   resolveUrlStrategy,
   resumableChunkSize,
 } from "../internal/core.js";
@@ -328,6 +329,14 @@ export const firebaseStorage = (
     async download(key, downloadOpts) {
       try {
         const file = bucket.file(key);
+        const range = downloadOpts?.range;
+        // GCS byte offsets are inclusive on both ends, matching ByteRange.
+        const rangeOpts = range
+          ? {
+              start: range.start,
+              ...(range.end !== undefined && { end: range.end }),
+            }
+          : undefined;
         if (downloadOpts?.as === "stream") {
           // Stream path needs metadata up front for size/type — the stream
           // itself only carries bytes. One extra round trip vs. the buffer
@@ -335,18 +344,18 @@ export const firebaseStorage = (
           const [meta] = await file.getMetadata();
           const m = metaToStored(meta);
           return createStoredFile(
-            { key, ...m },
+            { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
               factory: () =>
                 Readable.toWeb(
-                  file.createReadStream()
+                  file.createReadStream(rangeOpts)
                 ) as unknown as ReadableStream<Uint8Array>,
               kind: "stream",
             }
           );
         }
         const [downloadResult, metaResult] = await Promise.all([
-          file.download(),
+          file.download(rangeOpts),
           file.getMetadata(),
         ]);
         const [buf] = downloadResult;
@@ -461,6 +470,7 @@ export const firebaseStorage = (
         throw mapFirebaseStorageError(error);
       }
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const { cacheControl, metadata, multipart, onProgress } = options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(

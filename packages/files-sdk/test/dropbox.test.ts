@@ -454,6 +454,49 @@ describe("dropbox adapter", () => {
     }
   });
 
+  test("download with a range routes through the temporary link and returns the slice", async () => {
+    const originalFetch = globalThis.fetch;
+    let seenRange: string | null | undefined;
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("234", {
+          headers: { "content-length": "3" },
+          status: 206,
+        })
+      );
+    }) as typeof fetch;
+    try {
+      const files = new Files({ adapter: dropbox(baseOpts) });
+      await files.upload("a.txt", "0123456789");
+      const f = await files.download("a.txt", { range: { end: 4, start: 2 } });
+      expect(seenRange).toBe("bytes=2-4");
+      expect(await f.text()).toBe("234");
+      expect(f.size).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("download (stream) with a range reports the slice length", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_url: string | URL | Request) =>
+      Promise.resolve(
+        new Response("789", { headers: { "content-length": "3" }, status: 206 })
+      )) as typeof fetch;
+    try {
+      const files = new Files({ adapter: dropbox(baseOpts) });
+      await files.upload("a.txt", "0123456789");
+      const f = await files.download("a.txt", {
+        as: "stream",
+        range: { start: 7 },
+      });
+      expect(f.size).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("head returns metadata with lazy body factory", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });

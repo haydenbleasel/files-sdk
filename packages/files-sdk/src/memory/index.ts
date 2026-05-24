@@ -243,8 +243,31 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       store.delete(key);
       return Promise.resolve();
     },
-    download(key) {
-      return defer(() => toStored(key, getOrThrow(key)));
+    download(key, downloadOpts) {
+      return defer(() => {
+        const entry = getOrThrow(key);
+        const range = downloadOpts?.range;
+        if (!range) {
+          return toStored(key, entry);
+        }
+        // subarray is a view over the same buffer — no copy — and createStoredFile
+        // narrows to the view's bytes when it reads. `end` is inclusive, so +1.
+        const sliced = entry.bytes.subarray(
+          range.start,
+          range.end === undefined ? undefined : range.end + 1
+        );
+        return createStoredFile(
+          {
+            etag: entry.etag,
+            key,
+            lastModified: entry.lastModified,
+            ...(entry.metadata && { metadata: entry.metadata }),
+            size: sliced.byteLength,
+            type: entry.contentType,
+          },
+          { data: sliced, kind: "buffer" }
+        );
+      });
     },
     exists(key) {
       return Promise.resolve(store.has(key));
@@ -296,6 +319,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         url: `memory://${key}?expires=${signOpts.expiresIn}`,
       });
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const bytes = await bodyToBytes(body);
       const contentType = inferContentType(body, options?.contentType);

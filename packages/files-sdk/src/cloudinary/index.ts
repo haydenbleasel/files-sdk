@@ -6,6 +6,7 @@ import type { UploadApiOptions, UploadApiResponse } from "cloudinary";
 import type {
   Adapter,
   Body,
+  ByteRange,
   ListOptions,
   ListResult,
   SignUploadOptions,
@@ -16,11 +17,13 @@ import type {
   UrlOptions,
 } from "../index.js";
 import {
+  assertRangeHonored,
   collectStream,
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   makeErrorMapper,
   normalizeBody,
+  rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -257,14 +260,21 @@ export const cloudinaryAdapter = (
   // head()/list() factories invoke it lazily (outside any operation scope) and
   // pass none, matching how the other adapters leave deferred bodies unsigned.
   const lazyDownload =
-    (key: string, signal?: AbortSignal) => async (): Promise<Uint8Array> => {
+    (key: string, signal?: AbortSignal, range?: ByteRange) =>
+    async (): Promise<Uint8Array> => {
       const url = buildDeliveryUrl(key);
-      const res = await fetch(url, signal ? { signal } : undefined);
+      const res = await fetch(url, {
+        ...(signal && { signal }),
+        ...(range && { headers: rangeRequestHeaders(range) }),
+      });
       if (!res.ok) {
         throw new FilesError(
           res.status === 404 ? "NotFound" : "Provider",
           `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
         );
+      }
+      if (range) {
+        assertRangeHonored(res.status, "cloudinary");
       }
       const buf = await res.arrayBuffer();
       return new Uint8Array(buf);
@@ -302,6 +312,7 @@ export const cloudinaryAdapter = (
     },
     async download(key, downloadOpts) {
       try {
+        const range = downloadOpts?.range;
         const [resource, bytes] = await Promise.all([
           sdk.api.resource(key, {
             resource_type: resourceType,
@@ -313,7 +324,7 @@ export const cloudinaryAdapter = (
             etag?: string;
             created_at?: string;
           }>,
-          lazyDownload(key, downloadOpts?.signal)(),
+          lazyDownload(key, downloadOpts?.signal, range)(),
         ]);
         return createStoredFile(
           {
@@ -322,7 +333,11 @@ export const cloudinaryAdapter = (
             ...(resource.created_at && {
               lastModified: new Date(resource.created_at).getTime(),
             }),
-            size: resource.bytes ?? bytes.byteLength,
+            // `resource.bytes` is the full asset size — for a ranged read the
+            // bytes we actually fetched are authoritative.
+            size: range
+              ? bytes.byteLength
+              : (resource.bytes ?? bytes.byteLength),
             type: resolveContentType(resource),
           },
           { data: bytes, kind: "buffer" }
@@ -471,6 +486,7 @@ export const cloudinaryAdapter = (
         url,
       });
     },
+    supportsRange: true,
     type,
     async upload(
       key: string,

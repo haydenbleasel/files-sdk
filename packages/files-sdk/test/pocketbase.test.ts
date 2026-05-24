@@ -464,6 +464,30 @@ describe("pocketbase adapter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("download forwards a Range header and reports the slice length", async () => {
+    const adapter = pocketbase({
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "0123456789", { contentType: "text/plain" });
+    let seenRange: string | null | undefined;
+    globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("234", {
+          headers: { "Content-Type": "text/plain" },
+          status: 206,
+        })
+      );
+    }) as unknown as typeof fetch;
+    const file = await adapter.download("a.txt", {
+      range: { end: 4, start: 2 },
+    });
+    expect(seenRange).toBe("bytes=2-4");
+    expect(await file.text()).toBe("234");
+    expect(file.size).toBe(3);
+  });
+
   test("download includes a file token when auth store is valid", async () => {
     process.env.POCKETBASE_AUTH_TOKEN = "user-token";
     const adapter = pocketbase({

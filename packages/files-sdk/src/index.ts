@@ -182,8 +182,47 @@ export interface StoredFile {
   metadata?: Record<string, string>;
 }
 
+/**
+ * A contiguous byte range to download, mirroring the HTTP `Range` header
+ * (`bytes=start-end`) the supporting adapters issue under the hood.
+ *
+ * Both bounds are **0-based**, and `end` is **inclusive** — `{ start: 0, end:
+ * 99 }` is the first 100 bytes, matching the wire semantics of S3, GCS, Azure,
+ * and `fetch`. This is deliberately *not* `slice()` semantics (where `end`
+ * would be exclusive); the bytes returned line up with what a `Range` request
+ * would yield.
+ */
+export interface ByteRange {
+  /** First byte to return, 0-based and inclusive. Must be a non-negative integer. */
+  start: number;
+  /**
+   * Last byte to return, 0-based and **inclusive**. Omit to read from `start`
+   * to the end of the object (`bytes=start-`). When set, must be an integer
+   * `>= start`.
+   */
+  end?: number;
+}
+
 export interface DownloadOptions extends OperationOptions {
   as?: "blob" | "stream";
+  /**
+   * Download only a contiguous slice of the object instead of the whole thing
+   * — the building block for video seeking and resumable downloads. The
+   * returned {@link StoredFile} carries just the requested bytes, and its
+   * `size` reflects the range length (not the full object).
+   *
+   * **Supported** by the adapters with a native byte-range primitive: S3 and
+   * the S3-compatible adapters (R2 over HTTP, MinIO, DigitalOcean Spaces,
+   * Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, and the rest of the
+   * `s3()` family), Bun's S3, Google Cloud Storage, Firebase Storage, Azure
+   * Blob, the local `fs` adapter, and the in-memory adapter.
+   *
+   * **Throws** a {@link FilesError} on adapters with no range primitive
+   * (most SaaS/document providers) rather than silently downloading the whole
+   * object and slicing it — so the bandwidth saving is never quietly lost.
+   * Check {@link Adapter.supportsRange} to branch at runtime.
+   */
+  range?: ByteRange;
 }
 
 export interface ListOptions extends OperationOptions {
@@ -423,7 +462,20 @@ export interface Adapter<Raw = unknown> {
    * byte-level for `ReadableStream` bodies, start/finish for buffered ones.
    */
   readonly reportsUploadProgress?: boolean;
+  /**
+   * Set `true` when `download` honors {@link DownloadOptions.range} by issuing
+   * a real byte-range request to the provider. The {@link Files} wrapper gates
+   * on this: a `range` passed to an adapter without it throws before any
+   * provider call, rather than silently downloading the whole object. Leave
+   * unset for adapters whose provider has no range primitive.
+   */
+  readonly supportsRange?: boolean;
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
+  /**
+   * Download an object's body and metadata. When {@link DownloadOptions.range}
+   * is set, adapters that advertise {@link Adapter.supportsRange} must return
+   * only the requested bytes, with `size` set to the range length.
+   */
   download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
   /**
    * Fetch metadata only — does not transfer the body.
@@ -1085,14 +1137,48 @@ export class Files<A extends Adapter = Adapter> {
     const ctx: ActionContext = { key: keyOrKeys, type: "download" };
     return this.#action(ctx, () => {
       const path = this.#path(keyOrKeys);
+      const downloadOpts = opts as DownloadOptions | undefined;
+      if (downloadOpts?.range) {
+        this.#assertRangeSupported(downloadOpts.range);
+      }
       return this.#run(
-        opts as DownloadOptions | undefined,
+        downloadOpts,
         async (attemptOpts) =>
           this.#storedFile(await this.#adapter.download(path, attemptOpts)),
         true,
         ctx
       );
     });
+  }
+
+  /**
+   * Validate a requested byte range and confirm the adapter can serve it.
+   * Runs inside the `#action` wrapper so a bad range or an unsupported adapter
+   * surfaces through `onError` like any other download failure, and short of a
+   * real byte-range primitive we throw rather than quietly fetch-and-slice the
+   * whole object (which would forfeit the bandwidth saving callers reach for
+   * range to get).
+   */
+  #assertRangeSupported(range: ByteRange): void {
+    const { start, end } = range;
+    if (!Number.isInteger(start) || start < 0) {
+      throw new FilesError(
+        "Provider",
+        "range.start must be a non-negative integer"
+      );
+    }
+    if (end !== undefined && (!Number.isInteger(end) || end < start)) {
+      throw new FilesError(
+        "Provider",
+        "range.end must be an integer greater than or equal to range.start"
+      );
+    }
+    if (!this.#adapter.supportsRange) {
+      throw new FilesError(
+        "Provider",
+        `${this.#adapter.name}: range downloads are not supported by this adapter`
+      );
+    }
   }
 
   async #downloadMany(

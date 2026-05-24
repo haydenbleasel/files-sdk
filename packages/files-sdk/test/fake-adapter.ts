@@ -79,7 +79,9 @@ const compareKeys = (a: string, b: string): number => {
   return 0;
 };
 
-export const fakeAdapter = (): FakeAdapter => {
+export const fakeAdapter = (config?: {
+  supportsRange?: boolean;
+}): FakeAdapter => {
   const store = new Map<string, Entry>();
   let counter = 0;
   const nextEtag = () => {
@@ -138,10 +140,30 @@ export const fakeAdapter = (): FakeAdapter => {
       }
       return Promise.resolve({ deleted, errors });
     },
-    download(key: string, _opts?: DownloadOptions): Promise<StoredFile> {
+    download(key: string, downloadOpts?: DownloadOptions): Promise<StoredFile> {
       const entry = store.get(key);
       if (!entry) {
         throw new FilesError("NotFound", `not found: ${key}`);
+      }
+      const range = downloadOpts?.range;
+      if (range) {
+        const sliced = entry.bytes.subarray(
+          range.start,
+          range.end === undefined ? undefined : range.end + 1
+        );
+        return Promise.resolve(
+          createStoredFile(
+            {
+              etag: entry.etag,
+              key,
+              lastModified: entry.uploadedAt,
+              metadata: entry.metadata,
+              size: sliced.byteLength,
+              type: entry.contentType,
+            },
+            { data: sliced, kind: "buffer" }
+          )
+        );
       }
       return Promise.resolve(toStored(key, entry));
     },
@@ -179,6 +201,7 @@ export const fakeAdapter = (): FakeAdapter => {
     },
     name: "fake",
     raw: store,
+    ...(config?.supportsRange && { supportsRange: true }),
     signedUploadUrl(
       key: string,
       _opts: SignUploadOptions

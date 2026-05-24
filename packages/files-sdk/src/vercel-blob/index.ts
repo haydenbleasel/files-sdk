@@ -8,7 +8,13 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { existsByProbe, joinPublicUrl } from "../internal/core.js";
+import {
+  assertRangeHonored,
+  existsByProbe,
+  joinPublicUrl,
+  rangeRequestHeaders,
+  rangedResponseSize,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -114,10 +120,15 @@ const withTimeoutSignal = (
 const fetchWithTimeout = (
   url: string,
   timeoutMs: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  headers?: Record<string, string>
 ): Promise<Response> => {
   const mergedSignal = withTimeoutSignal(signal, timeoutMs);
-  return mergedSignal ? fetch(url, { signal: mergedSignal }) : fetch(url);
+  const init: RequestInit = {
+    ...(headers && { headers }),
+    ...(mergedSignal && { signal: mergedSignal }),
+  };
+  return fetch(url, init);
 };
 
 export type VercelBlobClient = typeof blob;
@@ -390,10 +401,12 @@ export const vercelBlob = (
             { data: bytes, kind: "buffer" }
           );
         }
+        const range = downloadOpts?.range;
         const res = await fetchWithTimeout(
           result.url,
           downloadTimeoutMs,
-          downloadOpts?.signal
+          downloadOpts?.signal,
+          rangeRequestHeaders(range)
         );
         if (!res.ok) {
           throw new FilesError(
@@ -401,10 +414,22 @@ export const vercelBlob = (
             `vercel-blob download failed: ${res.status} ${res.statusText}`
           );
         }
+        if (range) {
+          assertRangeHonored(res.status, "vercel-blob");
+        }
         if (downloadOpts?.as === "stream" && res.body) {
           const stream = res.body;
           return createStoredFile(
-            { ...meta, size: result.size },
+            {
+              ...meta,
+              size: range
+                ? rangedResponseSize(
+                    res.headers.get("content-length"),
+                    result.size,
+                    range
+                  )
+                : result.size,
+            },
             { factory: () => stream, kind: "stream" }
           );
         }
@@ -492,6 +517,10 @@ export const vercelBlob = (
     name: "vercel-blob",
     raw: blob,
     reportsUploadProgress: true,
+    // Range rides on the standard-HTTP fetch of the public blob URL. Private
+    // blobs read through `blob.get`, which has no range primitive, so they
+    // fall through to the gate's loud throw.
+    ...(access !== "private" && { supportsRange: true }),
     signedUploadUrl(_key, _opts): Promise<SignedUpload> {
       throw new FilesError(
         "Provider",

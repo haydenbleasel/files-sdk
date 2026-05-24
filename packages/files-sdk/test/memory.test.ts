@@ -267,6 +267,27 @@ describe("memory adapter", () => {
       expect(await blob.text()).toBe("blobby");
       expect(blob.type).toContain("text/plain");
     });
+
+    test("range returns an inclusive slice with the slice length as size", async () => {
+      const adapter = memory();
+      await adapter.upload("a.txt", "0123456789");
+      const file = await adapter.download("a.txt", {
+        range: { end: 4, start: 2 },
+      });
+      expect(await file.text()).toBe("234");
+      expect(file.size).toBe(3);
+      // Object identity (etag) is the full object's, like an HTTP 206.
+      const full = await adapter.head("a.txt");
+      expect(file.etag).toBe(full.etag);
+    });
+
+    test("open-ended range reads from start to EOF", async () => {
+      const adapter = memory();
+      await adapter.upload("a.txt", "0123456789");
+      const file = await adapter.download("a.txt", { range: { start: 8 } });
+      expect(await file.text()).toBe("89");
+      expect(file.size).toBe(2);
+    });
   });
 
   describe("head", () => {

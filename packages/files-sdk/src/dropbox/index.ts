@@ -13,9 +13,12 @@ import type {
   UploadResult,
 } from "../index.js";
 import {
+  assertRangeHonored,
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
+  rangeRequestHeaders,
+  rangedResponseSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -873,33 +876,53 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     async download(key, downloadOpts) {
       try {
         await authHandle.ensureAccessToken();
-        if (downloadOpts?.as === "stream") {
-          // Dropbox's SDK download doesn't expose a streaming body —
-          // `filesDownload` buffers the full response. For genuine streaming
-          // we fall back to fetching the temporary link, which serves the
-          // bytes via standard HTTP and exposes a ReadableStream body.
+        const range = downloadOpts?.range;
+        // `filesDownload` buffers the whole body and exposes neither streaming
+        // nor a byte range. For streaming OR a range we fetch the temporary
+        // link instead — it serves the bytes over standard HTTP (Range-capable)
+        // and exposes a ReadableStream body. This fetch is also the only path
+        // that can carry the abort signal, since the SDK transport can't.
+        if (downloadOpts?.as === "stream" || range) {
           const tmp = await client.filesGetTemporaryLink({
             path: keyToPath(key),
           });
           const tmpResult = tmp.result;
           const meta = fileMetaFromDropbox(tmpResult.metadata);
-          // The buffer path below goes through the Dropbox SDK's own
-          // transport, which exposes no cancellation; only this temporary-link
-          // fetch can carry the signal.
-          const linkRes = await fetch(
-            tmpResult.link,
-            downloadOpts?.signal ? { signal: downloadOpts.signal } : undefined
-          );
+          const linkRes = await fetch(tmpResult.link, {
+            ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+            ...(range && { headers: rangeRequestHeaders(range) }),
+          });
           if (!linkRes.ok || !linkRes.body) {
             throw new FilesError(
               "Provider",
               `dropbox: temporary-link fetch failed (${linkRes.status})`
             );
           }
-          const stream = linkRes.body as ReadableStream<Uint8Array>;
+          if (range) {
+            assertRangeHonored(linkRes.status, "dropbox");
+          }
+          if (downloadOpts?.as === "stream") {
+            const stream = linkRes.body as ReadableStream<Uint8Array>;
+            return createStoredFile(
+              {
+                key,
+                ...meta,
+                ...(range && {
+                  size: rangedResponseSize(
+                    linkRes.headers.get("content-length"),
+                    meta.size,
+                    range
+                  ),
+                }),
+              },
+              { factory: () => stream, kind: "stream" }
+            );
+          }
+          // Buffered + ranged: drain the ranged response.
+          const rangedBytes = new Uint8Array(await linkRes.arrayBuffer());
           return createStoredFile(
-            { key, ...meta },
-            { factory: () => stream, kind: "stream" }
+            { key, ...meta, size: rangedBytes.byteLength },
+            { data: rangedBytes, kind: "buffer" }
           );
         }
         const res = await client.filesDownload({ path: keyToPath(key) });
@@ -1013,6 +1036,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         )
       );
     },
+    supportsRange: true,
     async upload(key, body, options): Promise<UploadResult> {
       if (options?.metadata && Object.keys(options.metadata).length > 0) {
         throw new FilesError(

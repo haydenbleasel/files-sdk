@@ -561,6 +561,17 @@ describe("onedrive adapter", () => {
     expect(total).toBe("stream-me".length);
   });
 
+  test("download (stream) with a range reports the slice length", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "0123456789");
+    const f = await files.download("a.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    // 10-byte object, bytes 7..EOF → 3 bytes.
+    expect(f.size).toBe(3);
+  });
+
   test("head returns metadata with lazy body factory", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });

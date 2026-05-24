@@ -19,6 +19,7 @@ import {
   DEFAULT_URL_EXPIRES_IN,
   deleteManyWithFallback,
   joinPublicUrl,
+  rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
@@ -178,12 +179,15 @@ const r2ObjectToStoredFile = (
   downloadOpts?: DownloadOptions,
   fallbackBody?: () => Promise<Uint8Array>
 ): StoredFile => {
+  const range = downloadOpts?.range;
   const meta = {
     etag: obj.etag,
     key: obj.key,
     lastModified: obj.uploaded.getTime(),
     metadata: obj.customMetadata,
-    size: obj.size,
+    // `obj.size` is the full object size even on a ranged get; the body holds
+    // only the slice, so report the slice length to match.
+    size: range ? rangedSize(obj.size, range) : obj.size,
     type: obj.httpMetadata?.contentType ?? "application/octet-stream",
   };
   if ("body" in obj && obj.body) {
@@ -305,9 +309,22 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       }
     },
     async download(key, downloadOpts) {
+      const range = downloadOpts?.range;
+      // R2's binding takes a native range option (offset + optional length);
+      // an omitted `end` becomes an open-ended read from `offset`.
+      const getOpts = range
+        ? {
+            range: {
+              offset: range.start,
+              ...(range.end !== undefined && {
+                length: range.end - range.start + 1,
+              }),
+            },
+          }
+        : undefined;
       let obj: Awaited<ReturnType<typeof bucket.get>>;
       try {
-        obj = await bucket.get(key);
+        obj = await bucket.get(key, getOpts);
       } catch (error) {
         throw mapR2Error(error);
       }
@@ -395,6 +412,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       const signer = await getSigner();
       return signer.signedUploadUrl(key, signOpts);
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const { data, contentType, contentLength } = await normalizeForR2(
         body,

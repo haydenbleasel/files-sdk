@@ -214,6 +214,30 @@ describe("fs adapter", () => {
       expect(new TextDecoder().decode(bytes)).toBe("stream-content");
     });
 
+    test("range reads only the requested slice off disk (buffer)", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("r.txt", "0123456789");
+      const got = await files.download("r.txt", {
+        range: { end: 5, start: 3 },
+      });
+      expect(await got.text()).toBe("345");
+      expect(got.size).toBe(3);
+    });
+
+    test("open-ended range streams from start to EOF", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("r.txt", "0123456789");
+      const got = await files.download("r.txt", {
+        as: "stream",
+        range: { start: 6 },
+      });
+      expect(got.size).toBe(4);
+      const bytes = await drainStream(got.stream());
+      expect(new TextDecoder().decode(bytes)).toBe("6789");
+    });
+
     test("download falls back when sidecar is missing", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });

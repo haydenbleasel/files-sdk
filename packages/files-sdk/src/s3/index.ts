@@ -25,6 +25,7 @@ import type {
 import {
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
+  httpRangeHeader,
   isMultipartRequested,
   joinPublicUrl,
   makeErrorMapper,
@@ -402,7 +403,16 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     async download(key, downloadOpts) {
       try {
         const result = await client.send(
-          new GetObjectCommand({ Bucket: bucket, Key: key }),
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            // S3 replies 206 with ContentLength set to the slice length and a
+            // ranged body, so the size/byte handling below needs no special
+            // casing — the range just rides along on the GET.
+            ...(downloadOpts?.range && {
+              Range: httpRangeHeader(downloadOpts.range),
+            }),
+          }),
           downloadOpts?.signal
             ? { abortSignal: downloadOpts.signal }
             : undefined
@@ -572,6 +582,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const { cacheControl, metadata, multipart, onProgress, signal } =
         options ?? {};

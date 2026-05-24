@@ -285,6 +285,29 @@ describe("cloudinary adapter", () => {
     });
   });
 
+  test("download > forwards a Range header and reports the slice length", async () => {
+    let seenRange: string | null | undefined;
+    globalThis.fetch = mock((_url: unknown, init?: RequestInit) => {
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("ell", {
+          headers: { "content-type": "text/plain" },
+          status: 206,
+        })
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+    });
+    const file = await files.download("test-file", {
+      range: { end: 3, start: 1 },
+    });
+    expect(seenRange).toBe("bytes=1-3");
+    expect(await file.text()).toBe("ell");
+    // The full asset is larger; a ranged read reports the slice length.
+    expect(file.size).toBe(3);
+  });
+
   test("head > returns lazy StoredFile that fetches on read", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(

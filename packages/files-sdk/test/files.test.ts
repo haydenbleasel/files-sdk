@@ -67,6 +67,48 @@ describe("Files class", () => {
     expect(chunks.length).toBeGreaterThan(0);
   });
 
+  test("download forwards a byte range to a supporting adapter", async () => {
+    const files = new Files({ adapter: fakeAdapter({ supportsRange: true }) });
+    await files.upload("r.txt", "0123456789");
+    const got = await files.download("r.txt", { range: { end: 4, start: 2 } });
+    // Inclusive end: bytes 2..4 → "234", and size reflects the slice.
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+  });
+
+  test("download with an open-ended range reads to EOF", async () => {
+    const files = new Files({ adapter: fakeAdapter({ supportsRange: true }) });
+    await files.upload("r.txt", "0123456789");
+    const got = await files.download("r.txt", { range: { start: 7 } });
+    expect(await got.text()).toBe("789");
+    expect(got.size).toBe(3);
+  });
+
+  test("download with a range throws on an adapter without range support", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await files.upload("r.txt", "0123456789");
+    await expect(
+      files.download("r.txt", { range: { start: 0 } })
+    ).rejects.toThrow(/range downloads are not supported/u);
+  });
+
+  test("download rejects a malformed byte range before hitting the adapter", async () => {
+    const files = new Files({ adapter: fakeAdapter({ supportsRange: true }) });
+    await files.upload("r.txt", "0123456789");
+    await expect(
+      files.download("r.txt", { range: { start: -1 } })
+    ).rejects.toThrow(/range\.start must be a non-negative integer/u);
+    await expect(
+      files.download("r.txt", { range: { start: 1.5 } })
+    ).rejects.toThrow(/range\.start must be a non-negative integer/u);
+    await expect(
+      files.download("r.txt", { range: { end: 2, start: 5 } })
+    ).rejects.toThrow(/range\.end must be an integer/u);
+    await expect(
+      files.download("r.txt", { range: { end: 4.5, start: 0 } })
+    ).rejects.toThrow(/range\.end must be an integer/u);
+  });
+
   test("head returns metadata-only StoredFile", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("h.txt", "x");

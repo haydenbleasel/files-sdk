@@ -13,7 +13,12 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { existsByProbe } from "../internal/core.js";
+import {
+  assertRangeHonored,
+  existsByProbe,
+  rangeRequestHeaders,
+  rangedSize,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -548,6 +553,9 @@ export const googleDrive = (
     async download(key, downloadOpts) {
       try {
         const fileId = await resolveFileId(key, downloadOpts?.signal);
+        const range = downloadOpts?.range;
+        // Drive's alt=media download honors a Range header and replies 206.
+        const rangeHeaders = range && { headers: rangeRequestHeaders(range) };
         if (downloadOpts?.as === "stream") {
           const [metaRes, mediaRes] = await Promise.all([
             driveClient.files.get(
@@ -563,13 +571,17 @@ export const googleDrive = (
               {
                 responseType: "stream",
                 ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+                ...rangeHeaders,
               }
             ),
           ]);
+          if (range) {
+            assertRangeHonored(mediaRes.status, "google-drive");
+          }
           const m = fileToStoredMeta(metaRes.data);
           const node = mediaRes.data as unknown as Readable;
           return createStoredFile(
-            { key, ...m },
+            { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
               factory: () =>
                 Readable.toWeb(node) as unknown as ReadableStream<Uint8Array>,
@@ -591,9 +603,13 @@ export const googleDrive = (
             {
               responseType: "arraybuffer",
               ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+              ...rangeHeaders,
             }
           ),
         ]);
+        if (range) {
+          assertRangeHonored(mediaRes.status, "google-drive");
+        }
         const m = fileToStoredMeta(metaRes.data);
         const bytes = toUint8(mediaRes.data as unknown);
         return createStoredFile(
@@ -759,6 +775,7 @@ export const googleDrive = (
         }),
       };
     },
+    supportsRange: true,
     async upload(key, body, options): Promise<UploadResult> {
       assertNoReservedMetadata(options?.metadata);
       try {

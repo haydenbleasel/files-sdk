@@ -49,26 +49,33 @@ class FakeBunS3Client implements BunS3ClientLike {
   readonly writes: { key: string; options?: BunS3OperationOptions }[] = [];
 
   file(path: string): BunS3FileLike {
-    const bytes = (): Promise<Uint8Array> =>
-      Promise.resolve(this.mustGet(path).bytes);
-    return {
+    const stat = (): Promise<BunS3Stats> => this.stat(path);
+    // `build` recurses through slice() so a sliced handle reads only its
+    // sub-range — Blob-style exclusive end, matching Bun's S3File.slice.
+    const build = (read: () => Promise<Uint8Array>): BunS3FileLike => ({
       async arrayBuffer(): Promise<ArrayBuffer> {
-        const data = await bytes();
+        const data = await read();
         return data.buffer.slice(
           data.byteOffset,
           data.byteOffset + data.byteLength
         ) as ArrayBuffer;
       },
-      bytes,
-      stat: () => this.stat(path),
+      bytes: read,
+      slice: (begin?: number, end?: number) =>
+        build(async () => {
+          const data = await read();
+          return data.subarray(begin, end);
+        }),
+      stat,
       stream: () =>
         new ReadableStream<Uint8Array>({
           async start(controller) {
-            controller.enqueue(await bytes());
+            controller.enqueue(await read());
             controller.close();
           },
         }),
-    };
+    });
+    return build(() => Promise.resolve(this.mustGet(path).bytes));
   }
 
   mustGet(key: string): Entry {
@@ -374,6 +381,44 @@ describe("bun-s3 adapter", () => {
       offset += c.byteLength;
     }
     expect(new TextDecoder().decode(flat)).toBe("stream me");
+  });
+
+  test("range slices via Bun's exclusive-end slice() and reports slice length", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    await files.upload("r.txt", "0123456789", { contentType: "text/plain" });
+    const got = await files.download("r.txt", { range: { end: 4, start: 2 } });
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+  });
+
+  test("open-ended range streams from start to EOF", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    await files.upload("r.txt", "0123456789", { contentType: "text/plain" });
+    const got = await files.download("r.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    expect(got.size).toBe(3);
+    const reader = got.stream().getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value) {
+        chunks.push(value);
+      }
+    }
+    const flat = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+    let offset = 0;
+    for (const c of chunks) {
+      flat.set(c, offset);
+      offset += c.byteLength;
+    }
+    expect(new TextDecoder().decode(flat)).toBe("789");
   });
 
   test("download maps provider errors for missing keys", async () => {

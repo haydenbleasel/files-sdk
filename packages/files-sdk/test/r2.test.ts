@@ -298,22 +298,32 @@ const fakeBinding = () => {
       map.delete(key);
       return Promise.resolve();
     },
-    get(key: string) {
+    get(key: string, opts?: { range?: { offset?: number; length?: number } }) {
       const entry = map.get(key);
       if (!entry) {
         return Promise.resolve(null);
       }
+      // Honor the native range option: the body holds only the slice, while
+      // `size` stays the full object size (as the real R2 binding reports).
+      const range = opts?.range;
+      const offset = range?.offset ?? 0;
+      const slice = range
+        ? entry.bytes.subarray(
+            offset,
+            range.length === undefined ? undefined : offset + range.length
+          )
+        : entry.bytes;
       return Promise.resolve({
         arrayBuffer: () =>
           Promise.resolve(
-            entry.bytes.buffer.slice(
-              entry.bytes.byteOffset,
-              entry.bytes.byteOffset + entry.bytes.byteLength
+            slice.buffer.slice(
+              slice.byteOffset,
+              slice.byteOffset + slice.byteLength
             )
           ),
         body: new ReadableStream<Uint8Array>({
           start(c) {
-            c.enqueue(entry.bytes);
+            c.enqueue(slice);
             c.close();
           },
         }),
@@ -322,7 +332,7 @@ const fakeBinding = () => {
         httpMetadata: entry.httpMetadata,
         key,
         size: entry.size,
-        text: () => Promise.resolve(new TextDecoder().decode(entry.bytes)),
+        text: () => Promise.resolve(new TextDecoder().decode(slice)),
         uploaded: entry.uploaded,
       });
     },
@@ -427,6 +437,27 @@ describe("r2 adapter — Workers binding path", () => {
     const got = await files.download("a.txt");
     expect(await got.text()).toBe("hello");
     expect(got.type).toBe("text/plain");
+  });
+
+  test("download with a range reads only the slice and reports its length", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("r.txt", "0123456789");
+    const got = await files.download("r.txt", { range: { end: 4, start: 2 } });
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+  });
+
+  test("download with an open-ended range reads from the offset to EOF", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("r.txt", "0123456789");
+    const got = await files.download("r.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    expect(got.size).toBe(3);
+    expect(await got.text()).toBe("789");
   });
 
   test("delete + head returning NotFound", async () => {

@@ -94,16 +94,29 @@ const filesGetMock = mock((params: unknown, requestOpts?: unknown) => {
     throw Object.assign(new Error("Not Found"), { code: 404 });
   }
   if (p.alt === "media") {
-    const opts = requestOpts as { responseType?: string } | undefined;
-    if (opts?.responseType === "stream") {
-      return Promise.resolve({
-        data: Readable.from(Buffer.from(`body-${file.id}`)),
-      });
+    const opts = requestOpts as
+      | { responseType?: string; headers?: Record<string, string> }
+      | undefined;
+    const rangeHeader = opts?.headers?.Range;
+    const full = Buffer.from(`body-${file.id}`);
+    let body = full;
+    if (rangeHeader) {
+      const m = /bytes=(\d+)-(\d*)/u.exec(rangeHeader);
+      const start = Number(m?.[1] ?? 0);
+      const end = m?.[2] ? Number(m[2]) : full.length - 1;
+      body = full.subarray(start, end + 1);
     }
-    // arraybuffer
-    const buf = Buffer.from(`body-${file.id}`);
+    // A ranged request gets 206 Partial Content, matching real Drive.
+    const status = rangeHeader ? 206 : 200;
+    if (opts?.responseType === "stream") {
+      return Promise.resolve({ data: Readable.from(body), status });
+    }
     return Promise.resolve({
-      data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+      data: body.buffer.slice(
+        body.byteOffset,
+        body.byteOffset + body.byteLength
+      ),
+      status,
     });
   }
   return Promise.resolve({ data: file });
@@ -358,6 +371,26 @@ describe("google-drive adapter", () => {
       }
     }
     expect(total).toBe("body-id-1".length);
+  });
+
+  test("download (buffer) with a range sends a Range header and returns the slice", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "0123456789");
+    const f = await files.download("a.txt", { range: { end: 3, start: 0 } });
+    // Synthetic body is `body-<id>`; bytes 0..3 inclusive → "body".
+    expect(await f.text()).toBe("body");
+    expect(f.size).toBe(4);
+  });
+
+  test("download (stream) with a range reports the slice length from metadata", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "0123456789");
+    const f = await files.download("a.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    // Metadata size is 10 (the uploaded bytes), so bytes 7..EOF → 3.
+    expect(f.size).toBe(3);
   });
 
   test("head returns metadata with lazy body factory", async () => {

@@ -646,6 +646,54 @@ describe("azure adapter", () => {
       expect(total).toBe(5);
     });
 
+    test("range maps to a blob offset/count and reports the slice length", async () => {
+      downloadToBufferMock.mockImplementationOnce(
+        (offset?: number, count?: number) => {
+          const full = Buffer.from("hello");
+          const start = offset ?? 0;
+          return Promise.resolve(
+            full.subarray(
+              start,
+              count === undefined ? undefined : start + count
+            )
+          );
+        }
+      );
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const got = await files.download("a.txt", {
+        range: { end: 3, start: 1 },
+      });
+      expect(await got.text()).toBe("ell");
+      expect(got.size).toBe(3);
+      const call = downloadToBufferMock.mock.calls[0] as
+        | [number?, number?, ...unknown[]]
+        | undefined;
+      expect(call?.[0]).toBe(1);
+      expect(call?.[1]).toBe(3);
+    });
+
+    test("open-ended range passes an undefined count (read to EOF)", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      await files.download("a.txt", { as: "stream", range: { start: 2 } });
+      const call = downloadMock.mock.calls[0] as
+        | [number?, number?, ...unknown[]]
+        | undefined;
+      expect(call?.[0]).toBe(2);
+      expect(call?.[1]).toBeUndefined();
+    });
+
     test("as: 'stream' yields an empty stream when SDK omits readableStreamBody", async () => {
       // The Azure SDK occasionally returns the metadata envelope without a
       // readable body (e.g. zero-byte blobs). The adapter's stream factory

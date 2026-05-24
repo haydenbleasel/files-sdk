@@ -580,6 +580,50 @@ describe("box adapter", () => {
     expect(total).toBe("stream-bytes".length);
   });
 
+  test("download with a range sends a Range header and returns the slice", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("r.txt", "0123456789", { contentType: "text/plain" });
+    let seenRange: string | null | undefined;
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      void url;
+      seenRange = new Headers(init?.headers).get("range");
+      return Promise.resolve(
+        new Response("234", {
+          headers: { "content-length": "3" },
+          status: 206,
+        })
+      );
+    }) as typeof fetch;
+    const f = await files.download("r.txt", { range: { end: 4, start: 2 } });
+    expect(seenRange).toBe("bytes=2-4");
+    expect(await f.text()).toBe("234");
+    expect(f.size).toBe(3);
+  });
+
+  test("download (stream) throws when the response has no body", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("a.txt", "hi");
+    globalThis.fetch = ((_url: string | URL | Request) =>
+      Promise.resolve(new Response(null, { status: 200 }))) as typeof fetch;
+    await expect(
+      files.download("a.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "Provider" });
+  });
+
+  test("download (stream) with a range reports the slice length", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("r.txt", "0123456789");
+    globalThis.fetch = ((_url: string | URL | Request) =>
+      Promise.resolve(
+        new Response("789", { headers: { "content-length": "3" }, status: 206 })
+      )) as typeof fetch;
+    const f = await files.download("r.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    expect(f.size).toBe(3);
+  });
+
   test("head returns metadata with lazy body factory", async () => {
     const files = new Files({ adapter: box(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });

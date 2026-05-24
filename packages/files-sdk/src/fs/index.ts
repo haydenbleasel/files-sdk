@@ -15,9 +15,11 @@ import type {
   UploadResult,
 } from "../index.js";
 import {
+  collectStream,
   DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
+  rangedSize,
 } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -423,16 +425,41 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           ...(sidecar?.metadata && { metadata: sidecar.metadata }),
           type: sidecar?.contentType ?? "application/octet-stream",
         };
+        const range = downloadOpts?.range;
+        // Node's createReadStream takes inclusive `start`/`end` byte offsets,
+        // matching ByteRange; an omitted `end` reads to EOF.
+        const streamRange = range
+          ? {
+              start: range.start,
+              ...(range.end !== undefined && { end: range.end }),
+            }
+          : undefined;
         if (downloadOpts?.as === "stream") {
           return createStoredFile(
-            { ...baseMeta, size: stat.size },
+            {
+              ...baseMeta,
+              size: range ? rangedSize(stat.size, range) : stat.size,
+            },
             {
               factory: () =>
                 Readable.toWeb(
-                  createReadStream(bodyPath)
+                  createReadStream(bodyPath, streamRange)
                 ) as unknown as ReadableStream<Uint8Array>,
               kind: "stream",
             }
+          );
+        }
+        if (range) {
+          // Read just the slice off disk rather than buffering the whole file
+          // and trimming — the point of a range request is to touch less data.
+          const bytes = await collectStream(
+            Readable.toWeb(
+              createReadStream(bodyPath, streamRange)
+            ) as unknown as ReadableStream<Uint8Array>
+          );
+          return createStoredFile(
+            { ...baseMeta, size: bytes.byteLength },
+            { data: bytes, kind: "buffer" }
           );
         }
         const buf = await fsp.readFile(bodyPath);
@@ -577,6 +604,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         url: `${joinPublicUrl(urlBaseUrl, key)}?${params.toString()}`,
       });
     },
+    supportsRange: true,
     async upload(key, body, options) {
       const bodyPath = resolveKeyPath(root, key);
       const contentType = defaultContentType(body, options?.contentType);

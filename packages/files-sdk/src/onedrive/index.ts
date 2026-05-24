@@ -28,7 +28,11 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { existsByProbe } from "../internal/core.js";
+import {
+  existsByProbe,
+  httpRangeHeader,
+  rangedSize,
+} from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -797,17 +801,22 @@ export const onedrive = (
     },
     async download(key, downloadOpts) {
       try {
+        const range = downloadOpts?.range;
+        // Graph's /content endpoint honors a Range header; add it when asked.
+        const contentReq = () => {
+          const req = client.api(`${itemApiPath(key)}/content`);
+          return range ? req.header("Range", httpRangeHeader(range)) : req;
+        };
         if (downloadOpts?.as === "stream") {
           const [meta, stream] = await Promise.all([
             client.api(itemApiPath(key)).get() as Promise<DriveItem>,
-            client
-              .api(`${itemApiPath(key)}/content`)
+            contentReq()
               .responseType(ResponseType.STREAM)
               .get() as Promise<Readable>,
           ]);
           const m = itemToStoredMeta(meta);
           return createStoredFile(
-            { key, ...m },
+            { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
               factory: () =>
                 Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>,
@@ -817,8 +826,7 @@ export const onedrive = (
         }
         const [meta, bytes] = await Promise.all([
           client.api(itemApiPath(key)).get() as Promise<DriveItem>,
-          client
-            .api(`${itemApiPath(key)}/content`)
+          contentReq()
             .responseType(ResponseType.ARRAYBUFFER)
             .get() as Promise<unknown>,
         ]);
@@ -918,6 +926,7 @@ export const onedrive = (
         throw mapGraphError(error);
       }
     },
+    supportsRange: true,
     async upload(key, body, options): Promise<UploadResult> {
       if (options?.metadata && Object.keys(options.metadata).length > 0) {
         throw new FilesError(

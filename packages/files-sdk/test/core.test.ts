@@ -1,6 +1,52 @@
 import { describe, expect, test } from "bun:test";
 
-import { deleteManyWithFallback, mapMany } from "../src/internal/core.js";
+import {
+  assertRangeHonored,
+  deleteManyWithFallback,
+  httpRangeHeader,
+  mapMany,
+  rangeRequestHeaders,
+  rangedResponseSize,
+  rangedSize,
+} from "../src/internal/core.js";
+import { FilesError } from "../src/internal/errors.js";
+
+describe("range helpers", () => {
+  test("httpRangeHeader renders inclusive and open-ended ranges", () => {
+    expect(httpRangeHeader({ end: 99, start: 0 })).toBe("bytes=0-99");
+    expect(httpRangeHeader({ start: 1024 })).toBe("bytes=1024-");
+  });
+
+  test("rangeRequestHeaders builds a Range header for a range", () => {
+    expect(rangeRequestHeaders({ end: 4, start: 2 })).toEqual({
+      Range: "bytes=2-4",
+    });
+  });
+
+  test("rangedSize clamps end past EOF and a start at/after EOF", () => {
+    expect(rangedSize(10, { end: 4, start: 2 })).toBe(3);
+    expect(rangedSize(10, { start: 7 })).toBe(3);
+    // end past EOF is clamped to the last byte.
+    expect(rangedSize(5, { end: 99, start: 0 })).toBe(5);
+    // start at/after EOF yields 0 rather than a negative length.
+    expect(rangedSize(5, { start: 5 })).toBe(0);
+    expect(rangedSize(5, { start: 9 })).toBe(0);
+  });
+
+  test("rangedResponseSize prefers the Content-Length, else computes it", () => {
+    expect(rangedResponseSize("3", 10, { end: 4, start: 2 })).toBe(3);
+    // No header → fall back to the computed slice length.
+    expect(rangedResponseSize(null, 10, { start: 7 })).toBe(3);
+  });
+
+  test("assertRangeHonored passes a 206 and throws on a 200", () => {
+    expect(() => assertRangeHonored(206, "provider")).not.toThrow();
+    expect(() => assertRangeHonored(200, "provider")).toThrow(FilesError);
+    expect(() => assertRangeHonored(200, "provider")).toThrow(
+      /ignored the requested byte range/u
+    );
+  });
+});
 
 // These exercise the early-return and stopOnError-success branches of the
 // shared bulk engines that no adapter happens to hit (empty input, the

@@ -321,6 +321,36 @@ describe("gcs adapter", () => {
     expect(total).toBe(5);
   });
 
+  test("range forwards inclusive start/end to file.download (buffer)", async () => {
+    downloadMock.mockImplementationOnce(
+      (opts?: { start?: number; end?: number }) => {
+        const full = Buffer.from("hello");
+        const slice = full.subarray(
+          opts?.start ?? 0,
+          opts?.end === undefined ? undefined : opts.end + 1
+        );
+        return Promise.resolve([slice] as [Buffer]);
+      }
+    );
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const got = await files.download("a.txt", { range: { end: 3, start: 1 } });
+    expect(downloadMock).toHaveBeenCalledWith({ end: 3, start: 1 });
+    expect(await got.text()).toBe("ell");
+    expect(got.size).toBe(3);
+  });
+
+  test("open-ended range streams from start and sizes via metadata", async () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const got = await files.download("a.txt", {
+      as: "stream",
+      range: { start: 2 },
+    });
+    // metadata size is 5, so bytes 2..EOF is 3 bytes.
+    expect(got.size).toBe(3);
+    got.stream().getReader();
+    expect(createReadStreamMock).toHaveBeenCalledWith({ start: 2 });
+  });
+
   test("head returns metadata only and does not pre-fetch the body", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const info = await files.head("a.txt");

@@ -216,6 +216,37 @@ describe("s3 adapter", () => {
     expect(got.etag).toBe("e");
   });
 
+  test("download forwards a byte range as the S3 Range param", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      // S3 replies 206 with the slice as the body and ContentLength set to it.
+      Body: streamBody("234") as unknown as undefined,
+      ContentLength: 3,
+      ContentType: "text/plain",
+    });
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const got = await files.download("a.txt", { range: { end: 4, start: 2 } });
+    expect(await got.text()).toBe("234");
+    expect(got.size).toBe(3);
+    const calls = s3Mock.commandCalls(GetObjectCommand);
+    const [{ input }] = firstCall(calls).args;
+    expect(input.Range).toBe("bytes=2-4");
+  });
+
+  test("download with an open-ended range sends bytes=start-", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: streamBody("789") as unknown as undefined,
+      ContentLength: 3,
+      ContentType: "text/plain",
+    });
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    await adapter.download("a.txt", { range: { start: 7 } });
+    const calls = s3Mock.commandCalls(GetObjectCommand);
+    const [{ input }] = firstCall(calls).args;
+    expect(input.Range).toBe("bytes=7-");
+  });
+
   test("head returns metadata without fetching body", async () => {
     s3Mock.on(HeadObjectCommand).resolves({
       ContentLength: 7,
