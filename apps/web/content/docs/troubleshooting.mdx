@@ -21,6 +21,8 @@ try {
         /* re-auth */ break;
       case "Conflict":
         /* retry */ break;
+      case "ReadOnly":
+        /* use a writable Files instance */ break;
       case "Provider":
         console.error(err.cause);
         break;
@@ -52,6 +54,14 @@ Credentials are missing, expired, or insufficient for the operation.
 ### `Conflict`
 
 A precondition failed - usually a conditional write losing a race, or an object existing when the call required it to be absent.
+
+### `ReadOnly`
+
+The call tried to write through a read-only `Files` instance created with `new Files({ readonly: true })` or `files.readonly()`.
+
+- Reads still work: `download`, `head`, `exists`, `list`, `listAll`, `url`.
+- Writes are blocked uniformly: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, plus the equivalent `file(key)` helpers.
+- `files.raw` is not governed by this flag. If the mutation came through `raw`, the SDK's read-only guard will not see it.
 
 ### `Provider`
 

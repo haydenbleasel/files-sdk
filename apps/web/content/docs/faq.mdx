@@ -29,7 +29,7 @@ The core `Files` class and the `StoredFile` type are isomorphic, but most adapte
 
 ## How are errors handled?
 
-Every method throws a single `FilesError` with a normalized `code` - `NotFound`, `Unauthorized`, `Conflict`, or `Provider` - and the original provider error attached as `cause`. See [Errors](/api/errors).
+Every method throws a single `FilesError` with a normalized `code` - `NotFound`, `Unauthorized`, `Conflict`, `ReadOnly`, or `Provider` - and the original provider error attached as `cause`. See [Errors](/api/errors).
 
 ## Does `delete` throw on a missing key?
 

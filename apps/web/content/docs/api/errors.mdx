@@ -21,7 +21,7 @@ try {
 
 ## Properties
 
-- **`code`** — one of the four normalized codes below. Match on this for control flow.
+- **`code`** — one of the normalized codes below. Match on this for control flow.
 - **`message`** — a human-readable summary, taken from the provider error where one is available.
 - **`cause`** — the original provider error, untouched. Reach into it for provider-specific detail: `@aws-sdk` errors, for instance, carry a request ID and HTTP status on `$metadata` and a typed `name` like `NoSuchKey`.
 - **`aborted`** — `true` when the failure came from a [cancellation](/features/cancellations) or a [timeout](/features/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
@@ -31,9 +31,10 @@ try {
 - `"NotFound"` — the key (or bucket / container) does not exist.
 - `"Unauthorized"` — credentials missing, expired, or insufficient for the operation.
 - `"Conflict"` — a precondition failed, e.g. a conditional write that lost a race.
+- `"ReadOnly"` — the operation tried to mutate a read-only `Files` instance.
 - `"Provider"` — anything else, including network failures, throttling, timeouts, and aborts. Inspect `cause` for the underlying error.
 
-Codes are derived from the provider's own error code and HTTP status: `404` maps to `NotFound`, `401` / `403` to `Unauthorized`, `409` / `412` to `Conflict`, and everything else to `Provider`. Only `Provider` failures are [retried](/features/retries); the rest are deterministic and returned to you immediately.
+Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/features/retries); the rest are deterministic and returned to you immediately.
 
 ## Errors in bulk operations
 

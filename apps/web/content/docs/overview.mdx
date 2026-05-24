@@ -16,7 +16,7 @@ Every storage SDK ships with its own shape: `PutObjectCommand`, `put()`, `upload
 Files SDK collapses that into one class and one error type:
 
 - **One API** - same call shape across every adapter. The code that uploads to S3 is the code that uploads to Vercel Blob.
-- **Normalized errors** - `FilesError` with a small enum of codes (`NotFound`, `Unauthorized`, `Conflict`, `Provider`), with the original error preserved on `cause`.
+- **Normalized errors** - `FilesError` with a small enum of codes (`NotFound`, `Unauthorized`, `Conflict`, `ReadOnly`, `Provider`), with the original error preserved on `cause`.
 - **Lazy SDK loading** - adapters are subpath exports (`files-sdk/s3`, `files-sdk/r2`, ...). The provider SDK you don't use isn't bundled.
 - **Typed escape hatch** - `files.raw` is typed as the underlying client (S3Client, R2Bucket, VercelBlobClient, ...), so the unified API never traps you.
 - **Agent-friendly CLI** - one `files` binary, JSON output, stdin/stdout streaming, plus a built-in [MCP](https://modelcontextprotocol.io) server. Same semantics as the SDK.
