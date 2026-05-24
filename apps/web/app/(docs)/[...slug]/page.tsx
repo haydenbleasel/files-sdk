@@ -66,11 +66,32 @@ export const generateMetadata = async ({
     notFound();
   }
 
+  const ogImage = {
+    alt: page.data.title,
+    height: 630,
+    url: `/og/${slug.join("/")}`,
+    width: 1200,
+  };
+
   return {
     alternates: {
       canonical: page.url,
     },
     description: page.data.description,
+    openGraph: {
+      description: page.data.description,
+      images: [ogImage],
+      siteName: "Files SDK",
+      title: page.data.title,
+      type: "article",
+      url: page.url,
+    },
     title: page.data.title,
+    twitter: {
+      card: "summary_large_image",
+      description: page.data.description,
+      images: [ogImage],
+      title: page.data.title,
+    },
   };
 };
