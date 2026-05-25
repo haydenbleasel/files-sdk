@@ -19,7 +19,8 @@
     "release": "turbo run build && changeset publish",
     "prepare": "husky",
     "check": "ultracite check",
-    "fix": "ultracite fix"
+    "fix": "ultracite fix",
+    "bump-deps": "npx npm-check-updates --deep -u && bun install"
   },
   "dependencies": {
     "@shikijs/langs": "^4.0.2",
