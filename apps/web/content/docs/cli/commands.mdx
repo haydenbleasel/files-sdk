@@ -1,9 +1,9 @@
 ---
 title: Commands
-description: Each CLI command maps 1:1 to an Adapter method - upload, download, head, exists, delete, copy, move, list, url, and sign-upload.
+description: Each CLI command maps to an SDK method - upload, download, head, exists, delete, copy, move, list, url, sign-upload, and transfer.
 ---
 
-Each command maps 1:1 to an `Adapter` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
+Each command maps to a `Files` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
 
 ```bash lineNumbers
 # Upload from a file (or pipe stdin)
@@ -33,4 +33,84 @@ files --provider s3 --bucket uploads url reports/2026-q1.pdf --expires-in 600
 # Browser uploads via presigned POST policy (enforces size server-side)
 files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
   --expires-in 600 --max-size 5242880 --content-type image/png
+```
+
+## Global flags
+
+These apply to every command and mirror the `Files` constructor and `OperationOptions`:
+
+```bash lineNumbers
+# --key-prefix scopes every operation under a base path (the instance prefix,
+# distinct from `list --prefix`, which is a one-off filter). Listed/returned
+# keys come back relative to it.
+files --provider s3 --bucket uploads --key-prefix tenants/acme \
+  list                                  # lists under tenants/acme/
+
+# --timeout (per attempt, ms) and --retries (provider failures) apply to all commands
+files --provider s3 --bucket uploads --timeout 10000 --retries 3 \
+  head reports/2026-q1.pdf
+```
+
+## Many keys at once
+
+`head`, `exists`, and `delete` take multiple keys and return a structured result
+instead of throwing on partial failure. `--concurrency` and `--stop-on-error`
+tune the fan-out:
+
+```bash lineNumbers
+files --provider s3 --bucket uploads head a.txt b.txt c.txt
+files --provider s3 --bucket uploads delete a.txt b.txt --concurrency 16
+files --provider s3 --bucket uploads exists a.txt b.txt --stop-on-error
+```
+
+## Byte ranges and multipart
+
+```bash lineNumbers
+# Download a byte range (0-based, inclusive) — for video seeking or resuming.
+# Range downloads throw on adapters with no native range primitive.
+files --provider s3 --bucket uploads download big.mp4 --out head.mp4 --range 0-1048575
+
+# Upload in parallel parts (robust for large objects). --part-size /
+# --multipart-concurrency tune it and imply --multipart.
+files --provider s3 --bucket uploads \
+  upload big.iso --file ./big.iso --multipart --part-size 16777216
+```
+
+## Directories (bulk upload / download)
+
+Upload a whole local tree, or download many keys into a directory. Each file is
+keyed by (or written to) its relative path; content types are inferred per file
+on upload.
+
+```bash lineNumbers
+# Upload every file under ./build, keyed by relative path (composes with --key-prefix)
+files --provider s3 --bucket site --key-prefix assets upload --dir ./build
+
+# Download many keys into a directory, recreating their key paths underneath it
+files --provider s3 --bucket uploads \
+  download docs/a.pdf docs/b.pdf logos/c.png --out-dir ./pulled
+```
+
+## Walking everything
+
+`list` returns one page plus a `cursor`. `--all` follows the cursor to the end
+and returns every item in one result (mind the memory cost on huge buckets):
+
+```bash lineNumbers
+files --provider s3 --bucket uploads list --prefix logs/ --all | jq '.items[].key'
+```
+
+## Cross-provider transfer
+
+`transfer` streams every object from the configured (source) provider to another
+provider, given as a JSON config. The source uses the normal global flags (so
+`--key-prefix` scopes it); `--prefix` filters the walk, and `--no-overwrite`
+skips keys already present at the destination.
+
+```bash lineNumbers
+# Migrate an S3 prefix to R2, skipping anything already copied
+files --provider s3 --bucket old --verbose \
+  transfer \
+  --to '{"provider":"r2","bucket":"new","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}' \
+  --prefix uploads/ --no-overwrite --concurrency 16
 ```

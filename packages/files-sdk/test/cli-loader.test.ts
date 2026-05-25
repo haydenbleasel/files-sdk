@@ -109,4 +109,24 @@ describe("cli/loader loadFiles", () => {
       FilesError
     );
   });
+
+  test("threads --key-prefix / --timeout / --retries into the Files instance", async () => {
+    const root = await makeRoot();
+    const { files } = await loadFiles({
+      prefix: "scoped",
+      provider: "fs",
+      retries: 2,
+      root,
+      timeout: 5000,
+    });
+    // The instance prefix scopes writes: the key lands under scoped/ on disk,
+    // and reads report the prefix-stripped key.
+    const result = await files.upload("note.txt", "hi");
+    expect(result.key).toBe("note.txt");
+    const onDisk = await fsp.readFile(
+      path.join(root, "scoped", "note.txt"),
+      "utf-8"
+    );
+    expect(onDisk).toBe("hi");
+  });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,11 +12,48 @@ import {
   runList,
   runUpload,
 } from "../src/cli/commands.js";
-import { parseJson, parseKeyValuePairs } from "../src/cli/io.js";
+import {
+  fileBodyStream,
+  parseJson,
+  parseKeyValuePairs,
+  parseRange,
+  walkDir,
+  writeBodyToDir,
+} from "../src/cli/io.js";
 import { loadFiles } from "../src/cli/loader.js";
 import { buildProgram } from "../src/cli/program.js";
 import { PROVIDER_NAMES, PROVIDERS } from "../src/cli/registry.js";
+import type { StoredFile } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
+
+const collect = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value) {
+      chunks.push(value);
+    }
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+};
+
+// Minimal StoredFile whose only meaningful members for writeBodyToDir are
+// `key` and `stream()`. The rest satisfy the type.
+const fakeStoredFile = (key: string, body: string): StoredFile =>
+  ({
+    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+    blob: () => Promise.resolve(new Blob([body])),
+    key,
+    name: key,
+    size: body.length,
+    stream: () => new Response(body).body as ReadableStream<Uint8Array>,
+    text: () => Promise.resolve(body),
+    type: "text/plain",
+  }) as StoredFile;
 
 describe("cli/io", () => {
   test("parseKeyValuePairs splits k=v", () => {
@@ -51,6 +88,85 @@ describe("cli/io", () => {
 
   test("parseJson throws FilesError on malformed JSON", () => {
     expect(() => parseJson("{bad")).toThrow(FilesError);
+  });
+
+  test("parseRange parses start-end and start- forms", () => {
+    expect(parseRange("0-99")).toEqual({ end: 99, start: 0 });
+    expect(parseRange("100-")).toEqual({ start: 100 });
+  });
+
+  test("parseRange returns undefined for empty input", () => {
+    expect(parseRange()).toBeUndefined();
+    expect(parseRange("")).toBeUndefined();
+  });
+
+  test("parseRange throws FilesError on a malformed range", () => {
+    expect(() => parseRange("abc")).toThrow(FilesError);
+    expect(() => parseRange("-100")).toThrow(FilesError);
+  });
+});
+
+describe("cli/io filesystem helpers", () => {
+  const tmp: string[] = [];
+  const mkroot = async (): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "files-sdk-io-"));
+    tmp.push(dir);
+    return dir;
+  };
+  afterEach(async () => {
+    await Promise.all(
+      tmp.splice(0).map((d) => rm(d, { force: true, recursive: true }))
+    );
+  });
+
+  test("fileBodyStream streams a file's bytes lazily", async () => {
+    const dir = await mkroot();
+    const file = join(dir, "body.txt");
+    await writeFile(file, "lazy bytes");
+    expect(await collect(fileBodyStream(file))).toBe("lazy bytes");
+  });
+
+  test("fileBodyStream closes cleanly on an empty file", async () => {
+    const dir = await mkroot();
+    const file = join(dir, "empty.txt");
+    await writeFile(file, "");
+    expect(await collect(fileBodyStream(file))).toBe("");
+  });
+
+  test("fileBodyStream cancel tears down the underlying reader", async () => {
+    const dir = await mkroot();
+    const file = join(dir, "cancel.txt");
+    await writeFile(file, "abcdef");
+    const stream = fileBodyStream(file);
+    const reader = stream.getReader();
+    // The first read opens the underlying file (reader is now defined);
+    // cancelling then exercises the stream's cancel path.
+    await reader.read();
+    await reader.cancel();
+  });
+
+  test("walkDir returns sorted, posix-keyed regular files only", async () => {
+    const dir = await mkroot();
+    await mkdir(join(dir, "sub"), { recursive: true });
+    await writeFile(join(dir, "b.txt"), "b");
+    await writeFile(join(dir, "a.txt"), "a");
+    await writeFile(join(dir, "sub", "c.txt"), "c");
+    const walked = await walkDir(dir);
+    expect(walked.map((f) => f.key)).toEqual(["a.txt", "b.txt", "sub/c.txt"]);
+  });
+
+  test("writeBodyToDir writes under the dir, creating subdirs", async () => {
+    const dir = await mkroot();
+    const dest = await writeBodyToDir(fakeStoredFile("x/y/z.txt", "deep"), dir);
+    expect(dest).toBe(join(dir, "x/y/z.txt"));
+    expect(await readFile(dest, "utf-8")).toBe("deep");
+  });
+
+  test("writeBodyToDir refuses keys that escape the directory", async () => {
+    const dir = await mkroot();
+    await expect(
+      writeBodyToDir(fakeStoredFile("../escape.txt", "no"), dir)
+    ).rejects.toThrow(FilesError);
   });
 });
 
@@ -91,6 +207,7 @@ describe("cli/program", () => {
       "mcp",
       "move",
       "sign-upload",
+      "transfer",
       "upload",
       "url",
     ]);
@@ -102,6 +219,9 @@ describe("cli/program", () => {
     for (const flag of [
       "--provider",
       "--config-json",
+      "--key-prefix",
+      "--timeout",
+      "--retries",
       "--bucket",
       "--region",
       "--endpoint",
@@ -252,7 +372,7 @@ describe("cli/commands (fs integration)", () => {
     stdoutChunks.length = 0;
 
     const dest = join(root, "downloaded.txt");
-    await runDownload({ ...common(), key: "out/body.txt", out: dest });
+    await runDownload({ ...common(), keys: ["out/body.txt"], out: dest });
     expect(await readFile(dest, "utf-8")).toBe("world");
   });
 

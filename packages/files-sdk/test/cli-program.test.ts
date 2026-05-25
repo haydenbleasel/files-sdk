@@ -348,4 +348,71 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     await run("--provider", "fs", "--root", root, "mcp");
     expect(mcpStartCalls).toBe(before + 1);
   });
+
+  test("transfer routes through its action builder (dry-run)", async () => {
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "transfer",
+      "--to",
+      JSON.stringify({ provider: "fs", root }),
+      "--prefix",
+      "p/",
+      "--concurrency",
+      "4",
+      "--no-overwrite"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "transfer",
+      dryRun: true,
+      overwrite: false,
+      prefix: "p/",
+      to: "fs",
+    });
+  });
+
+  test("upload/download new flags route through their builders", async () => {
+    const local = path.join(root, "in.txt");
+    await fsp.writeFile(local, "payload");
+    // --multipart + --part-size flow through the upload builder
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "upload",
+      "k",
+      "--file",
+      local,
+      "--multipart",
+      "--part-size",
+      "1024"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "upload",
+      multipart: { partSize: 1024 },
+    });
+    cap.stdout.length = 0;
+    // download --range + many-key/--out-dir flow through the download builder
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "download",
+      "a",
+      "b",
+      "--out-dir",
+      root
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "download",
+      keys: ["a", "b"],
+    });
+  });
 });
