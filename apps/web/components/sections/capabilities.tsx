@@ -43,7 +43,7 @@ await files.delete(["old/1.png", "old/2.png"]);`,
       "upload, download, head, exists, copy, move, list, delete — the same calls on every adapter. Hand any of them an array to batch with bounded concurrency, or walk a listing as a plain async iterable.",
     docHref: "/api",
     panel: <Methods />,
-    title: "Every operation, one vocabulary",
+    title: "Every operation, one interface",
   },
   {
     code: `import { createFileTools } from "files-sdk/ai-sdk";
