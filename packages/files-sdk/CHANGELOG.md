@@ -1,5 +1,175 @@
 # files-sdk
 
+## 1.6.0
+
+### Minor Changes
+
+- 12d6218: Bring the CLI (and MCP server) to full parity with the SDK surface.
+
+  Every `Files` capability is now reachable from the `files` binary:
+
+  - **Global `--key-prefix`** scopes every operation under a base path (the instance prefix from `new Files({ prefix })`, distinct from the one-off `list --prefix` filter). **Global `--timeout` / `--retries`** set the per-attempt timeout and retry count for all commands.
+  - **`download --range start-end`** downloads a byte range (0-based, inclusive), e.g. `0-1023` or `1024-`.
+  - **`upload --multipart`** (with `--part-size` / `--multipart-concurrency`) uploads large objects in parallel parts.
+  - **`head` / `exists` / `delete`** accept `--concurrency` and `--stop-on-error` to tune the bulk fan-out for many keys.
+  - **`list --all`** walks every page (following the cursor) and returns all items in one result.
+  - **`upload --dir <localDir>`** uploads a whole local tree (keyed by relative path, content type inferred per file), and **`download <keys...> --out-dir <dir>`** downloads many keys into a directory — both built on the SDK's bulk array forms.
+  - **`transfer`** copies every object from the configured (source) provider to another provider given as a JSON config (`--to`), streaming each body across backends. `--prefix` filters the walk and `--no-overwrite` skips keys already present at the destination.
+
+  The MCP server mirrors all of the above: the `upload` tool takes `multipart`, `download` takes a byte `range`, the `head` / `exists` / `delete` tools take `concurrency` / `stopOnError`, `list` takes `all`, and a new `transfer` tool copies objects across providers. The global `--key-prefix` / `--timeout` / `--retries` bind to the server's `Files` instance at startup.
+
+- 0bb7ca3: Add `transfer` for cross-provider migration.
+
+  `transfer(source, dest, options?)` streams every object from one `Files` instance to another — the one operation the unified surface uniquely enables, since `copy`/`move` live inside a single adapter. It's built entirely on public primitives (the source's `listAll` + streaming `download`, the destination's `exists` + `upload`), so no adapter implements anything new.
+
+  ```ts
+  import { Files, transfer } from "files-sdk";
+  import { s3 } from "files-sdk/s3";
+  import { r2 } from "files-sdk/r2";
+
+  const from = new Files({ adapter: s3({ bucket: "old" }) });
+  const to = new Files({
+    adapter: r2({ bucket: "new", accountId, accessKeyId, secretAccessKey }),
+  });
+
+  const { transferred, skipped, errors } = await transfer(from, to, {
+    prefix: "uploads/",
+    onProgress: ({ done, key }) => console.log(done, key),
+  });
+  ```
+
+  Both sides are full `Files` instances, so each leg honors its own `prefix`, retries, timeouts, and hooks. Each object is streamed download-to-upload — the destination never buffers a whole large file. Body, content type, and user metadata travel; `etag`/`lastModified` are destination-assigned and `Cache-Control` is not carried.
+
+  Like the bulk array methods, `transfer` doesn't throw on partial failure: results come back as `{ transferred, skipped?, errors? }` in walk order. Options cover `prefix`, `transformKey`, `overwrite` (skip keys already present), `concurrency` (default 8), `limit` (walk page size), `stopOnError` (sequential, bail at first failure), `signal`, and `onProgress`.
+
+- 5d24bc8: Add `hooks` to `new Files(...)` so applications can observe SDK activity with `onAction`, `onError`, and `onRetry`.
+
+  Each hook is fire-and-forget (called, not awaited) and receives a small, caller-facing event — the operation `type`, the public `key` / `keys` (or `from` / `to` for `copy`), timing, and the final result or error. It mirrors the lightweight `onProgress` callback style.
+
+- c50a55a: Add an in-memory adapter at `files-sdk/memory`. It implements the full `Adapter` contract backed by a `Map`, so you can test code that uses `Files` without touching disk or real storage — the same swap-in-via-env story as the other adapters, but with nothing to clean up.
+
+  ```ts
+  import { Files } from "files-sdk";
+  import { memory } from "files-sdk/memory";
+
+  const files = new Files({ adapter: memory() });
+  await files.upload("hello.txt", "hi");
+  (await files.download("hello.txt")).text(); // "hi"
+  ```
+
+  Zero dependencies and isomorphic (no `node:fs`/`node:crypto`), so it runs unchanged in Node, Bun, Deno, the browser, and edge runtimes. Pass `initial` to pre-populate fixtures, and reach into `adapter.raw` (the backing `Map`) to inspect or reset the store between tests:
+
+  ```ts
+  const adapter = memory({ initial: { "users/1.json": '{"id":1}' } });
+  adapter.raw.clear();
+  ```
+
+  `url()` returns an opaque, non-fetchable `memory://${key}` and `signedUploadUrl()` a `memory://` placeholder — there's no server backing the store. It's a test/reference adapter, not for production.
+
+- 67349f4: Add `move` and `listAll`.
+
+  `files.move(from, to, options?)` renames a key. It uses the adapter's native rename where one exists (the `fs` adapter renames in place atomically; Cloudinary uses its server-side `rename`, keeping the same `asset_id` with no re-upload) and otherwise falls back to `copy` + `delete` — the same two-step every object store takes, since none offer an atomic move. Moving a key onto itself is a no-op, so the fallback can't copy-then-delete a file out of existence. `move` throws on Convex, where `copy` does (immutable storage ids, no rename).
+
+  ```ts
+  await files.move("uploads/tmp-abc.png", "avatars/user-123.png");
+  ```
+
+  `FileHandle` gains the matching `moveTo` / `moveFrom`, and `move` fires the lifecycle hooks (`onAction` / `onError` / `onRetry`) with a new `"move"` action type.
+
+  `files.listAll(options?)` walks every page as an async iterable, following the cursor for you:
+
+  ```ts
+  for await (const file of files.listAll({ prefix: "avatars/" })) {
+    console.log(file.key, file.size);
+  }
+  ```
+
+  `prefix` scopes the walk and `limit` sets the per-page size; each page is a real `list` call, so retries, timeouts, and prefix scoping all apply.
+
+  Custom adapters can implement an optional `move(from, to, opts?)` to provide a native rename; omitting it keeps the copy + delete fallback.
+
+  The CLI gains a `move <from> <to>` command and the MCP server exposes a matching `move` tool.
+
+- a96874f: `upload` now accepts a `multipart` option for uploading large bodies in parallel parts.
+
+  ```ts
+  await files.upload("backups/db.tar", stream, {
+    multipart: true, // or { partSize, concurrency }
+  });
+  ```
+
+  - **S3 and the S3-compatible adapters** (incl. R2 over HTTP) run multipart through `@aws-sdk/lib-storage`, falling back to a single `PutObject` for small bodies. Unknown-length `ReadableStream` bodies now use multipart automatically, even without the flag.
+  - **OneDrive** uploads above its 250 MB simple-upload limit (and any `multipart` request) now go through a chunked upload session instead of throwing — large files just work.
+  - **GCS** and **Firebase Storage** switch to a resumable upload when `multipart` is set; `partSize` maps to the chunk size.
+  - **Azure Blob** maps `partSize`/`concurrency` to its parallel block-upload tuning.
+  - **Dropbox** now streams `ReadableStream` bodies through its upload session chunk-by-chunk instead of buffering the whole file in memory; `partSize` tunes the chunk size (rounded to a 4 MiB multiple).
+  - The array form of `upload` accepts a per-item `multipart` toggle/tuning too.
+
+  Other adapters already stream natively or only accept a fully-buffered body, so they ignore the option.
+
+- 64cf324: `download` now accepts a `range` option for fetching a contiguous byte slice of an object — the primitive behind video seeking and resumable downloads.
+
+  ```ts
+  // Bytes 0–1023 (end is inclusive, matching the HTTP Range header) → 1024 bytes.
+  const head = await files.download("video.mp4", {
+    range: { start: 0, end: 1023 },
+  });
+
+  // Omit end to read from an offset to EOF — e.g. resume an interrupted download.
+  const rest = await files.download("video.mp4", { range: { start: 1024 } });
+  ```
+
+  Both bounds are 0-based and `end` is inclusive, mirroring the `bytes=start-end` request the supporting adapters issue. The returned `StoredFile` carries just the requested bytes and reports the range length as its `size`. `range` works with `as: "stream"` so you never buffer the whole slice.
+
+  - **S3 and every S3-compatible adapter** (R2 over HTTP, MinIO, DigitalOcean Spaces, Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, and the rest of the `s3()` family) issue a ranged `GetObject`.
+  - **Bun S3** slices via `S3File.slice`, **GCS** and **Firebase Storage** via `createReadStream`/`download` byte offsets, **Azure Blob** via its offset/count download, and the **R2 Workers binding** via its native `range` option.
+  - The local **`fs`** adapter reads only the requested bytes off disk, and the in-memory adapter slices its buffer.
+  - The fetch-based adapters — **UploadThing, Box, Vercel Blob (public), Cloudinary, PocketBase, Dropbox, OneDrive, SharePoint, and Google Drive** — send an HTTP `Range` header and verify the host replied `206 Partial Content`, throwing if it ignored the range and returned the whole object (so the bandwidth saving is never silently lost).
+
+  Adapters whose provider has no range primitive (Supabase, Appwrite, Netlify Blobs, Bunny Storage, Convex, and Vercel Blob private blobs) throw a `FilesError` rather than downloading the whole object and slicing it client-side. Custom adapters opt in by setting `supportsRange: true` and honoring `DownloadOptions.range`; the `Files` wrapper validates the range and gates unsupported adapters before any provider call.
+
+- 841175a: `upload` now accepts an `onProgress` callback for reporting realtime progress — e.g. to drive a progress bar.
+
+  ```ts
+  await files.upload("big.zip", stream, {
+    onProgress: ({ loaded, total }) =>
+      console.log(
+        total ? `${Math.round((loaded / total) * 100)}%` : `${loaded} bytes`
+      ),
+  });
+  ```
+
+  Granularity depends on the body and the adapter:
+
+  - A `ReadableStream` body is reported byte-by-byte on every adapter, as the bytes are consumed (`total` is omitted, since the length is unknown).
+  - A buffered body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) reports `{ loaded: 0, total }` then `{ loaded: total, total }` by default.
+  - Adapters with a native upload-progress hook report true byte-level progress for every body type (buffered included): S3 and the S3-compatible adapters, R2 (HTTP), Azure Blob, Google Cloud Storage, Firebase Storage, Vercel Blob, and FTP. The S3 family uses `@aws-sdk/lib-storage` (a new optional peer dependency loaded only when `onProgress` is used) and also gains multipart for large files; GCS and Firebase Storage switch to a resumable upload when `onProgress` is set.
+
+  The array form of `upload` accepts `onProgress` too; each report carries the item's `key`. Custom adapters can opt into reporting progress themselves by setting `reportsUploadProgress: true` and calling `opts.onProgress`.
+
+### Patch Changes
+
+- 52daa66: Update bundled and peer dependencies.
+
+  The CLI's `commander` runtime dependency moves to v14. Several optional provider-SDK peer floors are raised to the majors now built and tested against:
+
+  - `@anthropic-ai/claude-agent-sdk` → `^0.3.0` (claude adapter)
+  - `@googleapis/drive` → `^20.0.0` (google-drive adapter)
+  - `google-auth-library` → `^10.0.0` (gcs / google-drive auth)
+  - `node-appwrite` → `^25.0.0` (appwrite adapter)
+  - `pocketbase` → `^0.27.0` (pocketbase adapter)
+
+  No public API or behaviour changes. If you use one of the adapters above, upgrade its peer to the new major.
+
+- 26989e0: The published package now ships its documentation. The full docs are bundled at `node_modules/files-sdk/docs` (per-adapter pages under `docs/adapters/`, AI tools under `docs/ai/`, plus `overview`, `api`, `cli`, `providers`, and `troubleshooting`), so tools and agents can read version-matched reference material offline instead of relying on the hosted site.
+- 7027836: In-memory adapter (`files-sdk/memory`): give `metadata` the same value semantics the bytes already have. The adapter cloned an entry's bytes on the way in but stored and returned the `metadata` object by reference, so three aliases leaked: mutating the object passed to `upload()` (or an `initial` seed) after the call reached into the store, mutating a `head()`/`download()` result's `metadata` reached back into the store, and `copy()` left the source and destination sharing one mutable metadata object — mutating one silently changed the other. Metadata is now shallow-cloned on write and on read, so each stored entry owns its own copy and every read hands back a fresh one, matching how a real backend round-trips metadata. Bytes behavior is unchanged.
+- 293ba1d: `onProgress` is now truly fire-and-forget: a throwing progress reporter can no longer fail or retry the upload it observes. Previously, a buffered upload's final progress report ran inside the retryable attempt, so a throw was caught by the retry layer, mislabelled a provider error, and re-uploaded the body up to `retries` times before rejecting; on the streaming path a throw errored the underlying stream and failed the upload. All three wrapper-driven `onProgress` calls now route through the same swallow-and-ignore guard the `hooks` callbacks use, matching the contract already documented on `FilesHooks` ("a hook that throws can never fail the operation it observes"). Self-reporting adapters (`reportsUploadProgress`) are unaffected — they own their own reporting.
+- 1b978b9: Fix `signedUploadUrl({ maxSize })` failing with `501 Not Implemented` on Cloudflare R2.
+
+  The R2 adapter inherited the S3 adapter's behaviour of routing `maxSize` through a presigned `POST` policy (`content-length-range`). Cloudflare R2 does not implement the S3 `POST Object` API, so those uploads failed at upload time with `501 Not Implemented`.
+
+  R2 now throws a clear `Provider` error when `maxSize` is passed (matching how the Azure and Supabase adapters handle the same limitation), instead of handing back a POST form R2 can't serve. Omit `maxSize` to get a presigned `PUT` URL, and enforce upload caps at your application gateway. Fixes #49.
+
 ## 1.5.0
 
 ### Minor Changes
