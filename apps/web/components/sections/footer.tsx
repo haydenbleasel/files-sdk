@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 const PROJECT_LINKS = [
-  { href: "/docs", label: "Docs" },
+  { href: "/overview", label: "Docs" },
   { href: "/adapters", label: "Adapters" },
   { href: "/api", label: "API" },
   { href: "/cli", label: "CLI" },

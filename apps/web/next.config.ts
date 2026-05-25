@@ -6,6 +6,11 @@ const withMDX = createMDX();
 const nextConfig: NextConfig = {
   redirects: () => [
     {
+      destination: "/overview",
+      permanent: true,
+      source: "/docs",
+    },
+    {
       destination: "/adapters/s3",
       permanent: false,
       source: "/adapters",
