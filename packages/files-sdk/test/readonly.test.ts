@@ -7,10 +7,8 @@ import type {
   FilesErrorEvent,
   FilesHooks,
 } from "../src/index.js";
-import {
-  createResponsesFileTools,
-  type FunctionCallItem,
-} from "../src/openai/index.js";
+import { createResponsesFileTools } from "../src/openai/index.js";
+import type { FunctionCallItem } from "../src/openai/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const newFiles = () => new Files({ adapter: fakeAdapter() });
@@ -68,7 +66,8 @@ const captureExit = (): Capture => {
   const origExit = process.exit.bind(process) as ExitFn;
   const origErr = process.stderr.write.bind(process.stderr) as WriteFn;
 
-  (process.stderr as { write: WriteFn }).write = ((_: unknown) => true) as WriteFn;
+  (process.stderr as { write: WriteFn }).write = ((_: unknown) =>
+    true) as WriteFn;
   (process as { exit: ExitFn }).exit = ((code?: number): never => {
     exits.push(code ?? 0);
     throw new Error(`__exit:${code ?? 0}`);
@@ -127,8 +126,7 @@ describe("readonly feature", () => {
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
     ).rejects.toMatchObject({
       code: "ReadOnly",
-      message:
-        "Cannot call signedUploadUrl() on a read-only Files instance.",
+      message: "Cannot call signedUploadUrl() on a read-only Files instance.",
     });
 
     expect(upload).not.toHaveBeenCalled();
@@ -139,7 +137,7 @@ describe("readonly feature", () => {
 
   test("readonly() returns a derived read-only view that preserves reads and prefix behavior", async () => {
     const adapter = fakeAdapter();
-    const writer = new Files({ adapter, prefix: "users", timeout: 1_000 });
+    const writer = new Files({ adapter, prefix: "users", timeout: 1000 });
     await writer.upload("123.txt", "hello");
 
     const files = writer.readonly();

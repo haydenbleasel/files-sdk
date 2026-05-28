@@ -75,9 +75,7 @@ const errorCode = (err: unknown): string | undefined => {
   return undefined;
 };
 
-const classifyFsError = (
-  code: string | undefined
-): ProviderFilesErrorCode => {
+const classifyFsError = (code: string | undefined): ProviderFilesErrorCode => {
   if (code === "ENOENT" || code === "ENOTDIR") {
     return "NotFound";
   }

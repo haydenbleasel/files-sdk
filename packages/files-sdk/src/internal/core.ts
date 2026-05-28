@@ -17,7 +17,7 @@ import type {
   MultipartOptions,
 } from "../index.js";
 import { FilesError } from "./errors.js";
-import type { FilesErrorCode, ProviderFilesErrorCode } from "./errors.js";
+import type { ProviderFilesErrorCode } from "./errors.js";
 
 // =============================================================================
 // URL helpers

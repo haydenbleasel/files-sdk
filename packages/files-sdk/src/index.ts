@@ -645,7 +645,7 @@ export interface FilesOptions<A extends Adapter> extends OperationOptions {
    * `delete`, `copy`, `move`, `signedUploadUrl`, and the write helpers on
    * `file(key)`) with `FilesError("ReadOnly", ...)`.
    */
-  "readonly"?: boolean;
+  readonly?: boolean;
   /** Observability callbacks — see {@link FilesHooks}. */
   hooks?: FilesHooks;
 }
@@ -1687,9 +1687,7 @@ export class Files<A extends Adapter = Adapter> {
     return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
   }
 
-  #assertWritable(
-    operation: WriteActionType
-  ): void {
+  #assertWritable(operation: WriteActionType): void {
     if (!this.#isReadOnly) {
       return;
     }
