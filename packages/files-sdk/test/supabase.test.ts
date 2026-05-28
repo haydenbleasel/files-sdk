@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const sigOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
   m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
@@ -1072,5 +1073,243 @@ describe("supabase adapter", () => {
       // list(path, options, parameters) — parameters is the 3rd arg.
       expect(sigOf(listMock, 2)?.signal).toBe(signal);
     });
+  });
+});
+
+describe("supabase resumable uploads (TUS)", () => {
+  const TUS = `${STORAGE_URL}/upload/resumable`;
+  const SESSION = `${TUS}/uploads-file`;
+  const SIX_MIB = 6 * 1024 * 1024;
+  let restoreFetch: () => void;
+  afterEach(() => {
+    restoreFetch?.();
+  });
+  const installFetch = (
+    handler: (url: string, init: RequestInit) => Response
+  ): void => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = ((url: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(url, init))) as unknown as typeof fetch;
+  };
+
+  test("fresh upload creates a session and PATCHes chunks", async () => {
+    const offsets: string[] = [];
+    installFetch((_url, init) => {
+      if (init.method === "POST") {
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      const headers = init.headers as Record<string, string>;
+      offsets.push(headers["Upload-Offset"] ?? "");
+      const next =
+        Number(headers["Upload-Offset"]) +
+        ((init.body as Uint8Array)?.byteLength ?? 0);
+      return new Response(null, {
+        headers: { "Upload-Offset": String(next) },
+        status: 204,
+      });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    const control = new UploadControl();
+    const result = await files.upload("file", new Uint8Array(SIX_MIB + 10), {
+      control,
+      multipart: { partSize: SIX_MIB },
+    });
+    expect(result.size).toBe(SIX_MIB + 10);
+    expect(control.status).toBe("completed");
+    expect(control.session?.provider).toBe("supabase");
+    expect(offsets).toEqual(["0", String(SIX_MIB)]);
+  });
+
+  test("resume reads Upload-Offset via HEAD, then sends the rest", async () => {
+    const patched: string[] = [];
+    installFetch((_url, init) => {
+      if (init.method === "HEAD") {
+        return new Response(null, {
+          headers: { "Upload-Offset": String(SIX_MIB) },
+          status: 200,
+        });
+      }
+      const headers = init.headers as Record<string, string>;
+      patched.push(headers["Upload-Offset"] ?? "");
+      return new Response(null, {
+        headers: { "Upload-Offset": String(SIX_MIB + 10) },
+        status: 204,
+      });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "file",
+      provider: "supabase",
+      uri: SESSION,
+    };
+    const result = await files.upload("file", new Uint8Array(SIX_MIB + 10), {
+      control: UploadControl.from(token),
+      multipart: { partSize: SIX_MIB },
+    });
+    expect(result.size).toBe(SIX_MIB + 10);
+    expect(patched).toEqual([String(SIX_MIB)]);
+  });
+
+  test("abort deletes the session", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      if (init.method === "POST") {
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      if (init.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      const headers = init.headers as Record<string, string>;
+      const next =
+        Number(headers["Upload-Offset"]) +
+        ((init.body as Uint8Array)?.byteLength ?? 0);
+      return new Response(null, {
+        headers: { "Upload-Offset": String(next) },
+        status: 204,
+      });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab", new Uint8Array(SIX_MIB * 2 + 5), {
+      control,
+      multipart: { partSize: SIX_MIB },
+      onProgress: ({ loaded }) => {
+        if (loaded >= SIX_MIB && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(methods).toContain("DELETE");
+  });
+
+  test("a failed session init throws", async () => {
+    installFetch(() => new Response(null, { status: 500 }));
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/session init failed/u);
+  });
+
+  test("a failed chunk PATCH throws", async () => {
+    installFetch((_url, init) =>
+      init.method === "POST"
+        ? new Response(null, { headers: { Location: SESSION }, status: 201 })
+        : new Response(null, { status: 500 })
+    );
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl(), retries: 0 })
+    ).rejects.toThrow(/chunk upload failed/u);
+  });
+
+  test("the client escape hatch can't do resumable (no url/key)", async () => {
+    installFetch(() => new Response(null, { status: 201 }));
+    // A pre-built client lets construction succeed, but there's no URL/key to
+    // reach the TUS endpoint with — so resumable must reject.
+    const files = new Files({
+      adapter: supabase({
+        bucket: BUCKET,
+        client: new StorageClientStub(STORAGE_URL, {}) as never,
+      }),
+    });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/require `url` \+ `key`/u);
+  });
+
+  test("a session response missing Location throws", async () => {
+    installFetch(() => new Response(null, { status: 201 }));
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/missing Location/u);
+  });
+
+  test("a failed resume HEAD throws", async () => {
+    installFetch(() => new Response(null, { status: 410 }));
+    const files = new Files({ adapter: makeAdapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "file",
+      provider: "supabase",
+      uri: SESSION,
+    };
+    await expect(
+      files.upload("file", new Uint8Array(SIX_MIB + 10), {
+        control: UploadControl.from(token),
+        multipart: { partSize: SIX_MIB },
+        retries: 0,
+      })
+    ).rejects.toThrow(/status check failed/u);
+  });
+
+  test("a trailing-slash project url still resolves the TUS endpoint", async () => {
+    let posted = "";
+    installFetch((url, init) => {
+      if (init.method === "POST") {
+        posted = url;
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      const headers = init.headers as Record<string, string>;
+      return new Response(null, {
+        headers: {
+          "Upload-Offset": String(
+            Number(headers["Upload-Offset"]) +
+              ((init.body as Uint8Array)?.byteLength ?? 0)
+          ),
+        },
+        status: 204,
+      });
+    });
+    const files = new Files({
+      adapter: makeAdapter({ url: `${PROJECT_URL}/` }),
+    });
+    await files.upload("file", "hello", { control: new UploadControl() });
+    expect(posted).toBe(TUS);
+  });
+
+  test("resuming a mismatched key throws", async () => {
+    installFetch(() => new Response(null, { status: 201 }));
+    const files = new Files({ adapter: makeAdapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "other",
+      provider: "supabase",
+      uri: SESSION,
+    };
+    await expect(
+      files.upload("file", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
+  });
+
+  test("resuming a non-supabase token throws", async () => {
+    installFetch(() => new Response(null, { status: 201 }));
+    const files = new Files({ adapter: makeAdapter() });
+    const token = {
+      bucket: "b",
+      key: "x",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

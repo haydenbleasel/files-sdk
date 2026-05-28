@@ -1,36 +1,195 @@
 ---
 title: Commands
-description: Each CLI command maps 1:1 to an Adapter method - upload, download, head, exists, delete, copy, move, list, url, and sign-upload.
+description: Each CLI command maps to an SDK method - upload, download, head, exists, delete, copy, move, list, url, sign-upload, and transfer.
 ---
 
-Each command maps 1:1 to an `Adapter` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
+Each command maps to a `Files` method. Same semantics, same `FilesError` codes, same `StoredFile` shape on the way out.
+
+| Command       | SDK method                                  | What it does                              |
+| ------------- | ------------------------------------------- | ----------------------------------------- |
+| `upload`      | [`upload`](/api/upload)                     | Write a file or piped stdin to a key      |
+| `download`    | [`download`](/api/download)                 | Read a key to disk or stream it to stdout |
+| `head`        | [`head`](/api/head)                         | Fetch metadata without the body           |
+| `exists`      | [`exists`](/api/exists)                     | Test a key — exit code only, no output    |
+| `list`        | [`list`](/api/list)                         | Page through keys under a prefix          |
+| `copy`        | [`copy`](/api/copy)                         | Copy a key to a new key                   |
+| `move`        | [`move`](/api/move)                         | Move (rename) a key                       |
+| `delete`      | [`delete`](/api/delete)                     | Delete one or more keys                   |
+| `url`         | [`url`](/api/url)                           | Get a read URL — presigned or public      |
+| `sign-upload` | [`signedUploadUrl`](/api/signed-upload-url) | Mint a browser-direct upload policy       |
+| `transfer`    | [`transfer`](/features/transfer)            | Stream every object to another provider   |
+
+All examples use `--provider s3 --bucket uploads`; swap in any [provider](/providers) and its flags.
+
+## Methods
+
+### upload
+
+Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. `--content-type` is otherwise inferred from the key.
 
 ```bash lineNumbers
-# Upload from a file (or pipe stdin)
 files --provider s3 --bucket uploads \
   upload reports/2026-q1.pdf --file ./report.pdf --content-type application/pdf
 
 cat report.pdf | files --provider s3 --bucket uploads \
   upload reports/2026-q1.pdf --stdin --content-type application/pdf
+```
 
-# Download to disk or stream to stdout
+For large objects see [multipart](#byte-ranges-and-multipart); to push a whole local tree see [directories](#directories).
+
+### download
+
+Read a key back. `--out` writes it to a file; `--stdout` streams the raw bytes so you can pipe them onward.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads download reports/2026-q1.pdf --out ./report.pdf
 files --provider s3 --bucket uploads download reports/2026-q1.pdf --stdout > report.pdf
+```
 
-# Metadata, existence, listing
+To pull a slice instead of the whole object see [byte ranges](#byte-ranges-and-multipart); to fetch many keys at once see [directories](#directories).
+
+### head
+
+Fetch an object's metadata — size, content type, etag, last-modified — without downloading the body.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads head reports/2026-q1.pdf
+```
+
+Pass several keys to inspect them in one call; see [many keys at once](#many-keys-at-once).
+
+### exists
+
+Test whether a key exists. It prints nothing and signals through the exit code, so it drops straight into a shell conditional.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads exists reports/2026-q1.pdf   # exit 0 = exists, 1 = missing
+```
+
+### list
+
+Return one page of keys under a prefix. `--prefix` filters this call (distinct from the instance-wide [`--key-prefix`](#global-flags)) and `--limit` caps the page.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads list --prefix reports/ --limit 50
+```
 
-# Copy, move (rename), delete
+The result carries a `cursor` for the next page. Pass `--all` to follow the cursor to the end and return every item in one result — mind the memory cost on huge buckets:
+
+```bash lineNumbers
+files --provider s3 --bucket uploads list --prefix logs/ --all | jq '.items[].key'
+```
+
+### copy
+
+Copy a key to a new key, leaving the source in place.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1.pdf
+```
+
+### move
+
+Move (rename) a key — a copy followed by a delete of the source.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads move uploads/tmp-q1.pdf reports/2026-q1.pdf
+```
+
+### delete
+
+Delete a key.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads delete reports/archive/q1.pdf
+```
 
-# URLs (presigned on signing adapters, public for CDN-backed providers)
+Pass several keys to delete them in one fan-out; see [many keys at once](#many-keys-at-once).
+
+### url
+
+Get a read URL for a key — presigned and short-lived on signing adapters, a public URL for CDN-backed providers. `--expires-in` sets the lifetime in seconds.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads url reports/2026-q1.pdf --expires-in 600
+```
 
-# Browser uploads via presigned POST policy (enforces size server-side)
+### sign-upload
+
+Mint a presigned POST policy for browser-direct uploads. `--max-size` is enforced server-side, so the client can't exceed it.
+
+```bash lineNumbers
 files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
   --expires-in 600 --max-size 5242880 --content-type image/png
+```
+
+### transfer
+
+Stream every object from the configured (source) provider to another provider,
+given as a JSON config. The source uses the normal global flags (so
+`--key-prefix` scopes it); `--prefix` filters the walk, and `--no-overwrite`
+skips keys already present at the destination.
+
+```bash lineNumbers
+# Migrate an S3 prefix to R2, skipping anything already copied
+files --provider s3 --bucket old --verbose \
+  transfer \
+  --to '{"provider":"r2","bucket":"new","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}' \
+  --prefix uploads/ --no-overwrite --concurrency 16
+```
+
+## Global flags
+
+These apply to every command and mirror the `Files` constructor and `OperationOptions`:
+
+```bash lineNumbers
+# --key-prefix scopes every operation under a base path (the instance prefix,
+# distinct from `list --prefix`, which is a one-off filter). Listed/returned
+# keys come back relative to it.
+files --provider s3 --bucket uploads --key-prefix tenants/acme \
+  list                                  # lists under tenants/acme/
+
+# --timeout (per attempt, ms) and --retries (provider failures) apply to all commands
+files --provider s3 --bucket uploads --timeout 10000 --retries 3 \
+  head reports/2026-q1.pdf
+```
+
+## Many keys at once
+
+`head`, `exists`, and `delete` take multiple keys and return a structured result
+instead of throwing on partial failure. `--concurrency` and `--stop-on-error`
+tune the fan-out:
+
+```bash lineNumbers
+files --provider s3 --bucket uploads head a.txt b.txt c.txt
+files --provider s3 --bucket uploads delete a.txt b.txt --concurrency 16
+files --provider s3 --bucket uploads exists a.txt b.txt --stop-on-error
+```
+
+## Byte ranges and multipart
+
+```bash lineNumbers
+# Download a byte range (0-based, inclusive) — for video seeking or resuming.
+# Range downloads throw on adapters with no native range primitive.
+files --provider s3 --bucket uploads download big.mp4 --out head.mp4 --range 0-1048575
+
+# Upload in parallel parts (robust for large objects). --part-size /
+# --multipart-concurrency tune it and imply --multipart.
+files --provider s3 --bucket uploads \
+  upload big.iso --file ./big.iso --multipart --part-size 16777216
+```
+
+## Directories
+
+Upload a whole local tree, or download many keys into a directory. Each file is
+keyed by (or written to) its relative path; content types are inferred per file
+on upload.
+
+```bash lineNumbers
+# Upload every file under ./build, keyed by relative path (composes with --key-prefix)
+files --provider s3 --bucket site --key-prefix assets upload --dir ./build
+
+# Download many keys into a directory, recreating their key paths underneath it
+files --provider s3 --bucket uploads \
+  download docs/a.pdf docs/b.pdf logos/c.png --out-dir ./pulled
 ```

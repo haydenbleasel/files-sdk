@@ -44,6 +44,7 @@ export const AdaptersIndex = ({ adapters }: AdaptersIndexProps) => {
           className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <input
+          aria-label="Search adapters"
           autoComplete="off"
           className="w-full rounded-md border border-dotted bg-transparent py-2.5 pr-3 pl-9 text-sm placeholder:text-muted-foreground focus:outline-1 focus:outline-ring"
           id={inputId}

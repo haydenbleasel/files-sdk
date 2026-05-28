@@ -2,18 +2,35 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Readable } from "node:stream";
 
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { sdkStreamMixin } from "@smithy/util-stream";
 import { mockClient } from "aws-sdk-client-mock";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 import { r2 } from "../src/r2/index.js";
+
+const makeAdapter = () =>
+  r2({
+    accessKeyId: "K",
+    accountId: "ACCT",
+    bucket: "uploads",
+    secretAccessKey: "S",
+  });
+
+const streamBody = (text: string) =>
+  sdkStreamMixin(Readable.from(Buffer.from(text)));
 
 describe("r2 adapter — HTTP path", () => {
   test("uses S3-compatible endpoint with auto region and path-style", async () => {
@@ -127,17 +144,6 @@ describe("r2 adapter — HTTP path", () => {
     beforeEach(() => s3Mock.reset());
     afterEach(() => s3Mock.reset());
 
-    const makeAdapter = () =>
-      r2({
-        accessKeyId: "K",
-        accountId: "ACCT",
-        bucket: "uploads",
-        secretAccessKey: "S",
-      });
-
-    const streamBody = (text: string) =>
-      sdkStreamMixin(Readable.from(Buffer.from(text)));
-
     test("copy issues a CopyObjectCommand against the inner s3 client", async () => {
       s3Mock.on(CopyObjectCommand).resolves({});
       const files = new Files({ adapter: makeAdapter() });
@@ -250,6 +256,20 @@ describe("r2 adapter — HTTP path", () => {
         expect(out.url).toContain("X-Amz-Signature=");
         expect(out.url).toContain("X-Amz-Expires=60");
       }
+    });
+
+    test("signedUploadUrl with maxSize throws — R2 has no POST policy", async () => {
+      // R2 doesn't implement the S3 POST Object API, so the inner s3
+      // adapter's content-length-range POST form would 501 at upload time.
+      // We reject up front instead. See issue #49.
+      const files = new Files({ adapter: makeAdapter() });
+      await expect(
+        files.signedUploadUrl("a.txt", {
+          contentType: "image/png",
+          expiresIn: 60,
+          maxSize: 5_000_000,
+        })
+      ).rejects.toThrow(/maxSize.*not supported/u);
     });
 
     test("raw is undefined before any method runs and resolves to the inner S3Client after", async () => {
@@ -652,6 +672,22 @@ describe("r2 adapter — Workers binding path", () => {
     }
   });
 
+  test("hybrid: signedUploadUrl with maxSize throws — R2 has no POST policy", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        secretAccessKey: "S",
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, maxSize: 5_000_000 })
+    ).rejects.toThrow(/maxSize.*not supported/u);
+  });
+
   test("hybrid: url() falls back to HTTP signing when no publicBaseUrl is set", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({
@@ -965,5 +1001,107 @@ describe("r2 adapter — Workers binding path", () => {
     expect(await got.text()).toBe("");
     const buffer = await got.arrayBuffer();
     expect(buffer.byteLength).toBe(0);
+  });
+});
+
+describe("r2 resumable uploads (HTTP path delegates to the lazy s3 driver)", () => {
+  const FIVE_MIB = 5 * 1024 * 1024;
+  const s3Mock = mockClient(S3Client);
+  beforeEach(() => s3Mock.reset());
+  afterEach(() => s3Mock.reset());
+
+  test("fresh upload drives S3 multipart through the lazy wrapper", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: FIVE_MIB + 10 });
+    const files = new Files({ adapter: makeAdapter() });
+    const control = new UploadControl();
+    const result = await files.upload(
+      "big.bin",
+      new Uint8Array(FIVE_MIB + 10),
+      {
+        control,
+        multipart: { partSize: FIVE_MIB },
+      }
+    );
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(control.status).toBe("completed");
+    expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(2);
+    expect(control.session?.provider).toBe("s3");
+  });
+
+  test("resume adopts the token and uploads only missing parts", async () => {
+    s3Mock.on(ListPartsCommand).resolves({
+      IsTruncated: false,
+      Parts: [{ ETag: '"p1"', PartNumber: 1, Size: FIVE_MIB }],
+    });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p2"' });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: FIVE_MIB + 10 });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "u1",
+    };
+    const files = new Files({ adapter: makeAdapter() });
+    const result = await files.upload(
+      "big.bin",
+      new Uint8Array(FIVE_MIB + 10),
+      { control: UploadControl.from(token), multipart: { partSize: FIVE_MIB } }
+    );
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(1);
+  });
+
+  test("abort discards the multipart upload through the wrapper", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+    const files = new Files({ adapter: makeAdapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("big.bin", new Uint8Array(FIVE_MIB + 10), {
+      control,
+      multipart: { concurrency: 1, partSize: FIVE_MIB },
+      onProgress: ({ loaded }) => {
+        if (loaded >= FIVE_MIB && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(1);
+  });
+
+  test("the Workers binding path has no resumableUpload (throws unsupported)", async () => {
+    const store = new Map<string, ArrayBuffer>();
+    const bucket = {
+      delete: () => Promise.resolve(),
+      get: () => Promise.resolve(null),
+      head: () => Promise.resolve(null),
+      list: () => Promise.resolve({ objects: [], truncated: false }),
+      put: (key: string) => {
+        store.set(key, new ArrayBuffer(0));
+        return Promise.resolve({});
+      },
+    };
+    const files = new Files({
+      adapter: r2({
+        binding: bucket as unknown as Parameters<typeof r2>[0] extends {
+          binding: infer B;
+        }
+          ? B
+          : never,
+        bucket: "uploads",
+      }),
+    });
+    await expect(
+      files.upload("x.bin", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/not supported/iu);
   });
 });

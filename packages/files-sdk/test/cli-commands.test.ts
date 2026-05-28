@@ -12,6 +12,7 @@ import {
   runList,
   runMove,
   runSignUpload,
+  runTransfer,
   runUpload,
   runUrl,
 } from "../src/cli/commands.js";
@@ -134,7 +135,7 @@ describe("cli/commands dry-run", () => {
   test("download dry-run prints dest=<stdout> when --stdout", async () => {
     await runDownload({
       ...baseOpts({ dryRun: true }),
-      key: "k",
+      keys: ["k"],
       stdout: true,
     });
     expect(lastJson(cap.stdout)).toMatchObject({
@@ -452,7 +453,7 @@ describe("cli/commands real (fs adapter)", () => {
     await uploadFile("d.txt", "downloaded", local);
     const dest = path.join(root, "out.bin");
     cap.stdout.length = 0;
-    await runDownload({ ...baseOpts(), key: "d.txt", out: dest });
+    await runDownload({ ...baseOpts(), keys: ["d.txt"], out: dest });
     expect(await fsp.readFile(dest, "utf-8")).toBe("downloaded");
     const out = lastJson(cap.stdout) as { key: string; size: number };
     expect(out.key).toBe("d.txt");
@@ -466,7 +467,7 @@ describe("cli/commands real (fs adapter)", () => {
     cap.stderr.length = 0;
     await runDownload({
       ...baseOpts({ verbose: true }),
-      key: "v.txt",
+      keys: ["v.txt"],
       stdout: true,
     });
     // Body should land on stdout untouched (raw stream, no JSON wrapper).
@@ -491,11 +492,271 @@ describe("cli/commands real (fs adapter)", () => {
     cap.stderr.length = 0;
     await runDownload({
       ...baseOpts({ json: false, verbose: true }),
-      key: "v2.txt",
+      keys: ["v2.txt"],
       stdout: true,
     });
     expect(cap.stdout.join("")).toContain("x");
     // Pretty JSON has indented "key":  prefixed with two spaces.
     expect(cap.stderr.join("")).toContain('  "key": "v2.txt"');
+  });
+});
+
+describe("cli/commands new surface", () => {
+  // Write the upload source OUTSIDE the fs root — a file under the root would
+  // itself show up as a stray object key in list/transfer results.
+  const write = async (key: string, body: string): Promise<void> => {
+    const src = await fsp.mkdtemp(path.join(os.tmpdir(), "files-sdk-src-"));
+    tmpDirs.push(src);
+    const file = path.join(src, "body");
+    await fsp.writeFile(file, body);
+    await runUpload({ ...baseOpts(), file, key });
+    cap.stdout.length = 0;
+  };
+
+  test("upload --multipart dry-run echoes multipart: true", async () => {
+    await runUpload({
+      ...baseOpts({ dryRun: true }),
+      key: "k",
+      multipart: true,
+    });
+    expect(lastJson(cap.stdout).multipart).toBe(true);
+  });
+
+  test("upload --part-size implies multipart object in dry-run", async () => {
+    await runUpload({
+      ...baseOpts({ dryRun: true }),
+      key: "k",
+      multipartConcurrency: 2,
+      partSize: 1024,
+    });
+    expect(lastJson(cap.stdout).multipart).toEqual({
+      concurrency: 2,
+      partSize: 1024,
+    });
+  });
+
+  test("upload with neither key nor --dir throws", async () => {
+    await expect(runUpload({ ...baseOpts() })).rejects.toThrow(FilesError);
+  });
+
+  test("upload --dir rejects a stray key/--file/--stdin", async () => {
+    await expect(
+      runUpload({ ...baseOpts(), dir: root, key: "k" })
+    ).rejects.toThrow(FilesError);
+  });
+
+  test("upload --dir dry-run echoes the dir without walking", async () => {
+    await runUpload({ ...baseOpts({ dryRun: true }), dir: "/nope" });
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "upload",
+      dir: "/nope",
+      dryRun: true,
+    });
+  });
+
+  test("upload --dir uploads a tree, inferring content types", async () => {
+    const localDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "files-sdk-dir-")
+    );
+    tmpDirs.push(localDir);
+    await fsp.mkdir(path.join(localDir, "sub"), { recursive: true });
+    await fsp.writeFile(path.join(localDir, "a.json"), '{"x":1}');
+    await fsp.writeFile(path.join(localDir, "sub", "b.txt"), "hello");
+    await runUpload({ ...baseOpts(), dir: localDir });
+    const out = lastJson(cap.stdout) as {
+      uploaded: { key: string; contentType: string }[];
+    };
+    expect(out.uploaded.map((u) => u.key)).toEqual(["a.json", "sub/b.txt"]);
+    expect(out.uploaded[0]?.contentType).toBe("application/json");
+    expect(await fsp.readFile(path.join(root, "sub/b.txt"), "utf-8")).toBe(
+      "hello"
+    );
+  });
+
+  test("download --range slices a single key", async () => {
+    await write("r.txt", "downloaded");
+    const dest = path.join(root, "slice.bin");
+    await runDownload({
+      ...baseOpts(),
+      keys: ["r.txt"],
+      out: dest,
+      range: "0-3",
+    });
+    expect(await fsp.readFile(dest, "utf-8")).toBe("down");
+  });
+
+  test("download --range dry-run echoes the parsed range", async () => {
+    await runDownload({
+      ...baseOpts({ dryRun: true }),
+      keys: ["k"],
+      range: "10-20",
+      stdout: true,
+    });
+    expect(lastJson(cap.stdout).range).toEqual({ end: 20, start: 10 });
+  });
+
+  test("download many --out-dir writes each key under the dir", async () => {
+    await write("docs/a.txt", "AAA");
+    await write("docs/b.txt", "BBBB");
+    const outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "files-sdk-out-"));
+    tmpDirs.push(outDir);
+    await runDownload({
+      ...baseOpts(),
+      keys: ["docs/a.txt", "docs/b.txt"],
+      outDir,
+    });
+    const out = lastJson(cap.stdout) as { downloaded: { key: string }[] };
+    expect(out.downloaded.map((d) => d.key).toSorted()).toEqual([
+      "docs/a.txt",
+      "docs/b.txt",
+    ]);
+    expect(await fsp.readFile(path.join(outDir, "docs/a.txt"), "utf-8")).toBe(
+      "AAA"
+    );
+  });
+
+  test("download many reports per-key errors and exits non-zero", async () => {
+    await write("ok.txt", "present");
+    const outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "files-sdk-out-"));
+    tmpDirs.push(outDir);
+    await expect(
+      runDownload({ ...baseOpts(), keys: ["ok.txt", "gone.txt"], outDir })
+    ).rejects.toThrow("__exit:1");
+    const out = lastJson(cap.stdout) as {
+      downloaded: { key: string }[];
+      errors: { key: string }[];
+    };
+    expect(out.downloaded.map((d) => d.key)).toEqual(["ok.txt"]);
+    expect(out.errors.map((e) => e.key)).toEqual(["gone.txt"]);
+    expect(cap.exits).toEqual([1]);
+  });
+
+  test("download many dry-run echoes keys + outDir", async () => {
+    await runDownload({
+      ...baseOpts({ dryRun: true }),
+      keys: ["a", "b"],
+      outDir: "/out",
+    });
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "download",
+      keys: ["a", "b"],
+      outDir: "/out",
+    });
+  });
+
+  test("download many rejects --out / --range / missing --out-dir", async () => {
+    await expect(
+      runDownload({ ...baseOpts(), keys: ["a", "b"], out: "/x" })
+    ).rejects.toThrow(/single key/u);
+    await expect(
+      runDownload({
+        ...baseOpts(),
+        keys: ["a", "b"],
+        outDir: "/o",
+        range: "0-1",
+      })
+    ).rejects.toThrow(/single key/u);
+    await expect(
+      runDownload({ ...baseOpts(), keys: ["a", "b"] })
+    ).rejects.toThrow(/out-dir/u);
+  });
+
+  test("delete many threads --concurrency / --stop-on-error", async () => {
+    await write("d-a.txt", "a");
+    await write("d-b.txt", "b");
+    await runDelete({
+      ...baseOpts(),
+      concurrency: 1,
+      keys: ["d-a.txt", "d-b.txt"],
+      stopOnError: true,
+    });
+    expect(lastJson(cap.stdout)).toEqual({ deleted: ["d-a.txt", "d-b.txt"] });
+  });
+
+  test("list --all walks every page and omits the cursor", async () => {
+    await write("all/a", "a");
+    await write("all/b", "b");
+    await runList({ ...baseOpts(), all: true, prefix: "all/" });
+    const out = lastJson(cap.stdout) as {
+      items: { key: string }[];
+      cursor?: string;
+    };
+    expect(out.items.map((i) => i.key).toSorted()).toEqual(["all/a", "all/b"]);
+    expect(out).not.toHaveProperty("cursor");
+  });
+
+  test("list --all dry-run echoes all: true", async () => {
+    await runList({ ...baseOpts({ dryRun: true }), all: true });
+    expect(lastJson(cap.stdout).all).toBe(true);
+  });
+
+  test("transfer copies every object to another provider", async () => {
+    await write("t/a.txt", "one");
+    await write("t/b.txt", "two");
+    const destRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "files-sdk-dst-")
+    );
+    tmpDirs.push(destRoot);
+    await runTransfer({
+      ...baseOpts(),
+      to: JSON.stringify({ provider: "fs", root: destRoot }),
+    });
+    const out = lastJson(cap.stdout) as { transferred: string[] };
+    expect(out.transferred.toSorted()).toEqual(["t/a.txt", "t/b.txt"]);
+    expect(await fsp.readFile(path.join(destRoot, "t/a.txt"), "utf-8")).toBe(
+      "one"
+    );
+  });
+
+  test("transfer --no-overwrite skips keys already present", async () => {
+    await write("s.txt", "x");
+    const destRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "files-sdk-dst-")
+    );
+    tmpDirs.push(destRoot);
+    const to = JSON.stringify({ provider: "fs", root: destRoot });
+    await runTransfer({ ...baseOpts(), to });
+    cap.stdout.length = 0;
+    await runTransfer({ ...baseOpts(), overwrite: false, to });
+    expect(lastJson(cap.stdout)).toMatchObject({
+      skipped: ["s.txt"],
+      transferred: [],
+    });
+  });
+
+  test("transfer dry-run validates the destination provider", async () => {
+    await runTransfer({
+      ...baseOpts({ dryRun: true }),
+      prefix: "p/",
+      to: JSON.stringify({ provider: "fs", root: "/tmp/x" }),
+    });
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "transfer",
+      prefix: "p/",
+      to: "fs",
+    });
+  });
+
+  test("transfer rejects a non-object or provider-less --to", async () => {
+    await expect(runTransfer({ ...baseOpts(), to: "null" })).rejects.toThrow(
+      FilesError
+    );
+    await expect(
+      runTransfer({ ...baseOpts(), to: JSON.stringify({ root: "/x" }) })
+    ).rejects.toThrow(FilesError);
+  });
+
+  test("transfer surfaces verbose per-key progress on stderr", async () => {
+    await write("p.txt", "data");
+    const destRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "files-sdk-dst-")
+    );
+    tmpDirs.push(destRoot);
+    cap.stderr.length = 0;
+    await runTransfer({
+      ...baseOpts({ verbose: true }),
+      to: JSON.stringify({ provider: "fs", root: destRoot }),
+    });
+    expect(cap.stderr.join("")).toContain("transferred p.txt");
   });
 });

@@ -53,4 +53,34 @@ const files = new Files({
 
 ## Limitations
 
-`signedUploadUrl()` throws - browser uploads go through `handleUpload()` from `@vercel/blob/client` instead of presigned URLs. `url()` on public blobs returns the permanent CDN URL: `expiresIn` is silently ignored (no signing primitive) and `responseContentDisposition` throws (no override available). On `access: "private"`, `url()` throws because there's no public URL - use `download()` instead. User `metadata` isn't supported by the underlying API, so it round-trips as `undefined`.
+User `metadata` isn't supported by the underlying API, so it round-trips as `undefined`.
+
+## Compatibility
+
+### Public access
+
+| Method            | Status | Notes                                                                                                                                                                                                                                              |
+| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                                                                                    |
+| `download`        |   ✅   |                                                                                                                                                                                                                                                    |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                    |
+| `list`            |   ✅   |                                                                                                                                                                                                                                                    |
+| `head`            |   ✅   |                                                                                                                                                                                                                                                    |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                    |
+| `copy`            |   ✅   |                                                                                                                                                                                                                                                    |
+| `url`             |   ⚠️   | Returns the permanent CDN URL. `expiresIn` is silently ignored (no signing primitive); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
+| `signedUploadUrl` |   ❌   | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads.                                                                                                                                                |
+
+### Private access
+
+| Method            | Status | Notes                                                                                                                                                                                        |
+| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                              |
+| `download`        |   ✅   |                                                                                                                                                                                              |
+| `delete`          |   ✅   |                                                                                                                                                                                              |
+| `list`            |   ✅   |                                                                                                                                                                                              |
+| `head`            |   ✅   |                                                                                                                                                                                              |
+| `exists`          |   ✅   |                                                                                                                                                                                              |
+| `copy`            |   ✅   |                                                                                                                                                                                              |
+| `url`             |   ❌   | No URL primitive for private blobs - the underlying SDK requires an authenticated `blob.get()` call with the token. Use `download()` instead, or instantiate a second public-access adapter. |
+| `signedUploadUrl` |   ❌   | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads.                                                                                          |

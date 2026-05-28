@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type {
   BunS3ClientLike,
@@ -10,7 +11,8 @@ import type {
   BunS3WritableBody,
 } from "../src/bun-s3/index.js";
 import { bunS3, mapBunS3Error } from "../src/bun-s3/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 interface Entry {
   bytes: Uint8Array;
@@ -689,5 +691,113 @@ describe("bun-s3 adapter", () => {
     } finally {
       g.Bun.S3Client = originalS3Client;
     }
+  });
+});
+
+describe("bun-s3 resumable uploads (in-process)", () => {
+  test("fresh upload buffers chunks and writes once", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", "abcdefghijkl", {
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(control.status).toBe("completed");
+    const got = await files.download("big.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+    expect(control.session?.provider).toBe("bun-s3");
+  });
+
+  test("pause holds the upload, resume finishes it", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    const control = new UploadControl();
+    let paused = false;
+    const promise = files.upload("p.bin", new Uint8Array(12).fill(7), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !paused) {
+          paused = true;
+          control.pause();
+        }
+      },
+    });
+    await delay(0);
+    await delay(0);
+    expect(control.status).toBe("paused");
+    control.resume();
+    const result = await promise;
+    expect(result.size).toBe(12);
+  });
+
+  test("abort discards the pending upload", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", new Uint8Array(12).fill(9), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+    expect(await files.exists("a.bin")).toBe(false);
+  });
+
+  test("a token can't be resumed in a different instance", async () => {
+    const files = new Files({
+      adapter: bunS3({ client: new FakeBunS3Client() }),
+    });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "x.bin",
+      provider: "bun-s3",
+      uploadId: "bun-1",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/in-process only/u);
+  });
+
+  test("metadata and cacheControl are rejected", async () => {
+    const files = new Files({
+      adapter: bunS3({ client: new FakeBunS3Client() }),
+    });
+    await expect(
+      files.upload("m.bin", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+    await expect(
+      files.upload("c.bin", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("resuming a non-bun-s3 token throws", async () => {
+    const files = new Files({
+      adapter: bunS3({ client: new FakeBunS3Client() }),
+    });
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

@@ -4,6 +4,9 @@ import type {
   Adapter,
   Body,
   ListResult,
+  PartMeta,
+  PartsResumableDriver,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -517,6 +520,135 @@ export const vercelBlob = (
     name: "vercel-blob",
     raw: blob,
     reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts): PartsResumableDriver {
+      // Vercel Blob has no list-parts or abort primitive, so the session token
+      // carries the parts completed so far; the driver appends to it as each
+      // part lands, keeping `toJSON()` resumable across a pause.
+      let session:
+        | Extract<ResumableUploadSession, { provider: "vercel-blob" }>
+        | undefined;
+      const requireSession = () => {
+        if (!session) {
+          throw new FilesError(
+            "Provider",
+            "vercel-blob: resumable upload not started."
+          );
+        }
+        return session;
+      };
+      const minPart = 5 * 1024 * 1024;
+      const requestedPart =
+        typeof resumableOpts.multipart === "object"
+          ? resumableOpts.multipart.partSize
+          : undefined;
+      const partSize =
+        requestedPart && requestedPart > minPart ? requestedPart : minPart;
+      return {
+        adopt(adopted: ResumableUploadSession) {
+          if (adopted.provider !== "vercel-blob") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${adopted.provider} session on a vercel-blob adapter.`
+            );
+          }
+          if (adopted.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          session = adopted;
+        },
+        async begin(meta): Promise<ResumableUploadSession> {
+          try {
+            const created = await blob.createMultipartUpload(key, {
+              access,
+              addRandomSuffix,
+              ...auth,
+              contentType: meta.contentType,
+            });
+            session = {
+              contentType: meta.contentType,
+              key,
+              partSize,
+              parts: [],
+              provider: "vercel-blob",
+              storageKey: created.key,
+              uploadId: created.uploadId,
+            };
+            return session;
+          } catch (error) {
+            throw mapBlobError(error);
+          }
+        },
+        async complete(parts: PartMeta[]): Promise<UploadResult> {
+          const active = requireSession();
+          try {
+            const result = await blob.completeMultipartUpload(
+              key,
+              parts.map((part) => ({
+                etag: part.etag ?? "",
+                partNumber: part.partNumber,
+              })),
+              {
+                access,
+                key: active.storageKey,
+                uploadId: active.uploadId,
+                ...auth,
+              }
+            );
+            return {
+              contentType:
+                result.contentType ??
+                active.contentType ??
+                "application/octet-stream",
+              etag: result.etag,
+              key: result.pathname,
+              lastModified: Date.now(),
+              size: parts.reduce((sum, part) => sum + part.size, 0),
+            };
+          } catch (error) {
+            throw mapBlobError(error);
+          }
+        },
+        discard() {
+          // Vercel Blob has no abort-multipart primitive; an abandoned session
+          // expires on its own. Nothing to clean up.
+          return Promise.resolve();
+        },
+        mode: "parts",
+        partSize,
+        probe(): Promise<{ committedParts: PartMeta[] }> {
+          return Promise.resolve({ committedParts: requireSession().parts });
+        },
+        async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
+          const active = requireSession();
+          try {
+            const part = await blob.uploadPart(
+              key,
+              data as unknown as Parameters<typeof blob.uploadPart>[1],
+              {
+                access,
+                key: active.storageKey,
+                partNumber,
+                uploadId: active.uploadId,
+                ...auth,
+                ...(signal && { abortSignal: signal }),
+              }
+            );
+            const meta: PartMeta = {
+              etag: part.etag,
+              partNumber,
+              size: data.byteLength,
+            };
+            active.parts.push(meta);
+            return meta;
+          } catch (error) {
+            throw mapBlobError(error);
+          }
+        },
+      };
+    },
     // Range rides on the standard-HTTP fetch of the public blob URL. Private
     // blobs read through `blob.get`, which has no range primitive, so they
     // fall through to the gate's loud throw.

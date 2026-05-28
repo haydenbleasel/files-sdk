@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 
 type Adapter = ReturnType<typeof memory>;
@@ -363,6 +365,53 @@ describe("memory adapter", () => {
     });
   });
 
+  describe("metadata isolation", () => {
+    test("upload copies the caller's metadata object in", async () => {
+      const adapter = memory();
+      const meta = { k: "v" };
+      await adapter.upload("a.txt", "hello", { metadata: meta });
+      // Mutating the object the caller handed us must not reach the store.
+      meta.k = "mutated";
+      const head = await adapter.head("a.txt");
+      expect(head.metadata).toEqual({ k: "v" });
+    });
+
+    test("head returns a metadata copy that cannot mutate the store", async () => {
+      const adapter = memory();
+      await adapter.upload("a.txt", "hello", { metadata: { k: "v" } });
+      const head = await adapter.head("a.txt");
+      if (head.metadata) {
+        head.metadata.k = "mutated";
+      }
+      const again = await adapter.head("a.txt");
+      expect(again.metadata).toEqual({ k: "v" });
+    });
+
+    test("copy gives the destination an independent metadata object", async () => {
+      const adapter = memory();
+      await adapter.upload("a.txt", "hello", { metadata: { k: "v" } });
+      await adapter.copy("a.txt", "b.txt");
+      const source = adapter.raw.get("a.txt");
+      const dest = adapter.raw.get("b.txt");
+      // Distinct objects with equal contents — mutating one can't reach the other.
+      expect(dest?.metadata).not.toBe(source?.metadata);
+      if (dest?.metadata) {
+        dest.metadata.k = "changed";
+      }
+      expect(source?.metadata).toEqual({ k: "v" });
+    });
+
+    test("initial seed copies the metadata object in", async () => {
+      const meta = { owner: "alice" };
+      const adapter = memory({
+        initial: { "a.txt": { body: "hi", metadata: meta } },
+      });
+      meta.owner = "bob";
+      const head = await adapter.head("a.txt");
+      expect(head.metadata).toEqual({ owner: "alice" });
+    });
+  });
+
   describe("move", () => {
     test("re-keys, removing the source and preserving lastModified", async () => {
       const adapter = memory();
@@ -498,5 +547,89 @@ describe("memory adapter", () => {
       const files = new Files({ adapter: memory() });
       await expect(files.download("nope")).rejects.toBeInstanceOf(FilesError);
     });
+  });
+});
+
+describe("memory resumable uploads (in-process)", () => {
+  test("fresh upload completes and stores the bytes", async () => {
+    const files = new Files({ adapter: memory() });
+    const control = new UploadControl();
+    const result = await files.upload("doc.txt", "abcdefghijkl", {
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(control.status).toBe("completed");
+    const got = await files.download("doc.txt");
+    expect(await got.text()).toBe("abcdefghijkl");
+    expect(control.session?.provider).toBe("memory");
+  });
+
+  test("pause holds the upload, resume finishes it", async () => {
+    const files = new Files({ adapter: memory() });
+    const control = new UploadControl();
+    let paused = false;
+    const promise = files.upload("p.bin", new Uint8Array(12).fill(7), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !paused) {
+          paused = true;
+          control.pause();
+        }
+      },
+    });
+    await delay(0);
+    await delay(0);
+    expect(control.status).toBe("paused");
+    control.resume();
+    const result = await promise;
+    expect(result.size).toBe(12);
+  });
+
+  test("abort discards the pending upload", async () => {
+    const adapter = memory();
+    const files = new Files({ adapter });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", new Uint8Array(12).fill(9), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+    expect(await files.exists("a.bin")).toBe(false);
+  });
+
+  test("a token can't be resumed in a different instance (in-process only)", async () => {
+    const files = new Files({ adapter: memory() });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "x.bin",
+      provider: "memory",
+      uploadId: "mem-1",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/in-process only/u);
+  });
+
+  test("resuming a non-memory token throws", async () => {
+    const files = new Files({ adapter: memory() });
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

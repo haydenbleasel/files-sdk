@@ -25,7 +25,7 @@ await files.upload("hello.txt", "world");`;
 
 export const GetStarted = () => (
   <section>
-    <div className="mx-auto max-w-6xl px-6 py-24 sm:py-32">
+    <div className="mx-auto max-w-6xl px-6 py-24">
       <div>
         <p className="font-mono text-xs text-muted-foreground">Two steps</p>
         <h2 className="mt-3 max-w-[30ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">

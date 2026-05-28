@@ -11,6 +11,7 @@ import {
   runList,
   runMove,
   runSignUpload,
+  runTransfer,
   runUpload,
   runUrl,
 } from "./commands.js";
@@ -82,6 +83,20 @@ const buildGlobal = (program: Command): void => {
     .option(
       "--config-json <json>",
       `${G.COMMON} raw adapter options as JSON (escape hatch for the long tail)`
+    )
+    .option(
+      "--key-prefix <prefix>",
+      `${G.COMMON} scope every operation under this key prefix (instance prefix; distinct from the per-call \`list --prefix\` filter)`
+    )
+    .option(
+      "--timeout <ms>",
+      `${G.COMMON} per-attempt timeout in milliseconds`,
+      intArg
+    )
+    .option(
+      "--retries <n>",
+      `${G.COMMON} retry provider failures up to n times`,
+      intArg
     )
     // S3 family + GCS-style buckets
     .option(
@@ -155,6 +170,9 @@ const buildGlobal = (program: Command): void => {
 interface RawGlobalFlags {
   provider?: string;
   configJson?: string;
+  keyPrefix?: string;
+  timeout?: number;
+  retries?: number;
   bucket?: string;
   region?: string;
   endpoint?: string;
@@ -209,16 +227,19 @@ const resolveOpts = (
     endpoint: raw.endpoint,
     forcePathStyle: raw.forcePathStyle,
     keyFilename: raw.keyFilename,
+    prefix: raw.keyPrefix,
     projectId: raw.projectId,
     provider: raw.provider,
     publicBaseUrl: raw.publicBaseUrl,
     region: raw.region,
+    retries: raw.retries,
     root: raw.root,
     secretAccessKey: raw.secretAccessKey,
     serviceRoleKey: raw.serviceRoleKey,
     sessionToken: raw.sessionToken,
     siteId: raw.siteId,
     storeName: raw.storeName,
+    timeout: raw.timeout,
     token: raw.token,
     url: raw.url,
     urlBaseUrl: raw.urlBaseUrl,
@@ -252,6 +273,16 @@ const wrap =
     }
   };
 
+const bulkBuilder = (args: unknown[], common: CommonRunOpts): CommonRunOpts => {
+  const [keys, opts] = args as [string[], Record<string, unknown>];
+  return {
+    ...common,
+    concurrency: opts.concurrency as number | undefined,
+    keys,
+    stopOnError: opts.stopOnError as boolean | undefined,
+  } as CommonRunOpts;
+};
+
 export const buildProgram = (): Command => {
   const program = new Command();
   program
@@ -265,12 +296,25 @@ export const buildProgram = (): Command => {
   buildGlobal(program);
 
   program
-    .command("upload <key>")
-    .description("upload a file (provide body via --file or --stdin)")
-    .addOption(
-      new Option("--file <path>", "read body from this file").conflicts("stdin")
+    .command("upload [key]")
+    .description(
+      "upload a file (body via --file or --stdin), or a whole directory via --dir"
     )
-    .addOption(new Option("--stdin", "read body from stdin").conflicts("file"))
+    .addOption(
+      new Option("--file <path>", "read body from this file").conflicts([
+        "stdin",
+        "dir",
+      ])
+    )
+    .addOption(
+      new Option("--stdin", "read body from stdin").conflicts(["file", "dir"])
+    )
+    .addOption(
+      new Option(
+        "--dir <localDir>",
+        "upload every file under this directory, keyed by relative path"
+      ).conflicts(["file", "stdin"])
+    )
     .option("--content-type <type>", "MIME content type")
     .option("--cache-control <value>", "Cache-Control header")
     .option(
@@ -278,36 +322,84 @@ export const buildProgram = (): Command => {
       "metadata as key=value pairs (repeatable)",
       collect
     )
+    .option("--multipart", "upload in parallel parts")
+    .option(
+      "--part-size <bytes>",
+      "multipart part size in bytes (implies --multipart)",
+      intArg
+    )
+    .option(
+      "--multipart-concurrency <n>",
+      "parts uploaded in parallel (implies --multipart)",
+      intArg
+    )
+    .option("--concurrency <n>", "parallel uploads for --dir", intArg)
+    .option("--stop-on-error", "stop at the first failure (--dir)")
     .action(
       wrap(runUpload as (opts: never) => Promise<void>, (args, common) => {
-        const [key, opts] = args as [string, Record<string, unknown>];
+        const [key, opts] = args as [
+          string | undefined,
+          Record<string, unknown>,
+        ];
         return {
           ...common,
           cacheControl: opts.cacheControl as string | undefined,
+          concurrency: opts.concurrency as number | undefined,
           contentType: opts.contentType as string | undefined,
+          dir: opts.dir as string | undefined,
           file: opts.file as string | undefined,
           key,
           metadata: opts.metadata as readonly string[] | undefined,
+          multipart: opts.multipart as boolean | undefined,
+          multipartConcurrency: opts.multipartConcurrency as number | undefined,
+          partSize: opts.partSize as number | undefined,
           stdin: opts.stdin as boolean | undefined,
+          stopOnError: opts.stopOnError as boolean | undefined,
         } as CommonRunOpts;
       })
     );
 
   program
-    .command("download <key>")
-    .description("download a file (--out <path> or --stdout)")
-    .addOption(
-      new Option("--out <path>", "write body to this file").conflicts("stdout")
+    .command("download <keys...>")
+    .description(
+      "download one key (--out <path> or --stdout) or many (--out-dir <dir>)"
     )
-    .addOption(new Option("--stdout", "stream body to stdout").conflicts("out"))
+    .addOption(
+      new Option("--out <path>", "write body to this file").conflicts([
+        "stdout",
+        "outDir",
+      ])
+    )
+    .addOption(
+      new Option("--stdout", "stream body to stdout").conflicts([
+        "out",
+        "outDir",
+      ])
+    )
+    .addOption(
+      new Option(
+        "--out-dir <dir>",
+        "write each key under this directory (for many keys)"
+      ).conflicts(["out", "stdout"])
+    )
+    .option(
+      "--range <start-end>",
+      "download a byte range (0-based, inclusive), e.g. 0-1023 or 1024- (single key)"
+    )
+    .option("--concurrency <n>", "parallel downloads for many keys", intArg)
+    .option("--stop-on-error", "stop at the first failure (many keys)")
     .action(
       wrap(runDownload as (opts: never) => Promise<void>, (args, common) => {
-        const [key, opts] = args as [string, Record<string, unknown>];
+        const [keys, opts] = args as [string[], Record<string, unknown>];
         return {
           ...common,
-          key,
+          concurrency: opts.concurrency as number | undefined,
+          keys,
           out: opts.out as string | undefined,
+          outDir: opts.outDir as string | undefined,
+          range: opts.range as string | undefined,
           stdout: opts.stdout as boolean | undefined,
+          stopOnError: opts.stopOnError as boolean | undefined,
         } as CommonRunOpts;
       })
     );
@@ -317,36 +409,27 @@ export const buildProgram = (): Command => {
     .description(
       "fetch object metadata (no body); one key throws on failure, many returns a structured result and exits non-zero on any failure"
     )
-    .action(
-      wrap(runHead as (opts: never) => Promise<void>, (args, common) => {
-        const [keys] = args as [string[]];
-        return { ...common, keys } as CommonRunOpts;
-      })
-    );
+    .option("--concurrency <n>", "parallel lookups for many keys", intArg)
+    .option("--stop-on-error", "stop at the first failure (many keys)")
+    .action(wrap(runHead as (opts: never) => Promise<void>, bulkBuilder));
 
   program
     .command("exists <keys...>")
     .description(
       "check whether keys exist (one key: exit 0 = exists, 1 = missing; many: exit 0 only if every key exists)"
     )
-    .action(
-      wrap(runExists as (opts: never) => Promise<void>, (args, common) => {
-        const [keys] = args as [string[]];
-        return { ...common, keys } as CommonRunOpts;
-      })
-    );
+    .option("--concurrency <n>", "parallel checks for many keys", intArg)
+    .option("--stop-on-error", "stop at the first hard error (many keys)")
+    .action(wrap(runExists as (opts: never) => Promise<void>, bulkBuilder));
 
   program
     .command("delete <keys...>")
     .description(
       "delete one or many objects (one key throws on failure; many returns a structured result and exits non-zero on any failure; idempotency is adapter-dependent)"
     )
-    .action(
-      wrap(runDelete as (opts: never) => Promise<void>, (args, common) => {
-        const [keys] = args as [string[]];
-        return { ...common, keys } as CommonRunOpts;
-      })
-    );
+    .option("--concurrency <n>", "parallel deletes for many keys", intArg)
+    .option("--stop-on-error", "stop at the first failure (many keys)")
+    .action(wrap(runDelete as (opts: never) => Promise<void>, bulkBuilder));
 
   program
     .command("copy <from> <to>")
@@ -375,12 +458,21 @@ export const buildProgram = (): Command => {
     .description("list objects (optionally under --prefix, paginated)")
     .option("--prefix <prefix>", "filter by key prefix")
     .option("--cursor <cursor>", "continuation cursor from a prior page")
-    .option("--limit <n>", "max items to return", intArg)
+    .option(
+      "--limit <n>",
+      "max items per page (page size, not a total cap)",
+      intArg
+    )
+    .option(
+      "--all",
+      "walk every page, following the cursor, and return all items"
+    )
     .action(
       wrap(runList as (opts: never) => Promise<void>, (args, common) => {
         const [opts] = args as [Record<string, unknown>];
         return {
           ...common,
+          all: opts.all as boolean | undefined,
           cursor: opts.cursor as string | undefined,
           limit: opts.limit as number | undefined,
           prefix: opts.prefix as string | undefined,
@@ -435,6 +527,35 @@ export const buildProgram = (): Command => {
           key,
           maxSize: opts.maxSize as number | undefined,
           minSize: opts.minSize as number | undefined,
+        } as CommonRunOpts;
+      })
+    );
+
+  program
+    .command("transfer")
+    .description(
+      "copy every object from the configured (source) provider to another (--to), streaming each body across backends"
+    )
+    .requiredOption(
+      "--to <json>",
+      'destination provider options as JSON (same shape as the global flags, e.g. \'{"provider":"r2","bucket":"new","accountId":"..."}\')'
+    )
+    .option("--prefix <prefix>", "only transfer keys under this prefix")
+    .option("--no-overwrite", "skip keys already present at the destination")
+    .option("--limit <n>", "page size for the source walk", intArg)
+    .option("--concurrency <n>", "parallel transfers", intArg)
+    .option("--stop-on-error", "stop at the first failure")
+    .action(
+      wrap(runTransfer as (opts: never) => Promise<void>, (args, common) => {
+        const [opts] = args as [Record<string, unknown>];
+        return {
+          ...common,
+          concurrency: opts.concurrency as number | undefined,
+          limit: opts.limit as number | undefined,
+          overwrite: opts.overwrite as boolean | undefined,
+          prefix: opts.prefix as string | undefined,
+          stopOnError: opts.stopOnError as boolean | undefined,
+          to: opts.to as string,
         } as CommonRunOpts;
       })
     );

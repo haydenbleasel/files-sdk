@@ -190,6 +190,21 @@ const sendOpts = (
   signal: AbortSignal | undefined
 ): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
 
+const assertSupportedUploadOptions = (options?: UploadOptions): void => {
+  if (options?.cacheControl) {
+    throw new FilesError(
+      "Provider",
+      "pocketbase: `cacheControl` is not supported. PocketBase does not expose HTTP cache headers on file content."
+    );
+  }
+  if (options?.metadata && Object.keys(options.metadata).length > 0) {
+    throw new FilesError(
+      "Provider",
+      "pocketbase: `metadata` is not supported. PocketBase record fields are typed and not arbitrary; drop to `raw` if you need additional fields on the record."
+    );
+  }
+};
+
 export const pocketbase = (
   opts: PocketBaseAdapterOptions
 ): PocketBaseAdapter => {
@@ -329,21 +344,6 @@ export const pocketbase = (
         kind: "lazy",
       }
     );
-  };
-
-  const assertSupportedUploadOptions = (options?: UploadOptions): void => {
-    if (options?.cacheControl) {
-      throw new FilesError(
-        "Provider",
-        "pocketbase: `cacheControl` is not supported. PocketBase does not expose HTTP cache headers on file content."
-      );
-    }
-    if (options?.metadata && Object.keys(options.metadata).length > 0) {
-      throw new FilesError(
-        "Provider",
-        "pocketbase: `metadata` is not supported. PocketBase record fields are typed and not arbitrary; drop to `raw` if you need additional fields on the record."
-      );
-    }
   };
 
   return {

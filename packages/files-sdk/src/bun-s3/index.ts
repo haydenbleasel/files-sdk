@@ -1,4 +1,10 @@
-import type { Adapter, StoredFile } from "../index.js";
+import type {
+  Adapter,
+  OffsetResumableDriver,
+  ResumableUploadSession,
+  StoredFile,
+  UploadResult,
+} from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
   joinPublicUrl,
@@ -274,6 +280,13 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
   const { publicBaseUrl } = opts;
 
+  // In-flight resumable uploads. Bun's S3 client exposes no multipart
+  // upload-id, so chunks are buffered in-process and written in one call at
+  // complete — pause/resume works within a process, but a token can't be
+  // resumed in a new one (see `adopt`).
+  const pending = new Map<string, { chunks: Uint8Array[]; received: number }>();
+  let uploadSeq = 0;
+
   return {
     bucket: opts.bucket,
     /**
@@ -395,6 +408,107 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     },
     name: "bun-s3",
     raw: client,
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      if (resumableOpts.cacheControl) {
+        throw new FilesError(
+          "Provider",
+          "bun-s3 adapter: `cacheControl` is not supported by Bun.s3."
+        );
+      }
+      if (resumableOpts.metadata) {
+        throw new FilesError(
+          "Provider",
+          "bun-s3 adapter: `metadata` is not supported by Bun.s3."
+        );
+      }
+      let uploadId: string | undefined;
+      let contentType = "application/octet-stream";
+      const requirePending = () => {
+        const entry =
+          uploadId === undefined ? undefined : pending.get(uploadId);
+        if (!entry) {
+          throw new FilesError(
+            "Provider",
+            "bun-s3: resumable session not found — bun-s3 uploads are in-process only and can't resume in a new instance."
+          );
+        }
+        return entry;
+      };
+      return {
+        adopt(session: ResumableUploadSession) {
+          if (session.provider !== "bun-s3") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on a bun-s3 adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          ({ uploadId } = session);
+          ({ contentType } = session);
+        },
+        begin(meta): Promise<ResumableUploadSession> {
+          uploadSeq += 1;
+          uploadId = `bun-${uploadSeq}`;
+          ({ contentType } = meta);
+          pending.set(uploadId, { chunks: [], received: 0 });
+          return Promise.resolve({
+            contentType,
+            key,
+            provider: "bun-s3",
+            uploadId,
+          });
+        },
+        async complete(): Promise<UploadResult> {
+          const entry = requirePending();
+          const bytes = new Uint8Array(entry.received);
+          let offset = 0;
+          for (const chunk of entry.chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          try {
+            await client.write(key, bytes, { type: contentType });
+            const stat = await client.stat(key);
+            pending.delete(uploadId as string);
+            return {
+              contentType: stat.type || contentType,
+              etag: stripEtag(stat.etag),
+              key,
+              lastModified: stat.lastModified.getTime(),
+              size: stat.size,
+            };
+          } catch (error) {
+            throw mapBunS3Error(error);
+          }
+        },
+        discard() {
+          if (uploadId !== undefined) {
+            pending.delete(uploadId);
+          }
+          return Promise.resolve();
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 8 * 1024 * 1024,
+        probe(): Promise<{ nextOffset: number }> {
+          return Promise.resolve({ nextOffset: requirePending().received });
+        },
+        uploadAt({ offset, data }): Promise<{ nextOffset: number }> {
+          const entry = requirePending();
+          entry.chunks.push(new Uint8Array(data));
+          entry.received = offset + data.byteLength;
+          return Promise.resolve({ nextOffset: entry.received });
+        },
+      };
+    },
     signedUploadUrl(key, signOpts) {
       if (signOpts.maxSize !== undefined) {
         return Promise.reject(

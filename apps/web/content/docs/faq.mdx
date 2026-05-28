@@ -21,7 +21,7 @@ Swap the adapter you pass to `new Files({ adapter })`. Every call site below the
 
 ## What happens when a provider doesn't support a feature?
 
-Every method normalizes to the same shape, but providers differ in what they offer natively. Where a provider lacks a primitive, the method throws a `FilesError` rather than silently misbehaving (for example, `signedUploadUrl` on Vercel Blob). The [compatibility matrix](/api/compatibility) shows per-adapter support, and `files.raw` is the [typed escape hatch](/features/escape-hatch) for anything outside the unified surface.
+Every method normalizes to the same shape, but providers differ in what they offer natively. Where a provider lacks a primitive, the method throws a `FilesError` rather than silently misbehaving (for example, `signedUploadUrl` on Vercel Blob). Each [adapter's docs page](/adapters/vercel-blob) has a Compatibility section listing its per-method support, and `files.raw` is the [typed escape hatch](/features/escape-hatch) for anything outside the unified surface.
 
 ## Can I use it in the browser?
 

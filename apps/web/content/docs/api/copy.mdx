@@ -20,7 +20,7 @@ Adapters with no server-side copy primitive — UploadThing, Netlify Blobs, Clou
 - **It costs an egress download plus an ingest upload.** For large or frequent copies on these providers, consider doing the copy at the application layer with a storage strategy that copies server-side.
 - **It is not atomic.** Concurrent writes to `from` between the read and the write are not detected, so the destination may reflect an in-flight change to the source.
 
-The [compatibility matrix](/api/compatibility) marks exactly which adapters copy natively, which fall back, and which throw.
+Each adapter's Compatibility section marks whether it copies natively, falls back, or throws.
 
 ## Providers without copy
 

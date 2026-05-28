@@ -79,6 +79,19 @@ const compareKeys = (a: string, b: string): number => {
   return 0;
 };
 
+const toStored = (key: string, entry: Entry): StoredFile =>
+  createStoredFile(
+    {
+      etag: entry.etag,
+      key,
+      lastModified: entry.uploadedAt,
+      metadata: entry.metadata,
+      size: entry.bytes.byteLength,
+      type: entry.contentType,
+    },
+    { data: entry.bytes, kind: "buffer" }
+  );
+
 export const fakeAdapter = (config?: {
   supportsRange?: boolean;
 }): FakeAdapter => {
@@ -88,19 +101,6 @@ export const fakeAdapter = (config?: {
     counter += 1;
     return `"etag-${counter}"`;
   };
-
-  const toStored = (key: string, entry: Entry): StoredFile =>
-    createStoredFile(
-      {
-        etag: entry.etag,
-        key,
-        lastModified: entry.uploadedAt,
-        metadata: entry.metadata,
-        size: entry.bytes.byteLength,
-        type: entry.contentType,
-      },
-      { data: entry.bytes, kind: "buffer" }
-    );
 
   return {
     copy(from: string, to: string): Promise<void> {

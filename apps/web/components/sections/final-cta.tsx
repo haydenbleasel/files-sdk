@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 
 export const FinalCta = () => (
   <section>
-    <div className="mx-auto flex max-w-6xl flex-col items-center px-6 py-24 text-center sm:py-32">
+    <div className="mx-auto flex max-w-6xl flex-col items-center px-6 py-24 text-center">
       <h2 className="mx-auto max-w-[20ch] text-[2.5rem]/[1.05] font-medium tracking-tight text-balance text-foreground sm:text-6xl lg:text-7xl">
         Ship the storage layer once.
       </h2>

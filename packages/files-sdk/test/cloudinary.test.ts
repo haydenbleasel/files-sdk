@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Writable } from "node:stream";
 
 import { cloudinary, mapCloudinaryError } from "../src/cloudinary/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const CLOUD_NAME = "test-cloud";
 const API_KEY = "test-key";
@@ -881,5 +882,178 @@ describe("cloudinary adapter", () => {
     const { signal } = new AbortController();
     await files.download("test-file", { signal });
     expect(seenSignal).toBe(signal);
+  });
+});
+
+const cldFinalJson = (bytes: number) =>
+  Response.json({
+    bytes,
+    created_at: "2024-01-02T03:04:05Z",
+    etag: "cld-etag",
+    public_id: "doc",
+    resource_type: "raw",
+  });
+// bytes start-end/total → true when this chunk completes the file.
+const cldIsFinal = (range: string): boolean => {
+  const match = /bytes \d+-(\d+)\/(\d+)/u.exec(range);
+  return match ? Number(match[1]) + 1 === Number(match[2]) : false;
+};
+
+describe("cloudinary resumable uploads (chunked)", () => {
+  let restoreFetch: () => void;
+  afterEach(() => {
+    restoreFetch?.();
+  });
+  const installFetch = (
+    handler: (url: string, init: RequestInit) => Response
+  ): void => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = ((url: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(url, init))) as unknown as typeof fetch;
+  };
+  const finalJson = cldFinalJson;
+  const isFinal = cldIsFinal;
+  const withCreds = () =>
+    cloudinary({
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      cloudName: CLOUD_NAME,
+    });
+
+  test("fresh upload posts a signed chunk and completes", async () => {
+    const headers: Record<string, string>[] = [];
+    installFetch((_url, init) => {
+      const h = init.headers as Record<string, string>;
+      headers.push(h);
+      return isFinal(h["Content-Range"] ?? "")
+        ? finalJson(5)
+        : Response.json({});
+    });
+    const files = new Files({ adapter: withCreds() });
+    const control = new UploadControl();
+    const result = await files.upload("doc", "hello", { control });
+    expect(result.key).toBe("doc");
+    expect(result.size).toBe(5);
+    expect(result.etag).toBe("cld-etag");
+    expect(control.status).toBe("completed");
+    expect(control.session?.provider).toBe("cloudinary");
+    expect(headers[0]?.["Content-Range"]).toBe("bytes 0-4/5");
+    expect(headers[0]?.["X-Unique-Upload-Id"]).toBeDefined();
+  });
+
+  test("resume continues from the token's offset", async () => {
+    const ranges: string[] = [];
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      ranges.push(range);
+      return isFinal(range) ? finalJson(2048) : Response.json({});
+    });
+    const files = new Files({ adapter: withCreds() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "doc",
+      offset: 1024,
+      provider: "cloudinary",
+      uploadId: "uid-1",
+    };
+    const result = await files.upload("doc", new Uint8Array(2048), {
+      control: UploadControl.from(token),
+      multipart: { partSize: 1024 },
+    });
+    expect(result.size).toBe(2048);
+    expect(ranges).toEqual(["bytes 1024-2047/2048"]);
+  });
+
+  test("abort stops the upload (discard is a no-op)", async () => {
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      return isFinal(range) ? finalJson(2053) : Response.json({});
+    });
+    const files = new Files({ adapter: withCreds() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab", new Uint8Array(2048 + 5), {
+      control,
+      multipart: { partSize: 1024 },
+      onProgress: ({ loaded }) => {
+        if (loaded >= 1024 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+  });
+
+  test("a failed chunk throws", async () => {
+    installFetch(() => new Response("nope", { status: 500 }));
+    const files = new Files({ adapter: withCreds() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl(), retries: 0 })
+    ).rejects.toThrow(/chunk upload failed/u);
+  });
+
+  test("resumable requires apiKey + apiSecret", async () => {
+    const files = new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME }) });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/require both apiKey and apiSecret/u);
+  });
+
+  test("metadata and cacheControl are rejected", async () => {
+    const files = new Files({ adapter: withCreds() });
+    await expect(
+      files.upload("m", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+    await expect(
+      files.upload("c", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("a final chunk without a public_id throws (did not finalize)", async () => {
+    installFetch(() => Response.json({}));
+    const files = new Files({ adapter: withCreds() });
+    await expect(
+      files.upload("x", "hi", { control: new UploadControl() })
+    ).rejects.toThrow(/did not finalize/u);
+  });
+
+  test("resuming a mismatched key throws", async () => {
+    const files = new Files({ adapter: withCreds() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "other",
+      offset: 0,
+      provider: "cloudinary",
+      uploadId: "uid-1",
+    };
+    await expect(
+      files.upload("doc", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
+  });
+
+  test("resuming a non-cloudinary token throws", async () => {
+    const files = new Files({ adapter: withCreds() });
+    const token = {
+      bucket: "b",
+      key: "x",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

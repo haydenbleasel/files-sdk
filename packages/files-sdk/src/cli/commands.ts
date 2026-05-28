@@ -1,15 +1,66 @@
+import type {
+  BulkOptions,
+  MultipartOptions,
+  UploadManyItem,
+} from "../index.js";
+import { transfer } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { inferTypeFromName } from "../internal/mime.js";
 import {
   emit,
   exitCode,
+  fileBodyStream,
+  parseJson,
   parseKeyValuePairs,
+  parseRange,
   readBody,
   storedFileToJson,
+  walkDir,
   writeBody,
+  writeBodyToDir,
 } from "./io.js";
 import type { OutputOpts } from "./io.js";
 import { describeProvider, loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
+
+/**
+ * Resolve the `--multipart` / `--part-size` / `--multipart-concurrency` flags
+ * into the SDK's `boolean | MultipartOptions` shape. Any tuning flag implies
+ * multipart even without the bare `--multipart`; absent everything, returns
+ * `undefined` so the adapter's default single-PUT path stands.
+ */
+const buildMultipart = (opts: {
+  multipart?: boolean;
+  partSize?: number;
+  multipartConcurrency?: number;
+}): boolean | MultipartOptions | undefined => {
+  const tuning: MultipartOptions = {};
+  if (opts.partSize !== undefined) {
+    tuning.partSize = opts.partSize;
+  }
+  if (opts.multipartConcurrency !== undefined) {
+    tuning.concurrency = opts.multipartConcurrency;
+  }
+  if (Object.keys(tuning).length > 0) {
+    return tuning;
+  }
+  return opts.multipart ? true : undefined;
+};
+
+/** The bulk-fanout knobs (`--concurrency` / `--stop-on-error`) as `BulkOptions`. */
+const buildBulkOptions = (opts: {
+  concurrency?: number;
+  stopOnError?: boolean;
+}): BulkOptions | undefined => {
+  const bulk: BulkOptions = {};
+  if (opts.concurrency !== undefined) {
+    bulk.concurrency = opts.concurrency;
+  }
+  if (opts.stopOnError) {
+    bulk.stopOnError = true;
+  }
+  return Object.keys(bulk).length > 0 ? bulk : undefined;
+};
 
 export interface CommonRunOpts extends OutputOpts {
   dryRun: boolean;
@@ -29,23 +80,88 @@ const dryRun = (action: string, detail: unknown, opts: CommonRunOpts): void => {
 };
 
 export interface UploadCmdOpts extends CommonRunOpts {
-  key: string;
+  key?: string;
   file?: string;
   stdin?: boolean;
+  dir?: string;
   contentType?: string;
   cacheControl?: string;
   metadata?: readonly string[];
+  multipart?: boolean;
+  partSize?: number;
+  multipartConcurrency?: number;
+  concurrency?: number;
+  stopOnError?: boolean;
 }
 
+const runUploadDir = async (
+  opts: UploadCmdOpts,
+  multipart: boolean | MultipartOptions | undefined
+): Promise<void> => {
+  if (opts.dryRun) {
+    // Local-only preview — don't walk the tree, matching the single-upload
+    // dry-run which doesn't stat its --file either.
+    return dryRun("upload", { dir: opts.dir, multipart }, opts);
+  }
+  const metadata = parseKeyValuePairs(opts.metadata);
+  const { files } = await loadFiles(opts.global);
+  const walked = await walkDir(opts.dir as string);
+  // Content type is inferred per-file from the key's extension unless the
+  // caller pins one for the whole batch. The body is a lazily-opened stream
+  // so the open-fd count stays bounded by upload concurrency, not file count.
+  const items: UploadManyItem[] = walked.map((f) => ({
+    body: fileBodyStream(f.absPath),
+    contentType: opts.contentType ?? inferTypeFromName(f.key),
+    key: f.key,
+    ...(opts.cacheControl !== undefined && { cacheControl: opts.cacheControl }),
+    ...(metadata !== undefined && { metadata }),
+    ...(multipart !== undefined && { multipart }),
+  }));
+  const result = await files.upload(items, buildBulkOptions(opts));
+  emit(
+    {
+      uploaded: result.uploaded,
+      ...(result.errors && { errors: result.errors }),
+    },
+    opts
+  );
+  if (result.errors?.length) {
+    process.exit(exitCode(result.errors[0]?.error.code ?? "Provider"));
+  }
+};
+
 export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
+  const multipart = buildMultipart(opts);
+
+  // --dir uploads a whole local tree via the SDK's bulk array form. It's
+  // mutually exclusive with the single-object inputs (a key, --file, --stdin).
+  if (opts.dir !== undefined) {
+    if (opts.key !== undefined || opts.file !== undefined || opts.stdin) {
+      throw new FilesError(
+        "Provider",
+        "--dir cannot be combined with a <key>, --file, or --stdin"
+      );
+    }
+    return runUploadDir(opts, multipart);
+  }
+
+  if (opts.key === undefined) {
+    throw new FilesError(
+      "Provider",
+      "expected a <key> (or --dir to upload a directory)"
+    );
+  }
+  const { key } = opts;
+
   if (opts.dryRun) {
     return dryRun(
       "upload",
       {
         cacheControl: opts.cacheControl,
         contentType: opts.contentType,
-        key: opts.key,
+        key,
         metadata: parseKeyValuePairs(opts.metadata),
+        multipart,
         source: opts.stdin ? "<stdin>" : opts.file,
       },
       opts
@@ -53,30 +169,99 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
   }
   const { files } = await loadFiles(opts.global);
   const { body } = await readBody({ file: opts.file, stdin: opts.stdin });
-  const result = await files.upload(opts.key, body, {
+  const result = await files.upload(key, body, {
     cacheControl: opts.cacheControl,
     contentType: opts.contentType,
     metadata: parseKeyValuePairs(opts.metadata),
+    ...(multipart !== undefined && { multipart }),
   });
   emit(result, opts);
 };
 
 export interface DownloadCmdOpts extends CommonRunOpts {
-  key: string;
+  keys: string[];
   out?: string;
   stdout?: boolean;
+  outDir?: string;
+  range?: string;
+  concurrency?: number;
+  stopOnError?: boolean;
 }
 
-export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
-  if (opts.dryRun) {
-    return dryRun(
-      "download",
-      { dest: opts.stdout ? "<stdout>" : opts.out, key: opts.key },
-      opts
+const runDownloadMany = async (
+  opts: DownloadCmdOpts,
+  range: ReturnType<typeof parseRange>
+): Promise<void> => {
+  // --out and --stdout name a single destination; the per-object byte range
+  // has no meaning across many keys. Both are single-key only.
+  if (opts.out !== undefined || opts.stdout) {
+    throw new FilesError(
+      "Provider",
+      "--out / --stdout download a single key; use --out-dir for many"
+    );
+  }
+  if (range !== undefined) {
+    throw new FilesError(
+      "Provider",
+      "--range is only supported when downloading a single key"
+    );
+  }
+  if (opts.outDir === undefined) {
+    throw new FilesError(
+      "Provider",
+      "expected --out-dir <dir> when downloading multiple keys"
     );
   }
   const { files } = await loadFiles(opts.global);
-  const file = await files.download(opts.key, { as: "stream" });
+  const result = await files.download(opts.keys, {
+    as: "stream",
+    ...buildBulkOptions(opts),
+  });
+  const downloaded: { key: string; path: string }[] = [];
+  for (const file of result.downloaded) {
+    const dest = await writeBodyToDir(file, opts.outDir);
+    downloaded.push({ key: file.key, path: dest });
+  }
+  emit(
+    {
+      downloaded,
+      ...(result.errors && { errors: result.errors }),
+    },
+    opts
+  );
+  if (result.errors?.length) {
+    process.exit(exitCode(result.errors[0]?.error.code ?? "Provider"));
+  }
+};
+
+export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
+  const range = parseRange(opts.range);
+  // Many keys (or an explicit --out-dir) take the bulk path: each body is
+  // written under the directory at the path its key implies.
+  const many = opts.keys.length > 1 || opts.outDir !== undefined;
+
+  if (opts.dryRun) {
+    if (many) {
+      return dryRun(
+        "download",
+        { keys: opts.keys, outDir: opts.outDir, range },
+        opts
+      );
+    }
+    return dryRun(
+      "download",
+      { dest: opts.stdout ? "<stdout>" : opts.out, key: opts.keys[0], range },
+      opts
+    );
+  }
+
+  if (many) {
+    return runDownloadMany(opts, range);
+  }
+
+  const key = opts.keys[0] as string;
+  const { files } = await loadFiles(opts.global);
+  const file = await files.download(key, { as: "stream", range });
   await writeBody(file, { out: opts.out, stdout: opts.stdout });
   if (!opts.stdout) {
     // body went to a file; emit status to stdout in the user's chosen format
@@ -99,6 +284,8 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
 
 export interface HeadCmdOpts extends CommonRunOpts {
   keys: string[];
+  concurrency?: number;
+  stopOnError?: boolean;
 }
 
 export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
@@ -117,7 +304,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
   // Many keys return a structured result instead of throwing on partial
   // failure. Surface that failure to scripts via a non-zero exit code,
   // mapped from the first error like the single-key path does.
-  const result = await files.head(opts.keys);
+  const result = await files.head(opts.keys, buildBulkOptions(opts));
   emit(
     {
       files: result.files.map(storedFileToJson),
@@ -132,6 +319,8 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
 
 export interface ExistsCmdOpts extends CommonRunOpts {
   keys: string[];
+  concurrency?: number;
+  stopOnError?: boolean;
 }
 
 export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
@@ -155,7 +344,7 @@ export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
   // Many keys: a structured existing/missing split. A hard error (auth,
   // transport) exits with its mapped code; otherwise any missing key exits 1,
   // scaling the single-key `test -e` convention to "all keys must exist".
-  const result = await files.exists(opts.keys);
+  const result = await files.exists(opts.keys, buildBulkOptions(opts));
   emit(result, opts);
   if (result.errors?.length) {
     process.exit(exitCode(result.errors[0]?.error.code ?? "Provider"));
@@ -167,6 +356,8 @@ export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
 
 export interface DeleteCmdOpts extends CommonRunOpts {
   keys: string[];
+  concurrency?: number;
+  stopOnError?: boolean;
 }
 
 export const runDelete = async (opts: DeleteCmdOpts): Promise<void> => {
@@ -186,7 +377,7 @@ export const runDelete = async (opts: DeleteCmdOpts): Promise<void> => {
   // Many keys return a structured result instead of throwing on partial
   // failure. Surface that failure to scripts via a non-zero exit code,
   // mapped from the first error like the single-key path does.
-  const result = await files.delete(opts.keys);
+  const result = await files.delete(opts.keys, buildBulkOptions(opts));
   emit(result, opts);
   if (result.errors?.length) {
     process.exit(exitCode(result.errors[0]?.error.code ?? "Provider"));
@@ -225,17 +416,39 @@ export interface ListCmdOpts extends CommonRunOpts {
   prefix?: string;
   cursor?: string;
   limit?: number;
+  all?: boolean;
 }
 
 export const runList = async (opts: ListCmdOpts): Promise<void> => {
   if (opts.dryRun) {
     return dryRun(
       "list",
-      { cursor: opts.cursor, limit: opts.limit, prefix: opts.prefix },
+      {
+        all: opts.all,
+        cursor: opts.cursor,
+        limit: opts.limit,
+        prefix: opts.prefix,
+      },
       opts
     );
   }
   const { files } = await loadFiles(opts.global);
+
+  // --all walks every page transparently (Files.listAll), following the cursor
+  // until exhausted. The result has no `cursor` — there's nothing left to page.
+  if (opts.all) {
+    const items: ReturnType<typeof storedFileToJson>[] = [];
+    for await (const file of files.listAll({
+      cursor: opts.cursor,
+      limit: opts.limit,
+      prefix: opts.prefix,
+    })) {
+      items.push(storedFileToJson(file));
+    }
+    emit({ items }, opts);
+    return;
+  }
+
   const result = await files.list({
     cursor: opts.cursor,
     limit: opts.limit,
@@ -314,4 +527,66 @@ export const runSignUpload = async (opts: SignUploadCmdOpts): Promise<void> => {
     minSize: opts.minSize,
   });
   emit({ key: opts.key, ...signed }, opts);
+};
+
+export interface TransferCmdOpts extends CommonRunOpts {
+  /** Destination provider config as JSON — a {@link GlobalCliOptions} blob. */
+  to: string;
+  prefix?: string;
+  /** `false` only when `--no-overwrite` was passed; otherwise overwrite (the default). */
+  overwrite?: boolean;
+  limit?: number;
+  concurrency?: number;
+  stopOnError?: boolean;
+}
+
+export const runTransfer = async (opts: TransferCmdOpts): Promise<void> => {
+  // The source comes from the standard global flags (so the global
+  // --key-prefix scopes it); the destination is a separate provider, supplied
+  // as a JSON blob of the same option shape.
+  const destConfig = parseJson<GlobalCliOptions>(opts.to);
+  if (!destConfig || typeof destConfig !== "object") {
+    throw new FilesError(
+      "Provider",
+      "--to must be a JSON object of destination provider options"
+    );
+  }
+
+  if (opts.dryRun) {
+    return dryRun(
+      "transfer",
+      {
+        limit: opts.limit,
+        overwrite: opts.overwrite,
+        prefix: opts.prefix,
+        // Validates the destination provider name without constructing it.
+        to: describeProvider(destConfig),
+      },
+      opts
+    );
+  }
+
+  const [source, dest] = await Promise.all([
+    loadFiles(opts.global),
+    loadFiles(destConfig),
+  ]);
+
+  const result = await transfer(source.files, dest.files, {
+    ...(opts.prefix !== undefined && { prefix: opts.prefix }),
+    ...(opts.overwrite === false && { overwrite: false }),
+    ...(opts.limit !== undefined && { limit: opts.limit }),
+    ...buildBulkOptions(opts),
+    // transformKey can't be expressed as a flag; identity is the only mapping
+    // reachable from the CLI. onProgress streams to stderr under --verbose so
+    // it never pollutes the JSON result on stdout.
+    ...(opts.verbose && {
+      onProgress: ({ done, total, key, status }) =>
+        process.stderr.write(`${done}/${total} ${status} ${key}\n`),
+    }),
+  });
+
+  emit(result, opts);
+  if (result.errors?.length) {
+    process.exit(exitCode(result.errors[0]?.error.code ?? "Provider"));
+  }
 };

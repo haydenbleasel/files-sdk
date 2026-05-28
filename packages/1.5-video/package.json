@@ -14,18 +14,18 @@
     "types": "tsc"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.459",
-    "@remotion/google-fonts": "^4.0.459",
-    "@remotion/sfx": "^4.0.459",
-    "@remotion/tailwind-v4": "4.0.459",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "remotion": "4.0.459",
-    "tailwindcss": "4.0.0"
+    "@remotion/cli": "4.0.465",
+    "@remotion/google-fonts": "^4.0.465",
+    "@remotion/sfx": "^4.0.465",
+    "@remotion/tailwind-v4": "4.0.465",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "remotion": "4.0.465",
+    "tailwindcss": "4.3.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.7",
-    "@types/web": "0.0.166",
-    "typescript": "5.9.3"
+    "@types/react": "19.2.15",
+    "@types/web": "0.0.349",
+    "typescript": "6.0.3"
   }
 }

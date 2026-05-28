@@ -68,6 +68,20 @@ await files.upload("backups/db.tar", stream, {
 - **Dropbox** streams `ReadableStream` bodies through its upload session chunk-by-chunk, so a large stream is never buffered whole; `partSize` (rounded to a 4 MiB multiple) tunes the chunk size.
 - Other adapters already stream natively or only accept a fully-buffered body, so they ignore the option.
 
+## Pause and resume
+
+Pass a `control` ([`UploadControl`](/features/resumable)) to pause, resume, or abort a large upload — and to resume it later, even in a new process, from a serializable session token. It's supported on every adapter whose provider exposes a resumable session — S3 and the S3-compatible adapters, GCS, Firebase Storage, Google Drive, Azure, OneDrive, Dropbox, Vercel Blob, the local filesystem, FTP/SFTP, Supabase, Appwrite, and Cloudinary (Box, bun-s3, and memory pause in-process only); the rest throw. See [Resumable uploads](/features/resumable) for the full walkthrough.
+
+```ts lineNumbers
+import { UploadControl } from "files-sdk";
+
+const control = new UploadControl();
+const result = files.upload("big.iso", file, { control });
+control.pause();
+control.resume();
+await result;
+```
+
 ## Many items
 
 Pass an array of `{ key, body, ...options }` to upload many in one call. Each item carries its own `contentType` / `cacheControl` / `metadata` / `multipart`. The call returns a structured result instead of throwing on partial failure: successes land in `uploaded`, per-item failures (including invalid keys) in `errors`, both in the order supplied. It honors the client's `prefix` and fans out with bounded `concurrency` (default 8); `stopOnError: true` stops at the first failure.

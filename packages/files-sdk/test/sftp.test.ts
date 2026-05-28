@@ -5,7 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import type SftpClient from "ssh2-sftp-client";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z").getTime();
 
@@ -54,6 +55,12 @@ const collect = async (input: unknown): Promise<Buffer> => {
 
 const makeFakeClient = () =>
   ({
+    async append(input: unknown, remote: string) {
+      const chunk = await collect(input);
+      const existing = store.get(remote)?.bytes ?? Buffer.alloc(0);
+      store.set(remote, { bytes: Buffer.concat([existing, chunk]) });
+      return "ok";
+    },
     createReadStream(remote: string) {
       const entry = store.get(remote);
       if (!entry) {
@@ -564,5 +571,117 @@ describe("mapSftpError", () => {
   test("passes through an existing FilesError unchanged", () => {
     const err = new FilesError("NotFound", "x");
     expect(mapSftpError(err)).toBe(err);
+  });
+});
+
+describe("sftp resumable uploads", () => {
+  test("fresh upload appends chunks and completes", async () => {
+    const files = newFiles();
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", "abcdefghijkl", {
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(control.status).toBe("completed");
+    const got = await files.download("big.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+    expect(control.session?.provider).toBe("sftp");
+  });
+
+  test("resumes from the remote size in a new connection", async () => {
+    const writer = newFiles();
+    const control = new UploadControl();
+    let paused = false;
+    const pending = writer
+      .upload("r.bin", "abcdefghijkl", {
+        control,
+        multipart: { concurrency: 1, partSize: 4 },
+        onProgress: ({ loaded }) => {
+          if (loaded === 4 && !paused) {
+            paused = true;
+            control.pause();
+          }
+        },
+      })
+      .catch(() => {
+        // Abandoned — resumed below against the same remote store.
+      });
+    await sleep(0);
+    await sleep(0);
+    const token = structuredClone(control.toJSON()) as ResumableUploadSession;
+    expect(token.provider).toBe("sftp");
+
+    const resumer = newFiles();
+    const result = await resumer.upload("r.bin", "abcdefghijkl", {
+      control: UploadControl.from(token),
+      multipart: { concurrency: 1, partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    const got = await resumer.download("r.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+    void pending;
+  });
+
+  test("abort removes the partial", async () => {
+    const files = newFiles();
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", "abcdefghijkl", {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(await files.exists("a.bin")).toBe(false);
+  });
+
+  test("metadata is rejected", async () => {
+    const files = newFiles();
+    await expect(
+      files.upload("m.bin", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+  });
+
+  test("cacheControl is rejected", async () => {
+    const files = newFiles();
+    await expect(
+      files.upload("c.bin", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("resuming a non-sftp token throws", async () => {
+    const files = newFiles();
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a mismatched key throws", async () => {
+    const files = newFiles();
+    const token: ResumableUploadSession = {
+      key: "other.bin",
+      provider: "sftp",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

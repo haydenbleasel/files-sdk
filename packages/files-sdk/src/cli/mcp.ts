@@ -4,10 +4,37 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { transfer } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { storedFileToJson } from "./io.js";
 import { loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
+
+// Shared schema for the bulk-fanout knobs on the array-form tools.
+const concurrencyArg = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe("Parallel operations for the array form (default 8)");
+const stopOnErrorArg = z
+  .boolean()
+  .optional()
+  .describe("Stop at the first failure instead of collecting per-key errors");
+
+const bulkOpts = (
+  concurrency?: number,
+  stopOnError?: boolean
+): { concurrency?: number; stopOnError?: boolean } | undefined => {
+  const opts: { concurrency?: number; stopOnError?: boolean } = {};
+  if (concurrency !== undefined) {
+    opts.concurrency = concurrency;
+  }
+  if (stopOnError) {
+    opts.stopOnError = true;
+  }
+  return Object.keys(opts).length > 0 ? opts : undefined;
+};
 
 const pkg = createRequire(import.meta.url)("../../package.json") as {
   version: string;
@@ -86,6 +113,18 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
           .record(z.string(), z.string())
           .optional()
           .describe("Metadata as a string-to-string object"),
+        multipart: z
+          .union([
+            z.boolean(),
+            z.object({
+              concurrency: z.number().int().positive().optional(),
+              partSize: z.number().int().positive().optional(),
+            }),
+          ])
+          .optional()
+          .describe(
+            "Upload in parallel parts: true, or { partSize, concurrency }"
+          ),
         text: z
           .string()
           .optional()
@@ -93,7 +132,15 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
       },
       title: "Upload a file",
     },
-    async ({ key, text, base64, contentType, cacheControl, metadata }) => {
+    async ({
+      key,
+      text,
+      base64,
+      contentType,
+      cacheControl,
+      metadata,
+      multipart,
+    }) => {
       try {
         if (text !== undefined && base64 !== undefined) {
           throw new FilesError(
@@ -106,6 +153,7 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
           cacheControl,
           contentType,
           metadata,
+          ...(multipart !== undefined && { multipart }),
         });
         return ok(result);
       } catch (error) {
@@ -129,20 +177,33 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
           .describe(
             `Refuse the download if the body exceeds this many bytes (default ${DEFAULT_MCP_DOWNLOAD_MAX_BYTES})`
           ),
+        range: z
+          .object({
+            end: z.number().int().nonnegative().optional(),
+            start: z.number().int().nonnegative(),
+          })
+          .optional()
+          .describe(
+            "Download only a byte range (0-based, inclusive). Throws on adapters with no range primitive."
+          ),
       },
       title: "Download a file",
     },
-    async ({ key, maxBytes }) => {
+    async ({ key, maxBytes, range }) => {
       try {
         const cap = maxBytes ?? DEFAULT_MCP_DOWNLOAD_MAX_BYTES;
-        const meta = await files.head(key);
-        if (typeof meta.size === "number" && meta.size > cap) {
-          throw new FilesError(
-            "Provider",
-            `object is ${meta.size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
-          );
+        // The head precheck reflects the full object; with a range the body is
+        // smaller, so skip it and rely on the post-download byte-length guard.
+        if (!range) {
+          const meta = await files.head(key);
+          if (typeof meta.size === "number" && meta.size > cap) {
+            throw new FilesError(
+              "Provider",
+              `object is ${meta.size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
+            );
+          }
         }
-        const file = await files.download(key);
+        const file = await files.download(key, range ? { range } : undefined);
         const buf = Buffer.from(await file.arrayBuffer());
         if (buf.byteLength > cap) {
           throw new FilesError(
@@ -165,13 +226,20 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     {
       description:
         "Fetch metadata for `key` without transferring its body. Pass an array of keys to fetch many in one call — that form returns a structured `{ files, errors? }` result instead of throwing on partial failure.",
-      inputSchema: { key: z.union([z.string(), z.array(z.string())]) },
+      inputSchema: {
+        concurrency: concurrencyArg,
+        key: z.union([z.string(), z.array(z.string())]),
+        stopOnError: stopOnErrorArg,
+      },
       title: "Get metadata for one or many keys",
     },
-    async ({ key }) => {
+    async ({ key, concurrency, stopOnError }) => {
       try {
         if (Array.isArray(key)) {
-          const result = await files.head(key);
+          const result = await files.head(
+            key,
+            bulkOpts(concurrency, stopOnError)
+          );
           return ok({
             ...result,
             files: result.files.map(storedFileToJson),
@@ -190,13 +258,19 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     {
       description:
         "Returns { key, exists }. Pass an array of keys to check many in one call — that form returns `{ existing, missing, errors? }` instead.",
-      inputSchema: { key: z.union([z.string(), z.array(z.string())]) },
+      inputSchema: {
+        concurrency: concurrencyArg,
+        key: z.union([z.string(), z.array(z.string())]),
+        stopOnError: stopOnErrorArg,
+      },
       title: "Check whether one or many keys exist",
     },
-    async ({ key }) => {
+    async ({ key, concurrency, stopOnError }) => {
       try {
         if (Array.isArray(key)) {
-          return ok(await files.exists(key));
+          return ok(
+            await files.exists(key, bulkOpts(concurrency, stopOnError))
+          );
         }
         const exists = await files.exists(key);
         return ok({ exists, key });
@@ -211,13 +285,19 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     {
       description:
         "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure.",
-      inputSchema: { key: z.union([z.string(), z.array(z.string())]) },
+      inputSchema: {
+        concurrency: concurrencyArg,
+        key: z.union([z.string(), z.array(z.string())]),
+        stopOnError: stopOnErrorArg,
+      },
       title: "Delete one or many keys",
     },
-    async ({ key }) => {
+    async ({ key, concurrency, stopOnError }) => {
       try {
         if (Array.isArray(key)) {
-          return ok(await files.delete(key));
+          return ok(
+            await files.delete(key, bulkOpts(concurrency, stopOnError))
+          );
         }
         await files.delete(key);
         return ok({ deleted: true, key });
@@ -266,16 +346,29 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     "list",
     {
       description:
-        "List up to `limit` objects under an optional `prefix`. Paginated via `cursor`.",
+        "List up to `limit` objects under an optional `prefix`. Paginated via `cursor`. Pass `all: true` to walk every page (following the cursor) and return all items at once.",
       inputSchema: {
+        all: z
+          .boolean()
+          .optional()
+          .describe(
+            "Walk every page and return all items (ignores cursor paging)"
+          ),
         cursor: z.string().optional(),
         limit: z.number().int().positive().optional(),
         prefix: z.string().optional(),
       },
       title: "List objects",
     },
-    async ({ prefix, cursor, limit }) => {
+    async ({ prefix, cursor, limit, all }) => {
       try {
+        if (all) {
+          const items: ReturnType<typeof storedFileToJson>[] = [];
+          for await (const file of files.listAll({ cursor, limit, prefix })) {
+            items.push(storedFileToJson(file));
+          }
+          return ok({ items });
+        }
         const result = await files.list({ cursor, limit, prefix });
         return ok({
           cursor: result.cursor,
@@ -335,6 +428,53 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
           minSize,
         });
         return ok({ key, ...signed });
+      } catch (error) {
+        return errorPayload(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    "transfer",
+    {
+      description:
+        "Copy every object from the configured (source) provider to another provider, streaming each body across backends. The destination is a separate provider config (`to`). Returns `{ transferred, skipped?, errors? }`.",
+      inputSchema: {
+        concurrency: concurrencyArg,
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Page size for the source walk"),
+        overwrite: z
+          .boolean()
+          .optional()
+          .describe("When false, skip keys already present at the destination"),
+        prefix: z
+          .string()
+          .optional()
+          .describe("Only transfer keys under this prefix"),
+        stopOnError: stopOnErrorArg,
+        to: z
+          .record(z.string(), z.unknown())
+          .describe(
+            'Destination provider options, e.g. { "provider": "r2", "bucket": "new", "accountId": "..." }'
+          ),
+      },
+      title: "Transfer objects to another provider",
+    },
+    async ({ to, prefix, overwrite, limit, concurrency, stopOnError }) => {
+      try {
+        const dest = await loadFiles(to as unknown as GlobalCliOptions);
+        const result = await transfer(files, dest.files, {
+          ...(prefix !== undefined && { prefix }),
+          ...(overwrite === false && { overwrite: false }),
+          ...(limit !== undefined && { limit }),
+          ...(concurrency !== undefined && { concurrency }),
+          ...(stopOnError && { stopOnError: true }),
+        });
+        return ok(result);
       } catch (error) {
         return errorPayload(error);
       }

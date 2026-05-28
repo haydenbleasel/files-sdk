@@ -35,6 +35,12 @@ const streamFromPromise = (
     },
   });
 
+const consumedError = (): FilesError =>
+  new FilesError(
+    "Provider",
+    "StoredFile body was already consumed via stream(). For multi-format access, call text()/arrayBuffer()/blob() before stream() — those drain into a cache."
+  );
+
 export const createStoredFile = (
   meta: StoredFileMeta,
   body: BodySource
@@ -51,12 +57,6 @@ export const createStoredFile = (
   let cached: Uint8Array | undefined;
   let cachePromise: Promise<Uint8Array> | undefined;
   let streamConsumed = false;
-
-  const consumedError = (): FilesError =>
-    new FilesError(
-      "Provider",
-      "StoredFile body was already consumed via stream(). For multi-format access, call text()/arrayBuffer()/blob() before stream() — those drain into a cache."
-    );
 
   const cacheFrom = async (
     source: () => Promise<Uint8Array>

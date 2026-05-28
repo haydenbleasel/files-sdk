@@ -1424,6 +1424,48 @@ describe("upload progress", () => {
     ]);
   });
 
+  test("a throwing onProgress neither fails the upload nor retries it", async () => {
+    const base = fakeAdapter();
+    let uploads = 0;
+    const adapter: Adapter = {
+      ...base,
+      upload(key, body, opts) {
+        uploads += 1;
+        return base.upload(key, body, opts);
+      },
+    };
+    const files = new Files({ adapter });
+
+    // With retries configured, a post-upload `onProgress` throw treated as a
+    // provider error would re-run the attempt — re-uploading the body — and
+    // ultimately reject. It must do neither: progress is fire-and-forget.
+    const result = await files.upload("a.txt", "hello", {
+      onProgress: () => {
+        throw new Error("reporter boom");
+      },
+      retries: 3,
+    });
+
+    expect(result.size).toBe(5);
+    expect(uploads).toBe(1);
+    expect(base.has("a.txt")).toBe(true);
+  });
+
+  test("a throwing onProgress does not error a streaming upload", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+
+    await files.upload("s.bin", streamOf([new Uint8Array([1, 2, 3, 4])]), {
+      onProgress: () => {
+        throw new Error("reporter boom");
+      },
+    });
+
+    const got = await files.download("s.bin");
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3, 4])
+    );
+  });
+
   test("countingStream cancel propagates to the source reader", async () => {
     let cancelledWith: unknown;
     const source = new ReadableStream<Uint8Array>({

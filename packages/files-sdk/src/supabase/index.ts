@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { StorageClient } from "@supabase/storage-js";
 import type { FileObject } from "@supabase/storage-js";
 
@@ -5,6 +7,8 @@ import type {
   Adapter,
   Body,
   ListResult,
+  OffsetResumableDriver,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -259,6 +263,38 @@ const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
     Authorization: `Bearer ${key}`,
     apikey: key,
   });
+};
+
+const b64 = (value: string): string => Buffer.from(value).toString("base64");
+
+// Resolve the resumable (TUS) endpoint + key the same way `buildClient`
+// resolves the storage URL. Returns `undefined` when only a pre-built `client`
+// was supplied (no URL/key to reach the upload endpoint with).
+const resolveTusConfig = (
+  opts: SupabaseAdapterOptions
+): { endpoint: string; key: string } | undefined => {
+  if (opts.client) {
+    return;
+  }
+  const url =
+    opts.url ?? readEnv("SUPABASE_URL") ?? readEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const key =
+    opts.key ??
+    readEnv("SUPABASE_SERVICE_ROLE_KEY") ??
+    readEnv("SUPABASE_KEY") ??
+    readEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  if (!(url && key)) {
+    return;
+  }
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") {
+    end -= 1;
+  }
+  const trimmed = url.slice(0, end);
+  const storageUrl = trimmed.endsWith("/storage/v1")
+    ? trimmed
+    : `${trimmed}/storage/v1`;
+  return { endpoint: `${storageUrl}/upload/resumable`, key };
 };
 
 interface SupabaseListItemMetadata {
@@ -578,6 +614,136 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     },
     name: "supabase",
     raw: client,
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      const tus = resolveTusConfig(opts);
+      let uri: string | undefined;
+      let contentType = "application/octet-stream";
+      let lastOffset = 0;
+      const requireTus = () => {
+        if (!tus) {
+          throw new FilesError(
+            "Provider",
+            "supabase: resumable uploads require `url` + `key` (not the pre-built `client` escape hatch)."
+          );
+        }
+        return tus;
+      };
+      const requireUri = () => {
+        if (!uri) {
+          throw new FilesError(
+            "Provider",
+            "supabase: resumable upload has no session."
+          );
+        }
+        return uri;
+      };
+      const authHeaders = (): Record<string, string> => ({
+        Authorization: `Bearer ${requireTus().key}`,
+        "Tus-Resumable": "1.0.0",
+        apikey: requireTus().key,
+      });
+      return {
+        adopt(session: ResumableUploadSession) {
+          if (session.provider !== "supabase") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on a supabase adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          ({ uri } = session);
+          ({ contentType } = session);
+        },
+        async begin(meta): Promise<ResumableUploadSession> {
+          ({ contentType } = meta);
+          const { endpoint } = requireTus();
+          const res = await fetch(endpoint, {
+            headers: {
+              ...authHeaders(),
+              "Upload-Length": String(meta.total),
+              "Upload-Metadata": `bucketName ${b64(bucket)},objectName ${b64(key)},contentType ${b64(meta.contentType)}`,
+              "x-upsert": "true",
+            },
+            method: "POST",
+          });
+          if (res.status !== 201) {
+            throw new FilesError(
+              "Provider",
+              `supabase: resumable session init failed (HTTP ${res.status}).`
+            );
+          }
+          const location = res.headers.get("location");
+          if (!location) {
+            throw new FilesError(
+              "Provider",
+              "supabase: resumable session response missing Location header"
+            );
+          }
+          uri = location;
+          return { contentType, key, provider: "supabase", uri };
+        },
+        complete(): Promise<UploadResult> {
+          return Promise.resolve({ contentType, key, size: lastOffset });
+        },
+        async discard() {
+          if (!uri) {
+            return;
+          }
+          await fetch(uri, { headers: authHeaders(), method: "DELETE" });
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 6 * 1024 * 1024,
+        async probe(): Promise<{ nextOffset: number }> {
+          const res = await fetch(requireUri(), {
+            headers: authHeaders(),
+            method: "HEAD",
+          });
+          if (!res.ok) {
+            throw new FilesError(
+              "Provider",
+              `supabase: resume status check failed (HTTP ${res.status}).`
+            );
+          }
+          lastOffset = Number(res.headers.get("upload-offset") ?? 0);
+          return { nextOffset: lastOffset };
+        },
+        async uploadAt({
+          offset,
+          data,
+          signal,
+        }): Promise<{ nextOffset: number }> {
+          const res = await fetch(requireUri(), {
+            body: data as unknown as BodyInit,
+            headers: {
+              ...authHeaders(),
+              "Content-Type": "application/offset+octet-stream",
+              "Upload-Offset": String(offset),
+            },
+            method: "PATCH",
+            ...(signal && { signal }),
+          });
+          if (!res.ok) {
+            throw new FilesError(
+              "Provider",
+              `supabase: chunk upload failed (HTTP ${res.status}).`
+            );
+          }
+          lastOffset = Number(
+            res.headers.get("upload-offset") ?? offset + data.byteLength
+          );
+          return { nextOffset: lastOffset };
+        },
+      };
+    },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Supabase's createSignedUploadUrl has no `content-length-range`
       // equivalent — there's no way to enforce a max upload size at the

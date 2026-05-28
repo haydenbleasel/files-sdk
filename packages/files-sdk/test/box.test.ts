@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { BoxClient } from "box-typescript-sdk-gen";
 
 import { box, mapBoxError } from "../src/box/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const stubFetchCapturing = (sink: { signal?: AbortSignal }) => {
   globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -1368,5 +1370,101 @@ describe("box adapter", () => {
       await files.download("a.txt", { as: "stream", signal });
       expect(sink.signal).toBe(signal);
     });
+  });
+});
+
+describe("box resumable uploads (in-process)", () => {
+  test("fresh upload buffers chunks and uploads once on complete", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", "abcdefghijkl", {
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(control.status).toBe("completed");
+    expect(uploadFileMock).toHaveBeenCalledTimes(1);
+    expect(control.session?.provider).toBe("box");
+    // result.size is the byte count the mock read off the assembled upload —
+    // 12 confirms all chunks were buffered and sent in the single call.
+  });
+
+  test("pause holds the upload, resume finishes it", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const control = new UploadControl();
+    let paused = false;
+    const promise = files.upload("p.bin", new Uint8Array(12).fill(7), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !paused) {
+          paused = true;
+          control.pause();
+        }
+      },
+    });
+    await delay(0);
+    await delay(0);
+    expect(control.status).toBe("paused");
+    expect(uploadFileMock).not.toHaveBeenCalled();
+    control.resume();
+    const result = await promise;
+    expect(result.size).toBe(12);
+    expect(uploadFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("abort discards the buffered upload without uploading", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", new Uint8Array(12).fill(9), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+    expect(uploadFileMock).not.toHaveBeenCalled();
+  });
+
+  test("a token can't be resumed in a different instance", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "x.bin",
+      provider: "box",
+      uploadId: "box-1",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/in-process only/u);
+  });
+
+  test("metadata is rejected", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await expect(
+      files.upload("m.bin", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+  });
+
+  test("resuming a non-box token throws", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

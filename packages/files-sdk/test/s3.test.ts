@@ -2,19 +2,25 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Readable } from "node:stream";
 
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { sdkStreamMixin } from "@smithy/util-stream";
 import { mockClient } from "aws-sdk-client-mock";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 import { mapS3Error, s3 } from "../src/s3/index.js";
 
 const s3Mock = mockClient(S3Client);
@@ -1022,5 +1028,196 @@ describe("s3 adapter", () => {
     });
     expect(events.length).toBeGreaterThan(0);
     expect(FakeUpload.aborted).toBe(1);
+  });
+});
+
+const rbAdapter = () => s3({ bucket: "rb", region: "us-east-1" });
+
+describe("s3 resumable uploads", () => {
+  const FIVE_MIB = 5 * 1024 * 1024;
+  const adapter = rbAdapter;
+
+  const mockSession = () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({
+      ContentLength: FIVE_MIB + 10,
+      ContentType: "application/octet-stream",
+      LastModified: new Date(0),
+    });
+  };
+
+  test("fresh multipart upload creates, uploads parts, and completes", async () => {
+    mockSession();
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    const result = await files.upload(
+      "big.bin",
+      new Uint8Array(FIVE_MIB + 10),
+      {
+        control,
+        multipart: { partSize: FIVE_MIB },
+      }
+    );
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(result.etag).toBe("final");
+    expect(control.status).toBe("completed");
+    expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(2);
+    const [complete] = s3Mock.commandCalls(CompleteMultipartUploadCommand);
+    const completeInput = complete?.args[0]?.input as {
+      MultipartUpload?: { Parts?: unknown[] };
+    };
+    expect(completeInput.MultipartUpload?.Parts).toHaveLength(2);
+    expect(control.session?.provider).toBe("s3");
+  });
+
+  test("resume skips already-uploaded parts via ListParts", async () => {
+    s3Mock.on(ListPartsCommand).resolves({
+      IsTruncated: false,
+      Parts: [{ ETag: '"p1"', PartNumber: 1, Size: FIVE_MIB }],
+    });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p2"' });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: FIVE_MIB + 10 });
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      bucket: "rb",
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "u1",
+    };
+    const result = await files.upload(
+      "big.bin",
+      new Uint8Array(FIVE_MIB + 10),
+      { control: UploadControl.from(token), multipart: { partSize: FIVE_MIB } }
+    );
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(1);
+  });
+
+  test("ListParts pagination is followed across pages", async () => {
+    s3Mock
+      .on(ListPartsCommand)
+      .resolvesOnce({
+        IsTruncated: true,
+        NextPartNumberMarker: "1",
+        Parts: [{ ETag: '"p1"', PartNumber: 1, Size: FIVE_MIB }],
+      })
+      .resolves({
+        IsTruncated: false,
+        Parts: [{ ETag: '"p2"', PartNumber: 2, Size: 10 }],
+      });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: FIVE_MIB + 10 });
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      bucket: "rb",
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "u1",
+    };
+    // Both parts already present → no new UploadPart calls.
+    const result = await files.upload(
+      "big.bin",
+      new Uint8Array(FIVE_MIB + 10),
+      { control: UploadControl.from(token), multipart: { partSize: FIVE_MIB } }
+    );
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(s3Mock.commandCalls(UploadPartCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(ListPartsCommand)).toHaveLength(2);
+  });
+
+  test("abort discards the multipart upload", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("big.bin", new Uint8Array(FIVE_MIB + 10), {
+      control,
+      multipart: { concurrency: 1, partSize: FIVE_MIB },
+      onProgress: ({ loaded }) => {
+        if (loaded >= FIVE_MIB && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(1);
+    expect(control.status).toBe("aborted");
+  });
+
+  test("a missing UploadId from CreateMultipartUpload throws", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({});
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/UploadId/u);
+  });
+
+  test("a CreateMultipartUpload failure is wrapped", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).rejects(new Error("boom"));
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", "data", { control: new UploadControl() })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("an UploadPart failure rejects when retries are exhausted", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).rejects(new Error("part boom"));
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", "data", {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a CompleteMultipartUpload failure is wrapped", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock
+      .on(CompleteMultipartUploadCommand)
+      .rejects(new Error("complete boom"));
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", "data", { control: new UploadControl() })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("resuming a token from another provider throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token = {
+      bucket: "rb",
+      key: "big.bin",
+      provider: "gcs",
+      uri: "x",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("big.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a token for a different key throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      bucket: "rb",
+      key: "other.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "u1",
+    };
+    await expect(
+      files.upload("big.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

@@ -5,7 +5,8 @@ import type { Dropbox } from "dropbox";
 import { DropboxResponseError } from "dropbox";
 
 import { dropbox } from "../src/dropbox/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 interface FakeFile {
   id: string;
@@ -1300,5 +1301,146 @@ describe("dropbox adapter", () => {
     expect(r.contentType).toBe("application/octet-stream");
     const f = await adapter.download("collected.bin");
     expect(await f.text()).toBe("collect-via-reader");
+  });
+});
+
+describe("dropbox resumable uploads", () => {
+  const FOUR_MIB = 4 * 1024 * 1024;
+  const adapter = () => dropbox(baseOpts);
+
+  test("fresh multi-chunk upload starts, appends, and finishes", async () => {
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    const result = await files.upload(
+      "doc.bin",
+      new Uint8Array(FOUR_MIB + 10),
+      { control, multipart: { partSize: FOUR_MIB } }
+    );
+    expect(result.size).toBe(FOUR_MIB + 10);
+    expect(control.status).toBe("completed");
+    expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
+    expect(filesUploadSessionAppendV2Mock).toHaveBeenCalledTimes(1);
+    expect(filesUploadSessionFinishMock).toHaveBeenCalledTimes(1);
+    expect(control.session?.provider).toBe("dropbox");
+  });
+
+  test("a single-chunk body goes straight to finish", async () => {
+    const files = new Files({ adapter: adapter() });
+    await files.upload("small.bin", "hello", {
+      control: new UploadControl(),
+    });
+    expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
+    expect(filesUploadSessionAppendV2Mock).not.toHaveBeenCalled();
+    expect(filesUploadSessionFinishMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("resume continues from the token's offset", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      offset: FOUR_MIB,
+      path: "/doc.bin",
+      provider: "dropbox",
+      sessionId: "session-1",
+    };
+    const result = await files.upload(
+      "doc.bin",
+      new Uint8Array(FOUR_MIB + 10),
+      { control: UploadControl.from(token), multipart: { partSize: FOUR_MIB } }
+    );
+    expect(result.size).toBe(FOUR_MIB + 10);
+    expect(filesUploadSessionStartMock).not.toHaveBeenCalled();
+    expect(filesUploadSessionAppendV2Mock).not.toHaveBeenCalled();
+    expect(filesUploadSessionFinishMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("abort stops appending (discard is a no-op)", async () => {
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab.bin", new Uint8Array(FOUR_MIB + 10), {
+      control,
+      multipart: { partSize: FOUR_MIB },
+      onProgress: ({ loaded }) => {
+        if (loaded >= FOUR_MIB && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+    expect(filesUploadSessionFinishMock).not.toHaveBeenCalled();
+  });
+
+  test("metadata is rejected", async () => {
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("m.bin", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+  });
+
+  test("cacheControl is rejected", async () => {
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("c.bin", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("a sessionStart failure is wrapped", async () => {
+    filesUploadSessionStartMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("start boom"))
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("x.bin", "data", { control: new UploadControl() })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a sessionAppend failure is wrapped", async () => {
+    filesUploadSessionAppendV2Mock.mockImplementationOnce(() =>
+      Promise.reject(new Error("append boom"))
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("x.bin", new Uint8Array(FOUR_MIB + 10), {
+        control: new UploadControl(),
+        multipart: { partSize: FOUR_MIB },
+        retries: 0,
+      })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("resuming a non-dropbox token throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token = {
+      bucket: "b",
+      key: "doc.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("doc.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a mismatched path throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      offset: 0,
+      path: "/other.bin",
+      provider: "dropbox",
+      sessionId: "session-1",
+    };
+    await expect(
+      files.upload("doc.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

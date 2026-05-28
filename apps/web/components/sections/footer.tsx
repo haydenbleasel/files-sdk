@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 const PROJECT_LINKS = [
-  { href: "/docs", label: "Docs" },
+  { href: "/overview", label: "Docs" },
   { href: "/adapters", label: "Adapters" },
   { href: "/api", label: "API" },
   { href: "/cli", label: "CLI" },
@@ -66,7 +66,7 @@ export const Footer = () => (
             <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
               Project
             </p>
-            <ul className="flex flex-col gap-2" role="list">
+            <ul className="flex flex-col gap-2">
               {PROJECT_LINKS.map(({ href, label }) => (
                 <li key={href}>
                   <FooterLink href={href}>{label}</FooterLink>
@@ -78,7 +78,7 @@ export const Footer = () => (
             <p className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
               Resources
             </p>
-            <ul className="flex flex-col gap-2" role="list">
+            <ul className="flex flex-col gap-2">
               {RESOURCE_LINKS.map(({ external, href, label }) => (
                 <li key={href}>
                   <FooterLink external={external} href={href}>

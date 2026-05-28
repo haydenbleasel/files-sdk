@@ -29,6 +29,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { createGcsResumableDriver } from "../internal/gcs-resumable.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface GCSAdapterOptions {
@@ -315,6 +316,15 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     name: "gcs",
     raw: storage,
     reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts) {
+      return createGcsResumableDriver({
+        bucket: bucketName,
+        file: bucket.file(key),
+        key,
+        opts: resumableOpts,
+        wrapErr: mapGCSError,
+      });
+    },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);

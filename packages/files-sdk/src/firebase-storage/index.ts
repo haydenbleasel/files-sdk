@@ -36,6 +36,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { createGcsResumableDriver } from "../internal/gcs-resumable.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface FirebaseStorageAdapterOptions {
@@ -432,6 +433,15 @@ export const firebaseStorage = (
     name: "firebase-storage",
     raw: bucket,
     reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts) {
+      return createGcsResumableDriver({
+        bucket: bucketName,
+        file: bucket.file(key),
+        key,
+        opts: resumableOpts,
+        wrapErr: mapFirebaseStorageError,
+      });
+    },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         const file = bucket.file(key);

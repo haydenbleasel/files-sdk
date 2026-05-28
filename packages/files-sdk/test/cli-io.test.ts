@@ -225,6 +225,20 @@ describe("cli/io readBody", () => {
   });
 });
 
+const makeStoredFile = (text: string) => {
+  const bytes = new TextEncoder().encode(text);
+  return createStoredFile(
+    {
+      etag: '"x"',
+      key: "k",
+      lastModified: 0,
+      size: bytes.byteLength,
+      type: "text/plain",
+    },
+    { data: bytes, kind: "buffer" }
+  );
+};
+
 describe("cli/io writeBody", () => {
   const tmpDirs: string[] = [];
   const makeTmpDir = async (): Promise<string> => {
@@ -237,20 +251,6 @@ describe("cli/io writeBody", () => {
       tmpDirs.splice(0).map((d) => fsp.rm(d, { force: true, recursive: true }))
     );
   });
-
-  const makeStoredFile = (text: string) => {
-    const bytes = new TextEncoder().encode(text);
-    return createStoredFile(
-      {
-        etag: '"x"',
-        key: "k",
-        lastModified: 0,
-        size: bytes.byteLength,
-        type: "text/plain",
-      },
-      { data: bytes, kind: "buffer" }
-    );
-  };
 
   test("--out writes the body to disk", async () => {
     const dir = await makeTmpDir();

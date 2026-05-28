@@ -5,8 +5,33 @@ import {
   mapMany,
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
+import { runResumableUpload } from "./internal/resumable.js";
+import type {
+  ResumableDriver,
+  ResumableDriverOptions,
+  UploadControl,
+} from "./internal/resumable.js";
+import {
+  abortError,
+  canRetry,
+  maxRetries,
+  mergeSignals,
+  retryBackoff,
+  runWithSignal,
+  sleep,
+} from "./internal/retry.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
+export { UploadControl } from "./internal/resumable.js";
+export type {
+  OffsetResumableDriver,
+  PartMeta,
+  PartsResumableDriver,
+  ResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
+  UploadControlStatus,
+} from "./internal/resumable.js";
 export type { BodySource, StoredFileMeta } from "./internal/stored-file.js";
 export { createStoredFile } from "./internal/stored-file.js";
 export {
@@ -158,6 +183,19 @@ export interface UploadOptions extends OperationOptions {
    * transparently and ignore it.
    */
   multipart?: boolean | MultipartOptions;
+  /**
+   * Drive the upload through a pause-able, resumable session. Construct an
+   * {@link UploadControl}, pass it here, and call `pause()` / `resume()` /
+   * `abort()` on it; persist `control.toJSON()` and rehydrate with
+   * `UploadControl.from(token)` to resume in a later process.
+   *
+   * Requires a body with a known length (`File`, `Blob`, `ArrayBuffer`, a typed
+   * array, or `string`) — a `ReadableStream` can't be re-read to resume.
+   * Supported on S3 and the S3-compatible adapters, GCS, Firebase Storage,
+   * Azure Blob, OneDrive, and Dropbox; other adapters throw. Not available in
+   * the array (bulk) form of `upload`.
+   */
+  control?: UploadControl;
 }
 
 export interface UploadResult {
@@ -541,6 +579,16 @@ export interface Adapter<Raw = unknown> {
    */
   url(key: string, opts?: UrlOptions): Promise<string>;
   signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
+  /**
+   * Build a {@link ResumableDriver} for a pause-able / resumable upload of
+   * `key`. Optional: only adapters whose provider exposes a resumable or
+   * multipart-with-listable-parts primitive implement it. When omitted, an
+   * `upload()` call that passes {@link UploadOptions.control} throws an
+   * unsupported-operation error before any provider call (mirroring the
+   * {@link Adapter.supportsRange} gate). The returned driver is synchronous to
+   * construct; it establishes the provider session lazily in `begin()`.
+   */
+  resumableUpload?(key: string, opts: ResumableDriverOptions): ResumableDriver;
 }
 
 /** The public {@link Files} method a hook event describes. */
@@ -666,179 +714,6 @@ export interface FileHandle {
   /** Move `sourceKey` onto this key. See {@link Files.move}. */
   moveFrom(sourceKey: string, opts?: OperationOptions): Promise<void>;
 }
-
-const DEFAULT_RETRY_BACKOFF_MS = 100;
-// Cap the built-in exponential backoff so a large `retries` count can't
-// schedule an absurd sleep (and `2 ** attempt` can't overflow to Infinity).
-// Only applies to the default curve — a caller-supplied `backoff` is theirs.
-const MAX_DEFAULT_RETRY_BACKOFF_MS = 30_000;
-
-const timeoutError = (timeout: number): FilesError =>
-  new FilesError(
-    "Provider",
-    `Operation timed out after ${timeout}ms`,
-    undefined,
-    {
-      aborted: true,
-    }
-  );
-
-const mergeSignals = (
-  signals: AbortSignal[],
-  timeout?: number
-): { signal?: AbortSignal; cleanup?: () => void } => {
-  if (signals.length === 0 && (timeout ?? 0) <= 0) {
-    return {};
-  }
-  if (signals.length === 1 && (timeout ?? 0) <= 0) {
-    return { signal: signals[0] };
-  }
-
-  const controller = new AbortController();
-  const listeners: (() => void)[] = [];
-  const abort = (reason: unknown) => {
-    if (!controller.signal.aborted) {
-      controller.abort(reason);
-    }
-  };
-
-  for (const signal of signals) {
-    if (signal.aborted) {
-      abort(signal.reason);
-    } else {
-      const onAbort = () => abort(signal.reason);
-      signal.addEventListener("abort", onAbort, { once: true });
-      listeners.push(() => signal.removeEventListener("abort", onAbort));
-    }
-  }
-
-  const timer =
-    timeout !== undefined && timeout > 0
-      ? setTimeout(() => {
-          abort(timeoutError(timeout));
-        }, timeout)
-      : undefined;
-
-  return {
-    cleanup: () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      for (const cleanup of listeners) {
-        cleanup();
-      }
-    },
-    signal: controller.signal,
-  };
-};
-
-const abortError = (reason: unknown): FilesError => {
-  if (reason instanceof FilesError) {
-    return reason;
-  }
-  if (reason instanceof Error) {
-    return new FilesError(
-      "Provider",
-      `Operation aborted: ${reason.message}`,
-      reason,
-      { aborted: true }
-    );
-  }
-  return new FilesError(
-    "Provider",
-    reason === undefined
-      ? "Operation aborted"
-      : `Operation aborted: ${String(reason)}`,
-    reason,
-    { aborted: true }
-  );
-};
-
-const runWithSignal = async <T>(
-  signal: AbortSignal | undefined,
-  fn: () => Promise<T>
-): Promise<T> => {
-  if (!signal) {
-    return await fn();
-  }
-  if (signal.aborted) {
-    throw abortError(signal.reason);
-  }
-
-  // oxlint-disable-next-line promise/avoid-new -- AbortSignal needs callback interop.
-  return await new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError(signal.reason));
-    signal.addEventListener("abort", onAbort, { once: true });
-    fn()
-      .then(resolve, reject)
-      .finally(() => {
-        signal.removeEventListener("abort", onAbort);
-      });
-  });
-};
-
-const sleep = async (
-  ms: number,
-  signal: AbortSignal | undefined
-): Promise<void> => {
-  if (ms <= 0) {
-    return;
-  }
-  if (signal?.aborted) {
-    throw abortError(signal.reason);
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-  try {
-    // oxlint-disable-next-line promise/avoid-new -- setTimeout and AbortSignal are callback APIs.
-    await new Promise<void>((resolve, reject) => {
-      timer = setTimeout(resolve, ms);
-      onAbort = () => {
-        clearTimeout(timer);
-        reject(abortError(signal?.reason));
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-    if (signal && onAbort) {
-      signal.removeEventListener("abort", onAbort);
-    }
-  }
-};
-
-const maxRetries = (
-  retries: RetryOptions | undefined,
-  retryable: boolean
-): number => {
-  if (!retryable) {
-    return 0;
-  }
-  const max = typeof retries === "number" ? retries : retries?.max;
-  return Math.max(0, Math.floor(max ?? 0));
-};
-
-const retryBackoff = (
-  retries: RetryOptions | undefined,
-  attempt: number,
-  error: FilesError
-): number => {
-  if (typeof retries === "object" && retries.backoff) {
-    return Math.max(0, retries.backoff({ attempt, error }));
-  }
-  const backoff = DEFAULT_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
-  return Math.min(MAX_DEFAULT_RETRY_BACKOFF_MS, backoff);
-};
-
-const canRetry = (
-  error: FilesError,
-  attempt: number,
-  maxAttempts: number
-): boolean =>
-  attempt < maxAttempts && error.code === "Provider" && !error.aborted;
 
 // Catch the obviously-broken cases at the SDK boundary so callers get a
 // useful error from us instead of an opaque provider 400. We deliberately
@@ -1064,6 +939,9 @@ export class Files<A extends Adapter = Adapter> {
     ctx?: ActionContext
   ): Promise<UploadResult> {
     const path = this.#path(key);
+    if (opts?.control) {
+      return this.#runResumable(path, body, opts, opts.control);
+    }
     const isStream = body instanceof ReadableStream;
     const onProgress = opts?.onProgress;
 
@@ -1087,7 +965,12 @@ export class Files<A extends Adapter = Adapter> {
 
     if (isStream) {
       const tracked = countingStream(body, (loaded) =>
-        onProgress(total === undefined ? { loaded } : { loaded, total })
+        // `onProgress` is fire-and-forget: route it through `emitHook` so a
+        // throwing reporter can't error the stream and fail the upload.
+        emitHook(
+          onProgress,
+          total === undefined ? { loaded } : { loaded, total }
+        )
       );
       return this.#run(
         rest,
@@ -1100,7 +983,14 @@ export class Files<A extends Adapter = Adapter> {
       );
     }
 
-    onProgress(total === undefined ? { loaded: 0 } : { loaded: 0, total });
+    // `emitHook` swallows a throw from `onProgress` — a buffered upload's final
+    // report runs inside the retryable attempt below, so an unguarded throw
+    // there would be caught by `#run` and wrongly retried as a provider error,
+    // re-uploading the body. See the fire-and-forget contract on `FilesHooks`.
+    emitHook(
+      onProgress,
+      total === undefined ? { loaded: 0 } : { loaded: 0, total }
+    );
     return this.#run(
       rest,
       async (attemptOpts) => {
@@ -1108,12 +998,54 @@ export class Files<A extends Adapter = Adapter> {
           await this.#adapter.upload(path, body, attemptOpts)
         );
         const done = total ?? result.size;
-        onProgress({ loaded: done, total: done });
+        emitHook(onProgress, { loaded: done, total: done });
         return result;
       },
       true,
       ctx
     );
+  }
+
+  /**
+   * Drive a pause-able / resumable upload via {@link UploadOptions.control}.
+   * Gates on the adapter's optional {@link Adapter.resumableUpload} capability
+   * (mirroring {@link Files.#assertRangeSupported}) and on a re-readable body,
+   * then hands off to the orchestrator. Bypasses {@link Files.#run} — the
+   * orchestrator owns per-chunk retry and abort, so retrying the whole call
+   * would restart the upload from zero.
+   */
+  #runResumable(
+    path: string,
+    body: Body,
+    opts: UploadOptions,
+    control: UploadControl
+  ): Promise<UploadResult> {
+    if (!this.#adapter.resumableUpload) {
+      throw new FilesError(
+        "Provider",
+        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
+      );
+    }
+    const driver = this.#adapter.resumableUpload(path, {
+      ...(opts.multipart !== undefined && { multipart: opts.multipart }),
+      ...(opts.cacheControl && { cacheControl: opts.cacheControl }),
+      ...(opts.metadata && { metadata: opts.metadata }),
+    });
+    const signals = [this.#defaults.signal, opts.signal].filter(
+      (signal): signal is AbortSignal => signal !== undefined
+    );
+    const timeout = opts.timeout ?? this.#defaults.timeout;
+    return runResumableUpload({
+      body,
+      control,
+      driver,
+      signals,
+      ...(opts.contentType && { contentTypeHint: opts.contentType }),
+      ...(opts.multipart !== undefined && { multipart: opts.multipart }),
+      ...(opts.onProgress && { onProgress: opts.onProgress }),
+      retries: opts.retries ?? this.#defaults.retries,
+      ...(timeout !== undefined && { timeout }),
+    }).then((result) => this.#uploadResult(result));
   }
 
   async #uploadMany(

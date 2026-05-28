@@ -45,3 +45,17 @@ const files = new Files({
 ## Limitations
 
 Firebase's `?alt=media&token=...` download-token URL form is out of scope for v1 - `url()` always returns either a V4 signed read URL or your configured `publicBaseUrl`. Reach for `adapter.raw` (the underlying `@google-cloud/storage` `Bucket`) if you need to mint Firebase download tokens or use any GCS-side feature that isn't in the unified API. Stream uploads use single-request mode; multi-GB resumable uploads also need `raw`.
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

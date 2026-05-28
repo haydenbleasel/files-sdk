@@ -16,6 +16,8 @@ import type {
   Adapter,
   Body,
   ListResult,
+  OffsetResumableDriver,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadOptions,
@@ -799,6 +801,13 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     }
   };
 
+  // In-flight resumable uploads. Box's chunked-upload commit requires a
+  // whole-file SHA-1 that can't be recomputed across a process boundary, so
+  // resume is in-process only: chunks are buffered and uploaded in one call at
+  // complete. A token from another process/instance is rejected by `adopt`.
+  const pending = new Map<string, { chunks: Uint8Array[]; received: number }>();
+  let uploadSeq = 0;
+
   const adapter: BoxAdapter = {
     async copy(from, to) {
       try {
@@ -989,6 +998,92 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     },
     name: "box",
     raw: client,
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      let uploadId: string | undefined;
+      let contentType = "application/octet-stream";
+      const requirePending = () => {
+        const entry =
+          uploadId === undefined ? undefined : pending.get(uploadId);
+        if (!entry) {
+          throw new FilesError(
+            "Provider",
+            "box: resumable session not found — box uploads are in-process only (commit needs a whole-file digest) and can't resume in a new instance."
+          );
+        }
+        return entry;
+      };
+      return {
+        adopt(session: ResumableUploadSession) {
+          if (session.provider !== "box") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on a box adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          ({ uploadId } = session);
+          ({ contentType } = session);
+        },
+        begin(meta): Promise<ResumableUploadSession> {
+          if (
+            resumableOpts.metadata &&
+            Object.keys(resumableOpts.metadata).length > 0
+          ) {
+            throw new FilesError(
+              "Provider",
+              "box: `metadata` is not supported on the unified API."
+            );
+          }
+          uploadSeq += 1;
+          uploadId = `box-${uploadSeq}`;
+          ({ contentType } = meta);
+          pending.set(uploadId, { chunks: [], received: 0 });
+          return Promise.resolve({
+            contentType,
+            key,
+            provider: "box",
+            uploadId,
+          });
+        },
+        complete(): Promise<UploadResult> {
+          const entry = requirePending();
+          const bytes = new Uint8Array(entry.received);
+          let offset = 0;
+          for (const chunk of entry.chunks) {
+            bytes.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          pending.delete(uploadId as string);
+          return runUpload(key, bytes, { contentType });
+        },
+        discard() {
+          if (uploadId !== undefined) {
+            pending.delete(uploadId);
+          }
+          return Promise.resolve();
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 8 * 1024 * 1024,
+        probe(): Promise<{ nextOffset: number }> {
+          return Promise.resolve({ nextOffset: requirePending().received });
+        },
+        uploadAt({ offset, data }): Promise<{ nextOffset: number }> {
+          const entry = requirePending();
+          entry.chunks.push(new Uint8Array(data));
+          entry.received = offset + data.byteLength;
+          return Promise.resolve({ nextOffset: entry.received });
+        },
+      };
+    },
     rootFolderId,
     signedUploadUrl(_key, _signOpts): Promise<SignedUpload> {
       // Box's upload URL (`/files/content` against a session) requires a

@@ -12,7 +12,9 @@ import type {
   DownloadOptions,
   ListOptions,
   ListResult,
+  OffsetResumableDriver,
   OperationOptions,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -479,6 +481,87 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       return "injected" in resolved
         ? resolved.injected
         : { connect: connectNew };
+    },
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      const remote = keyToRemote(key);
+      return {
+        adopt(session: ResumableUploadSession) {
+          if (session.provider !== "sftp") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on an sftp adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+        },
+        async begin(): Promise<ResumableUploadSession> {
+          if (
+            resumableOpts.metadata &&
+            Object.keys(resumableOpts.metadata).length > 0
+          ) {
+            throw new FilesError(
+              "Provider",
+              "sftp: `metadata` is not supported."
+            );
+          }
+          if (resumableOpts.cacheControl) {
+            throw new FilesError(
+              "Provider",
+              "sftp: `cacheControl` is not supported."
+            );
+          }
+          await run(undefined, async (client) => {
+            await ensureParentDir(client, remote);
+            // Clear any stale partial so appended chunks build a fresh file.
+            await client.delete(remote, true);
+          });
+          return { key, provider: "sftp" };
+        },
+        complete(): Promise<UploadResult> {
+          return run(undefined, async (client) => {
+            const stat = await client.stat(remote);
+            return {
+              contentType: inferTypeFromName(key),
+              key,
+              ...(Number.isFinite(stat.modifyTime) && {
+                lastModified: stat.modifyTime,
+              }),
+              size: stat.size,
+            };
+          });
+        },
+        async discard() {
+          await run(undefined, (client) => client.delete(remote, true));
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 8 * 1024 * 1024,
+        probe(): Promise<{ nextOffset: number }> {
+          return run(undefined, async (client) => {
+            try {
+              const stat = await client.stat(remote);
+              return { nextOffset: stat.size };
+            } catch {
+              // No partial yet — start from the top.
+              return { nextOffset: 0 };
+            }
+          });
+        },
+        uploadAt({ offset, data, signal }): Promise<{ nextOffset: number }> {
+          return run(signal, async (client) => {
+            await client.append(uint8ToBuffer(data), remote);
+            return { nextOffset: offset + data.byteLength };
+          });
+        },
+      };
     },
     get root() {
       return root;

@@ -13,11 +13,16 @@ figure.shiki {
 
 /* Geist Mono ships ligatures/contextual alternates/kerning that shape across
    shiki's per-token <span> boundaries, collapsing glyphs (e.g. `=== 0`
-   overlapping on /ai#openai-tools-responses). Disable them in code blocks;
-   these properties inherit, so setting them on the figure covers pre/code. */
+   overlapping on /ai#openai-tools-responses). The same shaping makes `--` bleed
+   past inline <code> backgrounds (e.g. `--provider` on /docs/cli). Disable them
+   everywhere we render mono — code blocks, inline code, and the .font-mono
+   homepage animations; these properties inherit, so setting them on the figure
+   covers pre/code. */
 figure.shiki,
 figure.shiki code,
-figure.shiki pre {
+figure.shiki pre,
+code,
+.font-mono {
   font-feature-settings:
     "liga" 0,
     "calt" 0;

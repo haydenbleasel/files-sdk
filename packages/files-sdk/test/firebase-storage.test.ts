@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { PassThrough, Readable } from "node:stream";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
 
 const STABLE_UPDATED = "2024-01-02T03:04:05.000Z";
 const STABLE_UPDATED_MS = new Date(STABLE_UPDATED).getTime();
@@ -42,10 +42,14 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
 );
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
 const createWriteStreamMock = mock(() => new PassThrough());
+const createResumableUploadMock = mock(() =>
+  Promise.resolve(["https://session.example/fb-uri"] as [string])
+);
 
 const makeFile = (name: string, populateMetadata = false) => ({
   copy: copyMock,
   createReadStream: createReadStreamMock,
+  createResumableUpload: createResumableUploadMock,
   createWriteStream: createWriteStreamMock,
   delete: deleteMock,
   download: downloadMock,
@@ -133,6 +137,10 @@ beforeEach(() => {
   generateSignedPostPolicyV4Mock.mockClear();
   createReadStreamMock.mockClear();
   createWriteStreamMock.mockClear();
+  createResumableUploadMock.mockClear();
+  createResumableUploadMock.mockImplementation(() =>
+    Promise.resolve(["https://session.example/fb-uri"] as [string])
+  );
   bucketFileMock.mockClear();
   getFilesMock.mockClear();
   initializeAppMock.mockClear();
@@ -840,5 +848,36 @@ describe("firebase-storage adapter", () => {
       // is what's being exercised here.
       expect(getStorageMock).toHaveBeenCalledWith(app);
     });
+  });
+});
+
+describe("firebase-storage resumable uploads", () => {
+  let restoreFetch: () => void;
+  afterEach(() => {
+    restoreFetch?.();
+  });
+
+  test("a resumable upload drives the shared GCS session driver", async () => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({
+          contentType: "application/octet-stream",
+          etag: "fb-final",
+          size: "5",
+          updated: "2024-01-02T03:04:05.000Z",
+        })
+      )) as unknown as typeof fetch;
+
+    const files = new Files({ adapter: firebaseStorage({ projectId: "p" }) });
+    const control = new UploadControl();
+    const result = await files.upload("note.txt", "hello", { control });
+    expect(result.etag).toBe("fb-final");
+    expect(control.status).toBe("completed");
+    expect(createResumableUploadMock).toHaveBeenCalledTimes(1);
+    expect(control.session?.provider).toBe("gcs");
   });
 });

@@ -1,7 +1,6 @@
 import { Demo } from "@/components/demo";
 import { FadeIn } from "@/components/fade-in";
-import { AdapterCloud } from "@/components/sections/adapter-cloud";
-import { Features } from "@/components/sections/features";
+import { Capabilities } from "@/components/sections/capabilities";
 import { FinalCta } from "@/components/sections/final-cta";
 import { GetStarted } from "@/components/sections/get-started";
 import { Hero } from "@/components/sections/hero";
@@ -15,11 +14,8 @@ const Home = () => {
     <>
       <Hero adapterCount={ADAPTERS.length} latestVersion={latestVersion} />
       <FadeIn>
-        <AdapterCloud />
-      </FadeIn>
-      <FadeIn>
         <section>
-          <div className="mx-auto max-w-6xl px-6 py-24 sm:py-32">
+          <div className="mx-auto max-w-6xl px-6 py-24">
             <div>
               <p className="font-mono text-xs text-muted-foreground">
                 Live snippet
@@ -39,9 +35,7 @@ const Home = () => {
           </div>
         </section>
       </FadeIn>
-      <FadeIn>
-        <Features />
-      </FadeIn>
+      <Capabilities />
       <FadeIn>
         <GetStarted />
       </FadeIn>

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants as fsConstants, createReadStream } from "node:fs";
 import type { Dirent } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
@@ -10,6 +10,8 @@ import type {
   Adapter,
   Body,
   ListResult,
+  OffsetResumableDriver,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -55,6 +57,10 @@ export interface FsAdapterOptions {
 export type FsAdapter = Adapter<{ root: string }> & { readonly root: string };
 
 const SIDECAR_SUFFIX = ".meta.json";
+// Partial body of an in-progress resumable upload. Reserved like the sidecar:
+// `walk()` skips it so a paused upload's partial never surfaces in `list()`,
+// and `resolveKeyPath` rejects keys that would land on one.
+const RESUMABLE_SUFFIX = ".fls-part";
 const ETAG_HEX_LEN = 16;
 
 interface Sidecar {
@@ -164,12 +170,13 @@ const FS_TRAILING_NOISE = /(?<![. ])[. ]+$/u;
 // variants like `x.META.JSON` or `x.meta.json.` can't slip a body onto
 // another key's sidecar. Operating on the resolved basename (not the raw
 // key) also folds away `..` and trailing-slash dodges like `x.meta.json/`.
-const aliasesSidecarPath = (resolved: string): boolean =>
-  path
+const aliasesSidecarPath = (resolved: string): boolean => {
+  const name = path
     .basename(resolved)
     .replace(FS_TRAILING_NOISE, "")
-    .toLowerCase()
-    .endsWith(SIDECAR_SUFFIX);
+    .toLowerCase();
+  return name.endsWith(SIDECAR_SUFFIX) || name.endsWith(RESUMABLE_SUFFIX);
+};
 
 // `path.resolve` collapses `..` segments, so a key like
 // `../../etc/passwd` resolves outside `root`. We compare the resolved path
@@ -283,7 +290,10 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
       if (!entry.isFile()) {
         continue;
       }
-      if (entry.name.endsWith(SIDECAR_SUFFIX)) {
+      if (
+        entry.name.endsWith(SIDECAR_SUFFIX) ||
+        entry.name.endsWith(RESUMABLE_SUFFIX)
+      ) {
         continue;
       }
       // Yield posix-style keys regardless of host OS so callers see the
@@ -572,6 +582,111 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     },
     name: "fs",
     raw: { root },
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      const bodyPath = resolveKeyPath(root, key);
+      let tempPath = bodyPath + RESUMABLE_SUFFIX;
+      let contentType = "application/octet-stream";
+      return {
+        adopt(session: ResumableUploadSession) {
+          if (session.provider !== "fs") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on an fs adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          ({ tempPath } = session);
+          ({ contentType } = session);
+        },
+        async begin(meta): Promise<ResumableUploadSession> {
+          ({ contentType } = meta);
+          try {
+            await ensureDirFor(tempPath);
+            // Start (or truncate) the partial file so positional writes have a
+            // target. A leftover partial from a prior, abandoned attempt is
+            // overwritten — `begin` always starts fresh.
+            await fsp.writeFile(tempPath, "");
+          } catch (error) {
+            throw mapFsError(error);
+          }
+          return { contentType, key, provider: "fs", tempPath };
+        },
+        async complete(): Promise<UploadResult> {
+          try {
+            const buf = await fsp.readFile(tempPath);
+            const bytes = new Uint8Array(
+              buf.buffer,
+              buf.byteOffset,
+              buf.byteLength
+            );
+            const lastModified = Date.now();
+            const sidecar: Sidecar = {
+              contentType,
+              etag: sha1Etag(bytes),
+              lastModified,
+              ...(resumableOpts.cacheControl && {
+                cacheControl: resumableOpts.cacheControl,
+              }),
+              ...(resumableOpts.metadata && {
+                metadata: resumableOpts.metadata,
+              }),
+            };
+            await writeSidecar(bodyPath, sidecar);
+            await fsp.rename(tempPath, bodyPath);
+            return {
+              contentType,
+              etag: sidecar.etag,
+              key,
+              lastModified,
+              size: bytes.byteLength,
+            };
+          } catch (error) {
+            throw mapFsError(error);
+          }
+        },
+        discard() {
+          return bestEffortRm(tempPath);
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 8 * 1024 * 1024,
+        async probe(): Promise<{ nextOffset: number }> {
+          try {
+            const stat = await fsp.stat(tempPath);
+            return { nextOffset: stat.size };
+          } catch (error) {
+            if (errorCode(error) === "ENOENT") {
+              return { nextOffset: 0 };
+            }
+            throw mapFsError(error);
+          }
+        },
+        async uploadAt({ offset, data }): Promise<{ nextOffset: number }> {
+          // O_RDWR | O_CREAT: positional write, creating the partial if it's
+          // missing (e.g. resuming after it was cleaned up) without truncating
+          // an existing one.
+          const handle = await fsp.open(
+            tempPath,
+            // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
+            fsConstants.O_RDWR | fsConstants.O_CREAT
+          );
+          try {
+            await handle.write(data, 0, data.byteLength, offset);
+          } finally {
+            await handle.close();
+          }
+          return { nextOffset: offset + data.byteLength };
+        },
+      };
+    },
     get root() {
       return root;
     },

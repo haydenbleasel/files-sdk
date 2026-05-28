@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const reqOptsOf = (m: { mock: { calls: unknown[][] } }) =>
   m.mock.calls.at(-1)?.[1] as { signal?: AbortSignal } | undefined;
@@ -761,5 +762,208 @@ describe("google-drive adapter", () => {
       await files.signedUploadUrl("a.txt", { expiresIn: 60, signal });
       expect(seenSignal).toBe(signal);
     });
+  });
+});
+
+describe("google-drive resumable uploads", () => {
+  const CHUNK = 256 * 1024;
+  const driveResult = () =>
+    Response.json({
+      id: "file-1",
+      md5Checksum: "md5abc",
+      mimeType: "application/octet-stream",
+      modifiedTime: "2024-01-02T03:04:05.000Z",
+      size: String(CHUNK + 10),
+    });
+
+  test("fresh upload opens a session, PUTs chunks, and finalizes", async () => {
+    const ranges: string[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      if ((init?.method ?? "GET") === "POST") {
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://upload.example.com/session/abc" },
+            status: 200,
+          })
+        );
+      }
+      const range =
+        ((init?.headers ?? {}) as Record<string, string>)["Content-Range"] ??
+        "";
+      ranges.push(range);
+      return Promise.resolve(
+        range.endsWith("/*")
+          ? new Response(null, {
+              headers: { Range: `bytes=0-${CHUNK - 1}` },
+              status: 308,
+            })
+          : driveResult()
+      );
+    }) as typeof fetch;
+
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", new Uint8Array(CHUNK + 10), {
+      control,
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.etag).toBe("md5abc");
+    expect(result.size).toBe(CHUNK + 10);
+    expect(control.status).toBe("completed");
+    expect(control.session?.provider).toBe("google-drive");
+    expect(ranges[0]).toBe(`bytes 0-${CHUNK - 1}/*`);
+  });
+
+  test("resume reads the session offset, then sends the rest", async () => {
+    const puts: string[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const range =
+        ((init?.headers ?? {}) as Record<string, string>)["Content-Range"] ??
+        "";
+      if (range === "bytes */*") {
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Range: `bytes=0-${CHUNK - 1}` },
+            status: 308,
+          })
+        );
+      }
+      puts.push(range);
+      return Promise.resolve(driveResult());
+    }) as typeof fetch;
+
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      key: "big.bin",
+      provider: "google-drive",
+      uri: "https://upload.example.com/session/abc",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(CHUNK + 10), {
+      control: UploadControl.from(token),
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.size).toBe(CHUNK + 10);
+    expect(puts).toEqual([`bytes ${CHUNK}-${CHUNK + 9}/${CHUNK + 10}`]);
+  });
+
+  test("abort discards the session via DELETE", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const method = init?.method ?? "GET";
+      methods.push(method);
+      if (method === "POST") {
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://upload.example.com/session/abc" },
+            status: 200,
+          })
+        );
+      }
+      if (method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const range =
+        ((init?.headers ?? {}) as Record<string, string>)["Content-Range"] ??
+        "";
+      return Promise.resolve(
+        range.endsWith("/*")
+          ? new Response(null, {
+              headers: { Range: `bytes=0-${CHUNK - 1}` },
+              status: 308,
+            })
+          : driveResult()
+      );
+    }) as typeof fetch;
+
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab.bin", new Uint8Array(CHUNK * 2 + 5), {
+      control,
+      multipart: { partSize: CHUNK },
+      onProgress: ({ loaded }) => {
+        if (loaded >= CHUNK && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(methods).toContain("DELETE");
+  });
+
+  test("a failed session initiation is wrapped", async () => {
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      if ((init?.method ?? "GET") === "POST") {
+        return Promise.resolve(new Response("nope", { status: 500 }));
+      }
+      return Promise.resolve(driveResult());
+    }) as typeof fetch;
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "data", { control: new UploadControl() })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a failed chunk PUT throws", async () => {
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      if ((init?.method ?? "GET") === "POST") {
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://upload.example.com/session/abc" },
+            status: 200,
+          })
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 500 }));
+    }) as typeof fetch;
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", new Uint8Array(CHUNK + 10), {
+        control: new UploadControl(),
+        multipart: { partSize: CHUNK },
+        retries: 0,
+      })
+    ).rejects.toThrow(/chunk upload failed|upload failed/u);
+  });
+
+  test("resuming a non-google-drive token throws", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a mismatched key throws", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      key: "other.bin",
+      provider: "google-drive",
+      uri: "https://upload.example.com/session/abc",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

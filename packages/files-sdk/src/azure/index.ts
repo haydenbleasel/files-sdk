@@ -17,6 +17,10 @@ import type {
 
 import type {
   Adapter,
+  PartMeta,
+  PartsResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -225,6 +229,140 @@ const runAzureUpload = async (
   return {
     etag: stripEtag(uploaded.etag),
     lastModified: uploaded.lastModified?.getTime(),
+  };
+};
+
+const AZURE_DEFAULT_BLOCK_SIZE = 8 * 1024 * 1024;
+// Block IDs must be equal-length, base64-encoded strings. Encode a fixed-width
+// index behind a prefix so every block ID is the same length and so we can tell
+// our staged blocks apart from any left by another writer on resume.
+const BLOCK_ID_PREFIX = "fls-";
+const azureBlockId = (partNumber: number): string =>
+  Buffer.from(
+    `${BLOCK_ID_PREFIX}${String(partNumber).padStart(8, "0")}`
+  ).toString("base64");
+const decodeBlockNumber = (blockId: string | undefined): number | undefined => {
+  if (!blockId) {
+    return;
+  }
+  const raw = Buffer.from(blockId, "base64").toString();
+  if (!raw.startsWith(BLOCK_ID_PREFIX)) {
+    return;
+  }
+  const partNumber = Number(raw.slice(BLOCK_ID_PREFIX.length));
+  return Number.isInteger(partNumber) && partNumber > 0
+    ? partNumber
+    : undefined;
+};
+
+/**
+ * Drive a pause-able / resumable upload over Azure block blobs: `stageBlock`
+ * per part, `getBlockList("uncommitted")` to discover staged blocks on resume,
+ * `commitBlockList` to finalize. Block blobs need no explicit "create" call —
+ * staging a block implicitly opens the upload — so `begin` just mints the token.
+ */
+const createAzureResumableDriver = (
+  blockBlob: BlockBlobClient,
+  container: string,
+  key: string,
+  opts: ResumableDriverOptions,
+  wrapErr: (err: unknown) => FilesError
+): PartsResumableDriver => {
+  let blockSize =
+    typeof opts.multipart === "object" && opts.multipart.partSize
+      ? opts.multipart.partSize
+      : AZURE_DEFAULT_BLOCK_SIZE;
+  let contentType = "application/octet-stream";
+  return {
+    adopt(session: ResumableUploadSession) {
+      if (session.provider !== "azure") {
+        throw new FilesError(
+          "Provider",
+          `Cannot resume a ${session.provider} session on an Azure adapter.`
+        );
+      }
+      if (session.container !== container || session.blob !== key) {
+        throw new FilesError(
+          "Provider",
+          "Resume token does not match this upload's container/blob."
+        );
+      }
+      ({ blockSize } = session);
+      ({ contentType } = session);
+    },
+    begin(meta): Promise<ResumableUploadSession> {
+      ({ contentType } = meta);
+      return Promise.resolve({
+        blob: key,
+        blockSize,
+        container,
+        contentType,
+        provider: "azure",
+      });
+    },
+    async complete(parts: PartMeta[]): Promise<UploadResult> {
+      try {
+        const committed = await blockBlob.commitBlockList(
+          parts.map((part) => azureBlockId(part.partNumber)),
+          {
+            blobHTTPHeaders: {
+              blobContentType: contentType,
+              ...(opts.cacheControl && { blobCacheControl: opts.cacheControl }),
+            },
+            ...(opts.metadata && { metadata: opts.metadata }),
+          }
+        );
+        return {
+          contentType,
+          ...(committed.etag && { etag: stripEtag(committed.etag) }),
+          key,
+          ...(committed.lastModified && {
+            lastModified: committed.lastModified.getTime(),
+          }),
+          size: parts.reduce((sum, part) => sum + part.size, 0),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    discard() {
+      // Uncommitted blocks are garbage-collected by Azure (~7 days). There's no
+      // API to drop them explicitly without committing or deleting the blob, so
+      // discard is a no-op — abort just stops staging new ones.
+      return Promise.resolve();
+    },
+    mode: "parts",
+    get partSize() {
+      return blockSize;
+    },
+    async probe(): Promise<{ committedParts: PartMeta[] }> {
+      try {
+        const list = await blockBlob.getBlockList("uncommitted");
+        const committedParts: PartMeta[] = [];
+        for (const block of list.uncommittedBlocks ?? []) {
+          const partNumber = decodeBlockNumber(block.name);
+          if (partNumber !== undefined) {
+            committedParts.push({ partNumber, size: block.size ?? 0 });
+          }
+        }
+        return { committedParts };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
+      try {
+        await blockBlob.stageBlock(
+          azureBlockId(partNumber),
+          uint8ToBuffer(data),
+          data.byteLength,
+          signal ? { abortSignal: signal } : undefined
+        );
+        return { partNumber, size: data.byteLength };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
   };
 };
 
@@ -689,6 +827,15 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     name: "azure",
     raw: client,
     reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts) {
+      return createAzureResumableDriver(
+        containerClient.getBlockBlobClient(key),
+        container,
+        key,
+        resumableOpts,
+        mapAzureError
+      );
+    },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Azure SAS has no `content-length-range` policy equivalent — there's
       // no way to enforce a max upload size at the URL level. Throw rather

@@ -8,6 +8,9 @@ import type {
   Body,
   ListResult,
   MultipartOptions,
+  OffsetResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -286,6 +289,11 @@ export const mapDropboxError = (err: unknown): FilesError => {
   const code = classifyByTags([], status);
   return new FilesError(code, e?.message ?? DEFAULT_MESSAGES[code], err);
 };
+
+// View a Uint8Array as a Node Buffer without copying — the Dropbox session
+// helpers take `Buffer` contents.
+const toBuffer = (data: Uint8Array): Buffer =>
+  Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 
 const trimSlashes = (s: string): string => {
   let start = 0;
@@ -848,6 +856,137 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     return { item, size: offset + tail.byteLength };
   };
 
+  // Pause-able / resumable upload over the same Dropbox upload session as
+  // `uploadSession`, driven chunk-by-chunk by the orchestrator. Dropbox has no
+  // API to query a session's offset, so the token tracks it client-side — the
+  // driver mutates the session object the orchestrator exposes via `toJSON()`,
+  // keeping the persisted offset current across a pause.
+  const createResumableDriver = (
+    key: string,
+    resumableOpts: ResumableDriverOptions
+  ): OffsetResumableDriver => {
+    const path = keyToPath(key);
+    const chunkBytes = resolveChunkBytes(resumableOpts.multipart);
+    let session:
+      | Extract<ResumableUploadSession, { provider: "dropbox" }>
+      | undefined;
+    let finalItem: files.FileMetadata | undefined;
+    let contentType = "application/octet-stream";
+    const requireSession = () => {
+      if (!session) {
+        throw new FilesError(
+          "Provider",
+          "dropbox: upload session not started."
+        );
+      }
+      return session;
+    };
+    return {
+      adopt(adopted: ResumableUploadSession) {
+        if (adopted.provider !== "dropbox") {
+          throw new FilesError(
+            "Provider",
+            `Cannot resume a ${adopted.provider} session on a Dropbox adapter.`
+          );
+        }
+        if (adopted.path !== path) {
+          throw new FilesError(
+            "Provider",
+            "Resume token does not match this upload's path."
+          );
+        }
+        session = adopted;
+        ({ contentType } = adopted);
+      },
+      async begin(meta): Promise<ResumableUploadSession> {
+        if (
+          resumableOpts.metadata &&
+          Object.keys(resumableOpts.metadata).length > 0
+        ) {
+          throw new FilesError(
+            "Provider",
+            "dropbox: `metadata` is not supported."
+          );
+        }
+        if (resumableOpts.cacheControl) {
+          throw new FilesError(
+            "Provider",
+            "dropbox: `cacheControl` is not supported."
+          );
+        }
+        try {
+          await authHandle.ensureAccessToken();
+          ({ contentType } = meta);
+          const sessionId = await sessionStart(Buffer.alloc(0));
+          session = {
+            contentType,
+            offset: 0,
+            path,
+            provider: "dropbox",
+            sessionId,
+          };
+          return session;
+        } catch (error) {
+          throw mapDropboxError(error);
+        }
+      },
+      complete(): Promise<UploadResult> {
+        if (!finalItem) {
+          throw new FilesError(
+            "Provider",
+            "dropbox: upload session did not finalize."
+          );
+        }
+        const meta = fileMetaFromDropbox(finalItem);
+        return Promise.resolve({
+          contentType,
+          ...(meta.etag && { etag: meta.etag }),
+          key,
+          ...(meta.lastModified !== undefined && {
+            lastModified: meta.lastModified,
+          }),
+          size: requireSession().offset,
+        });
+      },
+      discard() {
+        // Dropbox has no API to cancel an upload session; it expires on its own.
+        return Promise.resolve();
+      },
+      mode: "offset",
+      partSize: chunkBytes,
+      probe(): Promise<{ nextOffset: number }> {
+        // No server-side offset query — trust the offset tracked in the token.
+        return Promise.resolve({ nextOffset: requireSession().offset });
+      },
+      async uploadAt({
+        offset,
+        data,
+        isLast,
+      }): Promise<{ nextOffset: number }> {
+        try {
+          await authHandle.ensureAccessToken();
+          const current = requireSession();
+          const buffer = toBuffer(data);
+          if (isLast) {
+            finalItem = await sessionFinish(
+              path,
+              current.sessionId,
+              offset,
+              buffer
+            );
+          } else {
+            await sessionAppend(current.sessionId, offset, buffer);
+          }
+          const nextOffset = offset + data.byteLength;
+          current.offset = nextOffset;
+          return { nextOffset };
+        } catch (error) {
+          throw mapDropboxError(error);
+        }
+      },
+    };
+  };
+
   const adapter: DropboxAdapter = {
     async copy(from, to) {
       try {
@@ -1021,6 +1160,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     },
     name: "dropbox",
     raw: client,
+    resumableUpload: createResumableDriver,
     rootFolderPath,
     signedUploadUrl(_key, _signOpts): Promise<SignedUpload> {
       // Dropbox's `files/get_temporary_upload_link` returns a URL that

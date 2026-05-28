@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const lastOptsOf = (m: { mock: { calls: unknown[][] } }) =>
   m.mock.calls.at(-1)?.at(-1) as { abortSignal?: AbortSignal } | undefined;
@@ -54,6 +55,19 @@ const uploadStreamMock = mock(
     await drainStream(stream);
     return uploadStreamResponse();
   }
+);
+const stageBlockMock = mock(
+  (_blockId: string, _body: unknown, _length: number, _opts: unknown) =>
+    Promise.resolve({})
+);
+const getBlockListMock = mock((_listType: string) =>
+  Promise.resolve({ uncommittedBlocks: [] as { name: string; size: number }[] })
+);
+const commitBlockListMock = mock((_blockIds: string[], _opts: unknown) =>
+  Promise.resolve({
+    etag: '"etag-committed"',
+    lastModified: new Date(STABLE_LAST_MODIFIED),
+  })
 );
 interface DownloadResult {
   contentLength?: number;
@@ -120,6 +134,9 @@ const makeBlobClient = (key: string) => ({
 
 const makeBlockBlobClient = (key: string) => ({
   ...makeBlobClient(key),
+  commitBlockList: commitBlockListMock,
+  getBlockList: getBlockListMock,
+  stageBlock: stageBlockMock,
   uploadData: uploadDataMock,
   uploadStream: uploadStreamMock,
 });
@@ -274,6 +291,19 @@ beforeEach(() => {
   getBlobClientMock.mockClear();
   getBlockBlobClientMock.mockClear();
   getContainerClientMock.mockClear();
+  stageBlockMock.mockClear();
+  stageBlockMock.mockImplementation(() => Promise.resolve({}));
+  getBlockListMock.mockClear();
+  getBlockListMock.mockImplementation(() =>
+    Promise.resolve({ uncommittedBlocks: [] })
+  );
+  commitBlockListMock.mockClear();
+  commitBlockListMock.mockImplementation(() =>
+    Promise.resolve({
+      etag: '"etag-committed"',
+      lastModified: new Date(STABLE_LAST_MODIFIED),
+    })
+  );
   listBlobsFlatMock.mockClear();
   generateBlobSASQueryParametersMock.mockClear();
   generateUserDelegationSasUrlMock.mockClear();
@@ -1572,5 +1602,149 @@ describe("azure adapter", () => {
           ?.abortSignal
       ).toBe(signal);
     });
+  });
+});
+
+const azureBlockId = (n: number): string =>
+  Buffer.from(`fls-${String(n).padStart(8, "0")}`).toString("base64");
+
+describe("azure resumable uploads", () => {
+  const blockId = azureBlockId;
+  const adapter = () =>
+    azure({ accountKey: "k", accountName: ACCOUNT, container: CONTAINER });
+
+  test("fresh upload stages blocks and commits them in order", async () => {
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", new Uint8Array(12), {
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.etag).toBe("etag-committed");
+    expect(control.status).toBe("completed");
+    expect(stageBlockMock).toHaveBeenCalledTimes(3);
+    const [committed] = commitBlockListMock.mock.calls.at(-1) ?? [];
+    expect(committed).toEqual([blockId(1), blockId(2), blockId(3)]);
+    expect(control.session?.provider).toBe("azure");
+  });
+
+  test("resume stages only blocks not already uncommitted", async () => {
+    getBlockListMock.mockImplementation(() =>
+      Promise.resolve({
+        uncommittedBlocks: [
+          { name: blockId(1), size: 4 },
+          // A block from another writer is ignored — it doesn't decode.
+          { name: Buffer.from("other").toString("base64"), size: 9 },
+        ],
+      })
+    );
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "big.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(12), {
+      control: UploadControl.from(token),
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    // Block 1 already staged → only blocks 2 and 3 staged on resume.
+    expect(stageBlockMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("a stageBlock failure rejects the upload", async () => {
+    stageBlockMock.mockImplementation(() =>
+      Promise.reject(new Error("stage boom"))
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", new Uint8Array(12), {
+        control: new UploadControl(),
+        multipart: { partSize: 4 },
+        retries: 0,
+      })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a commitBlockList failure rejects the upload", async () => {
+    commitBlockListMock.mockImplementation(() =>
+      Promise.reject(new Error("commit boom"))
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("big.bin", new Uint8Array(8), {
+        control: new UploadControl(),
+        multipart: { partSize: 4 },
+      })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a getBlockList failure rejects a resume", async () => {
+    getBlockListMock.mockImplementation(() =>
+      Promise.reject(new Error("list boom"))
+    );
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "big.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    await expect(
+      files.upload("big.bin", new Uint8Array(8), {
+        control: UploadControl.from(token),
+        multipart: { partSize: 4 },
+        retries: 0,
+      })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("abort stops staging (discard is a no-op)", async () => {
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab.bin", new Uint8Array(12), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded >= 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(control.status).toBe("aborted");
+  });
+
+  test("resuming a non-azure token throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token = {
+      bucket: CONTAINER,
+      key: "big.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("big.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a mismatched container/blob throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "other.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    await expect(
+      files.upload("big.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

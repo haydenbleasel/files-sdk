@@ -39,12 +39,7 @@ const ease = (
   });
 
 const DriveIcon: React.FC<{ size?: number }> = ({ size = 22 }) => (
-  <svg
-    height={(size * 78) / 87.3}
-    role="img"
-    viewBox="0 0 87.3 78"
-    width={size}
-  >
+  <svg height={(size * 78) / 87.3} viewBox="0 0 87.3 78" width={size}>
     <title>Google Drive</title>
     <path
       d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z"
@@ -80,7 +75,6 @@ const Pointer: React.FC<{ x: number; y: number; opacity: number }> = ({
 }) => (
   <svg
     height="26"
-    role="img"
     style={{ left: x, opacity, position: "absolute", top: y }}
     viewBox="0 0 24 24"
     width="26"

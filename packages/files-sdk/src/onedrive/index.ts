@@ -24,6 +24,9 @@ import type {
   Body,
   ListResult,
   MultipartOptions,
+  OffsetResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -722,6 +725,154 @@ export const onedrive = (
     return item;
   };
 
+  // Pause-able / resumable upload over the same Graph upload session as
+  // `uploadViaSession`, but driven chunk-by-chunk by the orchestrator. The
+  // session `uploadUrl` is the resumable token; `GET`ting it reports
+  // `nextExpectedRanges` for resume, and `DELETE`ing it discards the session.
+  const createResumableDriver = (
+    key: string,
+    resumableOpts: ResumableDriverOptions
+  ): OffsetResumableDriver => {
+    const partSize = resolveRangeSize(resumableOpts.multipart);
+    let uploadUrl: string | undefined;
+    let finalItem: DriveItem | undefined;
+    const requireUrl = (): string => {
+      if (!uploadUrl) {
+        throw new FilesError(
+          "Provider",
+          "onedrive: upload session not started."
+        );
+      }
+      return uploadUrl;
+    };
+    const result = (item: DriveItem): UploadResult => ({
+      contentType: item.file?.mimeType ?? "application/octet-stream",
+      ...(item.eTag && { etag: item.eTag.replaceAll('"', "") }),
+      key,
+      ...(item.lastModifiedDateTime && {
+        lastModified: new Date(item.lastModifiedDateTime).getTime(),
+      }),
+      size: Number(item.size ?? 0),
+    });
+    return {
+      adopt(session: ResumableUploadSession) {
+        if (session.provider !== "onedrive") {
+          throw new FilesError(
+            "Provider",
+            `Cannot resume a ${session.provider} session on a OneDrive adapter.`
+          );
+        }
+        if (session.itemPath !== key) {
+          throw new FilesError(
+            "Provider",
+            "Resume token does not match this upload's item path."
+          );
+        }
+        ({ uploadUrl } = session);
+      },
+      async begin(): Promise<ResumableUploadSession> {
+        if (
+          resumableOpts.metadata &&
+          Object.keys(resumableOpts.metadata).length > 0
+        ) {
+          throw new FilesError(
+            "Provider",
+            "onedrive: `metadata` is not supported."
+          );
+        }
+        if (resumableOpts.cacheControl) {
+          throw new FilesError(
+            "Provider",
+            "onedrive: `cacheControl` is not supported."
+          );
+        }
+        try {
+          const { uploadUrl: created } = (await client
+            .api(`${itemApiPath(key)}/createUploadSession`)
+            .post({
+              item: {
+                "@microsoft.graph.conflictBehavior": "replace",
+                name: basename(key),
+              },
+            })) as { uploadUrl?: string };
+          if (!created) {
+            throw new FilesError(
+              "Provider",
+              "onedrive: createUploadSession response missing uploadUrl"
+            );
+          }
+          uploadUrl = created;
+          return { itemPath: key, provider: "onedrive", uploadUrl: created };
+        } catch (error) {
+          throw mapGraphError(error);
+        }
+      },
+      complete(): Promise<UploadResult> {
+        if (!finalItem) {
+          throw new FilesError(
+            "Provider",
+            "onedrive: upload session completed without returning a drive item"
+          );
+        }
+        return Promise.resolve(result(finalItem));
+      },
+      async discard() {
+        if (!uploadUrl) {
+          return;
+        }
+        try {
+          await fetch(uploadUrl, { method: "DELETE" });
+        } catch (error) {
+          throw mapGraphError(error);
+        }
+      },
+      mode: "offset",
+      partSize,
+      async probe(): Promise<{ nextOffset: number }> {
+        try {
+          const res = await fetch(requireUrl(), { method: "GET" });
+          if (!res.ok) {
+            throw new FilesError(
+              "Provider",
+              `onedrive: resume status check failed (${res.status})`
+            );
+          }
+          const body = (await res.json()) as { nextExpectedRanges?: string[] };
+          const first = body.nextExpectedRanges?.[0];
+          return { nextOffset: first ? Number(first.split("-")[0]) : 0 };
+        } catch (error) {
+          throw mapGraphError(error);
+        }
+      },
+      async uploadAt({ offset, data, total, signal }): Promise<{
+        nextOffset: number;
+      }> {
+        try {
+          const end = offset + data.byteLength;
+          const res = await fetch(requireUrl(), {
+            body: data as unknown as BodyInit,
+            headers: { "Content-Range": `bytes ${offset}-${end - 1}/${total}` },
+            method: "PUT",
+            ...(signal && { signal }),
+          });
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new FilesError(
+              "Provider",
+              `onedrive: upload session chunk failed (${res.status}): ${text || res.statusText}`
+            );
+          }
+          if (res.status === 200 || res.status === 201) {
+            finalItem = (await res.json()) as DriveItem;
+          }
+          return { nextOffset: end };
+        } catch (error) {
+          throw mapGraphError(error);
+        }
+      },
+    };
+  };
+
   const createAnonymousLink = async (key: string): Promise<string> => {
     const res = (await client
       .api(`${itemApiPath(key)}/createLink`)
@@ -897,6 +1048,7 @@ export const onedrive = (
     },
     name: "onedrive",
     raw: client,
+    resumableUpload: createResumableDriver,
     rootFolderPath,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {

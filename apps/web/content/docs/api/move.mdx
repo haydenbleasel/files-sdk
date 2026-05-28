@@ -28,7 +28,7 @@ Moving a key onto itself (`from === to`, after the client `prefix` is applied) i
 
 ## Providers without move
 
-`move` works on every adapter except where its building blocks don't. Since the fallback is `copy` + `delete`, `move` throws wherever `copy` throws — notably [Convex](/adapters/convex), which assigns immutable storage ids and has no rename. There, `download()` the source and `upload()` it under a new key, then track the new id. The [compatibility matrix](/api/compatibility) marks `copy` (and therefore `move`) per adapter.
+`move` works on every adapter except where its building blocks don't. Since the fallback is `copy` + `delete`, `move` throws wherever `copy` throws — notably [Convex](/adapters/convex), which assigns immutable storage ids and has no rename. There, `download()` the source and `upload()` it under a new key, then track the new id. Each adapter's Compatibility section marks `copy` (and therefore `move`).
 
 ## Options
 

@@ -9,6 +9,8 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  PartsResumableDriver,
+  ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
   StoredFile,
@@ -237,6 +239,22 @@ const mapR2Error = (err: unknown): FilesError => {
   return new FilesError("Provider", message, err);
 };
 
+// R2 does not implement the S3 `POST Object` API, so it has no
+// `content-length-range` policy. The inner s3 adapter routes `maxSize`
+// through `createPresignedPost`, which yields a multipart/form-data POST
+// that R2 rejects with `501 Not Implemented`. Reject it up front with the
+// same honest-API stance Azure and Supabase take rather than hand back a
+// URL that fails at upload time. See
+// https://developers.cloudflare.com/r2/api/s3/api/ (no `POST Object`).
+const assertNoMaxSize = (signOpts: SignUploadOptions): void => {
+  if (signOpts.maxSize !== undefined) {
+    throw new FilesError(
+      "Provider",
+      "r2: `maxSize` is not supported. Cloudflare R2 does not implement the S3 POST Object API, so it has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway before issuing the URL, or omit `maxSize` and accept the unbounded presigned PUT."
+    );
+  }
+};
+
 const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   const bucket = opts.binding;
   const { publicBaseUrl } = opts;
@@ -409,7 +427,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       key,
       signOpts: SignUploadOptions
     ): Promise<SignedUpload> {
+      // getSigner() first: a binding without HTTP creds can't sign at all,
+      // which is the more fundamental thing to fix than `maxSize`.
       const signer = await getSigner();
+      assertNoMaxSize(signOpts);
       return signer.signedUploadUrl(key, signOpts);
     },
     supportsRange: true,
@@ -564,7 +585,69 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     // `upload` delegates to the underlying S3 adapter, which reports
     // byte-level progress via @aws-sdk/lib-storage when onProgress is set.
     reportsUploadProgress: true,
+    // Resumable uploads delegate to the inner S3 driver. The driver must be
+    // returned synchronously, but the S3 adapter loads lazily — so wrap it:
+    // each async method awaits the (memoized) inner driver, and the sync
+    // `adopt` just stashes the token for the first async call to apply.
+    resumableUpload(key, resumableOpts): PartsResumableDriver {
+      let inner: PartsResumableDriver | undefined;
+      let stored: ResumableUploadSession | undefined;
+      let partSize = 5 * 1024 * 1024;
+      const build = async (): Promise<PartsResumableDriver> => {
+        if (!inner) {
+          const adapter = await ensure();
+          // The inner S3 adapter always defines `resumableUpload`.
+          inner = (
+            adapter.resumableUpload as NonNullable<
+              typeof adapter.resumableUpload
+            >
+          )(key, resumableOpts) as PartsResumableDriver;
+          if (stored) {
+            inner.adopt(stored);
+          }
+          ({ partSize } = inner);
+        }
+        return inner;
+      };
+      return {
+        adopt(session) {
+          stored = session;
+          if (session.provider === "s3") {
+            ({ partSize } = session);
+          }
+        },
+        begin: async (meta) => {
+          const driver = await build();
+          return driver.begin(meta);
+        },
+        complete: async (parts) => {
+          const driver = await build();
+          return driver.complete(parts);
+        },
+        discard: async () => {
+          if (inner || stored) {
+            const driver = await build();
+            await driver.discard();
+          }
+        },
+        mode: "parts",
+        get partSize() {
+          return inner?.partSize ?? partSize;
+        },
+        probe: async () => {
+          const driver = await build();
+          return driver.probe();
+        },
+        uploadPart: async (part) => {
+          const driver = await build();
+          return driver.uploadPart(part);
+        },
+      };
+    },
     async signedUploadUrl(key, signOpts) {
+      // Reject before loading the inner s3 adapter — `maxSize` is
+      // unsupported on R2 regardless of whether the import has resolved.
+      assertNoMaxSize(signOpts);
       const adapter = await ensure();
       return adapter.signedUploadUrl(key, signOpts);
     },

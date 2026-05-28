@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { AppwriteException, Client, Storage } from "node-appwrite";
 
 import { appwrite, mapAppwriteError } from "../src/appwrite/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const ENDPOINT = "https://cloud.appwrite.io/v1";
 const PROJECT_ID = "proj123";
@@ -733,5 +734,187 @@ describe("appwrite adapter", () => {
       code: "Provider",
       message: expect.stringContaining("missing endpoint or projectId"),
     });
+  });
+});
+
+const appwriteFileJson = (size: number) =>
+  Response.json({
+    $id: "file-id-123",
+    chunksTotal: 1,
+    chunksUploaded: 1,
+    mimeType: "application/octet-stream",
+    sizeOriginal: size,
+  });
+
+describe("appwrite resumable uploads (chunked)", () => {
+  const FIVE_MIB = 5 * 1024 * 1024;
+  const filesUrl = `${ENDPOINT}/storage/buckets/${BUCKET}/files`;
+  let restoreFetch: () => void;
+  const installFetch = (
+    handler: (url: string, init: RequestInit) => Response
+  ): void => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = ((url: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(url, init))) as unknown as typeof fetch;
+  };
+  const fileJson = appwriteFileJson;
+
+  const adapter = () =>
+    appwrite({
+      bucket: BUCKET,
+      endpoint: ENDPOINT,
+      key: "api-key",
+      projectId: PROJECT_ID,
+    });
+
+  beforeEach(() => {
+    deleteFileMock.mockClear();
+  });
+  afterEach(() => {
+    restoreFetch?.();
+  });
+
+  test("fresh upload posts a chunk with Content-Range and completes", async () => {
+    const ranges: string[] = [];
+    installFetch((url, init) => {
+      expect(url).toBe(filesUrl);
+      ranges.push(
+        (init.headers as Record<string, string>)["Content-Range"] ?? ""
+      );
+      return fileJson(5);
+    });
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    const result = await files.upload("doc", "hello", { control });
+    expect(result.key).toBe("file-id-123");
+    expect(result.size).toBe(5);
+    expect(control.status).toBe("completed");
+    expect(control.session?.provider).toBe("appwrite");
+    expect(ranges).toEqual(["bytes 0-4/5"]);
+  });
+
+  test("resume continues from the token's offset", async () => {
+    const ranges: string[] = [];
+    installFetch((_url, init) => {
+      ranges.push(
+        (init.headers as Record<string, string>)["Content-Range"] ?? ""
+      );
+      return fileJson(FIVE_MIB + 10);
+    });
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      fileId: "doc",
+      key: "doc",
+      offset: FIVE_MIB,
+      provider: "appwrite",
+    };
+    const result = await files.upload("doc", new Uint8Array(FIVE_MIB + 10), {
+      control: UploadControl.from(token),
+    });
+    expect(result.size).toBe(FIVE_MIB + 10);
+    expect(ranges).toEqual([
+      `bytes ${FIVE_MIB}-${FIVE_MIB + 9}/${FIVE_MIB + 10}`,
+    ]);
+  });
+
+  test("abort deletes the partial file", async () => {
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      // Two chunks: first reports more to come, then abort fires.
+      return range.startsWith("bytes 0-")
+        ? Response.json({
+            $id: "file-id-123",
+            chunksTotal: 2,
+            chunksUploaded: 1,
+            mimeType: "application/octet-stream",
+            sizeOriginal: FIVE_MIB,
+          })
+        : fileJson(FIVE_MIB * 2 + 5);
+    });
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab", new Uint8Array(FIVE_MIB * 2 + 5), {
+      control,
+      onProgress: ({ loaded }) => {
+        if (loaded >= FIVE_MIB && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(deleteFileMock).toHaveBeenCalled();
+  });
+
+  test("a failed chunk throws", async () => {
+    installFetch(() => new Response("nope", { status: 500 }));
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl(), retries: 0 })
+    ).rejects.toThrow(/chunk upload failed/u);
+  });
+
+  test("resumable requires an API key (not a keyless client)", async () => {
+    delete process.env.APPWRITE_API_KEY;
+    delete process.env.APPWRITE_KEY;
+    const files = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+      }),
+    });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/require an API key/u);
+  });
+
+  test("metadata and cacheControl are rejected", async () => {
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("m", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+    await expect(
+      files.upload("c", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("resuming a mismatched key throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      fileId: "other",
+      key: "other",
+      offset: 0,
+      provider: "appwrite",
+    };
+    await expect(
+      files.upload("doc", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
+  });
+
+  test("resuming a non-appwrite token throws", async () => {
+    const files = new Files({ adapter: adapter() });
+    const token = {
+      bucket: "b",
+      key: "x",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
   });
 });

@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { PassThrough, Readable } from "node:stream";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const STABLE_UPDATED = "2024-01-02T03:04:05.000Z";
 const STABLE_UPDATED_MS = new Date(STABLE_UPDATED).getTime();
@@ -42,10 +43,14 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
 );
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
 const createWriteStreamMock = mock(() => new PassThrough());
+const createResumableUploadMock = mock(() =>
+  Promise.resolve(["https://session.example/uri1"] as [string])
+);
 
 const makeFile = (name: string, populateMetadata = false) => ({
   copy: copyMock,
   createReadStream: createReadStreamMock,
+  createResumableUpload: createResumableUploadMock,
   createWriteStream: createWriteStreamMock,
   delete: deleteMock,
   download: downloadMock,
@@ -102,6 +107,10 @@ beforeEach(() => {
   generateSignedPostPolicyV4Mock.mockClear();
   createReadStreamMock.mockClear();
   createWriteStreamMock.mockClear();
+  createResumableUploadMock.mockClear();
+  createResumableUploadMock.mockImplementation(() =>
+    Promise.resolve(["https://session.example/uri1"] as [string])
+  );
   bucketFileMock.mockClear();
   getFilesMock.mockClear();
   // Restore default implementations so `mockImplementationOnce` from a
@@ -850,5 +859,278 @@ describe("gcs adapter", () => {
       });
       expect(result.contentType).toBe("application/octet-stream");
     });
+  });
+});
+
+describe("gcs resumable uploads", () => {
+  const CHUNK = 256 * 1024;
+  let restoreFetch: () => void;
+
+  const installFetch = (
+    handler: (url: string, init: RequestInit) => Response
+  ): void => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = ((url: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(url, init))) as unknown as typeof fetch;
+  };
+
+  const metaJson = () =>
+    Response.json({
+      contentType: "application/octet-stream",
+      etag: "final-etag",
+      size: "12",
+      updated: STABLE_UPDATED,
+    });
+
+  afterEach(() => {
+    restoreFetch?.();
+  });
+
+  test("fresh upload streams chunks and finalizes", async () => {
+    const ranges: string[] = [];
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      ranges.push(range);
+      // Final chunk carries a concrete total; interim chunks end in `/*`.
+      return range.endsWith("/*")
+        ? new Response(null, {
+            headers: { Range: `bytes=0-${CHUNK - 1}` },
+            status: 308,
+          })
+        : metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", new Uint8Array(CHUNK + 12), {
+      control,
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.etag).toBe("final-etag");
+    expect(control.status).toBe("completed");
+    expect(createResumableUploadMock).toHaveBeenCalledTimes(1);
+    expect(ranges[0]).toBe(`bytes 0-${CHUNK - 1}/*`);
+    expect(control.session?.provider).toBe("gcs");
+  });
+
+  test("resume probes the session offset, then sends the rest", async () => {
+    const sent: string[] = [];
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      if (range === "bytes */*") {
+        // Status probe — server already has the first chunk.
+        return new Response(null, {
+          headers: { Range: `bytes=0-${CHUNK - 1}` },
+          status: 308,
+        });
+      }
+      sent.push(range);
+      return metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "big.bin",
+      provider: "gcs",
+      uri: "https://session.example/uri1",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(CHUNK + 12), {
+      control: UploadControl.from(token),
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.etag).toBe("final-etag");
+    expect(createResumableUploadMock).not.toHaveBeenCalled();
+    // Only the trailing 12 bytes are re-sent.
+    expect(sent).toEqual([`bytes ${CHUNK}-${CHUNK + 11}/${CHUNK + 12}`]);
+  });
+
+  test("resuming an already-complete session finalizes without sending", async () => {
+    installFetch(() => metaJson());
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "done.bin",
+      provider: "gcs",
+      uri: "https://session.example/uri1",
+    };
+    const result = await files.upload("done.bin", new Uint8Array(CHUNK + 12), {
+      control: UploadControl.from(token),
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.size).toBe(12);
+  });
+
+  test("an empty body finalizes via a zero-length range", async () => {
+    let lastRange = "";
+    installFetch((_url, init) => {
+      lastRange =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      return metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await files.upload("empty.bin", "", { control: new UploadControl() });
+    expect(lastRange).toBe("bytes */0");
+  });
+
+  test("abort discards the session via DELETE", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      const range = (init.headers as Record<string, string> | undefined)?.[
+        "Content-Range"
+      ];
+      if (init.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      return range?.endsWith("/*")
+        ? new Response(null, {
+            headers: { Range: `bytes=0-${CHUNK - 1}` },
+            status: 308,
+          })
+        : metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab.bin", new Uint8Array(CHUNK * 2 + 5), {
+      control,
+      multipart: { partSize: CHUNK },
+      onProgress: ({ loaded }) => {
+        if (loaded >= CHUNK && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(methods).toContain("DELETE");
+    expect(control.status).toBe("aborted");
+  });
+
+  test("a failed createResumableUpload is wrapped", async () => {
+    createResumableUploadMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("session boom"))
+    );
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(
+      files.upload("x.bin", "data", { control: new UploadControl() })
+    ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a non-308 chunk response throws", async () => {
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      return range.endsWith("/*")
+        ? new Response(null, { status: 500 })
+        : metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(
+      files.upload("x.bin", new Uint8Array(CHUNK + 12), {
+        control: new UploadControl(),
+        multipart: { partSize: CHUNK },
+        retries: 0,
+      })
+    ).rejects.toThrow(/chunk upload failed/u);
+  });
+
+  test("a failed final chunk throws", async () => {
+    installFetch(() => new Response(null, { status: 503 }));
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(
+      files.upload("x.bin", "hi", { control: new UploadControl(), retries: 0 })
+    ).rejects.toThrow(/upload failed/u);
+  });
+
+  test("a non-308 resume probe throws", async () => {
+    installFetch(() => new Response(null, { status: 410 }));
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "https://session.example/uri1",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(CHUNK + 12), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+        retries: 0,
+      })
+    ).rejects.toThrow(/status check failed/u);
+  });
+
+  test("a session token with an empty uri is rejected", async () => {
+    installFetch(() => metaJson());
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(12), {
+        control: UploadControl.from(token),
+        retries: 0,
+      })
+    ).rejects.toThrow(/no session/u);
+  });
+
+  test("resuming a session that already has every byte but no finalize throws", async () => {
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      // Probe reports the whole 12 bytes are present, so no chunk is sent and
+      // the session was never finalized.
+      return range === "bytes */*"
+        ? new Response(null, { headers: { Range: "bytes=0-11" }, status: 308 })
+        : metaJson();
+    });
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "https://session.example/uri1",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(12), {
+        control: UploadControl.from(token),
+        retries: 0,
+      })
+    ).rejects.toThrow(/did not finalize/u);
+  });
+
+  test("resuming a non-gcs token throws", async () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token = {
+      bucket: "uploads",
+      key: "x.bin",
+      partSize: 1,
+      provider: "s3",
+      uploadId: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a s3/u);
+  });
+
+  test("resuming a mismatched bucket/key throws", async () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "other.bin",
+      provider: "gcs",
+      uri: "u",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
   });
 });

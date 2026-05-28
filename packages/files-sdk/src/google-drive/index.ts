@@ -9,6 +9,8 @@ import type {
   Adapter,
   Body,
   ListResult,
+  OffsetResumableDriver,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadResult,
@@ -18,10 +20,12 @@ import {
   existsByProbe,
   rangeRequestHeaders,
   rangedSize,
+  resumableChunkSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { createOffsetHttpDriver } from "../internal/resumable-offset-http.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface GoogleDriveAdapterOptions {
@@ -702,6 +706,114 @@ export const googleDrive = (
     },
     name: "google-drive",
     raw: driveClient,
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      let contentType = "application/octet-stream";
+      let total = 0;
+      return createOffsetHttpDriver({
+        async open(meta) {
+          assertNoReservedMetadata(resumableOpts.metadata);
+          ({ contentType } = meta);
+          ({ total } = meta);
+          if (!authForTokens) {
+            throw new FilesError(
+              "Provider",
+              "google-drive: resumable uploads require `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
+            );
+          }
+          const tokenResp = await (
+            authForTokens as {
+              getAccessToken: () => Promise<string | { token?: string | null }>;
+            }
+          ).getAccessToken();
+          const token =
+            typeof tokenResp === "string" ? tokenResp : tokenResp?.token;
+          if (!token) {
+            throw new FilesError(
+              "Provider",
+              "google-drive: failed to mint access token for resumable upload session"
+            );
+          }
+          const res = await fetch(
+            `${RESUMABLE_INITIATE_URL}&fields=${encodeURIComponent(
+              "id,size,md5Checksum,mimeType,modifiedTime"
+            )}`,
+            {
+              body: JSON.stringify({
+                appProperties: {
+                  [KEY_PROP]: key,
+                  [CONTENT_TYPE_PROP]: meta.contentType,
+                  ...(resumableOpts.cacheControl && {
+                    [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
+                  }),
+                  ...resumableOpts.metadata,
+                },
+                mimeType: meta.contentType,
+                name: basename(key),
+                parents: [rootFolderId],
+              }),
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": meta.contentType,
+              },
+              method: "POST",
+            }
+          );
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            throw new FilesError(
+              "Provider",
+              `google-drive: resumable session initiation failed: ${res.status} ${text}`.trim()
+            );
+          }
+          const uri =
+            res.headers.get("location") ?? res.headers.get("Location");
+          if (!uri) {
+            throw new FilesError(
+              "Provider",
+              "google-drive: resumable session response missing Location header"
+            );
+          }
+          return { session: { key, provider: "google-drive", uri }, uri };
+        },
+        async parseResult(res) {
+          const data = (await res.json()) as {
+            id?: string;
+            size?: string | number;
+            md5Checksum?: string;
+            mimeType?: string;
+            modifiedTime?: string;
+          };
+          return {
+            contentType: data.mimeType ?? contentType,
+            ...(data.md5Checksum && { etag: data.md5Checksum }),
+            key,
+            ...(data.modifiedTime && {
+              lastModified: new Date(data.modifiedTime).getTime(),
+            }),
+            size: Number(data.size ?? total),
+          };
+        },
+        partSize:
+          resumableChunkSize(resumableOpts.multipart) ?? 8 * 1024 * 1024,
+        resume(session: ResumableUploadSession): string {
+          if (session.provider !== "google-drive") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${session.provider} session on a google-drive adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          return session.uri;
+        },
+        wrapErr: mapDriveError,
+      });
+    },
     rootFolderId,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       if (!authForTokens) {

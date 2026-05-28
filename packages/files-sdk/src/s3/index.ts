@@ -1,12 +1,17 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import type { PutObjectCommandInput, S3ClientConfig } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
@@ -17,6 +22,10 @@ import type {
   DeleteManyOptions,
   DeleteManyResult,
   MultipartOptions,
+  PartMeta,
+  PartsResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
   SignedUpload,
   StoredFile,
   UploadProgress,
@@ -171,6 +180,190 @@ const runLibStorageUpload = async (
   signal?.addEventListener("abort", () => void upload.abort(), { once: true });
   const result = await upload.done();
   return stripEtag(result.ETag);
+};
+
+// Every multipart part except the last must be at least 5 MiB (S3 rule), so
+// clamp the requested part size up to that floor.
+const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
+
+const resolveResumablePartSize = (
+  multipart: boolean | MultipartOptions | undefined
+): number => {
+  const partSize =
+    typeof multipart === "object" ? multipart.partSize : undefined;
+  return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
+};
+
+/**
+ * Drive a pause-able / resumable upload over S3's native multipart API
+ * (`CreateMultipartUpload` → `UploadPart` → `CompleteMultipartUpload`), with
+ * `ListParts` for resume and `AbortMultipartUpload` for discard. Unlike the
+ * `@aws-sdk/lib-storage` path used by plain `upload()`, this exposes the
+ * `UploadId` so the session survives in a serializable token.
+ */
+const createS3ResumableDriver = (
+  client: S3Client,
+  bucket: string,
+  key: string,
+  driverOpts: ResumableDriverOptions,
+  wrapErr: (err: unknown) => FilesError
+): PartsResumableDriver => {
+  let partSize = resolveResumablePartSize(driverOpts.multipart);
+  let uploadId: string | undefined;
+  const requireUploadId = (): string => {
+    if (uploadId === undefined) {
+      throw new FilesError("Provider", "S3 resumable upload has no session.");
+    }
+    return uploadId;
+  };
+  return {
+    adopt(session: ResumableUploadSession) {
+      if (session.provider !== "s3") {
+        throw new FilesError(
+          "Provider",
+          `Cannot resume a ${session.provider} session on an S3 adapter.`
+        );
+      }
+      if (session.bucket !== bucket || session.key !== key) {
+        throw new FilesError(
+          "Provider",
+          "Resume token does not match this upload's bucket/key."
+        );
+      }
+      ({ uploadId } = session);
+      ({ partSize } = session);
+    },
+    async begin(meta): Promise<ResumableUploadSession> {
+      try {
+        const result = await client.send(
+          new CreateMultipartUploadCommand({
+            Bucket: bucket,
+            ContentType: meta.contentType,
+            Key: key,
+            ...(driverOpts.cacheControl && {
+              CacheControl: driverOpts.cacheControl,
+            }),
+            ...(driverOpts.metadata && { Metadata: driverOpts.metadata }),
+          })
+        );
+        if (!result.UploadId) {
+          throw new FilesError("Provider", "S3 did not return an UploadId.");
+        }
+        uploadId = result.UploadId;
+        return { bucket, key, partSize, provider: "s3", uploadId };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async complete(parts: PartMeta[]): Promise<UploadResult> {
+      try {
+        const completed = await client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            MultipartUpload: {
+              Parts: parts.map((part) => ({
+                ETag: part.etag,
+                PartNumber: part.partNumber,
+              })),
+            },
+            UploadId: requireUploadId(),
+          })
+        );
+        // CompleteMultipartUpload doesn't return size/contentType; head the
+        // object for authoritative metadata, mirroring upload()'s stream path.
+        const head = await client.send(
+          new HeadObjectCommand({ Bucket: bucket, Key: key })
+        );
+        return {
+          contentType: head.ContentType ?? "application/octet-stream",
+          etag: stripEtag(completed.ETag),
+          key,
+          lastModified: head.LastModified?.getTime(),
+          size: Number(
+            head.ContentLength ?? parts.reduce((sum, p) => sum + p.size, 0)
+          ),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async discard() {
+      if (uploadId === undefined) {
+        return;
+      }
+      try {
+        await client.send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            UploadId: uploadId,
+          })
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    mode: "parts",
+    get partSize() {
+      return partSize;
+    },
+    async probe(): Promise<{ committedParts: PartMeta[] }> {
+      try {
+        const id = requireUploadId();
+        const committedParts: PartMeta[] = [];
+        let marker: string | undefined;
+        for (;;) {
+          const page = await client.send(
+            new ListPartsCommand({
+              Bucket: bucket,
+              Key: key,
+              UploadId: id,
+              ...(marker !== undefined && { PartNumberMarker: marker }),
+            })
+          );
+          for (const part of page.Parts ?? []) {
+            if (part.PartNumber !== undefined) {
+              committedParts.push({
+                partNumber: part.PartNumber,
+                size: Number(part.Size ?? 0),
+                ...(part.ETag && { etag: part.ETag }),
+              });
+            }
+          }
+          if (page.IsTruncated && page.NextPartNumberMarker) {
+            marker = page.NextPartNumberMarker;
+          } else {
+            break;
+          }
+        }
+        return { committedParts };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
+      try {
+        const result = await client.send(
+          new UploadPartCommand({
+            Body: data,
+            Bucket: bucket,
+            Key: key,
+            PartNumber: partNumber,
+            UploadId: requireUploadId(),
+          }),
+          signal ? { abortSignal: signal } : undefined
+        );
+        return {
+          partNumber,
+          size: data.byteLength,
+          ...(result.ETag && { etag: result.ETag }),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+  };
 };
 
 const emptyStream = (): ReadableStream<Uint8Array> =>
@@ -539,6 +732,15 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
     name: "s3",
     raw: client,
     reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts) {
+      return createS3ResumableDriver(
+        client,
+        bucket,
+        key,
+        resumableOpts,
+        wrapErr
+      );
+    },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       try {
         if (signOpts.maxSize !== undefined) {

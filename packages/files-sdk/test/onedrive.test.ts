@@ -4,7 +4,8 @@ import { Readable } from "node:stream";
 
 import { GraphError } from "@microsoft/microsoft-graph-client";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 import { mapGraphError, onedrive } from "../src/onedrive/index.js";
 
 interface FakeItem {
@@ -952,5 +953,215 @@ describe("onedrive adapter", () => {
   test("mapGraphError passes existing FilesError through unchanged", () => {
     const original = new FilesError("NotFound", "already mapped");
     expect(mapGraphError(original)).toBe(original);
+  });
+});
+
+describe("onedrive resumable uploads", () => {
+  const CHUNK = 320 * 1024;
+  let restoreFetch: () => void;
+  afterEach(() => {
+    restoreFetch?.();
+  });
+  const installFetch = (
+    handler: (url: string, init: RequestInit) => Response
+  ): void => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = ((url: string, init: RequestInit = {}) =>
+      Promise.resolve(handler(url, init))) as unknown as typeof fetch;
+  };
+  const driveItem = () =>
+    Response.json(
+      {
+        eTag: '"od-etag"',
+        file: { mimeType: "application/octet-stream" },
+        lastModifiedDateTime: new Date(STABLE_MODIFIED_MS).toISOString(),
+        name: "doc.bin",
+        size: CHUNK + 5,
+      },
+      { status: 201 }
+    );
+
+  test("fresh upload creates a session and PUTs chunks", async () => {
+    const ranges: string[] = [];
+    installFetch((_url, init) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      ranges.push(range);
+      return range.startsWith(`bytes 0-${CHUNK - 1}`)
+        ? new Response(null, { status: 202 })
+        : driveItem();
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const control = new UploadControl();
+    const result = await files.upload("doc.bin", new Uint8Array(CHUNK + 5), {
+      control,
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.etag).toBe("od-etag");
+    expect(control.status).toBe("completed");
+    expect(ranges).toEqual([
+      `bytes 0-${CHUNK - 1}/${CHUNK + 5}`,
+      `bytes ${CHUNK}-${CHUNK + 4}/${CHUNK + 5}`,
+    ]);
+    expect(control.session?.provider).toBe("onedrive");
+  });
+
+  test("resume reads nextExpectedRanges then sends the rest", async () => {
+    const puts: string[] = [];
+    installFetch((_url, init) => {
+      if (init.method === "GET") {
+        return Response.json({ nextExpectedRanges: [`${CHUNK}-`] });
+      }
+      puts.push(
+        (init.headers as Record<string, string>)["Content-Range"] ?? ""
+      );
+      return driveItem();
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      itemPath: "doc.bin",
+      provider: "onedrive",
+      uploadUrl: "https://upload.example.com/session/doc.bin",
+    };
+    const result = await files.upload("doc.bin", new Uint8Array(CHUNK + 5), {
+      control: UploadControl.from(token),
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.size).toBe(CHUNK + 5);
+    expect(puts).toEqual([`bytes ${CHUNK}-${CHUNK + 4}/${CHUNK + 5}`]);
+  });
+
+  test("abort discards the session via DELETE", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      if (init.method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      return range.startsWith(`bytes 0-${CHUNK - 1}`)
+        ? new Response(null, { status: 202 })
+        : driveItem();
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("ab.bin", new Uint8Array(CHUNK * 2 + 5), {
+      control,
+      multipart: { partSize: CHUNK },
+      onProgress: ({ loaded }) => {
+        if (loaded >= CHUNK && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(methods).toContain("DELETE");
+  });
+
+  test("metadata is rejected", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("m.bin", "data", {
+        control: new UploadControl(),
+        metadata: { a: "b" },
+      })
+    ).rejects.toThrow(/metadata/u);
+  });
+
+  test("cacheControl is rejected", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("c.bin", "data", {
+        cacheControl: "public",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/cacheControl/u);
+  });
+
+  test("a session response missing uploadUrl throws", async () => {
+    dispatchPost.mockImplementationOnce(() => Promise.resolve({}));
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/uploadUrl/u);
+  });
+
+  test("a failed chunk PUT throws", async () => {
+    installFetch(() => new Response("nope", { status: 500 }));
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "hi", { control: new UploadControl(), retries: 0 })
+    ).rejects.toThrow(/chunk failed/u);
+  });
+
+  test("a failed resume status check throws", async () => {
+    installFetch(() => new Response(null, { status: 410 }));
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      itemPath: "x.bin",
+      provider: "onedrive",
+      uploadUrl: "https://upload.example.com/session/x.bin",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(CHUNK + 5), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+        retries: 0,
+      })
+    ).rejects.toThrow(/status check failed/u);
+  });
+
+  test("resuming a session that already has every byte throws (no drive item)", async () => {
+    installFetch((_url, init) => {
+      if (init.method === "GET") {
+        // Server reports the whole body is already received, so no chunk is
+        // sent and the session was never finalized into a drive item.
+        return Response.json({ nextExpectedRanges: [`${CHUNK + 5}-`] });
+      }
+      return driveItem();
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      itemPath: "x.bin",
+      provider: "onedrive",
+      uploadUrl: "https://upload.example.com/session/x.bin",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(CHUNK + 5), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+      })
+    ).rejects.toThrow(/without returning a drive item/u);
+  });
+
+  test("resuming a non-onedrive token throws", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token = {
+      bucket: "b",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("resuming a mismatched item path throws", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      itemPath: "other.bin",
+      provider: "onedrive",
+      uploadUrl: "https://upload.example.com/session/other.bin",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/item path/u);
   });
 });

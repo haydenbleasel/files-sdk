@@ -3,9 +3,11 @@ import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { fs as fsAdapter, mapFsError } from "../src/fs/index.js";
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 
 const tmpRoots: string[] = [];
 
@@ -859,5 +861,178 @@ describe("fs adapter", () => {
       const remaining = await fsp.readdir(root);
       expect(remaining.some((n) => n.includes(".tmp"))).toBe(false);
     });
+  });
+});
+
+describe("fs resumable uploads", () => {
+  test("fresh upload writes the file and a sidecar", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const control = new UploadControl();
+    const result = await files.upload("big.bin", "abcdefghijkl", {
+      contentType: "text/plain",
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(control.status).toBe("completed");
+    const got = await files.download("big.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+    expect(got.type).toBe("text/plain");
+    expect(got.etag).toBeDefined();
+    // The partial file is gone once complete renames it into place.
+    await expect(
+      fsp.stat(path.join(root, "big.bin.fls-part"))
+    ).rejects.toThrow();
+  });
+
+  test("resumes in a new adapter instance from the persisted token", async () => {
+    const root = await makeRoot();
+    const writer = new Files({ adapter: fsAdapter({ root }) });
+    const control = new UploadControl();
+    let paused = false;
+    const pending = writer
+      .upload("r.bin", "abcdefghijkl", {
+        control,
+        multipart: { concurrency: 1, partSize: 4 },
+        onProgress: ({ loaded }) => {
+          if (loaded === 4 && !paused) {
+            paused = true;
+            control.pause();
+          }
+        },
+      })
+      .catch(() => {
+        // Abandoned — a "new process" resumes below.
+      });
+    await delay(0);
+    await delay(0);
+    const token = structuredClone(control.toJSON()) as ResumableUploadSession;
+    expect(token.provider).toBe("fs");
+
+    // A fresh adapter on the same root resumes from the partial file on disk.
+    const resumer = new Files({ adapter: fsAdapter({ root }) });
+    const result = await resumer.upload("r.bin", "abcdefghijkl", {
+      control: UploadControl.from(token),
+      multipart: { concurrency: 1, partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    const got = await resumer.download("r.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+    await control.abort();
+    await pending;
+  });
+
+  test("a paused partial does not show up in list()", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const control = new UploadControl();
+    let paused = false;
+    const pending = files
+      .upload("hidden.bin", "abcdefghijkl", {
+        control,
+        multipart: { concurrency: 1, partSize: 4 },
+        onProgress: ({ loaded }) => {
+          if (loaded === 4 && !paused) {
+            paused = true;
+            control.pause();
+          }
+        },
+      })
+      .catch(() => {
+        // Abandoned below.
+      });
+    await delay(0);
+    await delay(0);
+    const { items } = await files.list();
+    expect(items.map((item) => item.key)).not.toContain("hidden.bin.fls-part");
+    await control.abort();
+    await pending;
+  });
+
+  test("abort deletes the partial file", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", "abcdefghijkl", {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    await expect(fsp.stat(path.join(root, "a.bin.fls-part"))).rejects.toThrow();
+  });
+
+  test("uses the default part size when multipart is unset", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const result = await files.upload("d.bin", "hello", {
+      control: new UploadControl(),
+    });
+    expect(result.size).toBe(5);
+    const got = await files.download("d.bin");
+    expect(await got.text()).toBe("hello");
+  });
+
+  test("resuming a token whose partial was cleaned up restarts from zero", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    // The partial file never existed, so probe reports offset 0 and the upload
+    // re-sends every chunk, creating the partial on first write.
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "z.bin",
+      provider: "fs",
+      tempPath: path.join(root, "z.bin.fls-part"),
+    };
+    const result = await files.upload("z.bin", "abcdefghijkl", {
+      control: UploadControl.from(token),
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    const got = await files.download("z.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+  });
+
+  test("resuming a token for a different key throws", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "other.bin",
+      provider: "fs",
+      tempPath: path.join(root, "other.bin.fls-part"),
+    };
+    await expect(
+      files.upload("mine.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/does not match/u);
+  });
+
+  test("resuming a non-fs token throws", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const token = {
+      bucket: "b",
+      key: "a.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("a.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("a key ending in the reserved partial suffix is rejected", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    await expect(files.upload("x.fls-part", "data")).rejects.toThrow(
+      /reserved/u
+    );
   });
 });

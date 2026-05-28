@@ -1,10 +1,26 @@
 import { Files } from "../index.js";
+import type { FilesOptions } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { PROVIDER_NAMES, PROVIDERS } from "./registry.js";
 import type { ProviderOpts } from "./registry.js";
 
 export interface GlobalCliOptions {
   provider?: string;
+  /**
+   * Scope every operation under this key prefix — maps to `FilesOptions.prefix`
+   * on the constructed {@link Files} instance, not the per-call `list` filter.
+   */
+  prefix?: string;
+  /**
+   * Per-attempt timeout in milliseconds, applied to every command as the
+   * instance default ({@link OperationOptions.timeout}).
+   */
+  timeout?: number;
+  /**
+   * Retry provider failures up to this many times, applied to every command
+   * as the instance default ({@link OperationOptions.retries}).
+   */
+  retries?: number;
   bucket?: string;
   region?: string;
   endpoint?: string;
@@ -96,7 +112,21 @@ export const loadFiles = async (
   }
   try {
     const adapter = await entry.load(toProviderOpts(opts));
-    return { files: new Files({ adapter }), provider };
+    // `prefix` / `timeout` / `retries` are Files-instance concerns, not adapter
+    // config, so they're threaded straight into the constructor (omitted when
+    // unset so the SDK defaults stand). `retries` is a bare count, which
+    // RetryOptions accepts as `{ max }`.
+    const filesOpts: FilesOptions<typeof adapter> = { adapter };
+    if (opts.prefix !== undefined) {
+      filesOpts.prefix = opts.prefix;
+    }
+    if (opts.timeout !== undefined) {
+      filesOpts.timeout = opts.timeout;
+    }
+    if (opts.retries !== undefined) {
+      filesOpts.retries = opts.retries;
+    }
+    return { files: new Files(filesOpts), provider };
   } catch (error) {
     // The adapter's own missing-required-field error is the most accurate
     // message — wrap it with the provider's `notes` hint so OAuth-only

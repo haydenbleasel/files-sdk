@@ -9,6 +9,8 @@ import type {
   ByteRange,
   ListOptions,
   ListResult,
+  OffsetResumableDriver,
+  ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
   StoredFile,
@@ -450,6 +452,161 @@ export const cloudinaryAdapter = (
     name: "cloudinary",
     raw: sdk,
     resourceType,
+    resumableUpload(key, resumableOpts): OffsetResumableDriver {
+      if (resumableOpts.cacheControl) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `cacheControl` is not supported."
+        );
+      }
+      if (
+        resumableOpts.metadata &&
+        Object.keys(resumableOpts.metadata).length > 0
+      ) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `metadata` is not supported."
+        );
+      }
+      if (!(apiKey && apiSecret)) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: resumable uploads require both apiKey and apiSecret."
+        );
+      }
+      const signingKey = apiKey;
+      const signingSecret = apiSecret;
+      let session:
+        | Extract<ResumableUploadSession, { provider: "cloudinary" }>
+        | undefined;
+      let finalResponse:
+        | {
+            public_id: string;
+            bytes?: number;
+            etag?: string;
+            created_at?: string;
+          }
+        | undefined;
+      let contentType = "application/octet-stream";
+      const requireSession = () => {
+        if (!session) {
+          throw new FilesError(
+            "Provider",
+            "cloudinary: resumable upload not started."
+          );
+        }
+        return session;
+      };
+      return {
+        adopt(adopted: ResumableUploadSession) {
+          if (adopted.provider !== "cloudinary") {
+            throw new FilesError(
+              "Provider",
+              `Cannot resume a ${adopted.provider} session on a cloudinary adapter.`
+            );
+          }
+          if (adopted.key !== key) {
+            throw new FilesError(
+              "Provider",
+              "Resume token does not match this upload's key."
+            );
+          }
+          session = adopted;
+          ({ contentType } = adopted);
+        },
+        begin(meta): Promise<ResumableUploadSession> {
+          ({ contentType } = meta);
+          session = {
+            contentType,
+            key,
+            offset: 0,
+            // Cloudinary ties a chunked upload together by this header value.
+            provider: "cloudinary",
+            uploadId: `fls-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          };
+          return Promise.resolve(session);
+        },
+        complete(): Promise<UploadResult> {
+          if (!finalResponse) {
+            throw new FilesError(
+              "Provider",
+              "cloudinary: upload did not finalize."
+            );
+          }
+          return Promise.resolve({
+            contentType: resolveContentType(
+              finalResponse as UploadApiResponse,
+              contentType
+            ),
+            ...(finalResponse.etag && { etag: finalResponse.etag }),
+            key: finalResponse.public_id,
+            ...(finalResponse.created_at && {
+              lastModified: new Date(finalResponse.created_at).getTime(),
+            }),
+            size: finalResponse.bytes ?? requireSession().offset,
+          });
+        },
+        discard() {
+          // Cloudinary has no abort for an in-progress chunked upload; the
+          // partial expires on its own.
+          return Promise.resolve();
+        },
+        mode: "offset",
+        partSize:
+          typeof resumableOpts.multipart === "object" &&
+          resumableOpts.multipart.partSize
+            ? resumableOpts.multipart.partSize
+            : 20 * 1024 * 1024,
+        probe(): Promise<{ nextOffset: number }> {
+          return Promise.resolve({ nextOffset: requireSession().offset });
+        },
+        async uploadAt({ offset, data, total, signal }): Promise<{
+          nextOffset: number;
+        }> {
+          const current = requireSession();
+          const timestamp = Math.floor(Date.now() / 1000);
+          const signature = sdk.utils.api_sign_request(
+            { public_id: key, timestamp },
+            signingSecret
+          );
+          const form = new FormData();
+          form.append("file", new Blob([data as unknown as BlobPart]), key);
+          form.append("api_key", signingKey);
+          form.append("timestamp", String(timestamp));
+          form.append("signature", signature);
+          form.append("public_id", key);
+          const res = await fetch(
+            `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`,
+            {
+              body: form,
+              headers: {
+                "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
+                "X-Unique-Upload-Id": current.uploadId,
+              },
+              method: "POST",
+              ...(signal && { signal }),
+            }
+          );
+          if (!res.ok) {
+            const text = await res.text();
+            throw new FilesError(
+              "Provider",
+              `cloudinary: chunk upload failed (HTTP ${res.status}): ${text}`.trim()
+            );
+          }
+          const json = (await res.json()) as { public_id?: string } & Record<
+            string,
+            unknown
+          >;
+          if (json.public_id) {
+            finalResponse = json as typeof finalResponse;
+          }
+          const nextOffset = offset + data.byteLength;
+          current.offset = nextOffset;
+          return { nextOffset };
+        },
+      };
+    },
     signedUploadUrl(
       key: string,
       signOpts: SignUploadOptions
