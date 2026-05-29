@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as realMcp from "../src/cli/mcp.js";
 import { buildProgram } from "../src/cli/program.js";
 
 // The mcp subcommand pulls ./mcp.js in via a dynamic import inside its action
@@ -11,12 +12,18 @@ import { buildProgram } from "../src/cli/program.js";
 // and the real server blocks on stdio. The mock only needs to be in place
 // before parseAsync runs the action; program.ts itself doesn't import mcp.ts
 // statically, so installing the mock at module top level is sufficient.
+//
+// `mock.module` overrides persist in the process-wide module registry across
+// test files, so we spread the real module and only stub `startMcpServer` —
+// otherwise the other named exports (mcpDownloadSize, resolveMcpDownloadCap…)
+// would vanish for any test file that loads after this one.
 const MCP_MODULE_PATH = fileURLToPath(
   new URL("../src/cli/mcp.ts", import.meta.url)
 );
 let mcpStartCalls = 0;
 const mcpStartArgs: unknown[] = [];
 mock.module(MCP_MODULE_PATH, () => ({
+  ...realMcp,
   startMcpServer: (opts: unknown) => {
     mcpStartCalls += 1;
     mcpStartArgs.push(opts);
