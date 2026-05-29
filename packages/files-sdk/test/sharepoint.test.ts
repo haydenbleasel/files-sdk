@@ -887,6 +887,40 @@ describe("sharepoint adapter", () => {
     expect(result.items).toEqual([]);
   });
 
+  test("clientCredentials direct > list cursors stay bound to rootFolderPath", async () => {
+    const adapter = sharepoint({
+      clientCredentials: CREDS,
+      driveId: "d",
+      rootFolderPath: "safe",
+    });
+
+    await expect(
+      adapter.list({
+        cursor:
+          "https://graph.microsoft.com/v1.0/drives/d/root/children?$skiptoken=abc",
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("cursor"),
+    });
+    expect(lastCalls).toEqual([]);
+
+    getHandler = (path) => {
+      if (path === "/drives/d/root:/safe:/children?$skiptoken=abc") {
+        return { value: [] };
+      }
+      return {};
+    };
+    const result = await adapter.list({
+      cursor:
+        "https://graph.microsoft.com/v1.0/drives/d/root:/safe:/children?$skiptoken=abc",
+    });
+    expect(result.items).toEqual([]);
+    expect(lastCalls.at(-1)?.path).toBe(
+      "/drives/d/root:/safe:/children?$skiptoken=abc"
+    );
+  });
+
   test("non-OneDrive error > passes through unchanged (no relabel)", async () => {
     getHandler = () => {
       throw new Error("plain non-graph error");

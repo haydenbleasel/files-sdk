@@ -265,6 +265,45 @@ const encodePathSegments = (path: string): string =>
     .map(encodeURIComponent)
     .join("/");
 
+const GRAPH_API_VERSION_PREFIX = "/v1.0";
+
+const throwListCursorRootMismatch = (): never => {
+  throw new FilesError(
+    "Provider",
+    "onedrive: list cursor does not match this adapter root"
+  );
+};
+
+const normalizeListCursor = (cursor: string, expectedPath: string): string => {
+  let apiPath = cursor;
+  if (/^[a-z][a-z\d+.-]*:/iu.test(cursor)) {
+    try {
+      const url = new URL(cursor);
+      if (
+        url.protocol !== "https:" ||
+        !url.pathname.startsWith(`${GRAPH_API_VERSION_PREFIX}/`)
+      ) {
+        throwListCursorRootMismatch();
+      }
+      apiPath = `${url.pathname.slice(GRAPH_API_VERSION_PREFIX.length)}${
+        url.search
+      }`;
+    } catch {
+      throwListCursorRootMismatch();
+    }
+  }
+
+  if (!apiPath.startsWith("/")) {
+    throwListCursorRootMismatch();
+  }
+  const queryStart = apiPath.indexOf("?");
+  const pathOnly = queryStart === -1 ? apiPath : apiPath.slice(0, queryStart);
+  if (pathOnly !== expectedPath) {
+    throwListCursorRootMismatch();
+  }
+  return apiPath;
+};
+
 interface NormalizedBody {
   data: Buffer;
   contentType: string;
@@ -1032,9 +1071,10 @@ export const onedrive = (
     },
     async list(options): Promise<ListResult> {
       try {
-        // Cursor (when provided) is the @odata.nextLink absolute URL, which
-        // the Graph client accepts as a path.
-        const initial = options?.cursor ?? `${containerApiPath()}/children`;
+        const listPath = `${containerApiPath()}/children`;
+        const initial = options?.cursor
+          ? normalizeListCursor(options.cursor, listPath)
+          : listPath;
         let req = client.api(initial);
         if (!options?.cursor && options?.limit !== undefined) {
           req = req.top(options.limit);

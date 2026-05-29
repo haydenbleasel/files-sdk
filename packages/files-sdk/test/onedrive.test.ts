@@ -34,6 +34,7 @@ const newId = (): string => {
 const parseItemPath = (
   apiPath: string
 ): { virtualPath: string; suffix?: string } | null => {
+  const [pathOnly] = apiPath.split("?", 1);
   // Strip whichever base prefix the adapter generated:
   //   /me/drive | /drives/{id} | /sites/{id}/drive | /users/{id}/drive
   // and parse the remaining /root[:/path:][/suffix] tail. Examples:
@@ -41,7 +42,7 @@ const parseItemPath = (
   //   .../root:/docs/a.txt:/content       -> { virtualPath: "docs/a.txt", suffix: "content" }
   //   .../root:/docs:/children            -> { virtualPath: "docs",       suffix: "children" }
   //   .../root/children                   -> { virtualPath: "",           suffix: "children" }
-  const tail = apiPath.replace(
+  const tail = (pathOnly ?? apiPath).replace(
     /^(?:\/me\/drive|\/drives\/[^/]+|\/sites\/[^/]+\/drive|\/users\/[^/]+\/drive)/u,
     ""
   );
@@ -639,12 +640,40 @@ describe("onedrive adapter", () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     dispatchGet.mockImplementationOnce(() =>
       Promise.resolve({
-        "@odata.nextLink": "https://graph.microsoft.com/v1.0/next-page",
+        "@odata.nextLink":
+          "https://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc",
         value: [],
       })
     );
     const r = await files.list();
-    expect(r.cursor).toBe("https://graph.microsoft.com/v1.0/next-page");
+    expect(r.cursor).toBe(
+      "https://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc"
+    );
+  });
+
+  test("list only follows cursors bound to the configured root", async () => {
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, rootFolderPath: "safe" }),
+    });
+
+    await expect(
+      files.list({
+        cursor:
+          "https://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc",
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("cursor"),
+    });
+    expect(dispatchGet).not.toHaveBeenCalled();
+
+    await files.list({
+      cursor:
+        "https://graph.microsoft.com/v1.0/me/drive/root:/safe:/children?$skiptoken=abc",
+    });
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/me/drive/root:/safe:/children?$skiptoken=abc"
+    );
   });
 
   test("copy creates new item at destination and polls monitor URL", async () => {
