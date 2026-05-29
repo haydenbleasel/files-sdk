@@ -111,18 +111,22 @@ const errorPayload = (err: unknown) => {
 };
 
 /**
- * Start an MCP server on stdio. Read tools are registered by default; pass
- * `allowWrites` to expose mutating tools. Provider + credentials are bound at
- * server startup (from the global flags / env), so each tool call only needs
- * operation arguments — the agent doesn't have to thread credentials through
- * every request.
+ * Build an MCP server with the file tools registered, ready to connect to a
+ * transport. Read tools are registered by default; pass `allowWrites` to
+ * expose mutating tools. Provider + credentials are bound here (from the
+ * global flags / env), so each tool call only needs operation arguments — the
+ * agent doesn't have to thread credentials through every request.
  *
- * The `Files` instance is constructed once at startup and reused across
- * every tool call. This keeps the underlying SDK client (S3 client,
- * GCS client, etc.) warm and surfaces credential failures immediately
- * rather than on the first tool call.
+ * The `Files` instance is constructed once and reused across every tool call.
+ * This keeps the underlying SDK client (S3 client, GCS client, etc.) warm and
+ * surfaces credential failures immediately rather than on the first tool call.
+ *
+ * Split out from {@link startMcpServer} so the registered tools can be driven
+ * over an in-memory transport in tests without touching stdio.
  */
-export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
+export const buildMcpServer = async (
+  opts: McpServerOpts
+): Promise<McpServer> => {
   const server = new McpServer({
     name: "files-sdk",
     version: pkg.version,
@@ -511,6 +515,16 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     );
   }
 
+  return server;
+};
+
+/**
+ * Start an MCP server on stdio. Builds the server (binding provider +
+ * credentials, registering tools) and connects it to a stdio transport so the
+ * host agent can drive it.
+ */
+export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
+  const server = await buildMcpServer(opts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 };
