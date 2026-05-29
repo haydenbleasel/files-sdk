@@ -88,6 +88,7 @@ const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
 };
 
 export interface McpServerOpts {
+  allowWrites?: boolean;
   global: GlobalCliOptions;
 }
 
@@ -110,10 +111,11 @@ const errorPayload = (err: unknown) => {
 };
 
 /**
- * Start an MCP server on stdio that exposes every CLI command as an MCP
- * tool. Provider + credentials are bound at server startup (from the
- * global flags / env), so each tool call only needs operation arguments —
- * the agent doesn't have to thread credentials through every request.
+ * Start an MCP server on stdio. Read tools are registered by default; pass
+ * `allowWrites` to expose mutating tools. Provider + credentials are bound at
+ * server startup (from the global flags / env), so each tool call only needs
+ * operation arguments — the agent doesn't have to thread credentials through
+ * every request.
  *
  * The `Files` instance is constructed once at startup and reused across
  * every tool call. This keeps the underlying SDK client (S3 client,
@@ -127,72 +129,75 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
   });
 
   const { files } = await loadFiles(opts.global);
+  const allowWrites = opts.allowWrites ?? false;
 
-  server.registerTool(
-    "upload",
-    {
-      description:
-        "Upload bytes to the configured provider at the given key. Body may be inline UTF-8 text or base64-encoded binary — exactly one of `text` or `base64` is required.",
-      inputSchema: {
-        base64: z
-          .string()
-          .optional()
-          .describe("Base64-encoded body (mutually exclusive with text)"),
-        cacheControl: z.string().optional(),
-        contentType: z.string().optional(),
-        key: z.string().describe("Object key (path) within the bucket/store"),
-        metadata: z
-          .record(z.string(), z.string())
-          .optional()
-          .describe("Metadata as a string-to-string object"),
-        multipart: z
-          .union([
-            z.boolean(),
-            z.object({
-              concurrency: z.number().int().positive().optional(),
-              partSize: z.number().int().positive().optional(),
-            }),
-          ])
-          .optional()
-          .describe(
-            "Upload in parallel parts: true, or { partSize, concurrency }"
-          ),
-        text: z
-          .string()
-          .optional()
-          .describe("UTF-8 body (mutually exclusive with base64)"),
+  if (allowWrites) {
+    server.registerTool(
+      "upload",
+      {
+        description:
+          "Upload bytes to the configured provider at the given key. Body may be inline UTF-8 text or base64-encoded binary — exactly one of `text` or `base64` is required.",
+        inputSchema: {
+          base64: z
+            .string()
+            .optional()
+            .describe("Base64-encoded body (mutually exclusive with text)"),
+          cacheControl: z.string().optional(),
+          contentType: z.string().optional(),
+          key: z.string().describe("Object key (path) within the bucket/store"),
+          metadata: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe("Metadata as a string-to-string object"),
+          multipart: z
+            .union([
+              z.boolean(),
+              z.object({
+                concurrency: z.number().int().positive().optional(),
+                partSize: z.number().int().positive().optional(),
+              }),
+            ])
+            .optional()
+            .describe(
+              "Upload in parallel parts: true, or { partSize, concurrency }"
+            ),
+          text: z
+            .string()
+            .optional()
+            .describe("UTF-8 body (mutually exclusive with base64)"),
+        },
+        title: "Upload a file",
       },
-      title: "Upload a file",
-    },
-    async ({
-      key,
-      text,
-      base64,
-      contentType,
-      cacheControl,
-      metadata,
-      multipart,
-    }) => {
-      try {
-        if (text !== undefined && base64 !== undefined) {
-          throw new FilesError(
-            "Provider",
-            "`text` and `base64` are mutually exclusive — pass exactly one"
-          );
+      async ({
+        key,
+        text,
+        base64,
+        contentType,
+        cacheControl,
+        metadata,
+        multipart,
+      }) => {
+        try {
+          if (text !== undefined && base64 !== undefined) {
+            throw new FilesError(
+              "Provider",
+              "`text` and `base64` are mutually exclusive — pass exactly one"
+            );
+          }
+          const body = encodeUploadBody(text, base64);
+          const result = await files.upload(key, body, {
+            cacheControl,
+            contentType,
+            metadata,
+            ...(multipart !== undefined && { multipart }),
+          });
+          return ok(result);
+        } catch (error) {
+          return errorPayload(error);
         }
-        const body = encodeUploadBody(text, base64);
-        const result = await files.upload(key, body, {
-          cacheControl,
-          contentType,
-          metadata,
-          ...(multipart !== undefined && { multipart }),
-        });
-        return ok(result);
-      } catch (error) {
-        return errorPayload(error);
       }
-    }
-  );
+    );
+  }
 
   server.registerTool(
     "download",
@@ -299,67 +304,69 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     }
   );
 
-  server.registerTool(
-    "delete",
-    {
-      description:
-        "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure.",
-      inputSchema: {
-        concurrency: concurrencyArg,
-        key: z.union([z.string(), z.array(z.string())]),
-        stopOnError: stopOnErrorArg,
+  if (allowWrites) {
+    server.registerTool(
+      "delete",
+      {
+        description:
+          "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure.",
+        inputSchema: {
+          concurrency: concurrencyArg,
+          key: z.union([z.string(), z.array(z.string())]),
+          stopOnError: stopOnErrorArg,
+        },
+        title: "Delete one or many keys",
       },
-      title: "Delete one or many keys",
-    },
-    async ({ key, concurrency, stopOnError }) => {
-      try {
-        if (Array.isArray(key)) {
-          return ok(
-            await files.delete(key, bulkOpts(concurrency, stopOnError))
-          );
+      async ({ key, concurrency, stopOnError }) => {
+        try {
+          if (Array.isArray(key)) {
+            return ok(
+              await files.delete(key, bulkOpts(concurrency, stopOnError))
+            );
+          }
+          await files.delete(key);
+          return ok({ deleted: true, key });
+        } catch (error) {
+          return errorPayload(error);
         }
-        await files.delete(key);
-        return ok({ deleted: true, key });
-      } catch (error) {
-        return errorPayload(error);
       }
-    }
-  );
+    );
 
-  server.registerTool(
-    "copy",
-    {
-      description: "Copy `from` to `to` within the same store.",
-      inputSchema: { from: z.string(), to: z.string() },
-      title: "Server-side copy",
-    },
-    async ({ from, to }) => {
-      try {
-        await files.copy(from, to);
-        return ok({ copied: true, from, to });
-      } catch (error) {
-        return errorPayload(error);
+    server.registerTool(
+      "copy",
+      {
+        description: "Copy `from` to `to` within the same store.",
+        inputSchema: { from: z.string(), to: z.string() },
+        title: "Server-side copy",
+      },
+      async ({ from, to }) => {
+        try {
+          await files.copy(from, to);
+          return ok({ copied: true, from, to });
+        } catch (error) {
+          return errorPayload(error);
+        }
       }
-    }
-  );
+    );
 
-  server.registerTool(
-    "move",
-    {
-      description:
-        "Move (rename) `from` to `to` within the same store. Native rename where supported, else copy + delete.",
-      inputSchema: { from: z.string(), to: z.string() },
-      title: "Move object",
-    },
-    async ({ from, to }) => {
-      try {
-        await files.move(from, to);
-        return ok({ from, moved: true, to });
-      } catch (error) {
-        return errorPayload(error);
+    server.registerTool(
+      "move",
+      {
+        description:
+          "Move (rename) `from` to `to` within the same store. Native rename where supported, else copy + delete.",
+        inputSchema: { from: z.string(), to: z.string() },
+        title: "Move object",
+      },
+      async ({ from, to }) => {
+        try {
+          await files.move(from, to);
+          return ok({ from, moved: true, to });
+        } catch (error) {
+          return errorPayload(error);
+        }
       }
-    }
-  );
+    );
+  }
 
   server.registerTool(
     "list",
@@ -424,81 +431,85 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     }
   );
 
-  server.registerTool(
-    "sign-upload",
-    {
-      description:
-        "Produce a presigned upload URL/form. `maxSize` enables a POST policy (recommended).",
-      inputSchema: {
-        contentType: z.string().optional(),
-        expiresIn: z.number().int().positive(),
-        key: z.string(),
-        maxSize: z.number().int().positive().optional(),
-        minSize: z.number().int().nonnegative().optional(),
+  if (allowWrites) {
+    server.registerTool(
+      "sign-upload",
+      {
+        description:
+          "Produce a presigned upload URL/form. `maxSize` enables a POST policy (recommended).",
+        inputSchema: {
+          contentType: z.string().optional(),
+          expiresIn: z.number().int().positive(),
+          key: z.string(),
+          maxSize: z.number().int().positive().optional(),
+          minSize: z.number().int().nonnegative().optional(),
+        },
+        title: "Sign an upload URL",
       },
-      title: "Sign an upload URL",
-    },
-    async ({ key, expiresIn, contentType, maxSize, minSize }) => {
-      try {
-        const signed = await files.signedUploadUrl(key, {
-          contentType,
-          expiresIn,
-          maxSize,
-          minSize,
-        });
-        return ok({ key, ...signed });
-      } catch (error) {
-        return errorPayload(error);
+      async ({ key, expiresIn, contentType, maxSize, minSize }) => {
+        try {
+          const signed = await files.signedUploadUrl(key, {
+            contentType,
+            expiresIn,
+            maxSize,
+            minSize,
+          });
+          return ok({ key, ...signed });
+        } catch (error) {
+          return errorPayload(error);
+        }
       }
-    }
-  );
+    );
 
-  server.registerTool(
-    "transfer",
-    {
-      description:
-        "Copy every object from the configured (source) provider to another provider, streaming each body across backends. The destination is a separate provider config (`to`). Returns `{ transferred, skipped?, errors? }`.",
-      inputSchema: {
-        concurrency: concurrencyArg,
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Page size for the source walk"),
-        overwrite: z
-          .boolean()
-          .optional()
-          .describe("When false, skip keys already present at the destination"),
-        prefix: z
-          .string()
-          .optional()
-          .describe("Only transfer keys under this prefix"),
-        stopOnError: stopOnErrorArg,
-        to: z
-          .record(z.string(), z.unknown())
-          .describe(
-            'Destination provider options, e.g. { "provider": "r2", "bucket": "new", "accountId": "..." }'
-          ),
+    server.registerTool(
+      "transfer",
+      {
+        description:
+          "Copy every object from the configured (source) provider to another provider, streaming each body across backends. The destination is a separate provider config (`to`). Returns `{ transferred, skipped?, errors? }`.",
+        inputSchema: {
+          concurrency: concurrencyArg,
+          limit: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Page size for the source walk"),
+          overwrite: z
+            .boolean()
+            .optional()
+            .describe(
+              "When false, skip keys already present at the destination"
+            ),
+          prefix: z
+            .string()
+            .optional()
+            .describe("Only transfer keys under this prefix"),
+          stopOnError: stopOnErrorArg,
+          to: z
+            .record(z.string(), z.unknown())
+            .describe(
+              'Destination provider options, e.g. { "provider": "r2", "bucket": "new", "accountId": "..." }'
+            ),
+        },
+        title: "Transfer objects to another provider",
       },
-      title: "Transfer objects to another provider",
-    },
-    async ({ to, prefix, overwrite, limit, concurrency, stopOnError }) => {
-      try {
-        const dest = await loadFiles(to as unknown as GlobalCliOptions);
-        const result = await transfer(files, dest.files, {
-          ...(prefix !== undefined && { prefix }),
-          ...(overwrite === false && { overwrite: false }),
-          ...(limit !== undefined && { limit }),
-          ...(concurrency !== undefined && { concurrency }),
-          ...(stopOnError && { stopOnError: true }),
-        });
-        return ok(result);
-      } catch (error) {
-        return errorPayload(error);
+      async ({ to, prefix, overwrite, limit, concurrency, stopOnError }) => {
+        try {
+          const dest = await loadFiles(to as unknown as GlobalCliOptions);
+          const result = await transfer(files, dest.files, {
+            ...(prefix !== undefined && { prefix }),
+            ...(overwrite === false && { overwrite: false }),
+            ...(limit !== undefined && { limit }),
+            ...(concurrency !== undefined && { concurrency }),
+            ...(stopOnError && { stopOnError: true }),
+          });
+          return ok(result);
+        } catch (error) {
+          return errorPayload(error);
+        }
       }
-    }
-  );
+    );
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

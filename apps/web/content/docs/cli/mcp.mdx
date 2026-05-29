@@ -1,15 +1,20 @@
 ---
 title: MCP server
-description: Boot a built-in MCP server on stdio that exposes every CLI command as a tool, with provider and credentials bound at startup.
+description: Boot a built-in read-only MCP server on stdio, with provider and credentials bound at startup.
 ---
 
-`files ... mcp` boots an [MCP server](https://modelcontextprotocol.io) on stdio that exposes every CLI command as a tool — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`, `url`, `sign-upload`, and `transfer`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
+`files ... mcp` boots a read-only [MCP server](https://modelcontextprotocol.io) on stdio. By default it exposes `download`, `head`, `exists`, `list`, and `url`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
 
-The tools mirror the CLI surface: `upload` accepts `multipart`, `download` accepts a byte `range`, `head`/`exists`/`delete` take arrays of keys plus `concurrency`/`stopOnError`, `list` accepts `all` to walk every page, and `transfer` takes a destination provider config (`to`) to copy objects across backends.
+Pass `--allow-writes` to also expose mutating tools: `upload`, `delete`, `copy`, `move`, `sign-upload`, and `transfer`.
+
+The tools mirror the CLI surface: `download` accepts a byte `range`, `head`/`exists` take arrays of keys plus `concurrency`/`stopOnError`, and `list` accepts `all` to walk every page. With `--allow-writes`, `upload` accepts `multipart`, `delete` takes arrays of keys plus `concurrency`/`stopOnError`, and `transfer` takes a destination provider config (`to`) to copy objects across backends.
 
 ```bash lineNumbers
-# Start the MCP server on stdio
+# Start the read-only MCP server on stdio
 files --provider s3 --bucket uploads mcp
+
+# Opt into mutation tools
+files --provider s3 --bucket uploads mcp --allow-writes
 ```
 
 ```jsonc lineNumbers
@@ -28,4 +33,4 @@ files --provider s3 --bucket uploads mcp
 }
 ```
 
-Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and uploads (`upload` with a `base64` body) survive intact.
+Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and, when writes are enabled, uploads (`upload` with a `base64` body) survive intact.

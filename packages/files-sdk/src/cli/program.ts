@@ -562,10 +562,12 @@ export const buildProgram = (): Command => {
 
   program
     .command("mcp")
-    .description(
-      "start an MCP server on stdio exposing every command as a tool"
+    .description("start a read-only MCP server on stdio")
+    .option(
+      "--allow-writes",
+      "also expose mutating MCP tools: upload, delete, copy, move, sign-upload, and transfer"
     )
-    .action(async (_opts, cmd) => {
+    .action(async (opts, cmd) => {
       const { global, out } = resolveOpts(cmd as Command);
       try {
         // `@modelcontextprotocol/sdk` is an optional dependency — pulling
@@ -578,7 +580,10 @@ export const buildProgram = (): Command => {
         } catch (loadError) {
           throw rewrapMcpLoadError(loadError);
         }
-        await mcp.startMcpServer({ global });
+        await mcp.startMcpServer({
+          allowWrites: opts.allowWrites === true,
+          global,
+        });
       } catch (error) {
         fail(error, out);
       }

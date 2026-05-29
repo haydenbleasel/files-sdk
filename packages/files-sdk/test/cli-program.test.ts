@@ -15,9 +15,11 @@ const MCP_MODULE_PATH = fileURLToPath(
   new URL("../src/cli/mcp.ts", import.meta.url)
 );
 let mcpStartCalls = 0;
+const mcpStartArgs: unknown[] = [];
 mock.module(MCP_MODULE_PATH, () => ({
-  startMcpServer: () => {
+  startMcpServer: (opts: unknown) => {
     mcpStartCalls += 1;
+    mcpStartArgs.push(opts);
     return Promise.resolve();
   },
 }));
@@ -347,6 +349,12 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     const before = mcpStartCalls;
     await run("--provider", "fs", "--root", root, "mcp");
     expect(mcpStartCalls).toBe(before + 1);
+    expect(mcpStartArgs.at(-1)).toMatchObject({ allowWrites: false });
+  });
+
+  test("mcp --allow-writes opts into mutation tools", async () => {
+    await run("--provider", "fs", "--root", root, "mcp", "--allow-writes");
+    expect(mcpStartArgs.at(-1)).toMatchObject({ allowWrites: true });
   });
 
   test("transfer routes through its action builder (dry-run)", async () => {
