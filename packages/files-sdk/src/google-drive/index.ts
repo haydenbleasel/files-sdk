@@ -816,6 +816,12 @@ export const googleDrive = (
     },
     rootFolderId,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+      if (signOpts.maxSize !== undefined || signOpts.minSize !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "google-drive: `maxSize` and `minSize` are not supported for signed upload URLs. Drive resumable upload sessions do not enforce a server-side content-length-range policy; enforce size limits at your application gateway / proxy before issuing the session URL."
+        );
+      }
       if (!authForTokens) {
         throw new FilesError(
           "Provider",
@@ -841,13 +847,6 @@ export const googleDrive = (
       };
       if (signOpts.contentType) {
         headers["X-Upload-Content-Type"] = signOpts.contentType;
-      }
-      // `maxSize` is *advisory* — Drive does not enforce a server-side
-      // size policy on resumable sessions. We forward
-      // `X-Upload-Content-Length` so Drive can return early on quota
-      // overruns, but the cap is not binding. `minSize` is ignored.
-      if (signOpts.maxSize !== undefined) {
-        headers["X-Upload-Content-Length"] = String(signOpts.maxSize);
       }
       const initBody = {
         appProperties: { [KEY_PROP]: key },

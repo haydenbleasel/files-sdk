@@ -460,11 +460,12 @@ export interface SignUploadOptions extends OperationOptions {
   /**
    * Maximum upload size in bytes, enforced server-side.
    *
-   * **Strongly recommended.** When omitted, the adapter falls back to a
-   * presigned PUT URL with no server-side size limit — anyone with the URL
-   * can upload an arbitrarily large file until `expiresIn` elapses. When set,
-   * the adapter uses a presigned POST form (S3/R2) that enforces the size
-   * via a `content-length-range` policy.
+   * **Strongly recommended when supported.** When omitted, the adapter falls
+   * back to a presigned PUT URL with no server-side size limit — anyone with
+   * the URL can upload an arbitrarily large file until `expiresIn` elapses.
+   * When set, supporting adapters use a presigned POST form (S3/R2) that
+   * enforces the size via a `content-length-range` policy. Adapters whose
+   * direct-upload primitive cannot enforce this fail closed.
    */
   maxSize?: number;
   /**
@@ -472,8 +473,8 @@ export interface SignUploadOptions extends OperationOptions {
    * `1` — empty uploads are usually a sign of a broken client, and the most
    * common application assumption ("file present means real content") fails
    * silently when 0-byte objects can land. Pass `0` if you genuinely want to
-   * allow empty uploads. Only used when `maxSize` is set (otherwise the
-   * adapter falls back to a presigned PUT, which has no policy at all).
+   * allow empty uploads. Only used by adapters that can enforce `maxSize`;
+   * adapters whose direct-upload primitive cannot enforce this fail closed.
    */
   minSize?: number;
 }

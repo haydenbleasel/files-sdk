@@ -1112,6 +1112,12 @@ export const onedrive = (
     resumableUpload: createResumableDriver,
     rootFolderPath,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+      if (signOpts.maxSize !== undefined || signOpts.minSize !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "onedrive: `maxSize` and `minSize` are not supported for signed upload URLs. Graph upload sessions do not enforce a server-side content-length-range policy; enforce size limits at your application gateway / proxy before issuing the session URL."
+        );
+      }
       try {
         const res = (await client
           .api(`${itemApiPath(key)}/createUploadSession`)

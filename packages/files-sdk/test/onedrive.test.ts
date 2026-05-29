@@ -858,7 +858,6 @@ describe("onedrive adapter", () => {
     const out = await files.signedUploadUrl("a.txt", {
       contentType: "text/plain",
       expiresIn: 3600,
-      maxSize: 1024,
     });
     expect(out).toEqual({
       headers: { "Content-Type": "text/plain" },
@@ -873,6 +872,22 @@ describe("onedrive adapter", () => {
     expect(sessionCall).toBeDefined();
     const body = sessionCall?.[1] as { item: { name: string } };
     expect(body.item.name).toBe("a.txt");
+  });
+
+  test("signedUploadUrl rejects maxSize before creating a Graph session", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 3600, maxSize: 1024 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    expect(dispatchPost).not.toHaveBeenCalled();
+  });
+
+  test("signedUploadUrl rejects minSize before creating a Graph session", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 3600, minSize: 1 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    expect(dispatchPost).not.toHaveBeenCalled();
   });
 
   test("rootFolderPath nests virtual keys under the configured folder", async () => {

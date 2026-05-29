@@ -588,7 +588,6 @@ describe("google-drive adapter", () => {
     const out = await files.signedUploadUrl("a.txt", {
       contentType: "text/plain",
       expiresIn: 3600,
-      maxSize: 1024,
     });
 
     expect(out).toEqual({
@@ -601,11 +600,25 @@ describe("google-drive adapter", () => {
     const headers = captured?.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer test-access-token");
     expect(headers["X-Upload-Content-Type"]).toBe("text/plain");
-    expect(headers["X-Upload-Content-Length"]).toBe("1024");
+    expect(headers["X-Upload-Content-Length"]).toBeUndefined();
     const body = JSON.parse(captured?.init?.body as string);
     expect(body.name).toBe("a.txt");
     expect(body.parents).toEqual(["rootX"]);
     expect(body.appProperties.fsdkKey).toBe("a.txt");
+  });
+
+  test("signedUploadUrl rejects maxSize because Drive sessions cannot enforce it", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, maxSize: 1024 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+  });
+
+  test("signedUploadUrl rejects minSize because Drive sessions cannot enforce it", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
   });
 
   test("signedUploadUrl throws when adapter constructed with `client` escape hatch", async () => {

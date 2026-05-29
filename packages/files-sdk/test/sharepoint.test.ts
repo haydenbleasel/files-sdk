@@ -451,6 +451,36 @@ describe("sharepoint adapter", () => {
     expect(signed.url).toBe("https://upload.example.com/session-abc");
   });
 
+  test("signedUploadUrl > rejects maxSize before creating an upload session", async () => {
+    const files = new Files({
+      adapter: sharepoint({
+        clientCredentials: CREDS,
+        driveId: "d",
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("big.bin", { expiresIn: 3600, maxSize: 1024 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    expect(lastCalls.some((c) => c.path.endsWith("/createUploadSession"))).toBe(
+      false
+    );
+  });
+
+  test("signedUploadUrl > rejects minSize before creating an upload session", async () => {
+    const files = new Files({
+      adapter: sharepoint({
+        clientCredentials: CREDS,
+        driveId: "d",
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("big.bin", { expiresIn: 3600, minSize: 1 })
+    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    expect(lastCalls.some((c) => c.path.endsWith("/createUploadSession"))).toBe(
+      false
+    );
+  });
+
   test("siteUrl > non-URL string throws Provider", async () => {
     const adapter = sharepoint({
       clientCredentials: CREDS,
