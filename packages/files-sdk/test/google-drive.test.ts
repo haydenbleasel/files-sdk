@@ -477,6 +477,45 @@ describe("google-drive adapter", () => {
     expect((err as FilesError).code).toBe("NotFound");
   });
 
+  test("resolve fileId is scoped to rootFolderId", async () => {
+    store.set("outside-1", {
+      appProperties: { fsdkKey: "secret.txt" },
+      id: "outside-1",
+      md5Checksum: "etag-outside-1",
+      mimeType: "text/plain",
+      modifiedTime: STABLE_MODIFIED,
+      name: "secret.txt",
+      parents: ["outsideRoot"],
+      size: "6",
+    });
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+
+    const missing = await files
+      .head("secret.txt")
+      .catch((error: unknown) => error);
+    expect(missing).toBeInstanceOf(FilesError);
+    expect((missing as FilesError).code).toBe("NotFound");
+
+    const [listArgs] = filesListMock.mock.calls.at(-1) ?? [];
+    expect((listArgs as { q?: string }).q).toContain("'rootX' in parents");
+
+    await files.upload("scoped.txt", "inside");
+    store.set("outside-2", {
+      appProperties: { fsdkKey: "scoped.txt" },
+      id: "outside-2",
+      md5Checksum: "etag-outside-2",
+      mimeType: "text/plain",
+      modifiedTime: STABLE_MODIFIED,
+      name: "scoped.txt",
+      parents: ["outsideRoot"],
+      size: "7",
+    });
+    const fresh = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(fresh.head("scoped.txt")).resolves.toMatchObject({
+      key: "scoped.txt",
+    });
+  });
+
   test("resolve fileId throws Conflict when two files share a virtual key", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("dup.txt", "hi");

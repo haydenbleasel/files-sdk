@@ -461,7 +461,7 @@ export const googleDrive = (
     if (cached) {
       return cached;
     }
-    const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and trashed=false`;
+    const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and '${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
     let res: { data: drive_v3.Schema$FileList };
     try {
       res = (await driveClient.files.list(
