@@ -4,6 +4,7 @@ import type { ToolExecutionOptions } from "ai";
 
 import { createFileTools } from "../src/ai-sdk/index.js";
 import { Files, FilesError } from "../src/index.js";
+import { MAX_DOWNLOAD_BYTES } from "../src/internal/ai-tools/schemas.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 // `Tool<INPUT, OUTPUT>` is invariant in INPUT (INPUT appears in
@@ -204,6 +205,21 @@ describe("createFileTools", () => {
 
     try {
       await exec(tools.downloadFile, { key: "big.txt", maxBytes: 4 });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).message).toMatch(/maxBytes/u);
+    }
+  });
+
+  test("downloadFile rejects maxBytes above the hard tool ceiling", async () => {
+    const tools = createFileTools({ files: newFiles() });
+
+    try {
+      await exec(tools.downloadFile, {
+        key: "anything.txt",
+        maxBytes: MAX_DOWNLOAD_BYTES + 1,
+      });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);

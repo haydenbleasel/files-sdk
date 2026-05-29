@@ -78,10 +78,10 @@ export interface FileTools {
   getFileMetadata: ReturnType<typeof getFileMetadata>;
   /**
    * Download an object and return its contents. Accepts a `maxBytes` guard
-   * (default 1 MiB) checked via `head()` _before_ any transfer — JSON tool
-   * boundaries don't love multi-megabyte payloads. Returns UTF-8 text by
-   * default; pass `binary: true` to receive base64-encoded bytes for
-   * non-text files.
+   * (default 1 MiB, maximum 10 MiB) checked via `head()` _before_ any
+   * transfer — JSON tool boundaries don't love multi-megabyte payloads.
+   * Returns UTF-8 text by default; pass `binary: true` to receive
+   * base64-encoded bytes for non-text files.
    */
   downloadFile: ReturnType<typeof downloadFile>;
   /**

@@ -1,6 +1,6 @@
 import type { Files } from "../../index.js";
 import { FilesError } from "../errors.js";
-import { DEFAULT_MAX_DOWNLOAD_BYTES } from "./schemas.js";
+import { DEFAULT_MAX_DOWNLOAD_BYTES, MAX_DOWNLOAD_BYTES } from "./schemas.js";
 import type {
   CopyFileInput,
   DeleteFileInput,
@@ -50,6 +50,12 @@ export const executors = {
     { key, maxBytes, binary }: DownloadFileInput
   ) => {
     const limit = maxBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
+    if (limit > MAX_DOWNLOAD_BYTES) {
+      throw new FilesError(
+        "Provider",
+        `maxBytes must be less than or equal to ${MAX_DOWNLOAD_BYTES}. Use getFileUrl to delegate larger downloads to the client.`
+      );
+    }
     const meta = await files.head(key);
     if (meta.size > limit) {
       throw new FilesError(

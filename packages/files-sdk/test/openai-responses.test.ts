@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
+import { MAX_DOWNLOAD_BYTES } from "../src/internal/ai-tools/schemas.js";
 import { createResponsesFileTools } from "../src/openai/index.js";
 import type { FunctionCallItem } from "../src/openai/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -196,6 +197,19 @@ describe("createResponsesFileTools", () => {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).message).toMatch(/maxBytes/u);
     }
+  });
+
+  test("validation rejects maxBytes above the hard tool ceiling", async () => {
+    const ft = createResponsesFileTools({ files: newFiles() });
+    const out = await ft.execute(
+      call("downloadFile", {
+        key: "big.txt",
+        maxBytes: MAX_DOWNLOAD_BYTES + 1,
+      })
+    );
+    const parsed = JSON.parse(out.output) as { error: string; issues: unknown };
+    expect(parsed.error).toBe("Argument validation failed");
+    expect(Array.isArray(parsed.issues)).toBe(true);
   });
 
   test("uploadFile encoding=base64 round-trips bytes", async () => {
