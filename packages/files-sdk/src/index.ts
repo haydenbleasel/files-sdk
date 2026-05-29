@@ -452,8 +452,9 @@ export interface SignUploadOptions extends OperationOptions {
    */
   expiresIn: number;
   /**
-   * MIME type bound into the signature. The browser's PUT/POST must send a
-   * matching `Content-Type` header or the provider rejects the upload.
+   * MIME type bound into the signature when the provider supports doing so.
+   * Adapters that cannot enforce it at the signed URL layer throw rather
+   * than returning an advisory header.
    */
   contentType?: string;
   /**

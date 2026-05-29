@@ -1258,21 +1258,23 @@ describe("azure adapter", () => {
       expect(opts.permissions.toString()).toBe("cw");
     });
 
-    test("includes Content-Type header when contentType passed", async () => {
+    test("throws when contentType is set", async () => {
       const adapter = azure({
         accountKey: "k",
         accountName: ACCOUNT,
         container: CONTAINER,
       });
-      const out = await adapter.signedUploadUrl("a.png", {
-        contentType: "image/png",
-        expiresIn: 60,
-      });
-      if (out.method !== "PUT") {
-        throw new Error("expected PUT");
+      try {
+        await adapter.signedUploadUrl("a.png", {
+          contentType: "image/png",
+          expiresIn: 60,
+        });
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).message).toMatch(/contentType/u);
+        expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
       }
-      expect(out.headers?.["Content-Type"]).toBe("image/png");
-      expect(out.headers?.["x-ms-blob-type"]).toBe("BlockBlob");
     });
 
     test("TokenCredential mode signs upload URLs with a user delegation SAS", async () => {
@@ -1289,7 +1291,6 @@ describe("azure adapter", () => {
         },
       });
       const out = await adapter.signedUploadUrl("a.png", {
-        contentType: "image/png",
         expiresIn: 60,
       });
       if (out.method !== "PUT") {
@@ -1297,7 +1298,6 @@ describe("azure adapter", () => {
       }
       expect(out.url).toContain(`${BLOB_BASE}/a.png?`);
       expect(out.url).toContain("sig=delegated");
-      expect(out.headers?.["Content-Type"]).toBe("image/png");
       expect(out.headers?.["x-ms-blob-type"]).toBe("BlockBlob");
       const [signCall] = generateUserDelegationSasUrlMock.mock.calls;
       if (!signCall) {

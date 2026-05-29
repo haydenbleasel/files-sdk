@@ -848,6 +848,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
           "azure: `maxSize` is not supported. Azure SAS has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway / proxy before issuing the SAS, or omit `maxSize` and accept the unbounded PUT."
         );
       }
+      if (signOpts.contentType !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "azure: `contentType` is not supported for signed upload URLs. Azure SAS does not bind the request Content-Type into the signature, so validate it at your application gateway / proxy before issuing the SAS."
+        );
+      }
       try {
         const url = await buildSasUrl({
           expiresIn: signOpts.expiresIn,
@@ -857,9 +863,6 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         return {
           headers: {
             "x-ms-blob-type": "BlockBlob",
-            ...(signOpts.contentType && {
-              "Content-Type": signOpts.contentType,
-            }),
           },
           method: "PUT",
           url,
