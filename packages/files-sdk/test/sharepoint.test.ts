@@ -640,6 +640,29 @@ describe("sharepoint adapter", () => {
     expect(adapter.rootFolderPath).toBe("");
   });
 
+  test("rootFolderPath > rejects dot segments in roots and delegated keys", async () => {
+    const unsafeRoot = sharepoint({
+      clientCredentials: CREDS,
+      driveId: "d",
+      rootFolderPath: "../Uploads",
+    });
+    await expect(unsafeRoot.list()).rejects.toThrow(
+      /rootFolderPath must not contain/u
+    );
+
+    const files = new Files({
+      adapter: sharepoint({
+        clientCredentials: CREDS,
+        driveId: "d",
+        rootFolderPath: "Uploads",
+      }),
+    });
+    await expect(files.download("../secret.txt")).rejects.toThrow(
+      /key must not contain/u
+    );
+    expect(lastCalls).toEqual([]);
+  });
+
   test("delete > delegates to onedrive (DELETE on item path)", async () => {
     deleteHandler = () => Promise.resolve({});
     const files = new Files({

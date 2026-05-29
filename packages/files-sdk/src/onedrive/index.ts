@@ -238,6 +238,26 @@ const trimSlashes = (s: string): string => {
   return start === 0 && end === s.length ? s : s.slice(start, end);
 };
 
+const assertNoRelativeSegments = (path: string, label: string): void => {
+  if (
+    trimSlashes(path)
+      .split("/")
+      .filter(Boolean)
+      .some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new FilesError(
+      "Provider",
+      `onedrive: ${label} must not contain . or .. path segments`
+    );
+  }
+};
+
+const normalizeRootFolderPath = (path: string | undefined): string => {
+  const normalized = trimSlashes(path ?? "");
+  assertNoRelativeSegments(normalized, "rootFolderPath");
+  return normalized;
+};
+
 const encodePathSegments = (path: string): string =>
   trimSlashes(path)
     .split("/")
@@ -587,7 +607,7 @@ export const onedrive = (
   }
 
   const basePath = resolveBasePath(opts);
-  const rootFolderPath = trimSlashes(opts.rootFolderPath ?? "");
+  const rootFolderPath = normalizeRootFolderPath(opts.rootFolderPath);
   const publicByDefault = opts.publicByDefault ?? false;
   const copyTimeoutMs = opts.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS;
 
@@ -605,6 +625,7 @@ export const onedrive = (
   }
 
   const itemApiPath = (key: string): string => {
+    assertNoRelativeSegments(key, "key");
     const fullPath = rootFolderPath
       ? `${rootFolderPath}/${trimSlashes(key)}`
       : trimSlashes(key);

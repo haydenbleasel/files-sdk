@@ -855,6 +855,24 @@ describe("onedrive adapter", () => {
     expect(putCall?.[0]).toBe("/me/drive/root:/SDK%20Storage/a.txt:/content");
   });
 
+  test("rootFolderPath rejects dot segments in configured roots and keys", async () => {
+    expect(() =>
+      onedrive({ ...baseOpts, rootFolderPath: "../SDK Storage" })
+    ).toThrow(/rootFolderPath must not contain/u);
+
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, rootFolderPath: "SDK Storage" }),
+    });
+    await expect(files.download("../secret.txt")).rejects.toThrow(
+      /key must not contain/u
+    );
+    await expect(files.upload("docs/../secret.txt", "x")).rejects.toThrow(
+      /key must not contain/u
+    );
+    expect(dispatchGet).not.toHaveBeenCalled();
+    expect(dispatchPut).not.toHaveBeenCalled();
+  });
+
   test("driveId option targets /drives/{id}", async () => {
     const files = new Files({
       adapter: onedrive({ ...baseOpts, driveId: "drv-123" }),
