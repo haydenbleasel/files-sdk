@@ -729,6 +729,15 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+const assertNoRelativeSegments = (key: string, label = "key"): void => {
+  if (key.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new FilesError(
+      "Provider",
+      `${label} must not contain . or .. path segments`
+    );
+  }
+};
+
 // Normalize the prefix the same way the rest of the SDK treats keys: no
 // leading slash (S3/R2 store `/users/x` under a literal empty-named folder,
 // which is never what callers want), and no trailing slash so we control the
@@ -747,6 +756,7 @@ const normalizePrefix = (prefix: string | undefined): string => {
   // like `"users////…"`.
   const normalized = prefix.replaceAll(/^\/+|(?<!\/)\/+$/gu, "");
   assertValidKey(normalized, "prefix");
+  assertNoRelativeSegments(normalized, "prefix");
   return normalized;
 };
 
@@ -1616,7 +1626,12 @@ export class Files<A extends Adapter = Adapter> {
 
   #path(key: string, label = "key"): string {
     assertValidKey(key, label);
-    return this.#prefix ? `${this.#prefix}/${key.replace(/^\/+/u, "")}` : key;
+    if (!this.#prefix) {
+      return key;
+    }
+    const normalized = key.replace(/^\/+/u, "");
+    assertNoRelativeSegments(normalized, label);
+    return `${this.#prefix}/${normalized}`;
   }
 
   #assertWritable(operation: WriteActionType): void {
