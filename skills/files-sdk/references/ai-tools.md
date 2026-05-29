@@ -1,8 +1,10 @@
 # AI tool bindings
 
-Three subpaths expose a configured `Files` instance as ready-made tools for AI agents. They share the same eight operations (`listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl`, `uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) and the same approval-gating defaults — only the _shape of the binding_ differs per SDK.
+Three subpaths expose a configured `Files` instance as ready-made **in-process** tools for AI agents. They share the same eight operations (`listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl`, `uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) and the same approval-gating defaults — only the _shape of the binding_ differs per SDK.
 
-The four writes (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) are approval-gated by default. Reads are not.
+The four writes (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) are approval-gated by default. Reads are not. `downloadFile` accepts a `maxBytes` guard (and overrides are capped to a safe ceiling) so a model can't pull an unbounded object into context.
+
+> Not to be confused with the CLI's built-in MCP server (`files … mcp`), which is a separate, process-external binding — read-only by default, opt into writes with `--allow-writes`. See [cli-and-mcp.md](cli-and-mcp.md). The subpaths below are for embedding tools directly in your own agent code.
 
 ## Vercel AI SDK — `files-sdk/ai-sdk`
 

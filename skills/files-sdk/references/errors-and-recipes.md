@@ -13,19 +13,38 @@ Shape:
 
 ```ts
 class FilesError extends Error {
-  readonly code: FilesErrorCode; // "NotFound" | "Unauthorized" | "Conflict" | "Provider"
+  readonly code: FilesErrorCode; // "NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"
+  readonly aborted: boolean; // true for a cancellation or timeout
   readonly cause?: unknown; // the original provider error
 }
 ```
 
-`code` is the only field worth branching on:
+`code` is the field worth branching on:
 
-| Code           | Meaning                                                                |
-| -------------- | ---------------------------------------------------------------------- |
-| `NotFound`     | The object or key does not exist.                                      |
-| `Unauthorized` | Credentials are missing, wrong, or lack the required permission.       |
-| `Conflict`     | Precondition failed — e.g. `If-Match` mismatch, create-only collision. |
-| `Provider`     | Catch-all for anything else (transport, throttling, malformed input).  |
+| Code           | Meaning                                                                          |
+| -------------- | -------------------------------------------------------------------------------- |
+| `NotFound`     | The object or key (or bucket/container) does not exist.                          |
+| `Unauthorized` | Credentials are missing, wrong, or lack the required permission.                 |
+| `Conflict`     | Precondition failed — e.g. `If-Match` mismatch, create-only collision.           |
+| `ReadOnly`     | A write was attempted on a `new Files({ readonly: true })` / `files.readonly()`. |
+| `Provider`     | Catch-all for anything else (transport, throttling, malformed input, timeouts).  |
+
+Codes map from the provider's own error/HTTP status (`404` → `NotFound`, `401`/`403` → `Unauthorized`, `409`/`412` → `Conflict`); `ReadOnly` is the one SDK-native code. Only `Provider` is retried — the rest are deterministic and returned immediately.
+
+### The `aborted` flag
+
+A cancellation (via a `signal` you abort) or a `timeout` rejects with `code: "Provider"` **and** `aborted: true`. That flag — not the code — is how you tell an intentional abort apart from a genuine provider failure, and aborts are never retried.
+
+```ts
+try {
+  await files.download("big.zip", { signal: controller.signal });
+} catch (err) {
+  if (err instanceof FilesError && err.aborted) {
+    return; // expected — the caller (or a timeout) aborted it
+  }
+  throw err;
+}
+```
 
 Use it like this:
 
