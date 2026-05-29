@@ -765,26 +765,14 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     },
     url(key, urlOpts): Promise<string> {
       const bodyPath = resolveKeyPath(root, key);
-      if (urlBaseUrl) {
-        const base = joinPublicUrl(urlBaseUrl, key);
-        if (urlOpts?.responseContentDisposition) {
-          const sep = base.includes("?") ? "&" : "?";
-          return Promise.resolve(
-            `${base}${sep}response-content-disposition=${encodeURIComponent(urlOpts.responseContentDisposition)}`
-          );
-        }
-        return Promise.resolve(base);
-      }
-      // Without a `urlBaseUrl`, the only thing we can return is a
-      // `file://` URL. There's no signature mechanism on `file://`, so
-      // `responseContentDisposition` cannot be enforced — throw rather
-      // than silently drop the security override (same stance as
-      // vercel-blob and supabase).
       if (urlOpts?.responseContentDisposition) {
         throw new FilesError(
           "Provider",
-          "fs: `responseContentDisposition` requires `urlBaseUrl`. A `file://` URL has no signature in which to bind the override; configure `urlBaseUrl` so the dev server can apply Content-Disposition itself."
+          "fs: `responseContentDisposition` is not supported. fs URLs are either `file://` URLs or static-server URLs, with no signature in which to bind the override."
         );
+      }
+      if (urlBaseUrl) {
+        return Promise.resolve(joinPublicUrl(urlBaseUrl, key));
       }
       // Note: this does not check whether the file exists. file:// URLs
       // are inert (the browser/OS resolves them at fetch time), so

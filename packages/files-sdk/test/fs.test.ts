@@ -705,15 +705,14 @@ describe("fs adapter", () => {
       expect(u).toBe("http://localhost:3000/files/a.txt");
     });
 
-    test("appends responseContentDisposition with urlBaseUrl", async () => {
+    test("throws on responseContentDisposition with urlBaseUrl", async () => {
       const root = await makeRoot();
       const files = new Files({
         adapter: fsAdapter({ root, urlBaseUrl: "http://localhost:3000/files" }),
       });
-      const u = await files.url("a.txt", {
-        responseContentDisposition: "attachment",
-      });
-      expect(u).toContain("response-content-disposition=attachment");
+      await expect(
+        files.url("a.txt", { responseContentDisposition: "attachment" })
+      ).rejects.toMatchObject({ code: "Provider" });
     });
 
     test("throws on responseContentDisposition without urlBaseUrl", async () => {

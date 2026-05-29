@@ -439,12 +439,11 @@ describe("ftp connect-per-op (mocked basic-ftp)", () => {
 });
 
 describe("ftp edge cases (injected client)", () => {
-  test("url appends responseContentDisposition when publicBaseUrl is set", async () => {
+  test("url rejects responseContentDisposition when publicBaseUrl is set", async () => {
     const files = newFiles({ publicBaseUrl: "https://cdn.example.com" });
-    const url = await files.url("a.txt", {
-      responseContentDisposition: "attachment",
-    });
-    expect(url).toContain("response-content-disposition=attachment");
+    await expect(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    ).rejects.toThrow(/responseContentDisposition/iu);
   });
 
   test("url with responseContentDisposition but no publicBaseUrl throws", async () => {

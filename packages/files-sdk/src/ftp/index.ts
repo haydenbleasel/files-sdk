@@ -650,21 +650,14 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     url(key, urlOpts): Promise<string> {
       // Validate the key (traversal guard) even though we don't connect.
       keyToRemote(key);
-      if (publicBaseUrl) {
-        const base = joinPublicUrl(publicBaseUrl, key);
-        if (urlOpts?.responseContentDisposition) {
-          const sep = base.includes("?") ? "&" : "?";
-          return Promise.resolve(
-            `${base}${sep}response-content-disposition=${encodeURIComponent(urlOpts.responseContentDisposition)}`
-          );
-        }
-        return Promise.resolve(base);
-      }
       if (urlOpts?.responseContentDisposition) {
         throw new FilesError(
           "Provider",
-          "ftp: `responseContentDisposition` requires `publicBaseUrl`. FTP serves no HTTP and has no signature in which to bind the override."
+          "ftp: `responseContentDisposition` is not supported. FTP publicBaseUrl URLs are static HTTP-front URLs, with no signature in which to bind the override."
         );
+      }
+      if (publicBaseUrl) {
+        return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       throw new FilesError(
         "Provider",

@@ -335,9 +335,9 @@ describe("sftp adapter", () => {
     expect(await withBase.url("dir/a.txt")).toBe(
       "https://cdn.example.com/dir/a.txt"
     );
-    expect(
-      await withBase.url("a.txt", { responseContentDisposition: "attachment" })
-    ).toContain("response-content-disposition=attachment");
+    await expect(
+      withBase.url("a.txt", { responseContentDisposition: "attachment" })
+    ).rejects.toThrow(/responseContentDisposition/iu);
   });
 
   test("responseContentDisposition without publicBaseUrl throws", async () => {
