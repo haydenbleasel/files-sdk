@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { transfer } from "../index.js";
+import { rangedSize } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { storedFileToJson } from "./io.js";
 import { loadFiles } from "./loader.js";
@@ -42,8 +43,39 @@ const pkg = createRequire(import.meta.url)("../../package.json") as {
 
 // Default cap for MCP `download` — base64-encoded bodies must fit in a
 // single tool response, so refuse anything that would obviously OOM the
-// agent process. Override with the `maxBytes` argument per call.
-const DEFAULT_MCP_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
+// agent process. Callers can lower the cap with `maxBytes`, but cannot raise
+// it above the hard ceiling.
+export const DEFAULT_MCP_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
+export const MAX_MCP_DOWNLOAD_BYTES = DEFAULT_MCP_DOWNLOAD_MAX_BYTES;
+
+export const resolveMcpDownloadCap = (maxBytes?: number): number => {
+  const cap = maxBytes ?? DEFAULT_MCP_DOWNLOAD_MAX_BYTES;
+  if (cap > MAX_MCP_DOWNLOAD_BYTES) {
+    throw new FilesError(
+      "Provider",
+      `maxBytes must be less than or equal to ${MAX_MCP_DOWNLOAD_BYTES} — use the CLI to stream larger bodies`
+    );
+  }
+  return cap;
+};
+
+export const mcpDownloadSize = (
+  fullSize: number,
+  range?: { end?: number; start: number }
+): number => (range ? rangedSize(fullSize, range) : fullSize);
+
+export const assertMcpDownloadFitsCap = (
+  key: string,
+  size: number,
+  cap: number
+): void => {
+  if (size > cap) {
+    throw new FilesError(
+      "Provider",
+      `object "${key}" is ${size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
+    );
+  }
+};
 
 const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
   if (text !== undefined) {
@@ -173,9 +205,10 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
           .number()
           .int()
           .positive()
+          .max(MAX_MCP_DOWNLOAD_BYTES)
           .optional()
           .describe(
-            `Refuse the download if the body exceeds this many bytes (default ${DEFAULT_MCP_DOWNLOAD_MAX_BYTES})`
+            `Refuse the download if the body exceeds this many bytes (default ${DEFAULT_MCP_DOWNLOAD_MAX_BYTES}, maximum ${MAX_MCP_DOWNLOAD_BYTES})`
           ),
         range: z
           .object({
@@ -191,26 +224,12 @@ export const startMcpServer = async (opts: McpServerOpts): Promise<void> => {
     },
     async ({ key, maxBytes, range }) => {
       try {
-        const cap = maxBytes ?? DEFAULT_MCP_DOWNLOAD_MAX_BYTES;
-        // The head precheck reflects the full object; with a range the body is
-        // smaller, so skip it and rely on the post-download byte-length guard.
-        if (!range) {
-          const meta = await files.head(key);
-          if (typeof meta.size === "number" && meta.size > cap) {
-            throw new FilesError(
-              "Provider",
-              `object is ${meta.size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
-            );
-          }
-        }
+        const cap = resolveMcpDownloadCap(maxBytes);
+        const meta = await files.head(key);
+        assertMcpDownloadFitsCap(key, mcpDownloadSize(meta.size, range), cap);
         const file = await files.download(key, range ? { range } : undefined);
         const buf = Buffer.from(await file.arrayBuffer());
-        if (buf.byteLength > cap) {
-          throw new FilesError(
-            "Provider",
-            `object is ${buf.byteLength} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
-          );
-        }
+        assertMcpDownloadFitsCap(key, buf.byteLength, cap);
         return ok({
           ...storedFileToJson(file),
           base64: buf.toString("base64"),
