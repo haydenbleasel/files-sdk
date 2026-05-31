@@ -98,12 +98,13 @@ const encryption = (key: CryptoKey): FilesPlugin => ({
 ```
 
 <Callout>
-  You don't have to write this one yourself - a production-ready
-  [`encryption()`](/plugins/encryption) plugin ships in `files-sdk/encryption`,
-  with real envelope encryption over the Web Crypto API. A
-  [`compression()`](/plugins/compression) plugin ships alongside it in
-  `files-sdk/compression`; put it first so it sees plaintext: `plugins:
-  [compression(), encryption(key)]`.
+  You don't have to write these yourself - production-ready
+  [`validation()`](/plugins/validation),
+  [`compression()`](/plugins/compression), and
+  [`encryption()`](/plugins/encryption) plugins ship in the box. They form a
+  natural pipeline, run in order: vet the upload, compress what's left, then
+  encrypt it - `plugins: [validation({maxSize}), compression(),
+  encryption(key)]`.
 </Callout>
 
 ## extend: new methods

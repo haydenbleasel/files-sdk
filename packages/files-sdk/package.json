@@ -38,6 +38,10 @@
       "types": "./dist/encryption/index.d.ts",
       "import": "./dist/encryption/index.js"
     },
+    "./validation": {
+      "types": "./dist/validation/index.d.ts",
+      "import": "./dist/validation/index.js"
+    },
     "./s3": {
       "types": "./dist/s3/index.d.ts",
       "import": "./dist/s3/index.js"

@@ -31,6 +31,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./encryption",
   "./openai",
   "./providers",
+  "./validation",
 ]);
 
 const packageJson = JSON.parse(
