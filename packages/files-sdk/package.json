@@ -248,8 +248,8 @@
     }
   },
   "scripts": {
-    "build": "NODE_OPTIONS='--max-old-space-size=8192' tsup",
-    "dev": "tsup --watch",
+    "build": "bun run scripts/build.ts",
+    "dev": "bun run scripts/build.ts --watch",
     "size": "bun run scripts/size.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
@@ -294,7 +294,6 @@
     "openai": "^6.39.0",
     "pocketbase": "^0.27.0",
     "ssh2-sftp-client": "^12.1.1",
-    "tsup": "^8.5.1",
     "typescript": "^6",
     "uploadthing": "^7",
     "zod": "^4.4.3"

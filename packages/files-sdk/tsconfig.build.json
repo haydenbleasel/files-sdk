@@ -1,0 +1,14 @@
+{
+  // Declaration-only emit for the published build (see scripts/build.ts).
+  // Bun produces the .js; tsgo produces the matching .d.ts into the same dist/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false
+  },
+  "include": ["src/**/*"]
+}

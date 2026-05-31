@@ -1,13 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // No `rootDir`: the build is produced by tsup (see tsup.config.ts), and
-    // this config is only used for `tsgo --noEmit` typechecking, which covers
-    // `test/**` and `tsup.config.ts` too. Setting `rootDir: "src"` made the
-    // typecheck fail every non-src file with TS6059 ("not under rootDir").
+    // No `rootDir`: the published build is produced by scripts/build.ts (Bun
+    // for .js + tsgo for .d.ts, via tsconfig.build.json). This config is only
+    // used for `tsgo --noEmit` typechecking, which covers `test/**` and the
+    // build scripts too. Setting `rootDir: "src"` made the typecheck fail every
+    // non-src file with TS6059 ("not under rootDir").
     "outDir": "dist",
     "types": ["bun", "@cloudflare/workers-types"],
     "strictNullChecks": true
   },
-  "include": ["src/**/*", "test/**/*", "tsup.config.ts"]
+  "include": ["src/**/*", "test/**/*", "scripts/**/*"]
 }

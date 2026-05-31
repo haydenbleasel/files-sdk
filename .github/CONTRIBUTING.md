@@ -58,7 +58,7 @@ From the repo root:
 
 From `packages/files-sdk`:
 
-- `bun run dev` — tsup watch mode
+- `bun run dev` — rebuild on change (Bun bundler + tsgo, watch mode)
 - `bun test` — run only the SDK tests
 - `bun test:coverage` — tests with coverage
 
