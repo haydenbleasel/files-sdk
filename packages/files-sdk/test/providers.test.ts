@@ -28,6 +28,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./ai-sdk",
   "./claude",
   "./compression",
+  "./content-type",
   "./encryption",
   "./openai",
   "./providers",

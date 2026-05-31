@@ -34,6 +34,10 @@
       "types": "./dist/compression/index.d.ts",
       "import": "./dist/compression/index.js"
     },
+    "./content-type": {
+      "types": "./dist/content-type/index.d.ts",
+      "import": "./dist/content-type/index.js"
+    },
     "./encryption": {
       "types": "./dist/encryption/index.d.ts",
       "import": "./dist/encryption/index.js"

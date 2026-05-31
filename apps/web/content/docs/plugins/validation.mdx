@@ -82,4 +82,4 @@ plugins: [validation({ maxSize }), compression(), encryption(key)];
 - **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only guards writes; it transforms nothing, so there's nothing to reverse on download.
 - **It stores no metadata.** Nothing rides along on the object, so a validated bucket is indistinguishable from an unvalidated one - safe to enable or remove at any time.
 - **Size rules buffer unknown-length streams.** Measuring a stream means draining it, which is incompatible with [resumable uploads](/resumable). Key and type rules never touch the body, so a key/type-only policy stays fully streaming.
-- **It's a guard, not a sanitizer.** It vets the _declared_ type and the key; it doesn't sniff magic bytes or rewrite anything. Pair it with content-type sniffing if you don't trust the client-declared type.
+- **It's a guard, not a sanitizer.** It vets the _declared_ type and the key; it doesn't sniff magic bytes or rewrite anything. Pair it with [`contentType()`](/plugins/content-type) if you don't trust the client-declared type.

@@ -1,0 +1,80 @@
+---
+title: contentType
+description: A security guard that decides each upload's Content-Type from its bytes, not the client's claim. Magic-byte sniffing stops a mislabeled .png that's really HTML or SVG from being stored as an image and served inline. No metadata, no native dependencies, and it never buffers the whole body.
+---
+
+The built-in `contentType()` plugin sets an upload's `Content-Type` from what the bytes **actually are**, not what the client said they were. On `upload` it magic-byte-sniffs the body and either corrects the stored type to match (the default) or rejects a mismatch — so a `.png` whose bytes are really HTML or SVG can't be stored under an image type and later served inline. It's the [wrap plugin](/plugins#wrap-intercepting-operations) counterpart to [`validation()`](/plugins/validation): validation vets the _declared_ type, `contentType()` verifies the _real_ one.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { contentType } from "files-sdk/content-type";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [contentType({ onMismatch: "reject" })],
+});
+
+await files.upload("avatar.png", pngBytes); // ok — bytes are a PNG
+await files.upload("avatar.png", htmlBytes); // throws — bytes are HTML
+```
+
+## What it recognizes
+
+The sniffer is deliberately scoped to where a verdict is unambiguous and useful:
+
+- **Images** — PNG, JPEG, GIF, BMP, WebP, TIFF, and ICO, by their magic bytes.
+- **PDF** — the `%PDF` signature.
+- **HTML, SVG, and XML** — the security-relevant part. These are text, so they have no fixed magic bytes; a leading text scan (skipping a BOM and whitespace) catches `<!doctype html>`, `<html>`, `<script>`, `<svg>`, `<?xml>`, and friends.
+
+Container formats whose magic bytes are shared by many real types — ZIP (which also backs `.docx`, `.jar`, `.epub`), gzip, and the `ftyp` audio/video family — are intentionally **not** sniffed: relabeling them would do more harm than good. Bodies it can't identify are handled by [`onUnknown`](#onunknown).
+
+You can run the same detection yourself with the exported `detectContentType(bytes)`, which returns the sniffed MIME type or `undefined`.
+
+## Options
+
+| Option       | Values                            | What it does                                                   |
+| ------------ | --------------------------------- | -------------------------------------------------------------- |
+| `onMismatch` | `"correct"` (default), `"reject"` | What to do when the sniffed type contradicts the declared one. |
+| `onUnknown`  | `"trust"` (default), `"reject"`   | What to do when the bytes match no known signature.            |
+
+### onMismatch
+
+When the bytes disagree with the type the caller declared (or that the key's extension implies):
+
+- **`"correct"`** (default) — overwrite the stored `Content-Type` with the sniffed one, so the object is always stored as what it actually _is_. The mislabeled file still lands, but under its true type.
+- **`"reject"`** — throw, so the upload never reaches the adapter. The security-hardening choice: a `.png` whose bytes are HTML is refused outright.
+
+A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's left **exactly** as you set it, so a `text/html; charset=utf-8` keeps its `charset` parameter.
+
+<Callout type="warn">
+  `onMismatch: "correct"` makes the stored type _honest_; it does not make a
+  dangerous file safe. Detecting that an upload is really HTML and storing it as
+  `text/html` still leaves it executable if you serve it inline. To **block**
+  mislabeled active content, use `onMismatch: "reject"`; to serve user uploads
+  safely, pair this with a forced `attachment` disposition on
+  [`url()`](/api/url).
+</Callout>
+
+### onUnknown
+
+When the bytes match no known signature:
+
+- **`"trust"`** (default) — keep the declared/inferred type. Sniffing only overrides types it's sure about, so a legitimate `.csv`, `.docx`, or arbitrary binary keeps its declared type untouched.
+- **`"reject"`** — throw. A strict allowlist-by-signature posture: nothing lands unless its bytes are recognized.
+
+## Ordering
+
+Put `contentType()` **first**, before any body-transforming plugin, so it sniffs the caller's original bytes rather than compressed or encrypted ones:
+
+```ts
+plugins: [contentType(), compression(), encryption(key)];
+```
+
+## Things to keep in mind
+
+- **It never buffers the whole body.** Only the first 512 bytes matter, so known-length bodies (strings, `Uint8Array`, `Blob`, `ArrayBuffer`) are peeked in place with no copy, and **streams stay streaming** — the prefix is read and replayed, the rest flows straight through. This is the one body-touching plugin that doesn't disable [streaming uploads](/api/upload).
+- **It writes no metadata.** The verdict lands in the object's own `Content-Type`; nothing rides along in `metadata`, so a sniffed bucket is indistinguishable from an un-sniffed one — safe to enable or remove at any time.
+- **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only acts on `upload`; it stores the right type up front, so there's nothing to undo on the way back out.
+- **`signedUploadUrl()` fails closed.** A presigned upload writes directly to the store, bypassing the sniff, so minting one would be a silent hole — it throws. Upload through the `Files` instance to enforce sniffing.
+- **It's a sniffer, not a validator.** It decides the stored type; it doesn't enforce a size limit or an allowed-type list. Pair it with [`validation()`](/plugins/validation) when you want both.
