@@ -1,6 +1,6 @@
 ---
 title: Read-only
-description: 'Lock a Files instance to reads only with `readonly: true` or `files.readonly()`, and make every write surface fail consistently with `FilesError { code: "ReadOnly" }`.'
+description: Lock a Files instance to reads only with the readonly option or files.readonly(), so every write surface fails consistently with a ReadOnly FilesError.
 ---
 
 When a caller should be able to inspect storage but never mutate it, lock the client at construction:

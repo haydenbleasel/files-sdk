@@ -1,6 +1,6 @@
 ---
 title: MCP server
-description: Boot a built-in read-only MCP server on stdio, with provider and credentials bound at startup.
+description: Boot a built-in read-only MCP server on stdio, with provider and credentials bound at startup so the agent passes only operation arguments, never secrets.
 ---
 
 `files ... mcp` boots a read-only [MCP server](https://modelcontextprotocol.io) on stdio. By default it exposes `download`, `head`, `exists`, `list`, and `url`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.

@@ -1,6 +1,6 @@
 ---
 title: Resumable uploads
-description: Pause, resume, and abort a large upload through a control handle — and resume it in a later process from a serializable session token. A per-call option on upload, for the adapters whose provider exposes a resumable session.
+description: Pause, resume, and abort a large upload via a control handle, or resume it in a later process from a serializable session token. A per-call option on upload.
 ---
 
 A long upload over a flaky connection shouldn't have to start over when it's interrupted. Pass an [`UploadControl`](/api/upload) to [`upload`](/api/upload) and you can `pause()` it, `resume()` it, or `abort()` it — and, because the control holds a **serializable session token**, you can persist it and resume the upload in a later process, after a crash, or on the next page load.

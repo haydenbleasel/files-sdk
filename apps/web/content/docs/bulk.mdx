@@ -1,6 +1,6 @@
 ---
 title: Bulk actions
-description: Pass an array instead of a key to act on many objects in one call - a bounded fan-out that keeps successes and failures separate, in input order, and never sinks the whole batch on one bad key.
+description: Pass an array instead of a key to act on many objects at once - a bounded fan-out that keeps successes and failures separate, never failing the whole batch.
 ---
 
 `upload`, `download`, `head`, and `exists` each take a single key or an array; `delete` takes one key or many. The array form fans out with bounded concurrency (8 by default) and returns a structured result that keeps successes and failures separate, in input order — so one bad key never sinks the whole batch.

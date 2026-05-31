@@ -1,6 +1,6 @@
 ---
 title: Prefixes
-description: Pass a prefix to the constructor and every key is resolved relative to it - prepended on the way in, stripped on the way out - so application code works in its own namespace.
+description: Pass a prefix to the constructor and every key resolves relative to it - prepended going in, stripped coming out - so your code stays in its own namespace.
 ---
 
 Pass `prefix` to the constructor and every key is resolved relative to it — reads, writes, copies, listings, URLs, and signed uploads. The prefix is prepended to the keys you pass in and stripped back off the keys returned in results, so the rest of your application code works in its own namespace and never repeats the base path.

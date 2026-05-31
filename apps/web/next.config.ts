@@ -27,7 +27,7 @@ const nextConfig: NextConfig = {
     },
     {
       destination: "/api/onaction",
-      permanent: false,
+      permanent: true,
       source: "/features",
     },
     {

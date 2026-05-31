@@ -3,7 +3,7 @@ title: encryption
 description: Envelope-encrypt object bodies at rest with AES-256-GCM. A per-object data key encrypts the body and your master key wraps it into metadata - provider-agnostic, no native dependencies, decrypted transparently on download.
 ---
 
-The built-in `encryption()` plugin encrypts every body **at rest** and decrypts it on the way back out - transparently, for single and [bulk](/features/bulk) calls alike. It's the canonical [wrap plugin](/plugins#wrap-intercepting-operations): it transforms the body on `upload`, reverses it on `download`, and round-trips its key material through the object's `metadata`.
+The built-in `encryption()` plugin encrypts every body **at rest** and decrypts it on the way back out - transparently, for single and [bulk](/bulk) calls alike. It's the canonical [wrap plugin](/plugins#wrap-intercepting-operations): it transforms the body on `upload`, reverses it on `download`, and round-trips its key material through the object's `metadata`.
 
 It uses only the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API), so it has **no native dependencies** and runs anywhere the SDK does - Node, Bun, Deno, edge runtimes, and the browser. It works on any adapter that [supports metadata](/api/upload).
 
@@ -71,8 +71,7 @@ Because reads unwind the [onion](/plugins#wrap-intercepting-operations) in rever
 <Callout type="warn">
   AES-GCM authenticates the whole ciphertext, so the plugin **buffers the entire
   body in memory** to encrypt or decrypt it. It's unsuitable for unknown-length
-  streams and [resumable uploads](/features/resumable), which re-read the
-  original body.
+  streams and [resumable uploads](/resumable), which re-read the original body.
 </Callout>
 
 - **Range downloads throw.** A slice of a GCM ciphertext can't be decrypted, so a [`download`](/api/download) with a `range` is refused.
