@@ -1,5 +1,71 @@
 # files-sdk
 
+## 1.7.0
+
+### Minor Changes
+
+- 3c8abf3: Add `sync()` — an incremental, optionally-pruning mirror between two providers. It skips objects already identical at the destination (compare by size + etag, size, or a custom predicate), can prune destination keys the source no longer has (mirror mode), and supports `dryRun` to preview the reconciliation plan. Surfaced at parity as the CLI `sync` command and a write-gated MCP `sync` tool.
+- d998ef6: Add directory-style listing to `list`: a new `delimiter` option collapses keys into S3-style common prefixes ("folders"), returned in `ListResult.prefixes`. Supported on every adapter with a folder or prefix model — the object stores (S3 family, R2, GCS, Firebase Storage, Azure) and `fs`/memory/FTP/SFTP/Google Drive/Cloudinary accept any delimiter; the folder-based providers (Vercel Blob, Netlify Blobs, Supabase, Dropbox, Box, OneDrive, SharePoint) accept `"/"`. Adapters with no folder concept (UploadThing, Appwrite, PocketBase, Convex, Bun's S3) advertise `supportsDelimiter: false` and throw rather than silently returning a flat list.
+
+  The CLI and MCP server expose this too: `files list --delimiter /` returns the direct files in `items` and the subfolders in a `prefixes` array, and the MCP `list` tool gains the same `delimiter` argument. Both throw on adapters with no folder concept and reject being combined with `--all` / `all` (which walks the whole tree).
+
+- 0345169: Add read-only `Files` instances.
+
+  Pass `readonly: true` to the constructor, or derive a locked view from an existing client with `files.readonly()`, when a caller should be able to read storage but never mutate it:
+
+  ```ts
+  const files = new Files({
+    adapter: s3({ bucket: "uploads" }),
+    readonly: true,
+  });
+
+  const readOnly = files.readonly(); // reuses the same adapter, prefix, timeout, retries, and hooks
+  ```
+
+  Reads stay available (`download`, `head`, `exists`, `list`, `listAll`, `url`). Every write surface — `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers (`upload`, `delete`, `copyTo`, `copyFrom`, `moveTo`, `moveFrom`, `signedUploadUrl`) — now fails immediately, before the adapter is touched, with a new normalized `FilesError { code: "ReadOnly" }`. The failure is deterministic and is not retried; `onError` and the final `onAction({ status: "error" })` hooks still fire.
+
+  The `raw` escape hatch is not governed by the guard — code that writes through `files.raw` bypasses it by design.
+
+- dbf6ded: `upload` now accepts a `control` option for **pause-able and resumable uploads**. Construct an `UploadControl`, pass it in, and pause, resume, or abort the upload — or persist `control.toJSON()` and resume it later (even in a new process or after a page reload) with `UploadControl.from(token)`.
+
+  ```ts
+  import { Files, UploadControl } from "files-sdk";
+
+  const control = new UploadControl();
+  const promise = files.upload("big.iso", file, {
+    control,
+    multipart: { partSize: 16 * 1024 * 1024 },
+    onProgress: ({ loaded, total }) => bar.set(loaded, total),
+  });
+
+  control.pause(); // in-flight parts settle, the promise stays pending
+  save(control.toJSON()); // serializable session token — persist anywhere
+  control.resume(); // continue
+
+  // …or, after a crash / reload, in a new process:
+  const result = await files.upload("big.iso", file, {
+    control: UploadControl.from(load()),
+  });
+  ```
+
+### Patch Changes
+
+- 1ff2550: Azure gains a native `deleteMany` backed by the Blob Batch API (256 keys per batch, idempotent on already-missing blobs); `stopOnError` falls back to sequential deletes. Previously it fanned out to single deletes.
+- e1d09a6: Validate Microsoft Graph pagination cursors against the adapter root before following them for OneDrive and SharePoint list calls.
+- e1d09a6: Cap AI tool download `maxBytes` overrides at 10 MiB and reject oversized values in both schema validation and direct executor calls.
+- e1d09a6: Bound CLI MCP downloads by checking object metadata and requested byte ranges before transferring response bodies.
+- e1d09a6: Reject `.` and `..` segments in `Files` prefixes and prefixed keys before resolving local filesystem paths, so prefixed fs adapters cannot escape their configured root.
+- 1ff2550: FTP & SFTP `move()` now uses a native rename (`RNFR`/`RNTO` and the SFTP `RENAME` op) instead of a copy + delete body round-trip. The destination's parent directory is created first where needed.
+- 1ff2550: FTP & SFTP now support ranged downloads (`download(key, { range })`): SFTP uses native read-stream `start`/`end` offsets; FTP begins the transfer at the `REST` start offset and trims a bounded `end` client-side. Both adapters now advertise `supportsRange`.
+- e1d09a6: Start the MCP server in read-only mode by default and require `--allow-writes` before registering mutation tools.
+- 1ff2550: Gate unsupported `metadata` / `cacheControl` centrally in the `Files` wrapper via new `Adapter.supportsMetadata` / `Adapter.supportsCacheControl` flags — exactly like `supportsRange`. Every adapter is flagged accurately and the per-adapter inline throws (Convex, FTP, SFTP, Dropbox, Box, OneDrive, Cloudinary, Appwrite, PocketBase, Bunny Storage, Bun's S3) are removed in favor of the one gate. **Behavior change:** Vercel Blob (`metadata`), UploadThing (`metadata`/`cacheControl`), and SharePoint (`metadata`/`cacheControl`) previously dropped these options silently and now throw a `FilesError`, matching every other adapter.
+- 1ff2550: R2 (HTTP) now advertises `supportsRange`, so ranged downloads work in HTTP mode — it delegates to `s3()`, which honors the `Range` request. The R2 Workers binding already supported them.
+- e1d09a6: Reject `responseContentDisposition` for fs, FTP, and SFTP public URLs because those static URLs cannot bind the override into a signature.
+- e1d09a6: Reject Azure signed upload `contentType` overrides because Azure SAS URLs do not bind the request Content-Type into the signature.
+- e1d09a6: Reject Google Drive, OneDrive, and SharePoint signed upload `maxSize` and `minSize` options because their upload sessions cannot enforce a server-side content-length policy.
+- e1d09a6: Reject relative path segments in OneDrive and SharePoint delegated paths before building Microsoft Graph item URLs, keeping `rootFolderPath` scoped to its configured folder.
+- e1d09a6: Scope Google Drive virtual-key file ID resolution to `rootFolderId` by including the configured root folder parent in Drive lookup queries.
+
 ## 1.6.0
 
 ### Minor Changes
