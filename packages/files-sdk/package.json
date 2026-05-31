@@ -54,6 +54,10 @@
       "types": "./dist/versioning/index.d.ts",
       "import": "./dist/versioning/index.js"
     },
+    "./usage": {
+      "types": "./dist/usage/index.d.ts",
+      "import": "./dist/usage/index.js"
+    },
     "./s3": {
       "types": "./dist/s3/index.d.ts",
       "import": "./dist/s3/index.js"

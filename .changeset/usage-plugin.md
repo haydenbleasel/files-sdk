@@ -1,0 +1,5 @@
+---
+"files-sdk": minor
+---
+
+Add a `usage()` plugin at `files-sdk/usage` for metering storage, bandwidth, and operation counts. It tallies every operation on a `Files` instance and surfaces the running totals via `files.usage()`: each call counts as one operation (with a per-verb `operationsByKind` breakdown), `upload` adds its result size to `bytesUp`, and `download` / `head` wrap the returned body so the bytes you actually read add to `bytesDown` — metered lazily, chunk-by-chunk, so an unread body costs nothing and a fire-and-forget hook couldn't do it. Pass `{ group }` to bucket usage per tenant or prefix and read it back with `usageByGroup()`; `resetUsage()` starts a fresh window. It's body-transparent (no buffering, no metadata, no native deps, so streaming / ranges / `url()` keep working), counts logical operations rather than retry attempts, and counts each item of a bulk call. Place it first (outermost) to meter logical bytes and caller-facing operations, or last to meter bytes-on-the-wire to the provider. Construct with `createFiles` so `files.usage()` shows up on the type.
