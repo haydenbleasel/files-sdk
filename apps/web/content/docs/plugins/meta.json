@@ -1,5 +1,5 @@
 {
   "root": true,
   "title": "Plugins",
-  "pages": ["index", "api"]
+  "pages": ["index", "api", "---Available Plugins---", "..."]
 }
