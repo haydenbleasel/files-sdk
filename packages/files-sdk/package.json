@@ -299,7 +299,7 @@
     "dropbox": "^10.34.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^10.6.2",
-    "node-appwrite": "^25.2.0",
+    "node-appwrite": "^26.0.0",
     "openai": "^6.39.0",
     "pocketbase": "^0.27.0",
     "ssh2-sftp-client": "^12.1.1",
