@@ -260,7 +260,7 @@
     "types": "tsgo --noEmit"
   },
   "dependencies": {
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "picomatch": "^4.0.4"
   },
   "devDependencies": {
