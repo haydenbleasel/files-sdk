@@ -17,7 +17,7 @@
     "@remotion/cli": "4.0.465",
     "@remotion/google-fonts": "^4.0.465",
     "@remotion/sfx": "^4.0.465",
-    "@remotion/tailwind-v4": "4.0.465",
+    "@remotion/tailwind-v4": "4.0.471",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "remotion": "4.0.465",
