@@ -24,7 +24,7 @@
     "motion": "^12.40.0",
     "next": "16.2.7",
     "radix-ui": "^1.4.3",
-    "react": "19.2.6",
+    "react": "19.2.7",
     "react-dom": "19.2.7",
     "shadcn": "^4.8.0",
     "tailwind-merge": "^3.6.0",
