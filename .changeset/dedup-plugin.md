@@ -1,5 +1,0 @@
----
-"files-sdk": minor
----
-
-Add a `dedup()` plugin at `files-sdk/dedup` for content-addressed de-duplication. On `upload` the body is hashed (SHA-256) and its bytes are stored only once at a content-addressed blob under a store prefix (`.dedup/` by default); the logical key holds a tiny pointer to it, so re-uploading content already in the store skips the byte upload, and `copy` / `move` of a de-duplicated file is near-free and shares the blob. Reads are transparent — `download` follows the pointer (ranges included, since blobs are stored verbatim), and `head` / `list` report the logical size with internal fields stripped — for bulk calls too. Uses only the Web Crypto API — no native dependencies — and works on any adapter that supports metadata. It buffers the body to hash it (so it doesn't suit unknown-length streams or resumable uploads), `url()` / `signedUploadUrl()` fail closed, and orphaned blobs aren't garbage-collected. Place it before `compression()` / `encryption()` in the array — encrypted bytes don't de-dup.

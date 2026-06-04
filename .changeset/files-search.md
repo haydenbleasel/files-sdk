@@ -1,5 +1,0 @@
----
-"files-sdk": minor
----
-
-Add a `files.search(pattern, options?)` method that finds objects whose key matches a pattern. By default `pattern` is a standard glob (powered by picomatch: `*` within a path segment, `**` globstar across segments, `?`, `[a-z]` classes, `{a,b}` braces, `!` negation; a glob with no wildcards is an exact match); set `match` to `"regex"`, `"substring"`, or `"exact"`, or pass a `RegExp` directly, to change that. It returns a streaming async iterable of `StoredFile` built on `listAll`, so it walks every page lazily (stays memory-bounded, `break` or `maxResults` to stop early) and works on every adapter with no per-provider capability. A glob's literal prefix is pushed down to the underlying `list` automatically (`uploads/2024/*.pdf` scopes the walk to the `uploads/2024` prefix); for a regex/substring/case-insensitive search, pass `prefix` to bound the walk. The CLI gains a `files search <pattern>` command (`--match`/`--regex`/`--prefix`/`--limit`/`--max-results`/`--case-insensitive`) and the MCP server a `search` tool.
