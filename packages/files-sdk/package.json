@@ -34,6 +34,10 @@
       "types": "./dist/audit/index.d.ts",
       "import": "./dist/audit/index.js"
     },
+    "./cache": {
+      "types": "./dist/cache/index.d.ts",
+      "import": "./dist/cache/index.js"
+    },
     "./compression": {
       "types": "./dist/compression/index.d.ts",
       "import": "./dist/compression/index.js"

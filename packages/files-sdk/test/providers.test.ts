@@ -27,6 +27,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   ".",
   "./ai-sdk",
   "./audit",
+  "./cache",
   "./claude",
   "./compression",
   "./content-type",
