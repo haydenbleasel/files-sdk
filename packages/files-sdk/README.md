@@ -2,6 +2,10 @@
 
 A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.
 
+![npm](https://img.shields.io/npm/dm/files-sdk?style=flat&colorA=000000&colorB=000000)
+[![npm version](https://img.shields.io/npm/v/files-sdk.svg?style=flat&colorA=000000&colorB=000000)](https://www.npmjs.com/package/@files-sdk/client)
+[![GitHub stars](https://img.shields.io/github/stars/haydenbleasel/files-sdk?style=flat&colorA=000000&colorB=000000)](https://github.com/haydenbleasel/files-sdk/stargazers)
+
 ## Install
 
 ```sh
