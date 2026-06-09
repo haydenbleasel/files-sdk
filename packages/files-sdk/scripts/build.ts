@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 import { watch as fsWatch } from "node:fs";
 // Build the package: JS via Bun's bundler, .d.ts via tsgo, then mirror the docs.
-// Replaces tsup. Bun bundles each entry (no shared chunks, externals stay
-// external); tsgo emits per-file declarations into the same dist/ tree.
+// Replaces tsup. Bun bundles entries with shared chunks enabled so dynamic
+// imports stay lazy; externals stay external. tsgo emits per-file declarations
+// into the same dist/ tree.
 import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -40,7 +41,7 @@ const buildJs = async () => {
     outdir: dist,
     root: srcDir,
     sourcemap: "linked",
-    splitting: false,
+    splitting: true,
     target: "node",
   });
   if (!result.success) {
