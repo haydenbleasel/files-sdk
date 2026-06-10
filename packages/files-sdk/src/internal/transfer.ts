@@ -164,9 +164,11 @@ export const transfer = async (
         // one per failed key on a large walk. A locked stream is held by the
         // failed consumer; nothing to release here.
         if (!body.locked) {
-          await body.cancel().catch(() => {
+          try {
+            await body.cancel();
+          } catch {
             // Best-effort cleanup — the per-key error is what matters.
-          });
+          }
         }
         throw error;
       }

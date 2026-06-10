@@ -258,9 +258,11 @@ const runUploads = async (
         // of leaking one per failed key. A locked stream is held by the
         // failed consumer; nothing to release here.
         if (!stream.locked) {
-          await stream.cancel().catch(() => {
+          try {
+            await stream.cancel();
+          } catch {
             // Best-effort cleanup — the per-key error is what matters.
-          });
+          }
         }
         throw error;
       }

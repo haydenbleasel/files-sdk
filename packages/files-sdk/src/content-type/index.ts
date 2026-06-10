@@ -406,9 +406,11 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
             // body / file handle. A locked replay body is owned by whoever
             // locked it; cancelling here is best-effort.
             if (!body.locked) {
-              await body.cancel().catch(() => {
+              try {
+                await body.cancel();
+              } catch {
                 // The upload error below is what matters.
-              });
+              }
             }
             throw error;
           }

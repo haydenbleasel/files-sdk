@@ -442,18 +442,46 @@ describe("resumable orchestrator (parts mode)", () => {
   });
 
   test("a part failure wakes a worker parked in pause()", async () => {
+    // Deterministic ordering: worker A finishes part 1, the control pauses,
+    // A parks on the pause gate picking up part 3; only then is worker B's
+    // hung part 2 released to fail. The run must wake A and reject without
+    // ever needing a resume().
     const server = newServer();
-    server.fail.set("parked.bin:2", 1000);
-    const files = makeFiles(server, "parts");
+    const gate = Promise.withResolvers<null>();
+    const adapter: Adapter = {
+      copy: unsupported,
+      delete: unsupported,
+      download: unsupported,
+      exists: unsupported,
+      head: unsupported,
+      list: unsupported,
+      name: "fake-parked",
+      raw: server,
+      resumableUpload: (key, opts) => {
+        const inner = createPartsDriver(server, key, opts);
+        return {
+          ...inner,
+          async uploadPart(part) {
+            if (part.partNumber === 2) {
+              await gate.promise;
+              throw new Error("permanent part-2 failure");
+            }
+            return inner.uploadPart(part);
+          },
+        };
+      },
+      signedUploadUrl: unsupported,
+      upload: unsupported,
+      url: unsupported,
+    };
+    const files = new Files({ adapter });
     const control = new UploadControl();
-    // Worker A parks on the pause gate before picking up part 3; worker B's
-    // part 2 then fails. The run must reject without needing a resume().
     let paused = false;
     const promise = files.upload("parked.bin", new Uint8Array(16), {
       control,
       multipart: { concurrency: 2, partSize: 4 },
       onProgress: ({ loaded }) => {
-        // Pause as soon as part 1 lands, so the next dispatch parks.
+        // Pause as soon as part 1 lands, so worker A parks on its next pick.
         if (loaded >= 4 && !paused) {
           paused = true;
           control.pause();
@@ -461,7 +489,12 @@ describe("resumable orchestrator (parts mode)", () => {
       },
       retries: 0,
     });
-    await expect(promise).rejects.toThrow(/transient/u);
+    // Give worker A time to park on the pause gate, then fail part 2.
+    await tick();
+    await tick();
+    expect(control.status).toBe("paused");
+    gate.resolve(null);
+    await expect(promise).rejects.toThrow(/permanent part-2 failure/u);
     expect(control.status).toBe("error");
   });
 
