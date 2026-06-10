@@ -268,6 +268,28 @@ describe("soft-delete plugin — options", () => {
   });
 });
 
+describe("soft-delete plugin — option threading", () => {
+  test("the caller's signal applies to the re-routed trash move", async () => {
+    const inner = fakeAdapter();
+    const seen: (AbortSignal | undefined)[] = [];
+    const spying: Adapter = {
+      ...inner,
+      copy(from, to, opts) {
+        seen.push(opts?.signal);
+        return inner.copy(from, to, opts);
+      },
+    };
+    const files = createFiles({ adapter: spying, plugins: [softDelete()] });
+    await files.upload("a.txt", "x");
+    const controller = new AbortController();
+    // The re-routed move IS the user's delete — its signal must reach the
+    // adapter (via the move's copy step).
+    await files.delete("a.txt", { signal: controller.signal });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeDefined();
+  });
+});
+
 describe("soft-delete plugin — error propagation", () => {
   test("surfaces a non-NotFound error from the trash move", async () => {
     const inner = fakeAdapter();

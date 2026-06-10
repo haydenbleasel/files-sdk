@@ -240,7 +240,14 @@ export const softDelete = (
           return next(op);
         }
         try {
-          await next({ from: op.key, kind: "move", to: trashKeyFor(op.key) });
+          // Thread the caller's options through — the re-routed move IS the
+          // user's delete, so its `signal`/`timeout`/`retries` must apply.
+          await next({
+            from: op.key,
+            kind: "move",
+            options: op.options,
+            to: trashKeyFor(op.key),
+          });
         } catch (error) {
           // Deleting a key that doesn't exist is a no-op, same as a plain
           // delete; the move's copy step is what surfaces a missing source.
