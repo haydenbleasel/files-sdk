@@ -87,6 +87,35 @@ describe("cli/io emit", () => {
     emit({ k: 2 }, { json: false, pretty: false, verbose: false });
     expect(cap.stdout.join("")).toBe('{\n  "k": 2\n}\n');
   });
+
+  test("embedded FilesErrors keep their message and drop their cause", () => {
+    // Bulk partial-failure results embed live FilesErrors. `message` is a
+    // non-enumerable Error property (a bare stringify drops it) and the
+    // enumerable `cause` is the raw provider error, which must not leak
+    // request internals across the CLI boundary.
+    const providerError = Object.assign(new Error("raw provider failure"), {
+      requestId: "req-123",
+    });
+    const payload = {
+      deleted: ["a.txt"],
+      errors: [
+        {
+          error: new FilesError("NotFound", "Not found: b.txt", providerError),
+          key: "b.txt",
+        },
+      ],
+    };
+    emit(payload, { json: true, pretty: false, verbose: false });
+    const parsed = JSON.parse(cap.stdout.join("")) as {
+      errors: { key: string; error: Record<string, unknown> }[];
+    };
+    expect(parsed.errors[0]?.error).toEqual({
+      aborted: false,
+      code: "NotFound",
+      message: "Not found: b.txt",
+      timedOut: false,
+    });
+  });
 });
 
 describe("cli/io fail", () => {

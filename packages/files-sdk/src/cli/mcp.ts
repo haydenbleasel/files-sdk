@@ -8,7 +8,7 @@ import { z } from "zod";
 import { sync, transfer } from "../index.js";
 import { rangedSize } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
-import { storedFileToJson } from "./io.js";
+import { filesErrorReplacer, storedFileToJson } from "./io.js";
 import { loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
 
@@ -94,7 +94,14 @@ export interface McpServerOpts {
 }
 
 const ok = (data: unknown) => ({
-  content: [{ text: JSON.stringify(data, null, 2), type: "text" as const }],
+  // filesErrorReplacer keeps bulk partial-failure errors useful (message is
+  // non-enumerable) and strips the provider `cause` from the MCP boundary.
+  content: [
+    {
+      text: JSON.stringify(data, filesErrorReplacer, 2),
+      type: "text" as const,
+    },
+  ],
 });
 
 const errorPayload = (err: unknown) => {

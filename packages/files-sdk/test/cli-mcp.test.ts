@@ -238,6 +238,24 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(many.data.missing).toEqual(["gone.txt"]);
   });
 
+  test("bulk partial-failure errors carry a message and no cause", async () => {
+    await call(h.client, "upload", { key: "ok.txt", text: "x" });
+    // An invalid key (NUL) fails per-item; the serialized error must keep its
+    // message (non-enumerable on Error) and not leak the raw provider cause.
+    const many = await call(h.client, "head", {
+      key: ["ok.txt", `bad${NUL}key`],
+    });
+    const errors = many.data.errors as {
+      key: string;
+      error: Record<string, unknown>;
+    }[];
+    expect(errors).toHaveLength(1);
+    const message = errors[0]?.error.message;
+    expect(typeof message).toBe("string");
+    expect((message as string).length).toBeGreaterThan(0);
+    expect(errors[0]?.error.cause).toBeUndefined();
+  });
+
   test("exists surfaces a hard error for a single key", async () => {
     const bad = await call(h.client, "exists", { key: `bad${NUL}key` });
     expect(bad.isError).toBe(true);

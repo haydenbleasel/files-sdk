@@ -15,11 +15,36 @@ export interface OutputOpts {
   verbose: boolean;
 }
 
+/**
+ * `JSON.stringify` replacer that makes a {@link FilesError} serialize
+ * usefully. A bare stringify drops `message` (a non-enumerable `Error`
+ * property) while leaking the enumerable `cause` — the raw provider error,
+ * which can carry request ids and headers the docs on {@link FilesError}
+ * explicitly warn against shipping across a trust boundary. Bulk partial
+ * failures embed live `FilesError`s in their `errors` arrays, so every
+ * outward serialization goes through this.
+ */
+export const filesErrorReplacer = (_key: string, value: unknown): unknown =>
+  value instanceof FilesError
+    ? {
+        aborted: value.aborted,
+        code: value.code,
+        message: value.message,
+        timedOut: value.timedOut,
+      }
+    : value;
+
+/** Stringify for output, with {@link filesErrorReplacer} applied. */
+export const toJson = (data: unknown, pretty: boolean): string =>
+  pretty
+    ? JSON.stringify(data, filesErrorReplacer, 2)
+    : JSON.stringify(data, filesErrorReplacer);
+
 const humanize = (data: unknown): string => {
   if (typeof data === "string") {
     return data;
   }
-  return JSON.stringify(data, null, 2);
+  return toJson(data, true);
 };
 
 export const exitCode = (code: string): number => {
@@ -41,10 +66,7 @@ export const exitCode = (code: string): number => {
 
 export const emit = (data: unknown, out: OutputOpts): void => {
   if (out.json) {
-    const text = out.pretty
-      ? JSON.stringify(data, null, 2)
-      : JSON.stringify(data);
-    process.stdout.write(`${text}\n`);
+    process.stdout.write(`${toJson(data, out.pretty)}\n`);
     return;
   }
   process.stdout.write(`${humanize(data)}\n`);
