@@ -755,6 +755,33 @@ describe("ftp resumable uploads", () => {
     expect(await files.exists("a.bin")).toBe(false);
   });
 
+  test("a retried chunk whose append landed is not appended twice", async () => {
+    // The server persists the append but the success reply is lost: the
+    // orchestrator retries the chunk. APPE writes at EOF, so a blind retry
+    // would duplicate the chunk's bytes mid-file — uploadAt must notice the
+    // remote size already advanced and skip the write.
+    const client = makeFakeClient();
+    const realAppend = client.appendFrom.bind(client);
+    let failNext = true;
+    client.appendFrom = async (source: Readable, path: string) => {
+      const result = await realAppend(source, path);
+      if (failNext && path.includes("lost.bin")) {
+        failNext = false;
+        throw ftpError(421, "421 reply lost");
+      }
+      return result;
+    };
+    const files = new Files({ adapter: ftp({ client }) });
+    const result = await files.upload("lost.bin", "abcdefghijkl", {
+      control: new UploadControl(),
+      multipart: { concurrency: 1, partSize: 4 },
+      retries: 2,
+    });
+    expect(result.size).toBe(12);
+    const got = await files.download("lost.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
+  });
+
   test("metadata is rejected", async () => {
     const files = newFiles();
     await expect(

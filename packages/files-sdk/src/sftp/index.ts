@@ -585,6 +585,23 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         },
         uploadAt({ offset, data, signal }): Promise<{ nextOffset: number }> {
           return run(signal, async (client) => {
+            // append() writes at the server-side EOF, not at `offset` — so
+            // verify the remote size still matches before appending. A
+            // per-chunk retry after a partial append (or a lost success
+            // reply) would otherwise append the whole chunk again, silently
+            // corrupting the file with duplicated bytes. On a mismatch, skip
+            // the write and report the server's real offset so the
+            // orchestrator re-slices from there.
+            let current: number | undefined;
+            try {
+              const stat = await client.stat(remote);
+              current = stat.size;
+            } catch {
+              // No partial yet — append as-is.
+            }
+            if (current !== undefined && current !== offset) {
+              return { nextOffset: current };
+            }
             await client.append(uint8ToBuffer(data), remote);
             return { nextOffset: offset + data.byteLength };
           });

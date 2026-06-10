@@ -618,6 +618,22 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         },
         uploadAt({ offset, data, signal }): Promise<{ nextOffset: number }> {
           return run(signal, async (client) => {
+            // APPE writes at the server-side EOF, not at `offset` — so verify
+            // the remote size still matches before appending. A per-chunk
+            // retry after a partial append (or a lost success reply) would
+            // otherwise append the whole chunk again, silently corrupting the
+            // file with duplicated bytes. On a mismatch, skip the write and
+            // report the server's real offset so the orchestrator re-slices
+            // from there.
+            let current: number | undefined;
+            try {
+              current = await client.size(remote);
+            } catch {
+              // No partial yet (or the server lacks SIZE) — append as-is.
+            }
+            if (current !== undefined && current !== offset) {
+              return { nextOffset: current };
+            }
             await client.appendFrom(Readable.from(uint8ToBuffer(data)), remote);
             return { nextOffset: offset + data.byteLength };
           });
