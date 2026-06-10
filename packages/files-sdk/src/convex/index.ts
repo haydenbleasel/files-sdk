@@ -250,7 +250,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
             lastModified: meta.lastModified,
           }),
           size: meta?.size ?? bytes.byteLength,
-          type: meta?.contentType ?? blob.type ?? "application/octet-stream",
+          type: meta?.contentType ?? (blob.type || "application/octet-stream"),
         },
         { data: bytes, kind: "buffer" }
       );

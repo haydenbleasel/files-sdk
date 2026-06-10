@@ -166,7 +166,7 @@ const normalizeForR2 = async (
     const buf = await body.arrayBuffer();
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? body.type ?? "application/octet-stream",
+      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
       data: buf,
     };
   }

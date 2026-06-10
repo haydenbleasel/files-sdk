@@ -636,7 +636,7 @@ export const uploadthing = (
       // sizeOf() finds them too.
       const localSize = sizeOf(body);
       return {
-        contentType: data.type ?? contentType ?? "application/octet-stream",
+        contentType: data.type || contentType || "application/octet-stream",
         etag: data.fileHash,
         key,
         lastModified: data.lastModified ?? Date.now(),

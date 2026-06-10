@@ -214,7 +214,7 @@ const normalizeBody = async (
     }
     return {
       contentLength: body.size,
-      contentType: contentTypeHint ?? body.type ?? "application/octet-stream",
+      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
       data: body,
       isBlob: true,
     };

@@ -5,11 +5,36 @@ import {
   deleteManyWithFallback,
   httpRangeHeader,
   mapMany,
+  normalizeBody,
   rangeRequestHeaders,
   rangedResponseSize,
   rangedSize,
 } from "../src/internal/core.js";
 import { FilesError } from "../src/internal/errors.js";
+
+describe("normalizeBody content types", () => {
+  test("an untyped Blob falls back to application/octet-stream", async () => {
+    // Blob.type is "" (never nullish) when no type was given, so a `??`
+    // fallback would let the empty string through to the provider.
+    const normalized = await normalizeBody(new Blob(["hi"]));
+    expect(normalized.contentType).toBe("application/octet-stream");
+  });
+
+  test("a typed Blob keeps its own type", async () => {
+    const normalized = await normalizeBody(
+      new Blob(["hi"], { type: "image/png" })
+    );
+    expect(normalized.contentType).toBe("image/png");
+  });
+
+  test("the caller's hint beats the Blob type", async () => {
+    const normalized = await normalizeBody(
+      new Blob(["hi"], { type: "image/png" }),
+      "application/json"
+    );
+    expect(normalized.contentType).toBe("application/json");
+  });
+});
 
 describe("range helpers", () => {
   test("httpRangeHeader renders inclusive and open-ended ranges", () => {

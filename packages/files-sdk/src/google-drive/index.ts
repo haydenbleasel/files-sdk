@@ -279,7 +279,7 @@ const normalizeBody = async (
     const buf = Buffer.from(await body.arrayBuffer());
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? body.type ?? "application/octet-stream",
+      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
       stream: Readable.from(buf),
     };
   }

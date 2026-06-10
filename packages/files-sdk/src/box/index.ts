@@ -309,7 +309,7 @@ const normalizeBody = async (
   }
   if (body instanceof Blob) {
     return {
-      contentType: contentTypeHint ?? body.type ?? "application/octet-stream",
+      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
       data: Buffer.from(await body.arrayBuffer()),
     };
   }
