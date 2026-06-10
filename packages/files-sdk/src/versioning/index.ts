@@ -200,13 +200,23 @@ export const versioning = (
     max: number
   ): Promise<void> => {
     const dir = versionsDirFor(key);
-    const { items } = await next({
-      kind: "list",
-      options: { prefix: dir },
-    });
-    const own = items
-      .map((file) => file.key)
-      .filter((listedKey) => ownVersionId(listedKey, dir) !== undefined);
+    // Paginate to exhaustion (like versions() does) — a single page would
+    // under-count once the history exceeds one provider page, leaving the
+    // configured limit unenforced.
+    const own: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await next({
+        kind: "list",
+        options: { prefix: dir, ...(cursor !== undefined && { cursor }) },
+      });
+      for (const file of page.items) {
+        if (ownVersionId(file.key, dir) !== undefined) {
+          own.push(file.key);
+        }
+      }
+      ({ cursor } = page);
+    } while (cursor !== undefined);
     if (own.length <= max) {
       return;
     }

@@ -299,6 +299,22 @@ describe("versioning plugin — paginated history", () => {
     const versions = await files.versions("k");
     expect(versions).toHaveLength(2);
   });
+
+  test("prune sees past the first list page", async () => {
+    // One-item pages: a single-page prune would count at most one version
+    // and never enforce the limit.
+    const files = createFiles({
+      adapter: pagedAdapter(),
+      plugins: [versioning({ limit: 2 })],
+    });
+    for (const value of ["1", "2", "3", "4", "5"]) {
+      await files.upload("k", value);
+    }
+    const versions = await files.versions("k");
+    expect(versions).toHaveLength(2);
+    const bodies = await Promise.all(versions.map((v) => bodyOf(files, v.key)));
+    expect(bodies).toEqual(["4", "3"]);
+  });
 });
 
 describe("versioning plugin — bulk operations", () => {
