@@ -84,6 +84,37 @@ describe("usage", () => {
     expect(files.usage().bytesDown).toBe(5);
   });
 
+  test("a repeatable stream() read twice still counts once", async () => {
+    const files = metered();
+    await files.upload("a.txt", bytes("hello"));
+    // The memory adapter returns a buffer-backed file, whose stream() is
+    // repeatable — only the first stream to move bytes may claim the count.
+    const file = await files.download("a.txt");
+    expect(await new Response(file.stream()).text()).toBe("hello");
+    expect(await new Response(file.stream()).text()).toBe("hello");
+    expect(files.usage().bytesDown).toBe(5);
+  });
+
+  test("an opened-but-unread stream doesn't suppress a buffered read's count", async () => {
+    const files = metered();
+    await files.upload("a.txt", bytes("hello"));
+    const file = await files.download("a.txt");
+    // Open a stream but never pull from it…
+    file.stream();
+    // …the text() read is what actually moved the bytes.
+    expect(await file.text()).toBe("hello");
+    expect(files.usage().bytesDown).toBe(5);
+  });
+
+  test("a stream read after a buffered read adds nothing", async () => {
+    const files = metered();
+    await files.upload("a.txt", bytes("hello"));
+    const file = await files.download("a.txt");
+    expect(await file.text()).toBe("hello");
+    expect(await new Response(file.stream()).text()).toBe("hello");
+    expect(files.usage().bytesDown).toBe(5);
+  });
+
   test("meters bytes read out of a head() body", async () => {
     const files = metered();
     await files.upload("a.txt", bytes("hello"));

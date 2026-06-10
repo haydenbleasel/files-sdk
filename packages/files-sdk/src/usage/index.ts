@@ -116,22 +116,30 @@ const meterRead = (
   file: StoredFile,
   add: (bytes: number) => void
 ): StoredFile => {
-  let counted = false;
-  const countOnce = (bytes: number): void => {
-    if (!counted) {
-      counted = true;
+  // At most one full read is metered, claimed by the first channel that
+  // actually moves bytes. A stream-kind source is read-once, but a
+  // buffer-backed file (the memory adapter, or anything a transforming
+  // plugin buffered) has a *repeatable* `stream()` that coexists with the
+  // buffering accessors — eagerly marking `stream()` as counted would let a
+  // double `stream()` read double-count, and an opened-but-unread stream
+  // suppress the count of a later `text()` that did read the bytes.
+  let claimedBy: "none" | "buffered" | number = "none";
+  let nextStreamId = 0;
+  const countBuffered = (bytes: number): void => {
+    if (claimedBy === "none") {
+      claimedBy = "buffered";
       add(bytes);
     }
   };
   return {
     arrayBuffer: async () => {
       const buffer = await file.arrayBuffer();
-      countOnce(buffer.byteLength);
+      countBuffered(buffer.byteLength);
       return buffer;
     },
     blob: async () => {
       const blob = await file.blob();
-      countOnce(blob.size);
+      countBuffered(blob.size);
       return blob;
     },
     etag: file.etag,
@@ -141,14 +149,17 @@ const meterRead = (
     name: file.name,
     size: file.size,
     stream: () => {
-      // The source is consumed here, so a later buffering read would throw
-      // anyway; mark counted up front so it can't double-count, then tally each
-      // chunk as it passes through.
-      counted = true;
+      const id = nextStreamId;
+      nextStreamId += 1;
       return file.stream().pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
-            add(chunk.byteLength);
+            if (claimedBy === "none") {
+              claimedBy = id;
+            }
+            if (claimedBy === id) {
+              add(chunk.byteLength);
+            }
             controller.enqueue(chunk);
           },
         })
@@ -156,7 +167,7 @@ const meterRead = (
     },
     text: async () => {
       const text = await file.text();
-      countOnce(file.size);
+      countBuffered(file.size);
       return text;
     },
     type: file.type,
