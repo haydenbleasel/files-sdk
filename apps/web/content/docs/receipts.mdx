@@ -1,0 +1,65 @@
+---
+title: Receipts
+description: Opt into a provenance Receipt for every mutating call - op, provider, key, bytes, etag, timing, and an optional SHA-256 - delivered on the onAction hook. Off by default, and never hashes unless you ask.
+---
+
+A **receipt** is a provenance record for a single mutating call (`upload`, `delete`, `copy`, `move`): what landed where, how big it was, how long it took, and - when you ask - a SHA-256 fingerprint of the uploaded bytes. It's built for tool wrappers and agents that need to attest "this exact content was written to this key", without bolting on a separate operation or a middleware layer.
+
+Receipts are **off by default**. An instance without the option behaves exactly as before: nothing is recorded, and nothing is hashed.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  receipts: true,
+  hooks: {
+    onAction(event) {
+      if (event.receipt) {
+        provenance.record(event.receipt);
+      }
+    },
+  },
+});
+
+await files.upload("reports/q3.pdf", pdf);
+// event.receipt -> { op: "upload", provider: "s3", adapter: "s3",
+//   key: "reports/q3.pdf", bytes: 48213, etag: "\"a1b2…\"",
+//   durationMs: 31, ts: 1733788800123 }
+```
+
+## How it's delivered
+
+Receipts ride on the existing [`onAction`](/api/onaction) hook as an additive `receipt` field - there's no new method, callback, or changed return type. The field is present **only** when:
+
+- the `receipts` option is on,
+- the call is a mutating verb (`upload`, `delete`, `copy`, `move`), and
+- the call **succeeded**.
+
+Reads, `signedUploadUrl`, failures, bulk array calls (which aggregate many objects into one event), and every instance with receipts off leave `event.receipt` unset - so an existing `onAction` consumer that never opted in sees the exact payload it always has.
+
+Every field except `sha256` is **derived** from the work the SDK already does for the hook - the timing, the adapter name, the caller-facing key, and `bytes` / `etag` read straight off the [`UploadResult`](/api/upload). Turning receipts on with `receipts: true` therefore adds no per-call cost.
+
+## SHA-256 is opt-in
+
+The fingerprint is the one field with a real per-call cost, so it stays off until you ask for it by name:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  receipts: { sha256: true },
+  hooks: {
+    onAction(event) {
+      if (event.receipt?.sha256) {
+        attest(event.receipt.key, event.receipt.sha256);
+      }
+    },
+  },
+});
+```
+
+`sha256` is the lowercase-hex SHA-256 of the uploaded bytes. It is computed **only** when you pass `{ sha256: true }`, and present **only** on an `upload` of a buffered body (a string, `Uint8Array`, `ArrayBuffer`, typed-array view, or `Blob`). A **streaming** upload is handed to the adapter without ever being buffered, so it carries no fingerprint - the SDK won't silently buffer a stream to hash it. `delete`, `copy`, and `move` transfer no content of their own, so they never carry one either.
+
+With `receipts: true` (or `{ sha256: false }`), the body is never read and no hash is taken.
+
+## The shape
+
+<AutoTypeTable path="../../packages/files-sdk/src/index.ts" name="Receipt" />
