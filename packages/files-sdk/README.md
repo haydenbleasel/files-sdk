@@ -81,6 +81,26 @@ A growing catalog covering S3 and S3-compatible stores, the major cloud blob pla
 
 A growing set of subpaths wrap a configured `Files` instance as ready-made tools for popular AI SDKs — currently the [Vercel AI SDK](https://ai-sdk.dev) (`files-sdk/ai-sdk`), OpenAI's [Responses API](https://platform.openai.com/docs/api-reference/responses) and [Agents SDK](https://openai.github.io/openai-agents-js/) (`files-sdk/openai`), and Anthropic's [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) (`files-sdk/claude`). All share the same file operations and approval-gating defaults, so models can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code. See [files-sdk.dev](https://files-sdk.dev) for the current list and per-SDK setup.
 
+## Live tests
+
+Most tests mock the provider. A few `*.live.test.ts` suites exercise a real
+backend instead. They are **skipped by default** and only run with
+`LIVE_TESTS=1`; suites that need credentials also skip when those env vars are
+absent, so the default `bun test` stays fast, offline, and credential-free.
+
+```sh
+# fs needs no credentials — runs against a real temp dir.
+LIVE_TESTS=1 bun test fs.live
+
+# s3 needs a bucket + region + credentials.
+LIVE_TESTS=1 S3_LIVE_BUCKET=my-bucket AWS_REGION=us-east-1 \
+  AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... bun test s3.live
+```
+
+Live tests never run on `pull_request` from forks. In CI they run only via the
+`Live tests` workflow — manually (`workflow_dispatch`) or when a maintainer
+applies the `live-tests` label — with credentials from repo secrets.
+
 ## License
 
 MIT

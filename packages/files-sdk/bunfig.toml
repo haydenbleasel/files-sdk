@@ -1,3 +1,7 @@
 [test]
-coveragePathIgnorePatterns = ["**/test/**"]
+# `**/test/**` excludes all test files; `**/*.live.test.ts` is called out
+# explicitly so the live-test convention is self-documenting. Live tests are
+# skipped by default (run only with LIVE_TESTS=1), and counting skipped files
+# would tank the per-file 98% threshold below.
+coveragePathIgnorePatterns = ["**/test/**", "**/*.live.test.ts"]
 coverageThreshold = { lines = 0.98, functions = 0.98 }
