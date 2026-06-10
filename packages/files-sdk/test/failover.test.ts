@@ -266,6 +266,49 @@ describe("failover — shouldFailover", () => {
   });
 });
 
+/** A primary whose download hangs until the signal aborts. */
+const hangingAdapter = (): Adapter => ({
+  ...fakeAdapter(),
+  download: (_key, opts) =>
+    // oxlint-disable-next-line promise/avoid-new -- hang-until-abort needs callback interop.
+    new Promise((_resolve, reject) => {
+      opts?.signal?.addEventListener("abort", () =>
+        reject(opts.signal?.reason)
+      );
+    }),
+});
+
+describe("failover — timeouts vs caller aborts", () => {
+  test("a primary timeout fails over to the secondary", async () => {
+    const secondary = await seeded({ "a.txt": "from-replica" });
+    const files = new Files({
+      adapter: hangingAdapter(),
+      plugins: [failover({ secondaries: secondary })],
+    });
+    // The canonical "backend hung" case: the per-op timeout cuts the primary
+    // off and the chain serves the replica instead of surfacing the timeout.
+    const body = await files
+      .download("a.txt", { timeout: 20 })
+      .then((f) => f.text());
+    expect(body).toBe("from-replica");
+  });
+
+  test("a caller abort is surfaced, not failed over", async () => {
+    const secondary = await seeded({ "a.txt": "from-replica" });
+    const files = new Files({
+      adapter: hangingAdapter(),
+      plugins: [failover({ secondaries: secondary })],
+    });
+    const controller = new AbortController();
+    const promise = files.download("a.txt", { signal: controller.signal });
+    controller.abort();
+    const err = await promise.catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).aborted).toBe(true);
+    expect((err as FilesError).timedOut).toBe(false);
+  });
+});
+
 describe("failover — onFailover", () => {
   test("reports the operation and the backend indices", async () => {
     const events: FailoverEvent[] = [];

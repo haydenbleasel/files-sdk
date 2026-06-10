@@ -21,6 +21,7 @@ const timeoutError = (timeout: number): FilesError =>
     undefined,
     {
       aborted: true,
+      timedOut: true,
     }
   );
 

@@ -25,8 +25,8 @@ import { FilesError } from "../internal/errors.js";
  * error as-is.
  *
  * The default ({@link defaultShouldFailover}) fails over **only** on `Provider`
- * errors — network failures, timeouts, and 5xx, i.e. "the backend is down" — and
- * never on an aborted request. A `NotFound` / `Unauthorized` / `Conflict` /
+ * errors — network failures, timeouts (`timedOut`), and 5xx, i.e. "the backend
+ * is down" — and never on a caller-aborted request. A `NotFound` / `Unauthorized` / `Conflict` /
  * `ReadOnly` is a *definitive answer from a healthy backend*, so it's surfaced
  * rather than masked by probing a replica. Pass your own to widen this (e.g.
  * also fail over on `NotFound` to read through to a replica) or narrow it.
@@ -139,9 +139,15 @@ const runnerViaNext = (next: PluginNext): BackendRunner => ({
  */
 const isReplayable = (body: Body): boolean => !(body instanceof ReadableStream);
 
-/** Fail over only when a backend is *down*, never on a definitive answer. */
+/**
+ * Fail over only when a backend is *down*, never on a definitive answer. A
+ * timeout sets `aborted` too (the attempt was cancelled), but it's the
+ * canonical "backend hung" signal this plugin exists for — so `timedOut`
+ * overrides the abort exclusion, which is only meant for the caller's own
+ * signal.
+ */
 const defaultShouldFailover: ShouldFailover = (error) =>
-  error.code === "Provider" && !error.aborted;
+  error.code === "Provider" && (!error.aborted || error.timedOut);
 
 const normalizeSecondaries = (
   secondaries: Adapter | Adapter[] | undefined
