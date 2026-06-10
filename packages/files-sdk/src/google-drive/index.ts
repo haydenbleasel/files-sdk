@@ -102,6 +102,14 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const DEFAULT_CACHE_SIZE = 1024;
 const RESUMABLE_INITIATE_URL =
   "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true";
+/**
+ * Session initiation for a key that already has a file: a `PATCH` against
+ * that fileId updates it in place. A `POST` (create) would strand a
+ * duplicate carrying the same virtual key, wedging later reads on it with a
+ * Conflict. `parents` is create-only, so the update body must omit it.
+ */
+const resumableUpdateUrl = (fileId: string): string =>
+  `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=resumable&supportsAllDrives=true`;
 
 // Reserved appProperties keys — used as the virtual-key index and to
 // round-trip metadata Drive has no native field for. Caller metadata keys
@@ -454,14 +462,17 @@ export const googleDrive = (
     ...(driveId && { corpora: "drive", driveId }),
   };
 
-  const resolveFileId = async (
+  /**
+   * Look up the fileId carrying virtual key `key` with a fresh `files.list`,
+   * returning `undefined` when no file carries it. Skips the id cache on
+   * read (writes use this to decide create-vs-update, and a stale cache
+   * entry would mask an external delete or rewrite) but populates it on a
+   * hit.
+   */
+  const lookupFileId = async (
     key: string,
     signal?: AbortSignal
-  ): Promise<string> => {
-    const cached = fileIdCache.get(key);
-    if (cached) {
-      return cached;
-    }
+  ): Promise<string | undefined> => {
     const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and '${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
     let res: { data: drive_v3.Schema$FileList };
     try {
@@ -479,7 +490,7 @@ export const googleDrive = (
     }
     const files = res.data.files ?? [];
     if (files.length === 0) {
-      throw new FilesError("NotFound", `Not found: ${key}`);
+      return undefined;
     }
     if (files.length > 1) {
       throw new FilesError(
@@ -498,6 +509,21 @@ export const googleDrive = (
     return id;
   };
 
+  const resolveFileId = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<string> => {
+    const cached = fileIdCache.get(key);
+    if (cached) {
+      return cached;
+    }
+    const id = await lookupFileId(key, signal);
+    if (id === undefined) {
+      throw new FilesError("NotFound", `Not found: ${key}`);
+    }
+    return id;
+  };
+
   const lazyDownload = (fileId: string) => async (): Promise<Uint8Array> => {
     const res = await driveClient.files.get(
       { ...sharedDriveParams, alt: "media", fileId },
@@ -510,6 +536,10 @@ export const googleDrive = (
     async copy(from, to, operationOpts) {
       try {
         const fromId = await resolveFileId(from, operationOpts?.signal);
+        // Drive copies always create a new file; capture the id currently
+        // holding `to` so overwrite semantics hold (the stale file would
+        // otherwise duplicate the key and wedge later reads with a Conflict).
+        const clobberedId = await lookupFileId(to, operationOpts?.signal);
         const copied = await driveClient.files.copy(
           {
             ...sharedDriveParams,
@@ -524,6 +554,19 @@ export const googleDrive = (
           signalOpts(operationOpts?.signal)
         );
         const newId = copied.data.id;
+        if (clobberedId && clobberedId !== newId) {
+          try {
+            await driveClient.files.delete(
+              { ...sharedDriveParams, fileId: clobberedId },
+              signalOpts(operationOpts?.signal)
+            );
+          } catch (error) {
+            // Already gone is fine — the duplicate resolved itself.
+            if (mapDriveError(error).code !== "NotFound") {
+              throw error;
+            }
+          }
+        }
         if (newId) {
           fileIdCache.set(to, newId);
         }
@@ -780,30 +823,38 @@ export const googleDrive = (
               "google-drive: failed to mint access token for resumable upload session"
             );
           }
-          const res = await fetch(
-            `${RESUMABLE_INITIATE_URL}&fields=${encodeURIComponent(
-              "id,size,md5Checksum,mimeType,modifiedTime"
-            )}`,
-            {
-              body: JSON.stringify({
-                appProperties: {
-                  [KEY_PROP]: key,
-                  [CONTENT_TYPE_PROP]: meta.contentType,
-                  ...(resumableOpts.cacheControl && {
-                    [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
-                  }),
-                  ...resumableOpts.metadata,
-                },
-                mimeType: meta.contentType,
-                name: basename(key),
-                parents: [rootFolderId],
+          const existingId = await lookupFileId(key);
+          const fields = `&fields=${encodeURIComponent(
+            "id,size,md5Checksum,mimeType,modifiedTime"
+          )}`;
+          const initBody = {
+            appProperties: {
+              [KEY_PROP]: key,
+              [CONTENT_TYPE_PROP]: meta.contentType,
+              ...(resumableOpts.cacheControl && {
+                [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
               }),
+              ...resumableOpts.metadata,
+            },
+            mimeType: meta.contentType,
+            name: basename(key),
+          };
+          const res = await fetch(
+            existingId === undefined
+              ? `${RESUMABLE_INITIATE_URL}${fields}`
+              : `${resumableUpdateUrl(existingId)}${fields}`,
+            {
+              body: JSON.stringify(
+                existingId === undefined
+                  ? { ...initBody, parents: [rootFolderId] }
+                  : initBody
+              ),
               headers: {
                 Authorization: `Bearer ${token}`,
                 "Content-Type": "application/json; charset=UTF-8",
                 "X-Upload-Content-Type": meta.contentType,
               },
-              method: "POST",
+              method: existingId === undefined ? "POST" : "PATCH",
             }
           );
           if (!res.ok) {
@@ -895,19 +946,25 @@ export const googleDrive = (
       if (signOpts.contentType) {
         headers["X-Upload-Content-Type"] = signOpts.contentType;
       }
+      const existingId = await lookupFileId(key, signOpts.signal);
       const initBody = {
         appProperties: { [KEY_PROP]: key },
         name: basename(key),
-        parents: [rootFolderId],
+        ...(existingId === undefined && { parents: [rootFolderId] }),
       };
       let res: Response;
       try {
-        res = await fetch(RESUMABLE_INITIATE_URL, {
-          body: JSON.stringify(initBody),
-          headers,
-          method: "POST",
-          ...(signOpts.signal && { signal: signOpts.signal }),
-        });
+        res = await fetch(
+          existingId === undefined
+            ? RESUMABLE_INITIATE_URL
+            : resumableUpdateUrl(existingId),
+          {
+            body: JSON.stringify(initBody),
+            headers,
+            method: existingId === undefined ? "POST" : "PATCH",
+            ...(signOpts.signal && { signal: signOpts.signal }),
+          }
+        );
       } catch (error) {
         throw mapDriveError(error);
       }
@@ -951,23 +1008,45 @@ export const googleDrive = (
           }),
           ...options?.metadata,
         };
-        const res = await driveClient.files.create(
-          {
-            ...sharedDriveParams,
-            fields: "id, size, mimeType, md5Checksum, modifiedTime",
-            media: {
-              body: normalized.stream,
-              mimeType: normalized.contentType,
-            },
-            requestBody: {
-              appProperties,
-              mimeType: normalized.contentType,
-              name: basename(key),
-              parents: [rootFolderId],
-            },
-          },
-          signalOpts(options?.signal)
-        );
+        // Drive has no unique-name constraint, so an unconditional create
+        // would strand a duplicate per overwrite and wedge every later read
+        // on that key with a Conflict. Look the key up fresh and update the
+        // existing file in place (`parents` is create-only).
+        const existingId = await lookupFileId(key, options?.signal);
+        const media = {
+          body: normalized.stream,
+          mimeType: normalized.contentType,
+        };
+        const res =
+          existingId === undefined
+            ? await driveClient.files.create(
+                {
+                  ...sharedDriveParams,
+                  fields: "id, size, mimeType, md5Checksum, modifiedTime",
+                  media,
+                  requestBody: {
+                    appProperties,
+                    mimeType: normalized.contentType,
+                    name: basename(key),
+                    parents: [rootFolderId],
+                  },
+                },
+                signalOpts(options?.signal)
+              )
+            : await driveClient.files.update(
+                {
+                  ...sharedDriveParams,
+                  fields: "id, size, mimeType, md5Checksum, modifiedTime",
+                  fileId: existingId,
+                  media,
+                  requestBody: {
+                    appProperties,
+                    mimeType: normalized.contentType,
+                    name: basename(key),
+                  },
+                },
+                signalOpts(options?.signal)
+              );
         const { data } = res;
         const fileId = data.id;
         if (fileId) {

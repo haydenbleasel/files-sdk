@@ -62,6 +62,48 @@ const filesCreateMock = mock(async (params: unknown) => {
   return { data: file };
 });
 
+const filesUpdateMock = mock(async (params: unknown) => {
+  const p = params as {
+    fileId: string;
+    requestBody: {
+      name: string;
+      parents?: string[];
+      appProperties?: Record<string, string>;
+      mimeType?: string;
+    };
+    media?: { body: Readable; mimeType?: string };
+  };
+  const existing = store.get(p.fileId);
+  if (!existing) {
+    throw Object.assign(new Error("Not Found"), { code: 404 });
+  }
+  if (p.requestBody.parents) {
+    throw Object.assign(
+      new Error(
+        "The parents field is not directly writable in update requests."
+      ),
+      { code: 403 }
+    );
+  }
+  let size = 0;
+  if (p.media?.body) {
+    for await (const chunk of p.media.body as AsyncIterable<Buffer>) {
+      size += (chunk as Buffer).byteLength ?? 0;
+    }
+  }
+  const file: FakeFile = {
+    ...existing,
+    appProperties: p.requestBody.appProperties ?? existing.appProperties,
+    md5Checksum: `etag-${existing.id}-${size}`,
+    mimeType: p.requestBody.mimeType ?? existing.mimeType,
+    modifiedTime: STABLE_MODIFIED,
+    name: p.requestBody.name ?? existing.name,
+    size: String(size),
+  };
+  store.set(existing.id, file);
+  return { data: file };
+});
+
 const filesListMock = mock((params: unknown) => {
   const p = params as { q?: string; pageSize?: number; pageToken?: string };
   const q = p.q ?? "";
@@ -171,6 +213,7 @@ const fakeDriveClient = {
     delete: filesDeleteMock,
     get: filesGetMock,
     list: filesListMock,
+    update: filesUpdateMock,
   },
   permissions: { create: permissionsCreateMock },
 };
@@ -211,6 +254,7 @@ beforeEach(() => {
   store = new Map();
   nextId = 0;
   filesCreateMock.mockClear();
+  filesUpdateMock.mockClear();
   filesListMock.mockClear();
   filesGetMock.mockClear();
   filesDeleteMock.mockClear();
@@ -472,6 +516,47 @@ describe("google-drive adapter", () => {
     expect(filesListMock.mock.calls.length).toBe(before);
   });
 
+  test("upload to an existing key updates it in place (no duplicate)", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("over.txt", "v1");
+    await files.upload("over.txt", "v2-longer");
+
+    expect(filesCreateMock).toHaveBeenCalledTimes(1);
+    expect(filesUpdateMock).toHaveBeenCalledTimes(1);
+    // The update body must not write `parents` (a create-only field).
+    const updateArgs = filesUpdateMock.mock.calls[0]?.[0] as {
+      requestBody: { parents?: string[] };
+    };
+    expect(updateArgs.requestBody.parents).toBeUndefined();
+    // Exactly one Drive file carries the virtual key.
+    const carriers = [...store.values()].filter(
+      (f) => f.appProperties?.fsdkKey === "over.txt"
+    );
+    expect(carriers).toHaveLength(1);
+    // A fresh instance (cold id cache) resolves the key cleanly — this is
+    // what used to throw Conflict once a duplicate existed.
+    const fresh = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(fresh.head("over.txt")).resolves.toMatchObject({
+      key: "over.txt",
+      size: "v2-longer".length,
+    });
+  });
+
+  test("copy onto an existing key replaces it (no duplicate)", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("src.txt", "hi");
+    await files.upload("dst.txt", "old");
+    await files.copy("src.txt", "dst.txt");
+
+    const carriers = [...store.values()].filter(
+      (f) => f.appProperties?.fsdkKey === "dst.txt"
+    );
+    expect(carriers).toHaveLength(1);
+    const fresh = new Files({ adapter: googleDrive(baseOpts) });
+    const body = await fresh.download("dst.txt").then((f) => f.text());
+    expect(body).toBe(`body-${carriers[0]?.id}`);
+  });
+
   test("delete is idempotent on missing keys", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     // Should not throw — no file with that fsdkKey exists.
@@ -617,6 +702,34 @@ describe("google-drive adapter", () => {
     const body = JSON.parse(captured?.init?.body as string);
     expect(body.name).toBe("a.txt");
     expect(body.parents).toEqual(["rootX"]);
+    expect(body.appProperties.fsdkKey).toBe("a.txt");
+  });
+
+  test("signedUploadUrl PATCHes the existing file id when the key exists", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "old");
+
+    let captured: { url: string; init: RequestInit | undefined } | undefined;
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      captured = {
+        init,
+        url: typeof input === "string" ? input : input.toString(),
+      };
+      return Promise.resolve(
+        new Response(null, {
+          headers: { Location: "https://upload.example.com/session/upd" },
+          status: 200,
+        })
+      );
+    }) as typeof fetch;
+
+    const out = await files.signedUploadUrl("a.txt", { expiresIn: 3600 });
+    expect(out.url).toBe("https://upload.example.com/session/upd");
+    expect(captured?.init?.method).toBe("PATCH");
+    expect(captured?.url).toContain("/files/id-1?uploadType=resumable");
+    const body = JSON.parse(captured?.init?.body as string);
+    // `parents` is create-only and must be absent on an update session.
+    expect(body.parents).toBeUndefined();
     expect(body.appProperties.fsdkKey).toBe("a.txt");
   });
 
@@ -880,6 +993,55 @@ describe("google-drive resumable uploads", () => {
     expect(control.status).toBe("completed");
     expect(control.session?.provider).toBe("google-drive");
     expect(ranges[0]).toBe(`bytes 0-${CHUNK - 1}/*`);
+  });
+
+  test("resumable upload to an existing key PATCHes its file id", async () => {
+    const inits: { method: string; url: string; body?: string }[] = [];
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST" || method === "PATCH") {
+        inits.push({
+          body: init?.body as string,
+          method,
+          url: typeof input === "string" ? input : input.toString(),
+        });
+        return Promise.resolve(
+          new Response(null, {
+            headers: { Location: "https://upload.example.com/session/upd" },
+            status: 200,
+          })
+        );
+      }
+      const range =
+        ((init?.headers ?? {}) as Record<string, string>)["Content-Range"] ??
+        "";
+      return Promise.resolve(
+        range.endsWith("/*")
+          ? new Response(null, {
+              headers: { Range: `bytes=0-${CHUNK - 1}` },
+              status: 308,
+            })
+          : driveResult()
+      );
+    }) as typeof fetch;
+
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("big.bin", "old-small");
+    const result = await files.upload("big.bin", new Uint8Array(CHUNK + 10), {
+      control: new UploadControl(),
+      multipart: { partSize: CHUNK },
+    });
+    expect(result.size).toBe(CHUNK + 10);
+    expect(inits).toHaveLength(1);
+    expect(inits[0]?.method).toBe("PATCH");
+    expect(inits[0]?.url).toContain("/files/id-1?uploadType=resumable");
+    // `parents` is create-only and must be absent on an update session.
+    expect(JSON.parse(inits[0]?.body ?? "{}").parents).toBeUndefined();
+    // Still exactly one Drive file carries the key.
+    const carriers = [...store.values()].filter(
+      (f) => f.appProperties?.fsdkKey === "big.bin"
+    );
+    expect(carriers).toHaveLength(1);
   });
 
   test("resume reads the session offset, then sends the rest", async () => {
