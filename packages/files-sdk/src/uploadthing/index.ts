@@ -363,13 +363,15 @@ export const uploadthing = (
 
   const adapter: UploadThingAdapter = {
     async copy(from, to, opts) {
-      // UploadThing has no server-side copy. Stream the source through a
-      // re-upload so we don't buffer the whole object — multi-GB copies
-      // would otherwise blow past serverless memory limits. Source and
-      // destination are not atomic; concurrent mutations to `from` between
-      // the get and put are not detected. This call costs both an egress
-      // download and an ingest upload — for large files, prefer doing the
-      // copy at the application layer with a different storage strategy.
+      // UploadThing has no server-side copy, so this downloads and
+      // re-uploads. Note the re-upload **buffers the whole object**:
+      // `uploadFiles` needs a Blob, so `bodyToBlob` drains the stream into
+      // memory — a multi-GB copy will exhaust serverless memory limits.
+      // Source and destination are not atomic; concurrent mutations to
+      // `from` between the get and put are not detected. This call costs
+      // both an egress download and an ingest upload — for large files,
+      // prefer doing the copy at the application layer with a different
+      // storage strategy.
       const src = await adapter.download(from, {
         as: "stream",
         signal: opts?.signal,
