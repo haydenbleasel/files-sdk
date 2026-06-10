@@ -265,18 +265,135 @@ describe("tiering — merged listing", () => {
     expect(result.prefixes).toEqual(["cold/", "photos/"]);
   });
 
-  test("an undecodable cursor restarts from the top", async () => {
+  test("an undecodable cursor throws instead of silently restarting", async () => {
     const { files } = harness(prefixRoute);
     await files.upload("a.txt", "1");
     await files.upload("cold/b.txt", "2");
 
-    const fromGarbage = await files.list({ cursor: "not-json" });
-    const fromNumber = await files.list({ cursor: "123" });
-    expect(fromGarbage.items.map((f) => f.key)).toEqual([
-      "a.txt",
-      "cold/b.txt",
+    // A silent restart would re-emit the whole listing as duplicates.
+    await expect(files.list({ cursor: "not-json" })).rejects.toThrow(
+      /invalid list cursor/u
+    );
+    await expect(files.list({ cursor: "123" })).rejects.toThrow(
+      /invalid list cursor/u
+    );
+  });
+
+  test("a key present in both tiers is emitted exactly once across pages", async () => {
+    // Hot holds k1..k9 plus k5; cold holds only k5 (a stale shadow — exactly
+    // the state fallback mode anticipates after a crash mid-eviction). With
+    // one-item pages, the per-page "hot wins" dedup can't see the collision:
+    // cold's k5 arrives on page 1, hot's k5 only on page 5.
+    const hot = pagedAdapter();
+    const cold = pagedAdapter();
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+      await hot.upload(`k${n}`, `hot-${n}`);
+    }
+    await cold.upload("k5", "cold-5");
+
+    const keys: string[] = [];
+    for await (const file of files.listAll()) {
+      keys.push(file.key);
+    }
+    expect(keys).toEqual([
+      "k1",
+      "k2",
+      "k3",
+      "k4",
+      "k5",
+      "k6",
+      "k7",
+      "k8",
+      "k9",
     ]);
-    expect(fromNumber.items.map((f) => f.key)).toEqual(["a.txt", "cold/b.txt"]);
+  });
+
+  test("paginated delimiter listing emits each prefix exactly once", async () => {
+    const hot = pagedAdapter({ supportsDelimiter: true });
+    const cold = pagedAdapter({ supportsDelimiter: true });
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    // "docs/" exists in both tiers, so it surfaces from both streams.
+    await hot.upload("docs/a.txt", "1");
+    await hot.upload("pics/b.jpg", "2");
+    await cold.upload("docs/c.txt", "3");
+    await cold.upload("zzz.txt", "4");
+
+    const prefixes: string[] = [];
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await files.list({
+        delimiter: "/",
+        ...(cursor !== undefined && { cursor }),
+      });
+      prefixes.push(...(page.prefixes ?? []));
+      keys.push(...page.items.map((f) => f.key));
+      ({ cursor } = page);
+    } while (cursor !== undefined);
+    expect(prefixes).toEqual(["docs/", "pics/"]);
+    expect(keys).toEqual(["zzz.txt"]);
+  });
+
+  test("an empty page with a continuation holds the merge until it advances", async () => {
+    // The hot tier stutters: its first page is empty but carries a cursor, so
+    // its coverage is unknowable and nothing can safely be emitted that round.
+    const inner = fakeAdapter();
+    let stuttered = false;
+    const hot: Adapter = {
+      ...inner,
+      list(o?: ListOptions): Promise<ListResult> {
+        if (!stuttered && o?.cursor === undefined) {
+          stuttered = true;
+          return Promise.resolve({ cursor: "real-start", items: [] });
+        }
+        const cursor = o?.cursor === "real-start" ? undefined : o?.cursor;
+        return inner.list({ ...o, cursor, limit: 1 });
+      },
+    };
+    const cold = pagedAdapter();
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    await inner.upload("a.txt", "1");
+    await inner.upload("b.txt", "2");
+    await cold.upload("b.txt", "stale-shadow");
+    await cold.upload("c.txt", "3");
+
+    const keys: string[] = [];
+    for await (const file of files.listAll()) {
+      keys.push(file.key);
+    }
+    expect(keys).toEqual(["a.txt", "b.txt", "c.txt"]);
+  });
+
+  test("a tier that drains early still dedups against later pages", async () => {
+    // Cold drains on its first page having emitted k9; hot reaches k9 pages
+    // later. The held-back re-fetch (skip) must keep cold's k9 from being
+    // emitted again — and hot's k9 must not duplicate it either.
+    const hot = pagedAdapter();
+    const cold = pagedAdapter();
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    for (const n of [1, 2, 3, 4, 5, 9]) {
+      await hot.upload(`k${n}`, `hot-${n}`);
+    }
+    await cold.upload("k9", "cold-9");
+
+    const keys: string[] = [];
+    for await (const file of files.listAll()) {
+      keys.push(file.key);
+    }
+    expect(keys).toEqual(["k1", "k2", "k3", "k4", "k5", "k9"]);
   });
 });
 

@@ -207,12 +207,22 @@ const transferAcross = async (
   await dst.upload(to, file.stream(), uploadOpts);
 };
 
-/** A page split across the two tiers' independent cursors. */
+/**
+ * One tier's slice of the composite cursor. `cursor` is what to query the tier
+ * with next — a provider cursor, or `null` for "from the top" (used when a
+ * page wasn't fully emitted and must be re-fetched). A tier with no slot in
+ * the composite cursor is fully drained *and* fully emitted.
+ */
+interface TierCursor {
+  cursor?: string | null;
+  /** Drop entries (keys and prefixes) `<=` this from the re-fetched page. */
+  skip?: string;
+}
+
+/** A merged listing's composite cursor: one slot per tier still in play. */
 interface ListCursor {
-  /** Hot tier's continuation, present only while the hot tier has more. */
-  h?: string;
-  /** Cold tier's continuation, present only while the cold tier has more. */
-  c?: string;
+  h?: TierCursor;
+  c?: TierCursor;
 }
 
 const decodeCursor = (raw: string): ListCursor | undefined => {
@@ -226,30 +236,157 @@ const decodeCursor = (raw: string): ListCursor | undefined => {
   }
 };
 
+/** One tier's fetched (and skip-filtered) page, plus how it was queried. */
+interface TierPage {
+  items: StoredFile[];
+  prefixes: string[];
+  /** Provider continuation for the page, when the tier has more. */
+  next?: string;
+  /** The cursor this page was queried with (`null` = from the top). */
+  queriedWith: string | null;
+}
+
 /**
- * Fetch one tier's page of a merged listing. A fresh call (no composite cursor)
- * queries from the top; otherwise the tier is queried only while its slot in the
- * cursor is set, and skipped (returns `undefined`) once it's exhausted.
+ * Fetch one tier's page of a merged listing. A fresh call (no composite
+ * cursor) queries from the top; otherwise the tier is queried only while its
+ * slot is present (`undefined` once drained-and-emitted), re-applying the
+ * slot's `skip` so entries already emitted from a re-fetched page stay out.
  */
-const fetchTierPage = (
+const fetchTierPage = async (
   runner: TierRunner,
   base: ListOptions,
-  parsed: ListCursor | undefined,
-  slot: "h" | "c"
-): Promise<ListResult | undefined> => {
-  if (parsed === undefined) {
-    return runner.list(base);
+  slot: TierCursor | undefined,
+  fresh: boolean
+): Promise<TierPage | undefined> => {
+  if (!fresh && slot === undefined) {
+    return undefined;
   }
-  const sub = parsed[slot];
-  if (sub === undefined) {
-    // oxlint-disable-next-line unicorn/no-useless-undefined -- the union return type needs an explicit resolved value.
-    return Promise.resolve(undefined);
-  }
-  return runner.list({ ...base, cursor: sub });
+  const cursor = fresh ? undefined : (slot?.cursor ?? undefined);
+  const page = await runner.list(
+    cursor === undefined ? base : { ...base, cursor }
+  );
+  const skip = fresh ? undefined : slot?.skip;
+  const items =
+    skip === undefined ? page.items : page.items.filter((f) => f.key > skip);
+  const prefixes = (page.prefixes ?? []).filter(
+    (p) => skip === undefined || p > skip
+  );
+  return {
+    items,
+    prefixes,
+    queriedWith: cursor ?? null,
+    ...(page.cursor !== undefined && { next: page.cursor }),
+  };
 };
 
-/** Interleave both tiers' items, deduped (hot wins) and sorted by key. */
-const mergeItems = (pages: (ListResult | undefined)[]): StoredFile[] => {
+/**
+ * The highest key/prefix position a tier's page covers, or `undefined` for an
+ * empty page (an empty page with a continuation covers nothing knowable yet).
+ */
+const pageMax = (page: TierPage): string | undefined => {
+  const lastItem = page.items.at(-1)?.key;
+  const lastPrefix = page.prefixes.at(-1);
+  if (lastItem === undefined) {
+    return lastPrefix;
+  }
+  if (lastPrefix === undefined) {
+    return lastItem;
+  }
+  return lastItem > lastPrefix ? lastItem : lastPrefix;
+};
+
+/**
+ * The merged page's emission bound: entries `<= bound` are emitted now,
+ * entries above it are held back and re-fetched next round. Bounded by the
+ * lowest page-max among tiers that still have more pages, so emission is
+ * globally key-ordered across rounds — that ordering is what makes a
+ * cross-page duplicate (the same key surfacing from both tiers in different
+ * rounds) impossible. `{ emitAll: true }` when every in-play tier is on its
+ * final page; `{ emitNone: true }` when a tier returned an empty page with a
+ * continuation (its coverage is unknowable, so nothing can safely be emitted).
+ */
+const emissionBound = (
+  pages: (TierPage | undefined)[]
+): { bound?: string; emitAll?: boolean; emitNone?: boolean } => {
+  let bound: string | undefined;
+  for (const page of pages) {
+    if (page?.next === undefined) {
+      continue;
+    }
+    const max = pageMax(page);
+    if (max === undefined) {
+      return { emitNone: true };
+    }
+    if (bound === undefined || max < bound) {
+      bound = max;
+    }
+  }
+  return bound === undefined ? { emitAll: true } : { bound };
+};
+
+/** Split a page's entries into the emitted slice and the held-back slice. */
+const splitAtBound = (
+  page: TierPage,
+  bound: { bound?: string; emitAll?: boolean; emitNone?: boolean }
+): { emit: TierPage; held: boolean } => {
+  if (bound.emitAll) {
+    return { emit: page, held: false };
+  }
+  if (bound.emitNone) {
+    // Holding only applies to a page that actually has entries — the tier
+    // that produced the empty page must advance its cursor, or the merged
+    // listing would re-fetch the same empty page forever.
+    return {
+      emit: { ...page, items: [], prefixes: [] },
+      held: page.items.length > 0 || page.prefixes.length > 0,
+    };
+  }
+  const limit = bound.bound as string;
+  const items = page.items.filter((f) => f.key <= limit);
+  const prefixes = page.prefixes.filter((p) => p <= limit);
+  return {
+    emit: { ...page, items, prefixes },
+    held:
+      items.length < page.items.length ||
+      prefixes.length < page.prefixes.length,
+  };
+};
+
+/** A tier's next composite-cursor slot, or `undefined` when it's finished. */
+const nextSlot = (
+  page: TierPage | undefined,
+  held: boolean,
+  bound: { bound?: string; emitNone?: boolean },
+  previousSkip: string | undefined
+): TierCursor | undefined => {
+  if (page === undefined) {
+    return undefined;
+  }
+  if (held) {
+    // Re-fetch the same page next round and drop what was emitted this round
+    // (`emitNone` emitted nothing, so the previous skip still stands).
+    const skip = bound.emitNone ? previousSkip : bound.bound;
+    return { cursor: page.queriedWith, ...(skip !== undefined && { skip }) };
+  }
+  return page.next === undefined ? undefined : { cursor: page.next };
+};
+
+/** One tier's emitted slice and continuation slot for a merged-list round. */
+const tierOutcome = (
+  page: TierPage | undefined,
+  bound: { bound?: string; emitAll?: boolean; emitNone?: boolean },
+  previousSkip: string | undefined
+): { emit?: TierPage; slot?: TierCursor } => {
+  if (page === undefined) {
+    return {};
+  }
+  const { emit, held } = splitAtBound(page, bound);
+  const slot = nextSlot(page, held, bound, previousSkip);
+  return { emit, ...(slot !== undefined && { slot }) };
+};
+
+/** Interleave both tiers' emitted items, deduped (hot wins), sorted by key. */
+const mergeItems = (pages: (TierPage | undefined)[]): StoredFile[] => {
   const seen = new Set<string>();
   const items: StoredFile[] = [];
   for (const page of pages) {
@@ -263,8 +400,8 @@ const mergeItems = (pages: (ListResult | undefined)[]): StoredFile[] => {
   return items.toSorted(byKey);
 };
 
-/** Union both tiers' delimiter prefixes, sorted. */
-const mergePrefixes = (pages: (ListResult | undefined)[]): string[] => {
+/** Union both tiers' emitted delimiter prefixes, sorted. */
+const mergePrefixes = (pages: (TierPage | undefined)[]): string[] => {
   const set = new Set<string>();
   for (const page of pages) {
     for (const prefix of page?.prefixes ?? []) {
@@ -272,21 +409,6 @@ const mergePrefixes = (pages: (ListResult | undefined)[]): string[] => {
     }
   }
   return [...set].toSorted();
-};
-
-/** Build the next composite cursor, or `undefined` when both tiers are drained. */
-const buildCursor = (
-  hotPage: ListResult | undefined,
-  coldPage: ListResult | undefined
-): string | undefined => {
-  const next: ListCursor = {
-    ...(hotPage?.cursor !== undefined && { h: hotPage.cursor }),
-    ...(coldPage?.cursor !== undefined && { c: coldPage.cursor }),
-  };
-  if (next.h === undefined && next.c === undefined) {
-    return undefined;
-  }
-  return JSON.stringify(next);
 };
 
 /**
@@ -476,16 +598,32 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     opts?: ListOptions
   ): Promise<ListResult> => {
     const { cursor: rawCursor, ...base } = opts ?? {};
-    const parsed =
-      rawCursor === undefined ? undefined : decodeCursor(rawCursor);
+    const fresh = rawCursor === undefined;
+    const parsed = fresh ? undefined : decodeCursor(rawCursor);
+    if (!fresh && parsed === undefined) {
+      throw new FilesError(
+        "Provider",
+        "tiering: invalid list cursor — pass back the cursor a tiering list returned"
+      );
+    }
     const [hotPage, coldPage] = await Promise.all([
-      fetchTierPage(hot, base, parsed, "h"),
-      fetchTierPage(cold, base, parsed, "c"),
+      fetchTierPage(hot, base, parsed?.h, fresh),
+      fetchTierPage(cold, base, parsed?.c, fresh),
     ]);
 
-    const items = mergeItems([hotPage, coldPage]);
-    const prefixes = mergePrefixes([hotPage, coldPage]);
-    const cursor = buildCursor(hotPage, coldPage);
+    const bound = emissionBound([hotPage, coldPage]);
+    const hotOut = tierOutcome(hotPage, bound, parsed?.h?.skip);
+    const coldOut = tierOutcome(coldPage, bound, parsed?.c?.skip);
+
+    const items = mergeItems([hotOut.emit, coldOut.emit]);
+    const prefixes = mergePrefixes([hotOut.emit, coldOut.emit]);
+    const cursor =
+      hotOut.slot === undefined && coldOut.slot === undefined
+        ? undefined
+        : JSON.stringify({
+            ...(hotOut.slot !== undefined && { h: hotOut.slot }),
+            ...(coldOut.slot !== undefined && { c: coldOut.slot }),
+          } satisfies ListCursor);
     return {
       items,
       ...(prefixes.length > 0 && { prefixes }),
