@@ -540,7 +540,10 @@ export const deleteManyWithFallback = async (
         index += 1;
         const key = keys[current];
         if (key === undefined) {
-          return;
+          // A sparse/`undefined` slot (only reachable past the type system)
+          // skips just that slot — `return` would kill this worker and, at
+          // low concurrency, silently strand every key after it.
+          continue;
         }
         try {
           await remove(key);
@@ -624,7 +627,10 @@ export const mapMany = async <Item, Out>(
         index += 1;
         const item = items[current];
         if (item === undefined) {
-          return;
+          // A sparse/`undefined` slot (only reachable past the type system)
+          // skips just that slot — `return` would kill this worker and, at
+          // low concurrency, silently strand every item after it.
+          continue;
         }
         try {
           succeeded[current] = await run(item);

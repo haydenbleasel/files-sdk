@@ -115,6 +115,24 @@ describe("deleteManyWithFallback", () => {
     expect(result.errors).toBeUndefined();
     expect(removed).toEqual(["a", "c"]);
   });
+
+  test("a sparse slot doesn't strand later keys at low concurrency", async () => {
+    // With one worker, an `undefined` slot used to kill the whole pool —
+    // every key after the hole was silently neither deleted nor reported.
+    const keys: string[] = ["a"];
+    keys[2] = "c";
+    const removed: string[] = [];
+    const result = await deleteManyWithFallback(
+      keys,
+      (key) => {
+        removed.push(key);
+        return Promise.resolve();
+      },
+      { concurrency: 1 }
+    );
+    expect(result.deleted).toEqual(["a", "c"]);
+    expect(removed).toEqual(["a", "c"]);
+  });
 });
 
 describe("mapMany", () => {
@@ -126,5 +144,17 @@ describe("mapMany", () => {
       { stopOnError: true }
     );
     expect(result).toEqual({ errors: [], results: ["A", "B"] });
+  });
+
+  test("a sparse slot doesn't strand later items at low concurrency", async () => {
+    const items: string[] = ["a"];
+    items[2] = "c";
+    const result = await mapMany(
+      items,
+      (item) => item,
+      (item) => Promise.resolve(item.toUpperCase()),
+      { concurrency: 1 }
+    );
+    expect(result).toEqual({ errors: [], results: ["A", "C"] });
   });
 });
