@@ -888,12 +888,6 @@ export const PROVIDERS = {
           readBy: "files-sdk",
           secret: false,
         },
-        {
-          description: "Force path-style addressing (Neon requires it; defaults to true)",
-          key: "NEON_STORAGE_FORCE_PATH_STYLE",
-          readBy: "files-sdk",
-          secret: false,
-        },
       ],
       required: [
         {

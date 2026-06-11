@@ -16,7 +16,6 @@ const NEON_ENV_KEYS = [
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
   "NEON_STORAGE_REGION",
-  "NEON_STORAGE_FORCE_PATH_STYLE",
 ] as const;
 
 const ENDPOINT = "https://br-cool-moon-42.storage.example.neon.tech";
@@ -110,29 +109,6 @@ describe("neon adapter", () => {
         secretAccessKey: "SECRET",
       })
     ).toThrow(/endpoint/u);
-  });
-
-  test("NEON_STORAGE_FORCE_PATH_STYLE=false disables path-style", async () => {
-    process.env.NEON_STORAGE_FORCE_PATH_STYLE = "false";
-    const adapter = neon({
-      accessKeyId: "AKID",
-      bucket: "images",
-      endpoint: ENDPOINT,
-      secretAccessKey: "SECRET",
-    });
-    expect(await (adapter.raw as S3Client).config.forcePathStyle).toBe(false);
-  });
-
-  test("explicit forcePathStyle option wins over the env var", async () => {
-    process.env.NEON_STORAGE_FORCE_PATH_STYLE = "false";
-    const adapter = neon({
-      accessKeyId: "AKID",
-      bucket: "images",
-      endpoint: ENDPOINT,
-      forcePathStyle: true,
-      secretAccessKey: "SECRET",
-    });
-    expect(await (adapter.raw as S3Client).config.forcePathStyle).toBe(true);
   });
 
   test("url() returns a presigned GET URL by default", async () => {

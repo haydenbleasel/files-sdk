@@ -33,15 +33,6 @@ export interface NeonAdapterOptions {
    */
   secretAccessKey?: string;
   /**
-   * Use path-style addressing (`https://endpoint/bucket/key`). Defaults to
-   * `true` — Neon object storage **requires** it: the wildcard TLS cert covers
-   * one subdomain level (`*.storage.<suffix>`), which the branch id occupies,
-   * so the bucket name must travel in the request path. Honors
-   * `NEON_STORAGE_FORCE_PATH_STYLE` when the option is unset. There is rarely a
-   * reason to turn this off.
-   */
-  forcePathStyle?: boolean;
-  /**
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips signing — appropriate for a bucket
    * fronted by a CDN or custom domain. When unset, `url()` falls back to a
@@ -60,20 +51,6 @@ export type NeonAdapter = Adapter<S3Client> & {
 };
 
 const NEON_DEFAULT_REGION = "us-east-1";
-
-// `neon dev` / `neon env pull` set NEON_STORAGE_FORCE_PATH_STYLE to "true"
-// today. Mirror `@neondatabase/env`'s parser: default to path-style, and only
-// disable it on an explicit "false".
-const resolveForcePathStyle = (opt: boolean | undefined): boolean => {
-  if (opt !== undefined) {
-    return opt;
-  }
-  const fromEnv = readEnv("NEON_STORAGE_FORCE_PATH_STYLE");
-  if (fromEnv === undefined) {
-    return true;
-  }
-  return fromEnv.trim().toLowerCase() !== "false";
-};
 
 export const neon = (opts: NeonAdapterOptions): NeonAdapter => {
   const endpoint = opts.endpoint ?? readEnv("AWS_ENDPOINT_URL_S3");
@@ -106,7 +83,10 @@ export const neon = (opts: NeonAdapterOptions): NeonAdapter => {
     // users don't see "S3 error" from their Neon adapter.
     defaultProviderMessage: "Neon error",
     endpoint,
-    forcePathStyle: resolveForcePathStyle(opts.forcePathStyle),
+    // Neon object storage requires path-style addressing — the wildcard TLS
+    // cert covers one subdomain level, occupied by the branch id, so the bucket
+    // name must travel in the request path. Always on; not configurable.
+    forcePathStyle: true,
     ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
     region,
   });

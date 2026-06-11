@@ -41,7 +41,7 @@ await files.upload("avatars/abc.png", file, { contentType: "image/png" });
 const url = await files.url("avatars/abc.png", { expiresIn: 300 });
 ```
 
-Path-style addressing is **required**: Neon's wildcard TLS certificate covers a single subdomain level (`*.storage.<suffix>`), which the branch id occupies, so the bucket name must travel in the request path. The adapter sets `forcePathStyle: true` by default - leave it on.
+Path-style addressing is **required**: Neon's wildcard TLS certificate covers a single subdomain level (`*.storage.<suffix>`), which the branch id occupies, so the bucket name must travel in the request path. The adapter always uses path-style addressing.
 
 ## Options
 
