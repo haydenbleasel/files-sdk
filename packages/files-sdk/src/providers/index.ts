@@ -854,6 +854,60 @@ export const PROVIDERS = {
     peerDeps: AWS_S3_PEERS,
     slug: "minio",
   },
+  neon: {
+    description:
+      "Neon branchable object storage via the S3-compatible API. `neon dev` / `neon env pull` inject the standard AWS_* env vars for the linked branch; path-style addressing is required.",
+    env: {
+      config: ["bucket"],
+      credentialModes: [
+        {
+          label: "AWS credential chain (Neon injects AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)",
+          vars: [
+            {
+              description: "Access key ID (the Neon branch credential's token id)",
+              key: "AWS_ACCESS_KEY_ID",
+              readBy: "sdk-chain",
+              secret: true,
+            },
+            {
+              description: "Secret access key (the Neon branch credential secret)",
+              key: "AWS_SECRET_ACCESS_KEY",
+              readBy: "sdk-chain",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "`neon dev` and `neon env pull` inject every variable below from the linked branch (the credentials resolve through the AWS SDK chain via the standard AWS_* names). Object storage requires path-style addressing, which the adapter enables by default.",
+      optional: [
+        {
+          aliases: ["NEON_STORAGE_REGION"],
+          description: "SigV4 region (Neon injects it under both names; defaults to us-east-1)",
+          key: "AWS_REGION",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          description: "Force path-style addressing (Neon requires it; defaults to true)",
+          key: "NEON_STORAGE_FORCE_PATH_STYLE",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+      required: [
+        {
+          description: "The branch's S3-compatible endpoint URL",
+          key: "AWS_ENDPOINT_URL_S3",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "Neon",
+    peerDeps: AWS_S3_PEERS,
+    slug: "neon",
+  },
   "netlify-blobs": {
     description:
       "Netlify Blobs via @netlify/blobs. Auto-detects siteID and token on Netlify runtimes; falls back to env vars elsewhere.",

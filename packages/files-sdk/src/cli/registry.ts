@@ -352,6 +352,15 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     },
     required: ["--bucket", "--endpoint"],
   },
+  neon: {
+    load: async (opts) => {
+      const { neon } = await import("../neon/index.js");
+      return cast(neon, merge(s3LikeOpts(opts), opts.extra));
+    },
+    notes:
+      "endpoint comes from AWS_ENDPOINT_URL_S3 (injected by `neon dev` / `neon env pull`) or pass --endpoint; credentials resolve from the AWS_* env vars Neon injects",
+    required: ["--bucket"],
+  },
   "netlify-blobs": {
     load: async (opts) => {
       const { netlifyBlobs } = await import("../netlify-blobs/index.js");

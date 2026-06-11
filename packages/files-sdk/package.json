@@ -114,6 +114,10 @@
       "types": "./dist/minio/index.d.ts",
       "import": "./dist/minio/index.js"
     },
+    "./neon": {
+      "types": "./dist/neon/index.d.ts",
+      "import": "./dist/neon/index.js"
+    },
     "./digitalocean-spaces": {
       "types": "./dist/digitalocean-spaces/index.d.ts",
       "import": "./dist/digitalocean-spaces/index.js"

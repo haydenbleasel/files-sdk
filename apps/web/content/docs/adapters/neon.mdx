@@ -1,0 +1,66 @@
+---
+title: Neon
+description: Neon branchable object storage via the S3-compatible API. neon dev / neon env pull inject the AWS_* env vars; path-style addressing is required.
+peerDeps:
+  - "@aws-sdk/client-s3"
+  - "@aws-sdk/s3-presigned-post"
+  - "@aws-sdk/s3-request-presigner"
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { neon } from "files-sdk/neon";
+
+const files = new Files({
+  adapter: neon({
+    bucket: "images",
+    // endpoint defaults to AWS_ENDPOINT_URL_S3
+    // region defaults to AWS_REGION (then NEON_STORAGE_REGION, then us-east-1)
+    // accessKeyId / secretAccessKey resolve from the AWS credential chain
+    // (the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY Neon injects)
+  }),
+});
+```
+
+Neon branchable object storage via its S3-compatible API. A thin wrapper around the S3 adapter - errors relabelled, path-style addressing on by default. Declare a bucket in your `neon.ts` policy (`preview.buckets`), then run `neon dev` (or `neon env pull`) to mint a branch credential and inject the standard `AWS_*` variables. Inside a deployed Neon Function the same variables are present, so the adapter works from env alone:
+
+```ts lineNumbers
+const files = new Files({ adapter: neon({ bucket: "images" }) });
+
+await files.upload("avatars/abc.png", file, { contentType: "image/png" });
+const url = await files.url("avatars/abc.png", { expiresIn: 300 });
+```
+
+Path-style addressing is **required**: Neon's wildcard TLS certificate covers a single subdomain level (`*.storage.<suffix>`), which the branch id occupies, so the bucket name must travel in the request path. The adapter sets `forcePathStyle: true` by default - leave it on.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/neon/index.ts"
+  name="NeonAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |
