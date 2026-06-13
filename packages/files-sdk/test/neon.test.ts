@@ -28,14 +28,14 @@ describe("neon adapter", () => {
     saved = {};
     for (const key of NEON_ENV_KEYS) {
       saved[key] = process.env[key];
-      delete process.env[key];
+      Reflect.deleteProperty(process.env, key);
     }
   });
 
   afterEach(() => {
     for (const key of NEON_ENV_KEYS) {
       if (saved[key] === undefined) {
-        delete process.env[key];
+        Reflect.deleteProperty(process.env, key);
       } else {
         process.env[key] = saved[key];
       }
@@ -84,7 +84,9 @@ describe("neon adapter", () => {
       endpoint: ENDPOINT,
       secretAccessKey: "SECRET",
     });
-    expect(await (adapter.raw as S3Client).config.region()).toBe("eu-central-1");
+    expect(await (adapter.raw as S3Client).config.region()).toBe(
+      "eu-central-1"
+    );
   });
 
   test("explicit endpoint overrides the env var", async () => {
@@ -190,7 +192,10 @@ describe("neon adapter", () => {
       Provider: "Neon error",
       Unauthorized: "Unauthorized",
     } as const;
-    const err = mapS3Error({ $metadata: { httpStatusCode: 500 } }, neonMessages);
+    const err = mapS3Error(
+      { $metadata: { httpStatusCode: 500 } },
+      neonMessages
+    );
     expect(err.code).toBe("Provider");
     expect(err.message).toBe("Neon error");
   });

@@ -123,6 +123,11 @@ const cases: Record<string, Case> = {
     expectedName: "minio",
     opts: { ...baseS3, endpoint: "http://localhost:9000" },
   },
+  neon: {
+    expectedName: "neon",
+    // neon() requires an endpoint (or AWS_ENDPOINT_URL_S3); baseS3 has none.
+    opts: { ...baseS3, endpoint: "https://br.storage.example.neon.tech" },
+  },
   "netlify-blobs": {
     expectedName: "netlify-blobs",
     // Both siteId + token are required for explicit-auth mode; without both

@@ -861,16 +861,19 @@ export const PROVIDERS = {
       config: ["bucket"],
       credentialModes: [
         {
-          label: "AWS credential chain (Neon injects AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)",
+          label:
+            "AWS credential chain (Neon injects AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)",
           vars: [
             {
-              description: "Access key ID (the Neon branch credential's token id)",
+              description:
+                "Access key ID (the Neon branch credential's token id)",
               key: "AWS_ACCESS_KEY_ID",
               readBy: "sdk-chain",
               secret: true,
             },
             {
-              description: "Secret access key (the Neon branch credential secret)",
+              description:
+                "Secret access key (the Neon branch credential secret)",
               key: "AWS_SECRET_ACCESS_KEY",
               readBy: "sdk-chain",
               secret: true,
@@ -883,7 +886,8 @@ export const PROVIDERS = {
       optional: [
         {
           aliases: ["NEON_STORAGE_REGION"],
-          description: "SigV4 region (Neon injects it under both names; defaults to us-east-1)",
+          description:
+            "SigV4 region (Neon injects it under both names; defaults to us-east-1)",
           key: "AWS_REGION",
           readBy: "files-sdk",
           secret: false,
