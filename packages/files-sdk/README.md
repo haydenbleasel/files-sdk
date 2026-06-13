@@ -97,9 +97,10 @@ LIVE_TESTS=1 S3_LIVE_BUCKET=my-bucket AWS_REGION=us-east-1 \
   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... bun test s3.live
 ```
 
-Live tests never run on `pull_request` from forks. In CI they run only via the
-`Live tests` workflow — manually (`workflow_dispatch`) or when a maintainer
-applies the `live-tests` label — with credentials from repo secrets.
+Live tests never run on `pull_request` from forks. In CI they run only when a
+maintainer triggers the `Live tests` workflow manually (`workflow_dispatch`) —
+typically against `main` after a PR has merged — with credentials from repo
+secrets.
 
 ## License
 

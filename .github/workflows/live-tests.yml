@@ -2,38 +2,26 @@ name: Live tests
 
 # Live tests hit real providers and require credentials, so they must never run
 # on `pull_request` from forks (where secrets aren't exposed anyway, and where a
-# malicious PR could try to exfiltrate them). They run only when a maintainer
-# explicitly asks:
-#
-#   - `workflow_dispatch`: run manually from the Actions tab.
-#   - `pull_request_target` + the `live-tests` label: a maintainer adds the
-#     label to a PR they've reviewed. `pull_request_target` runs in the base
-#     repo's context, so we explicitly check out the *base* ref (never the
-#     untrusted PR head) to keep credentials out of fork-controlled code.
+# malicious PR could try to exfiltrate them). They run only on `workflow_dispatch`
+# — a maintainer triggers them manually from the Actions tab, against a branch
+# they've chosen (typically `main` after a PR has merged). The job runs trusted
+# in-repo code only, so credentials are never exposed to fork-controlled code.
 #
 # Credentials come from repo secrets; the per-adapter env gate in
 # `test/live-helper.ts` skips any suite whose secrets are absent.
 
 on:
   workflow_dispatch:
-  pull_request_target:
-    types: [labeled]
 
 permissions:
   contents: read
 
 jobs:
   live:
-    # Only run on manual dispatch, or when the `live-tests` label is applied.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.label.name == 'live-tests'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout base ref (never the untrusted PR head)
+      - name: Checkout
         uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         name: Install Bun
@@ -52,4 +40,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           S3_LIVE_BUCKET: ${{ secrets.S3_LIVE_BUCKET }}
-        run: bun test '*.live'
+        # `.live.test` is a substring path filter (Bun filters are substrings,
+        # not globs), so it matches every `*.live.test.ts` suite. A filter that
+        # matches nothing exits non-zero, so a broken filter fails loudly rather
+        # than silently running zero tests.
+        run: bun test .live.test
