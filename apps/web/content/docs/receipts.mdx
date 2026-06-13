@@ -21,7 +21,7 @@ const files = new Files({
 });
 
 await files.upload("reports/q3.pdf", pdf);
-// event.receipt -> { op: "upload", provider: "s3", adapter: "s3",
+// event.receipt -> { op: "upload", provider: "s3",
 //   key: "reports/q3.pdf", bytes: 48213, etag: "\"a1b2…\"",
 //   durationMs: 31, ts: 1733788800123 }
 ```

@@ -59,8 +59,6 @@ export interface Receipt {
   op: ReceiptOp;
   /** The storage provider, from the adapter's `name` (e.g. `"s3"`, `"r2"`). */
   provider: string;
-  /** The adapter instance name — same source as {@link Receipt.provider}. */
-  adapter: string;
   /**
    * Caller-facing key the content landed at — the upload/delete key, or a
    * `copy` / `move` destination. Always the un-prefixed key the caller passed.
@@ -81,7 +79,7 @@ export interface Receipt {
 /** The action-derived inputs a {@link Receipt} is assembled from. */
 export interface ReceiptInput {
   op: ReceiptOp;
-  adapter: string;
+  provider: string;
   key: string;
   bytes?: number;
   etag?: string;
@@ -93,15 +91,14 @@ export interface ReceiptInput {
 /**
  * Assemble a {@link Receipt} from the fields the action wrapper already holds,
  * plus an optional pre-computed `sha256`. Optional fields are omitted (rather
- * than set to `undefined`) so a receipt for a `delete` is `{ op, provider,
- * adapter, key, durationMs, ts }` with no dangling keys.
+ * than set to `undefined`) so a receipt for a `delete` is `{ op, provider, key,
+ * durationMs, ts }` with no dangling keys.
  */
 export const buildReceipt = (input: ReceiptInput): Receipt => ({
-  adapter: input.adapter,
   durationMs: input.durationMs,
   key: input.key,
   op: input.op,
-  provider: input.adapter,
+  provider: input.provider,
   ts: input.ts,
   ...(input.bytes !== undefined && { bytes: input.bytes }),
   ...(input.etag !== undefined && { etag: input.etag }),

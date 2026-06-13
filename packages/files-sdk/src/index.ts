@@ -1500,7 +1500,7 @@ export class Files<A extends Adapter = Adapter> {
   async #action<T>(
     ctx: ActionContext,
     fn: () => Promise<T>,
-    sha256?: string
+    sha256Of?: () => Promise<string | undefined>
   ): Promise<T> {
     const hooks = this.#hooks;
     if (!(hooks?.onAction || hooks?.onError)) {
@@ -1511,20 +1511,29 @@ export class Files<A extends Adapter = Adapter> {
       const result = await fn();
       const settledAt = Date.now();
       const durationMs = settledAt - startedAt;
-      const receipt = this.#makeReceipt(
-        ctx,
-        result,
-        durationMs,
-        settledAt,
-        sha256
-      );
-      emitHook(hooks.onAction, {
-        ...ctx,
-        durationMs,
-        result,
-        status: "success",
-        ...(receipt && { receipt }),
-      });
+      if (hooks.onAction) {
+        // The fingerprint is resolved here — on the success path, and only when
+        // an `onAction` is present to receive it — so a missing receipt
+        // consumer, or an upload that failed, never reads or hashes the body.
+        // `sha256Of` swallows its own read/hash errors: a receipt must never
+        // break the operation it observes.
+        const sha256 =
+          this.#receipts.sha256 && sha256Of ? await sha256Of() : undefined;
+        const receipt = this.#makeReceipt(
+          ctx,
+          result,
+          durationMs,
+          settledAt,
+          sha256
+        );
+        emitHook(hooks.onAction, {
+          ...ctx,
+          durationMs,
+          result,
+          status: "success",
+          ...(receipt && { receipt }),
+        });
+      }
       return result;
     } catch (error) {
       const wrapped = FilesError.wrap(error);
@@ -1573,10 +1582,10 @@ export class Files<A extends Adapter = Adapter> {
         ? (result as Partial<UploadResult>)
         : undefined;
     return buildReceipt({
-      adapter: this.#adapter.name,
       durationMs,
       key,
       op,
+      provider: this.#adapter.name,
       ts,
       ...(typeof upload?.size === "number" && { bytes: upload.size }),
       ...(typeof upload?.etag === "string" && { etag: upload.etag }),
@@ -1668,7 +1677,7 @@ export class Files<A extends Adapter = Adapter> {
   #writeAction<T>(
     ctx: ActionContext & { type: WriteActionType },
     fn: () => Promise<T>,
-    sha256?: string
+    sha256Of?: () => Promise<string | undefined>
   ): Promise<T> {
     return this.#action(
       ctx,
@@ -1676,23 +1685,29 @@ export class Files<A extends Adapter = Adapter> {
         this.#assertWritable(ctx.type);
         return fn();
       },
-      sha256
+      sha256Of
     );
   }
 
   /**
    * The SHA-256 to stamp on a single `upload`'s receipt, or `undefined` when
-   * the caller didn't ask for one (`receipts` off, or on without `sha256`) or
-   * the body is a stream the SDK won't buffer. This is the **only** per-call
-   * cost the receipts feature can incur, and it's gated entirely on
-   * `receipts: { sha256: true }` — with that off, the body is never read.
+   * the body is a stream the SDK won't buffer, or reading/hashing it fails.
+   * This is the **only** per-call cost the receipts feature can incur; it's
+   * invoked from {@link Files.#action} on the success path, gated on
+   * `receipts: { sha256: true }`. A read or digest error degrades to no
+   * fingerprint rather than rejecting — a receipt must never break the upload
+   * it describes.
    */
   async #uploadSha256(body: Body): Promise<string | undefined> {
     if (!(this.#receipts.enabled && this.#receipts.sha256)) {
       return;
     }
-    const bytes = await bufferedBodyBytes(body);
-    return bytes === undefined ? undefined : await sha256Hex(bytes);
+    try {
+      const bytes = await bufferedBodyBytes(body);
+      return bytes === undefined ? undefined : await sha256Hex(bytes);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1734,24 +1749,18 @@ export class Files<A extends Adapter = Adapter> {
       key: keyOrItems,
       type: "upload",
     };
-    const run = (sha256?: string) =>
-      this.#writeAction(
-        ctx,
-        () =>
-          this.#dispatch(
-            { body, key: keyOrItems, kind: "upload", options: opts },
-            (op) => this.#perform(op)
-          ),
-        sha256
-      );
-    // The hash is computed from a buffered copy of the body before dispatch;
-    // the body itself is handed to the adapter untouched. When `receipts.sha256`
-    // is off, `#uploadSha256` returns immediately without reading the body, so
-    // the common path takes the synchronous branch and adds nothing.
-    if (!(this.#receipts.enabled && this.#receipts.sha256)) {
-      return run();
-    }
-    return this.#uploadSha256(body).then(run);
+    // The body is handed to the adapter untouched. Any `sha256` is taken from it
+    // lazily on the success path (see `#action`), so an upload with no receipt
+    // consumer — or one that fails — never reads or hashes the body.
+    return this.#writeAction(
+      ctx,
+      () =>
+        this.#dispatch(
+          { body, key: keyOrItems, kind: "upload", options: opts },
+          (op) => this.#perform(op)
+        ),
+      () => this.#uploadSha256(body)
+    );
   }
 
   /**

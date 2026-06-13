@@ -98,7 +98,6 @@ describe("receipts — on, without sha256", () => {
     expect(rec.receipts).toHaveLength(1);
     const [receipt] = rec.receipts;
     expect(receipt).toMatchObject({
-      adapter: "fake",
       // bytes / etag are derived from the UploadResult, not recomputed.
       bytes: result.size,
       etag: result.etag,
@@ -192,6 +191,45 @@ describe("receipts — sha256 only when asked", () => {
       expect(rec.receipts).toHaveLength(1);
       expect(rec.receipts[0]?.sha256).toBeUndefined();
       expect(digest).not.toHaveBeenCalled();
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  test("the body is not hashed when there's no `onAction` consumer", async () => {
+    const digest = spyOn(crypto.subtle, "digest");
+    try {
+      // sha256 is requested, but only `onError` is wired up — there's nowhere
+      // for a receipt to land, so the fingerprint is never computed.
+      const files = new Files({
+        adapter: fakeAdapter(),
+        hooks: { onError: () => {} },
+        receipts: { sha256: true },
+      });
+      await files.upload("a.txt", "hello");
+      expect(digest).not.toHaveBeenCalled();
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  test("a hashing failure omits sha256 but does not fail the upload", async () => {
+    const digest = spyOn(crypto.subtle, "digest").mockImplementation(() =>
+      Promise.reject(new Error("digest unavailable"))
+    );
+    try {
+      const rec = receiptRecorder();
+      const files = new Files({
+        adapter: fakeAdapter(),
+        hooks: rec.hooks,
+        receipts: { sha256: true },
+      });
+      // The upload still succeeds — a receipt must never break the op it
+      // observes — and its receipt simply carries no fingerprint.
+      const result = await files.upload("a.txt", "hello");
+      expect(result).toMatchObject({ key: "a.txt", size: 5 });
+      expect(rec.receipts).toHaveLength(1);
+      expect(rec.receipts[0]?.sha256).toBeUndefined();
     } finally {
       digest.mockRestore();
     }
