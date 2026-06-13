@@ -935,10 +935,13 @@ export interface FilesOptions<A extends Adapter> extends OperationOptions {
    * - `true` — attach a {@link Receipt} (without `sha256`) to the success
    *   {@link FilesActionEvent} of each mutating call. Every field is derived
    *   from work the SDK already does, so this adds no per-call cost.
-   * - `{ sha256: true }` — additionally fingerprint the uploaded bytes. This is
-   *   the one field with a real per-call cost, so it stays off until asked for
-   *   by name. The `sha256` is present only on an `upload` of a buffered body;
-   *   a streaming upload (which the SDK never buffers) omits it.
+   * - `{ sha256: true }` — additionally fingerprint the upload body, taken
+   *   **as passed to `upload()`** (before any plugin transform). This is the one
+   *   field with a real per-call cost, so it stays off until asked for by name.
+   *   The `sha256` is present only on an `upload` of a buffered body; a
+   *   streaming upload (which the SDK never buffers) omits it. With a
+   *   body-transforming plugin (`encryption`, `compression`) the stored bytes
+   *   differ from this hash, but it matches what `download` returns.
    *
    * Receipts ride on the existing {@link FilesHooks.onAction} event as an
    * additive `receipt` field, so reading them is `new Files({ receipts: true,

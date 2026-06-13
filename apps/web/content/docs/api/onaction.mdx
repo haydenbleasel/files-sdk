@@ -59,7 +59,7 @@ hooks: {
 
 ## Provenance receipts
 
-With the [`receipts`](/receipts) option on, a successful mutating call (`upload`, `delete`, `copy`, `move`) also carries a `receipt` - a provenance record with the op, provider, key, byte size, etag, timing, and (when asked for) a SHA-256 of the uploaded bytes. It's an additive field: absent on reads, on failures, and whenever receipts are off.
+With the [`receipts`](/receipts) option on, a successful mutating call (`upload`, `delete`, `copy`, `move`) also carries a `receipt` - a provenance record with the op, provider, key, byte size, etag, timing, and (when asked for) a SHA-256 of the upload body. It's an additive field: absent on reads, on failures, and whenever receipts are off.
 
 ```ts lineNumbers
 hooks: {

@@ -1,8 +1,21 @@
 import { describe, expect, spyOn, test } from "bun:test";
 
-import { Files } from "../src/index.js";
-import type { FilesActionEvent, Receipt } from "../src/index.js";
+import { Files, handlers } from "../src/index.js";
+import type { FilesActionEvent, FilesPlugin, Receipt } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
+
+/**
+ * A body-transforming plugin, like `encryption` / `compression`: it swaps the
+ * upload body for different bytes before the adapter ever sees it. Used to pin
+ * down what `sha256` attests — the body the caller passed, not the stored bytes.
+ */
+const bodyRewriter = (): FilesPlugin => ({
+  name: "body-rewriter",
+  wrap: handlers({
+    upload: (op, next) =>
+      next({ ...op, body: new TextEncoder().encode("TRANSFORMED") }),
+  }),
+});
 
 // SHA-256 of the ASCII string "hello", lowercase hex.
 const SHA256_HELLO =
@@ -194,6 +207,25 @@ describe("receipts — sha256 only when asked", () => {
     } finally {
       digest.mockRestore();
     }
+  });
+
+  test("sha256 fingerprints the caller's body, not a plugin-transformed one", async () => {
+    const rec = receiptRecorder();
+    const files = new Files({
+      adapter: fakeAdapter(),
+      hooks: rec.hooks,
+      plugins: [bodyRewriter()],
+      receipts: { sha256: true },
+    });
+
+    await files.upload("a.txt", "hello");
+
+    // The plugin rewrote the body, so the adapter stored different bytes...
+    const stored = await files.download("a.txt");
+    expect(await stored.text()).toBe("TRANSFORMED");
+    // ...but the receipt fingerprints the "hello" the caller passed — the value
+    // a transparent round-trip (which reverses the transform) can verify.
+    expect(rec.receipts[0]?.sha256).toBe(SHA256_HELLO);
   });
 
   test("the body is not hashed when there's no `onAction` consumer", async () => {

@@ -48,11 +48,17 @@ export const resolveReceiptsConfig = (
  * adds no work beyond what the hook payload already computed.
  *
  * `sha256` is the sole genuinely new field, and the only one with a real
- * per-call cost: it's the lowercase-hex SHA-256 of the uploaded bytes, computed
- * **only** when `receipts: { sha256: true }` is set, and present **only** on an
- * `upload` of a buffered body. It is omitted (left `undefined`) when not asked
- * for, on non-`upload` ops, and on streaming uploads (whose bytes the SDK never
- * buffers).
+ * per-call cost: it's the lowercase-hex SHA-256 of the body **exactly as passed
+ * to `upload()`**, computed **only** when `receipts: { sha256: true }` is set,
+ * and present **only** on an `upload` of a buffered body. It is omitted (left
+ * `undefined`) when not asked for, on non-`upload` ops, and on streaming uploads
+ * (whose bytes the SDK never buffers).
+ *
+ * The fingerprint is taken **before** any plugin transform. With a
+ * body-transforming plugin (e.g. `encryption`, `compression`) the bytes stored
+ * on disk differ from this hash, but it still matches what a `download` returns
+ * — reads reverse the same transforms — so it's the value a round-trip
+ * verification can actually check.
  */
 export interface Receipt {
   /** The mutating verb that produced this receipt. */
@@ -66,7 +72,10 @@ export interface Receipt {
   key: string;
   /** Stored byte size, when the settled result reports one (`upload`). */
   bytes?: number;
-  /** Lowercase-hex SHA-256 of the uploaded bytes — see {@link Receipt}. */
+  /**
+   * Lowercase-hex SHA-256 of the body as passed to `upload()`, before any
+   * plugin transform — see {@link Receipt}.
+   */
   sha256?: string;
   /** Entity tag the provider returned, when present (`upload`). */
   etag?: string;

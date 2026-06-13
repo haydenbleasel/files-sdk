@@ -3,7 +3,7 @@ title: Receipts
 description: Opt into a provenance Receipt for every mutating call - op, provider, key, bytes, etag, timing, and an optional SHA-256 - delivered on the onAction hook. Off by default, and never hashes unless you ask.
 ---
 
-A **receipt** is a provenance record for a single mutating call (`upload`, `delete`, `copy`, `move`): what landed where, how big it was, how long it took, and - when you ask - a SHA-256 fingerprint of the uploaded bytes. It's built for tool wrappers and agents that need to attest "this exact content was written to this key", without bolting on a separate operation or a middleware layer.
+A **receipt** is a provenance record for a single mutating call (`upload`, `delete`, `copy`, `move`): what landed where, how big it was, how long it took, and - when you ask - a SHA-256 fingerprint of the content you upload. It's built for tool wrappers and agents that need to attest "this exact content was written to this key", without bolting on a separate operation or a middleware layer.
 
 Receipts are **off by default**. An instance without the option behaves exactly as before: nothing is recorded, and nothing is hashed.
 
@@ -56,9 +56,13 @@ const files = new Files({
 });
 ```
 
-`sha256` is the lowercase-hex SHA-256 of the uploaded bytes. It is computed **only** when you pass `{ sha256: true }`, and present **only** on an `upload` of a buffered body (a string, `Uint8Array`, `ArrayBuffer`, typed-array view, or `Blob`). A **streaming** upload is handed to the adapter without ever being buffered, so it carries no fingerprint - the SDK won't silently buffer a stream to hash it. `delete`, `copy`, and `move` transfer no content of their own, so they never carry one either.
+`sha256` is the lowercase-hex SHA-256 of the body **as you pass it to `upload()`**. It is computed **only** when you pass `{ sha256: true }`, and present **only** on an `upload` of a buffered body (a string, `Uint8Array`, `ArrayBuffer`, typed-array view, or `Blob`). A **streaming** upload is handed to the adapter without ever being buffered, so it carries no fingerprint - the SDK won't silently buffer a stream to hash it. `delete`, `copy`, and `move` transfer no content of their own, so they never carry one either.
 
 With `receipts: true` (or `{ sha256: false }`), the body is never read and no hash is taken.
+
+### Plugins that transform the body
+
+The fingerprint is taken **before** any plugin runs. If you compose the instance with a body-transforming plugin - [`encryption`](/plugins/encryption) writes ciphertext, [`compression`](/plugins/compression) writes compressed bytes - the bytes on disk differ from `sha256`. That's deliberate: it's the hash of the content you handed in, and it matches what a [`download`](/api/download) gives back, since reads reverse the same transforms. So it's the value a round-trip check can verify - and the only stable one, since `encryption` uses a fresh key per object and would otherwise hash differently on every upload of identical content.
 
 ## The shape
 
