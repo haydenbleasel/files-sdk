@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import type { FilesApi } from "../src/api/index.js";
 import { createFilesRouter } from "../src/api/index.js";
 import { createRouteHandler } from "../src/express/index.js";
+import type { ExpressLikeRequest } from "../src/express/index.js";
 import { createFiles } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 
@@ -15,9 +16,13 @@ import { memory } from "../src/memory/index.js";
 // it). `app.all(path, handler)` in Express is `(req, res) => handler(req, res)`.
 let server: Server | undefined;
 
-const serve = (router: FilesApi): Promise<string> => {
+const serve = (
+  router: FilesApi,
+  prepare?: (req: ExpressLikeRequest) => void
+): Promise<string> => {
   const handler = createRouteHandler(router);
   const s = createServer((req, res) => {
+    prepare?.(req);
     void handler(req, res);
   });
   server = s;
@@ -83,6 +88,73 @@ describe("files-sdk/express", () => {
     const res = await fetch(url, { body: "{}", method: "POST" });
     expect(res.status).toBe(204);
     expect(await res.text()).toBe("");
+  });
+
+  test("forwards request headers and honours x-forwarded-proto", async () => {
+    const router: FilesApi = {
+      handle: (req) => {
+        const url = new URL(req.url);
+        return Promise.resolve(
+          new Response(`${url.protocol}|${req.headers.get("x-custom")}`)
+        );
+      },
+    };
+    const url = await serve(router);
+
+    const res = await fetch(url, {
+      headers: { "x-custom": "hi", "x-forwarded-proto": "https" },
+    });
+    // The URL is rebuilt as https so a signed proxy-upload target is correct
+    // behind a TLS-terminating proxy; the custom header rides through verbatim.
+    expect(await res.text()).toBe("https:|hi");
+  });
+
+  test("flushes the response status and headers onto the Node response", async () => {
+    const router: FilesApi = {
+      handle: () =>
+        Promise.resolve(
+          new Response("ok", {
+            headers: { "x-files-meta": "abc" },
+            status: 201,
+          })
+        ),
+    };
+    const url = await serve(router);
+
+    const res = await fetch(url);
+    expect(res.status).toBe(201);
+    expect(res.headers.get("x-files-meta")).toBe("abc");
+    expect(await res.text()).toBe("ok");
+  });
+
+  test("streams a PUT request body through to the gateway", async () => {
+    const router: FilesApi = {
+      handle: async (req) => {
+        const body = await req.text();
+        return new Response(`${req.method}:${body}`);
+      },
+    };
+    const url = await serve(router);
+
+    const res = await fetch(`${url}?op=upload&key=a.txt`, {
+      body: "the-bytes",
+      method: "PUT",
+    });
+    expect(await res.text()).toBe("PUT:the-bytes");
+  });
+
+  test("builds the request URL from Express's originalUrl when present", async () => {
+    const router: FilesApi = {
+      handle: (req) => Promise.resolve(new Response(new URL(req.url).pathname)),
+    };
+    // Express rewrites `req.url` to the post-mount path; `originalUrl` keeps the
+    // full path the client hit, which is what the proxy-upload URL must echo.
+    const url = await serve(router, (req) => {
+      req.originalUrl = "/mounted/files";
+    });
+
+    const res = await fetch(url);
+    expect(await res.text()).toBe("/mounted/files");
   });
 
   test("replies 500 when marshalling/transport fails", async () => {

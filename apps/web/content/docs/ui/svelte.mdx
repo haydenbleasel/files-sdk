@@ -1,9 +1,9 @@
 ---
 title: Svelte
-description: The same full Files-API parity, as a Svelte binding - useFiles returns Svelte stores for ambient state (used with $store), plus useList / useFile / useSearch.
+description: The full Files API in the browser, idiomatic Svelte - useFiles returns the verbs plus Svelte stores for ambient state (read with $store), with useList / useFile / useSearch.
 ---
 
-`files-sdk/svelte` is the Svelte binding of [`useFiles`](/react/use-files). It wraps the same framework-agnostic client and talks to the same [gateway](/react/gateway) — only the reactivity layer differs. Ambient state is exposed as **Svelte stores** (use them with the `$` prefix); the verb methods are plain async functions.
+`files-sdk/svelte` brings the full Files API to the browser as idiomatic Svelte. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as **Svelte stores** you read with the `$` prefix.
 
 ```svelte
 <script lang="ts">
@@ -31,7 +31,7 @@ The binding ships **no Svelte runtime** — its stores are a tiny implementation
 
 ## The verbs
 
-Every verb mirrors the SDK (and the React/Vue bindings) — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods:
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods:
 
 ```ts lineNumbers
 const { key } = await files.upload(file); // keyless → server mints the key
@@ -51,7 +51,7 @@ files.reset(); // clear ambient error + upload state (re-arms after abort)
 files.abort(); // abort every in-flight call — wire to onDestroy
 ```
 
-Unlike React/Vue, the binding can't hook component teardown by itself (Svelte's lifecycle needs the compiler), so cancel in-flight work by calling `files.abort` from `onDestroy` — one line, as above.
+Svelte's lifecycle hooks need the compiler, so cancel in-flight work by calling `files.abort` from `onDestroy` — one line, as above.
 
 ## Reactive reads
 
@@ -76,4 +76,4 @@ The query stores load on creation and expose `data` / `error` / `isLoading` / `i
 
 ## Setting up the gateway
 
-The server side is identical to React and Vue — mount [`createFilesRouter`](/react/gateway) at your endpoint and lock it down with [`authorize`](/react/authorization). Only the browser binding changes per framework.
+Point the binding at a mounted [gateway](/ui/gateway) — `createFilesRouter` on Next, Hono, Express, or any Web-`Request` runtime — and lock it down with [`authorize`](/ui/authorization).

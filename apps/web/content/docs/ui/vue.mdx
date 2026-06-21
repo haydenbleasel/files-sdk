@@ -1,9 +1,9 @@
 ---
 title: Vue
-description: The same full Files-API parity as the React hook, as a Vue composable - useFiles returns refs for ambient state, plus reactive useList / useFile / useSearch.
+description: The full Files API in the browser as a Vue 3 composable - useFiles returns the verbs plus refs for ambient state, with reactive useList / useFile / useSearch.
 ---
 
-`files-sdk/vue` is the Vue 3 twin of [`useFiles`](/react/use-files). It wraps the same framework-agnostic client, so it talks to the exact same [gateway](/react/gateway) with the same [authorization](/react/authorization) — only the reactivity layer differs. Ambient state is exposed as refs; the verb methods are plain async functions.
+`files-sdk/vue` brings the full Files API to the browser as an idiomatic Vue 3 composable. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as refs that unwrap automatically in templates.
 
 ```vue
 <script setup lang="ts">
@@ -31,7 +31,7 @@ const onUpload = async (event: Event) => {
 
 ## The verbs
 
-Every verb mirrors the SDK (and the React hook) — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods (no `.value`):
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods (no `.value`):
 
 ```ts lineNumbers
 const { key } = await files.upload(file); // keyless → server mints the key
@@ -78,4 +78,4 @@ Like the React versions they are cache-free and dependency-light; for shared cac
 
 ## Setting up the gateway
 
-The server side is identical to React — mount [`createFilesRouter`](/react/gateway) at your endpoint (Next, or any Web-`Request` runtime) and lock it down with [`authorize`](/react/authorization). The browser binding is the only thing that changes per framework.
+Point the composable at a mounted [gateway](/ui/gateway) — `createFilesRouter` on Next, Hono, Express, or any Web-`Request` runtime — and lock it down with [`authorize`](/ui/authorization).

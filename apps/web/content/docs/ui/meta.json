@@ -1,0 +1,17 @@
+{
+  "root": true,
+  "title": "UI",
+  "pages": [
+    "index",
+    "---Client---",
+    "react",
+    "svelte",
+    "vue",
+    "---Server---",
+    "gateway",
+    "authorization",
+    "next",
+    "hono",
+    "express"
+  ]
+}
