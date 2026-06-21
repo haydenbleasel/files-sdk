@@ -20,28 +20,51 @@ const external = [
   ...Object.keys(pkg.optionalDependencies ?? {}),
 ];
 
+const entryFor = (importPath: string) =>
+  resolve(
+    root,
+    importPath.replace(/^\.\/dist\//u, "src/").replace(/\.js$/u, ".ts")
+  );
+
 // Every published subpath in "exports", plus the CLI bin (which lives in "bin",
 // not "exports"). `root: src` mirrors the source tree into dist/.
-const entrypoints = [
+const allEntrypoints = [
   ...Object.values(pkg.exports as Record<string, { import: string }>).map(
-    ({ import: imp }) =>
-      resolve(
-        root,
-        imp.replace(/^\.\/dist\//u, "src/").replace(/\.js$/u, ".ts")
-      )
+    ({ import: imp }) => entryFor(imp)
   ),
   resolve(srcDir, "cli/index.ts"),
 ];
 
-const buildJs = async () => {
+// The app-layer entries (`api`/`client`/`next`/`react`) must run on the edge and
+// in the browser, so they are built in their own pass(es). Bundled together with
+// the node entries, Bun's shared `createRequire` shim chunk (`node:module`) leaks
+// in as a stray side-effect import, which would fail to load outside Node.
+const reactEntry = resolve(srcDir, "react/index.ts");
+const edgeEntrypoints = ["api", "client", "next"].map((sub) =>
+  resolve(srcDir, `${sub}/index.ts`)
+);
+const isEdge = (entry: string) =>
+  entry === reactEntry || edgeEntrypoints.includes(entry);
+const nodeEntrypoints = allEntrypoints.filter((entry) => !isEdge(entry));
+
+const buildJs = async ({
+  entrypoints,
+  banner,
+  splitting = true,
+}: {
+  entrypoints: string[];
+  banner?: string;
+  splitting?: boolean;
+}) => {
   const result = await Bun.build({
+    banner,
     entrypoints,
     external,
     format: "esm",
     outdir: dist,
     root: srcDir,
     sourcemap: "linked",
-    splitting: true,
+    splitting,
     target: "node",
   });
   if (!result.success) {
@@ -74,7 +97,16 @@ const copyDocs = () => run(["bun", "scripts/copy-docs.ts"], "copy-docs");
 const build = async ({ docs = true } = {}) => {
   const start = performance.now();
   await rm(dist, { force: true, recursive: true });
-  await buildJs();
+  await buildJs({ entrypoints: nodeEntrypoints });
+  await buildJs({ entrypoints: edgeEntrypoints });
+  // React is built standalone (no splitting) so the emitted module is a clean
+  // client-boundary file importing only `react`, and the `"use client"` banner
+  // lands on the actual module the consumer imports.
+  await buildJs({
+    banner: '"use client";',
+    entrypoints: [reactEntry],
+    splitting: false,
+  });
   await buildTypes();
   if (docs) {
     await copyDocs();

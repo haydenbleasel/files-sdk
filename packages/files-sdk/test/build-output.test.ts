@@ -81,3 +81,42 @@ test(
   },
   COLD_BUILD_TIMEOUT_MS
 );
+
+const ensureBuilt = () => {
+  if (!existsSync(cliBundle)) {
+    const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
+      cwd: pkgRoot,
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    if (!proc.success) {
+      throw new Error(`build failed:\n${proc.stderr.toString()}`);
+    }
+  }
+};
+
+test(
+  "react bundle is a `use client` module importing only react",
+  () => {
+    ensureBuilt();
+    const reactBundle = resolve(distDir, "react/index.js");
+    expect(readFileSync(reactBundle, "utf-8").startsWith('"use client";')).toBe(
+      true
+    );
+    const externals = [...staticExternals(reactBundle)];
+    expect(externals.filter((e) => e !== "react")).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+test(
+  "gateway, client and next bundles have no node: static imports",
+  () => {
+    ensureBuilt();
+    for (const sub of ["api/index.js", "client/index.js", "next/index.js"]) {
+      const externals = [...staticExternals(resolve(distDir, sub))];
+      expect(externals.filter((e) => e.startsWith("node:"))).toEqual([]);
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);

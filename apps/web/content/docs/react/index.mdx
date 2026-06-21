@@ -1,0 +1,102 @@
+---
+title: Overview
+description: useFiles - the whole Files API in the browser, over one endpoint. A typed React hook backed by a server gateway you mount in minutes.
+---
+
+`files-sdk/react` gives the browser the same API the SDK gives the server. One hook mirrors every `Files` verb over a single HTTP endpoint:
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+
+function Uploader() {
+  const {
+    upload,
+    download,
+    list,
+    url,
+    delete: del,
+  } = useFiles({
+    endpoint: "/api/files",
+  });
+
+  const onUpload = async (file: File) => {
+    const { key } = await upload(file); // keyless - the server mints the key
+    const link = await url(key); // a URL for <img src> / <a href>
+  };
+}
+```
+
+The browser never holds storage credentials. Calls go to **your** endpoint, which runs the SDK against whatever adapter you configured (S3, R2, GCS, Vercel Blob, …) and streams or signs as needed.
+
+## The two halves
+
+|            | Package                            | What it is                                                                                                                                          |
+| ---------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server** | `files-sdk/api` + `files-sdk/next` | A [gateway](/react/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/react/authorization) hook. |
+| **Client** | `files-sdk/react`                  | The [`useFiles`](/react/use-files) hook (every verb, imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`.  |
+
+A framework-agnostic core, `createFilesClient` from `files-sdk/client`, sits under the hook for non-React (Node, Vue, Svelte) callers.
+
+<Callout type="warn">
+  The gateway proxies `download`, `list`, `delete`, and `move` to the browser —
+  it is effectively a remote storage console. It is **deny-by-default**: nothing
+  is exposed until you configure [`authorize`](/react/authorization) or
+  `operations`. Read that page before shipping.
+</Callout>
+
+## Quick start
+
+**1. Mount the gateway.** In a Next.js App Router route, expose the `Files` API and scope every key to the signed-in user:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    const session = await auth(req); // throw → 401
+    return { keyPrefix: `users/${session.id}/`, maxExpiresIn: 300 };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+**2. Use the hook.** Keys the client sends are relative to the authorized prefix, so the browser can never address another user's files:
+
+```tsx title="app/page.tsx" lineNumbers
+"use client";
+import { useFiles, useList } from "files-sdk/react";
+
+export default function Page() {
+  const files = useFiles({ endpoint: "/api/files" });
+  const list = useList(); // reactive: data / isLoading / refetch
+
+  return (
+    <>
+      <input
+        type="file"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            await files.upload(file);
+            list.refetch();
+          }
+        }}
+      />
+      {files.isUploading && <progress value={files.progress.fraction} />}
+      <ul>
+        {list.data?.items.map((f) => (
+          <li key={f.key}>{f.key}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+```
+
+That's the whole loop: upload streams directly to storage (or proxies through your endpoint for adapters that can't presign), and reads run against your gateway. Next: the [gateway](/react/gateway), [authorization](/react/authorization), and the [`useFiles`](/react/use-files) surface.
