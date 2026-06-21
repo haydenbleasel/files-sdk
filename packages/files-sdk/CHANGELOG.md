@@ -1,5 +1,30 @@
 # files-sdk
 
+## 2.0.0
+
+### Major Changes
+
+- 2b81046: Release **files-sdk 2.0** — the full-stack release. Alongside the core `Files` API, the SDK now reaches the browser with framework client bindings (`files-sdk/react`, `files-sdk/vue`, `files-sdk/svelte`), a server gateway (`files-sdk/api`) with route handlers for Next.js, Hono, Express, Fastify, Koa, Elysia, Nitro, SvelteKit, Astro, Bun, and Deno, and a shadcn UI component registry wired to the `useFiles` hook. See the accompanying changesets for the full surface.
+
+### Minor Changes
+
+- 58757d7: Add an Archil adapter (`files-sdk/archil`) for [Archil](https://archil.com) disks over their S3-compatible API. The disk id is the path-style bucket and the endpoint is derived from the Archil region; SigV4 enables byte ranges, multipart, and presigned URLs. Supports a `branch` option (branch-scoped access) and an optional `disk` instance exposed at `adapter.disk` for Archil-native operations.
+- 31c9c3f: Add `files-sdk/api` — `createFilesRouter`, a server gateway exposing the whole `Files` verb set (upload, download, head, exists, list, search, url, delete, copy, move, capabilities, signed upload URLs) over a single endpoint, with deny-by-default per-operation `authorize` (throw to deny, return a key-prefix/expiry/read-only constraint), redirect-or-proxy streaming downloads (Range/206 + client-disconnect abort), keyless presign→complete uploads with a proxy fallback, HMAC round-trip tokens, and an origin allowlist.
+- 91d20ef: Add `files-sdk/astro` — `createRouteHandler(router)` returns `{ GET, POST, PUT }` for an Astro endpoint (`GET` serves downloads, `POST` the JSON verbs, `PUT` the upload byte path). The handlers are Web-native, so the route runs on Node and edge adapters alike. The endpoint must run per-request: set `prerender = false` (or `output: "server"`) with an SSR adapter.
+- 31c9c3f: Add `files-sdk/client` — `createFilesClient`, a framework-agnostic verb client for the gateway; `download` returns the same lazy `StoredFile` the server SDK returns.
+- 31c9c3f: Add `files-sdk/express` — `createRouteHandler(router)` returns a Node `(req, res)` handler that bridges `IncomingMessage`/`ServerResponse` to the Web `Request`/`Response` the gateway speaks (also works with Connect and a raw `http.createServer`). A client disconnect aborts the upstream read on a proxied download. Mount it before any body parser so the gateway can read the raw upload/JSON body.
+- 91d20ef: Add `files-sdk/fastify` — `createRouteHandler(router)` returns a Fastify `(request, reply)` handler that `reply.hijack()`s and bridges the raw `IncomingMessage`/`ServerResponse` to the Web `Request`/`Response` the gateway speaks (the same seam as `files-sdk/express`). A client disconnect aborts the upstream read on a proxied download. Drop Fastify's built-in body parsers (`removeAllContentTypeParsers()` + a no-op `addContentTypeParser("*", …)`) so the gateway can read the raw upload/JSON body.
+- 31c9c3f: Add `files-sdk/hono` — `createRouteHandler(router)` returns a single Hono handler (`app.all("/api/files", handler)`). Web-native, so it runs on Workers, Bun, Deno, and Node.
+- 91d20ef: Add `files-sdk/koa` — `createRouteHandler(router)` returns a Koa handler that sets `ctx.respond = false` and bridges `ctx.req`/`ctx.res` to the Web `Request`/`Response` the gateway speaks (the same seam as `files-sdk/express`). A client disconnect aborts the upstream read on a proxied download. Mount it before any body parser so the gateway can read the raw upload/JSON body.
+- 31c9c3f: Add `files-sdk/next` — `createRouteHandler` to mount the gateway in the Next.js App Router.
+- 91d20ef: Add `files-sdk/nitro` — `createRouteHandler(router)` returns an h3 event handler for Nitro (and Nuxt server) routes that marshals `event.node.req` into the Web `Request` the gateway speaks and returns the Web `Response` for Nitro to flush, hiding the `toWebRequest(event)` step. A client disconnect aborts the upstream read on a proxied download. Targets Nitro v2 / h3 v1, where `event.node.req` is present on every preset.
+- 9923947: Expose the `versioning()` and `softDelete()` plugin verbs through the gateway, client and `useFiles` hook. `createFilesRouter` now dispatches `versions` / `restoreVersion` / `trashed` / `restoreTrashed` / `purge` (each a new deny-by-default `FilesOperation`, answered only when the matching plugin wraps the `Files` instance — otherwise a 422), and `createFilesClient` / `useFiles` gain matching methods (`files.versions(key)`, `files.restoreVersion(key, versionId?)`, `files.trashed()`, `files.restoreTrashed(key)`, `files.purge(key?)`). Trash listing and "empty trash" are key-prefix-scoped, so a multi-tenant `authorize` keyPrefix never leaks or purges another tenant's trash.
+- 31c9c3f: Add `files-sdk/react` — `useFiles({ endpoint })` returning every verb (imperative, with ambient upload progress/error) plus optional reactive `useList`/`useFile`/`useSearch` hooks. Emitted as a `"use client"` module.
+- 31c9c3f: Add `files-sdk/svelte` — the Svelte binding: `useFiles` returning Svelte stores for the ambient state, plus `useList`/`useFile`/`useSearch` query stores. Store-based (no Svelte runtime dependency).
+- 91d20ef: Add `files-sdk/sveltekit` — `createRouteHandler(router)` returns `{ GET, POST, PUT }` for a SvelteKit `+server.ts` endpoint (`GET` serves downloads, `POST` the JSON verbs, `PUT` the upload byte path). The handlers are Web-native, so the route runs on the Node and edge adapters alike. This is the server binding, distinct from the `files-sdk/svelte` client store.
+- b20440c: Add a shadcn component registry of `useFiles`-wired UI, installable with `npx shadcn add`. Upload + display: `dropzone`, `file-list`, `file-preview`, `upload-progress`, `multipart-uploader`. Navigation + actions: `file-browser` (folder tree via `list({ delimiter })` + breadcrumbs), `file-search` (`search()` with glob/regex/substring/exact), `share-dialog` (`url()` / `signedUploadUrl()` with expiry + copy), `file-actions` (copy/move/rename/download/delete menu), `capabilities-badges` (`capabilities()` as feature badges). Plugin showcases: `version-history` (`versioning()` — list + restore snapshots) and `trash-bin` (`softDelete()` — restore + purge soft-deleted files). The components ship in the docs site rather than the package, but they're a first-class part of the SDK surface.
+- 31c9c3f: Add `files-sdk/vue` — the Vue 3 twin of the React hook: a `useFiles` composable returning refs for the ambient state, plus reactive `useList`/`useFile`/`useSearch` composables over the same gateway.
+
 ## 1.9.0
 
 ### Minor Changes
@@ -164,7 +189,6 @@
 - 12d6218: Bring the CLI (and MCP server) to full parity with the SDK surface.
 
   Every `Files` capability is now reachable from the `files` binary:
-
   - **Global `--key-prefix`** scopes every operation under a base path (the instance prefix from `new Files({ prefix })`, distinct from the one-off `list --prefix` filter). **Global `--timeout` / `--retries`** set the per-attempt timeout and retry count for all commands.
   - **`download --range start-end`** downloads a byte range (0-based, inclusive), e.g. `0-1023` or `1024-`.
   - **`upload --multipart`** (with `--part-size` / `--multipart-concurrency`) uploads large objects in parallel parts.
@@ -277,7 +301,6 @@
   ```
 
   Both bounds are 0-based and `end` is inclusive, mirroring the `bytes=start-end` request the supporting adapters issue. The returned `StoredFile` carries just the requested bytes and reports the range length as its `size`. `range` works with `as: "stream"` so you never buffer the whole slice.
-
   - **S3 and every S3-compatible adapter** (R2 over HTTP, MinIO, DigitalOcean Spaces, Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, and the rest of the `s3()` family) issue a ranged `GetObject`.
   - **Bun S3** slices via `S3File.slice`, **GCS** and **Firebase Storage** via `createReadStream`/`download` byte offsets, **Azure Blob** via its offset/count download, and the **R2 Workers binding** via its native `range` option.
   - The local **`fs`** adapter reads only the requested bytes off disk, and the in-memory adapter slices its buffer.
@@ -291,13 +314,12 @@
   await files.upload("big.zip", stream, {
     onProgress: ({ loaded, total }) =>
       console.log(
-        total ? `${Math.round((loaded / total) * 100)}%` : `${loaded} bytes`
+        total ? `${Math.round((loaded / total) * 100)}%` : `${loaded} bytes`,
       ),
   });
   ```
 
   Granularity depends on the body and the adapter:
-
   - A `ReadableStream` body is reported byte-by-byte on every adapter, as the bytes are consumed (`total` is omitted, since the length is unknown).
   - A buffered body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) reports `{ loaded: 0, total }` then `{ loaded: total, total }` by default.
   - Adapters with a native upload-progress hook report true byte-level progress for every body type (buffered included): S3 and the S3-compatible adapters, R2 (HTTP), Azure Blob, Google Cloud Storage, Firebase Storage, Vercel Blob, and FTP. The S3 family uses `@aws-sdk/lib-storage` (a new optional peer dependency loaded only when `onProgress` is used) and also gains multipart for large files; GCS and Firebase Storage switch to a resumable upload when `onProgress` is set.
@@ -309,7 +331,6 @@
 - 52daa66: Update bundled and peer dependencies.
 
   The CLI's `commander` runtime dependency moves to v14. Several optional provider-SDK peer floors are raised to the majors now built and tested against:
-
   - `@anthropic-ai/claude-agent-sdk` → `^0.3.0` (claude adapter)
   - `@googleapis/drive` → `^20.0.0` (google-drive adapter)
   - `google-auth-library` → `^10.0.0` (gcs / google-drive auth)
@@ -339,7 +360,7 @@
       { key: "avatars/a.png", body: a, contentType: "image/png" },
       { key: "avatars/b.png", body: b },
     ],
-    { concurrency: 8, stopOnError: false }
+    { concurrency: 8, stopOnError: false },
   );
   up.uploaded; // UploadResult[] — successes, in the order supplied
   up.errors; // undefined when every item succeeded
@@ -357,7 +378,7 @@
   ```ts
   const result = await files.delete(
     ["avatars/a.png", "avatars/b.png", "avatars/c.png"],
-    { concurrency: 8, stopOnError: false }
+    { concurrency: 8, stopOnError: false },
   );
 
   result.deleted; // string[] — keys removed, in the order supplied
@@ -500,7 +521,6 @@
   Individual tool factories (`claudeUploadFile`, `claudeDownloadFile`, …) are also exported as `SdkMcpToolDefinition` instances for callers that want to compose their own `createSdkMcpServer` rather than use the bundled one. `@anthropic-ai/claude-agent-sdk` and `zod` are optional peer dependencies — only required when consuming the new subpath.
 
 - d6adeae: Add OpenAI tools subpath (`files-sdk/openai`) with two factories:
-
   - `createResponsesFileTools(...)` — for OpenAI's native [Responses API](https://platform.openai.com/docs/api-reference/responses). Returns `{ definitions, execute, needsApproval }`. `definitions` is the array of function-tool specs to pass into `openai.responses.create({ tools })`. `execute(call)` runs a `function_call` item and returns a `function_call_output` ready to push into the next turn's input — JSON parse failures and Zod validation errors come back as the tool's output so the model can self-correct.
   - `createAgentsFileTools(...)` — for the [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) (`@openai/agents`). Returns a record of `tool()` outputs ready to spread into `new Agent({ tools })`.
 
