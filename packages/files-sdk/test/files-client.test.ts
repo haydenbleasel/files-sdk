@@ -10,10 +10,12 @@ import {
   fetchTransport,
   xhrTransport,
 } from "../src/client/transport.js";
-import type { Adapter } from "../src/index.js";
+import type { Adapter, Files } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 import { memory } from "../src/memory/index.js";
+import { softDelete } from "../src/soft-delete/index.js";
+import { versioning } from "../src/versioning/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const ENDPOINT = "https://app.test/api/files";
@@ -349,5 +351,73 @@ describe("progress helpers", () => {
     expect(aggregate([a, b])).toEqual({ fraction: 5 / 8, loaded: 5, total: 8 });
     expect(aggregate([])).toEqual({ fraction: 0, loaded: 0, total: 0 });
     expect(b.name).toBe("blob");
+  });
+});
+
+describe("createFilesClient — plugin verbs", () => {
+  const pluginClientFor = (files: Files) => {
+    const router = createFilesRouter({
+      allowedOrigins: () => true,
+      files,
+      operations: [
+        "versions",
+        "restoreVersion",
+        "trashed",
+        "restoreTrashed",
+        "purge",
+        "delete",
+      ],
+      secret: "client-secret",
+    });
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      router.handle(new Request(input, init))) as typeof fetch;
+    const transport: Transport = async (req: SendRequest) => {
+      const res = await router.handle(
+        new Request(req.url, {
+          body: req.body,
+          headers: req.headers,
+          method: req.method,
+        })
+      );
+      return { status: res.status, text: await res.text() };
+    };
+    return createFilesClient({ endpoint: ENDPOINT, fetchImpl, transport });
+  };
+
+  test("versions + restoreVersion (with and without an id)", async () => {
+    const files = createFiles({ adapter: memory(), plugins: [versioning()] });
+    await files.upload("n.txt", "v1");
+    await files.upload("n.txt", "v2");
+    const client = pluginClientFor(files);
+
+    const versions = await client.versions("n.txt");
+    expect(versions).toHaveLength(1);
+    const [version] = versions;
+    if (!version) {
+      throw new Error("expected a version");
+    }
+    expect((await client.restoreVersion("n.txt", version.versionId)).key).toBe(
+      "n.txt"
+    );
+    expect((await client.restoreVersion("n.txt")).key).toBe("n.txt");
+  });
+
+  test("trashed + restoreTrashed + purge (with and without a key)", async () => {
+    const files = createFiles({ adapter: memory(), plugins: [softDelete()] });
+    await files.upload("a.txt", "hi");
+    await files.delete("a.txt");
+    const client = pluginClientFor(files);
+
+    expect((await client.trashed()).map((t) => t.key)).toEqual(["a.txt"]);
+    expect((await client.restoreTrashed("a.txt")).key).toBe("a.txt");
+
+    await files.delete("a.txt");
+    await client.purge("a.txt");
+    expect(await client.trashed()).toHaveLength(0);
+
+    await files.upload("b.txt", "x");
+    await files.delete("b.txt");
+    await client.purge();
+    expect(await client.trashed()).toHaveLength(0);
   });
 });

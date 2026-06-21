@@ -158,6 +158,13 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       "configure via --config-json (endpoint, projectId, apiKey, bucketId) or APPWRITE_* env vars",
     required: [],
   },
+  archil: {
+    load: async (opts) => {
+      const { archil } = await import("../archil/index.js");
+      return cast(archil, merge(s3LikeOpts(opts), opts.extra));
+    },
+    required: ["--bucket", "--region"],
+  },
   azure: {
     load: async (opts) => {
       const { azure } = await import("../azure/index.js");

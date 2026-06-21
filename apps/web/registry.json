@@ -77,6 +77,111 @@
           "target": "components/files-sdk/file-preview.tsx"
         }
       ]
+    },
+    {
+      "name": "file-browser",
+      "type": "registry:component",
+      "title": "File Browser",
+      "description": "Folder-aware browser that descends into common prefixes with a breadcrumb trail.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button"],
+      "files": [
+        {
+          "path": "registry/files-sdk/file-browser/file-browser.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/file-browser.tsx"
+        }
+      ]
+    },
+    {
+      "name": "file-search",
+      "type": "registry:component",
+      "title": "File Search",
+      "description": "Search box that streams matching keys with switchable match modes.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button", "input"],
+      "files": [
+        {
+          "path": "registry/files-sdk/file-search/file-search.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/file-search.tsx"
+        }
+      ]
+    },
+    {
+      "name": "share-dialog",
+      "type": "registry:component",
+      "title": "Share Dialog",
+      "description": "Dialog that mints a shareable download or upload link with a chosen expiry.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button", "dialog", "input"],
+      "files": [
+        {
+          "path": "registry/files-sdk/share-dialog/share-dialog.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/share-dialog.tsx"
+        }
+      ]
+    },
+    {
+      "name": "file-actions",
+      "type": "registry:component",
+      "title": "File Actions",
+      "description": "Per-file actions menu — download, copy, rename, move and delete.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button", "dialog", "dropdown-menu", "input"],
+      "files": [
+        {
+          "path": "registry/files-sdk/file-actions/file-actions.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/file-actions.tsx"
+        }
+      ]
+    },
+    {
+      "name": "capabilities-badges",
+      "type": "registry:component",
+      "title": "Capabilities Badges",
+      "description": "Surfaces what the configured storage adapter can do as a row of badges.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["badge"],
+      "files": [
+        {
+          "path": "registry/files-sdk/capabilities-badges/capabilities-badges.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/capabilities-badges.tsx"
+        }
+      ]
+    },
+    {
+      "name": "version-history",
+      "type": "registry:component",
+      "title": "Version History",
+      "description": "A version timeline for one key with one-click restore (versioning plugin).",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button"],
+      "files": [
+        {
+          "path": "registry/files-sdk/version-history/version-history.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/version-history.tsx"
+        }
+      ]
+    },
+    {
+      "name": "trash-bin",
+      "type": "registry:component",
+      "title": "Trash Bin",
+      "description": "Lists, restores and permanently purges soft-deleted files (softDelete plugin).",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button", "dialog"],
+      "files": [
+        {
+          "path": "registry/files-sdk/trash-bin/trash-bin.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/trash-bin.tsx"
+        }
+      ]
     }
   ]
 }

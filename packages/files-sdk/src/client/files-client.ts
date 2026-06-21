@@ -29,11 +29,13 @@ import { defaultTransport } from "./transport.js";
 import type {
   BulkCallOptions,
   DownloadCallOptions,
+  FileVersion,
   FilesClient,
   FilesClientConfig,
   ListCallOptions,
   SearchCallOptions,
   SignUploadCallOptions,
+  TrashedFile,
   UploadBody,
   UploadCallOptions,
   UploadManyClientItem,
@@ -507,6 +509,33 @@ export const createFilesClient = (
       await post({ from, op: "move", to }, opts?.signal);
     },
 
+    purge: async (key, opts) => {
+      await post(
+        { op: "purge", ...(key === undefined ? {} : { key }) },
+        opts?.signal
+      );
+    },
+
+    restoreTrashed: async (key, opts) => {
+      const res = await post<{ file: WireStoredFile }>(
+        { key, op: "restore-trashed" },
+        opts?.signal
+      );
+      return toStoredFile(res.file);
+    },
+
+    restoreVersion: async (key, versionId, opts) => {
+      const res = await post<{ file: WireStoredFile }>(
+        {
+          key,
+          op: "restore-version",
+          ...(versionId === undefined ? {} : { versionId }),
+        },
+        opts?.signal
+      );
+      return toStoredFile(res.file);
+    },
+
     async *search(pattern: string | RegExp, opts?: SearchCallOptions) {
       const base =
         pattern instanceof RegExp
@@ -548,6 +577,14 @@ export const createFilesClient = (
       return res.signed;
     },
 
+    trashed: async (opts) => {
+      const res = await post<{ trashed: TrashedFile[] }>(
+        { op: "trashed" },
+        opts?.signal
+      );
+      return res.trashed;
+    },
+
     upload: ((
       a: Blob | string | UploadManyClientItem[],
       b?: UploadBody | UploadCallOptions | BulkCallOptions,
@@ -579,6 +616,14 @@ export const createFilesClient = (
         opts?.signal
       );
       return res.url;
+    },
+
+    versions: async (key, opts) => {
+      const res = await post<{ versions: FileVersion[] }>(
+        { key, op: "versions" },
+        opts?.signal
+      );
+      return res.versions;
     },
   };
 

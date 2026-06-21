@@ -99,6 +99,29 @@ export interface UploadManyClientItem {
   contentType?: string;
 }
 
+/**
+ * A saved version returned by `versions()` (needs the `versioning()` plugin on
+ * the server). Pass `versionId` back to `restoreVersion()`.
+ */
+export interface FileVersion {
+  versionId: string;
+  size: number;
+  lastModified: number;
+  etag?: string;
+}
+
+/**
+ * A trashed object returned by `trashed()` (needs the `softDelete()` plugin on
+ * the server). `key` is the original key — pass it to `restoreTrashed()` /
+ * `purge()`.
+ */
+export interface TrashedFile {
+  key: string;
+  size: number;
+  lastModified?: number;
+  etag?: string;
+}
+
 export interface FilesClient {
   upload(file: Blob, opts?: UploadCallOptions): Promise<UploadOutcome>;
   upload(
@@ -140,4 +163,17 @@ export interface FilesClient {
     opts?: SearchCallOptions
   ): AsyncGenerator<StoredFile, void>;
   capabilities(opts?: CallOptions): Promise<AdapterCapabilities>;
+
+  // Plugin verbs — resolve only when the server gateway exposes the matching
+  // plugin (`versioning()` / `softDelete()`); otherwise they reject with a
+  // gateway error. See the relevant plugin docs.
+  versions(key: string, opts?: CallOptions): Promise<FileVersion[]>;
+  restoreVersion(
+    key: string,
+    versionId?: string,
+    opts?: CallOptions
+  ): Promise<StoredFile>;
+  trashed(opts?: CallOptions): Promise<TrashedFile[]>;
+  restoreTrashed(key: string, opts?: CallOptions): Promise<StoredFile>;
+  purge(key?: string, opts?: CallOptions): Promise<void>;
 }
