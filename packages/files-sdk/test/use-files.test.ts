@@ -11,7 +11,7 @@ import {
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 import type { Transport } from "../src/client/transport.js";
-import type { Adapter } from "../src/index.js";
+import type { Adapter, Files } from "../src/index.js";
 
 beforeAll(() => {
   GlobalRegistrator.register();
@@ -26,6 +26,8 @@ const { act, cleanup, renderHook, waitFor } =
 const { createFiles } = await import("../src/index.js");
 const { createFilesRouter } = await import("../src/api/index.js");
 const { memory } = await import("../src/memory/index.js");
+const { softDelete } = await import("../src/soft-delete/index.js");
+const { versioning } = await import("../src/versioning/index.js");
 const { useFiles } = await import("../src/react/use-files.js");
 const { useFile, useList, useSearch } =
   await import("../src/react/use-files-query.js");
@@ -56,6 +58,35 @@ const config = (adapter: Adapter) => {
     router.handle(new Request(input, init))) as typeof fetch;
   const transport: Transport = async (req) => {
     req.onProgress?.(req.body?.size ?? 0, req.body?.size ?? 0);
+    const res = await router.handle(
+      new Request(req.url, {
+        body: req.body,
+        headers: req.headers,
+        method: req.method,
+      })
+    );
+    return { status: res.status, text: await res.text() };
+  };
+  return { endpoint: "https://app.test/api/files", fetchImpl, transport };
+};
+
+const pluginConfig = (files: Files) => {
+  const router = createFilesRouter({
+    allowedOrigins: () => true,
+    files,
+    operations: [
+      "versions",
+      "restoreVersion",
+      "trashed",
+      "restoreTrashed",
+      "purge",
+      "delete",
+    ],
+    secret: "react-secret",
+  });
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+    router.handle(new Request(input, init))) as typeof fetch;
+  const transport: Transport = async (req) => {
     const res = await router.handle(
       new Request(req.url, {
         body: req.body,
@@ -105,6 +136,46 @@ describe("useFiles", () => {
       count = (await result.current.list()).items.length;
     });
     expect(count).toBe(1);
+  });
+
+  test("plugin verbs forward through the hook", async () => {
+    const vFiles = createFiles({ adapter: memory(), plugins: [versioning()] });
+    await vFiles.upload("n.txt", "v1");
+    await vFiles.upload("n.txt", "v2");
+    const { result } = renderHook(() => useFiles(pluginConfig(vFiles)));
+
+    let versions: { versionId: string }[] = [];
+    await act(async () => {
+      versions = await result.current.versions("n.txt");
+    });
+    expect(versions).toHaveLength(1);
+    const [version] = versions;
+    await act(async () => {
+      await result.current.restoreVersion("n.txt", version?.versionId);
+      await result.current.restoreVersion("n.txt");
+    });
+    expect(result.current.error).toBeUndefined();
+
+    const sFiles = createFiles({ adapter: memory(), plugins: [softDelete()] });
+    await sFiles.upload("a.txt", "hi");
+    await sFiles.delete("a.txt");
+    const { result: trash } = renderHook(() => useFiles(pluginConfig(sFiles)));
+
+    let trashed: { key: string }[] = [];
+    await act(async () => {
+      trashed = await trash.current.trashed();
+    });
+    expect(trashed.map((t) => t.key)).toEqual(["a.txt"]);
+    await act(async () => {
+      await trash.current.restoreTrashed("a.txt");
+      await sFiles.delete("a.txt");
+      await trash.current.purge("a.txt");
+      await sFiles.upload("b.txt", "x");
+      await sFiles.delete("b.txt");
+      await trash.current.purge();
+    });
+    expect(trash.current.error).toBeUndefined();
+    expect(await trash.current.trashed()).toHaveLength(0);
   });
 
   test("renders under SSR (server snapshot)", () => {

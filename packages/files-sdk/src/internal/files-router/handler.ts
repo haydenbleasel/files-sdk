@@ -6,7 +6,7 @@
 // type it touches is `Request` — forwarded opaquely to `authorize` — so the
 // dispatch itself stays framework-free and is driven by constructing requests.
 
-import type { Files } from "../../index.js";
+import type { Files, StoredFile } from "../../index.js";
 import type { FilesError } from "../errors.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
@@ -21,7 +21,9 @@ import type {
   ClientFileInfo,
   FilesOperation,
   WireBulkError,
+  WireFileVersion,
   WireStoredFile,
+  WireTrashedFile,
 } from "./protocol.js";
 import { bulkErrorToWire, storedFileToWire } from "./serialize.js";
 import type { UploadConfig } from "./upload.js";
@@ -181,6 +183,66 @@ const clampExpiry = (
 
 const filtered = (scope: Scope, keys: string[]): string[] =>
   scope.filterKeys ? keys.filter(scope.filterKeys) : keys;
+
+// --- plugin verbs (versioning / softDelete) ---
+
+/**
+ * The optional methods `versioning()` / `softDelete()` graft onto a `Files`
+ * instance. They aren't on the base `Files` type, so the handler feature-detects
+ * them and 422s when the matching plugin isn't configured. `restore` is shared:
+ * `versioning` takes `(key, versionId?)`, `softDelete` takes `(key)`. When both
+ * plugins wrap one instance the outermost owns `restore` — an inherent property
+ * of the plugin model, not the gateway.
+ */
+interface PluginMethods {
+  versions?: (key: string) => Promise<
+    {
+      versionId: string;
+      size: number;
+      lastModified: number;
+      etag?: string;
+    }[]
+  >;
+  trashed?: () => Promise<
+    { key: string; size: number; lastModified?: number; etag?: string }[]
+  >;
+  restore?: (key: string, versionId?: string) => Promise<StoredFile>;
+  purge?: (key?: string) => Promise<void>;
+}
+
+const pluginMethods = (ctx: HandlerContext): PluginMethods =>
+  ctx.files as unknown as PluginMethods;
+
+const notConfigured = (plugin: string): never => {
+  throw new RouterError(
+    "Validation",
+    `${plugin} plugin is not configured on this gateway`
+  );
+};
+
+const toWireVersion = (v: {
+  versionId: string;
+  size: number;
+  lastModified: number;
+  etag?: string;
+}): WireFileVersion => ({
+  lastModified: v.lastModified,
+  size: v.size,
+  versionId: v.versionId,
+  ...(v.etag === undefined ? {} : { etag: v.etag }),
+});
+
+const toWireTrashed = (t: {
+  key: string;
+  size: number;
+  lastModified?: number;
+  etag?: string;
+}): WireTrashedFile => ({
+  key: t.key,
+  size: t.size,
+  ...(t.lastModified === undefined ? {} : { lastModified: t.lastModified }),
+  ...(t.etag === undefined ? {} : { etag: t.etag }),
+});
 
 // --- JSON op dispatch ---
 
@@ -443,6 +505,108 @@ const dispatchJson = async (
       const items = completions(body.completions);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handleComplete(uploadCfg(ctx), items, unscoper(scope));
+    }
+    case "versions": {
+      const key = str(body.key, "key");
+      const scope = await authorizeOp(ctx, {
+        key,
+        operation: "versions",
+        params: {},
+      });
+      const plugin = pluginMethods(ctx);
+      if (typeof plugin.versions !== "function") {
+        return notConfigured("versioning");
+      }
+      const versions = await plugin.versions(scopeKey(scope.prefix, key));
+      return json({ versions: versions.map(toWireVersion) });
+    }
+    case "restore-version": {
+      requireOrigin(ctx, parsed);
+      const key = str(body.key, "key");
+      const versionId = optStr(body.versionId, "versionId");
+      const scope = await authorizeOp(ctx, {
+        key,
+        operation: "restoreVersion",
+        params: { versionId },
+      });
+      const plugin = pluginMethods(ctx);
+      // Disambiguate the shared `restore` via `versions`, which only `versioning`
+      // adds — so a softDelete-only instance 422s instead of silently restoring.
+      if (
+        typeof plugin.versions !== "function" ||
+        typeof plugin.restore !== "function"
+      ) {
+        return notConfigured("versioning");
+      }
+      const file = await plugin.restore(scopeKey(scope.prefix, key), versionId);
+      return json({ file: storedFileToWire(file, unscoper(scope)) });
+    }
+    case "trashed": {
+      const scope = await authorizeOp(ctx, {
+        operation: "trashed",
+        params: {},
+      });
+      const plugin = pluginMethods(ctx);
+      if (typeof plugin.trashed !== "function") {
+        return notConfigured("softDelete");
+      }
+      const unscope = unscoper(scope);
+      // `trashed()` returns the whole trash; under a key-prefix scope, expose
+      // only the caller's own keys (and honor a bulk `filterKeys`).
+      const all = await plugin.trashed();
+      const visible = all
+        .filter((t) => t.key.startsWith(scope.prefix))
+        .map((t) => toWireTrashed({ ...t, key: unscope(t.key) }))
+        .filter((t) => !scope.filterKeys || scope.filterKeys(t.key));
+      return json({ trashed: visible });
+    }
+    case "restore-trashed": {
+      requireOrigin(ctx, parsed);
+      const key = str(body.key, "key");
+      const scope = await authorizeOp(ctx, {
+        key,
+        operation: "restoreTrashed",
+        params: {},
+      });
+      const plugin = pluginMethods(ctx);
+      // `trashed` is softDelete-only, disambiguating the shared `restore`.
+      if (
+        typeof plugin.trashed !== "function" ||
+        typeof plugin.restore !== "function"
+      ) {
+        return notConfigured("softDelete");
+      }
+      const file = await plugin.restore(scopeKey(scope.prefix, key));
+      return json({ file: storedFileToWire(file, unscoper(scope)) });
+    }
+    case "purge": {
+      requireOrigin(ctx, parsed);
+      const key = optStr(body.key, "key");
+      const scope = await authorizeOp(ctx, {
+        operation: "purge",
+        params: {},
+      });
+      const plugin = pluginMethods(ctx);
+      if (typeof plugin.purge !== "function") {
+        return notConfigured("softDelete");
+      }
+      if (key !== undefined) {
+        await plugin.purge(scopeKey(scope.prefix, key));
+      } else if (scope.prefix) {
+        // Empty-trash under a scope must never purge another tenant's keys, and
+        // a bare `purge()` empties everything — so purge only our own entries.
+        if (typeof plugin.trashed !== "function") {
+          return notConfigured("softDelete");
+        }
+        const entries = await plugin.trashed();
+        const mine = entries.filter((t) => t.key.startsWith(scope.prefix));
+        for (const t of mine) {
+          await plugin.purge(t.key);
+        }
+      } else {
+        await plugin.purge();
+      }
+      return json({ ok: true });
     }
     default: {
       return fail(`unknown op: ${op}`);

@@ -29,7 +29,14 @@ export type FilesOperation =
   | "delete"
   | "copy"
   | "move"
-  | "signedUploadUrl";
+  | "signedUploadUrl"
+  // Plugin verbs — only answer when the matching plugin wraps the `Files`
+  // instance (`versioning()` / `softDelete()`); deny-by-default like the rest.
+  | "versions"
+  | "restoreVersion"
+  | "trashed"
+  | "restoreTrashed"
+  | "purge";
 
 /** Every JSON op the gateway dispatches on (POST `{ op, ... }`). */
 export type WireOp =
@@ -47,7 +54,12 @@ export type WireOp =
   | "capabilities"
   | "signed-upload-url"
   | "presign"
-  | "complete";
+  | "complete"
+  | "versions"
+  | "restore-version"
+  | "trashed"
+  | "restore-trashed"
+  | "purge";
 
 /** Serialized `StoredFile` metadata — body is never inlined. Matches `storedFileToJson`. */
 export interface WireStoredFile {
@@ -134,7 +146,12 @@ export type JsonRequest =
       minSize?: number;
     }
   | { op: "presign"; files: ClientFileInfo[]; expiresIn?: number }
-  | { op: "complete"; completions: { id: string; key: string }[] };
+  | { op: "complete"; completions: { id: string; key: string }[] }
+  | { op: "versions"; key: string }
+  | { op: "restore-version"; key: string; versionId?: string }
+  | { op: "trashed" }
+  | { op: "restore-trashed"; key: string }
+  | { op: "purge"; key?: string };
 
 /** Client-reported file info for keyless presign — used for keygen/validation only. */
 export interface ClientFileInfo {
@@ -201,6 +218,36 @@ export interface PresignResponse {
 export interface CompleteResponse {
   files: WireStoredFile[];
   errors?: WireBulkError[];
+}
+
+/**
+ * A saved version on the wire (from `versioning()`). The internal version
+ * storage key is intentionally omitted — the client addresses a version by
+ * `versionId` against the original key, never by its `.versions/` path.
+ */
+export interface WireFileVersion {
+  versionId: string;
+  size: number;
+  lastModified: number;
+  etag?: string;
+}
+
+/**
+ * A trashed object on the wire (from `softDelete()`). Carries the original
+ * (unscoped) `key`; the internal `.trash/` storage key is omitted.
+ */
+export interface WireTrashedFile {
+  key: string;
+  size: number;
+  lastModified?: number;
+  etag?: string;
+}
+
+export interface VersionsResponse {
+  versions: WireFileVersion[];
+}
+export interface TrashedResponse {
+  trashed: WireTrashedFile[];
 }
 
 // --- Error envelope (every action, on failure) ---

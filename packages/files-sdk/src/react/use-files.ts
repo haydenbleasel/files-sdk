@@ -175,16 +175,22 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       list: (o) => remember(() => client.list(o)),
       move: (from, to, o) => remember(() => client.move(from, to, o)),
       progress: aggregate(state.uploads),
+      purge: (k, o) => remember(() => client.purge(k, o)),
       reset: () => {
         if (rootRef.current.signal.aborted) {
           rootRef.current = new AbortController();
         }
         store.reset();
       },
+      restoreTrashed: (k, o) => remember(() => client.restoreTrashed(k, o)),
+      restoreVersion: (k, v, o) =>
+        remember(() => client.restoreVersion(k, v, o)),
       signedUploadUrl: (k, o) => remember(() => client.signedUploadUrl(k, o)),
+      trashed: (o) => remember(() => client.trashed(o)),
       upload: upload as FilesClient["upload"],
       uploads: state.uploads,
       url: (k, o) => remember(() => client.url(k, o)),
+      versions: (k, o) => remember(() => client.versions(k, o)),
     };
   }, [client, store, state]);
 };
