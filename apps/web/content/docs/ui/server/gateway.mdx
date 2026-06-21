@@ -3,7 +3,7 @@ title: Gateway
 description: createFilesRouter exposes the whole Files API over one HTTP endpoint. Mount it in Next (or any Web-Request runtime) and the browser bindings talk to it.
 ---
 
-`createFilesRouter` turns a `Files` instance into an HTTP handler that the browser bindings ([React](/ui/react), [Vue](/ui/vue), [Svelte](/ui/svelte)) call. It is framework-agnostic — `handle(req: Request): Promise<Response>` — and surfaced by thin adapters like [`files-sdk/next`](/ui/next).
+`createFilesRouter` turns a `Files` instance into an HTTP handler that the browser bindings ([React](/ui/client/react), [Vue](/ui/client/vue), [Svelte](/ui/client/svelte)) call. It is framework-agnostic — `handle(req: Request): Promise<Response>` — and surfaced by thin adapters like [`files-sdk/next`](/ui/server/next).
 
 ```ts title="app/api/files/route.ts" lineNumbers
 import { createFiles } from "files-sdk";
@@ -32,7 +32,7 @@ createFilesRouter({
   // A Files instance, or a per-request factory for multi-tenant apps.
   files: Files | ((req: Request) => Files | Promise<Files>),
 
-  // Per-operation gate. Deny-by-default when omitted. See /ui/authorization.
+  // Per-operation gate. Deny-by-default when omitted. See /ui/server/authorization.
   authorize?: (ctx) => void | Constraint | Promise<void | Constraint>,
 
   // Declarative allow-list — operations permitted without a hook.
@@ -67,7 +67,7 @@ createFilesRouter({
 - **Redirect** — when the adapter can sign URLs (S3, R2, GCS, …), the gateway `302`s to a short-lived signed URL and the bytes flow **directly from storage**. Your server never touches them, and `Range` requests are handled by the provider.
 - **Proxy** — when the adapter can't sign (Vercel Blob private, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
 
-Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/ui/authorization) returns `{ disposition: "inline" }`.
+Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/ui/server/authorization) returns `{ disposition: "inline" }`.
 
 ## How uploads flow
 
@@ -81,4 +81,4 @@ An explicit `upload(key, body)` skips presign and streams straight through the g
 
 ## Other frameworks
 
-The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for [Next.js](/ui/next), [Hono](/ui/hono), and [Express](/ui/express). For anything else, call `router.handle(request)` directly from any handler that gives you a Web `Request`.
+The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for [Next.js](/ui/server/next), [Hono](/ui/server/hono), and [Express](/ui/server/express). For anything else, call `router.handle(request)` directly from any handler that gives you a Web `Request`.
