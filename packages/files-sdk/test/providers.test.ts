@@ -42,6 +42,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./react",
   "./signed-url-policy",
   "./soft-delete",
+  "./svelte",
   "./tiering",
   "./tracing",
   "./usage",

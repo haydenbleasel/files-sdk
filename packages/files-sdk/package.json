@@ -50,6 +50,10 @@
       "types": "./dist/vue/index.d.ts",
       "import": "./dist/vue/index.js"
     },
+    "./svelte": {
+      "types": "./dist/svelte/index.d.ts",
+      "import": "./dist/svelte/index.js"
+    },
     "./audit": {
       "types": "./dist/audit/index.d.ts",
       "import": "./dist/audit/index.js"
@@ -362,6 +366,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "ssh2-sftp-client": "^12.1.1",
+    "svelte": "^5.0.0",
     "typescript": "^6",
     "uploadthing": "^7",
     "vue": "^3.5.0",
@@ -400,6 +405,7 @@
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0",
     "ssh2-sftp-client": "^12.1.1",
+    "svelte": "^4.0.0 || ^5.0.0",
     "uploadthing": "^7",
     "vue": "^3.4.0",
     "zod": "^3.23.0 || ^4.0.0"
@@ -499,6 +505,9 @@
       "optional": true
     },
     "ssh2-sftp-client": {
+      "optional": true
+    },
+    "svelte": {
       "optional": true
     },
     "uploadthing": {

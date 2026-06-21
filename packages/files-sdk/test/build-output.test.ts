@@ -122,11 +122,15 @@ test(
 );
 
 test(
-  "vue bundle imports only vue",
+  "framework bundles import only their framework",
   () => {
     ensureBuilt();
-    const externals = [...staticExternals(resolve(distDir, "vue/index.js"))];
-    expect(externals.filter((e) => e !== "vue")).toEqual([]);
+    // vue imports only `vue`; svelte uses an inline store + a type-only
+    // `Readable`, so it imports nothing external at all.
+    const vue = [...staticExternals(resolve(distDir, "vue/index.js"))];
+    expect(vue.filter((e) => e !== "vue")).toEqual([]);
+    const svelte = [...staticExternals(resolve(distDir, "svelte/index.js"))];
+    expect(svelte).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );
@@ -145,6 +149,7 @@ test(
       ["next", ["createRouteHandler"]],
       ["react", ["useFiles", "useList", "useFile", "useSearch"]],
       ["vue", ["useFiles", "useList", "useFile", "useSearch"]],
+      ["svelte", ["useFiles", "useList", "useFile", "useSearch"]],
     ];
     for (const [sub, names] of cases) {
       const mod = (await import(resolve(distDir, sub, "index.js"))) as Record<

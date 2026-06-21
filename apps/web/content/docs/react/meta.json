@@ -1,5 +1,5 @@
 {
   "root": true,
   "title": "Frontend",
-  "pages": ["index", "gateway", "authorization", "use-files", "vue"]
+  "pages": ["index", "gateway", "authorization", "use-files", "vue", "svelte"]
 }

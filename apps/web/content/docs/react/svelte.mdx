@@ -1,0 +1,79 @@
+---
+title: Svelte
+description: The same full Files-API parity, as a Svelte binding - useFiles returns Svelte stores for ambient state (used with $store), plus useList / useFile / useSearch.
+---
+
+`files-sdk/svelte` is the Svelte binding of [`useFiles`](/react/use-files). It wraps the same framework-agnostic client and talks to the same [gateway](/react/gateway) — only the reactivity layer differs. Ambient state is exposed as **Svelte stores** (use them with the `$` prefix); the verb methods are plain async functions.
+
+```svelte
+<script lang="ts">
+  import { useFiles } from "files-sdk/svelte";
+  import { onDestroy } from "svelte";
+
+  const files = useFiles({ endpoint: "/api/files" });
+  const { isUploading, progress, error } = files;
+  onDestroy(files.abort); // cancel any in-flight calls on unmount
+
+  async function onUpload(event: Event) {
+    const file = (event.currentTarget as HTMLInputElement).files?.[0];
+    if (file) {
+      await files.upload(file);
+    }
+  }
+</script>
+
+<input type="file" on:change={onUpload} />
+{#if $isUploading}<progress value={$progress.fraction} />{/if}
+{#if $error}<p>{$error.message}</p>{/if}
+```
+
+The binding ships **no Svelte runtime** — its stores are a tiny implementation of the store contract, so `$store` auto-subscription works exactly as with `writable`.
+
+## The verbs
+
+Every verb mirrors the SDK (and the React/Vue bindings) — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods:
+
+```ts lineNumbers
+const { key } = await files.upload(file); // keyless → server mints the key
+const stored = await files.download("report.pdf"); // → a lazy StoredFile
+const link = await files.url("avatar.png"); // → string, for <img src>
+await files.delete(["a.txt", "b.txt"]); // bulk → { deleted, errors? }
+```
+
+## Ambient state (stores)
+
+```ts lineNumbers
+files.isUploading; // Readable<boolean>      → $isUploading
+files.progress; // Readable<{ loaded, total, fraction }>
+files.uploads; // Readable<FileUploadState[]> — per-file live state
+files.error; // Readable<FilesError | undefined> — last error from any verb
+files.reset(); // clear ambient error + upload state (re-arms after abort)
+files.abort(); // abort every in-flight call — wire to onDestroy
+```
+
+Unlike React/Vue, the binding can't hook component teardown by itself (Svelte's lifecycle needs the compiler), so cancel in-flight work by calling `files.abort` from `onDestroy` — one line, as above.
+
+## Reactive reads
+
+The query stores load on creation and expose `data` / `error` / `isLoading` / `isFetching` stores plus `refetch()`. Svelte's reactivity lives at the component level, so re-run them from a `$:` block when a dependency changes:
+
+```svelte
+<script lang="ts">
+  import { useList } from "files-sdk/svelte";
+
+  let prefix = "docs/";
+  const { data, isLoading, refetch } = useList({ prefix });
+
+  $: prefix, refetch(); // re-run whenever `prefix` changes
+</script>
+
+{#if $isLoading}Loading…{:else}
+  <ul>{#each $data?.items ?? [] as item}<li>{item.key}</li>{/each}</ul>
+{/if}
+```
+
+`useFile(key)` (a `head()` for previews) and `useSearch(pattern, opts)` work the same way.
+
+## Setting up the gateway
+
+The server side is identical to React and Vue — mount [`createFilesRouter`](/react/gateway) at your endpoint and lock it down with [`authorize`](/react/authorization). Only the browser binding changes per framework.

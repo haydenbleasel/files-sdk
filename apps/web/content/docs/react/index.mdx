@@ -30,12 +30,12 @@ The browser never holds storage credentials. Calls go to **your** endpoint, whic
 
 ## The two halves
 
-|            | Package                            | What it is                                                                                                                                                                    |
-| ---------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Server** | `files-sdk/api` + `files-sdk/next` | A [gateway](/react/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/react/authorization) hook.                           |
-| **Client** | `files-sdk/react`, `files-sdk/vue` | The [`useFiles`](/react/use-files) hook / [composable](/react/vue) (every verb, imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`. |
+|            | Package                                                | What it is                                                                                                                                                                                                          |
+| ---------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server** | `files-sdk/api` + `files-sdk/next`                     | A [gateway](/react/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/react/authorization) hook.                                                                 |
+| **Client** | `files-sdk/react`, `files-sdk/vue`, `files-sdk/svelte` | The [`useFiles`](/react/use-files) hook / [Vue composable](/react/vue) / [Svelte binding](/react/svelte) (every verb, imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`. |
 
-The same gateway backs both. A framework-agnostic core, `createFilesClient` from `files-sdk/client`, sits under the bindings for non-framework (Node, worker) callers.
+The same gateway backs all three. A framework-agnostic core, `createFilesClient` from `files-sdk/client`, sits under the bindings for non-framework (Node, worker) callers.
 
 <Callout type="warn">
   The gateway proxies `download`, `list`, `delete`, and `move` to the browser —

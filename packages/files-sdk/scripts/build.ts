@@ -41,11 +41,12 @@ const allEntrypoints = [
 // (`node:module`) leaks in as a stray side-effect import, failing outside Node.
 const reactEntry = resolve(srcDir, "react/index.ts");
 const vueEntry = resolve(srcDir, "vue/index.ts");
+const svelteEntry = resolve(srcDir, "svelte/index.ts");
 // Client framework bindings are each built standalone so the emitted module
-// imports only its framework (`react`/`vue`) and inlines its deps — no shared
-// `node:module` chunk, and (for React) the `"use client"` banner lands on the
-// actual module the consumer imports.
-const clientFrameworkEntries = new Set([reactEntry, vueEntry]);
+// imports only its framework (`react`/`vue`/`svelte`) and inlines its deps — no
+// shared `node:module` chunk, and (for React) the `"use client"` banner lands on
+// the actual module the consumer imports.
+const clientFrameworkEntries = new Set([reactEntry, vueEntry, svelteEntry]);
 const edgeEntrypoints = ["api", "client", "next"].map((sub) =>
   resolve(srcDir, `${sub}/index.ts`)
 );
@@ -109,6 +110,7 @@ const build = async ({ docs = true } = {}) => {
   // emitted module imports only its framework and inlines its deps. React also
   // carries a `"use client"` banner on the actual module the consumer imports.
   await buildJs({ entrypoints: [vueEntry], splitting: false });
+  await buildJs({ entrypoints: [svelteEntry], splitting: false });
   await buildJs({
     banner: '"use client";',
     entrypoints: [reactEntry],
