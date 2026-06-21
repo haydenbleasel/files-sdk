@@ -242,6 +242,10 @@
       "types": "./dist/alibaba/index.d.ts",
       "import": "./dist/alibaba/index.js"
     },
+    "./archil": {
+      "types": "./dist/archil/index.d.ts",
+      "import": "./dist/archil/index.js"
+    },
     "./yandex": {
       "types": "./dist/yandex/index.d.ts",
       "import": "./dist/yandex/index.js"
@@ -387,6 +391,7 @@
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.40.0",
+    "disk": "^0.8.18",
     "dropbox": "^10.34.0",
     "fastify": "^5.0.0",
     "firebase-admin": "^13.10.0",
@@ -433,6 +438,7 @@
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.16.0",
+    "disk": "^0.8.18",
     "dropbox": "^10.34.0",
     "fastify": "^4.0.0 || ^5.0.0",
     "firebase-admin": "^13.10.0",
@@ -523,6 +529,9 @@
       "optional": true
     },
     "convex": {
+      "optional": true
+    },
+    "disk": {
       "optional": true
     },
     "dropbox": {

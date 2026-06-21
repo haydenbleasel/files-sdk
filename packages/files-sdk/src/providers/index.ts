@@ -233,6 +233,43 @@ export const PROVIDERS = {
     peerDeps: ["node-appwrite"],
     slug: "appwrite",
   },
+  archil: {
+    description:
+      "Archil disks via the S3-compatible API. The disk id is the bucket and the endpoint is derived from the Archil region (aws-us-east-1, gcp-us-central1, ...).",
+    env: {
+      config: ["bucket"],
+      credentialModes: [
+        {
+          label: "Access key",
+          vars: [
+            {
+              description: "Archil S3 access key ID",
+              key: "ARCHIL_S3_ACCESS_KEY_ID",
+              readBy: "files-sdk",
+              secret: true,
+            },
+            {
+              description: "Archil S3 secret access key",
+              key: "ARCHIL_S3_SECRET_ACCESS_KEY",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      required: [
+        {
+          description: "Archil region (aws-us-east-1, gcp-us-central1, ...)",
+          key: "ARCHIL_REGION",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "Archil",
+    peerDeps: [...AWS_S3_PEERS, "disk"],
+    slug: "archil",
+  },
   azure: {
     description:
       "Azure Blob Storage via @azure/storage-blob. Four credential modes - connection string, account key, SAS token, or anonymous.",
