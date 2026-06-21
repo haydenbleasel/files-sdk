@@ -67,7 +67,14 @@ export const getRegistryItem = async (
   const files = await Promise.all(
     item.files.map(async (file) => ({
       ...file,
-      content: await readFile(join(process.cwd(), file.path), "utf-8"),
+      // Scope the dynamic read to the static `registry/` subfolder. `file.path`
+      // is always `registry/...` (see registry.json), so re-expressing it with a
+      // literal `"registry"` segment lets Node File Trace bundle just that
+      // directory instead of conservatively tracing the whole project.
+      content: await readFile(
+        join(process.cwd(), "registry", file.path.replace(/^registry\//u, "")),
+        "utf-8"
+      ),
     }))
   );
   return {

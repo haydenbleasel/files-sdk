@@ -1,6 +1,5 @@
 import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
-import { headers } from "next/headers";
 
 interface ComponentInstallProps {
   /** Registry item name, e.g. `"dropzone"`. */
@@ -13,12 +12,18 @@ const MANAGERS: { label: string; command: (url: string) => string }[] = [
   { command: (url) => `bunx --bun shadcn@latest add ${url}`, label: "bun" },
 ];
 
+// Derive the registry origin from env, not the request `headers()`. Reading
+// `headers()` is a Dynamic API that opts the whole page out of static
+// prerendering — and these pages also render <AutoTypeTable>, whose build-time
+// filesystem cache write throws (ENOENT) if it runs at request time on the
+// read-only serverless filesystem. Staying static keeps generation at build.
+const origin = process.env.VERCEL_PROJECT_PRODUCTION_URL ?? "localhost:3000";
+const protocol = origin.startsWith("localhost") ? "http" : "https";
+const baseUrl = `${protocol}://${origin}`;
+
 /** Per-package-manager `shadcn add` command pointing at this site's registry. */
-export const ComponentInstall = async ({ name }: ComponentInstallProps) => {
-  const head = await headers();
-  const host = head.get("host") ?? "localhost:3000";
-  const protocol = host.startsWith("localhost") ? "http" : "https";
-  const url = `${protocol}://${host}/r/${name}.json`;
+export const ComponentInstall = ({ name }: ComponentInstallProps) => {
+  const url = `${baseUrl}/r/${name}.json`;
 
   return (
     <Tabs items={MANAGERS.map((manager) => manager.label)}>
