@@ -65,10 +65,15 @@ describe("archil adapter", () => {
     expect(adapter.disk).toBeUndefined();
   });
 
-  test("rejects unknown region, invalid branch, and missing bucket", () => {
+  test("rejects unknown region, missing region, invalid branch, and missing bucket", () => {
     expect(() =>
       archil({ bucket: "dsk-abc", region: "useast1", ...creds })
     ).toThrow("unknown region");
+    // Empty string is falsy, so it trips the missing-region guard before the
+    // shape check — no ARCHIL_REGION env juggling needed.
+    expect(() => archil({ bucket: "dsk-abc", region: "", ...creds })).toThrow(
+      "missing `region`"
+    );
     expect(() =>
       archil({
         branch: "a/b",
@@ -80,5 +85,28 @@ describe("archil adapter", () => {
     expect(() => archil({ region: "aws-us-east-1", ...creds })).toThrow(
       "missing `bucket`"
     );
+  });
+
+  test("missing credentials throws at construction", () => {
+    const oldKey = process.env.ARCHIL_S3_ACCESS_KEY_ID;
+    const oldSecret = process.env.ARCHIL_S3_SECRET_ACCESS_KEY;
+    delete process.env.ARCHIL_S3_ACCESS_KEY_ID;
+    delete process.env.ARCHIL_S3_SECRET_ACCESS_KEY;
+    try {
+      expect(() =>
+        archil({ bucket: "dsk-abc", region: "aws-us-east-1" })
+      ).toThrow("missing credentials");
+    } finally {
+      if (oldKey === undefined) {
+        delete process.env.ARCHIL_S3_ACCESS_KEY_ID;
+      } else {
+        process.env.ARCHIL_S3_ACCESS_KEY_ID = oldKey;
+      }
+      if (oldSecret === undefined) {
+        delete process.env.ARCHIL_S3_SECRET_ACCESS_KEY;
+      } else {
+        process.env.ARCHIL_S3_SECRET_ACCESS_KEY = oldSecret;
+      }
+    }
   });
 });
