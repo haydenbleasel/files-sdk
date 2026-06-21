@@ -95,6 +95,12 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
   useEffect(
     () => () => {
       rootRef.current.abort();
+      // The ref survives a StrictMode (or any) remount, so leaving it aborted
+      // here would make every call after the remount fail with "signal is
+      // aborted without reason". Re-arm with a fresh controller — all cleanups
+      // run before the remount's effects, so the next mount sees a live signal.
+      // An explicit user `abort()` is untouched and still requires `reset()`.
+      rootRef.current = new AbortController();
     },
     []
   );

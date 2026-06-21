@@ -1,0 +1,7 @@
+[install]
+# Hoisted (flat) node_modules instead of bun's default isolated `.bun` store.
+# Turbopack's loader resolver can't follow the isolated store's symlinks to
+# nested deps (e.g. the `zod` that fumadocs-mdx's MDX loader imports), which
+# 500s every docs page; a flat layout resolves cleanly and matches a typical
+# npm/CI install. Node and webpack resolve either layout fine.
+linker = "hoisted"

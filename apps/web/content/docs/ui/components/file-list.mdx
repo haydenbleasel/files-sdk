@@ -1,0 +1,35 @@
+---
+title: File List
+description: A reactive list of stored files with thumbnails, size and type, plus download and delete — driven by useFiles.
+---
+
+Lists the objects under a prefix and keeps itself in sync as you mutate them. Images get an inline thumbnail through the gateway download proxy, so it works on every adapter — even ones that can't mint a public URL.
+
+<ComponentPreview name="file-list/file-list-basic" />
+
+## Installation
+
+<ComponentInstall name="file-list" />
+
+## Usage
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+
+import { FileList } from "@/components/files-sdk/file-list";
+
+export function Browser() {
+  const files = useFiles({ endpoint: "/api/files" });
+
+  return <FileList files={files} prefix="docs/" />;
+}
+```
+
+Delete and download both go through the same `files` instance you pass in, so ambient error state stays consistent. The component owns its own list state (a `files.list()` call on mount) — for shared, cached listing bring [`useList`](/ui/client/react#reactive-reads) instead.
+
+## Props
+
+<AutoTypeTable
+  path="registry/files-sdk/file-list/file-list.tsx"
+  name="FileListProps"
+/>

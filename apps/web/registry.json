@@ -1,0 +1,82 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "files-sdk",
+  "homepage": "https://github.com/haydenbleasel/files-sdk",
+  "items": [
+    {
+      "name": "dropzone",
+      "type": "registry:component",
+      "title": "Dropzone",
+      "description": "Drag-and-drop (or click) upload area wired to files-sdk/react.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button"],
+      "files": [
+        {
+          "path": "registry/files-sdk/dropzone/dropzone.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/dropzone.tsx"
+        }
+      ]
+    },
+    {
+      "name": "file-list",
+      "type": "registry:component",
+      "title": "File List",
+      "description": "Reactive list of stored files with thumbnails, download and delete.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button"],
+      "files": [
+        {
+          "path": "registry/files-sdk/file-list/file-list.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/file-list.tsx"
+        }
+      ]
+    },
+    {
+      "name": "upload-progress",
+      "type": "registry:component",
+      "title": "Upload Progress",
+      "description": "Per-file and aggregate progress for in-flight uploads.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["progress"],
+      "files": [
+        {
+          "path": "registry/files-sdk/upload-progress/upload-progress.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/upload-progress.tsx"
+        }
+      ]
+    },
+    {
+      "name": "multipart-uploader",
+      "type": "registry:component",
+      "title": "Multipart Uploader",
+      "description": "Multi-file queue uploader with bounded concurrency, live progress and cancel.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": ["button", "progress"],
+      "files": [
+        {
+          "path": "registry/files-sdk/multipart-uploader/multipart-uploader.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/multipart-uploader.tsx"
+        }
+      ]
+    },
+    {
+      "name": "file-preview",
+      "type": "registry:component",
+      "title": "File Preview",
+      "description": "Lazy preview of a single stored file (image, PDF or text) with metadata.",
+      "dependencies": ["files-sdk", "lucide-react"],
+      "registryDependencies": [],
+      "files": [
+        {
+          "path": "registry/files-sdk/file-preview/file-preview.tsx",
+          "type": "registry:component",
+          "target": "components/files-sdk/file-preview.tsx"
+        }
+      ]
+    }
+  ]
+}

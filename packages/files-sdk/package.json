@@ -340,6 +340,7 @@
     "@cloudflare/workers-types": "^4.20260603.1",
     "@google-cloud/storage": "^7.19.0",
     "@googleapis/drive": "^20.2.0",
+    "@happy-dom/global-registrator": "^20.0.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@netlify/blobs": "^10.7.9",
     "@openai/agents": "^0.11.6",
