@@ -51,6 +51,10 @@ const cases: Record<string, Case> = {
       },
     },
   },
+  archil: {
+    expectedName: "archil",
+    opts: { ...baseS3, region: "aws-us-east-1" },
+  },
   azure: {
     expectedName: "azure",
     // accountKey value is irrelevant — Azure validates shape, not auth.
