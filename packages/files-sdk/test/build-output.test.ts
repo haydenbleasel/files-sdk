@@ -113,7 +113,12 @@ test(
   "gateway, client and next bundles have no node: static imports",
   () => {
     ensureBuilt();
-    for (const sub of ["api/index.js", "client/index.js", "next/index.js"]) {
+    for (const sub of [
+      "api/index.js",
+      "client/index.js",
+      "hono/index.js",
+      "next/index.js",
+    ]) {
       const externals = [...staticExternals(resolve(distDir, sub))];
       expect(externals.filter((e) => e.startsWith("node:"))).toEqual([]);
     }
@@ -147,6 +152,8 @@ test(
       ["client", ["createFilesClient", "aggregate"]],
       ["api", ["createFilesRouter"]],
       ["next", ["createRouteHandler"]],
+      ["hono", ["createRouteHandler"]],
+      ["express", ["createRouteHandler"]],
       ["react", ["useFiles", "useList", "useFile", "useSearch"]],
       ["vue", ["useFiles", "useList", "useFile", "useSearch"]],
       ["svelte", ["useFiles", "useList", "useFile", "useSearch"]],

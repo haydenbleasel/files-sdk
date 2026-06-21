@@ -46,6 +46,14 @@
       "types": "./dist/next/index.d.ts",
       "import": "./dist/next/index.js"
     },
+    "./hono": {
+      "types": "./dist/hono/index.d.ts",
+      "import": "./dist/hono/index.js"
+    },
+    "./express": {
+      "types": "./dist/express/index.d.ts",
+      "import": "./dist/express/index.js"
+    },
     "./vue": {
       "types": "./dist/vue/index.d.ts",
       "import": "./dist/vue/index.js"
@@ -359,6 +367,7 @@
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^10.6.2",
     "happy-dom": "^20.0.0",
+    "hono": "^4.10.4",
     "next": "^16.2.7",
     "node-appwrite": "^26.0.0",
     "openai": "^6.42.0",
@@ -398,6 +407,7 @@
     "dropbox": "^10.34.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^10.0.0",
+    "hono": "^4.0.0",
     "next": "^14.0.0 || ^15.0.0 || ^16.0.0",
     "node-appwrite": "^26.0.0",
     "openai": "^6.0.0",
@@ -484,6 +494,9 @@
       "optional": true
     },
     "google-auth-library": {
+      "optional": true
+    },
+    "hono": {
       "optional": true
     },
     "next": {

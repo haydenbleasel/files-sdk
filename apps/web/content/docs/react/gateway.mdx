@@ -81,4 +81,4 @@ An explicit `upload(key, body)` skips presign and streams straight through the g
 
 ## Other frameworks
 
-The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. `files-sdk/next` ships today; Hono and an Express (`Readable.toWeb`/`fromWeb`) bridge are on the roadmap. Until then you can call `router.handle(request)` directly from any handler that gives you a Web `Request`.
+The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for **Next.js**, **Hono**, and **Express** — see [Framework adapters](/react/frameworks). For anything else, call `router.handle(request)` directly from any handler that gives you a Web `Request`.
