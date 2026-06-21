@@ -1,0 +1,97 @@
+---
+title: Authorization
+description: The gateway is deny-by-default. One authorize hook decides who can do what, and scopes every key - the single most important thing to get right.
+---
+
+Exposing `download`, `list`, `delete`, and `move` to the browser is a large attack surface. The gateway is **deny-by-default**: with no `authorize` and no `operations`, only `capabilities` answers and every other verb returns `403`.
+
+You open it up with one hook.
+
+```ts lineNumbers
+createFilesRouter({
+  files,
+  authorize: async ({ operation, key, req }) => {
+    const session = await auth(req);
+    if (!session) {
+      throw new FilesError("Unauthorized", "sign in"); // → 401
+    }
+    return { keyPrefix: `users/${session.id}/` }; // scope every key to this user
+  },
+});
+```
+
+`authorize` runs on every request. **Throw** to deny — a `FilesError` maps to its status (`Unauthorized` → 401, `ReadOnly` → 403, …). **Return** a constraint object to allow, optionally narrowing what the caller can do. **Return nothing** (`void`) to allow as-is.
+
+## The context
+
+```ts lineNumbers
+authorize(ctx: {
+  operation: FilesOperation;  // "download" | "upload" | "delete" | "list" | …
+  req: Request;               // cookies, headers, session live here
+  key?: string;               // single-key ops (client-supplied, pre-prefix)
+  keys?: string[];            // bulk ops
+  from?: string; to?: string; // copy / move
+  params: Readonly<Record<string, unknown>>; // expiresIn, range, …
+})
+```
+
+`operation` is the coarse verb, so one predicate covers the bulk and byte variants too (a `head-many` request authorizes as `"head"`; `presign`/`complete`/the upload `PUT` all authorize as `"upload"`).
+
+## The constraint
+
+```ts lineNumbers
+return {
+  keyPrefix?: string;     // prepended to every key/from/to; stripped from results
+  maxExpiresIn?: number;  // ceiling on url()/download expiry (seconds)
+  disposition?: "attachment" | "inline" | string; // download Content-Disposition
+  filterKeys?: (key: string) => boolean;           // narrow a bulk op
+  maxResults?: number;    // clamp a list/search page
+};
+```
+
+`keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` require **both** ends under the prefix, preventing exfiltration across scopes.
+
+## Recipes
+
+**Read-only session** — deny every write:
+
+```ts lineNumbers
+authorize: ({ operation }) => {
+  const writes = ["upload", "delete", "copy", "move"];
+  if (writes.includes(operation)) {
+    throw new FilesError("ReadOnly", "read-only"); // → 403
+  }
+  return { keyPrefix: "public/" };
+};
+```
+
+For defense in depth, also pass `files: files.readonly()` so writes are refused at the SDK layer even if the hook is misconfigured.
+
+**Declarative allow-list** — for a simple, uniform policy, skip the hook entirely:
+
+```ts lineNumbers
+createFilesRouter({
+  files,
+  operations: ["list", "head", "url", "download"], // read-only, no prefix scoping
+});
+```
+
+`operations` is a hard gate that runs _before_ `authorize`. Use both together for "only these verbs, and only under this prefix".
+
+## Origin & CSRF
+
+State-changing actions check the `Origin` header against `allowedOrigins` (an array or a predicate). It is off by default but strongly recommended:
+
+```ts lineNumbers
+createFilesRouter({
+  files,
+  authorize,
+  allowedOrigins: ["https://app.example.com"],
+});
+```
+
+The gateway reads no cookies except inside your `authorize` hook, so all authentication is in one place.
+
+## What crosses the wire
+
+Errors are serialized to `{ error: { code, reason?, message } }` and the underlying `FilesError.cause` (provider request IDs, headers) is **never** included. The client rebuilds a `FilesError` from the envelope, so `try/catch` in the browser behaves like the SDK.

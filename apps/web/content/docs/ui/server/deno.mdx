@@ -1,0 +1,39 @@
+---
+title: Deno
+description: Serve the Files gateway from Deno.serve. The gateway is a Web fetch handler, so it drops in with no adapter - import the SDK with the npm specifier.
+---
+
+`Deno.serve` calls your handler with a Web `Request` and returns your `Response` — the exact shape the gateway speaks (`handle(req: Request): Promise<Response>`). There is no `files-sdk/deno` adapter: pass [`router.handle`](/ui/server/gateway) the request directly. Import the SDK over Deno's `npm:` specifier (or an import map).
+
+```ts title="main.ts" lineNumbers
+import { createFiles } from "npm:files-sdk";
+import { s3 } from "npm:files-sdk/s3";
+import { createFilesRouter } from "npm:files-sdk/api";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+Deno.serve({ port: 3000 }, (req) => {
+  const { pathname } = new URL(req.url);
+  // One path, every method — the gateway dispatches internally
+  // (GET = download, POST = the JSON verbs, PUT = upload).
+  if (pathname === "/api/files") {
+    return router.handle(req);
+  }
+  return new Response("Not Found", { status: 404 });
+});
+```
+
+<Callout>
+  Deno is sandboxed — run with network and environment access: `deno run
+  --allow-net --allow-env main.ts`. The adapter reads credentials (e.g.
+  `AWS_ACCESS_KEY_ID`) and the gateway its `FILES_API_SECRET` from the
+  environment, so `--allow-env` is required.
+</Callout>
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.

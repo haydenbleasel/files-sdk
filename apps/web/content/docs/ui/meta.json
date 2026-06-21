@@ -4,14 +4,12 @@
   "pages": [
     "index",
     "---Client---",
-    "react",
-    "svelte",
-    "vue",
+    "...client",
+    "---Components---",
+    "...components",
     "---Server---",
-    "gateway",
-    "authorization",
-    "next",
-    "hono",
-    "express"
+    "server/gateway",
+    "server/authorization",
+    "...server"
   ]
 }

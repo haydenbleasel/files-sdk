@@ -1,0 +1,36 @@
+---
+title: Elysia
+description: Mount the Files gateway in an Elysia app. Web-native on Bun - forward the raw Request with parse:'none' so the gateway reads the body itself.
+---
+
+[Elysia](https://elysiajs.com) is Web-native (it runs on Bun), so the handler context carries the raw `request` and the gateway consumes it directly — `({ request }) => router.handle(request)`. Register it with `all` so all three methods reach the gateway: it dispatches on the method internally (GET = download, POST = the JSON verbs, PUT = upload).
+
+```ts title="server.ts" lineNumbers
+import { Elysia } from "elysia";
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+const app = new Elysia()
+  // `parse: "none"` keeps Elysia from consuming the body the gateway must read.
+  .all("/api/files", ({ request }) => router.handle(request), { parse: "none" })
+  .listen(3000);
+```
+
+<Callout type="warn">
+  Elysia eagerly parses the request body before your handler runs, and a Web
+  `Request` body can only be read once — so without `parse: "none"` the gateway
+  sees an already-consumed stream ("body already used"). This affects the JSON
+  verbs and the proxy/explicit-key `PUT` upload, both of which read the raw
+  body.
+</Callout>
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
