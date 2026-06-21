@@ -54,6 +54,26 @@
       "types": "./dist/express/index.d.ts",
       "import": "./dist/express/index.js"
     },
+    "./fastify": {
+      "types": "./dist/fastify/index.d.ts",
+      "import": "./dist/fastify/index.js"
+    },
+    "./koa": {
+      "types": "./dist/koa/index.d.ts",
+      "import": "./dist/koa/index.js"
+    },
+    "./nitro": {
+      "types": "./dist/nitro/index.d.ts",
+      "import": "./dist/nitro/index.js"
+    },
+    "./astro": {
+      "types": "./dist/astro/index.d.ts",
+      "import": "./dist/astro/index.js"
+    },
+    "./sveltekit": {
+      "types": "./dist/sveltekit/index.d.ts",
+      "import": "./dist/sveltekit/index.js"
+    },
     "./vue": {
       "types": "./dist/vue/index.d.ts",
       "import": "./dist/vue/index.js"
@@ -349,8 +369,10 @@
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@smithy/util-stream": "^4.6.6",
     "@supabase/storage-js": "^2.107.0",
+    "@sveltejs/kit": "^2.0.0",
     "@testing-library/react": "^16.3.0",
     "@types/bun": "^1.3.14",
+    "@types/koa": "^2.15.0",
     "@types/node": "^25.9.1",
     "@types/picomatch": "^4.0.3",
     "@types/react": "^19.2.0",
@@ -359,16 +381,20 @@
     "@typescript/native-preview": "^7.0.0-dev.20260603.1",
     "@vercel/blob": "^2.4.0",
     "ai": "^6.0.196",
+    "astro": "^5.0.0",
     "aws-sdk-client-mock": "^4.1.0",
     "basic-ftp": "^6.0.1",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.40.0",
     "dropbox": "^10.34.0",
+    "fastify": "^5.0.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^10.6.2",
+    "h3": "^1.13.0",
     "happy-dom": "^20.0.0",
     "hono": "^4.10.4",
+    "koa": "^3.0.0",
     "next": "^16.2.7",
     "node-appwrite": "^26.0.0",
     "openai": "^6.42.0",
@@ -399,16 +425,21 @@
     "@openai/agents": "^0.11.0",
     "@opentelemetry/api": "^1.9.0",
     "@supabase/storage-js": "^2.105.4",
+    "@sveltejs/kit": "^2.0.0",
     "@vercel/blob": "^2.4.0",
     "ai": "^6.0.0",
+    "astro": "^4.0.0 || ^5.0.0",
     "basic-ftp": "^6.0.1",
     "box-typescript-sdk-gen": "^1.19.1",
     "cloudinary": "^2.10.0",
     "convex": "^1.16.0",
     "dropbox": "^10.34.0",
+    "fastify": "^4.0.0 || ^5.0.0",
     "firebase-admin": "^13.10.0",
     "google-auth-library": "^10.0.0",
+    "h3": "^1.0.0",
     "hono": "^4.0.0",
+    "koa": "^2.0.0 || ^3.0.0",
     "next": "^14.0.0 || ^15.0.0 || ^16.0.0",
     "node-appwrite": "^26.0.0",
     "openai": "^6.0.0",
@@ -470,10 +501,16 @@
     "@supabase/storage-js": {
       "optional": true
     },
+    "@sveltejs/kit": {
+      "optional": true
+    },
     "@vercel/blob": {
       "optional": true
     },
     "ai": {
+      "optional": true
+    },
+    "astro": {
       "optional": true
     },
     "basic-ftp": {
@@ -491,13 +528,22 @@
     "dropbox": {
       "optional": true
     },
+    "fastify": {
+      "optional": true
+    },
     "firebase-admin": {
       "optional": true
     },
     "google-auth-library": {
       "optional": true
     },
+    "h3": {
+      "optional": true
+    },
     "hono": {
+      "optional": true
+    },
+    "koa": {
       "optional": true
     },
     "next": {

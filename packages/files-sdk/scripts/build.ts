@@ -47,9 +47,14 @@ const svelteEntry = resolve(srcDir, "svelte/index.ts");
 // shared `node:module` chunk, and (for React) the `"use client"` banner lands on
 // the actual module the consumer imports.
 const clientFrameworkEntries = new Set([reactEntry, vueEntry, svelteEntry]);
-const edgeEntrypoints = ["api", "client", "hono", "next"].map((sub) =>
-  resolve(srcDir, `${sub}/index.ts`)
-);
+const edgeEntrypoints = [
+  "api",
+  "client",
+  "hono",
+  "next",
+  "astro",
+  "sveltekit",
+].map((sub) => resolve(srcDir, `${sub}/index.ts`));
 const isEdge = (entry: string) =>
   clientFrameworkEntries.has(entry) || edgeEntrypoints.includes(entry);
 const nodeEntrypoints = allEntrypoints.filter((entry) => !isEdge(entry));
