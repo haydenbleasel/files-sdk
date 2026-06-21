@@ -35,16 +35,22 @@ const allEntrypoints = [
   resolve(srcDir, "cli/index.ts"),
 ];
 
-// The app-layer entries (`api`/`client`/`next`/`react`) must run on the edge and
-// in the browser, so they are built in their own pass(es). Bundled together with
-// the node entries, Bun's shared `createRequire` shim chunk (`node:module`) leaks
-// in as a stray side-effect import, which would fail to load outside Node.
+// The app-layer entries (`api`/`client`/`next`/`react`/`vue`) must run on the
+// edge and in the browser, so they are built in their own pass(es). Bundled
+// together with the node entries, Bun's shared `createRequire` shim chunk
+// (`node:module`) leaks in as a stray side-effect import, failing outside Node.
 const reactEntry = resolve(srcDir, "react/index.ts");
+const vueEntry = resolve(srcDir, "vue/index.ts");
+// Client framework bindings are each built standalone so the emitted module
+// imports only its framework (`react`/`vue`) and inlines its deps — no shared
+// `node:module` chunk, and (for React) the `"use client"` banner lands on the
+// actual module the consumer imports.
+const clientFrameworkEntries = new Set([reactEntry, vueEntry]);
 const edgeEntrypoints = ["api", "client", "next"].map((sub) =>
   resolve(srcDir, `${sub}/index.ts`)
 );
 const isEdge = (entry: string) =>
-  entry === reactEntry || edgeEntrypoints.includes(entry);
+  clientFrameworkEntries.has(entry) || edgeEntrypoints.includes(entry);
 const nodeEntrypoints = allEntrypoints.filter((entry) => !isEdge(entry));
 
 const buildJs = async ({
@@ -99,9 +105,10 @@ const build = async ({ docs = true } = {}) => {
   await rm(dist, { force: true, recursive: true });
   await buildJs({ entrypoints: nodeEntrypoints });
   await buildJs({ entrypoints: edgeEntrypoints });
-  // React is built standalone (no splitting) so the emitted module is a clean
-  // client-boundary file importing only `react`, and the `"use client"` banner
-  // lands on the actual module the consumer imports.
+  // The client framework bindings are each built standalone (no splitting) so the
+  // emitted module imports only its framework and inlines its deps. React also
+  // carries a `"use client"` banner on the actual module the consumer imports.
+  await buildJs({ entrypoints: [vueEntry], splitting: false });
   await buildJs({
     banner: '"use client";',
     entrypoints: [reactEntry],

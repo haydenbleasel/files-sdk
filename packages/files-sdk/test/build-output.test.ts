@@ -120,3 +120,41 @@ test(
   },
   COLD_BUILD_TIMEOUT_MS
 );
+
+test(
+  "vue bundle imports only vue",
+  () => {
+    ensureBuilt();
+    const externals = [...staticExternals(resolve(distDir, "vue/index.js"))];
+    expect(externals.filter((e) => e !== "vue")).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// A pure named re-export entry (`export { x } from "./y"`) is stripped by Bun to
+// an unbound stub — the runtime export is missing even though the .d.ts is fine,
+// and `src`-importing tests never catch it. This imports each shipped bundle and
+// asserts the public factory/hook actually resolves to a function.
+test(
+  "public app-layer bundles export bound runtime values",
+  async () => {
+    ensureBuilt();
+    const cases: [string, string[]][] = [
+      ["client", ["createFilesClient", "aggregate"]],
+      ["api", ["createFilesRouter"]],
+      ["next", ["createRouteHandler"]],
+      ["react", ["useFiles", "useList", "useFile", "useSearch"]],
+      ["vue", ["useFiles", "useList", "useFile", "useSearch"]],
+    ];
+    for (const [sub, names] of cases) {
+      const mod = (await import(resolve(distDir, sub, "index.js"))) as Record<
+        string,
+        unknown
+      >;
+      for (const name of names) {
+        expect(typeof mod[name]).toBe("function");
+      }
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);

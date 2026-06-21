@@ -47,6 +47,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./usage",
   "./validation",
   "./versioning",
+  "./vue",
   "./zip",
 ]);
 

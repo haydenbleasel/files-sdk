@@ -46,6 +46,10 @@
       "types": "./dist/next/index.d.ts",
       "import": "./dist/next/index.js"
     },
+    "./vue": {
+      "types": "./dist/vue/index.d.ts",
+      "import": "./dist/vue/index.js"
+    },
     "./audit": {
       "types": "./dist/audit/index.d.ts",
       "import": "./dist/audit/index.js"
@@ -360,6 +364,7 @@
     "ssh2-sftp-client": "^12.1.1",
     "typescript": "^6",
     "uploadthing": "^7",
+    "vue": "^3.5.0",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
@@ -396,6 +401,7 @@
     "react-dom": "^18.0.0 || ^19.0.0",
     "ssh2-sftp-client": "^12.1.1",
     "uploadthing": "^7",
+    "vue": "^3.4.0",
     "zod": "^3.23.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -496,6 +502,9 @@
       "optional": true
     },
     "uploadthing": {
+      "optional": true
+    },
+    "vue": {
       "optional": true
     },
     "zod": {
