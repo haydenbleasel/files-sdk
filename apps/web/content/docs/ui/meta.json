@@ -1,0 +1,15 @@
+{
+  "root": true,
+  "title": "UI",
+  "pages": [
+    "index",
+    "---Client---",
+    "...client",
+    "---Components---",
+    "...components",
+    "---Server---",
+    "server/gateway",
+    "server/authorization",
+    "...server"
+  ]
+}

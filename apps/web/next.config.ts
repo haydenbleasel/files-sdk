@@ -4,6 +4,16 @@ import type { NextConfig } from "next";
 const withMDX = createMDX();
 
 const nextConfig: NextConfig = {
+  headers: () => [
+    {
+      headers: [
+        { key: "Access-Control-Allow-Origin", value: "*" },
+        { key: "Access-Control-Allow-Methods", value: "GET" },
+      ],
+      // The shadcn CLI fetches registry items cross-origin.
+      source: "/r/(.*)",
+    },
+  ],
   redirects: () => [
     {
       destination: "/overview",
@@ -94,6 +104,21 @@ const nextConfig: NextConfig = {
       destination: "/timeouts",
       permanent: true,
       source: "/features/timeouts",
+    },
+    {
+      destination: "/ui/components/dropzone",
+      permanent: true,
+      source: "/ui/components",
+    },
+    {
+      destination: "/ui/client/react",
+      permanent: true,
+      source: "/ui/client",
+    },
+    {
+      destination: "/ui/server/next",
+      permanent: true,
+      source: "/ui/server",
     },
   ],
   rewrites: () => [

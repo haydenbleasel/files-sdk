@@ -1,0 +1,84 @@
+---
+title: Gateway
+description: createFilesRouter exposes the whole Files API over one HTTP endpoint. Mount it in Next (or any Web-Request runtime) and the browser bindings talk to it.
+---
+
+`createFilesRouter` turns a `Files` instance into an HTTP handler that the browser bindings ([React](/ui/client/react), [Vue](/ui/client/vue), [Svelte](/ui/client/svelte)) call. It is framework-agnostic — `handle(req: Request): Promise<Response>` — and surfaced by thin adapters like [`files-sdk/next`](/ui/server/next).
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  authorize: async ({ req }) => {
+    /* … */
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handler is Web-native (`Request`/`Response`, `crypto.subtle`, `ReadableStream`), so the same code runs on Node **and** the Edge runtime.
+
+Passing a `Files` instance (not a raw adapter) is deliberate: its `prefix`, `readonly`, `plugins`, `hooks`, and `receipts` all compose for free. Pass `files.readonly()` for a read-only deployment so writes are refused at the SDK layer too.
+
+## Options
+
+```ts lineNumbers
+createFilesRouter({
+  // A Files instance, or a per-request factory for multi-tenant apps.
+  files: Files | ((req: Request) => Files | Promise<Files>),
+
+  // Per-operation gate. Deny-by-default when omitted. See /ui/server/authorization.
+  authorize?: (ctx) => void | Constraint | Promise<void | Constraint>,
+
+  // Declarative allow-list — operations permitted without a hook.
+  operations?: FilesOperation[],
+
+  // CSRF/origin allow-list for state-changing actions. Strongly recommended.
+  allowedOrigins?: string[] | ((origin: string) => boolean),
+
+  // url()/download expiry default + ceiling, seconds. Default 300.
+  defaultExpiresIn?: number,
+
+  // Force Content-Disposition: attachment on proxied downloads. Default true.
+  forceDownloadDisposition?: boolean,
+
+  maxListLimit?: number,       // cap a list page. Default 1000.
+  maxSearchResults?: number,   // cap a search page. Default 1000.
+  maxUploadSize?: number,      // reject larger uploads (bound + verified).
+
+  downloadMode?: "auto" | "redirect" | "proxy",      // default "auto"
+  onUnsupportedRange?: "reject" | "ignore",          // default "reject" (416)
+
+  // HMAC secret for the upload round-trip. Falls back to FILES_API_SECRET,
+  // then a per-process random (logs a warning — set a stable secret in prod).
+  secret?: string,
+});
+```
+
+## How downloads flow
+
+`downloadMode: "auto"` (the default) picks the cheapest correct path per adapter:
+
+- **Redirect** — when the adapter can sign URLs (S3, R2, GCS, …), the gateway `302`s to a short-lived signed URL and the bytes flow **directly from storage**. Your server never touches them, and `Range` requests are handled by the provider.
+- **Proxy** — when the adapter can't sign (Vercel Blob private, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
+
+Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/ui/server/authorization) returns `{ disposition: "inline" }`.
+
+## How uploads flow
+
+A keyless `upload(file)` runs a three-step protocol so bytes never round-trip through your server when they don't have to:
+
+1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target.
+2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress.
+3. **complete** — the server verifies the token and `head`s the object — the authoritative size/type check that rejects an oversized "unbounded" upload — then returns the stored metadata.
+
+An explicit `upload(key, body)` skips presign and streams straight through the gateway.
+
+## Other frameworks
+
+The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for [Next.js](/ui/server/next), [Hono](/ui/server/hono), and [Express](/ui/server/express). For anything else, call `router.handle(request)` directly from any handler that gives you a Web `Request`.

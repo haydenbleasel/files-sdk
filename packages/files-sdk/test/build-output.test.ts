@@ -81,3 +81,92 @@ test(
   },
   COLD_BUILD_TIMEOUT_MS
 );
+
+const ensureBuilt = () => {
+  if (!existsSync(cliBundle)) {
+    const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
+      cwd: pkgRoot,
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    if (!proc.success) {
+      throw new Error(`build failed:\n${proc.stderr.toString()}`);
+    }
+  }
+};
+
+test(
+  "react bundle is a `use client` module importing only react",
+  () => {
+    ensureBuilt();
+    const reactBundle = resolve(distDir, "react/index.js");
+    expect(readFileSync(reactBundle, "utf-8").startsWith('"use client";')).toBe(
+      true
+    );
+    const externals = [...staticExternals(reactBundle)];
+    expect(externals.filter((e) => e !== "react")).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+test(
+  "gateway, client and next bundles have no node: static imports",
+  () => {
+    ensureBuilt();
+    for (const sub of [
+      "api/index.js",
+      "client/index.js",
+      "hono/index.js",
+      "next/index.js",
+    ]) {
+      const externals = [...staticExternals(resolve(distDir, sub))];
+      expect(externals.filter((e) => e.startsWith("node:"))).toEqual([]);
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+test(
+  "framework bundles import only their framework",
+  () => {
+    ensureBuilt();
+    // vue imports only `vue`; svelte uses an inline store + a type-only
+    // `Readable`, so it imports nothing external at all.
+    const vue = [...staticExternals(resolve(distDir, "vue/index.js"))];
+    expect(vue.filter((e) => e !== "vue")).toEqual([]);
+    const svelte = [...staticExternals(resolve(distDir, "svelte/index.js"))];
+    expect(svelte).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// A pure named re-export entry (`export { x } from "./y"`) is stripped by Bun to
+// an unbound stub — the runtime export is missing even though the .d.ts is fine,
+// and `src`-importing tests never catch it. This imports each shipped bundle and
+// asserts the public factory/hook actually resolves to a function.
+test(
+  "public app-layer bundles export bound runtime values",
+  async () => {
+    ensureBuilt();
+    const cases: [string, string[]][] = [
+      ["client", ["createFilesClient", "aggregate"]],
+      ["api", ["createFilesRouter"]],
+      ["next", ["createRouteHandler"]],
+      ["hono", ["createRouteHandler"]],
+      ["express", ["createRouteHandler"]],
+      ["react", ["useFiles", "useList", "useFile", "useSearch"]],
+      ["vue", ["useFiles", "useList", "useFile", "useSearch"]],
+      ["svelte", ["useFiles", "useList", "useFile", "useSearch"]],
+    ];
+    for (const [sub, names] of cases) {
+      const mod = (await import(resolve(distDir, sub, "index.js"))) as Record<
+        string,
+        unknown
+      >;
+      for (const name of names) {
+        expect(typeof mod[name]).toBe("function");
+      }
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);

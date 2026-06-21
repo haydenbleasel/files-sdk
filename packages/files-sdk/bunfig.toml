@@ -4,5 +4,8 @@
 # suite co-located outside `test/` (e.g. `src/foo.live.test.ts`) would otherwise
 # be counted, and since live tests are skipped by default (run only with
 # LIVE_TESTS=1) it would tank the per-file 98% threshold below.
-coveragePathIgnorePatterns = ["**/test/**", "**/*.live.test.ts"]
+# `**/dist/**` keeps the built bundles out of the report: `build-output.test.ts`
+# imports a few `dist/*` files to assert their exports resolve, which otherwise
+# instruments them at ~0% and pollutes the table (they're not source under test).
+coveragePathIgnorePatterns = ["**/test/**", "**/*.live.test.ts", "**/dist/**"]
 coverageThreshold = { lines = 0.98, functions = 0.98 }

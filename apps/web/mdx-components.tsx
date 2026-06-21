@@ -9,6 +9,8 @@ import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { MDXComponents } from "mdx/types";
 
 import { AdaptersIndexServer } from "@/components/adapters-index-server";
+import { ComponentInstall } from "@/components/component-install";
+import { ComponentPreview } from "@/components/component-preview";
 import { Badge } from "@/components/ui/badge";
 
 const typeGenerator = createGenerator({
@@ -61,6 +63,8 @@ export const getMDXComponents = (
     />
   ),
   Badge,
+  ComponentInstall,
+  ComponentPreview,
   Tab,
   Tabs,
   ...components,

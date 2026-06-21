@@ -1,0 +1,81 @@
+---
+title: Vue
+description: The full Files API in the browser as a Vue 3 composable - useFiles returns the verbs plus refs for ambient state, with reactive useList / useFile / useSearch.
+---
+
+`files-sdk/vue` brings the full Files API to the browser as an idiomatic Vue 3 composable. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as refs that unwrap automatically in templates.
+
+```vue
+<script setup lang="ts">
+import { useFiles } from "files-sdk/vue";
+
+const files = useFiles({ endpoint: "/api/files" });
+
+const onUpload = async (event: Event) => {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (file) {
+    await files.upload(file);
+  }
+};
+</script>
+
+<template>
+  <input type="file" @change="onUpload" />
+  <progress
+    v-if="files.isUploading.value"
+    :value="files.progress.value.fraction"
+  />
+  <p v-if="files.error.value">{{ files.error.value.message }}</p>
+</template>
+```
+
+## The verbs
+
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods (no `.value`):
+
+```ts lineNumbers
+const { key } = await files.upload(file); // keyless → server mints the key
+const stored = await files.download("report.pdf"); // → a lazy StoredFile
+const link = await files.url("avatar.png"); // → string, for <img :src>
+await files.delete(["a.txt", "b.txt"]); // bulk → { deleted, errors? }
+```
+
+## Ambient state (refs)
+
+Upload progress and the last error are exposed as refs, so they unwrap automatically in templates and stay reactive in script:
+
+```ts lineNumbers
+files.isUploading; // Ref<boolean>
+files.progress; // Ref<{ loaded, total, fraction }>
+files.uploads; // Ref<FileUploadState[]> — per-file live state
+files.error; // Ref<FilesError | undefined> — last error from any verb
+files.reset(); // clear ambient error + upload state (re-arms after abort)
+files.abort(); // abort every in-flight call
+```
+
+The composable owns an `AbortController` that is aborted automatically on scope dispose (component unmount), so in-flight requests are cancelled for you.
+
+## Reactive reads
+
+The query composables accept `MaybeRefOrGetter` inputs, so they re-run when their source changes — a file browser bound to a reactive `prefix` updates itself:
+
+```ts lineNumbers
+import { useList, useFile, useSearch } from "files-sdk/vue";
+
+const prefix = ref("docs/");
+const list = useList(() => ({ prefix: prefix.value })); // re-runs when prefix changes
+const file = useFile(selectedKey); // head() for a preview
+const hits = useSearch(query, { match: "substring" });
+
+// each returns refs:
+list.data; // Ref<ListResult | undefined>
+list.isLoading; // Ref<boolean>
+list.error; // Ref<FilesError | undefined>
+list.refetch(); // re-run on demand
+```
+
+Like the React versions they are cache-free and dependency-light; for shared caching, reach for a query library and call the imperative `useFiles()` methods inside it.
+
+## Setting up the gateway
+
+Point the composable at a mounted [gateway](/ui/server/gateway) — `createFilesRouter` on Next, Hono, Express, or any Web-`Request` runtime — and lock it down with [`authorize`](/ui/server/authorization).

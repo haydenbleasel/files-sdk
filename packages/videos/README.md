@@ -14,12 +14,16 @@ composition. Run `npm run dev` and pick a composition from the Studio sidebar.
 | `FilesSdk16`     | 1.6 release  |
 | `FilesSdk17`     | 1.7 release  |
 | `FilesSdk18`     | 1.8 release  |
+| `FilesSdk19`     | 1.9 release  |
+| `FilesSdk20`     | 2.0 launch   |
 
 ## Layout
 
 - `src/shared/` — components shared across videos (`Background`, `IntroScene`,
   `Outro`, `CodeWindow`, the `code` data, `typewriter`). `IntroScene`, `Outro`,
-  and `Background` are parameterized per video.
+  and `Background` are parameterized per video. `highlight` (a small TS/JSX
+  tokenizer so code panes can be authored as plain strings) and `animation`
+  (`fadeUp`/`fadeInOut`) back the newer `v2-0` tabbed editor.
 - `src/launch/`, `src/v1-3/` … `src/v1-8/` — each video's bespoke scenes,
   panels, `composition.tsx`, and `timings.ts`. Launch keeps its own
   `code.ts`/`code-window.tsx` (they diverge from the release set).

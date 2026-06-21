@@ -1,0 +1,33 @@
+---
+title: Nitro
+description: Mount the Files gateway in a Nitro (or Nuxt server) route. Marshals the h3 event into a Web Request and returns the Response for Nitro to flush.
+---
+
+`files-sdk/nitro` mounts a [`createFilesRouter`](/ui/server/gateway) in a Nitro route (and therefore Nuxt server routes). Nitro's h3 event carries the Node request as `event.node.req`, so the binding marshals it into the Web `Request` the gateway speaks and returns the Web `Response` for Nitro to flush — hiding the `toWebRequest(event)` step. A client disconnect is wired through to abort the upstream read on a proxied download.
+
+```ts title="routes/api/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/nitro";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+// In Nuxt, put this at server/routes/api/files.ts.
+export default defineEventHandler(createRouteHandler(router));
+```
+
+<Callout>
+  One handler serves every method — the gateway dispatches internally (GET =
+  download, POST = the JSON verbs, PUT = upload). The binding targets Nitro v2 /
+  h3 v1, where `event.node.req` is present on every preset (a node-compat shim
+  on edge, which Nitro polyfills via [unenv](https://github.com/unjs/unenv)).
+</Callout>
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
