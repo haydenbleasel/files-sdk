@@ -576,6 +576,23 @@ describe("cloudinary adapter", () => {
     });
   });
 
+  test("signedUploadUrl > rejects maxSize because Cloudinary cannot enforce it", async () => {
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("upload-key", {
+        expiresIn: 3600,
+        maxSize: 1024,
+      })
+    ).rejects.toThrow(/maxSize.*not supported/u);
+    expect(apiSignRequestMock).not.toHaveBeenCalled();
+  });
+
   test("error mapping > http_code 404 maps to NotFound", async () => {
     resourceMock.mockRejectedValueOnce({
       error: { http_code: 404, message: "Not found" },
