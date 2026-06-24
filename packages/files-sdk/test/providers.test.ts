@@ -50,6 +50,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./soft-delete",
   "./svelte",
   "./sveltekit",
+  "./tanstack-start",
   "./tiering",
   "./tracing",
   "./usage",

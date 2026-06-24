@@ -54,6 +54,7 @@ const edgeEntrypoints = [
   "next",
   "astro",
   "sveltekit",
+  "tanstack-start",
 ].map((sub) => resolve(srcDir, `${sub}/index.ts`));
 const isEdge = (entry: string) =>
   clientFrameworkEntries.has(entry) || edgeEntrypoints.includes(entry);
