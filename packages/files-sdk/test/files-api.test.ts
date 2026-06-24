@@ -163,6 +163,50 @@ describe("createFilesRouter — read verbs", () => {
     expect((await readJson<{ url: string }>(url)).url).toContain("memory://");
   });
 
+  test("url forces safe content disposition unless authorize overrides", async () => {
+    const r = router({ adapter, operations: ["url"] });
+
+    const unsafe = await readJson<{ url: string }>(
+      await r.handle(
+        post({
+          key: "docs/a.txt",
+          op: "url",
+          responseContentDisposition: "inline",
+        })
+      )
+    );
+    expect(
+      new URL(unsafe.url).searchParams.get("response-content-disposition")
+    ).toBe("attachment");
+
+    const attachment = await readJson<{ url: string }>(
+      await r.handle(
+        post({
+          key: "docs/a.txt",
+          op: "url",
+          responseContentDisposition: 'attachment; filename="a.txt"',
+        })
+      )
+    );
+    expect(
+      new URL(attachment.url).searchParams.get("response-content-disposition")
+    ).toBe('attachment; filename="a.txt"');
+
+    const inline = router({
+      adapter,
+      authorize: () => ({ disposition: "inline" }),
+      operations: ["url"],
+    });
+    const serverAllowed = await readJson<{ url: string }>(
+      await inline.handle(post({ key: "docs/a.txt", op: "url" }))
+    );
+    expect(
+      new URL(serverAllowed.url).searchParams.get(
+        "response-content-disposition"
+      )
+    ).toBe("inline");
+  });
+
   test("list with prefix + delimiter, and search", async () => {
     const r = router({ adapter, operations: ["list", "search"] });
     const list = await r.handle(post({ delimiter: "/", op: "list" }));

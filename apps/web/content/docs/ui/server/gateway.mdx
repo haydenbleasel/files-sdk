@@ -69,6 +69,8 @@ createFilesRouter({
 
 Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/ui/server/authorization) returns `{ disposition: "inline" }`.
 
+The JSON `url` operation applies the same safe default before calling `files.url()`: a browser request for `responseContentDisposition: "inline"` is rewritten to `attachment`, while an existing `attachment; filename="..."` value keeps its filename. Return `{ disposition: "inline" }` from `authorize` only for routes where inline rendering is deliberate server policy.
+
 ## How uploads flow
 
 A keyless `upload(file)` runs a three-step protocol so bytes never round-trip through your server when they don't have to:

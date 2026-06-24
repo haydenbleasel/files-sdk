@@ -7,6 +7,7 @@
 // dispatch itself stays framework-free and is driven by constructing requests.
 
 import type { Files, StoredFile } from "../../index.js";
+import { isAttachmentDisposition } from "../content-disposition.js";
 import type { FilesError } from "../errors.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
@@ -92,6 +93,16 @@ const optBool = (value: unknown, field: string): boolean | undefined => {
   return typeof value === "boolean"
     ? value
     : fail(`expected boolean: ${field}`);
+};
+
+const routerUrlDisposition = (
+  requested: string | undefined,
+  serverDisposition: string | undefined
+): string => {
+  if (serverDisposition) {
+    return serverDisposition;
+  }
+  return isAttachmentDisposition(requested) ? requested : "attachment";
 };
 
 const fileInfos = (value: unknown): ClientFileInfo[] => {
@@ -401,12 +412,13 @@ const dispatchJson = async (
         operation: "url",
         params: { expiresIn },
       });
-      const disposition =
-        scope.disposition ??
-        optStr(body.responseContentDisposition, "responseContentDisposition");
+      const disposition = routerUrlDisposition(
+        optStr(body.responseContentDisposition, "responseContentDisposition"),
+        scope.disposition
+      );
       const url = await ctx.files.url(scopeKey(scope.prefix, key), {
         expiresIn: clampExpiry(ctx, expiresIn ?? ctx.defaultExpiresIn, scope),
-        ...(disposition ? { responseContentDisposition: disposition } : {}),
+        responseContentDisposition: disposition,
       });
       return json({ url });
     }

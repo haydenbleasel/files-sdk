@@ -1,5 +1,6 @@
 import { handlers } from "../index.js";
 import type { FilesPlugin, SignUploadOptions, UrlOptions } from "../index.js";
+import { isAttachmentDisposition } from "../internal/content-disposition.js";
 
 /** The disposition forced onto `url()` when none is configured. */
 const DEFAULT_DISPOSITION = "attachment";
@@ -47,13 +48,6 @@ export interface SignedUrlPolicyOptions {
    */
   maxUploadSize?: number;
 }
-
-/**
- * Whether a `Content-Disposition` is already a download (an `attachment`), so
- * the policy can preserve a caller-set `filename` instead of clobbering it.
- */
-const isAttachment = (value: string | undefined): boolean =>
-  value !== undefined && /^\s*attachment\b/iu.test(value);
 
 /**
  * Clamp `requested` to `cap`, treating an absent request as the cap itself so
@@ -136,7 +130,7 @@ export const signedUrlPolicy = (
         const opts: UrlOptions = { ...op.options };
         if (
           disposition !== false &&
-          !isAttachment(opts.responseContentDisposition)
+          !isAttachmentDisposition(opts.responseContentDisposition)
         ) {
           opts.responseContentDisposition = disposition;
         }
