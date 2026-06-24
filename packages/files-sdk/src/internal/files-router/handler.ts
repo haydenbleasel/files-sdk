@@ -155,7 +155,9 @@ const downloadCfg = (ctx: HandlerContext): DownloadConfig => ({
 });
 
 const requireOrigin = (ctx: HandlerContext, parsed: ParsedRequest): void => {
-  if (!isOriginAllowed(parsed.origin, ctx.allowedOrigins)) {
+  if (
+    !isOriginAllowed(parsed.origin, ctx.allowedOrigins, parsed.requestOrigin)
+  ) {
     throw new RouterError("Forbidden", "origin not allowed", "origin");
   }
 };

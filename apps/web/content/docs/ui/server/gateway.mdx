@@ -38,7 +38,7 @@ createFilesRouter({
   // Declarative allow-list — operations permitted without a hook.
   operations?: FilesOperation[],
 
-  // CSRF/origin allow-list for state-changing actions. Strongly recommended.
+  // CSRF/origin allow-list for state-changing actions. Defaults to same-origin.
   allowedOrigins?: string[] | ((origin: string) => boolean),
 
   // url()/download expiry default + ceiling, seconds. Default 300.

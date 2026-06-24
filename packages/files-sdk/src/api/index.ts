@@ -32,7 +32,7 @@ export interface CreateFilesRouterOptions {
   authorize?: Authorize;
   /** Declarative allow-list: operations permitted without a hook. A hard gate that runs before `authorize`. */
   operations?: readonly FilesOperation[];
-  /** CSRF/origin allowlist for state-changing actions. Off by default; strongly recommended. */
+  /** CSRF/origin allowlist for state-changing actions. Defaults to same-origin when omitted. */
   allowedOrigins?: AllowedOrigins;
   /** Default + clamp for `url()`/`download` expiry, seconds. Default 300; clamped to capability. */
   defaultExpiresIn?: number;

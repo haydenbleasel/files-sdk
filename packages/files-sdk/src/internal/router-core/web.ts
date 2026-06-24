@@ -10,6 +10,8 @@ export interface ParsedRequest {
   method: string;
   /** The `?op=` query action for the byte paths (`download` / `upload` / `proxy`). */
   action: string | null;
+  /** Origin derived from the request URL, used as the default CSRF allowlist. */
+  requestOrigin: string;
   query: URLSearchParams;
   origin: string | null;
   rangeHeader: string | null;
@@ -65,6 +67,7 @@ export const parseRequest = async (req: Request): Promise<ParsedRequest> => {
     origin: req.headers.get("origin"),
     query: url.searchParams,
     rangeHeader: req.headers.get("range"),
+    requestOrigin: url.origin,
     signal: req.signal,
   };
 };

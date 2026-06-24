@@ -179,6 +179,34 @@ describe("handler — expiry clamping", () => {
 });
 
 describe("origin checks", () => {
+  test("same-origin is allowed by default; cross-origin is rejected", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("same.txt", "1");
+    const router = mk({ adapter, authorize: () => {} });
+    expect(
+      (
+        await router.handle(
+          post(
+            { key: "same.txt", op: "delete" },
+            { origin: "https://app.test" }
+          )
+        )
+      ).status
+    ).toBe(200);
+
+    await createFiles({ adapter }).upload("cross.txt", "1");
+    expect(
+      (
+        await router.handle(
+          post(
+            { key: "cross.txt", op: "delete" },
+            { origin: "https://evil.test" }
+          )
+        )
+      ).status
+    ).toBe(403);
+  });
+
   test("absent Origin is allowed; listed Origin is allowed", async () => {
     const adapter = memory();
     await createFiles({ adapter }).upload("a", "1");
