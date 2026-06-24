@@ -88,14 +88,15 @@ The unified API only covers what every adapter can do; a handful of operations a
 - **Vercel Blob** - uploads go through `handleUpload()` from `@vercel/blob/client`, not presigned URLs.
 - **Bunny Storage** - writes require the `AccessKey` header.
 - **Appwrite** and **PocketBase** - no presigned upload primitive. Mint a short-lived auth token for the client instead.
+- **Convex** - `generateUploadUrl()` cannot bind the caller's SDK key or upload constraints. Upload through a Convex action with `files.upload()` instead.
 - **R2 Workers binding without hybrid mode** - configure the binding _and_ HTTP credentials to enable signing.
 
 ### `maxSize` is advisory on three
 
-`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Three adapters don't honor it the same way:
+`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Some adapters can't honor that contract:
 
-- **Azure** and **Supabase** throw on `maxSize` - neither has a `content-length-range` equivalent.
-- **UploadThing** caps via the file-router config bound to the adapter's `slug`, not the URL signature.
+- **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent.
+- **Google Drive**, **OneDrive**, and **SharePoint** throw on `maxSize`/`minSize` for the same reason.
 
 For these, enforce upload caps at your application gateway, or set the bucket / route limit at the provider's dashboard.
 
