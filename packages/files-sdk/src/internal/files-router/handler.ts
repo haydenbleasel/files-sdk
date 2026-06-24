@@ -417,6 +417,7 @@ const dispatchJson = async (
       const listPrefix = scope.prefix + clientPrefix;
       const limit = Math.min(
         optNum(body.limit, "limit") ?? ctx.maxListLimit,
+        scope.maxResults ?? ctx.maxListLimit,
         ctx.maxListLimit
       );
       const unscope = unscoper(scope);

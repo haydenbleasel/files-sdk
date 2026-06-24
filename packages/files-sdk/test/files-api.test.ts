@@ -223,6 +223,28 @@ describe("createFilesRouter — read verbs", () => {
     const res = await r.handle(post({ limit: 999, op: "list" }));
     expect((await readJson<{ items: unknown[] }>(res)).items).toHaveLength(1);
   });
+
+  test("list honors authorize maxResults", async () => {
+    const r = router({
+      adapter,
+      authorize: () => ({ maxResults: 1 }),
+      maxListLimit: 10,
+      operations: ["list"],
+    });
+    const capped = await r.handle(post({ limit: 999, op: "list" }));
+    expect((await readJson<{ items: unknown[] }>(capped)).items).toHaveLength(
+      1
+    );
+
+    const clientCapped = router({
+      adapter,
+      authorize: () => ({ maxResults: 10 }),
+      maxListLimit: 10,
+      operations: ["list"],
+    });
+    const res = await clientCapped.handle(post({ limit: 2, op: "list" }));
+    expect((await readJson<{ items: unknown[] }>(res)).items).toHaveLength(2);
+  });
 });
 
 describe("createFilesRouter — bulk verbs", () => {
