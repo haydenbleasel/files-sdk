@@ -250,8 +250,10 @@ describe("upload edges", () => {
   });
 
   test("proxy upload: missing token, missing body, oversize", async () => {
+    const adapter = memory();
+    const files = createFiles({ adapter });
     const router = mk({
-      adapter: memory(),
+      adapter,
       allowedOrigins: () => true,
       maxUploadSize: 4,
       operations: ["upload"],
@@ -265,7 +267,7 @@ describe("upload edges", () => {
       })
     );
     const { uploads } = (await presign.json()) as {
-      uploads: { target: { url: string } }[];
+      uploads: { key: string; target: { url: string } }[];
     };
     const token = new URL(first(uploads).target.url).searchParams.get(
       "token"
@@ -276,11 +278,19 @@ describe("upload edges", () => {
       (await router.handle(put(q, "0123456789", { "content-length": "10" })))
         .status
     ).toBe(422);
+    const streamed = await router.handle(put(q, "0123456789"));
+    expect(streamed.status).toBe(422);
+    expect(
+      (await readJson<{ error: { reason: string } }>(streamed)).error.reason
+    ).toBe("size");
+    expect(await files.exists(first(uploads).key)).toBe(false);
   });
 
   test("explicit upload: missing body and oversize", async () => {
+    const adapter = memory();
+    const files = createFiles({ adapter });
     const router = mk({
-      adapter: memory(),
+      adapter,
       allowedOrigins: () => true,
       maxUploadSize: 3,
       operations: ["upload"],
@@ -295,6 +305,12 @@ describe("upload edges", () => {
         )
       ).status
     ).toBe(422);
+    const streamed = await router.handle(put("op=upload&key=k", "toolong"));
+    expect(streamed.status).toBe(422);
+    expect(
+      (await readJson<{ error: { reason: string } }>(streamed)).error.reason
+    ).toBe("size");
+    expect(await files.exists("k")).toBe(false);
   });
 });
 

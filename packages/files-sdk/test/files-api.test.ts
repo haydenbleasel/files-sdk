@@ -426,12 +426,7 @@ describe("createFilesRouter — upload", () => {
     const { uploads } = (await presign.json()) as {
       uploads: { id: string; key: string; target: { url: string } }[];
     };
-    const token = new URL(first(uploads).target.url).searchParams.get(
-      "token"
-    ) as string;
-    await r.handle(
-      put(`op=proxy&token=${encodeURIComponent(token)}`, "0123456789")
-    );
+    await createFiles({ adapter }).upload(first(uploads).key, "0123456789");
     const complete = await r.handle(
       post({
         completions: [{ id: first(uploads).id, key: first(uploads).key }],
