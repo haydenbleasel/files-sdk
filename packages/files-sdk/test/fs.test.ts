@@ -775,7 +775,7 @@ describe("fs adapter", () => {
       ).rejects.toMatchObject({ code: "Provider" });
     });
 
-    test("returns PUT URL with expires query when urlBaseUrl is set", async () => {
+    test("throws even with urlBaseUrl because upload controls are not signed", async () => {
       const root = await makeRoot();
       const files = new Files({
         adapter: fsAdapter({
@@ -783,19 +783,13 @@ describe("fs adapter", () => {
           urlBaseUrl: "http://localhost:3000/upload",
         }),
       });
-      const signed = await files.signedUploadUrl("a.txt", {
-        contentType: "text/plain",
-        expiresIn: 60,
-        maxSize: 1024,
-      });
-      expect(signed.method).toBe("PUT");
-      expect(signed.url).toContain("http://localhost:3000/upload/a.txt?");
-      expect(signed.url).toContain("expires=");
-      expect(signed.url).toContain("content-type=text%2Fplain");
-      expect(signed.url).toContain("max-size=1024");
-      if (signed.method === "PUT") {
-        expect(signed.headers?.["Content-Type"]).toBe("text/plain");
-      }
+      await expect(
+        files.signedUploadUrl("a.txt", {
+          contentType: "text/plain",
+          expiresIn: 60,
+          maxSize: 1024,
+        })
+      ).rejects.toMatchObject({ code: "Provider" });
     });
 
     test("validates key path even without urlBaseUrl", async () => {

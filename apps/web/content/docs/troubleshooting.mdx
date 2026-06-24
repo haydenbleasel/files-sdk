@@ -81,13 +81,14 @@ The unified API only covers what every adapter can do; a handful of operations a
 
 `responseContentDisposition: "attachment"` forces signing even when `publicBaseUrl` is set - a permanent CDN URL has no signature to bind the override into, so the alternative would be silently dropping a security ask.
 
-### `signedUploadUrl()` throws on five
+### `signedUploadUrl()` throws on unsupported adapters
 
 `signedUploadUrl()` returns a discriminated PUT-or-POST contract so a browser can upload directly to the bucket. These adapters throw:
 
 - **Vercel Blob** - uploads go through `handleUpload()` from `@vercel/blob/client`, not presigned URLs.
 - **Bunny Storage** - writes require the `AccessKey` header.
 - **Appwrite** and **PocketBase** - no presigned upload primitive. Mint a short-lived auth token for the client instead.
+- **fs** - no built-in upload server, signer, or verifier. Upload through `files.upload()` or an application route that enforces controls server-side.
 - **Convex** - `generateUploadUrl()` cannot bind the caller's SDK key or upload constraints. Upload through a Convex action with `files.upload()` instead.
 - **R2 Workers binding without hybrid mode** - configure the binding _and_ HTTP credentials to enable signing.
 

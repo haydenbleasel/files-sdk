@@ -122,7 +122,7 @@ liveDescribe("fs adapter (live)", () => {
     expect(url.endsWith("/u.txt")).toBe(true);
   });
 
-  test("url() honors urlBaseUrl and signedUploadUrl issues a PUT URL", async () => {
+  test("url() honors urlBaseUrl and signedUploadUrl fails closed", async () => {
     const root = await makeRoot();
     const files = new Files({
       adapter: fsAdapter({ root, urlBaseUrl: "http://localhost:3000/files" }),
@@ -133,12 +133,11 @@ liveDescribe("fs adapter (live)", () => {
       "http://localhost:3000/files/a/b.txt"
     );
 
-    const signed = await files.signedUploadUrl("up.txt", {
-      contentType: "text/plain",
-      expiresIn: 60,
-    });
-    expect(signed.method).toBe("PUT");
-    expect(signed.url).toContain("http://localhost:3000/files/up.txt?");
-    expect(signed.url).toContain("expires=");
+    await expect(
+      files.signedUploadUrl("up.txt", {
+        contentType: "text/plain",
+        expiresIn: 60,
+      })
+    ).rejects.toMatchObject({ code: "Provider" });
   });
 });

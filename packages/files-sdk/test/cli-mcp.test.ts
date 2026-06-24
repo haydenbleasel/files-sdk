@@ -81,8 +81,7 @@ const connect = async (
   };
 };
 
-// A server bound to a healthy fs root, with a urlBaseUrl so url()/
-// signedUploadUrl() resolve instead of erroring.
+// A server bound to a healthy fs root, with a urlBaseUrl so url() resolves.
 const healthyServer = async (allowWrites = true): Promise<Harness> => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-ok-"));
   return connect(
@@ -387,16 +386,17 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(bad.isError).toBe(true);
   });
 
-  test("sign-upload returns a presigned form", async () => {
+  test("sign-upload reports unsupported fs signing", async () => {
     const signed = await call(h.client, "sign-upload", {
       expiresIn: 600,
       key: "up.txt",
       maxSize: 1024,
       minSize: 0,
     });
-    expect(signed.isError).toBe(false);
-    expect(signed.data.key).toBe("up.txt");
-    expect(typeof signed.data.url).toBe("string");
+    expect(signed.isError).toBe(true);
+    expect((signed.data.error as { message: string }).message).toMatch(
+      /signedUploadUrl\(\) is not supported/u
+    );
   });
 
   test("transfer and sync are omitted without an operator destination", async () => {

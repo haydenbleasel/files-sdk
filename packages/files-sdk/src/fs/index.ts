@@ -18,7 +18,6 @@ import type {
 } from "../index.js";
 import {
   collectStream,
-  DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
   rangedSize,
@@ -44,13 +43,9 @@ export interface FsAdapterOptions {
    */
   urlBaseUrl?: string;
   /**
-   * Default expiry, in seconds, threaded into the `?expires=...` query
-   * string of `signedUploadUrl()` for parity with the cloud adapters. A
-   * dev upload-handler can validate it; the fs adapter itself does not
-   * enforce expiry. Defaults to 3600 (1 hour). Per-call
-   * `signedUploadUrl(key, { expiresIn })` overrides.
-   *
-   * `url()` ignores this — `file://` and static-server URLs don't expire.
+   * Accepted for backward compatibility but ignored. `url()` returns a
+   * `file://` or static-server URL, and `signedUploadUrl()` fails closed
+   * because the fs adapter has no built-in upload signer or verifier.
    */
   defaultUrlExpiresIn?: number;
 }
@@ -384,8 +379,6 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
   }
   const root = path.resolve(opts.root);
   const { urlBaseUrl } = opts;
-  const defaultUrlExpiresIn =
-    opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
   const storedFromSidecar = (
     key: string,
@@ -731,34 +724,16 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     get root() {
       return root;
     },
-    signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+    signedUploadUrl(key, _signOpts): Promise<SignedUpload> {
       // Validate the key path even though we don't write — surfaces
-      // traversal attempts at sign time, not at the eventual PUT.
+      // traversal attempts before reporting unsupported capability.
       resolveKeyPath(root, key);
-      if (!urlBaseUrl) {
-        throw new FilesError(
+      return Promise.reject(
+        new FilesError(
           "Provider",
-          "fs: signedUploadUrl() requires `urlBaseUrl`. The fs adapter has no built-in upload server, so there's no endpoint to sign against. Stand up a dev handler (Next.js route, express + multer, etc.) that writes to the same `root`, then construct the adapter with `urlBaseUrl: 'http://localhost:3000/upload'` (or wherever your handler lives)."
-        );
-      }
-      const expiresIn = signOpts.expiresIn ?? defaultUrlExpiresIn;
-      const expiresAtMs = Date.now() + expiresIn * 1000;
-      const params = new URLSearchParams({
-        expires: String(Math.floor(expiresAtMs / 1000)),
-      });
-      if (signOpts.contentType) {
-        params.set("content-type", signOpts.contentType);
-      }
-      if (signOpts.maxSize !== undefined) {
-        params.set("max-size", String(signOpts.maxSize));
-      }
-      return Promise.resolve({
-        headers: {
-          ...(signOpts.contentType && { "Content-Type": signOpts.contentType }),
-        },
-        method: "PUT",
-        url: `${joinPublicUrl(urlBaseUrl, key)}?${params.toString()}`,
-      });
+          "fs: signedUploadUrl() is not supported. The fs adapter has no built-in upload server, signer, or verifier, so it cannot bind expiresIn, contentType, maxSize, or minSize into an upload capability. Upload through files.upload() or through an application route that enforces those controls server-side."
+        )
+      );
     },
     // `url()` returns a `file://` or static-server URL — never a signed,
     // time-limited one (there's no signature to bind an expiry into).

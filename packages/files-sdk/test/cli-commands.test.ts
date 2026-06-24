@@ -530,29 +530,21 @@ describe("cli/commands real (fs adapter)", () => {
     });
   });
 
-  test("sign-upload returns method/url/headers", async () => {
+  test("sign-upload reports unsupported fs signing", async () => {
     cap.stdout.length = 0;
-    // fs adapter needs a urlBaseUrl to know where to sign against —
-    // there's no real upload endpoint in-process.
-    await runSignUpload({
-      ...baseOpts({
-        global: {
-          provider: "fs",
-          root,
-          urlBaseUrl: "http://localhost:3000/upload",
-        },
-      }),
-      expiresIn: 60,
-      key: "up.bin",
-    });
-    const out = lastJson(cap.stdout) as {
-      key: string;
-      url: string;
-      method: string;
-    };
-    expect(out.key).toBe("up.bin");
-    expect(out.url).toContain("http://localhost:3000/upload");
-    expect(out.method).toBe("PUT");
+    await expect(
+      runSignUpload({
+        ...baseOpts({
+          global: {
+            provider: "fs",
+            root,
+            urlBaseUrl: "http://localhost:3000/upload",
+          },
+        }),
+        expiresIn: 60,
+        key: "up.bin",
+      })
+    ).rejects.toMatchObject({ code: "Provider" });
   });
 
   test("download with --out writes file and emits metadata JSON to stdout", async () => {
