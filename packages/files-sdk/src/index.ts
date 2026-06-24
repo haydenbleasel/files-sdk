@@ -29,6 +29,7 @@ import {
   runWithSignal,
   sleep,
 } from "./internal/retry.js";
+import { isSafeSearchRegex } from "./internal/search-regex.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
 export { UploadControl } from "./internal/resumable.js";
@@ -1167,7 +1168,13 @@ const buildSearchMatcher = (
       );
     }
   }
-  return (key) => regexp.test(key);
+  if (!isSafeSearchRegex(regexp)) {
+    throw new FilesError("Provider", "search pattern is too complex");
+  }
+  return (key) => {
+    regexp.lastIndex = 0;
+    return regexp.test(key);
+  };
 };
 
 const assertNoRelativeSegments = (key: string, label = "key"): void => {

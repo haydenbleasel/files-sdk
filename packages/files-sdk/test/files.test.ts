@@ -1817,6 +1817,17 @@ describe("Files.search", () => {
     expect(prefixes).toEqual([]);
   });
 
+  test("an unsafe regex pattern throws before walking", async () => {
+    const { adapter, prefixes } = listSpy();
+    const files = new Files({ adapter });
+    await searchSeed(files, ["a.txt"]);
+
+    await expect(
+      files.search("(a+)+$", { match: "regex" }).next()
+    ).rejects.toThrow(/too complex/u);
+    expect(prefixes).toEqual([]);
+  });
+
   test("match: substring matches anywhere in the key", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await searchSeed(files, ["q1-report-final.pdf", "summary.txt"]);

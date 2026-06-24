@@ -12,6 +12,7 @@ import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
 import type { ParsedRequest, ResultModel } from "../router-core/web.js";
+import { isSafeSearchRegex } from "../search-regex.js";
 import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
 import { runAuthorize } from "./authorize.js";
 import type { DownloadConfig } from "./download.js";
@@ -439,12 +440,22 @@ const dispatchJson = async (
       const clientPrefix = optStr(body.prefix, "prefix") ?? "";
       assertSafePrefix(clientPrefix);
       const searchPrefix = scope.prefix + clientPrefix;
-      const pattern = optBool(body.isRegex, "isRegex")
-        ? new RegExp(
+      let pattern: string | RegExp;
+      if (optBool(body.isRegex, "isRegex")) {
+        try {
+          pattern = new RegExp(
             str(body.pattern, "pattern"),
             optStr(body.flags, "flags") ?? "u"
-          )
-        : str(body.pattern, "pattern");
+          );
+        } catch {
+          throw new RouterError("Validation", "invalid search regex");
+        }
+        if (!isSafeSearchRegex(pattern)) {
+          throw new RouterError("Validation", "search pattern is too complex");
+        }
+      } else {
+        pattern = str(body.pattern, "pattern");
+      }
       const cap = Math.min(
         optNum(body.maxResults, "maxResults") ?? ctx.maxSearchResults,
         scope.maxResults ?? ctx.maxSearchResults,

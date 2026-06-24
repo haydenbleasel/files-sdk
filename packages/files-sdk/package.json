@@ -353,7 +353,8 @@
   },
   "dependencies": {
     "commander": "^15.0.0",
-    "picomatch": "^4.0.4"
+    "picomatch": "^4.0.4",
+    "safe-regex2": "^5.1.1"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.162",

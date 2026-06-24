@@ -207,6 +207,17 @@ describe("createFilesRouter — read verbs", () => {
     );
   });
 
+  test("regex search rejects unsafe patterns", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    const res = await r.handle(
+      post({ flags: "u", isRegex: true, op: "search", pattern: "(a+)+$" })
+    );
+    expect(res.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toContain("too complex");
+  });
+
   test("list limit is clamped", async () => {
     const r = router({ adapter, maxListLimit: 1, operations: ["list"] });
     const res = await r.handle(post({ limit: 999, op: "list" }));
