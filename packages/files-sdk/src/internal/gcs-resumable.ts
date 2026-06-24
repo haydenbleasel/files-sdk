@@ -14,6 +14,7 @@ import type {
 import { resumableChunkSize } from "./core.js";
 import { FilesError } from "./errors.js";
 import { createOffsetHttpDriver } from "./resumable-offset-http.js";
+import { trustedHttpsSessionUrl } from "./resumable-session-url.js";
 
 const GCS_CHUNK_DEFAULT = 8 * 1024 * 1024;
 
@@ -55,9 +56,19 @@ export const createGcsResumableDriver = (params: {
           ...(opts.metadata && { metadata: opts.metadata }),
         },
       });
-      return {
-        session: { bucket, key, provider: "gcs", uri },
+      const trustedUri = trustedHttpsSessionUrl(
         uri,
+        "gcs resumable session URL",
+        ["storage.googleapis.com"]
+      );
+      return {
+        session: {
+          bucket,
+          key,
+          provider: "gcs",
+          uri: trustedUri,
+        },
+        uri: trustedUri,
       };
     },
     parseResult: (res) => parseResult(res, key),
@@ -75,7 +86,9 @@ export const createGcsResumableDriver = (params: {
           "Resume token does not match this upload's bucket/key."
         );
       }
-      return session.uri;
+      return trustedHttpsSessionUrl(session.uri, "gcs resumable session URL", [
+        "storage.googleapis.com",
+      ]);
     },
     wrapErr,
   });

@@ -264,7 +264,10 @@ beforeEach(() => {
   globalThis.fetch = ((_input: string | URL | Request, _init?: RequestInit) =>
     Promise.resolve(
       new Response(null, {
-        headers: { Location: "https://upload.example.com/session/abc" },
+        headers: {
+          Location:
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
+        },
         status: 200,
       })
     )) as typeof fetch;
@@ -676,7 +679,10 @@ describe("google-drive adapter", () => {
       };
       return Promise.resolve(
         new Response(null, {
-          headers: { Location: "https://upload.example.com/session/xyz" },
+          headers: {
+            Location:
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=xyz",
+          },
           status: 200,
         })
       );
@@ -691,7 +697,7 @@ describe("google-drive adapter", () => {
     expect(out).toEqual({
       headers: { "Content-Type": "text/plain" },
       method: "PUT",
-      url: "https://upload.example.com/session/xyz",
+      url: "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=xyz",
     });
     expect(captured?.url).toContain("uploadType=resumable");
     expect(captured?.url).toContain("supportsAllDrives=true");
@@ -717,14 +723,19 @@ describe("google-drive adapter", () => {
       };
       return Promise.resolve(
         new Response(null, {
-          headers: { Location: "https://upload.example.com/session/upd" },
+          headers: {
+            Location:
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=upd",
+          },
           status: 200,
         })
       );
     }) as typeof fetch;
 
     const out = await files.signedUploadUrl("a.txt", { expiresIn: 3600 });
-    expect(out.url).toBe("https://upload.example.com/session/upd");
+    expect(out.url).toBe(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=upd"
+    );
     expect(captured?.init?.method).toBe("PATCH");
     expect(captured?.url).toContain("/files/id-1?uploadType=resumable");
     const body = JSON.parse(captured?.init?.body as string);
@@ -930,7 +941,10 @@ describe("google-drive adapter", () => {
         seenSignal = init?.signal ?? undefined;
         return Promise.resolve(
           new Response(null, {
-            headers: { Location: "https://upload.example.com/session/abc" },
+            headers: {
+              Location:
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
+            },
             status: 200,
           })
         );
@@ -963,7 +977,10 @@ describe("google-drive resumable uploads", () => {
       if ((init?.method ?? "GET") === "POST") {
         return Promise.resolve(
           new Response(null, {
-            headers: { Location: "https://upload.example.com/session/abc" },
+            headers: {
+              Location:
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
+            },
             status: 200,
           })
         );
@@ -1007,7 +1024,10 @@ describe("google-drive resumable uploads", () => {
         });
         return Promise.resolve(
           new Response(null, {
-            headers: { Location: "https://upload.example.com/session/upd" },
+            headers: {
+              Location:
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=upd",
+            },
             status: 200,
           })
         );
@@ -1069,7 +1089,7 @@ describe("google-drive resumable uploads", () => {
     const token: ResumableUploadSession = {
       key: "big.bin",
       provider: "google-drive",
-      uri: "https://upload.example.com/session/abc",
+      uri: "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
     };
     const result = await files.upload("big.bin", new Uint8Array(CHUNK + 10), {
       control: UploadControl.from(token),
@@ -1077,6 +1097,24 @@ describe("google-drive resumable uploads", () => {
     });
     expect(result.size).toBe(CHUNK + 10);
     expect(puts).toEqual([`bytes ${CHUNK}-${CHUNK + 9}/${CHUNK + 10}`]);
+  });
+
+  test("resuming an untrusted session uri is rejected", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(driveResult())) as unknown as typeof fetch;
+
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      key: "big.bin",
+      provider: "google-drive",
+      uri: "https://attacker.example/session/abc",
+    };
+    await expect(
+      files.upload("big.bin", new Uint8Array(CHUNK + 10), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+      })
+    ).rejects.toThrow(/not trusted/u);
   });
 
   test("abort discards the session via DELETE", async () => {
@@ -1090,7 +1128,10 @@ describe("google-drive resumable uploads", () => {
       if (method === "POST") {
         return Promise.resolve(
           new Response(null, {
-            headers: { Location: "https://upload.example.com/session/abc" },
+            headers: {
+              Location:
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
+            },
             status: 200,
           })
         );
@@ -1152,7 +1193,10 @@ describe("google-drive resumable uploads", () => {
       if ((init?.method ?? "GET") === "POST") {
         return Promise.resolve(
           new Response(null, {
-            headers: { Location: "https://upload.example.com/session/abc" },
+            headers: {
+              Location:
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
+            },
             status: 200,
           })
         );
@@ -1187,7 +1231,7 @@ describe("google-drive resumable uploads", () => {
     const token: ResumableUploadSession = {
       key: "other.bin",
       provider: "google-drive",
-      uri: "https://upload.example.com/session/abc",
+      uri: "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=abc",
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
