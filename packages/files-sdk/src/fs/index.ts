@@ -216,6 +216,27 @@ const resolveKeyPath = (root: string, key: string): string => {
   return resolved;
 };
 
+const realpathUnderRoot = async (
+  root: string,
+  target: string,
+  key: string
+): Promise<string> => {
+  const [realRoot, realTarget] = await Promise.all([
+    fsp.realpath(root),
+    fsp.realpath(target),
+  ]);
+  const rootWithSep = realRoot.endsWith(path.sep)
+    ? realRoot
+    : realRoot + path.sep;
+  if (realTarget !== realRoot && !realTarget.startsWith(rootWithSep)) {
+    throw new FilesError(
+      "Provider",
+      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`
+    );
+  }
+  return realTarget;
+};
+
 const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
 
 const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
@@ -399,8 +420,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       const fromPath = resolveKeyPath(root, from);
       const toPath = resolveKeyPath(root, to);
       try {
+        const realFromPath = await realpathUnderRoot(root, fromPath, from);
         await ensureDirFor(toPath);
-        await fsp.copyFile(fromPath, toPath);
+        await fsp.copyFile(realFromPath, toPath);
         // If the source had a sidecar, copy it (refreshing
         // `lastModified`). If not, mirror that by removing any stale
         // destination sidecar from a prior upload at the same key —
@@ -427,7 +449,8 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     async download(key, downloadOpts) {
       const bodyPath = resolveKeyPath(root, key);
       try {
-        const stat = await fsp.stat(bodyPath);
+        const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
+        const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
         const baseMeta = {
           ...(sidecar?.etag && { etag: sidecar.etag }),
@@ -454,7 +477,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             {
               factory: () =>
                 Readable.toWeb(
-                  createReadStream(bodyPath, streamRange)
+                  createReadStream(realBodyPath, streamRange)
                 ) as unknown as ReadableStream<Uint8Array>,
               kind: "stream",
             }
@@ -465,7 +488,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           // and trimming — the point of a range request is to touch less data.
           const bytes = await collectStream(
             Readable.toWeb(
-              createReadStream(bodyPath, streamRange)
+              createReadStream(realBodyPath, streamRange)
             ) as unknown as ReadableStream<Uint8Array>
           );
           return createStoredFile(
@@ -473,7 +496,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             { data: bytes, kind: "buffer" }
           );
         }
-        const buf = await fsp.readFile(bodyPath);
+        const buf = await fsp.readFile(realBodyPath);
         const bytes = new Uint8Array(
           buf.buffer,
           buf.byteOffset,
@@ -492,16 +515,20 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       // permissive behavior. Tighten both together if file-only semantics
       // are ever needed.
       const bodyPath = resolveKeyPath(root, key);
-      return existsByProbe(() => fsp.stat(bodyPath), mapFsError);
+      return existsByProbe(
+        async () => fsp.stat(await realpathUnderRoot(root, bodyPath, key)),
+        mapFsError
+      );
     },
     async head(key) {
       const bodyPath = resolveKeyPath(root, key);
       try {
-        const stat = await fsp.stat(bodyPath);
+        const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
+        const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
         return storedFromSidecar(
           key,
-          bodyPath,
+          realBodyPath,
           sidecar,
           stat.size,
           stat.mtimeMs

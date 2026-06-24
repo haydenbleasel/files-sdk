@@ -551,6 +551,37 @@ describe("fs adapter", () => {
       });
     });
 
+    test("rejects symlinks that resolve outside root", async () => {
+      const root = await makeRoot();
+      const outside = await makeRoot();
+      const secretPath = path.join(outside, "secret.txt");
+      await fsp.writeFile(secretPath, "secret");
+      try {
+        await fsp.symlink(secretPath, path.join(root, "link.txt"));
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "EPERM" || error.code === "EACCES")
+        ) {
+          return;
+        }
+        throw error;
+      }
+      const files = new Files({ adapter: fsAdapter({ root }) });
+
+      await expect(files.download("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.head("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.exists("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+    });
+
     test("constructor prefix rejects dot segments before fs path resolution", async () => {
       const root = await makeRoot();
       await fsp.mkdir(path.join(root, "tenant-b"), { recursive: true });
