@@ -161,6 +161,17 @@ describe("signedUrlPolicy — signedUploadUrl()", () => {
     expect(rec.signOpts?.expiresIn).toBe(120);
   });
 
+  test("pins an absent signed-upload expiresIn to the cap", async () => {
+    const { files, rec } = withPolicy({ maxExpiresIn: 900 });
+    await (
+      files.signedUploadUrl as (
+        key: string,
+        opts: Partial<SignUploadOptions>
+      ) => Promise<SignedUpload>
+    )("a", {});
+    expect(rec.signOpts?.expiresIn).toBe(900);
+  });
+
   test("injects maxSize when the caller omits it", async () => {
     const { files, rec } = withPolicy({ maxUploadSize: 1024 });
     await files.signedUploadUrl("a", { expiresIn: 60 });
