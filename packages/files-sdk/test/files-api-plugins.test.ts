@@ -223,4 +223,38 @@ describe("gateway — softDelete ops", () => {
     );
     expect(body.trashed.map((t) => t.key)).toEqual(["other/b.txt"]);
   });
+
+  test("purge with a key rejects entries hidden by filterKeys", async () => {
+    const files = await seedTrashed(["a.txt", "c.txt"]);
+    const r = router(files, ["purge", "trashed"], () => ({
+      filterKeys: (key) => key !== "a.txt",
+    }));
+    expect((await r.handle(post({ key: "a.txt", op: "purge" }))).status).toBe(
+      403
+    );
+
+    const unscoped = router(files, ["trashed"]);
+    const body = await readJson<{ trashed: { key: string }[] }>(
+      await unscoped.handle(post({ op: "trashed" }))
+    );
+    expect(body.trashed.map((t) => t.key).toSorted()).toEqual([
+      "a.txt",
+      "c.txt",
+    ]);
+  });
+
+  test("scoped purge-all honors filterKeys", async () => {
+    const files = await seedTrashed(["tenant/a.txt", "tenant/c.txt"]);
+    const r = router(files, ["purge", "trashed"], () => ({
+      filterKeys: (key) => key !== "a.txt",
+      keyPrefix: "tenant",
+    }));
+    expect((await r.handle(post({ op: "purge" }))).status).toBe(200);
+
+    const unscoped = router(files, ["trashed"]);
+    const body = await readJson<{ trashed: { key: string }[] }>(
+      await unscoped.handle(post({ op: "trashed" }))
+    );
+    expect(body.trashed.map((t) => t.key)).toEqual(["tenant/a.txt"]);
+  });
 });

@@ -583,6 +583,7 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = optStr(body.key, "key");
       const scope = await authorizeOp(ctx, {
+        ...(key === undefined ? {} : { key }),
         operation: "purge",
         params: {},
       });
@@ -591,6 +592,13 @@ const dispatchJson = async (
         return notConfigured("softDelete");
       }
       if (key !== undefined) {
+        if (scope.filterKeys && !scope.filterKeys(key)) {
+          throw new RouterError(
+            "Forbidden",
+            "key is outside authorized scope",
+            "forbidden"
+          );
+        }
         await plugin.purge(scopeKey(scope.prefix, key));
       } else if (scope.prefix) {
         // Empty-trash under a scope must never purge another tenant's keys, and
@@ -599,7 +607,13 @@ const dispatchJson = async (
           return notConfigured("softDelete");
         }
         const entries = await plugin.trashed();
-        const mine = entries.filter((t) => t.key.startsWith(scope.prefix));
+        const mine = entries.filter((t) => {
+          if (!t.key.startsWith(scope.prefix)) {
+            return false;
+          }
+          const unscoped = unscoper(scope)(t.key);
+          return !scope.filterKeys || scope.filterKeys(unscoped);
+        });
         for (const t of mine) {
           await plugin.purge(t.key);
         }
