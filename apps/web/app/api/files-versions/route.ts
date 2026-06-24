@@ -11,10 +11,12 @@ import { resolveFilesApiSecret } from "../files-secret";
 // `/api/files` because `versioning()` and `softDelete()` both graft a `restore`
 // method — keeping them on different gateways lets each component's restore work.
 const files = createFiles({ adapter: memory(), plugins: [versioning()] });
+const DEMO_MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
 const router = createFilesRouter({
   authorize: () => ({ keyPrefix: "demo/" }),
   files,
+  maxUploadSize: DEMO_MAX_UPLOAD_SIZE,
   secret: resolveFilesApiSecret(),
 });
 
