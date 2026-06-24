@@ -4,6 +4,7 @@ import {
   assertRangeHonored,
   deleteManyWithFallback,
   httpRangeHeader,
+  joinPublicUrl,
   mapMany,
   normalizeBody,
   rangeRequestHeaders,
@@ -33,6 +34,22 @@ describe("normalizeBody content types", () => {
       "application/json"
     );
     expect(normalized.contentType).toBe("application/json");
+  });
+});
+
+describe("joinPublicUrl", () => {
+  test("encodes dot segments so URL parsing cannot escape the base path", () => {
+    const url = joinPublicUrl("https://cdn.example.com/base", ".././x.txt");
+    const parsed = new URL(url);
+
+    expect(url).toBe("https://cdn.example.com/base/%252E%252E/%252E/x.txt");
+    expect(parsed.pathname).toBe("/base/%252E%252E/%252E/x.txt");
+  });
+
+  test("still encodes ordinary key characters segment by segment", () => {
+    expect(joinPublicUrl("https://cdn.example.com/base/", "a b/c+d")).toBe(
+      "https://cdn.example.com/base/a%20b/c%2Bd"
+    );
   });
 });
 

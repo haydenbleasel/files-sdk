@@ -40,7 +40,19 @@ export const DEFAULT_URL_EXPIRES_IN = 3600;
  */
 export const joinPublicUrl = (base: string, key: string): string => {
   const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
-  return `${trimmed}/${key.split("/").map(encodeURIComponent).join("/")}`;
+  const path = key
+    .split("/")
+    .map((segment) => {
+      if (segment === ".") {
+        return "%252E";
+      }
+      if (segment === "..") {
+        return "%252E%252E";
+      }
+      return encodeURIComponent(segment);
+    })
+    .join("/");
+  return `${trimmed}/${path}`;
 };
 
 export interface UrlStrategyInput {
