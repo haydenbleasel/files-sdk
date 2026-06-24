@@ -1,6 +1,5 @@
 /* oxlint-disable no-bitwise -- the ZIP format is bit-packed: record flags, MS-DOS timestamps, and CRC-32 are all defined in terms of bit operations. */
 import type { Files, FilesPlugin, UploadResult } from "../index.js";
-import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
@@ -44,6 +43,9 @@ export interface UnzipOptions {
    * as recorded in the archive (before `into` is prepended).
    */
   filter?: (name: string) => boolean;
+  maxEntries?: number;
+  maxEntrySize?: number;
+  maxTotalSize?: number;
 }
 
 /**
@@ -115,6 +117,9 @@ const METHOD_DEFLATE = 8;
  */
 const MAX_UINT16 = 0xff_ff;
 const MAX_UINT32 = 0xff_ff_ff_ff;
+const DEFAULT_UNZIP_MAX_ENTRIES = 10_000;
+const DEFAULT_UNZIP_MAX_ENTRY_SIZE = 512 * 1024 * 1024;
+const DEFAULT_UNZIP_MAX_TOTAL_SIZE = 1024 * 1024 * 1024;
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -552,10 +557,50 @@ const parseCentralDirectory = (
   return entries;
 };
 
+const collectLimited = async (
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  key: string,
+  name: string
+): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (value) {
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new FilesError(
+          "Provider",
+          `zip: entry "${name}" in "${key}" exceeds the configured unzip size limit`
+        );
+      }
+      chunks.push(value);
+    }
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
+};
+
 /** Inflate a raw-deflate buffer via the platform {@link DecompressionStream}. */
-const inflate = async (data: Uint8Array): Promise<Uint8Array> => {
+const inflate = async (
+  data: Uint8Array,
+  maxBytes: number,
+  key: string,
+  name: string
+): Promise<Uint8Array> => {
   const transform = new DecompressionStream("deflate-raw");
-  const collected = collectStream(transform.readable);
+  const collected = collectLimited(transform.readable, maxBytes, key, name);
   const writer = transform.writable.getWriter();
   // Feed and drain concurrently (backpressure can deadlock otherwise), and
   // join via Promise.all so a corrupt-input failure on either side never
@@ -572,7 +617,8 @@ const inflate = async (data: Uint8Array): Promise<Uint8Array> => {
 const extractEntry = async (
   bytes: Uint8Array,
   entry: ParsedEntry,
-  key: string
+  key: string,
+  maxEntrySize: number
 ): Promise<Uint8Array> => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // The central record points at the local header, whose own variable-length
@@ -593,13 +639,22 @@ const extractEntry = async (
     throw corrupt(key, `truncated data for "${entry.name}"`);
   }
   const data = bytes.subarray(start, start + entry.compressedSize);
+  if (entry.size > maxEntrySize) {
+    throw new FilesError(
+      "Provider",
+      `zip: entry "${entry.name}" in "${key}" exceeds the configured unzip size limit`
+    );
+  }
   let out: Uint8Array;
   if (entry.method === METHOD_STORE) {
     out = data;
   } else if (entry.method === METHOD_DEFLATE) {
     try {
-      out = await inflate(data);
+      out = await inflate(data, entry.size, key, entry.name);
     } catch (error) {
+      if (error instanceof FilesError) {
+        throw error;
+      }
       throw corrupt(key, `entry "${entry.name}" failed to inflate`, error);
     }
   } else {
@@ -680,12 +735,25 @@ export const zip = (): FilesPlugin<ZipApi> => ({
       unzip: async (key, options = {}) => {
         const file = await files.download(key);
         const bytes = new Uint8Array(await file.arrayBuffer());
+        const maxEntries = options.maxEntries ?? DEFAULT_UNZIP_MAX_ENTRIES;
+        const maxEntrySize =
+          options.maxEntrySize ?? DEFAULT_UNZIP_MAX_ENTRY_SIZE;
+        const maxTotalSize =
+          options.maxTotalSize ?? DEFAULT_UNZIP_MAX_TOTAL_SIZE;
         let into = options.into ?? "";
         if (into !== "" && !into.endsWith("/")) {
           into += "/";
         }
+        const entries = parseCentralDirectory(bytes, key);
+        if (entries.length > maxEntries) {
+          throw new FilesError(
+            "Provider",
+            `zip: "${key}" has ${entries.length} entries, exceeding the configured unzip entry limit`
+          );
+        }
         const results: UploadResult[] = [];
-        for (const entry of parseCentralDirectory(bytes, key)) {
+        let totalSize = 0;
+        for (const entry of entries) {
           // A trailing slash marks a directory entry — nothing to store.
           if (entry.name.endsWith("/")) {
             continue;
@@ -697,7 +765,14 @@ export const zip = (): FilesPlugin<ZipApi> => ({
             entry.name,
             ENCODER.encode(entry.name).byteLength
           );
-          const data = await extractEntry(bytes, entry, key);
+          totalSize += entry.size;
+          if (totalSize > maxTotalSize) {
+            throw new FilesError(
+              "Provider",
+              `zip: "${key}" exceeds the configured unzip total size limit`
+            );
+          }
+          const data = await extractEntry(bytes, entry, key, maxEntrySize);
           results.push(
             await files.upload(into + entry.name, data, {
               contentType: inferTypeFromName(entry.name),
