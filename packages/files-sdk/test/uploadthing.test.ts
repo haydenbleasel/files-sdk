@@ -587,7 +587,6 @@ describe("uploadthing adapter", () => {
     const out = await files.signedUploadUrl("uploads/x.png", {
       contentType: "image/png",
       expiresIn: 60,
-      maxSize: 10_000_000,
     });
     expect(out.method).toBe("PUT");
     if (out.method !== "PUT") {
@@ -597,7 +596,7 @@ describe("uploadthing adapter", () => {
     expect(u.host).toBe("sea1.ingest.uploadthing.com");
     expect(u.searchParams.get("x-ut-identifier")).toBe("myapp");
     expect(u.searchParams.get("x-ut-file-name")).toBe("x.png");
-    expect(u.searchParams.get("x-ut-file-size")).toBe("10000000");
+    expect(u.searchParams.get("x-ut-file-size")).toBeNull();
     expect(u.searchParams.get("x-ut-slug")).toBe("mediaUploader");
     expect(u.searchParams.get("x-ut-file-type")).toBe("image/png");
     expect(u.searchParams.get("x-ut-custom-id")).toBe("uploads/x.png");
@@ -620,6 +619,18 @@ describe("uploadthing adapter", () => {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("")}`;
     expect(signature).toBe(expected);
+  });
+
+  test("signedUploadUrl rejects maxSize because UFS PUT URLs cannot enforce it", async () => {
+    const files = new Files({
+      adapter: uploadthing({ slug: "mediaUploader" }),
+    });
+    await expect(
+      files.signedUploadUrl("uploads/x.png", {
+        expiresIn: 60,
+        maxSize: 10_000_000,
+      })
+    ).rejects.toThrow(/maxSize.*not supported/u);
   });
 
   test("signedUploadUrl region override is honored", async () => {
