@@ -22,6 +22,7 @@ export {
   createResponsesFileTools,
   type FunctionCallItem,
   type FunctionCallOutputItem,
+  type ResponsesExecuteOptions,
   type ResponsesFileTools,
   type ResponsesFileToolsOptions,
   type ResponsesFunctionTool,

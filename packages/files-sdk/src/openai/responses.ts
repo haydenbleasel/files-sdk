@@ -46,6 +46,15 @@ export interface FunctionCallOutputItem {
   output: string;
 }
 
+export interface ResponsesExecuteOptions {
+  /**
+   * Set to `true` after your host approval UX approves this exact function
+   * call. Only required for write tools whose `needsApproval(name)` resolves
+   * to `true`.
+   */
+  approved?: boolean;
+}
+
 export interface ResponsesFileTools {
   /**
    * Function tool definitions. Pass directly to
@@ -63,10 +72,14 @@ export interface ResponsesFileTools {
    * `FilesError` from the underlying SDK is rethrown — the caller decides
    * how to surface it.
    *
-   * Approval is **not** enforced. Check {@link needsApproval} first if you
-   * want a human-in-the-loop gate.
+   * Approval is enforced for write tools whose {@link needsApproval} resolves
+   * to `true`. Pass `{ approved: true }` only after your host approval UX has
+   * approved this exact call.
    */
-  execute(call: FunctionCallItem): Promise<FunctionCallOutputItem>;
+  execute(
+    call: FunctionCallItem,
+    options?: ResponsesExecuteOptions
+  ): Promise<FunctionCallOutputItem>;
   /**
    * Returns whether the named tool is approval-gated under this config.
    * Read tools always return `false`. Unknown names return `false`.
@@ -87,11 +100,11 @@ export interface ResponsesFileToolsOptions {
    */
   readOnly?: boolean;
   /**
-   * Approval gating reflected by {@link ResponsesFileTools.needsApproval}.
-   * Defaults to `true` (every write reports as approval-required). Pass
-   * `false` to disable, or an object keyed by write-tool name for
-   * fine-grained control. Unspecified entries in the object form default
-   * to `true`.
+   * Approval gating enforced by {@link ResponsesFileTools.execute} and
+   * reflected by {@link ResponsesFileTools.needsApproval}. Defaults to `true`
+   * (every write requires approval). Pass `false` to disable, or an object
+   * keyed by write-tool name for fine-grained control. Unspecified entries in
+   * the object form default to `true`.
    */
   requireApproval?: ApprovalConfig;
   /**
@@ -219,10 +232,12 @@ const dispatch = async (
  *   const calls = res.output.filter((o) => o.type === "function_call");
  *   if (calls.length === 0) break;
  *   for (const call of calls) {
+ *     let approved = false;
  *     if (ft.needsApproval(call.name)) {
- *       // surface approval UX, then continue or break
+ *       // surface approval UX for this exact call
+ *       approved = true;
  *     }
- *     input.push(call, await ft.execute(call));
+ *     input.push(call, await ft.execute(call, { approved }));
  *   }
  * }
  * ```
@@ -259,7 +274,8 @@ export const createResponsesFileTools = ({
   const includedSet: ReadonlySet<FileToolName> = new Set(includedNames);
 
   const execute = async (
-    call: FunctionCallItem
+    call: FunctionCallItem,
+    options: ResponsesExecuteOptions = {}
   ): Promise<FunctionCallOutputItem> => {
     const wrap = (output: unknown): FunctionCallOutputItem => ({
       call_id: call.call_id,
@@ -271,6 +287,15 @@ export const createResponsesFileTools = ({
       return wrap({ error: `Unknown tool: ${call.name}` });
     }
 
+    const toolName = call.name as FileToolName;
+    if (approvalFor(toolName) && !options.approved) {
+      return wrap({
+        approvalRequired: true,
+        error: `Tool ${toolName} requires approval before execution`,
+        tool: toolName,
+      });
+    }
+
     let parsedArgs: unknown;
     try {
       parsedArgs = JSON.parse(call.arguments);
@@ -280,7 +305,7 @@ export const createResponsesFileTools = ({
       });
     }
 
-    const result = await dispatch(files, call.name as FileToolName, parsedArgs);
+    const result = await dispatch(files, toolName, parsedArgs);
     if (!result.ok) {
       return wrap({
         error: "Argument validation failed",

@@ -19,6 +19,8 @@ const call = (
   type: "function_call",
 });
 
+const approved = { approved: true } as const;
+
 describe("createResponsesFileTools", () => {
   test("definitions returns all eight tools by default", () => {
     const ft = createResponsesFileTools({ files: newFiles() });
@@ -117,7 +119,8 @@ describe("createResponsesFileTools", () => {
         content: "hello",
         contentType: "text/plain",
         key: "a.txt",
-      })
+      }),
+      approved
     );
     expect(uploadOut.type).toBe("function_call_output");
     expect(uploadOut.call_id).toBe("call_1");
@@ -139,8 +142,31 @@ describe("createResponsesFileTools", () => {
       encoding: "text",
     });
 
-    const delOut = await ft.execute(call("deleteFile", { key: "a.txt" }));
+    const delOut = await ft.execute(
+      call("deleteFile", { key: "a.txt" }),
+      approved
+    );
     expect(JSON.parse(delOut.output)).toEqual({ deleted: true, key: "a.txt" });
+  });
+
+  test("execute blocks approval-gated writes until approved", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({ files });
+    const out = await ft.execute(
+      call("uploadFile", { content: "x", key: "blocked.txt" })
+    );
+    const parsed = JSON.parse(out.output) as {
+      approvalRequired: boolean;
+      error: string;
+      tool: string;
+    };
+    expect(parsed).toMatchObject({
+      approvalRequired: true,
+      tool: "uploadFile",
+    });
+    expect(parsed.error).toMatch(/requires approval/u);
+    const listed = await files.list();
+    expect(listed.items).toHaveLength(0);
   });
 
   test("invalid JSON arguments come back as an error in the output", async () => {
@@ -157,7 +183,8 @@ describe("createResponsesFileTools", () => {
       call("uploadFile", {
         // missing required `content` and `key`
         contentType: "text/plain",
-      })
+      }),
+      approved
     );
     const parsed = JSON.parse(out.output) as { error: string; issues: unknown };
     expect(parsed.error).toBe("Argument validation failed");
@@ -187,7 +214,8 @@ describe("createResponsesFileTools", () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });
     await ft.execute(
-      call("uploadFile", { content: "abcdefghij", key: "big.txt" })
+      call("uploadFile", { content: "abcdefghij", key: "big.txt" }),
+      approved
     );
 
     try {
@@ -229,7 +257,8 @@ describe("createResponsesFileTools", () => {
         contentType: "application/octet-stream",
         encoding: "base64",
         key: "blob.dat",
-      })
+      }),
+      approved
     );
 
     const stored = await files.download("blob.dat");
@@ -268,7 +297,8 @@ describe("createResponsesFileTools", () => {
         contentType: "text/plain",
         key: "report.txt",
         metadata: { tenant: "acme" },
-      })
+      }),
+      approved
     );
 
     const out = await ft.execute(
@@ -289,7 +319,10 @@ describe("createResponsesFileTools", () => {
   test("getFileUrl forwards expiresIn and responseContentDisposition", async () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });
-    await ft.execute(call("uploadFile", { content: "x", key: "u.txt" }));
+    await ft.execute(
+      call("uploadFile", { content: "x", key: "u.txt" }),
+      approved
+    );
 
     const out = await ft.execute(
       call("getFileUrl", {
@@ -307,11 +340,13 @@ describe("createResponsesFileTools", () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });
     await ft.execute(
-      call("uploadFile", { content: "payload", key: "src.txt" })
+      call("uploadFile", { content: "payload", key: "src.txt" }),
+      approved
     );
 
     const out = await ft.execute(
-      call("copyFile", { from: "src.txt", to: "dst.txt" })
+      call("copyFile", { from: "src.txt", to: "dst.txt" }),
+      approved
     );
     expect(JSON.parse(out.output)).toEqual({
       copied: true,
@@ -327,7 +362,8 @@ describe("createResponsesFileTools", () => {
   test("signUploadUrl returns a SignedUpload descriptor", async () => {
     const ft = createResponsesFileTools({ files: newFiles() });
     const out = await ft.execute(
-      call("signUploadUrl", { expiresIn: 120, key: "upload.bin" })
+      call("signUploadUrl", { expiresIn: 120, key: "upload.bin" }),
+      approved
     );
     const result = JSON.parse(out.output) as { method: string; url: string };
     expect(result.method).toBe("PUT");
@@ -338,7 +374,7 @@ describe("createResponsesFileTools", () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });
     for (const k of ["a/1.txt", "a/2.txt", "b/1.txt"]) {
-      await ft.execute(call("uploadFile", { content: "x", key: k }));
+      await ft.execute(call("uploadFile", { content: "x", key: k }), approved);
     }
 
     const out = await ft.execute(
@@ -350,7 +386,7 @@ describe("createResponsesFileTools", () => {
 
   test("validation failure on signUploadUrl (missing required expiresIn)", async () => {
     const ft = createResponsesFileTools({ files: newFiles() });
-    const out = await ft.execute(call("signUploadUrl", { key: "k" }));
+    const out = await ft.execute(call("signUploadUrl", { key: "k" }), approved);
     const parsed = JSON.parse(out.output) as { error: string; issues: unknown };
     expect(parsed.error).toBe("Argument validation failed");
     expect(Array.isArray(parsed.issues)).toBe(true);
@@ -370,7 +406,10 @@ describe("createResponsesFileTools", () => {
       { args: { key: 123 }, name: "deleteFile" },
     ];
     for (const c of cases) {
-      const out = await ft.execute(call(c.name, c.args));
+      const out = await ft.execute(
+        call(c.name, c.args),
+        ft.needsApproval(c.name) ? approved : undefined
+      );
       const parsed = JSON.parse(out.output) as {
         error: string;
         issues: unknown;
@@ -391,7 +430,7 @@ describe("createResponsesFileTools", () => {
     const ft = createResponsesFileTools({ files: newFiles() });
     const hasSpy = spyOn(Set.prototype, "has").mockReturnValue(true);
     try {
-      await expect(ft.execute(call("ghostTool", {}))).rejects.toThrow(
+      await expect(ft.execute(call("ghostTool", {}), approved)).rejects.toThrow(
         /Unhandled tool: ghostTool/u
       );
     } finally {
@@ -399,7 +438,7 @@ describe("createResponsesFileTools", () => {
     }
   });
 
-  test("execute requireApproval=false leaves needsApproval false for writes", () => {
+  test("execute requireApproval=false leaves writes executable without approval", async () => {
     const ft = createResponsesFileTools({
       files: newFiles(),
       requireApproval: false,
@@ -413,5 +452,13 @@ describe("createResponsesFileTools", () => {
     ]) {
       expect(ft.needsApproval(name)).toBe(false);
     }
+
+    const out = await ft.execute(
+      call("uploadFile", { content: "x", key: "allowed.txt" })
+    );
+    expect(JSON.parse(out.output)).toMatchObject({
+      key: "allowed.txt",
+      size: 1,
+    });
   });
 });
