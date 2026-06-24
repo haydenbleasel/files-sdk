@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { createFilesRouter } from "../src/api/index.js";
 import type { Authorize, CreateFilesRouterOptions } from "../src/api/index.js";
-import type { Adapter } from "../src/index.js";
+import type { Adapter, SignUploadOptions } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
@@ -482,6 +482,49 @@ describe("createFilesRouter — upload", () => {
     expect(
       (await readJson<{ signed: { method: string } }>(res)).signed.method
     ).toBe("PUT");
+  });
+
+  test("signed-upload-url op clamps maxSize to maxUploadSize", async () => {
+    const seen: SignUploadOptions[] = [];
+    const adapter = {
+      ...signing(),
+      signedUploadUrl: (_key: string, opts: SignUploadOptions) => {
+        seen.push(opts);
+        return Promise.resolve({
+          headers: {},
+          method: "PUT" as const,
+          url: "https://fake.local/k.bin",
+        });
+      },
+    } satisfies Adapter;
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 5,
+      operations: ["signedUploadUrl"],
+    });
+
+    await r.handle(
+      post({ expiresIn: 60, key: "a.bin", op: "signed-upload-url" })
+    );
+    await r.handle(
+      post({
+        expiresIn: 60,
+        key: "b.bin",
+        maxSize: 999,
+        op: "signed-upload-url",
+      })
+    );
+    await r.handle(
+      post({
+        expiresIn: 60,
+        key: "c.bin",
+        maxSize: 3,
+        op: "signed-upload-url",
+      })
+    );
+
+    expect(seen.map((opts) => opts.maxSize)).toEqual([5, 5, 3]);
   });
 });
 

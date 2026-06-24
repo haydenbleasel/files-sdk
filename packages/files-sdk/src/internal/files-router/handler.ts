@@ -181,6 +181,18 @@ const clampExpiry = (
   return value;
 };
 
+const clampUploadMaxSize = (
+  requestedMaxSize: number | undefined,
+  maxUploadSize: number | undefined
+): number | undefined => {
+  if (requestedMaxSize === undefined) {
+    return maxUploadSize;
+  }
+  return maxUploadSize === undefined
+    ? requestedMaxSize
+    : Math.min(requestedMaxSize, maxUploadSize);
+};
+
 const filtered = (scope: Scope, keys: string[]): string[] =>
   scope.filterKeys ? keys.filter(scope.filterKeys) : keys;
 
@@ -466,10 +478,19 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = str(body.key, "key");
       const expiresIn = num(body.expiresIn, "expiresIn");
+      const maxSize = clampUploadMaxSize(
+        optNum(body.maxSize, "maxSize"),
+        ctx.maxUploadSize
+      );
+      const minSize = optNum(body.minSize, "minSize");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "signedUploadUrl",
-        params: { expiresIn },
+        params: {
+          expiresIn,
+          ...(maxSize === undefined ? {} : { maxSize }),
+          ...(minSize === undefined ? {} : { minSize }),
+        },
       });
       const signed = await ctx.files.signedUploadUrl(
         scopeKey(scope.prefix, key),
@@ -478,12 +499,8 @@ const dispatchJson = async (
           ...(optStr(body.contentType, "contentType")
             ? { contentType: body.contentType as string }
             : {}),
-          ...(optNum(body.maxSize, "maxSize") === undefined
-            ? {}
-            : { maxSize: body.maxSize as number }),
-          ...(optNum(body.minSize, "minSize") === undefined
-            ? {}
-            : { minSize: body.minSize as number }),
+          ...(maxSize === undefined ? {} : { maxSize }),
+          ...(minSize === undefined ? {} : { minSize }),
         }
       );
       return json({ signed });
