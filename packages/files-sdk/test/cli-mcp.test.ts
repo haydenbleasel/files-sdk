@@ -61,9 +61,10 @@ const NUL = String.fromCodePoint(0);
 const connect = async (
   global: GlobalCliOptions,
   allowWrites: boolean,
-  root: string
+  root: string,
+  destination?: GlobalCliOptions
 ): Promise<Harness> => {
-  const server = await buildMcpServer({ allowWrites, global });
+  const server = await buildMcpServer({ allowWrites, destination, global });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -398,76 +399,112 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(typeof signed.data.url).toBe("string");
   });
 
-  test("transfer copies to a destination provider", async () => {
-    await call(h.client, "upload", { key: "pre/x.txt", text: "x" });
-    await call(h.client, "upload", { key: "pre/y.txt", text: "y" });
-    const destRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-dest-"));
-
-    const result = await call(h.client, "transfer", {
-      concurrency: 2,
-      limit: 10,
-      overwrite: false,
-      prefix: "pre/",
-      stopOnError: true,
-      to: { provider: "fs", root: destRoot },
-    });
-    expect(result.isError).toBe(false);
-    expect((result.data.transferred as string[]).toSorted()).toEqual([
-      "pre/x.txt",
-      "pre/y.txt",
-    ]);
-
-    await fsp.rm(destRoot, { force: true, recursive: true });
+  test("transfer and sync are omitted without an operator destination", async () => {
+    const names = await toolNames(h.client);
+    expect(names).not.toContain("transfer");
+    expect(names).not.toContain("sync");
   });
 
-  test("transfer reports a bad destination config as an error", async () => {
-    const result = await call(h.client, "transfer", { to: {} });
-    expect(result.isError).toBe(true);
+  test("transfer copies to the operator destination provider", async () => {
+    const sourceRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-src-"));
+    const destRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-dest-"));
+    const attackerRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "mcp-attacker-")
+    );
+    const h2 = await connect(
+      { provider: "fs", root: sourceRoot },
+      true,
+      sourceRoot,
+      { provider: "fs", root: destRoot }
+    );
+
+    try {
+      await call(h2.client, "upload", { key: "pre/x.txt", text: "x" });
+      await call(h2.client, "upload", { key: "pre/y.txt", text: "y" });
+
+      const result = await call(h2.client, "transfer", {
+        concurrency: 2,
+        limit: 10,
+        overwrite: false,
+        prefix: "pre/",
+        stopOnError: true,
+        to: { provider: "fs", root: attackerRoot },
+      });
+      expect(result.isError).toBe(false);
+      expect((result.data.transferred as string[]).toSorted()).toEqual([
+        "pre/x.txt",
+        "pre/y.txt",
+      ]);
+      expect(await fsp.exists(path.join(destRoot, "pre/x.txt"))).toBe(true);
+      expect(await fsp.exists(path.join(attackerRoot, "pre/x.txt"))).toBe(
+        false
+      );
+    } finally {
+      await h2.close();
+      await fsp.rm(destRoot, { force: true, recursive: true });
+      await fsp.rm(attackerRoot, { force: true, recursive: true });
+    }
   });
 
   test("sync mirrors to a destination provider and prunes", async () => {
-    await call(h.client, "upload", { key: "m/a.txt", text: "alpha" });
+    const sourceRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-src-"));
     const destRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-sync-"));
+    const h2 = await connect(
+      { provider: "fs", root: sourceRoot },
+      true,
+      sourceRoot,
+      { provider: "fs", root: destRoot }
+    );
     await fsp.mkdir(path.join(destRoot, "m"), { recursive: true });
     await fsp.writeFile(path.join(destRoot, "m/stale.txt"), "gone");
 
-    const result = await call(h.client, "sync", {
-      compare: "size",
-      concurrency: 2,
-      prefix: "m/",
-      prune: true,
-      to: { provider: "fs", root: destRoot },
-    });
-    expect(result.isError).toBe(false);
-    expect(result.data.uploaded).toEqual(["m/a.txt"]);
-    expect(result.data.deleted).toEqual(["m/stale.txt"]);
+    try {
+      await call(h2.client, "upload", { key: "m/a.txt", text: "alpha" });
 
-    await fsp.rm(destRoot, { force: true, recursive: true });
+      const result = await call(h2.client, "sync", {
+        compare: "size",
+        concurrency: 2,
+        prefix: "m/",
+        prune: true,
+      });
+      expect(result.isError).toBe(false);
+      expect(result.data.uploaded).toEqual(["m/a.txt"]);
+      expect(result.data.deleted).toEqual(["m/stale.txt"]);
+    } finally {
+      await h2.close();
+      await fsp.rm(destRoot, { force: true, recursive: true });
+    }
   });
 
   test("sync dryRun returns the plan without mutating", async () => {
-    await call(h.client, "upload", { key: "d/new.txt", text: "n" });
+    const sourceRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-src-"));
     const destRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-sync-dry-"));
+    const h2 = await connect(
+      { provider: "fs", root: sourceRoot },
+      true,
+      sourceRoot,
+      { provider: "fs", root: destRoot }
+    );
     await fsp.mkdir(path.join(destRoot, "d"), { recursive: true });
     await fsp.writeFile(path.join(destRoot, "d/stale.txt"), "gone");
 
-    const result = await call(h.client, "sync", {
-      dryRun: true,
-      prefix: "d/",
-      prune: true,
-      to: { provider: "fs", root: destRoot },
-    });
-    expect(result.data.uploaded).toEqual(["d/new.txt"]);
-    expect(result.data.deleted).toEqual(["d/stale.txt"]);
-    expect(await fsp.exists(path.join(destRoot, "d/new.txt"))).toBe(false);
-    expect(await fsp.exists(path.join(destRoot, "d/stale.txt"))).toBe(true);
+    try {
+      await call(h2.client, "upload", { key: "d/new.txt", text: "n" });
 
-    await fsp.rm(destRoot, { force: true, recursive: true });
-  });
-
-  test("sync reports a bad destination config as an error", async () => {
-    const result = await call(h.client, "sync", { to: {} });
-    expect(result.isError).toBe(true);
+      const result = await call(h2.client, "sync", {
+        dryRun: true,
+        prefix: "d/",
+        prune: true,
+        to: { provider: "fs", root: "/attacker" },
+      });
+      expect(result.data.uploaded).toEqual(["d/new.txt"]);
+      expect(result.data.deleted).toEqual(["d/stale.txt"]);
+      expect(await fsp.exists(path.join(destRoot, "d/new.txt"))).toBe(false);
+      expect(await fsp.exists(path.join(destRoot, "d/stale.txt"))).toBe(true);
+    } finally {
+      await h2.close();
+      await fsp.rm(destRoot, { force: true, recursive: true });
+    }
   });
 });
 

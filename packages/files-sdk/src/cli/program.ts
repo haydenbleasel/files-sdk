@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import { Command, Option } from "commander";
 
+import { FilesError } from "../internal/errors.js";
 import {
   runCapabilities,
   runCopy,
@@ -46,6 +47,24 @@ const collect = (value: string, prev: string[] | undefined): string[] => {
   const arr = prev ?? [];
   arr.push(value);
   return arr;
+};
+
+const parseDestination = (raw?: string): GlobalCliOptions | undefined => {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const destination = parseJson<GlobalCliOptions>(raw, "--to");
+  if (
+    !destination ||
+    typeof destination !== "object" ||
+    Array.isArray(destination)
+  ) {
+    throw new FilesError(
+      "Provider",
+      "--to must be a JSON object of destination provider options"
+    );
+  }
+  return destination;
 };
 
 // Pulled out so the missing-optional-dep branch is unit-testable without
@@ -681,11 +700,16 @@ export const buildProgram = (
     .description("start a read-only MCP server on stdio")
     .option(
       "--allow-writes",
-      "also expose mutating MCP tools: upload, delete, copy, move, sign-upload, transfer, and sync"
+      "also expose mutating MCP tools: upload, delete, copy, move, sign-upload; transfer and sync require --to"
+    )
+    .option(
+      "--to <json>",
+      "operator-trusted destination provider options for MCP transfer/sync"
     )
     .action(async (opts, cmd) => {
       const { global, out } = resolveOpts(cmd as Command);
       try {
+        const destination = parseDestination(opts.to as string | undefined);
         // `@modelcontextprotocol/sdk` is an optional dependency — pulling
         // it in lazily means library-only consumers don't pay the install
         // cost. If it's missing, give a clearer hint than the raw
@@ -698,6 +722,7 @@ export const buildProgram = (
         }
         await mcp.startMcpServer({
           allowWrites: opts.allowWrites === true,
+          destination,
           global,
         });
       } catch (error) {
