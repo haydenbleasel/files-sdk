@@ -4,6 +4,8 @@ import { memory } from "files-sdk/memory";
 import { createRouteHandler } from "files-sdk/next";
 import { versioning } from "files-sdk/versioning";
 
+import { resolveFilesApiSecret } from "../files-secret";
+
 // A dedicated in-memory instance wrapped with `versioning()`, so the Version
 // History component docs render against real saved snapshots. It's separate from
 // `/api/files` because `versioning()` and `softDelete()` both graft a `restore`
@@ -13,7 +15,7 @@ const files = createFiles({ adapter: memory(), plugins: [versioning()] });
 const router = createFilesRouter({
   authorize: () => ({ keyPrefix: "demo/" }),
   files,
-  secret: process.env.FILES_API_SECRET ?? "demo-secret-change-in-production",
+  secret: resolveFilesApiSecret(),
 });
 
 // A short edit history for `demo/notes.txt`: each successive upload snapshots the
