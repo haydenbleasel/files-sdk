@@ -40,6 +40,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface OneDriveAdapterOptions {
@@ -829,7 +830,11 @@ export const onedrive = (
             "Resume token does not match this upload's item path."
           );
         }
-        ({ uploadUrl } = session);
+        uploadUrl = trustedHttpsSessionUrl(
+          session.uploadUrl,
+          "onedrive upload session URL",
+          ["up.1drv.com", "up.1drv.ms", "sharepoint.com"]
+        );
       },
       async begin(): Promise<ResumableUploadSession> {
         // `metadata` / `cacheControl` are rejected centrally by the Files
@@ -849,8 +854,12 @@ export const onedrive = (
               "onedrive: createUploadSession response missing uploadUrl"
             );
           }
-          uploadUrl = created;
-          return { itemPath: key, provider: "onedrive", uploadUrl: created };
+          uploadUrl = trustedHttpsSessionUrl(
+            created,
+            "onedrive upload session URL",
+            ["up.1drv.com", "up.1drv.ms", "sharepoint.com"]
+          );
+          return { itemPath: key, provider: "onedrive", uploadUrl };
         } catch (error) {
           throw mapGraphError(error);
         }

@@ -90,10 +90,9 @@ export interface ConvexAdapterOptions {
    *
    * Which operations work depends on the context Convex gives you:
    * - **action / httpAction** — `upload`, `download`, `delete`, `url`, `head`,
-   *   `exists`, `signedUploadUrl`. `list` throws (no `ctx.db`).
-   * - **mutation** — `delete`, `url`, `head`, `exists`, `list`,
-   *   `signedUploadUrl`. `upload` / `download` throw (no `ctx.storage.store` /
-   *   `get` outside actions).
+   *   `exists`. `list` throws (no `ctx.db`).
+   * - **mutation** — `delete`, `url`, `head`, `exists`, `list`. `upload` /
+   *   `download` throw (no `ctx.storage.store` / `get` outside actions).
    * - **query** — `url`, `head`, `exists`, `list` (all read-only).
    *
    * The adapter feature-detects the underlying primitive and throws a
@@ -343,24 +342,21 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     name: "convex",
     raw: ctx,
 
-    async signedUploadUrl(_key): Promise<SignedUpload> {
+    signedUploadUrl(_key): Promise<SignedUpload> {
       if (typeof storage.generateUploadUrl !== "function") {
-        throw new FilesError(
-          "Provider",
-          "convex: signedUploadUrl() requires a mutation or action context (ctx.storage.generateUploadUrl); it is unavailable in queries."
+        return Promise.reject(
+          new FilesError(
+            "Provider",
+            "convex: signedUploadUrl() requires a mutation or action context (ctx.storage.generateUploadUrl); it is unavailable in queries."
+          )
         );
       }
-      let url: string;
-      try {
-        url = await storage.generateUploadUrl();
-      } catch (error) {
-        throw mapConvexError(error);
-      }
-      // Convex's upload URL takes the file as the raw request body (not a
-      // multipart form), and the POST response is `{ storageId }` — that id is
-      // the file's key. expiresIn / maxSize / minSize / contentType are
-      // controlled by Convex and ignored here.
-      return { fields: {}, method: "POST", url };
+      return Promise.reject(
+        new FilesError(
+          "Provider",
+          "convex: signedUploadUrl() is not supported. Convex generateUploadUrl() cannot bind the caller's key, expiresIn, maxSize, minSize, or contentType into the issued upload capability; upload through a Convex action with files.upload() instead."
+        )
+      );
     },
     // `url()` returns a permanent Convex serving URL — unsigned and
     // non-expiring (`expiresIn` is ignored), so not a signed URL.

@@ -653,6 +653,12 @@ export const cloudinaryAdapter = (
           "cloudinary: signedUploadUrl requires both apiKey and apiSecret. Pass them at construction or set CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET / CLOUDINARY_URL."
         );
       }
+      if (signOpts.maxSize !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `maxSize` is not supported for signed upload URLs. Cloudinary upload signatures do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded signed upload."
+        );
+      }
       // Cloudinary signatures are computed over a sorted, ampersand-joined
       // parameter set excluding `file`, `cloud_name`, `resource_type`, and
       // `api_key`. The SDK helper handles the sort+hash for us.

@@ -364,15 +364,12 @@ describe("convex adapter", () => {
   });
 
   describe("signedUploadUrl", () => {
-    test("returns a raw-body POST target", async () => {
+    test("throws because Convex upload URLs cannot bind SDK keys or limits", async () => {
       const { actionCtx } = makeBackend();
       const adapter = convex({ ctx: actionCtx });
-      const signed = await adapter.signedUploadUrl("k", { expiresIn: 60 });
-      expect(signed).toEqual({
-        fields: {},
-        method: "POST",
-        url: expect.stringContaining("https://fake.convex.cloud/upload"),
-      });
+      await expect(
+        adapter.signedUploadUrl("k", { expiresIn: 60 })
+      ).rejects.toThrow(/not supported.*key.*maxSize/u);
     });
   });
 
@@ -708,21 +705,22 @@ describe("convex adapter", () => {
   });
 
   describe("signedUploadUrl errors", () => {
-    test("signedUploadUrl rethrows a generateUploadUrl failure", async () => {
+    test("signedUploadUrl does not mint an unbound Convex upload URL", async () => {
+      let called = false;
       const ctx: ConvexCtx = {
         storage: {
-          generateUploadUrl: () =>
-            Promise.reject(new Error("upload url failed")),
+          generateUploadUrl: () => {
+            called = true;
+            return Promise.resolve("https://fake.convex.cloud/upload");
+          },
           getUrl: () => Promise.resolve(null),
         },
       };
       const adapter = convex({ ctx });
       await expect(
         adapter.signedUploadUrl("k", { expiresIn: 60 })
-      ).rejects.toMatchObject({
-        code: "Provider",
-        message: "upload url failed",
-      });
+      ).rejects.toThrow(/not supported/u);
+      expect(called).toBe(false);
     });
   });
 

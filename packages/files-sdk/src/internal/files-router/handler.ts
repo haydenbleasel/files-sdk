@@ -7,11 +7,13 @@
 // dispatch itself stays framework-free and is driven by constructing requests.
 
 import type { Files, StoredFile } from "../../index.js";
+import { isAttachmentDisposition } from "../content-disposition.js";
 import type { FilesError } from "../errors.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
 import type { ParsedRequest, ResultModel } from "../router-core/web.js";
+import { isSafeSearchRegex } from "../search-regex.js";
 import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
 import { runAuthorize } from "./authorize.js";
 import type { DownloadConfig } from "./download.js";
@@ -93,6 +95,16 @@ const optBool = (value: unknown, field: string): boolean | undefined => {
     : fail(`expected boolean: ${field}`);
 };
 
+const routerUrlDisposition = (
+  requested: string | undefined,
+  serverDisposition: string | undefined
+): string => {
+  if (serverDisposition) {
+    return serverDisposition;
+  }
+  return isAttachmentDisposition(requested) ? requested : "attachment";
+};
+
 const fileInfos = (value: unknown): ClientFileInfo[] => {
   if (!Array.isArray(value) || value.length === 0) {
     return fail("expected a non-empty files[]");
@@ -154,7 +166,9 @@ const downloadCfg = (ctx: HandlerContext): DownloadConfig => ({
 });
 
 const requireOrigin = (ctx: HandlerContext, parsed: ParsedRequest): void => {
-  if (!isOriginAllowed(parsed.origin, ctx.allowedOrigins)) {
+  if (
+    !isOriginAllowed(parsed.origin, ctx.allowedOrigins, parsed.requestOrigin)
+  ) {
     throw new RouterError("Forbidden", "origin not allowed", "origin");
   }
 };
@@ -179,6 +193,18 @@ const clampExpiry = (
     value = Math.min(value, capMax);
   }
   return value;
+};
+
+const clampUploadMaxSize = (
+  requestedMaxSize: number | undefined,
+  maxUploadSize: number | undefined
+): number | undefined => {
+  if (requestedMaxSize === undefined) {
+    return maxUploadSize;
+  }
+  return maxUploadSize === undefined
+    ? requestedMaxSize
+    : Math.min(requestedMaxSize, maxUploadSize);
 };
 
 const filtered = (scope: Scope, keys: string[]): string[] =>
@@ -386,12 +412,13 @@ const dispatchJson = async (
         operation: "url",
         params: { expiresIn },
       });
-      const disposition =
-        scope.disposition ??
-        optStr(body.responseContentDisposition, "responseContentDisposition");
+      const disposition = routerUrlDisposition(
+        optStr(body.responseContentDisposition, "responseContentDisposition"),
+        scope.disposition
+      );
       const url = await ctx.files.url(scopeKey(scope.prefix, key), {
         expiresIn: clampExpiry(ctx, expiresIn ?? ctx.defaultExpiresIn, scope),
-        ...(disposition ? { responseContentDisposition: disposition } : {}),
+        responseContentDisposition: disposition,
       });
       return json({ url });
     }
@@ -402,6 +429,7 @@ const dispatchJson = async (
       const listPrefix = scope.prefix + clientPrefix;
       const limit = Math.min(
         optNum(body.limit, "limit") ?? ctx.maxListLimit,
+        scope.maxResults ?? ctx.maxListLimit,
         ctx.maxListLimit
       );
       const unscope = unscoper(scope);
@@ -427,12 +455,22 @@ const dispatchJson = async (
       const clientPrefix = optStr(body.prefix, "prefix") ?? "";
       assertSafePrefix(clientPrefix);
       const searchPrefix = scope.prefix + clientPrefix;
-      const pattern = optBool(body.isRegex, "isRegex")
-        ? new RegExp(
+      let pattern: string | RegExp;
+      if (optBool(body.isRegex, "isRegex")) {
+        try {
+          pattern = new RegExp(
             str(body.pattern, "pattern"),
             optStr(body.flags, "flags") ?? "u"
-          )
-        : str(body.pattern, "pattern");
+          );
+        } catch {
+          throw new RouterError("Validation", "invalid search regex");
+        }
+        if (!isSafeSearchRegex(pattern)) {
+          throw new RouterError("Validation", "search pattern is too complex");
+        }
+      } else {
+        pattern = str(body.pattern, "pattern");
+      }
       const cap = Math.min(
         optNum(body.maxResults, "maxResults") ?? ctx.maxSearchResults,
         scope.maxResults ?? ctx.maxSearchResults,
@@ -466,10 +504,19 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = str(body.key, "key");
       const expiresIn = num(body.expiresIn, "expiresIn");
+      const maxSize = clampUploadMaxSize(
+        optNum(body.maxSize, "maxSize"),
+        ctx.maxUploadSize
+      );
+      const minSize = optNum(body.minSize, "minSize");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "signedUploadUrl",
-        params: { expiresIn },
+        params: {
+          expiresIn,
+          ...(maxSize === undefined ? {} : { maxSize }),
+          ...(minSize === undefined ? {} : { minSize }),
+        },
       });
       const signed = await ctx.files.signedUploadUrl(
         scopeKey(scope.prefix, key),
@@ -478,12 +525,8 @@ const dispatchJson = async (
           ...(optStr(body.contentType, "contentType")
             ? { contentType: body.contentType as string }
             : {}),
-          ...(optNum(body.maxSize, "maxSize") === undefined
-            ? {}
-            : { maxSize: body.maxSize as number }),
-          ...(optNum(body.minSize, "minSize") === undefined
-            ? {}
-            : { minSize: body.minSize as number }),
+          ...(maxSize === undefined ? {} : { maxSize }),
+          ...(minSize === undefined ? {} : { minSize }),
         }
       );
       return json({ signed });
@@ -583,6 +626,7 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = optStr(body.key, "key");
       const scope = await authorizeOp(ctx, {
+        ...(key === undefined ? {} : { key }),
         operation: "purge",
         params: {},
       });
@@ -591,6 +635,13 @@ const dispatchJson = async (
         return notConfigured("softDelete");
       }
       if (key !== undefined) {
+        if (scope.filterKeys && !scope.filterKeys(key)) {
+          throw new RouterError(
+            "Forbidden",
+            "key is outside authorized scope",
+            "forbidden"
+          );
+        }
         await plugin.purge(scopeKey(scope.prefix, key));
       } else if (scope.prefix) {
         // Empty-trash under a scope must never purge another tenant's keys, and
@@ -599,7 +650,13 @@ const dispatchJson = async (
           return notConfigured("softDelete");
         }
         const entries = await plugin.trashed();
-        const mine = entries.filter((t) => t.key.startsWith(scope.prefix));
+        const mine = entries.filter((t) => {
+          if (!t.key.startsWith(scope.prefix)) {
+            return false;
+          }
+          const unscoped = unscoper(scope)(t.key);
+          return !scope.filterKeys || scope.filterKeys(unscoped);
+        });
         for (const t of mine) {
           await plugin.purge(t.key);
         }

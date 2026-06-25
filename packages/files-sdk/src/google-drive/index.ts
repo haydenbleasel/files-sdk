@@ -26,6 +26,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { createOffsetHttpDriver } from "../internal/resumable-offset-http.js";
+import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -872,7 +873,15 @@ export const googleDrive = (
               "google-drive: resumable session response missing Location header"
             );
           }
-          return { session: { key, provider: "google-drive", uri }, uri };
+          const trustedUri = trustedHttpsSessionUrl(
+            uri,
+            "google-drive resumable session URL",
+            ["googleapis.com"]
+          );
+          return {
+            session: { key, provider: "google-drive", uri: trustedUri },
+            uri: trustedUri,
+          };
         },
         async parseResult(res) {
           const data = (await res.json()) as {
@@ -907,7 +916,11 @@ export const googleDrive = (
               "Resume token does not match this upload's key."
             );
           }
-          return session.uri;
+          return trustedHttpsSessionUrl(
+            session.uri,
+            "google-drive resumable session URL",
+            ["googleapis.com"]
+          );
         },
         wrapErr: mapDriveError,
       });

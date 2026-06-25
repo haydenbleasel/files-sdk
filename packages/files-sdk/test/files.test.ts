@@ -1794,7 +1794,7 @@ describe("Files.search", () => {
       "b.txt",
       "c.txt",
     ]);
-    expect(await searchCollect(files.search(/.*\.txt$/yu))).toEqual([
+    expect(await searchCollect(files.search(/.*\.txt$/uy))).toEqual([
       "a.txt",
       "b.txt",
       "c.txt",
@@ -1830,6 +1830,17 @@ describe("Files.search", () => {
       FilesError
     );
     // It rejected before any list call.
+    expect(prefixes).toEqual([]);
+  });
+
+  test("an unsafe regex pattern throws before walking", async () => {
+    const { adapter, prefixes } = listSpy();
+    const files = new Files({ adapter });
+    await searchSeed(files, ["a.txt"]);
+
+    await expect(
+      files.search("(a+)+$", { match: "regex" }).next()
+    ).rejects.toThrow(/too complex/u);
     expect(prefixes).toEqual([]);
   });
 

@@ -38,7 +38,7 @@ createFilesRouter({
   // Declarative allow-list — operations permitted without a hook.
   operations?: FilesOperation[],
 
-  // CSRF/origin allow-list for state-changing actions. Strongly recommended.
+  // CSRF/origin allow-list for state-changing actions. Defaults to same-origin.
   allowedOrigins?: string[] | ((origin: string) => boolean),
 
   // url()/download expiry default + ceiling, seconds. Default 300.
@@ -68,6 +68,8 @@ createFilesRouter({
 - **Proxy** — when the adapter can't sign (Vercel Blob private, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
 
 Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/ui/server/authorization) returns `{ disposition: "inline" }`.
+
+The JSON `url` operation applies the same safe default before calling `files.url()`: a browser request for `responseContentDisposition: "inline"` is rewritten to `attachment`, while an existing `attachment; filename="..."` value keeps its filename. Return `{ disposition: "inline" }` from `authorize` only for routes where inline rendering is deliberate server policy.
 
 ## How uploads flow
 

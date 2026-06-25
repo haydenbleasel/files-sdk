@@ -90,6 +90,7 @@ const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
 
 export interface McpServerOpts {
   allowWrites?: boolean;
+  destination?: GlobalCliOptions;
   global: GlobalCliOptions;
 }
 
@@ -140,7 +141,12 @@ export const buildMcpServer = async (
     version: pkg.version,
   });
 
-  const { files } = await loadFiles(opts.global);
+  const [source, destination] = await Promise.all([
+    loadFiles(opts.global),
+    opts.destination ? loadFiles(opts.destination) : Promise.resolve(),
+  ]);
+  const { files } = source;
+  const destinationFiles = destination?.files;
   const allowWrites = opts.allowWrites ?? false;
 
   if (allowWrites) {
@@ -556,12 +562,14 @@ export const buildMcpServer = async (
         }
       }
     );
+  }
 
+  if (allowWrites && destinationFiles) {
     server.registerTool(
       "transfer",
       {
         description:
-          "Copy every object from the configured (source) provider to another provider, streaming each body across backends. The destination is a separate provider config (`to`). Returns `{ transferred, skipped?, errors? }`.",
+          "Copy every object from the configured source provider to the operator-configured destination provider, streaming each body across backends. Returns `{ transferred, skipped?, errors? }`.",
         inputSchema: {
           concurrency: concurrencyArg,
           limit: z
@@ -581,18 +589,12 @@ export const buildMcpServer = async (
             .optional()
             .describe("Only transfer keys under this prefix"),
           stopOnError: stopOnErrorArg,
-          to: z
-            .record(z.string(), z.unknown())
-            .describe(
-              'Destination provider options, e.g. { "provider": "r2", "bucket": "new", "accountId": "..." }'
-            ),
         },
         title: "Transfer objects to another provider",
       },
-      async ({ to, prefix, overwrite, limit, concurrency, stopOnError }) => {
+      async ({ prefix, overwrite, limit, concurrency, stopOnError }) => {
         try {
-          const dest = await loadFiles(to as unknown as GlobalCliOptions);
-          const result = await transfer(files, dest.files, {
+          const result = await transfer(files, destinationFiles, {
             ...(prefix !== undefined && { prefix }),
             ...(overwrite === false && { overwrite: false }),
             ...(limit !== undefined && { limit }),
@@ -610,7 +612,7 @@ export const buildMcpServer = async (
       "sync",
       {
         description:
-          "Mirror the configured (source) provider onto another: upload new or changed objects, skip unchanged ones, and (with `prune`) delete destination keys the source no longer has. The destination is a separate provider config (`to`). Set `dryRun` to preview the plan without mutating. Returns `{ uploaded, skipped, deleted?, errors? }`.",
+          "Mirror the configured source provider onto the operator-configured destination: upload new or changed objects, skip unchanged ones, and (with `prune`) delete destination keys the source no longer has. Set `dryRun` to preview the plan without mutating. Returns `{ uploaded, skipped, deleted?, errors? }`.",
         inputSchema: {
           compare: z
             .enum(["etag", "size"])
@@ -648,16 +650,10 @@ export const buildMcpServer = async (
               "Mirror mode: delete destination keys the source no longer has (destructive)"
             ),
           stopOnError: stopOnErrorArg,
-          to: z
-            .record(z.string(), z.unknown())
-            .describe(
-              'Destination provider options, e.g. { "provider": "r2", "bucket": "backup", "accountId": "..." }'
-            ),
         },
         title: "Mirror objects to another provider",
       },
       async ({
-        to,
         prefix,
         destPrefix,
         prune,
@@ -668,8 +664,7 @@ export const buildMcpServer = async (
         stopOnError,
       }) => {
         try {
-          const dest = await loadFiles(to as unknown as GlobalCliOptions);
-          const result = await sync(files, dest.files, {
+          const result = await sync(files, destinationFiles, {
             ...(prefix !== undefined && { prefix }),
             ...(destPrefix !== undefined && { destPrefix }),
             ...(prune && { prune: true }),

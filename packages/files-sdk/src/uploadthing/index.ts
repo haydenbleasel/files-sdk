@@ -574,11 +574,15 @@ export const uploadthing = (
       // UploadThing API key — see
       // https://docs.uploadthing.com/uploading-files for the wire format.
       //
-      // `maxSize`/`minSize` are *advisory* here: the server enforces size
-      // via the file-router config tied to `slug`. We surface the
-      // documented `x-ut-file-size` header anyway so the policy is at
-      // least communicated; oversize uploads will be rejected by
-      // UploadThing.
+      // UploadThing's UFS presigned PUT flow has no SDK-visible
+      // content-length-range policy equivalent. Refuse policy-backed size
+      // caps rather than returning a URL whose limit is only advisory.
+      if (options.maxSize !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "uploadthing: `maxSize` is not supported for signed upload URLs. UploadThing UFS presigned PUT URLs do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded PUT."
+        );
+      }
       const fileKey = randomFileKey();
       const url = new URL(
         `https://${region}.ingest.uploadthing.com/${fileKey}`
@@ -589,9 +593,6 @@ export const uploadthing = (
       );
       url.searchParams.set("x-ut-identifier", appId);
       url.searchParams.set("x-ut-file-name", basename(key));
-      if (options.maxSize !== undefined) {
-        url.searchParams.set("x-ut-file-size", String(options.maxSize));
-      }
       if (config.slug) {
         url.searchParams.set("x-ut-slug", config.slug);
       }

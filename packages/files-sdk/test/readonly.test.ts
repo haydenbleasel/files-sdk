@@ -221,7 +221,9 @@ describe("readonly feature", () => {
     const ft = createResponsesFileTools({ files });
 
     try {
-      await ft.execute(call("uploadFile", { content: "x", key: "k" }));
+      await ft.execute(call("uploadFile", { content: "x", key: "k" }), {
+        approved: true,
+      });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);

@@ -471,6 +471,32 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     expect(mcpStartArgs.at(-1)).toMatchObject({ allowWrites: true });
   });
 
+  test("mcp --to binds an operator destination for transfer and sync", async () => {
+    const destination = { provider: "fs", root };
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "mcp",
+      "--allow-writes",
+      "--to",
+      JSON.stringify(destination)
+    );
+    expect(mcpStartArgs.at(-1)).toMatchObject({
+      allowWrites: true,
+      destination,
+    });
+  });
+
+  test("mcp --to rejects non-object destination config", async () => {
+    await expect(
+      run("--provider", "fs", "--root", root, "mcp", "--to", "null")
+    ).rejects.toThrow("__exit:2");
+    const payload = JSON.parse(cap.stderr.join(""));
+    expect(payload.error.message).toContain("--to must be a JSON object");
+  });
+
   test("mcp load failure is rewrapped and routed through fail()", async () => {
     const notFound = Object.assign(new Error("nope"), {
       code: "ERR_MODULE_NOT_FOUND",

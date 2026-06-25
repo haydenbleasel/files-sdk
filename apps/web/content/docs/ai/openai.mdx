@@ -40,15 +40,17 @@ while (true) {
   }
 
   for (const call of calls) {
+    let approved = false;
     if (ft.needsApproval(call.name)) {
-      // surface approval UX, then continue or break
+      // surface approval UX for this exact call
+      approved = true;
     }
-    input.push(call, await ft.execute(call));
+    input.push(call, await ft.execute(call, { approved }));
   }
 }
 ```
 
-`execute` returns JSON parse failures and Zod validation errors _as the tool's output_, so the model can self-correct on the next turn. `FilesError` from the underlying SDK is rethrown - you decide how to surface it. `needsApproval(name)` is informational; checking it is the caller's responsibility.
+`execute` returns JSON parse failures, Zod validation errors, and unapproved write attempts _as the tool's output_, so the model can self-correct on the next turn. For write tools whose `needsApproval(name)` is `true`, call `execute(call, { approved: true })` only after your approval UX approves that exact function call. `FilesError` from the underlying SDK is rethrown - you decide how to surface it.
 
 ## Agents SDK
 

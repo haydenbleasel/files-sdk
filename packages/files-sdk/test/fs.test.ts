@@ -551,6 +551,37 @@ describe("fs adapter", () => {
       });
     });
 
+    test("rejects symlinks that resolve outside root", async () => {
+      const root = await makeRoot();
+      const outside = await makeRoot();
+      const secretPath = path.join(outside, "secret.txt");
+      await fsp.writeFile(secretPath, "secret");
+      try {
+        await fsp.symlink(secretPath, path.join(root, "link.txt"));
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "EPERM" || error.code === "EACCES")
+        ) {
+          return;
+        }
+        throw error;
+      }
+      const files = new Files({ adapter: fsAdapter({ root }) });
+
+      await expect(files.download("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.head("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await expect(files.exists("link.txt")).rejects.toMatchObject({
+        code: "Provider",
+      });
+    });
+
     test("constructor prefix rejects dot segments before fs path resolution", async () => {
       const root = await makeRoot();
       await fsp.mkdir(path.join(root, "tenant-b"), { recursive: true });
@@ -744,7 +775,7 @@ describe("fs adapter", () => {
       ).rejects.toMatchObject({ code: "Provider" });
     });
 
-    test("returns PUT URL with expires query when urlBaseUrl is set", async () => {
+    test("throws even with urlBaseUrl because upload controls are not signed", async () => {
       const root = await makeRoot();
       const files = new Files({
         adapter: fsAdapter({
@@ -752,19 +783,13 @@ describe("fs adapter", () => {
           urlBaseUrl: "http://localhost:3000/upload",
         }),
       });
-      const signed = await files.signedUploadUrl("a.txt", {
-        contentType: "text/plain",
-        expiresIn: 60,
-        maxSize: 1024,
-      });
-      expect(signed.method).toBe("PUT");
-      expect(signed.url).toContain("http://localhost:3000/upload/a.txt?");
-      expect(signed.url).toContain("expires=");
-      expect(signed.url).toContain("content-type=text%2Fplain");
-      expect(signed.url).toContain("max-size=1024");
-      if (signed.method === "PUT") {
-        expect(signed.headers?.["Content-Type"]).toBe("text/plain");
-      }
+      await expect(
+        files.signedUploadUrl("a.txt", {
+          contentType: "text/plain",
+          expiresIn: 60,
+          maxSize: 1024,
+        })
+      ).rejects.toMatchObject({ code: "Provider" });
     });
 
     test("validates key path even without urlBaseUrl", async () => {

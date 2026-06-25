@@ -159,7 +159,7 @@ const defaultPost = (
   }
   if (parsed.suffix === "createUploadSession") {
     return Promise.resolve({
-      uploadUrl: `https://upload.example.com/session/${encodeURIComponent(parsed.virtualPath)}`,
+      uploadUrl: `https://sn3302.up.1drv.com/up/session/${encodeURIComponent(parsed.virtualPath)}`,
     });
   }
   if (parsed.suffix === "createLink") {
@@ -876,7 +876,7 @@ describe("onedrive adapter", () => {
     expect(out).toEqual({
       headers: { "Content-Type": "text/plain" },
       method: "PUT",
-      url: "https://upload.example.com/session/a.txt",
+      url: "https://sn3302.up.1drv.com/up/session/a.txt",
     });
     const sessionCall = dispatchPost.mock.calls.find(
       (c) =>
@@ -1100,7 +1100,7 @@ describe("onedrive resumable uploads", () => {
     const token: ResumableUploadSession = {
       itemPath: "doc.bin",
       provider: "onedrive",
-      uploadUrl: "https://upload.example.com/session/doc.bin",
+      uploadUrl: "https://sn3302.up.1drv.com/up/session/doc.bin",
     };
     const result = await files.upload("doc.bin", new Uint8Array(CHUNK + 5), {
       control: UploadControl.from(token),
@@ -1108,6 +1108,22 @@ describe("onedrive resumable uploads", () => {
     });
     expect(result.size).toBe(CHUNK + 5);
     expect(puts).toEqual([`bytes ${CHUNK}-${CHUNK + 4}/${CHUNK + 5}`]);
+  });
+
+  test("resuming an untrusted uploadUrl is rejected", async () => {
+    installFetch(() => driveItem());
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const token: ResumableUploadSession = {
+      itemPath: "doc.bin",
+      provider: "onedrive",
+      uploadUrl: "https://attacker.example/session/doc.bin",
+    };
+    await expect(
+      files.upload("doc.bin", new Uint8Array(CHUNK + 5), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+      })
+    ).rejects.toThrow(/not trusted/u);
   });
 
   test("abort discards the session via DELETE", async () => {
@@ -1182,7 +1198,7 @@ describe("onedrive resumable uploads", () => {
     const token: ResumableUploadSession = {
       itemPath: "x.bin",
       provider: "onedrive",
-      uploadUrl: "https://upload.example.com/session/x.bin",
+      uploadUrl: "https://sn3302.up.1drv.com/up/session/x.bin",
     };
     await expect(
       files.upload("x.bin", new Uint8Array(CHUNK + 5), {
@@ -1206,7 +1222,7 @@ describe("onedrive resumable uploads", () => {
     const token: ResumableUploadSession = {
       itemPath: "x.bin",
       provider: "onedrive",
-      uploadUrl: "https://upload.example.com/session/x.bin",
+      uploadUrl: "https://sn3302.up.1drv.com/up/session/x.bin",
     };
     await expect(
       files.upload("x.bin", new Uint8Array(CHUNK + 5), {
@@ -1234,7 +1250,7 @@ describe("onedrive resumable uploads", () => {
     const token: ResumableUploadSession = {
       itemPath: "other.bin",
       provider: "onedrive",
-      uploadUrl: "https://upload.example.com/session/other.bin",
+      uploadUrl: "https://sn3302.up.1drv.com/up/session/other.bin",
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })

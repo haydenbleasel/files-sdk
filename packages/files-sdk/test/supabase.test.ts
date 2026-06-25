@@ -1257,6 +1257,23 @@ describe("supabase resumable uploads (TUS)", () => {
     expect(patched).toEqual([String(SIX_MIB)]);
   });
 
+  test("resuming a cross-origin session uri is rejected", async () => {
+    installFetch(() => new Response(null, { status: 204 }));
+    const files = new Files({ adapter: makeAdapter() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "file",
+      provider: "supabase",
+      uri: "https://attacker.example/upload",
+    };
+    await expect(
+      files.upload("file", new Uint8Array(SIX_MIB + 10), {
+        control: UploadControl.from(token),
+        multipart: { partSize: SIX_MIB },
+      })
+    ).rejects.toThrow(/origin does not match/u);
+  });
+
   test("abort deletes the session", async () => {
     const methods: string[] = [];
     installFetch((_url, init) => {

@@ -29,6 +29,7 @@ import {
   runWithSignal,
   sleep,
 } from "./internal/retry.js";
+import { isSafeSearchRegex } from "./internal/search-regex.js";
 
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
 export { UploadControl } from "./internal/resumable.js";
@@ -1168,6 +1169,9 @@ const buildSearchMatcher = (
         error
       );
     }
+  }
+  if (!isSafeSearchRegex(regexp)) {
+    throw new FilesError("Provider", "search pattern is too complex");
   }
   return (key) => {
     regexp.lastIndex = 0;

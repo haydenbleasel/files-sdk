@@ -44,7 +44,9 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
 const createWriteStreamMock = mock(() => new PassThrough());
 const createResumableUploadMock = mock(() =>
-  Promise.resolve(["https://session.example/uri1"] as [string])
+  Promise.resolve([
+    "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
+  ] as [string])
 );
 
 const makeFile = (name: string, populateMetadata = false) => ({
@@ -109,7 +111,9 @@ beforeEach(() => {
   createWriteStreamMock.mockClear();
   createResumableUploadMock.mockClear();
   createResumableUploadMock.mockImplementation(() =>
-    Promise.resolve(["https://session.example/uri1"] as [string])
+    Promise.resolve([
+      "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
+    ] as [string])
   );
   bucketFileMock.mockClear();
   getFilesMock.mockClear();
@@ -955,7 +959,7 @@ describe("gcs resumable uploads", () => {
       bucket: "uploads",
       key: "big.bin",
       provider: "gcs",
-      uri: "https://session.example/uri1",
+      uri: "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
     };
     const result = await files.upload("big.bin", new Uint8Array(CHUNK + 12), {
       control: UploadControl.from(token),
@@ -974,7 +978,7 @@ describe("gcs resumable uploads", () => {
       bucket: "uploads",
       key: "done.bin",
       provider: "gcs",
-      uri: "https://session.example/uri1",
+      uri: "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
     };
     const result = await files.upload("done.bin", new Uint8Array(CHUNK + 12), {
       control: UploadControl.from(token),
@@ -1073,7 +1077,7 @@ describe("gcs resumable uploads", () => {
       bucket: "uploads",
       key: "x.bin",
       provider: "gcs",
-      uri: "https://session.example/uri1",
+      uri: "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
     };
     await expect(
       files.upload("x.bin", new Uint8Array(CHUNK + 12), {
@@ -1098,7 +1102,24 @@ describe("gcs resumable uploads", () => {
         control: UploadControl.from(token),
         retries: 0,
       })
-    ).rejects.toThrow(/no session/u);
+    ).rejects.toThrow(/absolute URL/u);
+  });
+
+  test("a session token with an untrusted uri is rejected", async () => {
+    installFetch(() => metaJson());
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const token: ResumableUploadSession = {
+      bucket: "uploads",
+      key: "x.bin",
+      provider: "gcs",
+      uri: "https://attacker.example/upload",
+    };
+    await expect(
+      files.upload("x.bin", new Uint8Array(12), {
+        control: UploadControl.from(token),
+        retries: 0,
+      })
+    ).rejects.toThrow(/not trusted/u);
   });
 
   test("resuming a session that already has every byte but no finalize throws", async () => {
@@ -1116,7 +1137,7 @@ describe("gcs resumable uploads", () => {
       bucket: "uploads",
       key: "x.bin",
       provider: "gcs",
-      uri: "https://session.example/uri1",
+      uri: "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
     };
     await expect(
       files.upload("x.bin", new Uint8Array(12), {

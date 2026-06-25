@@ -62,7 +62,7 @@ Pass a full `'attachment; filename="..."'` string to set a default filename, or 
 
 ### Expiry
 
-`maxExpiresIn` caps the lifetime of both `url()` and `signedUploadUrl()`. A request for a longer TTL is clamped down; a shorter one is left as-is. To **guarantee** the ceiling, a `url()` with no `expiresIn` is pinned to the cap rather than left to the adapter's own (unknown) default - so set `maxExpiresIn` to the real ceiling you want, not higher than it.
+`maxExpiresIn` caps the lifetime of both `url()` and `signedUploadUrl()`. A request for a longer TTL is clamped down; a shorter one is left as-is. To **guarantee** the ceiling, a call with no `expiresIn` is pinned to the cap rather than left to the adapter's own (unknown) default - so set `maxExpiresIn` to the real ceiling you want, not higher than it.
 
 ```ts lineNumbers
 signedUrlPolicy({ maxExpiresIn: 900 });
@@ -70,6 +70,7 @@ signedUrlPolicy({ maxExpiresIn: 900 });
 await files.url("a", { expiresIn: 86_400 }); // clamped to 900
 await files.url("a", { expiresIn: 60 }); // left at 60
 await files.url("a"); // pinned to 900
+await files.signedUploadUrl("a", {} as never); // pinned to 900 for runtime callers
 ```
 
 ### Upload size

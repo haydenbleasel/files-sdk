@@ -3,7 +3,7 @@ title: Share Dialog
 description: A dialog that mints a shareable download or upload link with a chosen expiry — driven by useFiles.
 ---
 
-Mints a shareable link for one key. Download links go through [`url()`](/api/url) — a signed URL where the adapter supports it, a permanent public one where it doesn't — while upload links go through [`signedUploadUrl()`](/api/signed-upload-url). Pick an expiry (clamped to the adapter's cap), choose inline vs. attachment, then copy.
+Mints a shareable link for one key. Download links go through [`url()`](/api/url) — a signed URL where the adapter supports it, a permanent public one where it doesn't — while upload links go through [`signedUploadUrl()`](/api/signed-upload-url). Pick an expiry (clamped to the adapter's cap), choose attachment by default, then copy. Inline download links require the gateway's `authorize` hook to return `{ disposition: "inline" }`.
 
 <ComponentPreview name="share-dialog/share-dialog-basic" />
 

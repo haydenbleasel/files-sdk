@@ -43,13 +43,15 @@ authorize(ctx: {
 return {
   keyPrefix?: string;     // prepended to every key/from/to; stripped from results
   maxExpiresIn?: number;  // ceiling on url()/download expiry (seconds)
-  disposition?: "attachment" | "inline" | string; // download Content-Disposition
+  disposition?: "attachment" | "inline" | string; // download/url Content-Disposition
   filterKeys?: (key: string) => boolean;           // narrow a bulk op
   maxResults?: number;    // clamp a list/search page
 };
 ```
 
 `keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` require **both** ends under the prefix, preventing exfiltration across scopes.
+
+`disposition` is the server-side override for both proxy downloads and URL minting. The gateway defaults untrusted URLs to `attachment`; return `"inline"` only when that operation is safe for the current user, key, and content type.
 
 ## Recipes
 
@@ -80,7 +82,7 @@ createFilesRouter({
 
 ## Origin & CSRF
 
-State-changing actions check the `Origin` header against `allowedOrigins` (an array or a predicate). It is off by default but strongly recommended:
+State-changing actions check the `Origin` header before mutating storage. When `allowedOrigins` is omitted, requests with an `Origin` header must match the route's own origin; use an array or predicate to allow additional origins:
 
 ```ts lineNumbers
 createFilesRouter({

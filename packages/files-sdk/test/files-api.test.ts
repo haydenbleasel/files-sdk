@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { createFilesRouter } from "../src/api/index.js";
 import type { Authorize, CreateFilesRouterOptions } from "../src/api/index.js";
-import type { Adapter } from "../src/index.js";
+import type { Adapter, SignUploadOptions } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
@@ -163,6 +163,50 @@ describe("createFilesRouter — read verbs", () => {
     expect((await readJson<{ url: string }>(url)).url).toContain("memory://");
   });
 
+  test("url forces safe content disposition unless authorize overrides", async () => {
+    const r = router({ adapter, operations: ["url"] });
+
+    const unsafe = await readJson<{ url: string }>(
+      await r.handle(
+        post({
+          key: "docs/a.txt",
+          op: "url",
+          responseContentDisposition: "inline",
+        })
+      )
+    );
+    expect(
+      new URL(unsafe.url).searchParams.get("response-content-disposition")
+    ).toBe("attachment");
+
+    const attachment = await readJson<{ url: string }>(
+      await r.handle(
+        post({
+          key: "docs/a.txt",
+          op: "url",
+          responseContentDisposition: 'attachment; filename="a.txt"',
+        })
+      )
+    );
+    expect(
+      new URL(attachment.url).searchParams.get("response-content-disposition")
+    ).toBe('attachment; filename="a.txt"');
+
+    const inline = router({
+      adapter,
+      authorize: () => ({ disposition: "inline" }),
+      operations: ["url"],
+    });
+    const serverAllowed = await readJson<{ url: string }>(
+      await inline.handle(post({ key: "docs/a.txt", op: "url" }))
+    );
+    expect(
+      new URL(serverAllowed.url).searchParams.get(
+        "response-content-disposition"
+      )
+    ).toBe("inline");
+  });
+
   test("list with prefix + delimiter, and search", async () => {
     const r = router({ adapter, operations: ["list", "search"] });
     const list = await r.handle(post({ delimiter: "/", op: "list" }));
@@ -207,10 +251,43 @@ describe("createFilesRouter — read verbs", () => {
     );
   });
 
+  test("regex search rejects unsafe patterns", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    const res = await r.handle(
+      post({ flags: "u", isRegex: true, op: "search", pattern: "(a+)+$" })
+    );
+    expect(res.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toContain("too complex");
+  });
+
   test("list limit is clamped", async () => {
     const r = router({ adapter, maxListLimit: 1, operations: ["list"] });
     const res = await r.handle(post({ limit: 999, op: "list" }));
     expect((await readJson<{ items: unknown[] }>(res)).items).toHaveLength(1);
+  });
+
+  test("list honors authorize maxResults", async () => {
+    const r = router({
+      adapter,
+      authorize: () => ({ maxResults: 1 }),
+      maxListLimit: 10,
+      operations: ["list"],
+    });
+    const capped = await r.handle(post({ limit: 999, op: "list" }));
+    expect((await readJson<{ items: unknown[] }>(capped)).items).toHaveLength(
+      1
+    );
+
+    const clientCapped = router({
+      adapter,
+      authorize: () => ({ maxResults: 10 }),
+      maxListLimit: 10,
+      operations: ["list"],
+    });
+    const res = await clientCapped.handle(post({ limit: 2, op: "list" }));
+    expect((await readJson<{ items: unknown[] }>(res)).items).toHaveLength(2);
   });
 });
 
@@ -426,12 +503,7 @@ describe("createFilesRouter — upload", () => {
     const { uploads } = (await presign.json()) as {
       uploads: { id: string; key: string; target: { url: string } }[];
     };
-    const token = new URL(first(uploads).target.url).searchParams.get(
-      "token"
-    ) as string;
-    await r.handle(
-      put(`op=proxy&token=${encodeURIComponent(token)}`, "0123456789")
-    );
+    await createFiles({ adapter }).upload(first(uploads).key, "0123456789");
     const complete = await r.handle(
       post({
         completions: [{ id: first(uploads).id, key: first(uploads).key }],
@@ -482,6 +554,49 @@ describe("createFilesRouter — upload", () => {
     expect(
       (await readJson<{ signed: { method: string } }>(res)).signed.method
     ).toBe("PUT");
+  });
+
+  test("signed-upload-url op clamps maxSize to maxUploadSize", async () => {
+    const seen: SignUploadOptions[] = [];
+    const adapter = {
+      ...signing(),
+      signedUploadUrl: (_key: string, opts: SignUploadOptions) => {
+        seen.push(opts);
+        return Promise.resolve({
+          headers: {},
+          method: "PUT" as const,
+          url: "https://fake.local/k.bin",
+        });
+      },
+    } satisfies Adapter;
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 5,
+      operations: ["signedUploadUrl"],
+    });
+
+    await r.handle(
+      post({ expiresIn: 60, key: "a.bin", op: "signed-upload-url" })
+    );
+    await r.handle(
+      post({
+        expiresIn: 60,
+        key: "b.bin",
+        maxSize: 999,
+        op: "signed-upload-url",
+      })
+    );
+    await r.handle(
+      post({
+        expiresIn: 60,
+        key: "c.bin",
+        maxSize: 3,
+        op: "signed-upload-url",
+      })
+    );
+
+    expect(seen.map((opts) => opts.maxSize)).toEqual([5, 5, 3]);
   });
 });
 

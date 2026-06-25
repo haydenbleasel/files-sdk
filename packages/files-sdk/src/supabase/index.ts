@@ -21,6 +21,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { sameOriginSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface SupabaseAdapterOptions {
@@ -715,7 +716,11 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
               "Resume token does not match this upload's key."
             );
           }
-          ({ uri } = session);
+          uri = sameOriginSessionUrl(
+            session.uri,
+            requireTus().endpoint,
+            "supabase resumable session URL"
+          );
           ({ contentType } = session);
         },
         async begin(meta): Promise<ResumableUploadSession> {
@@ -743,7 +748,11 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
               "supabase: resumable session response missing Location header"
             );
           }
-          uri = location;
+          uri = sameOriginSessionUrl(
+            location,
+            endpoint,
+            "supabase resumable session URL"
+          );
           return { contentType, key, provider: "supabase", uri };
         },
         complete(): Promise<UploadResult> {

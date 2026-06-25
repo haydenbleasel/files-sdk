@@ -4,16 +4,20 @@ import { memory } from "files-sdk/memory";
 import { createRouteHandler } from "files-sdk/next";
 import { softDelete } from "files-sdk/soft-delete";
 
+import { resolveFilesApiSecret } from "../files-secret";
+
 // A dedicated in-memory instance wrapped with `softDelete()`, so the Trash Bin
 // component docs render against real trashed objects. Separate from `/api/files`
 // because `softDelete()` and `versioning()` both graft a `restore` method —
 // keeping them apart lets each component's restore work correctly.
 const files = createFiles({ adapter: memory(), plugins: [softDelete()] });
+const DEMO_MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
 const router = createFilesRouter({
   authorize: () => ({ keyPrefix: "demo/" }),
   files,
-  secret: process.env.FILES_API_SECRET ?? "demo-secret-change-in-production",
+  maxUploadSize: DEMO_MAX_UPLOAD_SIZE,
+  secret: resolveFilesApiSecret(),
 });
 
 // A handful of files uploaded then soft-deleted, so they show up in the trash

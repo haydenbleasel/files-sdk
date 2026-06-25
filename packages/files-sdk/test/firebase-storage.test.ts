@@ -43,7 +43,9 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
 const createWriteStreamMock = mock(() => new PassThrough());
 const createResumableUploadMock = mock(() =>
-  Promise.resolve(["https://session.example/fb-uri"] as [string])
+  Promise.resolve([
+    "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=fb-uri",
+  ] as [string])
 );
 
 const makeFile = (name: string, populateMetadata = false) => ({
@@ -139,7 +141,9 @@ beforeEach(() => {
   createWriteStreamMock.mockClear();
   createResumableUploadMock.mockClear();
   createResumableUploadMock.mockImplementation(() =>
-    Promise.resolve(["https://session.example/fb-uri"] as [string])
+    Promise.resolve([
+      "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=fb-uri",
+    ] as [string])
   );
   bucketFileMock.mockClear();
   getFilesMock.mockClear();

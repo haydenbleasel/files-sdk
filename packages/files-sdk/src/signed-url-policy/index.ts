@@ -1,5 +1,6 @@
 import { handlers } from "../index.js";
 import type { FilesPlugin, SignUploadOptions, UrlOptions } from "../index.js";
+import { isAttachmentDisposition } from "../internal/content-disposition.js";
 
 /** The disposition forced onto `url()` when none is configured. */
 const DEFAULT_DISPOSITION = "attachment";
@@ -26,9 +27,10 @@ export interface SignedUrlPolicyOptions {
   /**
    * Cap the lifetime of both `url()` and `signedUploadUrl()` at this many
    * seconds. A request for a longer TTL is clamped down to the cap; a shorter
-   * one is left as-is. To guarantee the ceiling, a `url()` with **no**
-   * `expiresIn` is pinned to the cap rather than left to the adapter's own
-   * default — so set this to the real ceiling you want, not higher.
+   * one is left as-is. To guarantee the ceiling, a `url()` or
+   * `signedUploadUrl()` with **no** `expiresIn` is pinned to the cap rather
+   * than left to the adapter's own default — so set this to the real ceiling
+   * you want, not higher.
    *
    * Omit to leave expiry uncapped.
    */
@@ -47,13 +49,6 @@ export interface SignedUrlPolicyOptions {
    */
   maxUploadSize?: number;
 }
-
-/**
- * Whether a `Content-Disposition` is already a download (an `attachment`), so
- * the policy can preserve a caller-set `filename` instead of clobbering it.
- */
-const isAttachment = (value: string | undefined): boolean =>
-  value !== undefined && /^\s*attachment\b/iu.test(value);
 
 /**
  * Clamp `requested` to `cap`, treating an absent request as the cap itself so
@@ -75,8 +70,8 @@ const clampToCap = (requested: number | undefined, cap: number): number =>
  * A call that already asks for an `attachment` keeps its disposition (and any
  * `filename`); only a missing or `inline` disposition is overridden.
  *
- * On `signedUploadUrl()` it clamps `expiresIn` to the same cap and, when
- * {@link SignedUrlPolicyOptions.maxUploadSize} is set, guarantees a
+ * On `signedUploadUrl()` it clamps or injects `expiresIn` to the same cap and,
+ * when {@link SignedUrlPolicyOptions.maxUploadSize} is set, guarantees a
  * server-enforced `maxSize` is always present (injected when absent, clamped
  * when over). Because adapters that can't bind a size limit into a signed
  * upload already fail closed, a size policy turns an unenforceable provider
@@ -124,8 +119,8 @@ export const signedUrlPolicy = (
     wrap: handlers({
       signedUploadUrl: (op, next) => {
         const opts = { ...op.options } as SignUploadOptions;
-        if (maxExpiresIn !== undefined && typeof opts.expiresIn === "number") {
-          opts.expiresIn = Math.min(opts.expiresIn, maxExpiresIn);
+        if (maxExpiresIn !== undefined) {
+          opts.expiresIn = clampToCap(opts.expiresIn, maxExpiresIn);
         }
         if (maxUploadSize !== undefined) {
           opts.maxSize = clampToCap(opts.maxSize, maxUploadSize);
@@ -136,7 +131,7 @@ export const signedUrlPolicy = (
         const opts: UrlOptions = { ...op.options };
         if (
           disposition !== false &&
-          !isAttachment(opts.responseContentDisposition)
+          !isAttachmentDisposition(opts.responseContentDisposition)
         ) {
           opts.responseContentDisposition = disposition;
         }

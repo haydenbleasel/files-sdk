@@ -18,7 +18,6 @@ import type {
 } from "../index.js";
 import {
   collectStream,
-  DEFAULT_URL_EXPIRES_IN,
   existsByProbe,
   joinPublicUrl,
   rangedSize,
@@ -44,13 +43,9 @@ export interface FsAdapterOptions {
    */
   urlBaseUrl?: string;
   /**
-   * Default expiry, in seconds, threaded into the `?expires=...` query
-   * string of `signedUploadUrl()` for parity with the cloud adapters. A
-   * dev upload-handler can validate it; the fs adapter itself does not
-   * enforce expiry. Defaults to 3600 (1 hour). Per-call
-   * `signedUploadUrl(key, { expiresIn })` overrides.
-   *
-   * `url()` ignores this — `file://` and static-server URLs don't expire.
+   * Accepted for backward compatibility but ignored. `url()` returns a
+   * `file://` or static-server URL, and `signedUploadUrl()` fails closed
+   * because the fs adapter has no built-in upload signer or verifier.
    */
   defaultUrlExpiresIn?: number;
 }
@@ -216,6 +211,27 @@ const resolveKeyPath = (root: string, key: string): string => {
   return resolved;
 };
 
+const realpathUnderRoot = async (
+  root: string,
+  target: string,
+  key: string
+): Promise<string> => {
+  const [realRoot, realTarget] = await Promise.all([
+    fsp.realpath(root),
+    fsp.realpath(target),
+  ]);
+  const rootWithSep = realRoot.endsWith(path.sep)
+    ? realRoot
+    : realRoot + path.sep;
+  if (realTarget !== realRoot && !realTarget.startsWith(rootWithSep)) {
+    throw new FilesError(
+      "Provider",
+      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`
+    );
+  }
+  return realTarget;
+};
+
 const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
 
 const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
@@ -363,8 +379,6 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
   }
   const root = path.resolve(opts.root);
   const { urlBaseUrl } = opts;
-  const defaultUrlExpiresIn =
-    opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
   const storedFromSidecar = (
     key: string,
@@ -399,8 +413,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       const fromPath = resolveKeyPath(root, from);
       const toPath = resolveKeyPath(root, to);
       try {
+        const realFromPath = await realpathUnderRoot(root, fromPath, from);
         await ensureDirFor(toPath);
-        await fsp.copyFile(fromPath, toPath);
+        await fsp.copyFile(realFromPath, toPath);
         // If the source had a sidecar, copy it (refreshing
         // `lastModified`). If not, mirror that by removing any stale
         // destination sidecar from a prior upload at the same key —
@@ -427,7 +442,8 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     async download(key, downloadOpts) {
       const bodyPath = resolveKeyPath(root, key);
       try {
-        const stat = await fsp.stat(bodyPath);
+        const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
+        const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
         const baseMeta = {
           ...(sidecar?.etag && { etag: sidecar.etag }),
@@ -454,7 +470,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             {
               factory: () =>
                 Readable.toWeb(
-                  createReadStream(bodyPath, streamRange)
+                  createReadStream(realBodyPath, streamRange)
                 ) as unknown as ReadableStream<Uint8Array>,
               kind: "stream",
             }
@@ -465,7 +481,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           // and trimming — the point of a range request is to touch less data.
           const bytes = await collectStream(
             Readable.toWeb(
-              createReadStream(bodyPath, streamRange)
+              createReadStream(realBodyPath, streamRange)
             ) as unknown as ReadableStream<Uint8Array>
           );
           return createStoredFile(
@@ -473,7 +489,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             { data: bytes, kind: "buffer" }
           );
         }
-        const buf = await fsp.readFile(bodyPath);
+        const buf = await fsp.readFile(realBodyPath);
         const bytes = new Uint8Array(
           buf.buffer,
           buf.byteOffset,
@@ -492,16 +508,20 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       // permissive behavior. Tighten both together if file-only semantics
       // are ever needed.
       const bodyPath = resolveKeyPath(root, key);
-      return existsByProbe(() => fsp.stat(bodyPath), mapFsError);
+      return existsByProbe(
+        async () => fsp.stat(await realpathUnderRoot(root, bodyPath, key)),
+        mapFsError
+      );
     },
     async head(key) {
       const bodyPath = resolveKeyPath(root, key);
       try {
-        const stat = await fsp.stat(bodyPath);
+        const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
+        const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
         return storedFromSidecar(
           key,
-          bodyPath,
+          realBodyPath,
           sidecar,
           stat.size,
           stat.mtimeMs
@@ -704,34 +724,16 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     get root() {
       return root;
     },
-    signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+    signedUploadUrl(key, _signOpts): Promise<SignedUpload> {
       // Validate the key path even though we don't write — surfaces
-      // traversal attempts at sign time, not at the eventual PUT.
+      // traversal attempts before reporting unsupported capability.
       resolveKeyPath(root, key);
-      if (!urlBaseUrl) {
-        throw new FilesError(
+      return Promise.reject(
+        new FilesError(
           "Provider",
-          "fs: signedUploadUrl() requires `urlBaseUrl`. The fs adapter has no built-in upload server, so there's no endpoint to sign against. Stand up a dev handler (Next.js route, express + multer, etc.) that writes to the same `root`, then construct the adapter with `urlBaseUrl: 'http://localhost:3000/upload'` (or wherever your handler lives)."
-        );
-      }
-      const expiresIn = signOpts.expiresIn ?? defaultUrlExpiresIn;
-      const expiresAtMs = Date.now() + expiresIn * 1000;
-      const params = new URLSearchParams({
-        expires: String(Math.floor(expiresAtMs / 1000)),
-      });
-      if (signOpts.contentType) {
-        params.set("content-type", signOpts.contentType);
-      }
-      if (signOpts.maxSize !== undefined) {
-        params.set("max-size", String(signOpts.maxSize));
-      }
-      return Promise.resolve({
-        headers: {
-          ...(signOpts.contentType && { "Content-Type": signOpts.contentType }),
-        },
-        method: "PUT",
-        url: `${joinPublicUrl(urlBaseUrl, key)}?${params.toString()}`,
-      });
+          "fs: signedUploadUrl() is not supported. The fs adapter has no built-in upload server, signer, or verifier, so it cannot bind expiresIn, contentType, maxSize, or minSize into an upload capability. Upload through files.upload() or through an application route that enforces those controls server-side."
+        )
+      );
     },
     // `url()` returns a `file://` or static-server URL — never a signed,
     // time-limited one (there's no signature to bind an expiry into).

@@ -400,6 +400,44 @@ describe("zip plugin — reading archives", () => {
     expect(await files.exists("dir/drop.txt")).toBe(false);
   });
 
+  test("unzip enforces the configured entry count limit", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      { data: TEXT.encode("a"), name: "a.txt" },
+      { data: TEXT.encode("b"), name: "b.txt" },
+    ]);
+    await files.upload("in.zip", crafted);
+
+    await expect(files.unzip("in.zip", { maxEntries: 1 })).rejects.toThrow(
+      "entry limit"
+    );
+  });
+
+  test("unzip enforces the configured per-entry size limit", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      { data: TEXT.encode("abc"), name: "a.txt", size: 4 },
+    ]);
+    await files.upload("in.zip", crafted);
+
+    await expect(files.unzip("in.zip", { maxEntrySize: 3 })).rejects.toThrow(
+      "size limit"
+    );
+  });
+
+  test("unzip enforces the configured total size limit", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      { data: TEXT.encode("abc"), name: "a.txt" },
+      { data: TEXT.encode("def"), name: "b.txt" },
+    ]);
+    await files.upload("in.zip", crafted);
+
+    await expect(files.unzip("in.zip", { maxTotalSize: 5 })).rejects.toThrow(
+      "total size limit"
+    );
+  });
+
   test("zip-slip entry names fail closed", async () => {
     const files = withZip();
     const crafted = craftZip([

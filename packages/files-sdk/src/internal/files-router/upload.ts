@@ -63,6 +63,37 @@ const proxyTarget = (
   url: cfg.proxyUrl(token),
 });
 
+const limitBody = (
+  body: ReadableStream<Uint8Array>,
+  maxSize: number | undefined,
+  message: string
+): {
+  body: ReadableStream<Uint8Array>;
+  getError: () => RouterError | undefined;
+} => {
+  if (maxSize === undefined) {
+    return { body, getError: () => void 0 };
+  }
+  let total = 0;
+  let limitError: RouterError | undefined;
+  return {
+    body: body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          total += chunk.byteLength;
+          if (total > maxSize) {
+            limitError = new RouterError("Validation", message, "size");
+            controller.error(limitError);
+            return;
+          }
+          controller.enqueue(chunk);
+        },
+      })
+    ),
+    getError: () => limitError,
+  };
+};
+
 export const handlePresign = async (
   cfg: UploadConfig,
   files: ClientFileInfo[],
@@ -188,7 +219,16 @@ export const handleProxyUpload = async (
   ) {
     throw new RouterError("Validation", "upload exceeds maxSize", "size");
   }
-  await cfg.files.upload(key, body, contentType ? { contentType } : {});
+  const limited = limitBody(body, maxSize, "upload exceeds maxSize");
+  try {
+    await cfg.files.upload(
+      key,
+      limited.body,
+      contentType ? { contentType } : {}
+    );
+  } catch (error) {
+    throw limited.getError() ?? FilesError.wrap(error);
+  }
   return { body: { ok: true }, kind: "json", status: 200 };
 };
 
@@ -210,11 +250,16 @@ export const handleExplicitUpload = async (
   ) {
     throw new RouterError("Validation", "upload exceeds maxUploadSize", "size");
   }
-  const result = await cfg.files.upload(
-    storageKey,
+  const limited = limitBody(
     body,
-    contentType ? { contentType } : {}
+    cfg.maxUploadSize,
+    "upload exceeds maxUploadSize"
   );
+  const result = await cfg.files
+    .upload(storageKey, limited.body, contentType ? { contentType } : {})
+    .catch((error: unknown) => {
+      throw limited.getError() ?? FilesError.wrap(error);
+    });
   return {
     body: {
       file: {
