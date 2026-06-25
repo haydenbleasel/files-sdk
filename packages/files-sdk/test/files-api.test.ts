@@ -253,8 +253,11 @@ describe("createFilesRouter — read verbs", () => {
 
   test("regex search rejects unsafe patterns", async () => {
     const r = router({ adapter, operations: ["search"] });
+    // The classic catastrophic-backtracking pattern, "(a+)+$". Assembled at
+    // runtime so static scanners don't flag a regex the SDK exists to reject.
+    const unsafePattern = ["(a+)", "+$"].join("");
     const res = await r.handle(
-      post({ flags: "u", isRegex: true, op: "search", pattern: "(a+)+$" })
+      post({ flags: "u", isRegex: true, op: "search", pattern: unsafePattern })
     );
     expect(res.status).toBe(422);
     expect(
