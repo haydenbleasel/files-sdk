@@ -131,6 +131,13 @@ jobs:
   build-web:
     runs-on: ubuntu-latest
 
+    env:
+      # The demo routes fail closed without a secret: page-data collection
+      # evaluates the route modules at build time, which throws when the secret
+      # is missing. The validation build never uses it for signing, and fork PRs
+      # can't read repository secrets, so fall back to a placeholder.
+      FILES_API_SECRET: "test"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
