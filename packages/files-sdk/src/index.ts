@@ -1153,10 +1153,12 @@ const buildSearchMatcher = (
   // A RegExp instance, or a string compiled as a regex.
   let regexp: RegExp;
   if (pattern instanceof RegExp) {
-    regexp =
+    regexp = new RegExp(
+      pattern.source,
       caseInsensitive && !pattern.flags.includes("i")
-        ? new RegExp(pattern.source, `${pattern.flags}i`)
-        : pattern;
+        ? `${pattern.flags}i`
+        : pattern.flags
+    );
   } else {
     try {
       regexp = new RegExp(pattern, caseInsensitive ? "iu" : "u");

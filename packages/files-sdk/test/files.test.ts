@@ -1785,6 +1785,22 @@ describe("Files.search", () => {
     expect(keys.toSorted()).toEqual(["a.txt", "c.txt"]);
   });
 
+  test("stateful RegExp instances match every key independently", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await searchSeed(files, ["a.txt", "b.txt", "c.txt"]);
+
+    expect(await searchCollect(files.search(/\.txt$/gu))).toEqual([
+      "a.txt",
+      "b.txt",
+      "c.txt",
+    ]);
+    expect(await searchCollect(files.search(/.*\.txt$/uy))).toEqual([
+      "a.txt",
+      "b.txt",
+      "c.txt",
+    ]);
+  });
+
   test("caseInsensitive recompiles a RegExp that lacks the i flag", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await searchSeed(files, ["Photo.JPG", "note.txt"]);
