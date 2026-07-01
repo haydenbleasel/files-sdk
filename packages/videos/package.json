@@ -20,7 +20,7 @@
     "@remotion/tailwind-v4": "4.0.471",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "remotion": "4.0.471",
+    "remotion": "4.0.484",
     "tailwindcss": "4.3.0"
   },
   "devDependencies": {
