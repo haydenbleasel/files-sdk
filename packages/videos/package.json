@@ -24,7 +24,7 @@
     "tailwindcss": "4.3.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.16",
+    "@types/react": "19.2.17",
     "@types/web": "0.0.350",
     "typescript": "6.0.3"
   }
