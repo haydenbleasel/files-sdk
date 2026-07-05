@@ -1,7 +1,6 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
-
+import { demoFiles } from "@/lib/demo-files";
 import {
   Dropzone,
   DropzoneContent,
@@ -9,7 +8,7 @@ import {
 } from "@/registry/files-sdk/dropzone/dropzone";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
 
   return (
     <Dropzone accept="image/*" files={files} prefix="demo/">

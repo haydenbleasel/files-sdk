@@ -1,11 +1,10 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
-
+import { demoFiles } from "@/lib/demo-files";
 import { CapabilitiesBadges } from "@/registry/files-sdk/capabilities-badges/capabilities-badges";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
 
   return <CapabilitiesBadges files={files} />;
 };

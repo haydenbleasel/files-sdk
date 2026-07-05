@@ -1,11 +1,10 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
-
+import { demoFiles } from "@/lib/demo-files";
 import { FileActions } from "@/registry/files-sdk/file-actions/file-actions";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
 
   return (
     <div className="flex items-center justify-between rounded-lg border border-border p-3">

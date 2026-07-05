@@ -1,12 +1,12 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
 import { useState } from "react";
 
+import { demoFiles } from "@/lib/demo-files";
 import { FileBrowser } from "@/registry/files-sdk/file-browser/file-browser";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
   const [selected, setSelected] = useState<string>();
 
   return (

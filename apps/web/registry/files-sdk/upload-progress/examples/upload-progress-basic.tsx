@@ -1,15 +1,15 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
 import { UploadIcon } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { demoFiles } from "@/lib/demo-files";
 import { UploadProgress } from "@/registry/files-sdk/upload-progress/upload-progress";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Read `files` via a ref so this one-shot effect never re-runs on store
