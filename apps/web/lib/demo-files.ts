@@ -44,12 +44,6 @@ const SAMPLE: { key: string; size: number; type: string; age: number }[] = [
     type: "application/pdf",
   },
   {
-    age: 8,
-    key: "documents/reports/annual-2026.pdf",
-    size: 3_120_000,
-    type: "application/pdf",
-  },
-  {
     age: 3,
     key: "documents/contracts/invoice-2026-06.pdf",
     size: 184_320,

@@ -7,8 +7,8 @@ const Example = () => {
   const files = demoFiles;
 
   return (
-    <div className="flex items-center justify-between rounded-lg border border-border p-3">
-      <span className="font-medium text-sm">photos/sunset.jpg</span>
+    <div className="flex w-full max-w-sm items-center justify-between gap-4 rounded-lg border border-border p-3">
+      <span className="truncate font-medium text-sm">photos/sunset.jpg</span>
       <FileActions files={files} fileKey="photos/sunset.jpg" />
     </div>
   );
