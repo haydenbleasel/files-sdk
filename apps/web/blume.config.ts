@@ -49,6 +49,8 @@ export default defineConfig({
   redirects: [
     { from: "/docs/adapters", status: 302, to: "/docs/adapters/s3" },
     { from: "/docs/ai", status: 302, to: "/docs/ai/openai" },
+    // Overview is now the docs index (/docs).
+    { from: "/docs/overview", status: 301, to: "/docs" },
   ],
 
   theme: {

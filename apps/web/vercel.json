@@ -31,8 +31,9 @@
       "destination": "/docs/ui/:path*",
       "permanent": true
     },
+    { "source": "/overview", "destination": "/docs", "permanent": true },
     {
-      "source": "/:page(overview|installation|usage|bulk|multipart|resumable|prefixes|retries|timeouts|cancellations|readonly|receipts|escape-hatch|capabilities|provider-gaps|faq|troubleshooting|providers)",
+      "source": "/:page(installation|usage|bulk|multipart|resumable|prefixes|retries|timeouts|cancellations|readonly|receipts|escape-hatch|capabilities|provider-gaps|faq|troubleshooting|providers)",
       "destination": "/docs/:page",
       "permanent": true
     }
