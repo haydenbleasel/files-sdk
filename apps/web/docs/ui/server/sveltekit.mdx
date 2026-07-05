@@ -1,0 +1,32 @@
+---
+title: SvelteKit
+description: Mount the Files gateway in a SvelteKit +server.ts endpoint. createRouteHandler returns { GET, POST, PUT } over the Web Request - runs on the Node and edge adapters.
+---
+
+`files-sdk/sveltekit` mounts a [`createFilesRouter`](/ui/server/gateway) in a SvelteKit `+server.ts` endpoint. SvelteKit hands each route a Web `Request` on `event.request` and wants named per-method exports, so — like [`files-sdk/next`](/ui/server/next) — `createRouteHandler` returns `{ GET, POST, PUT }`: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on the **Node and edge adapters alike**.
+
+```ts title="src/routes/api/files/+server.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/sveltekit";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+:::note
+This is the **server** binding — distinct from the
+[`files-sdk/svelte`](/ui/client/svelte) client store that drives the upload
+UI. One `+server.ts` backs every client binding; the gateway dispatches on the
+method internally (GET = download, POST = the JSON verbs, PUT = upload).
+:::
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.

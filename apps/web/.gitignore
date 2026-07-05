@@ -13,12 +13,13 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
+# blume (managed Astro build)
+/.blume/
+/.astro/
+/dist/
 
-# production
-/build
+# generated shadcn registry (rebuilt by scripts/build-registry.ts)
+/public/r/
 
 # misc
 .DS_Store
@@ -38,4 +39,3 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts

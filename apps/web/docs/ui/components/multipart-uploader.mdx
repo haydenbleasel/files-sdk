@@ -1,0 +1,35 @@
+---
+title: Multipart Uploader
+description: A multi-file queue uploader with bounded concurrency, live per-file progress and cancel — large files chunk into a multipart upload automatically.
+---
+
+A heavier-duty uploader for many or large files. Queue files, upload them with bounded concurrency, watch each one's progress, and cancel everything in flight. Files large enough to warrant it are chunked into a [multipart upload](/multipart) by the gateway transparently — the browser just streams the bytes.
+
+<Component path="multipart-uploader/examples/multipart-basic" />
+
+## Installation
+
+<ComponentInstall name="multipart-uploader" />
+
+## Usage
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+
+import { MultipartUploader } from "@/components/files-sdk/multipart-uploader";
+
+export function BulkUploader() {
+  const files = useFiles({ endpoint: "/api/files" });
+
+  return <MultipartUploader files={files} prefix="uploads/" concurrency={3} />;
+}
+```
+
+Cancel calls `files.abort()`, aborting every in-flight request the hook started; the queue re-arms automatically on the next upload.
+
+## Props
+
+<AutoTypeTable
+  path="registry/files-sdk/multipart-uploader/multipart-uploader.tsx"
+  name="MultipartUploaderProps"
+/>

@@ -1,0 +1,37 @@
+---
+title: Bun
+description: Serve the Files gateway from Bun.serve. The gateway's handle(req) is already a Web fetch handler, so it drops straight into a route - no adapter needed.
+---
+
+`Bun.serve` hands your handler a Web `Request` and sends back whatever `Response` you return — which is exactly the shape the gateway speaks (`handle(req: Request): Promise<Response>`). So there is no `files-sdk/bun` adapter to import: drop [`router.handle`](/ui/server/gateway) straight into a route.
+
+```ts title="server.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+Bun.serve({
+  port: 3000,
+  routes: {
+    // A bare handler runs for every method; the gateway dispatches internally
+    // (GET = download, POST = the JSON verbs, PUT = upload).
+    "/api/files": (req) => router.handle(req),
+  },
+});
+```
+
+:::note
+Want routing and middleware on Bun? [Hono](/ui/server/hono) and
+[Elysia](/ui/server/elysia) both run on Bun and have their own bindings — the
+gateway is the same underneath.
+:::
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.

@@ -1,0 +1,60 @@
+---
+title: Cloudinary
+description: "Cloudinary asset CDN via the official Node SDK. Defaults to resource_type: raw for arbitrary-bytes storage; switch to image/video for transforms."
+---
+
+## Installation
+
+`cloudinary` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk cloudinary
+```
+
+## Usage
+
+Cloudinary asset CDN via the official `cloudinary` Node SDK. Defaults to `resource_type: "raw"` for arbitrary-bytes storage so keys round-trip cleanly through the adapter; switch to `"image"` or `"video"` if you want Cloudinary's transformation features. Falls back to `CLOUDINARY_URL` or individual env vars when no explicit credentials are passed.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { cloudinary } from "files-sdk/cloudinary";
+
+const files = new Files({
+  adapter: cloudinary({
+    // Auto-loads from CLOUDINARY_URL (cloudinary://key:secret@cloud)
+    // or CLOUDINARY_CLOUD_NAME + CLOUDINARY_API_KEY + CLOUDINARY_API_SECRET.
+    //
+    // Defaults to resource_type: "raw" - closest to S3-style
+    // arbitrary-bytes storage. Switch to "image" / "video" if the
+    // bucket holds those types and you want transforms.
+    resourceType: "raw",
+    type: "upload",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/cloudinary/index.ts"
+  name="CloudinaryAdapterOptions"
+/>
+
+## Limitations
+
+Cloudinary's SDK keeps configuration as module-level global state, so mounting multiple `cloudinary()` adapters in the same process with different credentials will see only the last config win - use the `client` escape hatch with separately configured SDK instances if you need that.
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------------- | :----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Bodies are buffered into memory and handed to `upload_stream` - Cloudinary's SDK has no streaming form. User `metadata` and `cacheControl` throw - Cloudinary has no per-asset HTTP cache header and no arbitrary-metadata field on upload; drop to `raw` for `context`. Uploads are scoped to the adapter's `resourceType`/`type` and overwrite (`invalidate: true`).                      |
+| `download`        |   ⚠️   | No streaming primitive - the adapter fetches the delivery URL with `fetch()` to read bytes, so streamed downloads still buffer the body in memory. Metadata comes from a parallel `api.resource` call.                                                                                                                                                                                      |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                             |
+| `list`            |   ⚠️   | Page size clamped to 500 (Cloudinary Admin API ceiling). Resources are scoped by `resource_type` and `type` at adapter construction, so mixed-type buckets need separate adapters. Pagination uses Cloudinary's opaque `next_cursor`.                                                                                                                                                       |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                                                                                                  |
+| `head`            |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                             |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                             |
+| `copy`            |   ⚠️   | Re-upload by URL - Cloudinary has no native copy and `rename` is move-only. The adapter fetches the source delivery URL and ingests it as a new asset under `to`. Produces a new `asset_id`/`etag`, not a byte-identical reference. Costs an egress + an ingest; not atomic.                                                                                                                |
+| `url`             |   ⚠️   | Public delivery URLs by default (`type: 'upload'`). For `private`/`authenticated` types, mints a signed delivery URL via `private_download_url` (requires `apiSecret` and the asset's stored format - costs a HEAD round-trip per call). `responseContentDisposition` always throws - Cloudinary has no per-request Content-Disposition override (drop to `raw` for the `attachment` flag). |
+| `signedUploadUrl` |   ⚠️   | Form-POST shape with `fields` (`method: 'POST'`), not a single presigned PUT URL - signs Cloudinary's `api_sign_request` payload. Requires `apiSecret`. `maxSize` and `minSize` aren't enforced server-side - use an upload preset with `max_file_size` if you need a cap. `expiresIn` is informational - Cloudinary signatures are fixed at 1h.                                            |

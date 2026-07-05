@@ -1,0 +1,52 @@
+---
+title: Akamai Cloud Object Storage
+description: Akamai Cloud Object Storage (formerly Linode) via the S3-compatible API. Endpoint derived from the region/cluster code.
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { akamai } from "files-sdk/akamai";
+
+const files = new Files({
+  adapter: akamai({
+    bucket: "uploads",
+    region: "us-iad-1", // or "nl-ams-1", "fr-par-1", "us-east-1", ...
+    // accessKeyId / secretAccessKey auto-loaded from
+    // AKAMAI_ACCESS_KEY_ID / AKAMAI_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+Akamai Cloud Object Storage (formerly Linode Object Storage) via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region/cluster code (`us-iad-1`, `nl-ams-1`, `fr-par-1`, ...), virtual-hosted-style addressing, errors relabelled. The endpoint domain `linodeobjects.com` is unchanged from the Linode era - only the product branding moved to Akamai. Auto-loads from `AKAMAI_ACCESS_KEY_ID` and `AKAMAI_SECRET_ACCESS_KEY`. Generate access keys in the Akamai Cloud Manager under Object Storage -> Access Keys.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/akamai/index.ts"
+  name="AkamaiAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

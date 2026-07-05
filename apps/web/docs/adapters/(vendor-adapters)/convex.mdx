@@ -1,0 +1,73 @@
+---
+title: Convex
+description: Convex file storage via the function context (ctx.storage). Runs inside Convex actions/mutations/queries; the Convex-assigned storage id is the key.
+---
+
+## Installation
+
+`convex` is already in your project if you're using Convex. It's declared as an optional peer dependency so the adapter's types resolve.
+
+```package-install
+files-sdk convex
+```
+
+## Usage
+
+Convex file storage is only reachable from inside a Convex function — there's no external REST API. So this adapter wraps the function context (`ctx`) and is constructed **per request**, inside your `action`, `mutation`, or `query` handlers.
+
+Convex assigns an opaque storage id (`Id<"_storage">`) on upload — you don't choose it. The adapter therefore treats that id as the unified `key`: `upload()` ignores the key you pass and returns the assigned id as `UploadResult.key`, and `download`/`head`/`delete`/`url` take that id as the key.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { convex } from "files-sdk/convex";
+import { action, query } from "./_generated/server";
+import { v } from "convex/values";
+
+// Upload + download need an *action* (Convex exposes ctx.storage.store /
+// ctx.storage.get only there). The returned key is the Convex storage id —
+// persist it in your own table to reference the file later.
+export const saveFile = action({
+  args: { bytes: v.bytes() },
+  handler: async (ctx, { bytes }) => {
+    const files = new Files({ adapter: convex({ ctx }) });
+    const { key, size } = await files.upload("ignored", new Uint8Array(bytes));
+    return { size, storageId: key };
+  },
+});
+
+// list() needs a *query* or *mutation* (it reads the _storage system table
+// via ctx.db). url() works in any context.
+export const listFiles = query({
+  handler: async (ctx) => {
+    const files = new Files({ adapter: convex({ ctx }) });
+    const { items } = await files.list({ limit: 100 });
+    return items.map((f) => ({ key: f.key, size: f.size, type: f.type }));
+  },
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/convex/index.ts"
+  name="ConvexAdapterOptions"
+/>
+
+## Storage layout
+
+Files live in Convex storage, tracked by the built-in `_storage` system table. Each file's `key` is its `Id<"_storage">`. Metadata maps from that table: `size` → `size`, `contentType` → `type`, `sha256` → `etag`, `_creationTime` → `lastModified`. Convex has no user-metadata field, so `metadata` is always `undefined`. Don't set a `prefix` on the `Files` instance with this adapter - it would be prepended to the storage id and corrupt it.
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------- | :----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Requires an action context — `ctx.storage.store` exists only in actions, so calling `upload` from a mutation or query throws. The caller-supplied key is ignored: Convex assigns the storage id, which is returned as the key. Stream bodies are buffered up-front since `store` takes a Blob. User `metadata` and `cacheControl` throw — the `_storage` table is fixed to contentType/sha256/size. Resumable uploads (`control`) are not supported — `ctx.storage.store` is a single call with no resumable session. |
+| `download`        |   ⚠️   | Requires an action context — `ctx.storage.get` exists only in actions, so calling `download` from a mutation or query throws. The body is buffered into memory: Convex returns a Blob, not a stream.                                                                                                                                                                                                                                                                                                                  |
+| `delete`          |   ⚠️   | Requires a writer context (mutation or action); throws in queries. Idempotent — deleting a missing id is a no-op.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `list`            |   ⚠️   | Requires a query or mutation context — it reads the `_storage` system table via `ctx.db`, which actions don't have. `prefix` filters by literal storage-id prefix and is rarely meaningful for opaque ids. Pagination uses Convex's `paginate` cursor. List items expose lazy bodies, so reading them needs an action context.                                                                                                                                                                                        |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                                                                                                                                                                                                                            |
+| `head`            |   ⚠️   | Reads metadata from the `_storage` system table (`ctx.db.system`) in queries/mutations, or the deprecated `ctx.storage.getMetadata` in actions. The returned body is lazy — reading it calls `ctx.storage.get`, which requires an action context.                                                                                                                                                                                                                                                                     |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `copy`            |   ❌   | Throws — Convex assigns immutable storage ids and can't copy to a caller-chosen key. Download the source and `upload()` a new file, then track the new id.                                                                                                                                                                                                                                                                                                                                                            |
+| `url`             |   ⚠️   | Returns Convex's permanent serving URL (`getUrl`) — it stays valid while the file exists, so `expiresIn` is ignored. `responseContentDisposition` throws: Convex serving URLs have no Content-Disposition override; serve untrusted content through your own HTTP action.                                                                                                                                                                                                                                             |
+| `signedUploadUrl` |   ❌   | Throws — Convex `generateUploadUrl()` cannot bind the caller's SDK key, expiry, size bounds, or content type into the issued upload capability. Upload through a Convex action with `files.upload()` instead, then track the returned storage id.                                                                                                                                                                                                                                                                     |

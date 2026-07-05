@@ -1,0 +1,52 @@
+---
+title: Vultr Object Storage
+description: Vultr Object Storage via the S3-compatible API. Endpoint derived from the region code (ewr, sjc, ams, blr, ...).
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { vultr } from "files-sdk/vultr";
+
+const files = new Files({
+  adapter: vultr({
+    bucket: "uploads",
+    region: "ewr", // or "sjc", "ams", "blr", "del", "sgp", "lux"
+    // accessKeyId / secretAccessKey auto-loaded from
+    // VULTR_ACCESS_KEY_ID / VULTR_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+Vultr Object Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`ewr`, `sjc`, `ams`, `blr`, `del`, `sgp`, `lux`), virtual-hosted-style addressing, errors relabelled. Auto-loads from `VULTR_ACCESS_KEY_ID` and `VULTR_SECRET_ACCESS_KEY`. Generate access keys in the Vultr customer portal under Object Storage -> your subscription -> Overview.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/vultr/index.ts"
+  name="VultrAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

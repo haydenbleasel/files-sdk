@@ -2,7 +2,6 @@
 
 import { ArrowRight } from "lucide-react";
 import { motion } from "motion/react";
-import Link from "next/link";
 
 import { InstallCommand } from "@/components/install-command";
 import { Button } from "@/components/ui/button";
@@ -73,10 +72,10 @@ export const Hero = ({ adapterCount, latestVersion }: HeroProps) => (
       >
         <InstallCommand />
         <Button asChild size="lg" variant="ghost">
-          <Link href="/api">
+          <a href="/api">
             Read the docs
             <ArrowRight data-icon="inline-end" />
-          </Link>
+          </a>
         </Button>
       </motion.div>
     </div>
@@ -99,12 +98,12 @@ export const Hero = ({ adapterCount, latestVersion }: HeroProps) => (
       </div>
       <p className="mt-8 text-center font-mono text-xs text-muted-foreground">
         and {adapterCount - iconList.length} more —{" "}
-        <Link
+        <a
           href="/adapters"
           className="text-foreground underline-offset-4 hover:underline"
         >
           see every adapter →
-        </Link>
+        </a>
       </p>
     </motion.div>
   </section>

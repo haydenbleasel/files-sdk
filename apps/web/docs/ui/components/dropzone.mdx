@@ -1,0 +1,48 @@
+---
+title: Dropzone
+description: A drag-and-drop (or click) upload area wired to useFiles, with composable empty and uploaded states.
+---
+
+A compound dropzone that uploads through a [`useFiles`](/ui/client/react) instance. Drag files in or click to open the picker; bytes stream straight to your [gateway](/ui/server/gateway).
+
+<Component path="dropzone/examples/dropzone-basic" />
+
+## Installation
+
+<ComponentInstall name="dropzone" />
+
+## Usage
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+
+import {
+  Dropzone,
+  DropzoneContent,
+  DropzoneEmptyState,
+} from "@/components/files-sdk/dropzone";
+
+export function Uploader() {
+  const files = useFiles({ endpoint: "/api/files" });
+
+  return (
+    <Dropzone accept="image/*" files={files} prefix="docs/" maxFiles={5}>
+      <DropzoneEmptyState />
+      <DropzoneContent />
+    </Dropzone>
+  );
+}
+```
+
+`DropzoneEmptyState` renders the prompt until something uploads; `DropzoneContent` renders the result afterwards. Pass your own children to either to override the default look.
+
+## Props
+
+`<Dropzone>`
+
+<AutoTypeTable
+  path="registry/files-sdk/dropzone/dropzone.tsx"
+  name="DropzoneProps"
+/>
+
+`<DropzoneEmptyState>` and `<DropzoneContent>` each accept `className` and `children` to override the default look.

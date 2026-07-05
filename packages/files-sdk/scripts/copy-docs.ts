@@ -6,7 +6,7 @@ import path from "node:path";
 // version-matched docs from node_modules/files-sdk/docs. Source of truth is the
 // web app's content; this mirrors it into the package root at build time.
 const here = import.meta.dirname;
-const src = path.resolve(here, "../../../apps/web/content/docs");
+const src = path.resolve(here, "../../../apps/web/docs");
 const dest = path.resolve(here, "../docs");
 
 try {

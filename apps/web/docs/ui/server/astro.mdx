@@ -1,0 +1,35 @@
+---
+title: Astro
+description: Mount the Files gateway in an Astro endpoint. createRouteHandler returns { GET, POST, PUT } over the Web Request Astro hands each route - runs on Node and edge adapters.
+---
+
+`files-sdk/astro` mounts a [`createFilesRouter`](/ui/server/gateway) in an Astro endpoint. Astro hands each route a Web `Request` on `context.request` and wants named per-method exports, so — like [`files-sdk/next`](/ui/server/next) — `createRouteHandler` returns `{ GET, POST, PUT }`: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **Node and edge adapters alike**.
+
+```ts title="src/pages/api/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/astro";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+export const prerender = false;
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+:::warning
+The endpoint must run per-request, not at build time. Set `export const
+prerender = false` on the route (or `output: "server"` in `astro.config.mjs`)
+and install an [SSR
+adapter](https://docs.astro.build/en/guides/on-demand-rendering/)
+(`@astrojs/node`, `@astrojs/vercel`, …) — otherwise Astro tries to prerender
+it and the upload/download paths never reach a server.
+:::
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.

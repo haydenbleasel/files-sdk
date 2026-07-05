@@ -1,0 +1,42 @@
+---
+title: Koa
+description: Mount the Files gateway on a Koa app. Sets ctx.respond = false and bridges ctx.req/ctx.res to the Web Request/Response the gateway speaks.
+---
+
+`files-sdk/koa` mounts a [`createFilesRouter`](/ui/server/gateway) on a Koa app. Koa wraps the Node `IncomingMessage`/`ServerResponse` as `ctx.req`/`ctx.res`, so the binding bridges them to the Web `Request`/`Response` the gateway speaks (the same `Readable.toWeb`/`fromWeb` seam as the Express adapter). Setting `ctx.respond = false` steps Koa back so the gateway writes the raw response itself, and a client disconnect is wired through to abort the upstream read on a proxied download.
+
+```ts title="server.ts" lineNumbers
+import Koa from "koa";
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/koa";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+const app = new Koa();
+const files = createRouteHandler(router);
+
+// Gate the route before any body parser (see below). Pair with @koa/router if
+// you prefer: router.all("/api/files", (ctx) => files(ctx)).
+app.use((ctx, next) => (ctx.path === "/api/files" ? files(ctx) : next()));
+
+app.listen(3000);
+```
+
+:::warning
+A body parser (`koa-bodyparser`, `@koa/bodyparser`, …) consumes the request
+stream. The gateway reads the raw body itself — both for the JSON verbs and
+for the proxy/explicit-key `PUT` upload — so a parser that runs first leaves
+it empty. Mount the gateway **before** any global body parser, or scope the
+parser so it skips this route. The binding sets `ctx.respond = false` and
+writes `ctx.res` directly, so don't read `ctx.body` after it.
+:::
+
+See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.

@@ -1,0 +1,129 @@
+---
+title: cache
+description: An LRU/KV cache in front of head(), url(), and small download()s. Repeat reads of an unchanged key are served from memory; writes through the instance invalidate the affected key. Body-transparent, no native dependencies, works on any adapter.
+---
+
+The built-in `cache()` plugin puts an LRU (or your own KV) in front of the cheap read verbs. A repeat [`head()`](/api/head) or [`url()`](/api/url) - and, opt-in, a small [`download()`](/api/download) - for an unchanged key is served from memory instead of round-tripping to the provider. Any write **through the instance** ([`upload`](/api/upload), [`delete`](/api/delete), [`copy`](/api/copy), [`move`](/api/move)) invalidates the affected key, so the next read re-fetches.
+
+It writes **no object metadata** and has **no native dependencies**, so it works on any adapter. Like the other plugins it runs **outside** [retries](/retries) - a cache hit skips the retry loop entirely.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { cache } from "files-sdk/cache";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [cache()],
+});
+
+await files.head("a.png"); // miss → provider
+await files.head("a.png"); // hit  → memory
+await files.upload("a.png", body); // invalidates "a.png"
+await files.head("a.png"); // miss → provider again
+```
+
+:::note
+`invalidateCache()`, `cacheStats()`, and `resetCacheStats()` are contributed
+by the plugin's `extend`, so they only appear on the **type** when you
+construct with [`createFiles`](/plugins/api#createfiles) (identical to `new
+Files()` at runtime).
+:::
+
+## What gets cached
+
+By default `cache()` caches the two cheap, body-free verbs - `head` and `url`. Pass `operations` to change the set:
+
+```ts
+cache({ operations: ["head", "url", "download"] });
+```
+
+- **`head`** caches the metadata only. A hit returns a [`StoredFile`](/api/stored-file) whose body still **lazy-fetches on access** - exactly the contract an uncached `head` has - so nothing is buffered up front.
+- **`url`** caches the returned string, keyed per url-options signature (so a plain `url()` and a `url({ expiresIn })` cache apart). Each entry is **additionally capped at its own `expiresIn`**, so a presigned URL is never handed out past its signature.
+- **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile`.
+
+```ts
+cache({
+  operations: ["head", "url", "download"],
+  maxBytes: 256 * 1024, // only cache downloads ≤ 256 KiB
+});
+```
+
+## Invalidation
+
+Caching is only safe because writes evict. Every mutation **through the instance** drops the affected key's entire record (all of its cached verbs) once the write lands:
+
+| Write            | Invalidates         |
+| ---------------- | ------------------- |
+| `upload(key)`    | `key`               |
+| `delete(key)`    | `key`               |
+| `copy(from, to)` | `to` (destination)  |
+| `move(from, to)` | `from` **and** `to` |
+
+Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/prefixes) path - so it lines up with the keys reads are cached under.
+
+### Writes the cache can't see
+
+A change the plugin never observes won't invalidate: an upload made through a [presigned URL](/api/signed-upload-url), or a mutation straight against the provider. Treat the cache as **eventually-consistent** and evict by hand when that happens:
+
+```ts lineNumbers
+await files.invalidateCache("a.png"); // drop one key
+await files.invalidateCache(); // drop everything
+```
+
+## Stats
+
+`cacheStats()` returns a fresh `{ hits, misses }` snapshot for tuning your TTL and entry budget; `resetCacheStats()` starts a new window:
+
+```ts lineNumbers
+files.cacheStats(); // { hits: 41, misses: 9 }
+files.resetCacheStats();
+```
+
+## The store
+
+By default the cache is a **bounded in-memory LRU** keyed by object key, holding `maxEntries` keys (default 1000) before evicting the least-recently-used. Each key's record bundles every cached verb together, which is what makes invalidation a single delete.
+
+:::warning
+Worst-case memory is roughly `maxEntries * maxBytes` once `download` caching
+is on. The default set (`head` + `url`) stores only small metadata, so the
+entry count is the only thing to size.
+:::
+
+Pass your own `store` to share the cache across instances or processes - e.g. a Redis-backed `CacheStore` that serializes each record:
+
+```ts lineNumbers
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [cache({ store: myRedisStore })],
+});
+```
+
+A `CacheStore` is four methods - `get`, `set`, `delete`, `clear` - each of which may be sync or async. A distributed store has an inherent read-modify-write race when two different verbs for the same key are first cached at the exact same instant; it's harmless - it just costs a re-fetch next time.
+
+## TTL
+
+Every entry honors a `ttl` (default `60_000` ms). Set `0` to disable time-based expiry entirely (entries then live until evicted or invalidated):
+
+```ts
+cache({ ttl: 30_000 });
+```
+
+For `url`, keep `ttl` **comfortably below your signed-URL expiry**. The per-entry `expiresIn` cap guarantees you never serve a dead URL, but a short `ttl` keeps the URLs you hand out fresh with plenty of life left.
+
+## Ordering
+
+Place `cache()` **first** (outermost) so a hit short-circuits before the rest of the pipeline does any work:
+
+```ts
+plugins: [cache(), encryption(key)];
+```
+
+Put it **after** a body-transforming plugin only if you deliberately want to cache the transformed bytes (e.g. caching post-`compression()` output).
+
+## Things to keep in mind
+
+- **A cache is eventually-consistent.** Out-of-band writes (presigned uploads, direct provider changes) won't invalidate - call `invalidateCache()`, and keep the `ttl` honest.
+- **`download` caching buffers bodies.** It's gated to small, known-length objects for exactly this reason; large and unknown-length downloads always stream through untouched.
+- **Bound your memory.** With `download` enabled, size `maxEntries` and `maxBytes` together - the product is your ceiling.
+- **It's per-instance by default.** The in-memory store lives with the `Files` instance. Reach for a shared `store` to cache across processes.

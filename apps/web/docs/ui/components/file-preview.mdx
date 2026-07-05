@@ -1,0 +1,35 @@
+---
+title: File Preview
+description: A lazy preview of a single stored file — image, PDF or text — with metadata, resolving bytes only when it mounts.
+---
+
+Previews one stored file by key (or a resolved `StoredFile`). Images and PDFs prefer a direct [`url()`](/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; text is fetched and shown inline. Bytes load only when the component mounts.
+
+<Component path="file-preview/examples/file-preview-basic" />
+
+## Installation
+
+<ComponentInstall name="file-preview" />
+
+## Usage
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+
+import { FilePreview } from "@/components/files-sdk/file-preview";
+
+export function Preview({ fileKey }: { fileKey: string }) {
+  const files = useFiles({ endpoint: "/api/files" });
+
+  return <FilePreview file={fileKey} files={files} />;
+}
+```
+
+The footer shows the key, size, type and etag. Pass either a key string (the component `head()`s it for metadata) or an already-resolved `StoredFile` to skip that round-trip.
+
+## Props
+
+<AutoTypeTable
+  path="registry/files-sdk/file-preview/file-preview.tsx"
+  name="FilePreviewProps"
+/>
