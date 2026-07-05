@@ -10,7 +10,7 @@
     "test": "echo 'no tests'"
   },
   "dependencies": {
-    "blume": "^0.6.3",
+    "blume": "^0.6.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "files-sdk": "workspace:*",
