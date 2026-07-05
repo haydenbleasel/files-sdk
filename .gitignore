@@ -147,3 +147,6 @@ out
 
 # Fumadocs
 .source
+
+# Vercel
+.vercel
