@@ -23,7 +23,7 @@
     />
     <mask
       id="mask0_25_2"
-      style={{ maskType: "luminance" }}
+      style="mask-type: luminance"
       maskUnits="userSpaceOnUse"
       x="8"
       y="8"
@@ -43,7 +43,7 @@
     </g>
     <mask
       id="mask1_25_2"
-      style={{ maskType: "luminance" }}
+      style="mask-type: luminance"
       maskUnits="userSpaceOnUse"
       x="8"
       y="25"
