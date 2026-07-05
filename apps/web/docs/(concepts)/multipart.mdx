@@ -5,7 +5,7 @@ description: Upload a large body in parallel parts instead of one request - the 
 
 Multipart splits a body into parts and uploads them in parallel, then stitches them back together server-side. It's the robust path for objects beyond the single-request limit (5 GB on S3) and for `ReadableStream` bodies of unknown length: a single PUT must either buffer the whole body or know its length up front, while multipart streams part-by-part with bounded memory.
 
-It's a per-call option on [`upload`](/api/upload) — the only method that writes a body, and so the only one to which it applies. Pass `multipart: true` for sensible defaults, or an object to tune `partSize` and `concurrency`:
+It's a per-call option on [`upload`](/docs/api/upload) — the only method that writes a body, and so the only one to which it applies. Pass `multipart: true` for sensible defaults, or an object to tune `partSize` and `concurrency`:
 
 ```ts lineNumbers
 // Defaults: 5 MiB parts, 4 in flight.
@@ -17,7 +17,7 @@ await files.upload("backups/db.tar", stream, {
 });
 ```
 
-In the [array form](/bulk), `multipart` is a per-item option — set it on each `{ key, body }` that needs it.
+In the [array form](/docs/bulk), `multipart` is a per-item option — set it on each `{ key, body }` that needs it.
 
 <AutoTypeTable
   path="../../packages/files-sdk/src/index.ts"
@@ -43,6 +43,6 @@ Adapters that chunk natively round `partSize` to their own valid granularity —
 
 ## Progress and retries
 
-When [`onProgress`](/api/onprogress) is set, the S3 family reports true byte-level progress across the whole multipart upload through the same `@aws-sdk/lib-storage` path. Multipart is still a single [`upload`](/api/upload) call as far as [retries](/retries), [timeouts](/timeouts), and [cancellation](/cancellations) are concerned — a failure retries the call, not an individual part, and an aborted [`signal`](/cancellations) fails it fast.
+When [`onProgress`](/docs/api/onprogress) is set, the S3 family reports true byte-level progress across the whole multipart upload through the same `@aws-sdk/lib-storage` path. Multipart is still a single [`upload`](/docs/api/upload) call as far as [retries](/docs/retries), [timeouts](/docs/timeouts), and [cancellation](/docs/cancellations) are concerned — a failure retries the call, not an individual part, and an aborted [`signal`](/docs/cancellations) fails it fast.
 
-To pause and resume an upload — or resume one after a crash from a serializable token, retrying individual parts rather than the whole call — reach for a [resumable upload](/resumable) instead.
+To pause and resume an upload — or resume one after a crash from a serializable token, retrying individual parts rather than the whole call — reach for a [resumable upload](/docs/resumable) instead.

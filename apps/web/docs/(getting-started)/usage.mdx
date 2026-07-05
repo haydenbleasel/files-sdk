@@ -104,7 +104,7 @@ const files = new Files({
 const readOnlyFiles = files.readonly();
 ```
 
-Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/api/errors) with `code: "ReadOnly"`. The [`raw`](/escape-hatch) escape hatch stays unchanged.
+Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
 
 ## Working in bulk
 
@@ -118,7 +118,7 @@ const { uploaded, errors } = await files.upload([
 ]);
 ```
 
-See [Bulk actions](/bulk) for the per-method result shapes, partial-failure handling, and how `concurrency` and `stopOnError` tune the fan-out.
+See [Bulk actions](/docs/bulk) for the per-method result shapes, partial-failure handling, and how `concurrency` and `stopOnError` tune the fan-out.
 
 ## Configuring the client
 
@@ -133,11 +133,11 @@ const files = new Files({
 });
 ```
 
-See [Prefixes](/prefixes) and the per-operation options ([Timeouts](/timeouts), [Retries](/retries), [Cancellation](/cancellations), [Hooks](#hooks)) for the full behavior.
+See [Prefixes](/docs/prefixes) and the per-operation options ([Timeouts](/docs/timeouts), [Retries](/docs/retries), [Cancellation](/docs/cancellations), [Hooks](#hooks)) for the full behavior.
 
 ## Hooks
 
-Pass `hooks` to the constructor to observe operations as they run - one place to wire logging, metrics, error reporting, and retry telemetry without wrapping every call. Each hook is **fire-and-forget**, like the [`onProgress`](/api/onprogress) upload callback: the SDK calls it but never awaits it, and a hook that throws can't fail the operation it observes. Payloads are caller-facing - the public `key` / `keys` you passed, never the internal prefixed path.
+Pass `hooks` to the constructor to observe operations as they run - one place to wire logging, metrics, error reporting, and retry telemetry without wrapping every call. Each hook is **fire-and-forget**, like the [`onProgress`](/docs/api/onprogress) upload callback: the SDK calls it but never awaits it, and a hook that throws can't fail the operation it observes. Payloads are caller-facing - the public `key` / `keys` you passed, never the internal prefixed path.
 
 ```ts lineNumbers
 const files = new Files({
@@ -156,8 +156,8 @@ const files = new Files({
 });
 ```
 
-Three hooks live on the constructor: [`onAction`](/api/onaction) runs when a call settles, [`onError`](/api/onerror) when it rejects, and [`onRetry`](/api/onretry) before each scheduled retry. A fourth callback, [`onProgress`](/api/onprogress), is a per-call upload option rather than a constructor hook, but follows the same fire-and-forget contract.
+Three hooks live on the constructor: [`onAction`](/docs/api/onaction) runs when a call settles, [`onError`](/docs/api/onerror) when it rejects, and [`onRetry`](/docs/api/onretry) before each scheduled retry. A fourth callback, [`onProgress`](/docs/api/onprogress), is a per-call upload option rather than a constructor hook, but follows the same fire-and-forget contract.
 
 <AutoTypeTable path="../../packages/files-sdk/src/index.ts" name="FilesHooks" />
 
-For the complete method surface and options, see the [API reference](/api).
+For the complete method surface and options, see the [API reference](/docs/api).

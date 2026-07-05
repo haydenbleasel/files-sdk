@@ -7,7 +7,7 @@ description: Remove an object - a single key resolving to void, or an array retu
 
 Pass a single key to remove one object, or an array to remove many in one call. The two forms differ in how failures surface.
 
-**One key** removes a single object and resolves to `void`. No-op friendly: a missing key resolves successfully on providers that treat delete as idempotent, and throws [`FilesError`](/api/errors) with `code: "NotFound"` on ones that don't.
+**One key** removes a single object and resolves to `void`. No-op friendly: a missing key resolves successfully on providers that treat delete as idempotent, and throws [`FilesError`](/docs/api/errors) with `code: "NotFound"` on ones that don't.
 
 ```ts lineNumbers
 await files.delete("avatars/abc.png");

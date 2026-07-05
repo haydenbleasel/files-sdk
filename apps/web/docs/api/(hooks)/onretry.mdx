@@ -3,7 +3,7 @@ title: onRetry
 description: Runs each time the SDK schedules a retry for a single-operation call, with the upcoming attempt, its delay, and the triggering error.
 ---
 
-A constructor [`hook`](/usage#hooks) that runs each time the SDK schedules a retry for a single-operation call, with the upcoming `attempt`, the `delayMs` before it, and the `error` that triggered it. It never fires on the first attempt, for non-retryable errors, or for stream uploads (which aren't retried). The array forms never fire it either — they settle as a single aggregated [`onAction`](/api/onaction) event for the whole call. See [Retries](/retries) for what counts as retryable.
+A constructor [`hook`](/docs/usage#hooks) that runs each time the SDK schedules a retry for a single-operation call, with the upcoming `attempt`, the `delayMs` before it, and the `error` that triggered it. It never fires on the first attempt, for non-retryable errors, or for stream uploads (which aren't retried). The array forms never fire it either — they settle as a single aggregated [`onAction`](/docs/api/onaction) event for the whole call. See [Retries](/docs/retries) for what counts as retryable.
 
 ```ts lineNumbers
 const files = new Files({
@@ -23,11 +23,11 @@ const files = new Files({
 });
 ```
 
-It fires _before_ the wait, so `delayMs` is the [backoff](/retries#backoff) the SDK is about to sleep, not one already spent. `error` is the [`FilesError`](/api/errors) from the attempt that just failed - always a retryable `Provider` failure, since the deterministic codes are never retried.
+It fires _before_ the wait, so `delayMs` is the [backoff](/docs/retries#backoff) the SDK is about to sleep, not one already spent. `error` is the [`FilesError`](/docs/api/errors) from the attempt that just failed - always a retryable `Provider` failure, since the deterministic codes are never retried.
 
 ## Watching for exhaustion
 
-`attempt` counts up from `1`, and `maxRetries` is the ceiling for this call - so `attempt === maxRetries` is the last retry the SDK will schedule. If that one also fails, no further `onRetry` fires and the call settles through [`onError`](/api/onerror) and [`onAction`](/api/onaction). Use the comparison to count calls that burn through their whole retry budget.
+`attempt` counts up from `1`, and `maxRetries` is the ceiling for this call - so `attempt === maxRetries` is the last retry the SDK will schedule. If that one also fails, no further `onRetry` fires and the call settles through [`onError`](/docs/api/onerror) and [`onAction`](/docs/api/onaction). Use the comparison to count calls that burn through their whole retry budget.
 
 ```ts lineNumbers
 hooks: {

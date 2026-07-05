@@ -29,4 +29,4 @@ Leading and trailing slashes are normalized: `"/users/"`, `"users/"`, and `"user
 
 ## What stays caller-facing
 
-The prefix is an internal detail — it never leaks back to you. Results (`key`, `name`) come back relative, and [hook](/api/onaction) payloads report the `key` / `keys` you passed, never the prefixed path the adapter saw. The same holds in the [bulk](/bulk) forms: keys are resolved under the prefix on the way in and stripped on the way out, just as in the single-key forms.
+The prefix is an internal detail — it never leaks back to you. Results (`key`, `name`) come back relative, and [hook](/docs/api/onaction) payloads report the `key` / `keys` you passed, never the prefixed path the adapter saw. The same holds in the [bulk](/docs/bulk) forms: keys are resolved under the prefix on the way in and stripped on the way out, just as in the single-key forms.

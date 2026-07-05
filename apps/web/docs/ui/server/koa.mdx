@@ -3,7 +3,7 @@ title: Koa
 description: Mount the Files gateway on a Koa app. Sets ctx.respond = false and bridges ctx.req/ctx.res to the Web Request/Response the gateway speaks.
 ---
 
-`files-sdk/koa` mounts a [`createFilesRouter`](/ui/server/gateway) on a Koa app. Koa wraps the Node `IncomingMessage`/`ServerResponse` as `ctx.req`/`ctx.res`, so the binding bridges them to the Web `Request`/`Response` the gateway speaks (the same `Readable.toWeb`/`fromWeb` seam as the Express adapter). Setting `ctx.respond = false` steps Koa back so the gateway writes the raw response itself, and a client disconnect is wired through to abort the upstream read on a proxied download.
+`files-sdk/koa` mounts a [`createFilesRouter`](/docs/ui/server/gateway) on a Koa app. Koa wraps the Node `IncomingMessage`/`ServerResponse` as `ctx.req`/`ctx.res`, so the binding bridges them to the Web `Request`/`Response` the gateway speaks (the same `Readable.toWeb`/`fromWeb` seam as the Express adapter). Setting `ctx.respond = false` steps Koa back so the gateway writes the raw response itself, and a client disconnect is wired through to abort the upstream read on a proxied download.
 
 ```ts title="server.ts" lineNumbers
 import Koa from "koa";
@@ -39,4 +39,4 @@ parser so it skips this route. The binding sets `ctx.respond = false` and
 writes `ctx.res` directly, so don't read `ctx.body` after it.
 :::
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

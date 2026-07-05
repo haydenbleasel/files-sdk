@@ -3,9 +3,9 @@ title: cache
 description: An LRU/KV cache in front of head(), url(), and small download()s. Repeat reads of an unchanged key are served from memory; writes through the instance invalidate the affected key. Body-transparent, no native dependencies, works on any adapter.
 ---
 
-The built-in `cache()` plugin puts an LRU (or your own KV) in front of the cheap read verbs. A repeat [`head()`](/api/head) or [`url()`](/api/url) - and, opt-in, a small [`download()`](/api/download) - for an unchanged key is served from memory instead of round-tripping to the provider. Any write **through the instance** ([`upload`](/api/upload), [`delete`](/api/delete), [`copy`](/api/copy), [`move`](/api/move)) invalidates the affected key, so the next read re-fetches.
+The built-in `cache()` plugin puts an LRU (or your own KV) in front of the cheap read verbs. A repeat [`head()`](/docs/api/head) or [`url()`](/docs/api/url) - and, opt-in, a small [`download()`](/docs/api/download) - for an unchanged key is served from memory instead of round-tripping to the provider. Any write **through the instance** ([`upload`](/docs/api/upload), [`delete`](/docs/api/delete), [`copy`](/docs/api/copy), [`move`](/docs/api/move)) invalidates the affected key, so the next read re-fetches.
 
-It writes **no object metadata** and has **no native dependencies**, so it works on any adapter. Like the other plugins it runs **outside** [retries](/retries) - a cache hit skips the retry loop entirely.
+It writes **no object metadata** and has **no native dependencies**, so it works on any adapter. Like the other plugins it runs **outside** [retries](/docs/retries) - a cache hit skips the retry loop entirely.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -26,7 +26,7 @@ await files.head("a.png"); // miss → provider again
 :::note
 `invalidateCache()`, `cacheStats()`, and `resetCacheStats()` are contributed
 by the plugin's `extend`, so they only appear on the **type** when you
-construct with [`createFiles`](/plugins/api#createfiles) (identical to `new
+construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new
 Files()` at runtime).
 :::
 
@@ -38,9 +38,9 @@ By default `cache()` caches the two cheap, body-free verbs - `head` and `url`. P
 cache({ operations: ["head", "url", "download"] });
 ```
 
-- **`head`** caches the metadata only. A hit returns a [`StoredFile`](/api/stored-file) whose body still **lazy-fetches on access** - exactly the contract an uncached `head` has - so nothing is buffered up front.
+- **`head`** caches the metadata only. A hit returns a [`StoredFile`](/docs/api/stored-file) whose body still **lazy-fetches on access** - exactly the contract an uncached `head` has - so nothing is buffered up front.
 - **`url`** caches the returned string, keyed per url-options signature (so a plain `url()` and a `url({ expiresIn })` cache apart). Each entry is **additionally capped at its own `expiresIn`**, so a presigned URL is never handed out past its signature.
-- **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile`.
+- **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/docs/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile`.
 
 ```ts
 cache({
@@ -60,11 +60,11 @@ Caching is only safe because writes evict. Every mutation **through the instance
 | `copy(from, to)` | `to` (destination)  |
 | `move(from, to)` | `from` **and** `to` |
 
-Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/prefixes) path - so it lines up with the keys reads are cached under.
+Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/docs/prefixes) path - so it lines up with the keys reads are cached under.
 
 ### Writes the cache can't see
 
-A change the plugin never observes won't invalidate: an upload made through a [presigned URL](/api/signed-upload-url), or a mutation straight against the provider. Treat the cache as **eventually-consistent** and evict by hand when that happens:
+A change the plugin never observes won't invalidate: an upload made through a [presigned URL](/docs/api/signed-upload-url), or a mutation straight against the provider. Treat the cache as **eventually-consistent** and evict by hand when that happens:
 
 ```ts lineNumbers
 await files.invalidateCache("a.png"); // drop one key

@@ -3,7 +3,7 @@ title: zip
 description: Stream many stored objects as one ZIP archive, store archives back as objects, and extract archives into individual keys - standard ZIP with deflate via the platform CompressionStream, no native dependencies.
 ---
 
-The built-in `zip()` plugin bundles stored objects into ZIP archives — and back out of them — entirely through the `Files` instance. It's an [`extend`](/plugins/api#filesplugin)-only plugin: it intercepts nothing and adds three methods.
+The built-in `zip()` plugin bundles stored objects into ZIP archives — and back out of them — entirely through the `Files` instance. It's an [`extend`](/docs/plugins/api#filesplugin)-only plugin: it intercepts nothing and adds three methods.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -74,7 +74,7 @@ Extracted entries get a content type inferred from their extension; directory en
 
 ## Composition
 
-Everything goes through the fully-wrapped instance, so `zip()` composes with the rest of the pipeline: with [`encryption()`](/plugins/encryption) installed, zipped entries are read as **plaintext**, and an archive stored via `zipTo` is encrypted at rest. Because there's no `wrap`, the plugin's position in the array doesn't matter.
+Everything goes through the fully-wrapped instance, so `zip()` composes with the rest of the pipeline: with [`encryption()`](/docs/plugins/encryption) installed, zipped entries are read as **plaintext**, and an archive stored via `zipTo` is encrypted at rest. Because there's no `wrap`, the plugin's position in the array doesn't matter.
 
 ```ts
 plugins: [zip(), compression(), encryption(key)];

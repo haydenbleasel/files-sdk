@@ -29,8 +29,8 @@ await files.raw.send(
 The native client talks to the provider directly, so none of the `Files` wrapper's behavior applies to calls you make through it:
 
 - **No prefix scoping.** You pass the provider's full key yourself, including any `prefix` the `Files` instance was constructed with — `files.raw` doesn't know about it.
-- **No normalized errors.** A failure throws the provider's own error type, not a [`FilesError`](/api/errors); catch and classify accordingly.
-- **No hooks, retries, timeouts, or cancellation.** [Hooks](/usage#hooks) don't fire, and `signal` / `timeout` / `retries` aren't applied. Use the provider client's own equivalents.
+- **No normalized errors.** A failure throws the provider's own error type, not a [`FilesError`](/docs/api/errors); catch and classify accordingly.
+- **No hooks, retries, timeouts, or cancellation.** [Hooks](/docs/usage#hooks) don't fire, and `signal` / `timeout` / `retries` aren't applied. Use the provider client's own equivalents.
 
 In short, `raw` is an unmanaged door straight to the provider. Reach for it for the one feature you need, and keep using the unified methods for everything else.
 
@@ -48,4 +48,4 @@ widened.raw; // unknown
 
 If you store a `Files` instance on a typed field, annotate it with the adapter's type (for example `Files<S3Adapter>`) rather than the bare `Files`, and `raw` stays typed.
 
-See the Compatibility section on each [adapter's docs page](/adapters/s3) for what it supports through the unified surface before reaching for the escape hatch.
+See the Compatibility section on each [adapter's docs page](/docs/adapters/s3) for what it supports through the unified surface before reaching for the escape hatch.

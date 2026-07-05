@@ -28,7 +28,7 @@ for await (const f of files.listAll({ prefix: "img/" })) {
 await files.delete(["old/1.png", "old/2.png"]);`,
     description:
       "upload, download, head, exists, copy, move, list, delete — the same calls on every adapter. Hand any of them an array to batch with bounded concurrency, or walk a listing as a plain async iterable.",
-    docHref: "/api",
+    docHref: "/docs/api",
     panel: "methods",
     title: "Every operation, one interface",
   },
@@ -47,7 +47,7 @@ const recent = await Array.fromAsync(
 );`,
     description:
       "files.search() finds objects by key — a glob by default, or a regex, substring, or exact match. Matches stream back as an async iterable, and a glob's prefix scopes the walk to skip the rest of the bucket.",
-    docHref: "/api/search",
+    docHref: "/docs/api/search",
     panel: "search",
     title: "Find files by name, glob, or regex",
   },
@@ -67,7 +67,7 @@ await generateText({
 });`,
     description:
       "Generate ready-made file tools for the Vercel AI SDK, OpenAI Agents, or Claude and MCP. Hand your agent list, read, upload, and delete — with read-only mode and per-tool approval gates built in.",
-    docHref: "/ai/vercel",
+    docHref: "/docs/ai/vercel",
     panel: "ai-tools",
     title: "File tools for your agents",
   },
@@ -82,7 +82,7 @@ files --provider r2 list --prefix reports/
 files --provider gcs download q1.pdf --stdout > out.pdf`,
     description:
       "Every method is also a command. Stream with stdin and stdout, switch backends with --provider, and get JSON by default — handy for scripts, CI, and one-off ops.",
-    docHref: "/cli",
+    docHref: "/docs/cli",
     lang: "bash",
     panel: "cli",
     title: "The same SDK, from your shell",
@@ -102,7 +102,7 @@ await files.upload("db.tar", stream, {
 });`,
     description:
       "Hand off a large body or an unbounded stream and files-sdk splits it into parts, uploading them with bounded concurrency. Tune the part size and parallelism, or just say multipart: true.",
-    docHref: "/multipart",
+    docHref: "/docs/multipart",
     panel: "multipart",
     title: "Multipart, in parallel",
   },
@@ -120,7 +120,7 @@ await files.upload(items, {
 });`,
     description:
       "Pass one callback and get byte-level progress for every file — buffered or streamed, single or bulk. Drive a progress bar per key without ever touching the transport.",
-    docHref: "/api/onprogress",
+    docHref: "/docs/api/onprogress",
     panel: "upload-progress",
     title: "Live upload progress",
   },
@@ -137,7 +137,7 @@ const chunk = await files.download("video.mp4", {
 });`,
     description:
       "Ask for exactly the bytes you need. Ranged reads map straight to HTTP 206, so you can seek video, resume a download, or read a file header without pulling the whole object.",
-    docHref: "/api/download",
+    docHref: "/docs/api/download",
     panel: "byte-range",
     title: "Byte-range downloads",
   },
@@ -158,7 +158,7 @@ const chunk = await files.download("video.mp4", {
 });`,
     description:
       "Wire metrics, logging, and error reporting once at the constructor. onAction, onRetry, and onError fire for every operation across every adapter — fire-and-forget, never in your way.",
-    docHref: "/api/onaction",
+    docHref: "/docs/api/onaction",
     panel: "lifecycle-hooks",
     title: "Lifecycle hooks",
   },
@@ -184,7 +184,7 @@ const {
 });`,
     description:
       "sync() reconciles one backend onto another — uploading only what changed, skipping what's identical, and pruning what's gone. Back up or migrate in a line, and dry-run the plan first.",
-    docHref: "/api/sync",
+    docHref: "/docs/api/sync",
     panel: "sync",
     title: "Mirror across backends",
   },

@@ -3,7 +3,7 @@ title: Fastify
 description: Mount the Files gateway on a Fastify server. Hijacks the reply and bridges Fastify's raw IncomingMessage/ServerResponse to the Web Request/Response the gateway speaks.
 ---
 
-`files-sdk/fastify` mounts a [`createFilesRouter`](/ui/server/gateway) on a Fastify server. Fastify hands you Node `IncomingMessage`/`ServerResponse` under `request.raw`/`reply.raw`, so the binding bridges them to the Web `Request`/`Response` the gateway speaks (the same `Readable.toWeb`/`fromWeb` seam as the Express adapter). `reply.hijack()` cedes the response to the gateway, and a client disconnect is wired through to abort the upstream read on a proxied download.
+`files-sdk/fastify` mounts a [`createFilesRouter`](/docs/ui/server/gateway) on a Fastify server. Fastify hands you Node `IncomingMessage`/`ServerResponse` under `request.raw`/`reply.raw`, so the binding bridges them to the Web `Request`/`Response` the gateway speaks (the same `Readable.toWeb`/`fromWeb` seam as the Express adapter). `reply.hijack()` cedes the response to the gateway, and a client disconnect is wired through to abort the upstream read on a proxied download.
 
 ```ts title="server.ts" lineNumbers
 import Fastify from "fastify";
@@ -45,4 +45,4 @@ plugin](https://fastify.dev/docs/latest/Reference/Encapsulation/) with its own
 parsers.
 :::
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

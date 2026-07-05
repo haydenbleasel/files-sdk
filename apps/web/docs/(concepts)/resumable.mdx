@@ -3,7 +3,7 @@ title: Resumable uploads
 description: Pause, resume, and abort a large upload via a control handle, or resume it in a later process from a serializable session token. A per-call option on upload.
 ---
 
-A long upload over a flaky connection shouldn't have to start over when it's interrupted. Pass an [`UploadControl`](/api/upload) to [`upload`](/api/upload) and you can `pause()` it, `resume()` it, or `abort()` it — and, because the control holds a **serializable session token**, you can persist it and resume the upload in a later process, after a crash, or on the next page load.
+A long upload over a flaky connection shouldn't have to start over when it's interrupted. Pass an [`UploadControl`](/docs/api/upload) to [`upload`](/docs/api/upload) and you can `pause()` it, `resume()` it, or `abort()` it — and, because the control holds a **serializable session token**, you can persist it and resume the upload in a later process, after a crash, or on the next page load.
 
 ```ts lineNumbers
 import { Files, UploadControl } from "files-sdk";
@@ -21,7 +21,7 @@ control.resume(); // pick up where it left off
 await result;
 ```
 
-It's an [`AbortSignal`](/cancellations)-style handle: a plain object you construct and hand in, then drive from the outside. The `upload` call returns its usual promise, which resolves when the upload completes (and stays pending while paused).
+It's an [`AbortSignal`](/docs/cancellations)-style handle: a plain object you construct and hand in, then drive from the outside. The `upload` call returns its usual promise, which resolves when the upload completes (and stays pending while paused).
 
 ## Resuming across processes
 
@@ -49,13 +49,13 @@ Because resuming re-reads the bytes, `control` requires a body with a **known le
 - **`resume()`** continues a paused upload.
 - **`abort()`** cancels the upload **and discards the provider-side session** — the partial upload a provider might otherwise bill or retain is cleaned up. It's terminal: the token can no longer be resumed.
 
-Aborting via the [`signal`](/cancellations) option instead cancels the call but _keeps_ the session, so you can resume it later. `control.status` (`"idle"`, `"uploading"`, `"paused"`, `"completed"`, `"aborted"`, `"error"`) and `control.loaded` / `control.total` track progress for a UI.
+Aborting via the [`signal`](/docs/cancellations) option instead cancels the call but _keeps_ the session, so you can resume it later. `control.status` (`"idle"`, `"uploading"`, `"paused"`, `"completed"`, `"aborted"`, `"error"`) and `control.loaded` / `control.total` track progress for a UI.
 
 ## What each adapter does
 
 The token maps onto whatever resumable primitive the provider exposes. Most adapters resume **across processes** — persist the token, resume after a crash:
 
-- **S3 and the S3-compatible adapters** (incl. R2 over HTTP) drive S3's native multipart API directly — the token carries the `UploadId`, resume lists already-uploaded parts with `ListParts`, and `abort()` issues `AbortMultipartUpload`. (This is a separate path from the [`multipart`](/multipart) flag's `@aws-sdk/lib-storage` upload, which doesn't expose the upload id.)
+- **S3 and the S3-compatible adapters** (incl. R2 over HTTP) drive S3's native multipart API directly — the token carries the `UploadId`, resume lists already-uploaded parts with `ListParts`, and `abort()` issues `AbortMultipartUpload`. (This is a separate path from the [`multipart`](/docs/multipart) flag's `@aws-sdk/lib-storage` upload, which doesn't expose the upload id.)
 - **GCS**, **Firebase Storage**, and **Google Drive** resume against a stored resumable-session URI.
 - **Azure Blob** stages blocks and commits them, skipping blocks already staged on resume.
 - **OneDrive** drives a Graph upload session and reads `nextExpectedRanges` to resume.
@@ -67,7 +67,7 @@ The token maps onto whatever resumable primitive the provider exposes. Most adap
 
 A few providers expose no serializable session, so they support pause/resume **in-process only** — `control.toJSON()` can't be resumed in a new process: **Box** (its commit requires a whole-file digest), **bun-s3**, and **memory** (no upload id). They buffer the body in the running process and upload on completion.
 
-Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, and the rest — throws a clear "not supported" [`FilesError`](/api/errors) when `control` is passed, the same way an unsupported [range download](/api/download) does. `control` is a single-key option; it isn't available in the [array form](/bulk) of `upload`.
+Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, and the rest — throws a clear "not supported" [`FilesError`](/docs/api/errors) when `control` is passed, the same way an unsupported [range download](/docs/api/download) does. `control` is a single-key option; it isn't available in the [array form](/docs/bulk) of `upload`.
 
 > The Supabase (TUS), Appwrite, and Cloudinary drivers are built to each
 > provider's documented chunked-upload protocol and covered by mocked tests,
@@ -76,4 +76,4 @@ Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Conve
 
 ## Parts, retries, and progress
 
-`partSize` and `concurrency` come from the [`multipart`](/multipart) option and tune the same trade-off. Each part (or chunk) is retried on its own under the call's [retry](/retries) policy, so a transient failure mid-upload doesn't restart the whole transfer. [`onProgress`](/api/onprogress) fires as parts confirm, and on resume it starts from the bytes already uploaded.
+`partSize` and `concurrency` come from the [`multipart`](/docs/multipart) option and tune the same trade-off. Each part (or chunk) is retried on its own under the call's [retry](/docs/retries) policy, so a transient failure mid-upload doesn't restart the whole transfer. [`onProgress`](/docs/api/onprogress) fires as parts confirm, and on resume it starts from the bytes already uploaded.

@@ -70,7 +70,7 @@ await files.upload("backups/db.tar", stream, {
 
 ## Pause and resume
 
-Pass a `control` ([`UploadControl`](/resumable)) to pause, resume, or abort a large upload — and to resume it later, even in a new process, from a serializable session token. It's supported on every adapter whose provider exposes a resumable session — S3 and the S3-compatible adapters, GCS, Firebase Storage, Google Drive, Azure, OneDrive, Dropbox, Vercel Blob, the local filesystem, FTP/SFTP, Supabase, Appwrite, and Cloudinary (Box, bun-s3, and memory pause in-process only); the rest throw. See [Resumable uploads](/resumable) for the full walkthrough.
+Pass a `control` ([`UploadControl`](/docs/resumable)) to pause, resume, or abort a large upload — and to resume it later, even in a new process, from a serializable session token. It's supported on every adapter whose provider exposes a resumable session — S3 and the S3-compatible adapters, GCS, Firebase Storage, Google Drive, Azure, OneDrive, Dropbox, Vercel Blob, the local filesystem, FTP/SFTP, Supabase, Appwrite, and Cloudinary (Box, bun-s3, and memory pause in-process only); the rest throw. See [Resumable uploads](/docs/resumable) for the full walkthrough.
 
 ```ts lineNumbers
 import { UploadControl } from "files-sdk";

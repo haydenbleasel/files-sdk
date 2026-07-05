@@ -29,7 +29,7 @@ Each method returns a result shaped for what it does, and every one carries an o
 | `exists`   | `{ existing, missing, errors? }` |
 | `delete`   | `{ deleted, errors? }`           |
 
-The success arrays come back in the order you supplied the keys. Each entry in `errors` is `{ key, error }`, where `error` is a normalized [`FilesError`](/api/errors). Invalid keys (empty, or containing null bytes) are reported there too, never thrown.
+The success arrays come back in the order you supplied the keys. Each entry in `errors` is `{ key, error }`, where `error` is a normalized [`FilesError`](/docs/api/errors). Invalid keys (empty, or containing null bytes) are reported there too, never thrown.
 
 ## Partial failure
 
@@ -59,6 +59,6 @@ if (result.errors) {
 
 ## Retries and hooks
 
-Bulk calls are **not** retried — `retries` applies to single-operation calls only — so [`onRetry`](/api/onretry) never fires for them. [`onAction`](/api/onaction) emits one event for the whole call, carrying the caller's `keys` and the aggregated result; the per-item failures inside `errors` are not rejections, so they don't fire [`onError`](/api/onerror).
+Bulk calls are **not** retried — `retries` applies to single-operation calls only — so [`onRetry`](/docs/api/onretry) never fires for them. [`onAction`](/docs/api/onaction) emits one event for the whole call, carrying the caller's `keys` and the aggregated result; the per-item failures inside `errors` are not rejections, so they don't fire [`onError`](/docs/api/onerror).
 
-The client's [`prefix`](/prefixes) is honored throughout: keys are resolved under it on the way in and stripped back off on the way out, just as in the single-key forms.
+The client's [`prefix`](/docs/prefixes) is honored throughout: keys are resolved under it on the way in and stripped back off on the way out, just as in the single-key forms.

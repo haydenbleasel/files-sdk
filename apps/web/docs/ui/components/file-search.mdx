@@ -3,7 +3,7 @@ title: File Search
 description: A search box that streams matching keys with switchable match modes — driven by useFiles.
 ---
 
-Streams [`search()`](/api/search) results into a list. Switch between substring, glob, regex and exact matching, toggle case sensitivity, and the previous search is aborted the moment a new one starts.
+Streams [`search()`](/docs/api/search) results into a list. Switch between substring, glob, regex and exact matching, toggle case sensitivity, and the previous search is aborted the moment a new one starts.
 
 <Component path="file-search/examples/file-search-basic" />
 
@@ -32,7 +32,7 @@ export function Search() {
 }
 ```
 
-Matching runs over keys, not contents — the same four modes [`search()`](/api/search) exposes. Scope a search with `prefix` to keep it cheap on large buckets, and `maxResults` caps how many matches are collected per run.
+Matching runs over keys, not contents — the same four modes [`search()`](/docs/api/search) exposes. Scope a search with `prefix` to keep it cheap on large buckets, and `maxResults` caps how many matches are collected per run.
 
 ## Props
 

@@ -7,26 +7,26 @@ The surface is small: a `Files` instance with ten methods, plus `files.file(key)
 
 ## Functions
 
-- [`upload`](/api/upload) - write a body to a key, one or many.
-- [`download`](/api/download) - read an object as a [`StoredFile`](/api/stored-file) or a stream.
-- [`head`](/api/head) - fetch metadata without materializing the body.
-- [`exists`](/api/exists) - check whether a key exists.
-- [`delete`](/api/delete) - remove one object or many.
-- [`copy`](/api/copy) - server-side copy with a read + write fallback.
-- [`move`](/api/move) - rename a key, native where the provider supports it.
-- [`list`](/api/list) - cursor-paginated listing, or `listAll` to walk every page.
-- [`url`](/api/url) - a direct or signed URL to fetch a key.
-- [`signedUploadUrl`](/api/signed-upload-url) - a presigned PUT/POST contract for direct browser uploads.
-- [`file`](/api/file) - a `FileHandle` bound to one key.
+- [`upload`](/docs/api/upload) - write a body to a key, one or many.
+- [`download`](/docs/api/download) - read an object as a [`StoredFile`](/docs/api/stored-file) or a stream.
+- [`head`](/docs/api/head) - fetch metadata without materializing the body.
+- [`exists`](/docs/api/exists) - check whether a key exists.
+- [`delete`](/docs/api/delete) - remove one object or many.
+- [`copy`](/docs/api/copy) - server-side copy with a read + write fallback.
+- [`move`](/docs/api/move) - rename a key, native where the provider supports it.
+- [`list`](/docs/api/list) - cursor-paginated listing, or `listAll` to walk every page.
+- [`url`](/docs/api/url) - a direct or signed URL to fetch a key.
+- [`signedUploadUrl`](/docs/api/signed-upload-url) - a presigned PUT/POST contract for direct browser uploads.
+- [`file`](/docs/api/file) - a `FileHandle` bound to one key.
 
 Two **global functions** stand apart from the instance methods — they take two `Files` instances and move objects between backends, built entirely on the methods above:
 
-- [`transfer`](/api/transfer) - stream every object from one instance to another.
-- [`sync`](/api/sync) - mirror one instance onto another (skip-unchanged, prune, dry-run).
+- [`transfer`](/docs/api/transfer) - stream every object from one instance to another.
+- [`sync`](/docs/api/sync) - mirror one instance onto another (skip-unchanged, prune, dry-run).
 
 ## Scoping keys with a prefix
 
-Pass `prefix` to the constructor and every key is resolved relative to it — prepended on the way in, stripped on the way out — so application code works in its own namespace. See [Prefixes](/prefixes) for the full behavior, including slash normalization and how `list()` scopes to a path boundary.
+Pass `prefix` to the constructor and every key is resolved relative to it — prepended on the way in, stripped on the way out — so application code works in its own namespace. See [Prefixes](/docs/prefixes) for the full behavior, including slash normalization and how `list()` scopes to a path boundary.
 
 ## Read-only instances
 
@@ -52,8 +52,8 @@ await files.head("avatars/abc.png", { timeout: 2_000 });
   name="OperationOptions"
 />
 
-See [Timeouts](/timeouts), [Retries](/retries), and [Cancellation](/cancellations) for how each behaves, and [Hooks](/usage#hooks) to observe operations as they run.
+See [Timeouts](/docs/timeouts), [Retries](/docs/retries), and [Cancellation](/docs/cancellations) for how each behaves, and [Hooks](/docs/usage#hooks) to observe operations as they run.
 
 ## The StoredFile type
 
-`download`, `head`, and `list` all return [`StoredFile`](/api/stored-file) — a type that mirrors native `File`'s shape and adds the `key`, `etag`, and `metadata` that storage carries.
+`download`, `head`, and `list` all return [`StoredFile`](/docs/api/stored-file) — a type that mirrors native `File`'s shape and adds the `key`, `etag`, and `metadata` that storage carries.

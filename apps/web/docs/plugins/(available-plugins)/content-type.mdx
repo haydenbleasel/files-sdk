@@ -3,7 +3,7 @@ title: contentType
 description: A security guard that decides each upload's Content-Type from its bytes, not the client's claim. Magic-byte sniffing stops a mislabeled .png that's really HTML or SVG from being stored as an image and served inline. No metadata, no native dependencies, and it never buffers the whole body.
 ---
 
-The built-in `contentType()` plugin sets an upload's `Content-Type` from what the bytes **actually are**, not what the client said they were. On `upload` it magic-byte-sniffs the body and either corrects the stored type to match (the default) or rejects a mismatch — so a `.png` whose bytes are really HTML or SVG can't be stored under an image type and later served inline. It's the [wrap plugin](/plugins#wrap-intercepting-operations) counterpart to [`validation()`](/plugins/validation): validation vets the _declared_ type, `contentType()` verifies the _real_ one.
+The built-in `contentType()` plugin sets an upload's `Content-Type` from what the bytes **actually are**, not what the client said they were. On `upload` it magic-byte-sniffs the body and either corrects the stored type to match (the default) or rejects a mismatch — so a `.png` whose bytes are really HTML or SVG can't be stored under an image type and later served inline. It's the [wrap plugin](/docs/plugins#wrap-intercepting-operations) counterpart to [`validation()`](/docs/plugins/validation): validation vets the _declared_ type, `contentType()` verifies the _real_ one.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -53,7 +53,7 @@ dangerous file safe. Detecting that an upload is really HTML and storing it as
 `text/html` still leaves it executable if you serve it inline. To **block**
 mislabeled active content, use `onMismatch: "reject"`; to serve user uploads
 safely, pair this with a forced `attachment` disposition on
-[`url()`](/api/url).
+[`url()`](/docs/api/url).
 :::
 
 ### onUnknown
@@ -73,8 +73,8 @@ plugins: [contentType(), compression(), encryption(key)];
 
 ## Things to keep in mind
 
-- **It never buffers the whole body.** Only the first 512 bytes matter, so known-length bodies (strings, `Uint8Array`, `Blob`, `ArrayBuffer`) are peeked in place with no copy, and **streams stay streaming** — the prefix is read and replayed, the rest flows straight through. This is the one body-touching plugin that doesn't disable [streaming uploads](/api/upload).
+- **It never buffers the whole body.** Only the first 512 bytes matter, so known-length bodies (strings, `Uint8Array`, `Blob`, `ArrayBuffer`) are peeked in place with no copy, and **streams stay streaming** — the prefix is read and replayed, the rest flows straight through. This is the one body-touching plugin that doesn't disable [streaming uploads](/docs/api/upload).
 - **It writes no metadata.** The verdict lands in the object's own `Content-Type`; nothing rides along in `metadata`, so a sniffed bucket is indistinguishable from an un-sniffed one — safe to enable or remove at any time.
 - **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only acts on `upload`; it stores the right type up front, so there's nothing to undo on the way back out.
 - **`signedUploadUrl()` fails closed.** A presigned upload writes directly to the store, bypassing the sniff, so minting one would be a silent hole — it throws. Upload through the `Files` instance to enforce sniffing.
-- **It's a sniffer, not a validator.** It decides the stored type; it doesn't enforce a size limit or an allowed-type list. Pair it with [`validation()`](/plugins/validation) when you want both.
+- **It's a sniffer, not a validator.** It decides the stored type; it doesn't enforce a size limit or an allowed-type list. Pair it with [`validation()`](/docs/plugins/validation) when you want both.

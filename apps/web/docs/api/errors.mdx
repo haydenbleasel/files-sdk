@@ -24,7 +24,7 @@ try {
 - **`code`** — one of the normalized codes below. Match on this for control flow.
 - **`message`** — a human-readable summary, taken from the provider error where one is available.
 - **`cause`** — the original provider error, untouched. Reach into it for provider-specific detail: `@aws-sdk` errors, for instance, carry a request ID and HTTP status on `$metadata` and a typed `name` like `NoSuchKey`.
-- **`aborted`** — `true` when the failure came from a [cancellation](/cancellations) or a [timeout](/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
+- **`aborted`** — `true` when the failure came from a [cancellation](/docs/cancellations) or a [timeout](/docs/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
 
 ## Codes
 
@@ -34,7 +34,7 @@ try {
 - `"ReadOnly"` — the operation tried to mutate a read-only `Files` instance.
 - `"Provider"` — anything else, including network failures, throttling, timeouts, and aborts. Inspect `cause` for the underlying error.
 
-Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/retries); the rest are deterministic and returned to you immediately.
+Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/docs/retries); the rest are deterministic and returned to you immediately.
 
 ## Errors in bulk operations
 
@@ -42,4 +42,4 @@ The array forms — `upload([…])`, `download([…])`, `delete([…])`, `head([
 
 > **Logging note:** `cause` can carry request IDs, response headers, and partial request metadata from `@aws-sdk` and friends. If you forward a `FilesError` to logs that cross a trust boundary, strip or whitelist `cause` rather than `JSON.stringify`-ing the whole thing.
 
-For provider-by-provider error gotchas and debugging tips, see [Troubleshooting](/troubleshooting).
+For provider-by-provider error gotchas and debugging tips, see [Troubleshooting](/docs/troubleshooting).

@@ -3,7 +3,7 @@ title: React
 description: One hook, every Files verb. Imperative methods with upload progress and ambient error state, plus optional reactive useList / useFile / useSearch.
 ---
 
-`files-sdk/react` brings the full Files API to the browser as a React hook. `useFiles` returns one method per `Files` verb against the [gateway](/ui/server/gateway) you mounted, plus ambient upload/error state. Keys are plain strings (relative to your [authorized prefix](/ui/server/authorization)).
+`files-sdk/react` brings the full Files API to the browser as a React hook. `useFiles` returns one method per `Files` verb against the [gateway](/docs/ui/server/gateway) you mounted, plus ambient upload/error state. Keys are plain strings (relative to your [authorized prefix](/docs/ui/server/authorization)).
 
 ```tsx lineNumbers
 const files = useFiles({
@@ -89,7 +89,7 @@ const chunk = await files.download("video.mp4", {
 const src = await files.url("avatar.png");
 ```
 
-The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `type`, `etag`, `metadata`.
+The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/docs/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `type`, `etag`, `metadata`.
 
 ## Errors & cancellation
 

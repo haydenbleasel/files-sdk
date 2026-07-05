@@ -5,7 +5,7 @@ description: Read and write the primary adapter, and fall back to one or more se
 
 The built-in `failover()` plugin keeps a `Files` instance serving while a backend is down. Every operation tries the **primary** first; if it throws because the backend is unreachable, the plugin retries against a **secondary** - and the next, and the next - until one succeeds. The primary is the instance's own adapter (reached through the rest of the pipeline); the secondaries are backup adapters you pass in.
 
-It's **body-transparent**: it never buffers or transforms bytes, so streaming, [range downloads](/api/download), [`url()`](/api/url), and [`signedUploadUrl()`](/api/signed-upload-url) all keep working. It has **no native dependencies**, adds no methods (`wrap` only, so plain `new Files()` is enough), and works on any set of adapters.
+It's **body-transparent**: it never buffers or transforms bytes, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies**, adds no methods (`wrap` only, so plain `new Files()` is enough), and works on any set of adapters.
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
@@ -31,11 +31,11 @@ await files.upload("invoice.pdf", body); // lands on the first reachable backend
 
 These three Tier B plugins all take a second adapter, but they do different jobs:
 
-| Plugin                          | What it does                                                               |
-| ------------------------------- | -------------------------------------------------------------------------- |
-| `failover()`                    | Try the primary; fall back to a secondary **only when a backend is down**. |
-| `replication()`                 | Write **every** mutation to all backends (fan-out).                        |
-| [`tiering()`](/plugins/tiering) | **Partition** objects across backends by key / size / age.                 |
+| Plugin                               | What it does                                                               |
+| ------------------------------------ | -------------------------------------------------------------------------- |
+| `failover()`                         | Try the primary; fall back to a secondary **only when a backend is down**. |
+| `replication()`                      | Write **every** mutation to all backends (fan-out).                        |
+| [`tiering()`](/docs/plugins/tiering) | **Partition** objects across backends by key / size / age.                 |
 
 `failover()` treats each secondary as a **full replica** of one namespace, so it never splits or merges data across backends. It's the availability lever: keep serving against whatever backend is up.
 
@@ -88,7 +88,7 @@ secondaries are genuine replicas kept in sync.
 - **`list`** returns the first reachable backend's page. It is **not** merged across backends (each secondary is a full replica, so there's nothing to interleave).
 - **`signedUploadUrl`** signs against the first reachable backend.
 
-[Bulk](/plugins#bulk-operations-too) calls fan out to one operation per item, so each element fails over independently.
+[Bulk](/docs/plugins#bulk-operations-too) calls fan out to one operation per item, so each element fails over independently.
 
 ### Streaming uploads
 
@@ -120,7 +120,7 @@ Failover buys **availability**, not consistency. An object written to a secondar
 
 ## Ordering and prefixes
 
-- **Place it last (innermost).** Body-transforming plugins like [`encryption()`](/plugins/encryption) and [`compression()`](/plugins/compression) wrap `failover()` and transform the op on the way in, so the same bytes reach **every** backend:
+- **Place it last (innermost).** Body-transforming plugins like [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) wrap `failover()` and transform the op on the way in, so the same bytes reach **every** backend:
 
   ```ts
   plugins: [encryption(key), failover({ secondaries: backup })];

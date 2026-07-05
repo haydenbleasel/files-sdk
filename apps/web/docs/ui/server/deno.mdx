@@ -3,7 +3,7 @@ title: Deno
 description: Serve the Files gateway from Deno.serve. The gateway is a Web fetch handler, so it drops in with no adapter - import the SDK with the npm specifier.
 ---
 
-`Deno.serve` calls your handler with a Web `Request` and returns your `Response` — the exact shape the gateway speaks (`handle(req: Request): Promise<Response>`). There is no `files-sdk/deno` adapter: pass [`router.handle`](/ui/server/gateway) the request directly. Import the SDK over Deno's `npm:` specifier (or an import map).
+`Deno.serve` calls your handler with a Web `Request` and returns your `Response` — the exact shape the gateway speaks (`handle(req: Request): Promise<Response>`). There is no `files-sdk/deno` adapter: pass [`router.handle`](/docs/ui/server/gateway) the request directly. Import the SDK over Deno's `npm:` specifier (or an import map).
 
 ```ts title="main.ts" lineNumbers
 import { createFiles } from "npm:files-sdk";
@@ -36,4 +36,4 @@ Deno is sandboxed — run with network and environment access: `deno run
 environment, so `--allow-env` is required.
 :::
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

@@ -22,17 +22,17 @@ const { transferred, errors } = await transfer(from, to, {
 });
 ```
 
-Both arguments are full [`Files`](/api) instances, not raw adapters, so each leg honors its own instance's `prefix`, retries, timeouts, and [hooks](/api/onaction). Each object is streamed download-to-upload, so the destination never sees a buffered copy of a large file.
+Both arguments are full [`Files`](/docs/api) instances, not raw adapters, so each leg honors its own instance's `prefix`, retries, timeouts, and [hooks](/docs/api/onaction). Each object is streamed download-to-upload, so the destination never sees a buffered copy of a large file.
 
-`transfer` is a one-shot copy. For an incremental, optionally-pruning mirror — skip-unchanged, delete extraneous keys, dry-run the plan — reach for [`sync`](/api/sync) instead.
+`transfer` is a one-shot copy. For an incremental, optionally-pruning mirror — skip-unchanged, delete extraneous keys, dry-run the plan — reach for [`sync`](/docs/api/sync) instead.
 
 ## What travels
 
-The body, content type, and user metadata move with each object. Destination-assigned fields (`etag`, `lastModified`) are fresh on the other side, and `Cache-Control` is **not** carried — a [`StoredFile`](/api/download) doesn't expose it. Metadata is dropped for adapters with no metadata primitive; a metadata key a destination adapter rejects outright (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the whole run.
+The body, content type, and user metadata move with each object. Destination-assigned fields (`etag`, `lastModified`) are fresh on the other side, and `Cache-Control` is **not** carried — a [`StoredFile`](/docs/api/download) doesn't expose it. Metadata is dropped for adapters with no metadata primitive; a metadata key a destination adapter rejects outright (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the whole run.
 
 ## Result shape
 
-Like the [bulk actions](/bulk), `transfer` does **not** throw on a partial failure. Successes, skips, and failures come back separated, in walk order:
+Like the [bulk actions](/docs/bulk), `transfer` does **not** throw on a partial failure. Successes, skips, and failures come back separated, in walk order:
 
 ```ts lineNumbers
 const { transferred, skipped, errors } = await transfer(from, to);
@@ -44,7 +44,7 @@ const { transferred, skipped, errors } = await transfer(from, to);
 | `skipped`     | Keys skipped because they already existed. Omitted when none.   |
 | `errors`      | Per-key `{ key, error }` failures. Omitted when every key wins. |
 
-`error` is always a normalized [`FilesError`](/api/errors).
+`error` is always a normalized [`FilesError`](/docs/api/errors).
 
 ## Options
 

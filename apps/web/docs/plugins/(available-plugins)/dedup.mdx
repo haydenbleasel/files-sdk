@@ -25,7 +25,7 @@ await files.copy("a.png", "c.png"); // shares the one stored blob
 The logical key (`a.png`) becomes an empty object whose `metadata` records the content hash; the bytes live at `.dedup/<sha256>`. Two keys with identical content point at the same blob, so the content is stored once no matter how many keys reference it.
 
 - **`upload`** hashes the body, writes the blob only if that hash isn't already stored (`exists()`), then writes the pointer.
-- **`download`** follows the pointer to the blob and returns it under your key — **ranges included**, because blobs are stored verbatim (unlike [`compression()`](/plugins/compression)).
+- **`download`** follows the pointer to the blob and returns it under your key — **ranges included**, because blobs are stored verbatim (unlike [`compression()`](/docs/plugins/compression)).
 - **`head` / `list`** report the logical content size with the internal fields stripped, without fetching the blob. List hides the blob store from normal listings.
 - **`copy` / `move`** relocate the small pointer, so duplicating a de-duplicated file is near-free and the copy shares the original blob.
 
@@ -51,7 +51,7 @@ With this order the one stored blob is itself compressed and encrypted, and read
 
 ## Things to keep in mind
 
-- **It buffers the whole body** to hash it, so — like [`compression()`](/plugins/compression) — it's unsuitable for unknown-length [streaming uploads](/api/upload) and [resumable uploads](/resumable).
+- **It buffers the whole body** to hash it, so — like [`compression()`](/docs/plugins/compression) — it's unsuitable for unknown-length [streaming uploads](/docs/api/upload) and [resumable uploads](/docs/resumable).
 - **Reads cost a second fetch.** A download reads the pointer, then the blob; a ranged download does a `head` first. `head` and `list` add nothing — they only read the pointer.
 - **It needs adapter metadata support.** The hash round-trips through `metadata`, the same gate a direct `metadata` upload hits.
 - **`url()` and `signedUploadUrl()` fail closed.** A presigned GET would hand out the empty pointer, not the content, and a presigned PUT would write directly and bypass content-addressing — so both throw. Download through the `Files` instance instead.

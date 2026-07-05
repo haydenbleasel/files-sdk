@@ -25,7 +25,7 @@ export function Browser() {
 }
 ```
 
-Delete and download both go through the same `files` instance you pass in, so ambient error state stays consistent. The component owns its own list state (a `files.list()` call on mount) — for shared, cached listing bring [`useList`](/ui/client/react#reactive-reads) instead.
+Delete and download both go through the same `files` instance you pass in, so ambient error state stays consistent. The component owns its own list state (a `files.list()` call on mount) — for shared, cached listing bring [`useList`](/docs/ui/client/react#reactive-reads) instead.
 
 ## Props
 

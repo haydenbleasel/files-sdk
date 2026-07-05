@@ -40,7 +40,7 @@ Read-only instances still support every read surface:
 
 ## What is blocked
 
-Every write surface throws [`FilesError`](/api/errors) with `code: "ReadOnly"`:
+Every write surface throws [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`:
 
 - `upload`
 - `delete`
@@ -61,4 +61,4 @@ try {
 
 ## What it does not lock down
 
-Read-only applies to the unified `Files` API only. The [`raw`](/escape-hatch) escape hatch still exposes the underlying provider client unchanged, so code that writes through `files.raw` bypasses the guard by design.
+Read-only applies to the unified `Files` API only. The [`raw`](/docs/escape-hatch) escape hatch still exposes the underlying provider client unchanged, so code that writes through `files.raw` bypasses the guard by design.

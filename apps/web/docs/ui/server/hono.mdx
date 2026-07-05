@@ -3,7 +3,7 @@ title: Hono
 description: Mount the Files gateway in a Hono app. Web-native, so it runs anywhere Hono does - Cloudflare Workers, Bun, Deno, and Node.
 ---
 
-`files-sdk/hono` mounts a [`createFilesRouter`](/ui/server/gateway) in a Hono app. Like the [Next binding](/ui/server/next) it is Web-native, so it runs anywhere Hono does — **Cloudflare Workers, Bun, Deno, and Node**.
+`files-sdk/hono` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a Hono app. Like the [Next binding](/docs/ui/server/next) it is Web-native, so it runs anywhere Hono does — **Cloudflare Workers, Bun, Deno, and Node**.
 
 `createRouteHandler` returns a single handler. Mount it with `app.all` so all three methods reach the gateway — it dispatches on the method internally (GET = download, POST = the JSON verbs, PUT = upload) and addresses everything by query string, so one fixed path is enough.
 
@@ -28,4 +28,4 @@ app.all("/api/files", createRouteHandler(router));
 export default app;
 ```
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

@@ -18,7 +18,7 @@ controller.abort();
 
 ## Detecting an abort
 
-An aborted call rejects with a `Provider` [`FilesError`](/api/errors) whose `aborted` flag is `true`. That flag, not the `code`, is what distinguishes a cancellation (or a [timeout](/timeouts)) from a real provider failure.
+An aborted call rejects with a `Provider` [`FilesError`](/docs/api/errors) whose `aborted` flag is `true`. That flag, not the `code`, is what distinguishes a cancellation (or a [timeout](/docs/timeouts)) from a real provider failure.
 
 ```ts lineNumbers
 import { FilesError } from "files-sdk";
@@ -50,4 +50,4 @@ The array forms (`upload([…])`, `delete([…])`, …) don't take a per-call `s
 
 Failing fast at the `Files` layer is guaranteed; cancelling the _provider request_ underneath is not. Adapters whose SDK exposes cancellation forward the signal directly — the S3 adapter and the whole S3-compatible catalog (R2 over HTTP, MinIO, Spaces, and every regional / budget / decentralised wrapper), Vercel Blob, and UploadThing's fetch-backed reads. Adapters whose SDK has no cancellation primitive (for example UploadThing's `delete`) still reject at the `Files` layer the instant the signal aborts, but the provider request may run to completion in the background.
 
-Aborts are never retried — see [Retries](/retries) — and a [`timeout`](/timeouts) aborts the call the same way when it fires.
+Aborts are never retried — see [Retries](/docs/retries) — and a [`timeout`](/docs/timeouts) aborts the call the same way when it fires.

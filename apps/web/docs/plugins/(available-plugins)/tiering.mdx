@@ -3,9 +3,9 @@ title: tiering
 description: Route operations between a hot and a cold adapter by size, prefix, or age. Uploads land in the right store, reads transparently find them again, and tier() moves objects between stores - body-transparent, no native dependencies.
 ---
 
-The built-in `tiering()` plugin spreads one logical bucket across two adapters - a **hot** tier for what you reach for often and a **cold** tier for what you rarely touch. An [`upload`](/api/upload) lands in the tier your `route` function picks; every read transparently finds it again. The hot tier is the instance's own adapter (reached through the rest of the pipeline); the cold tier is a second adapter you pass in.
+The built-in `tiering()` plugin spreads one logical bucket across two adapters - a **hot** tier for what you reach for often and a **cold** tier for what you rarely touch. An [`upload`](/docs/api/upload) lands in the tier your `route` function picks; every read transparently finds it again. The hot tier is the instance's own adapter (reached through the rest of the pipeline); the cold tier is a second adapter you pass in.
 
-It's **body-transparent**: it never buffers or transforms bytes - a cross-tier copy streams straight through - so streaming, [range downloads](/api/download), [`url()`](/api/url), and [`signedUploadUrl()`](/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any pair of adapters.
+It's **body-transparent**: it never buffers or transforms bytes - a cross-tier copy streams straight through - so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any pair of adapters.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -31,7 +31,7 @@ await files.download("archive/2019.zip"); // transparently read from cold
 :::note
 `tierOf()` and `tier()` are contributed by the plugin's `extend`, so they only
 appear on the **type** when you construct with
-[`createFiles`](/plugins/api#createfiles) (identical to `new Files()` at
+[`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at
 runtime).
 :::
 
@@ -104,13 +104,13 @@ Because `tier()` moves objects to a tier `route` wouldn't pick from the key alon
 
 ## Merged listing
 
-[`list()`](/api/list) returns objects from **both** tiers. It fetches a page from each, deduplicates (hot wins), sorts by key, and paginates the two tiers independently behind one composite cursor - so [`listAll()`](/api/list) walks the whole namespace across both stores.
+[`list()`](/docs/api/list) returns objects from **both** tiers. It fetches a page from each, deduplicates (hot wins), sorts by key, and paginates the two tiers independently behind one composite cursor - so [`listAll()`](/docs/api/list) walks the whole namespace across both stores.
 
 Two things to know: a page can hold up to the sum of both tiers' page sizes (each tier's `limit` is applied per tier), and keys are sorted **within** a page but - because the tiers paginate independently - not globally across pages. For a single fully-ordered enumeration, list an adapter directly.
 
 ## Ordering and prefixes
 
-- **Place it last (innermost).** Body-transforming plugins like [`encryption()`](/plugins/encryption) and [`compression()`](/plugins/compression) wrap `tiering()` and transform the op on the way in, so they apply to **both** tiers:
+- **Place it last (innermost).** Body-transforming plugins like [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) wrap `tiering()` and transform the op on the way in, so they apply to **both** tiers:
 
   ```ts
   plugins: [encryption(key), tiering({ cold, route })];

@@ -3,7 +3,7 @@ title: usage
 description: Meter storage, bandwidth, and operation counts across a Files instance, and read the running totals back with files.usage(). Counts the bytes you actually read out of a download lazily, optionally bucketed per tenant or prefix. No native dependencies; works on any adapter.
 ---
 
-The built-in `usage()` plugin tallies every operation on a `Files` instance and surfaces the running totals as `files.usage()`. Each call counts as one operation, `upload` adds its size to `bytesUp`, and `download` / `head` wrap the returned body so the bytes you **actually read** add to `bytesDown` — the lazy, stream-level accounting a fire-and-forget [hook](/api/onaction) can't do.
+The built-in `usage()` plugin tallies every operation on a `Files` instance and surfaces the running totals as `files.usage()`. Each call counts as one operation, `upload` adds its size to `bytesUp`, and `download` / `head` wrap the returned body so the bytes you **actually read** add to `bytesDown` — the lazy, stream-level accounting a fire-and-forget [hook](/docs/api/onaction) can't do.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -22,13 +22,13 @@ files.usage();
 // { operations: 2, bytesUp: 5, bytesDown: 5, operationsByKind: { upload: 1, download: 1, … } }
 ```
 
-Because `usage()` adds `files.usage()`, construct the instance with [`createFiles`](/plugins/api#createfiles) so the method shows up on the type — the same as [`versioning()`](/plugins/versioning).
+Because `usage()` adds `files.usage()`, construct the instance with [`createFiles`](/docs/plugins/api#createfiles) so the method shows up on the type — the same as [`versioning()`](/docs/plugins/versioning).
 
 ## How it works
 
 - **`upload`** adds its result's reported size to `bytesUp`. Nothing is buffered — the body still streams to the adapter.
 - **`download` / `head`** return a body wrapped so the bytes are counted as they flow: `stream()` is metered chunk-by-chunk (an aborted read counts only what was consumed), and `arrayBuffer()` / `blob()` / `text()` count the body's length the first time one resolves. **An unread body costs nothing** — and a body read twice counts once.
-- **Every verb** increments `operations` and its `operationsByKind` entry. A call that throws (a missing key, a `validation()` veto) isn't counted, and because plugins run [outside retries](/retries) a call counts once no matter how many attempts it takes.
+- **Every verb** increments `operations` and its `operationsByKind` entry. A call that throws (a missing key, a `validation()` veto) isn't counted, and because plugins run [outside retries](/docs/retries) a call counts once no matter how many attempts it takes.
 
 Bulk `upload([...])` / `download([...])` count **per item**.
 
@@ -46,7 +46,7 @@ Each snapshot is a fresh copy, so mutating it never touches the running totals.
 
 ## Grouping by tenant or prefix
 
-Pass `group` to bucket usage by a label derived from each operation — a tenant id, a key prefix, anything. It receives the full [operation](/plugins/api#filesoperation), so branch on `op.kind` to reach `op.key`, `op.from` / `op.to`, etc.
+Pass `group` to bucket usage by a label derived from each operation — a tenant id, a key prefix, anything. It receives the full [operation](/docs/plugins/api#filesoperation), so branch on `op.kind` to reach `op.key`, `op.from` / `op.to`, etc.
 
 ```ts lineNumbers
 const files = createFiles({
@@ -65,7 +65,7 @@ files.usage(); // the two buckets summed
 
 ## Ordering
 
-Put `usage()` **first** (outermost) to meter what your application sees: a later body-transforming plugin like [`compression()`](/plugins/compression) or [`encryption()`](/plugins/encryption) reports the **logical** size up the chain, and the internal sub-operations a plugin like [`dedup()`](/plugins/dedup) issues stay below it, unmetered.
+Put `usage()` **first** (outermost) to meter what your application sees: a later body-transforming plugin like [`compression()`](/docs/plugins/compression) or [`encryption()`](/docs/plugins/encryption) reports the **logical** size up the chain, and the internal sub-operations a plugin like [`dedup()`](/docs/plugins/dedup) issues stay below it, unmetered.
 
 ```ts
 plugins: [usage(), compression(), encryption(key)];

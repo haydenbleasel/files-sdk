@@ -3,7 +3,7 @@ title: Astro
 description: Mount the Files gateway in an Astro endpoint. createRouteHandler returns { GET, POST, PUT } over the Web Request Astro hands each route - runs on Node and edge adapters.
 ---
 
-`files-sdk/astro` mounts a [`createFilesRouter`](/ui/server/gateway) in an Astro endpoint. Astro hands each route a Web `Request` on `context.request` and wants named per-method exports, so — like [`files-sdk/next`](/ui/server/next) — `createRouteHandler` returns `{ GET, POST, PUT }`: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **Node and edge adapters alike**.
+`files-sdk/astro` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in an Astro endpoint. Astro hands each route a Web `Request` on `context.request` and wants named per-method exports, so — like [`files-sdk/next`](/docs/ui/server/next) — `createRouteHandler` returns `{ GET, POST, PUT }`: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **Node and edge adapters alike**.
 
 ```ts title="src/pages/api/files.ts" lineNumbers
 import { createFiles } from "files-sdk";
@@ -32,4 +32,4 @@ adapter](https://docs.astro.build/en/guides/on-demand-rendering/)
 it and the upload/download paths never reach a server.
 :::
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

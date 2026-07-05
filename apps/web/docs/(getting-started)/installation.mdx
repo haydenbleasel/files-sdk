@@ -23,10 +23,10 @@ files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-pres
 
 The shape is the same for every adapter, only the packages change: Google Cloud Storage adds `@google-cloud/storage` and `google-auth-library`; Azure adds `@azure/storage-blob`, `@azure/core-auth`, and `@azure/identity`; Vercel Blob needs only `@vercel/blob`. A few adapters need no extra packages at all - `files-sdk/fs` and `files-sdk/bun-s3` use primitives the runtime already provides.
 
-The [per-adapter docs](/adapters/s3) list the exact packages for each provider, and the [provider catalog](/providers) exposes the same data programmatically (`peerDeps`) if you're generating install commands or building a config UI.
+The [per-adapter docs](/docs/adapters/s3) list the exact packages for each provider, and the [provider catalog](/docs/providers) exposes the same data programmatically (`peerDeps`) if you're generating install commands or building a config UI.
 
 ## Missing a peer dependency?
 
 Import an adapter without its peer installed and Node throws `ERR_MODULE_NOT_FOUND` naming the package that's missing - the SDK doesn't vendor or shim provider clients, so the failure is loud and specific rather than a silent fallback. Install the named package and the import resolves.
 
-Once your adapter's packages are in place, head to [Usage](/usage) to construct a `Files` instance and run the core methods.
+Once your adapter's packages are in place, head to [Usage](/docs/usage) to construct a `Files` instance and run the core methods.

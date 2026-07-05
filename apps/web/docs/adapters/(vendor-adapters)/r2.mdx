@@ -11,7 +11,7 @@ description: Cloudflare R2 over the S3-compatible HTTP API. Auto-loads R2_* env 
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-Over the HTTP API, `upload` reports true byte-level [progress](/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
+Over the HTTP API, `upload` reports true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
 
 ## Usage
 
@@ -72,7 +72,7 @@ const files = new Files({
 
 ## Signed uploads and `maxSize`
 
-[`signedUploadUrl()`](/api/signed-upload-url) returns a presigned **PUT** URL. Unlike S3, R2 does **not** implement the S3 `POST Object` API, so it has no `content-length-range` policy to enforce an upload size cap at the bucket. Passing `maxSize` throws a `Provider` error rather than handing back a POST form that R2 would reject with `501 Not Implemented` at upload time.
+[`signedUploadUrl()`](/docs/api/signed-upload-url) returns a presigned **PUT** URL. Unlike S3, R2 does **not** implement the S3 `POST Object` API, so it has no `content-length-range` policy to enforce an upload size cap at the bucket. Passing `maxSize` throws a `Provider` error rather than handing back a POST form that R2 would reject with `501 Not Implemented` at upload time.
 
 ```ts lineNumbers
 // ✅ presigned PUT — the browser uploads with fetch(url, { method: "PUT", body: file })

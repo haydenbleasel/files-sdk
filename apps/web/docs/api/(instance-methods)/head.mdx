@@ -5,7 +5,7 @@ description: Fetch an object's metadata without materializing its body - one key
 
 `files.head(key)` · `files.head(keys)`
 
-Returns the same [`StoredFile`](/api/stored-file) shape as [`download`](/api/download), without materializing the body. Calling a body accessor on the result lazy-fetches.
+Returns the same [`StoredFile`](/docs/api/stored-file) shape as [`download`](/docs/api/download), without materializing the body. Calling a body accessor on the result lazy-fetches.
 
 ```ts lineNumbers
 const info = await files.head("avatars/abc.png");

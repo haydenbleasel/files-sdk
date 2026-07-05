@@ -3,7 +3,7 @@ title: onAction
 description: Runs once when a public call settles, on success and on failure - the constructor hook for audit logs, activity feeds, and per-action metrics.
 ---
 
-A constructor [`hook`](/usage#hooks) that runs once when a public call settles, on success and on failure - `status` says which. Single-key operations report `key`; the array form reports the caller's `keys` and emits one event for the whole call, carrying the aggregated `result` (any per-item failures live in that result's `errors`). `copy` and `move` report `from` / `to`. Reach for it for audit logs, activity feeds, and per-action metrics.
+A constructor [`hook`](/docs/usage#hooks) that runs once when a public call settles, on success and on failure - `status` says which. Single-key operations report `key`; the array form reports the caller's `keys` and emits one event for the whole call, carrying the aggregated `result` (any per-item failures live in that result's `errors`). `copy` and `move` report `from` / `to`. Reach for it for audit logs, activity feeds, and per-action metrics.
 
 ```ts lineNumbers
 const files = new Files({
@@ -29,7 +29,7 @@ const files = new Files({
 - **Array calls** (`upload([…])`, `delete([…])`, …) set `keys` and fire one event for the whole batch - the per-item failures live in `result.errors`, not here.
 - **`copy`** and **`move`** set `from` / `to` instead of `key`.
 
-On success, `result` is the call's resolved value (an `UploadResult`, a `StoredFile`, a `ListResult`, …); on failure, `error` is the same [`FilesError`](/api/errors) delivered to [`onError`](/api/onerror) and then thrown. Keys are always the ones you passed - the client [`prefix`](/prefixes) is never leaked.
+On success, `result` is the call's resolved value (an `UploadResult`, a `StoredFile`, a `ListResult`, …); on failure, `error` is the same [`FilesError`](/docs/api/errors) delivered to [`onError`](/docs/api/onerror) and then thrown. Keys are always the ones you passed - the client [`prefix`](/docs/prefixes) is never leaked.
 
 ```ts lineNumbers
 import type { UploadResult } from "files-sdk";
@@ -59,7 +59,7 @@ hooks: {
 
 ## Provenance receipts
 
-With the [`receipts`](/receipts) option on, a successful mutating call (`upload`, `delete`, `copy`, `move`) also carries a `receipt` - a provenance record with the op, provider, key, byte size, etag, timing, and (when asked for) a SHA-256 of the upload body. It's an additive field: absent on reads, on failures, and whenever receipts are off.
+With the [`receipts`](/docs/receipts) option on, a successful mutating call (`upload`, `delete`, `copy`, `move`) also carries a `receipt` - a provenance record with the op, provider, key, byte size, etag, timing, and (when asked for) a SHA-256 of the upload body. It's an additive field: absent on reads, on failures, and whenever receipts are off.
 
 ```ts lineNumbers
 hooks: {

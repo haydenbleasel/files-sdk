@@ -5,7 +5,7 @@ description: Find objects whose key matches a glob (default), regex, substring, 
 
 `files.search(pattern, options?)`
 
-Find objects whose **key** matches `pattern`, walking every page like [`listAll`](/api/list#walking-every-page-with-listall). It's a streaming async iterable of [`StoredFile`](/api/stored-file), so it stays memory-bounded on large buckets and you can `break` to stop early.
+Find objects whose **key** matches `pattern`, walking every page like [`listAll`](/docs/api/list#walking-every-page-with-listall). It's a streaming async iterable of [`StoredFile`](/docs/api/stored-file), so it stays memory-bounded on large buckets and you can `break` to stop early.
 
 ```ts lineNumbers
 // Glob is the default: `*` stays within a path segment, `?` matches one char.
@@ -17,7 +17,7 @@ for await (const file of files.search("avatars/*.png")) {
 const pdfs = await Array.fromAsync(files.search("invoices/2024/*.pdf"));
 ```
 
-Matching is against the caller-facing key, so a [client `prefix`](/prefixes) on the instance is already stripped before the pattern is tested.
+Matching is against the caller-facing key, so a [client `prefix`](/docs/prefixes) on the instance is already stripped before the pattern is tested.
 
 ## Glob syntax
 
@@ -59,7 +59,7 @@ files.search("invoices/2024/q1.pdf", { match: "exact" });
 files.search("*.PNG", { caseInsensitive: true });
 ```
 
-An invalid `regex` pattern throws a [`FilesError`](/api/errors) before the walk begins.
+An invalid `regex` pattern throws a [`FilesError`](/docs/api/errors) before the walk begins.
 
 ## Scoping the walk with `prefix`
 
@@ -87,7 +87,7 @@ const recent = await Array.fromAsync(
 
 ## Provider support
 
-`search` runs on **every adapter**, since it's built on [`listAll`](/api/list#walking-every-page-with-listall) — there's no per-provider search capability and nothing to gate. The two `listAll` caveats carry over: on [Netlify Blobs](/adapters/netlify-blobs) omit `limit` to walk everything, and the non-recursive [Box](/adapters/box) / [OneDrive](/adapters/onedrive) / [SharePoint](/adapters/sharepoint) adapters only see the immediate children of the root folder. An unbounded search with no `prefix` walks the whole bucket by design.
+`search` runs on **every adapter**, since it's built on [`listAll`](/docs/api/list#walking-every-page-with-listall) — there's no per-provider search capability and nothing to gate. The two `listAll` caveats carry over: on [Netlify Blobs](/docs/adapters/netlify-blobs) omit `limit` to walk everything, and the non-recursive [Box](/docs/adapters/box) / [OneDrive](/docs/adapters/onedrive) / [SharePoint](/docs/adapters/sharepoint) adapters only see the immediate children of the root folder. An unbounded search with no `prefix` walks the whole bucket by design.
 
 ## Options
 

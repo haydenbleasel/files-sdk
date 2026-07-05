@@ -3,7 +3,7 @@ title: File Actions
 description: A per-file actions menu — download, copy, rename, move and delete — driven by useFiles.
 ---
 
-A `⋯` menu that routes every action through the `useFiles()` instance you pass in: [`download()`](/api/download), [`copy()`](/api/copy), [`move()`](/api/move) (rename is just a move that keeps the parent prefix) and [`delete()`](/api/delete). Copy, rename and move open a small prompt for the destination key; delete confirms first.
+A `⋯` menu that routes every action through the `useFiles()` instance you pass in: [`download()`](/docs/api/download), [`copy()`](/docs/api/copy), [`move()`](/docs/api/move) (rename is just a move that keeps the parent prefix) and [`delete()`](/docs/api/delete). Copy, rename and move open a small prompt for the destination key; delete confirms first.
 
 <Component path="file-actions/examples/file-actions-basic" />
 
@@ -25,7 +25,7 @@ export function Row({ fileKey }: { fileKey: string }) {
 }
 ```
 
-Drop it into a [File Browser](/ui/components/file-browser) or [File List](/ui/components/file-list) row. `onChanged` fires after a successful copy/rename/move/delete so the parent can re-list. Rename edits only the basename and re-attaches the original prefix; Move takes a full destination key.
+Drop it into a [File Browser](/docs/ui/components/file-browser) or [File List](/docs/ui/components/file-list) row. `onChanged` fires after a successful copy/rename/move/delete so the parent can re-list. Rename edits only the basename and re-attaches the original prefix; Move takes a full destination key.
 
 ## Props
 

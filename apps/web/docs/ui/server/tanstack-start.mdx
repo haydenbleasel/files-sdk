@@ -3,7 +3,7 @@ title: TanStack Start
 description: Mount the Files gateway in a TanStack Start server route. createRouteHandler returns { GET, POST, PUT } over the Web Request - Web-native, runs on every deploy target.
 ---
 
-`files-sdk/tanstack-start` mounts a [`createFilesRouter`](/ui/server/gateway) in a TanStack Start server route. TanStack Start hands each method handler a Web `Request` on `{ request }`, so — like [`files-sdk/next`](/ui/server/next) — `createRouteHandler` returns a `{ GET, POST, PUT }` handlers object: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **every TanStack Start deployment target**.
+`files-sdk/tanstack-start` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a TanStack Start server route. TanStack Start hands each method handler a Web `Request` on `{ request }`, so — like [`files-sdk/next`](/docs/ui/server/next) — `createRouteHandler` returns a `{ GET, POST, PUT }` handlers object: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **every TanStack Start deployment target**.
 
 ```ts title="src/routes/api/files.ts" lineNumbers
 import { createFileRoute } from "@tanstack/react-router";
@@ -26,9 +26,9 @@ export const Route = createFileRoute("/api/files")({
 ```
 
 :::note
-This is the **server** binding — it backs the [React hook](/ui/client/react)
+This is the **server** binding — it backs the [React hook](/docs/ui/client/react)
 client. One route file backs every client binding; the gateway dispatches on
 the method internally (GET = download, POST = the JSON verbs, PUT = upload).
 :::
 
-See the [gateway options](/ui/server/gateway) for the full configuration and the [`authorize`](/ui/server/authorization) model for locking it down.
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

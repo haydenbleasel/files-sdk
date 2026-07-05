@@ -3,7 +3,7 @@ title: API
 description: The plugin contract types and helpers - FilesPlugin, FilesOperation, handlers, and createFiles. See the overview for how they compose.
 ---
 
-The types and helpers that make up the plugin system. See the [overview](/plugins) for how `wrap`, `extend`, and the pipeline fit together.
+The types and helpers that make up the plugin system. See the [overview](/docs/plugins) for how `wrap`, `extend`, and the pipeline fit together.
 
 ## FilesPlugin
 
@@ -29,7 +29,7 @@ The discriminated union handed to `wrap` - one variant per public verb, carrying
 function handlers(map: PluginHandlers): FilesPlugin["wrap"];
 ```
 
-Builds a [`wrap`](/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
+Builds a [`wrap`](/docs/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
 
 ## createFiles
 
@@ -39,4 +39,4 @@ function createFiles(
 ): Files & ExtensionsOf<plugins>;
 ```
 
-Constructs a `Files` instance whose type includes every plugin's [`extend`](/plugins#extend-new-methods) surface. Runtime-identical to `new Files(opts)` - it exists only to surface the added methods on the type.
+Constructs a `Files` instance whose type includes every plugin's [`extend`](/docs/plugins#extend-new-methods) surface. Runtime-identical to `new Files(opts)` - it exists only to surface the added methods on the type.

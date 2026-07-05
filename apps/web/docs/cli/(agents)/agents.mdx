@@ -26,4 +26,4 @@ export FILES_SDK_PROVIDER=fs
 files --root ./sandbox list
 ```
 
-For read-only investigation, the JSON output piped through `jq` is usually enough. For multi-step workflows, the [MCP server](/cli/mcp) keeps tool calls structured and avoids quoting bugs in shell composition. For everything in between, the plain CLI with `--dry-run` gates is the path of least surprise.
+For read-only investigation, the JSON output piped through `jq` is usually enough. For multi-step workflows, the [MCP server](/docs/cli/mcp) keeps tool calls structured and avoids quoting bugs in shell composition. For everything in between, the plain CLI with `--dry-run` gates is the path of least surprise.

@@ -3,9 +3,9 @@ title: versioning
 description: Snapshot an object's prior bytes before every overwrite or delete, and roll a key back with versions() and restore(). Server-side copies under a hidden prefix - body-transparent, no native dependencies, works on any adapter.
 ---
 
-The built-in `versioning()` plugin keeps a history of every object. Before an [`upload`](/api/upload), [`delete`](/api/delete), or the destination of a [`copy`](/api/copy) / [`move`](/api/move) clobbers an existing object, it server-side-copies the current bytes to a time-stamped key under a hidden version prefix. Two new methods - `versions()` and `restore()` - let you list that history and roll a key back.
+The built-in `versioning()` plugin keeps a history of every object. Before an [`upload`](/docs/api/upload), [`delete`](/docs/api/delete), or the destination of a [`copy`](/docs/api/copy) / [`move`](/docs/api/move) clobbers an existing object, it server-side-copies the current bytes to a time-stamped key under a hidden version prefix. Two new methods - `versions()` and `restore()` - let you list that history and roll a key back.
 
-Unlike [`encryption()`](/plugins/encryption) and [`compression()`](/plugins/compression), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/api/download), [`url()`](/api/url), and [`signedUploadUrl()`](/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
+Unlike [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -27,7 +27,7 @@ await files.restore("notes.txt", previous.versionId); // back to "v1"
 :::note
 `versions()` and `restore()` are contributed by the plugin's `extend`, so they
 only appear on the **type** when you construct with
-[`createFiles`](/plugins/api#createfiles) (identical to `new Files()` at
+[`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at
 runtime). `versioning()` is the first built-in plugin to use `extend`.
 :::
 
@@ -54,7 +54,7 @@ await files.upload("report.pdf", v2); // overwrites; v1 is snapshotted
 await files.restore("report.pdf"); // back to v1
 ```
 
-A restore **snapshots the current bytes first**, so it's itself reversible - you can always roll forward again. It resolves to the restored [`StoredFile`](/api/stored-file). Restoring works after a delete too, since the delete was snapshotted:
+A restore **snapshots the current bytes first**, so it's itself reversible - you can always roll forward again. It resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring works after a delete too, since the delete was snapshotted:
 
 ```ts lineNumbers
 await files.delete("report.pdf");
@@ -91,7 +91,7 @@ Snapshots live under `.versions` by default. Override it with `prefix`, and keep
 versioning({ prefix: ".history" });
 ```
 
-Objects under the version prefix are **hidden from [`list()`](/api/list)** so snapshots don't clutter your listings - unless you explicitly list within the prefix (which is how `versions()` reads them). Filtering preserves the page `cursor`, so [pagination](/api/list) still resumes correctly; pages may just come back shorter.
+Objects under the version prefix are **hidden from [`list()`](/docs/api/list)** so snapshots don't clutter your listings - unless you explicitly list within the prefix (which is how `versions()` reads them). Filtering preserves the page `cursor`, so [pagination](/docs/api/list) still resumes correctly; pages may just come back shorter.
 
 ## Ordering
 
@@ -104,7 +104,7 @@ plugins: [versioning(), compression(), encryption(key)];
 ## Things to keep in mind
 
 - **A `head` + `copy` per overwrite/delete.** Snapshotting adds two adapter round-trips to writes that hit an existing object; first writes cost only the `head`. It's the price of keeping history.
-- **Direct presigned writes bypass it.** A client `PUT` to a [`signedUploadUrl`](/api/signed-upload-url) never runs the plugin, so no snapshot is taken. Write through the instance to version. It's a safety net, not a security control, so - unlike [`validation()`](/plugins/validation) - it doesn't fail closed.
+- **Direct presigned writes bypass it.** A client `PUT` to a [`signedUploadUrl`](/docs/api/signed-upload-url) never runs the plugin, so no snapshot is taken. Write through the instance to version. It's a safety net, not a security control, so - unlike [`validation()`](/docs/plugins/validation) - it doesn't fail closed.
 - **`move` snapshots only its destination.** A rename relocates the bytes rather than destroying them, so the source isn't snapshotted; the data lives on at the new key.
 - **History is unbounded** unless you set `limit`.
 - **Don't store your own data under the version prefix.** Writes there are passed through un-versioned and hidden from `list()`.

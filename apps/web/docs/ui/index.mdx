@@ -3,7 +3,7 @@ title: Overview
 description: The whole Files API in the browser, over one endpoint — a React hook, a Vue composable, or Svelte stores, backed by a server gateway you mount in minutes.
 ---
 
-`files-sdk` gives the browser the same API the SDK gives the server. One binding — a [React hook](/ui/client/react), a [Vue composable](/ui/client/vue), or [Svelte stores](/ui/client/svelte) — mirrors every `Files` verb over a single HTTP endpoint:
+`files-sdk` gives the browser the same API the SDK gives the server. One binding — a [React hook](/docs/ui/client/react), a [Vue composable](/docs/ui/client/vue), or [Svelte stores](/docs/ui/client/svelte) — mirrors every `Files` verb over a single HTTP endpoint:
 
 <Tabs>
 
@@ -87,23 +87,23 @@ The browser never holds storage credentials. Calls go to **your** endpoint, whic
 
 ## The two halves
 
-|            | Package                                                                                                                    | What it is                                                                                                                                                  |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Client** | [`files-sdk/react`](/ui/client/react), [`files-sdk/vue`](/ui/client/vue), [`files-sdk/svelte`](/ui/client/svelte)          | A `useFiles` binding for your framework — every verb (imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`.         |
-| **Server** | `files-sdk/api` + a framework adapter ([Next.js](/ui/server/next), [Hono](/ui/server/hono), [Express](/ui/server/express)) | A [gateway](/ui/server/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/ui/server/authorization) hook. |
+|            | Package                                                                                                                                   | What it is                                                                                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Client** | [`files-sdk/react`](/docs/ui/client/react), [`files-sdk/vue`](/docs/ui/client/vue), [`files-sdk/svelte`](/docs/ui/client/svelte)          | A `useFiles` binding for your framework — every verb (imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`.                   |
+| **Server** | `files-sdk/api` + a framework adapter ([Next.js](/docs/ui/server/next), [Hono](/docs/ui/server/hono), [Express](/docs/ui/server/express)) | A [gateway](/docs/ui/server/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/docs/ui/server/authorization) hook. |
 
 The same gateway backs all three bindings. A framework-agnostic core, `createFilesClient` from `files-sdk/client`, sits under them for non-framework (Node, worker) callers.
 
 :::warning
 The gateway proxies `download`, `list`, `delete`, and `move` to the browser —
 it is effectively a remote storage console. It is **deny-by-default**: nothing
-is exposed until you configure [`authorize`](/ui/server/authorization) or
+is exposed until you configure [`authorize`](/docs/ui/server/authorization) or
 `operations`. Read that page before shipping.
 :::
 
 ## Quick start
 
-**1. Mount the gateway.** Expose the `Files` API at an endpoint and scope every key to the signed-in user. This example uses Next.js; [Hono](/ui/server/hono) and [Express](/ui/server/express) are a one-liner too:
+**1. Mount the gateway.** Expose the `Files` API at an endpoint and scope every key to the signed-in user. This example uses Next.js; [Hono](/docs/ui/server/hono) and [Express](/docs/ui/server/express) are a one-liner too:
 
 ```ts title="app/api/files/route.ts" lineNumbers
 import { createFiles } from "files-sdk";
@@ -125,4 +125,4 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 
 **2. Use your binding.** Drop the component above into your app — that's the whole loop: uploads stream directly to storage (or proxy through your endpoint for adapters that can't presign), and reads run against your gateway. Keys the client sends are relative to the authorized prefix, so the browser can never address another user's files. For a file browser, the reactive reads (`useList` / `useFile` / `useSearch`) wrap the read verbs with `data` / `isLoading` / `refetch`.
 
-Next: pick your binding — [React](/ui/client/react), [Vue](/ui/client/vue), or [Svelte](/ui/client/svelte) — then set up the [gateway](/ui/server/gateway) and its [authorization](/ui/server/authorization).
+Next: pick your binding — [React](/docs/ui/client/react), [Vue](/docs/ui/client/vue), or [Svelte](/docs/ui/client/svelte) — then set up the [gateway](/docs/ui/server/gateway) and its [authorization](/docs/ui/server/authorization).

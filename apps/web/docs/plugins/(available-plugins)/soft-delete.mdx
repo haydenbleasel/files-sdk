@@ -3,9 +3,9 @@ title: soft-delete
 description: Turn delete into a recoverable move into a trash prefix, with trashed(), restore(), and purge(). A server-side move under a hidden prefix - body-transparent, no native dependencies, works on any adapter.
 ---
 
-The built-in `softDelete()` plugin gives you a recycle bin. Instead of destroying an object, [`delete`](/api/delete) server-side **moves** it to a hidden trash prefix; the bytes only ever leave storage when you `purge()`. Three new methods - `trashed()`, `restore()`, and `purge()` - let you list, recover, and permanently remove what's been deleted.
+The built-in `softDelete()` plugin gives you a recycle bin. Instead of destroying an object, [`delete`](/docs/api/delete) server-side **moves** it to a hidden trash prefix; the bytes only ever leave storage when you `purge()`. Three new methods - `trashed()`, `restore()`, and `purge()` - let you list, recover, and permanently remove what's been deleted.
 
-Like [`versioning()`](/plugins/versioning), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/api/download), [`url()`](/api/url), and [`signedUploadUrl()`](/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
+Like [`versioning()`](/docs/plugins/versioning), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
@@ -27,7 +27,7 @@ await files.restore("notes.txt"); // back to "notes.txt"
 :::note
 `trashed()`, `restore()`, and `purge()` are contributed by the plugin's
 `extend`, so they only appear on the **type** when you construct with
-[`createFiles`](/plugins/api#createfiles) (identical to `new Files()` at
+[`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at
 runtime).
 :::
 
@@ -35,7 +35,7 @@ runtime).
 
 A soft delete is a plain object **move**, not a re-upload:
 
-1. A [`delete`](/api/delete) of a live key `photos/a.jpg` moves the object to `"<prefix>/<key>"` - the default prefix is `.trash`, so it lands at `.trash/photos/a.jpg`.
+1. A [`delete`](/docs/api/delete) of a live key `photos/a.jpg` moves the object to `"<prefix>/<key>"` - the default prefix is `.trash`, so it lands at `.trash/photos/a.jpg`.
 2. The original key is now gone from listings; the bytes live on under the trash prefix.
 3. Deleting a key that doesn't exist stays a **no-op**, exactly like a plain `delete` - the move only runs when there's something to move.
 
@@ -43,7 +43,7 @@ Because a move relocates whatever is **already stored**, the plugin composes cle
 
 ## Restoring
 
-`restore(key)` moves the trashed copy back over the live key and resolves to the restored [`StoredFile`](/api/stored-file). Restoring also clears the copy from the trash:
+`restore(key)` moves the trashed copy back over the live key and resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring also clears the copy from the trash:
 
 ```ts lineNumbers
 await files.delete("report.pdf");
@@ -85,7 +85,7 @@ Trashed objects live under `.trash` by default. Override it with `prefix`, and k
 softDelete({ prefix: ".bin" });
 ```
 
-Objects under the trash prefix are **hidden from [`list()`](/api/list)** so deletes don't linger in your listings - unless you explicitly list within the prefix (which is how `trashed()` reads them). Filtering preserves the page `cursor`, so [pagination](/api/list) still resumes correctly; pages may just come back shorter.
+Objects under the trash prefix are **hidden from [`list()`](/docs/api/list)** so deletes don't linger in your listings - unless you explicitly list within the prefix (which is how `trashed()` reads them). Filtering preserves the page `cursor`, so [pagination](/docs/api/list) still resumes correctly; pages may just come back shorter.
 
 ## Ordering
 
@@ -97,8 +97,8 @@ plugins: [softDelete(), encryption(key)];
 
 ## Things to keep in mind
 
-- **One trashed copy per key.** A delete moves to `"<prefix>/<key>"`, so re-deleting a key whose trashed copy still exists **replaces** that copy (latest delete wins). Reach for [`versioning()`](/plugins/versioning) if you need every deleted generation kept.
+- **One trashed copy per key.** A delete moves to `"<prefix>/<key>"`, so re-deleting a key whose trashed copy still exists **replaces** that copy (latest delete wins). Reach for [`versioning()`](/docs/plugins/versioning) if you need every deleted generation kept.
 - **A delete costs an extra round-trip.** A soft delete is a server-side `copy` + `delete` rather than a single delete. It's the price of recoverability.
-- **Direct presigned writes bypass it.** Only deletes through the instance are trashed. It's a safety net, not a security control, so - unlike [`validation()`](/plugins/validation) - it doesn't fail closed.
+- **Direct presigned writes bypass it.** Only deletes through the instance are trashed. It's a safety net, not a security control, so - unlike [`validation()`](/docs/plugins/validation) - it doesn't fail closed.
 - **Trash grows until you `purge()`.** Nothing expires on its own; wire up your own retention if you need one.
 - **Don't store your own data under the trash prefix.** A `delete` there is a real delete, and the objects are hidden from `list()`.

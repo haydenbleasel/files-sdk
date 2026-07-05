@@ -72,7 +72,7 @@ export const Hero = ({ adapterCount, latestVersion }: HeroProps) => (
       >
         <InstallCommand />
         <Button asChild size="lg" variant="ghost">
-          <a href="/api">
+          <a href="/docs/api">
             Read the docs
             <ArrowRight data-icon="inline-end" />
           </a>
@@ -99,7 +99,7 @@ export const Hero = ({ adapterCount, latestVersion }: HeroProps) => (
       <p className="mt-8 text-center font-mono text-xs text-muted-foreground">
         and {adapterCount - iconList.length} more —{" "}
         <a
-          href="/adapters"
+          href="/docs/adapters"
           className="text-foreground underline-offset-4 hover:underline"
         >
           see every adapter →
