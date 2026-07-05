@@ -281,16 +281,18 @@ describe("receipts — sha256 only when asked", () => {
       typedArrayView: new Int8Array(arrayBuffer.slice(0)),
       uint8: new Uint8Array(helloBytes),
     };
-    for (const [name, body] of Object.entries(bodies)) {
-      const rec = receiptRecorder();
-      const files = new Files({
-        adapter: fakeAdapter(),
-        hooks: rec.hooks,
-        receipts: { sha256: true },
-      });
-      await files.upload(`${name}.txt`, body);
-      expect(rec.receipts[0]?.sha256).toBe(SHA256_HELLO);
-    }
+    await Promise.all(
+      Object.entries(bodies).map(async ([name, body]) => {
+        const rec = receiptRecorder();
+        const files = new Files({
+          adapter: fakeAdapter(),
+          hooks: rec.hooks,
+          receipts: { sha256: true },
+        });
+        await files.upload(`${name}.txt`, body);
+        expect(rec.receipts[0]?.sha256).toBe(SHA256_HELLO);
+      })
+    );
   });
 });
 

@@ -430,6 +430,7 @@ const fakeBinding = () => {
         let total = 0;
         const reader = body.getReader();
         while (true) {
+          // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
           const { value, done } = await reader.read();
           if (done) {
             break;
@@ -823,6 +824,7 @@ describe("r2 adapter — Workers binding path", () => {
     const reader = got.stream().getReader();
     const chunks: Uint8Array[] = [];
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
       const { value, done } = await reader.read();
       if (done) {
         break;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 
 import {
   runCopy,
@@ -30,6 +30,7 @@ const collect = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   for (;;) {
+    // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
     const { done, value } = await reader.read();
     if (done) {
       break;
@@ -114,7 +115,7 @@ describe("cli/io", () => {
 describe("cli/io filesystem helpers", () => {
   const tmp: string[] = [];
   const mkroot = async (): Promise<string> => {
-    const dir = await mkdtemp(join(tmpdir(), "files-sdk-io-"));
+    const dir = await mkdtemp(path.join(tmpdir(), "files-sdk-io-"));
     tmp.push(dir);
     return dir;
   };
@@ -126,21 +127,21 @@ describe("cli/io filesystem helpers", () => {
 
   test("fileBodyStream streams a file's bytes lazily", async () => {
     const dir = await mkroot();
-    const file = join(dir, "body.txt");
+    const file = path.join(dir, "body.txt");
     await writeFile(file, "lazy bytes");
     expect(await collect(fileBodyStream(file))).toBe("lazy bytes");
   });
 
   test("fileBodyStream closes cleanly on an empty file", async () => {
     const dir = await mkroot();
-    const file = join(dir, "empty.txt");
+    const file = path.join(dir, "empty.txt");
     await writeFile(file, "");
     expect(await collect(fileBodyStream(file))).toBe("");
   });
 
   test("fileBodyStream cancel tears down the underlying reader", async () => {
     const dir = await mkroot();
-    const file = join(dir, "cancel.txt");
+    const file = path.join(dir, "cancel.txt");
     await writeFile(file, "abcdef");
     const stream = fileBodyStream(file);
     const reader = stream.getReader();
@@ -152,10 +153,10 @@ describe("cli/io filesystem helpers", () => {
 
   test("walkDir returns sorted, posix-keyed regular files only", async () => {
     const dir = await mkroot();
-    await mkdir(join(dir, "sub"), { recursive: true });
-    await writeFile(join(dir, "b.txt"), "b");
-    await writeFile(join(dir, "a.txt"), "a");
-    await writeFile(join(dir, "sub", "c.txt"), "c");
+    await mkdir(path.join(dir, "sub"), { recursive: true });
+    await writeFile(path.join(dir, "b.txt"), "b");
+    await writeFile(path.join(dir, "a.txt"), "a");
+    await writeFile(path.join(dir, "sub", "c.txt"), "c");
     const walked = await walkDir(dir);
     expect(walked.map((f) => f.key)).toEqual(["a.txt", "b.txt", "sub/c.txt"]);
   });
@@ -163,7 +164,7 @@ describe("cli/io filesystem helpers", () => {
   test("writeBodyToDir writes under the dir, creating subdirs", async () => {
     const dir = await mkroot();
     const dest = await writeBodyToDir(fakeStoredFile("x/y/z.txt", "deep"), dir);
-    expect(dest).toBe(join(dir, "x/y/z.txt"));
+    expect(dest).toBe(path.join(dir, "x/y/z.txt"));
     expect(await readFile(dest, "utf-8")).toBe("deep");
   });
 
@@ -331,7 +332,7 @@ describe("cli/commands (fs integration)", () => {
   const captureStderr = (): string => stderrChunks.join("");
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "files-sdk-cli-"));
+    root = await mkdtemp(path.join(tmpdir(), "files-sdk-cli-"));
     stdoutChunks = [];
     stderrChunks = [];
     originalStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -359,7 +360,7 @@ describe("cli/commands (fs integration)", () => {
   });
 
   test("upload writes the file under root", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "hello");
     await runUpload({
       ...common(),
@@ -367,25 +368,28 @@ describe("cli/commands (fs integration)", () => {
       file: src,
       key: "greetings/hi.txt",
     });
-    const written = await readFile(join(root, "greetings/hi.txt"), "utf-8");
+    const written = await readFile(
+      path.join(root, "greetings/hi.txt"),
+      "utf-8"
+    );
     expect(written).toBe("hello");
     const payload = JSON.parse(captureStdout()) as { key: string };
     expect(payload.key).toBe("greetings/hi.txt");
   });
 
   test("download streams the body to a destination file", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "world");
     await runUpload({ ...common(), file: src, key: "out/body.txt" });
     stdoutChunks.length = 0;
 
-    const dest = join(root, "downloaded.txt");
+    const dest = path.join(root, "downloaded.txt");
     await runDownload({ ...common(), keys: ["out/body.txt"], out: dest });
     expect(await readFile(dest, "utf-8")).toBe("world");
   });
 
   test("head returns metadata for an uploaded key", async () => {
-    const src = join(root, "src.bin");
+    const src = path.join(root, "src.bin");
     await Bun.write(src, "abcd");
     await runUpload({ ...common(), file: src, key: "meta.bin" });
     stdoutChunks.length = 0;
@@ -397,7 +401,7 @@ describe("cli/commands (fs integration)", () => {
   });
 
   test("exists prints true when the key is present", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "x");
     await runUpload({ ...common(), file: src, key: "present.txt" });
     stdoutChunks.length = 0;
@@ -408,17 +412,17 @@ describe("cli/commands (fs integration)", () => {
   });
 
   test("copy duplicates the body server-side", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "copied");
     await runUpload({ ...common(), file: src, key: "from.txt" });
     stdoutChunks.length = 0;
 
     await runCopy({ ...common(), from: "from.txt", to: "to.txt" });
-    expect(await readFile(join(root, "to.txt"), "utf-8")).toBe("copied");
+    expect(await readFile(path.join(root, "to.txt"), "utf-8")).toBe("copied");
   });
 
   test("delete removes the key", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "doomed");
     await runUpload({ ...common(), file: src, key: "kill.txt" });
     stdoutChunks.length = 0;
@@ -429,7 +433,7 @@ describe("cli/commands (fs integration)", () => {
   });
 
   test("list returns uploaded keys under a prefix", async () => {
-    const src = join(root, "src.txt");
+    const src = path.join(root, "src.txt");
     await Bun.write(src, "x");
     await runUpload({ ...common(), file: src, key: "logs/a.txt" });
     await runUpload({ ...common(), file: src, key: "logs/b.txt" });

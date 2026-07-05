@@ -73,15 +73,19 @@ describe("compression plugin — round-trips", () => {
   });
 
   test("supports deflate and deflate-raw formats", async () => {
-    for (const format of ["deflate", "deflate-raw"] as CompressionFormat[]) {
-      const adapter = fakeAdapter();
-      const files = compressed(adapter, format);
-      await files.upload("a.txt", TEXT);
-      const raw = await new Files({ adapter }).download("a.txt");
-      expect(raw.metadata?.fscmp_alg).toBe(format);
-      const file = await files.download("a.txt");
-      expect(await file.text()).toBe(TEXT);
-    }
+    await Promise.all(
+      (["deflate", "deflate-raw"] as CompressionFormat[]).map(
+        async (format) => {
+          const adapter = fakeAdapter();
+          const files = compressed(adapter, format);
+          await files.upload("a.txt", TEXT);
+          const raw = await new Files({ adapter }).download("a.txt");
+          expect(raw.metadata?.fscmp_alg).toBe(format);
+          const file = await files.download("a.txt");
+          expect(await file.text()).toBe(TEXT);
+        }
+      )
+    );
   });
 });
 

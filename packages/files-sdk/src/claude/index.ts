@@ -104,7 +104,7 @@ export interface ClaudeFileTools {
    * MCP-prefixed form (`"mcp__files__uploadFile"`). Read tools and unknown
    * names return `false`.
    */
-  needsApproval(toolName: string): boolean;
+  needsApproval: (toolName: string) => boolean;
   /**
    * The raw SDK MCP server instance — same value as
    * `mcpServers[serverName]`. Exposed for callers that want to compose it

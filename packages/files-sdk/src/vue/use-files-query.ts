@@ -31,7 +31,7 @@ export interface QueryReturn<T> {
   error: Ref<FilesError | undefined>;
   isLoading: Ref<boolean>;
   isFetching: Ref<boolean>;
-  refetch(): void;
+  refetch: () => void;
 }
 
 const makeClient = (config?: QueryConfig): FilesClient =>

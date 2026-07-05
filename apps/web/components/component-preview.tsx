@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import path from "node:path";
 
 import { DynamicCodeBlock } from "fumadocs-ui/components/dynamic-codeblock";
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
@@ -35,7 +35,7 @@ export const ComponentPreview = async ({
   const Example = mod.default as ComponentType;
 
   const raw = await readFile(
-    join(
+    path.join(
       process.cwd(),
       "registry/files-sdk",
       component,

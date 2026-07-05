@@ -63,23 +63,23 @@ export type ZipApi = {
    * Selection and download failures surface as errors on the stream;
    * cancelling it stops the remaining work.
    */
-  zip(
+  zip: (
     selection: ZipSelection,
     options?: ZipOptions
-  ): ReadableStream<Uint8Array>;
+  ) => ReadableStream<Uint8Array>;
   /** Build the same archive and store it back at `key` (`application/zip`). */
-  zipTo(
+  zipTo: (
     key: string,
     selection: ZipSelection,
     options?: ZipOptions
-  ): Promise<UploadResult>;
+  ) => Promise<UploadResult>;
   /**
    * Extract a stored ZIP archive into individual objects: each file entry is
    * uploaded under {@link UnzipOptions.into} + its archive path, with a
    * content type inferred from its extension. Directory entries are skipped.
    * Returns one {@link UploadResult} per extracted entry, in archive order.
    */
-  unzip(key: string, options?: UnzipOptions): Promise<UploadResult[]>;
+  unzip: (key: string, options?: UnzipOptions) => Promise<UploadResult[]>;
 };
 
 /** ZIP record signatures (little-endian on the wire). */
@@ -370,6 +370,7 @@ const zipChunks = async function* zipChunks(
   const central: CentralEntry[] = [];
   let offset = 0;
   for (const entry of entries) {
+    // eslint-disable-next-line no-await-in-loop -- archive is streamed record by record with a running offset.
     const file = await files.download(entry.key);
     // Fail before streaming gigabytes that can't be represented anyway.
     assertFits(file.size, `entry "${entry.key}"`);
@@ -404,6 +405,7 @@ const zipChunks = async function* zipChunks(
     let drained = false;
     try {
       for (;;) {
+        // eslint-disable-next-line no-await-in-loop -- single body reader; compressed chunks arrive sequentially.
         const { done, value } = await reader.read();
         if (done) {
           drained = true;
@@ -417,6 +419,7 @@ const zipChunks = async function* zipChunks(
       // An early consumer cancel lands here mid-body; release the source so
       // the underlying download stops too.
       if (!drained) {
+        // eslint-disable-next-line no-await-in-loop -- release this entry's source before advancing the archive.
         await reader.cancel();
       }
     }
@@ -567,6 +570,7 @@ const collectLimited = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
     const { done, value } = await reader.read();
     if (done) {
       break;
@@ -574,6 +578,7 @@ const collectLimited = async (
     if (value) {
       total += value.byteLength;
       if (total > maxBytes) {
+        // eslint-disable-next-line no-await-in-loop -- cancel the source once the size limit is exceeded.
         await reader.cancel();
         throw new FilesError(
           "Provider",
@@ -772,8 +777,10 @@ export const zip = (): FilesPlugin<ZipApi> => ({
               `zip: "${key}" exceeds the configured unzip total size limit`
             );
           }
+          // eslint-disable-next-line no-await-in-loop -- decompress entries one at a time to bound memory; running total-size guard is order-sensitive.
           const data = await extractEntry(bytes, entry, key, maxEntrySize);
           results.push(
+            // eslint-disable-next-line no-await-in-loop -- upload each extracted entry in order after its size is accounted.
             await files.upload(into + entry.name, data, {
               contentType: inferTypeFromName(entry.name),
             })

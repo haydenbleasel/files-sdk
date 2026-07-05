@@ -35,6 +35,7 @@ const Example = () => {
       return;
     }
     for (const file of picked) {
+      // eslint-disable-next-line no-await-in-loop -- demo uploads files one at a time so progress reads cleanly
       await files.upload(`demo/${file.name}`, file, {
         contentType: file.type,
       });

@@ -658,6 +658,7 @@ const dispatchJson = async (
           return !scope.filterKeys || scope.filterKeys(unscoped);
         });
         for (const t of mine) {
+          // eslint-disable-next-line no-await-in-loop -- purge scoped trash entries sequentially; stops on the first failure.
           await plugin.purge(t.key);
         }
       } else {

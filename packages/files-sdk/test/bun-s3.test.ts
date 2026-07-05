@@ -418,6 +418,7 @@ describe("bun-s3 adapter", () => {
     const reader = got.stream().getReader();
     const chunks: Uint8Array[] = [];
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const { done, value } = await reader.read();
       if (done) {
         break;

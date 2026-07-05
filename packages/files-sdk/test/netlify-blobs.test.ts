@@ -388,6 +388,7 @@ describe("netlify-blobs adapter", () => {
     const reader = got.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -571,9 +572,9 @@ describe("netlify-blobs adapter", () => {
     // the third page entirely. This is the perf-cliff regression test:
     // before pagination, the adapter drained all pages regardless of limit.
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    for (const k of ["a", "b", "c", "d", "e", "f"]) {
-      await files.upload(k, k);
-    }
+    await Promise.all(
+      ["a", "b", "c", "d", "e", "f"].map((k) => files.upload(k, k))
+    );
     listPagesYielded = 0;
     const out = await files.list({ limit: 3 });
     expect(out.items).toHaveLength(3);
@@ -582,9 +583,7 @@ describe("netlify-blobs adapter", () => {
 
   test("list without a limit drains all pages", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    for (const k of ["a", "b", "c", "d", "e"]) {
-      await files.upload(k, k);
-    }
+    await Promise.all(["a", "b", "c", "d", "e"].map((k) => files.upload(k, k)));
     listPagesYielded = 0;
     const out = await files.list();
     expect(out.items).toHaveLength(5);

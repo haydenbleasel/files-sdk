@@ -223,6 +223,7 @@ const runDownloadMany = async (
   });
   const downloaded: { key: string; path: string }[] = [];
   for (const file of result.downloaded) {
+    // eslint-disable-next-line no-await-in-loop -- stream each downloaded body to disk sequentially to bound open fds/memory.
     const dest = await writeBodyToDir(file, opts.outDir);
     downloaded.push({ key: file.key, path: dest });
   }

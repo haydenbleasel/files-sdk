@@ -70,7 +70,9 @@ const parseFilter = (filter: string): SimpleFilter | undefined => {
   // The adapter only emits two shapes via `pb.filter`:
   //   key = 'value'
   //   key ~ 'prefix%'
-  const m = /^(\w+)\s*([=~])\s*'((?:[^'\\]|\\.)*)'$/u.exec(filter);
+  const m = /^(?<field>\w+)\s*(?<op>[=~])\s*'(?<value>(?:[^'\\]|\\.)*)'$/u.exec(
+    filter
+  );
   if (!m) {
     return;
   }
@@ -78,7 +80,7 @@ const parseFilter = (filter: string): SimpleFilter | undefined => {
   if (!field || !op || raw === undefined) {
     return;
   }
-  const value = raw.replaceAll(/\\(.)/gu, "$1");
+  const value = raw.replaceAll(/\\(?<ch>.)/gu, "$1");
   return { field, op: op as "=" | "~", value };
 };
 
@@ -184,6 +186,7 @@ const updateMock = mock(async (id: string, formData: FormData) => {
     }
     const fileBlob = formData.get("file");
     if (fileBlob instanceof Blob) {
+      // eslint-disable-next-line no-await-in-loop -- scans backing entries for the matching record and returns on first hit
       const bytes = new Uint8Array(await fileBlob.arrayBuffer());
       const filename =
         fileBlob instanceof File ? fileBlob.name : entry.filename;
@@ -245,7 +248,7 @@ const getURLMock = mock(
 );
 
 const filterMock = mock((template: string, params: Record<string, string>) =>
-  template.replaceAll(/\{:(\w+)\}/gu, (_, name: string) => {
+  template.replaceAll(/\{:(?<name>\w+)\}/gu, (_, name: string) => {
     const v = params[name] ?? "";
     return `'${v.replaceAll("\\", String.raw`\\`).replaceAll("'", String.raw`\'`)}'`;
   })
@@ -320,7 +323,10 @@ mock.module("pocketbase", () => ({
 const fetchMock = mock((url: string | URL | Request) => {
   const urlStr = typeof url === "string" ? url : url.toString();
   // Parse /api/files/<collectionId>/<recordId>/<filename>(?token=...)
-  const m = /\/api\/files\/[^/]+\/([^/]+)\/([^?]+)/u.exec(urlStr);
+  const m =
+    /\/api\/files\/[^/]+\/(?<collection>[^/]+)\/(?<filename>[^?]+)/u.exec(
+      urlStr
+    );
   if (!m) {
     return Promise.resolve(new Response("not found", { status: 404 }));
   }
@@ -611,6 +617,7 @@ describe("pocketbase adapter", () => {
       url: "http://pb.test",
     });
     for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- seeds records in insertion order for the position-based cursor assertions
       await adapter.upload(`f-${i}.txt`, String(i));
     }
     const page1 = await adapter.list({ limit: 2 });

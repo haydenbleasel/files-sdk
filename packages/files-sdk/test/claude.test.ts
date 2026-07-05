@@ -197,6 +197,7 @@ describe("createClaudeFileTools", () => {
       "mcp__files__copyFile",
       "mcp__files__signUploadUrl",
     ]) {
+      // eslint-disable-next-line no-await-in-loop -- checks approval for each tool name against the shared tool set
       const r = await callCanUseTool(tools.canUseTool, name);
       expect(r.behavior).toBe("allow");
     }
@@ -379,9 +380,11 @@ describe("createClaudeFileTools", () => {
   test("listFiles forwards prefix to underlying adapter", async () => {
     const files = newFiles();
     const upload = claudeUploadFile(files);
-    for (const k of ["a/1.txt", "a/2.txt", "b/1.txt"]) {
-      await invoke(upload, { content: "x", key: k });
-    }
+    await Promise.all(
+      ["a/1.txt", "a/2.txt", "b/1.txt"].map((k) =>
+        invoke(upload, { content: "x", key: k })
+      )
+    );
     const result = parseOutput(
       await invoke(claudeListFiles(files), { prefix: "a/" })
     ) as { items: { key: string }[] };

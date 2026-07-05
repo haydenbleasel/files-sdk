@@ -23,7 +23,7 @@ export interface QueryResult<T> {
   error: FilesError | undefined;
   isLoading: boolean;
   isFetching: boolean;
-  refetch(): void;
+  refetch: () => void;
 }
 
 const useClient = (config?: QueryConfig): FilesClient => {

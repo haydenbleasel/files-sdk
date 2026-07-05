@@ -281,9 +281,11 @@ describe("createAgentsFileTools", () => {
   test("listFiles forwards prefix to underlying adapter", async () => {
     const files = newFiles();
     const tools = createAgentsFileTools({ files });
-    for (const k of ["a/1.txt", "a/2.txt", "b/1.txt"]) {
-      await invoke(tools.uploadFile, { content: "x", key: k });
-    }
+    await Promise.all(
+      ["a/1.txt", "a/2.txt", "b/1.txt"].map((k) =>
+        invoke(tools.uploadFile, { content: "x", key: k })
+      )
+    );
 
     const result = (await invoke(tools.listFiles, { prefix: "a/" })) as {
       items: { key: string }[];

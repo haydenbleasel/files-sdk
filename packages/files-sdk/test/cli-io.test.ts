@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import {
   emit,
@@ -229,6 +229,7 @@ describe("cli/io readBody", () => {
     const reader = (body as ReadableStream<Uint8Array>).getReader();
     const chunks: Uint8Array[] = [];
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const r = await reader.read();
       if (r.done) {
         break;

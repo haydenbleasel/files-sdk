@@ -318,6 +318,7 @@ const collectStream = async (
   let total = 0;
   const reader = stream.getReader();
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- stream reader: each read() pulls the next chunk sequentially
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -693,14 +694,17 @@ export const onedrive = (
   const pollCopyMonitor = async (monitorUrl: string): Promise<void> => {
     const start = Date.now();
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- copy-status polling: each poll must observe the prior response before deciding to poll again
       const res = await fetch(monitorUrl);
       if (!res.ok && res.status !== 202) {
+        // eslint-disable-next-line no-await-in-loop -- reading the error body of the current poll response
         const text = await res.text().catch(() => "");
         throw new FilesError(
           "Provider",
           `onedrive: copy monitor failed (${res.status}): ${text || res.statusText}`
         );
       }
+      // eslint-disable-next-line no-await-in-loop -- parsing the current poll response body
       const json = (await res.json().catch(() => ({}))) as {
         status?: string;
         percentageComplete?: number;
@@ -721,6 +725,7 @@ export const onedrive = (
           `onedrive: copy operation timed out after ${copyTimeoutMs}ms`
         );
       }
+      // eslint-disable-next-line no-await-in-loop -- backoff between sequential status polls
       await delay(COPY_POLL_INTERVAL_MS);
     }
   };
@@ -756,6 +761,7 @@ export const onedrive = (
     while (offset < total) {
       const end = Math.min(offset + rangeSize, total);
       const chunk = data.subarray(offset, end);
+      // eslint-disable-next-line no-await-in-loop -- chunked upload session: each Content-Range PUT depends on the prior chunk's offset
       const res = await fetch(uploadUrl, {
         // A Node Buffer is a valid fetch body at runtime (undici), but its
         // generic ArrayBufferLike backing doesn't satisfy the DOM BodyInit type.
@@ -765,6 +771,7 @@ export const onedrive = (
         ...(signal && { signal }),
       });
       if (!res.ok) {
+        // eslint-disable-next-line no-await-in-loop -- reading the error body of the current chunk PUT
         const text = await res.text().catch(() => "");
         throw new FilesError(
           "Provider",
@@ -774,6 +781,7 @@ export const onedrive = (
       // 202 = accepted, more chunks expected; 200/201 = final chunk, body is
       // the DriveItem. Read it on completion and ignore the interim ranges.
       if (res.status === 200 || res.status === 201) {
+        // eslint-disable-next-line no-await-in-loop -- reading the DriveItem from the final chunk's response
         item = (await res.json()) as DriveItem;
       }
       offset = end;

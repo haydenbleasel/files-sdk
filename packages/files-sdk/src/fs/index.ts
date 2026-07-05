@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import type { Dirent } from "node:fs";
 import * as fsp from "node:fs/promises";
-import * as path from "node:path";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
@@ -291,6 +291,7 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
     }
     let entries: Dirent[];
     try {
+      // eslint-disable-next-line no-await-in-loop -- stack-based tree walk reads one directory per iteration.
       entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
@@ -346,6 +347,7 @@ const writeStreamToTempThenRename = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -559,7 +561,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       for (const key of page.keys) {
         const bodyPath = path.join(root, ...key.split("/"));
         try {
+          // eslint-disable-next-line no-await-in-loop -- sequential stat per page key; small bounded page, order preserved.
           const stat = await fsp.stat(bodyPath);
+          // eslint-disable-next-line no-await-in-loop -- sidecar read follows this key's stat within the same page iteration.
           const sidecar = await readSidecar(bodyPath);
           items.push(
             storedFromSidecar(key, bodyPath, sidecar, stat.size, stat.mtimeMs)

@@ -6,7 +6,7 @@
 // that proves the custom `writable` is structurally compatible with `Readable`
 // (the type-only contract the binding leans on) inside a component.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { dirname, join } from "node:path";
+import path from "node:path";
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { plugin } from "bun";
@@ -40,8 +40,8 @@ afterAll(() => GlobalRegistrator.unregister());
 // where `mount` throws. Reach the client entry by absolute path instead — its
 // deep internals (the scheduler, etc.) still resolve to the same files the
 // compiled component's `svelte/internal/client` imports, so reactivity is shared.
-const svelteClient = join(
-  dirname(Bun.resolveSync("svelte/package.json", import.meta.dir)),
+const svelteClient = path.join(
+  path.dirname(Bun.resolveSync("svelte/package.json", import.meta.dir)),
   "src/index-client.js"
 );
 const { mount, unmount, flushSync } = await import(svelteClient);

@@ -732,6 +732,7 @@ export const googleDrive = (
           const fileByKey = new Map<string, drive_v3.Schema$File>();
           let pageToken: string | undefined;
           do {
+            // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the pageToken from the previous response
             const res = (await driveClient.files.list(
               {
                 ...sharedDriveParams,

@@ -86,16 +86,23 @@ export interface FailoverOptions {
  * retry loop); each secondary supplies them from its own {@link Files} instance.
  */
 interface BackendRunner {
-  exists(key: string, opts?: OperationOptions): Promise<boolean>;
-  download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
-  head(key: string, opts?: OperationOptions): Promise<StoredFile>;
-  url(key: string, opts?: UrlOptions): Promise<string>;
-  upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
-  delete(key: string, opts?: OperationOptions): Promise<void>;
-  copy(from: string, to: string, opts?: OperationOptions): Promise<void>;
-  move(from: string, to: string, opts?: OperationOptions): Promise<void>;
-  list(opts?: ListOptions): Promise<ListResult>;
-  signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
+  exists: (key: string, opts?: OperationOptions) => Promise<boolean>;
+  download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
+  url: (key: string, opts?: UrlOptions) => Promise<string>;
+  upload: (
+    key: string,
+    body: Body,
+    opts?: UploadOptions
+  ) => Promise<UploadResult>;
+  delete: (key: string, opts?: OperationOptions) => Promise<void>;
+  copy: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
+  move: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
+  list: (opts?: ListOptions) => Promise<ListResult>;
+  signedUploadUrl: (
+    key: string,
+    opts: SignUploadOptions
+  ) => Promise<SignedUpload>;
 }
 
 /** Compose a {@link BackendRunner} from a {@link Files} instance (a secondary). */

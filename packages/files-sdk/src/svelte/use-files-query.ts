@@ -22,7 +22,7 @@ export interface QueryReturn<T> {
   error: ReadableStore<FilesError | undefined>;
   isLoading: ReadableStore<boolean>;
   isFetching: ReadableStore<boolean>;
-  refetch(): void;
+  refetch: () => void;
 }
 
 const makeClient = (config?: QueryConfig): FilesClient =>

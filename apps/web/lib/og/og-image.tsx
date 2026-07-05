@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import path from "node:path";
 
 import { ImageResponse } from "next/og";
 
@@ -10,7 +10,8 @@ export const OG_CONTENT_TYPE = "image/png";
 // fetched — these images are statically prerendered at build (Node), and
 // fetching a bundler asset URL isn't supported during prerender. The promise is
 // memoized so a full build doesn't re-read the files per image.
-const fontPath = (file: string) => join(process.cwd(), "lib/og-fonts", file);
+const fontPath = (file: string) =>
+  path.join(process.cwd(), "lib/og-fonts", file);
 let fontsPromise: Promise<Buffer[]> | undefined;
 const getFonts = () => {
   fontsPromise ??= Promise.all([

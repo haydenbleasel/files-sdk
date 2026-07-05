@@ -373,9 +373,11 @@ describe("createResponsesFileTools", () => {
   test("listFiles forwards prefix, cursor, and limit", async () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });
-    for (const k of ["a/1.txt", "a/2.txt", "b/1.txt"]) {
-      await ft.execute(call("uploadFile", { content: "x", key: k }), approved);
-    }
+    await Promise.all(
+      ["a/1.txt", "a/2.txt", "b/1.txt"].map((k) =>
+        ft.execute(call("uploadFile", { content: "x", key: k }), approved)
+      )
+    );
 
     const out = await ft.execute(
       call("listFiles", { limit: 10, prefix: "a/" })
@@ -406,6 +408,7 @@ describe("createResponsesFileTools", () => {
       { args: { key: 123 }, name: "deleteFile" },
     ];
     for (const c of cases) {
+      // eslint-disable-next-line no-await-in-loop -- exercises the shared tool executor once per validation case
       const out = await ft.execute(
         call(c.name, c.args),
         ft.needsApproval(c.name) ? approved : undefined

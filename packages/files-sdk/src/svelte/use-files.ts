@@ -28,9 +28,9 @@ export interface UseFilesReturn extends FilesClient {
   /** The last error from any verb. */
   error: ReadableStore<FilesError | undefined>;
   /** Clear the ambient error + upload state (and re-arm after an `abort`). */
-  reset(): void;
+  reset: () => void;
   /** Abort every in-flight call started here (call from `onDestroy`). */
-  abort(reason?: unknown): void;
+  abort: (reason?: unknown) => void;
 }
 
 export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {

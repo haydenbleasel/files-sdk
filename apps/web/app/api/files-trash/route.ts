@@ -45,7 +45,9 @@ let seedPromise: Promise<unknown> | undefined;
 const ensureSeeded = async (): Promise<void> => {
   seedPromise ??= (async () => {
     for (const item of TRASHED) {
+      // eslint-disable-next-line no-await-in-loop -- one-time seed; delete below depends on this upload landing first
       await files.upload(item.key, item.body, { contentType: item.type });
+      // eslint-disable-next-line no-await-in-loop -- must run after the upload above to seed the item into the trash
       await files.delete(item.key);
     }
   })();

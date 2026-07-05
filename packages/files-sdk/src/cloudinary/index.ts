@@ -126,7 +126,10 @@ const parseCloudinaryUrl = (
   url: string
 ): { cloudName?: string; apiKey?: string; apiSecret?: string } => {
   // Format: cloudinary://<api_key>:<api_secret>@<cloud_name>
-  const match = /^cloudinary:\/\/([^:]+):([^@]+)@(.+)$/u.exec(url);
+  const match =
+    /^cloudinary:\/\/(?<apiKey>[^:]+):(?<apiSecret>[^@]+)@(?<cloudName>.+)$/u.exec(
+      url
+    );
   if (!match) {
     return {};
   }
@@ -430,6 +433,7 @@ export const cloudinaryAdapter = (
             if (next) {
               apiOpts.next_cursor = next;
             }
+            // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the next_cursor from the previous response
             const resp = (await sdk.api.resources(apiOpts)) as {
               resources?: CloudinaryResource[];
               next_cursor?: string;

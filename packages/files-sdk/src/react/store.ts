@@ -15,11 +15,11 @@ export interface FilesStoreState {
 export const INITIAL_STATE: FilesStoreState = { inFlight: 0, uploads: [] };
 
 export interface FilesStore {
-  getState(): FilesStoreState;
-  subscribe(listener: () => void): () => void;
-  patch(next: Partial<FilesStoreState>): void;
-  setUploads(uploads: FileUploadState[]): void;
-  reset(): void;
+  getState: () => FilesStoreState;
+  subscribe: (listener: () => void) => () => void;
+  patch: (next: Partial<FilesStoreState>) => void;
+  setUploads: (uploads: FileUploadState[]) => void;
+  reset: () => void;
 }
 
 export const createStore = (): FilesStore => {

@@ -40,7 +40,7 @@ export type VersioningApi = {
    * `versionId` can be passed to {@link VersioningApi.restore}. Returns an empty
    * array when the key has no history.
    */
-  versions(key: string): Promise<FileVersion[]>;
+  versions: (key: string) => Promise<FileVersion[]>;
   /**
    * Roll `key` back to a prior version — the newest one when `versionId` is
    * omitted (an undo of the last change). The current bytes are snapshotted
@@ -48,7 +48,7 @@ export type VersioningApi = {
    * {@link StoredFile} (via `head`). Throws when the key has no versions, or the
    * given `versionId` doesn't exist.
    */
-  restore(key: string, versionId?: string): Promise<StoredFile>;
+  restore: (key: string, versionId?: string) => Promise<StoredFile>;
 };
 
 export interface VersioningOptions {
@@ -206,6 +206,7 @@ export const versioning = (
     const own: string[] = [];
     let cursor: string | undefined;
     do {
+      // eslint-disable-next-line no-await-in-loop -- pagination: each page's cursor comes from the previous response.
       const page = await next({
         kind: "list",
         options: { prefix: dir, ...(cursor !== undefined && { cursor }) },
@@ -224,6 +225,7 @@ export const versioning = (
     // the sorted list is the oldest.
     const excess = own.toSorted().slice(0, own.length - max);
     for (const versionKey of excess) {
+      // eslint-disable-next-line no-await-in-loop -- prune oldest-first sequentially; stops at the first delete failure.
       await next({ key: versionKey, kind: "delete" });
     }
   };
@@ -300,6 +302,7 @@ export const versioning = (
     const out: FileVersion[] = [];
     let cursor: string | undefined;
     do {
+      // eslint-disable-next-line no-await-in-loop -- pagination: each page's cursor comes from the previous response.
       const { cursor: nextCursor, items } = await files.list({
         prefix: dir,
         ...(cursor !== undefined && { cursor }),

@@ -289,42 +289,42 @@ interface ResumableDriverBase {
    */
   readonly partSize: number;
   /** Create the provider session and return its serializable token. */
-  begin(meta: {
+  begin: (meta: {
     total: number;
     contentType: string;
-  }): Promise<ResumableUploadSession>;
+  }) => Promise<ResumableUploadSession>;
   /** Resume: load (and validate) a persisted token. Throws on a mismatch. */
-  adopt(session: ResumableUploadSession): void;
+  adopt: (session: ResumableUploadSession) => void;
   /** Finalize the upload into an {@link UploadResult}. */
-  complete(parts: PartMeta[]): Promise<UploadResult>;
+  complete: (parts: PartMeta[]) => Promise<UploadResult>;
   /** Discard the provider session and any uploaded-but-uncommitted data. */
-  discard(): Promise<void>;
+  discard: () => Promise<void>;
 }
 
 /** Parallel, part-numbered providers (S3, Azure block blobs). */
 export interface PartsResumableDriver extends ResumableDriverBase {
   readonly mode: "parts";
   /** Discover which parts already landed server-side (for resume). */
-  probe(): Promise<{ committedParts: PartMeta[] }>;
-  uploadPart(part: {
+  probe: () => Promise<{ committedParts: PartMeta[] }>;
+  uploadPart: (part: {
     partNumber: number;
     data: Uint8Array;
     signal?: AbortSignal;
-  }): Promise<PartMeta>;
+  }) => Promise<PartMeta>;
 }
 
 /** Sequential, offset-based providers (GCS, OneDrive, Dropbox). */
 export interface OffsetResumableDriver extends ResumableDriverBase {
   readonly mode: "offset";
   /** Discover the next byte the server expects (for resume). */
-  probe(): Promise<{ nextOffset: number }>;
-  uploadAt(chunk: {
+  probe: () => Promise<{ nextOffset: number }>;
+  uploadAt: (chunk: {
     offset: number;
     data: Uint8Array;
     isLast: boolean;
     total: number;
     signal?: AbortSignal;
-  }): Promise<{ nextOffset: number }>;
+  }) => Promise<{ nextOffset: number }>;
 }
 
 export type ResumableDriver = PartsResumableDriver | OffsetResumableDriver;
@@ -335,7 +335,7 @@ export type ResumableDriver = PartsResumableDriver | OffsetResumableDriver;
 
 interface ByteSource {
   readonly size: number;
-  slice(start: number, end: number): Promise<Uint8Array>;
+  slice: (start: number, end: number) => Promise<Uint8Array>;
 }
 
 const STREAM_BODY_MESSAGE =
@@ -446,7 +446,7 @@ const pauseGate = async (
   // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- `runSignal.aborted` flips externally (sibling worker failure), not in the loop body.
   while (state.paused && state.status !== "aborted" && !runSignal?.aborted) {
     state.status = "paused";
-    // oxlint-disable-next-line promise/avoid-new -- resolved by resume()/abort().
+    // oxlint-disable-next-line promise/avoid-new, no-await-in-loop -- resolved by resume()/abort(); blocks until then, so the await must stay in the loop.
     await new Promise<void>((resolve) => {
       state.resumeWaiters.push(resolve);
       runSignal?.addEventListener("abort", () => resolve(), { once: true });
@@ -471,6 +471,7 @@ const attempt = async <T>(
   for (let n = 0; ; n += 1) {
     const runtime = mergeSignals(signals, opts.timeout);
     try {
+      // eslint-disable-next-line no-await-in-loop -- retry loop: each attempt must resolve before deciding to retry.
       return await runWithSignal(runtime.signal, () => fn(runtime.signal));
     } catch (error) {
       const wrapped = runtime.signal?.aborted
@@ -481,6 +482,7 @@ const attempt = async <T>(
       }
       const wait = mergeSignals(signals);
       try {
+        // eslint-disable-next-line no-await-in-loop -- sequential backoff between retry attempts.
         await sleep(retryBackoff(opts.retries, n + 1, wrapped), wait.signal);
       } finally {
         wait.cleanup?.();
@@ -532,16 +534,19 @@ const runParts = async (
       if (partNumber === undefined) {
         return;
       }
+      // eslint-disable-next-line no-await-in-loop -- worker drains parts serially; concurrency comes from multiple workers.
       await pauseGate(state, runAbort.signal);
       if (failure !== undefined) {
         return;
       }
       const start = (partNumber - 1) * partSize;
       try {
+        // eslint-disable-next-line no-await-in-loop -- slice each part before uploading it, within this worker's serial loop.
         const data = await source.slice(
           start,
           Math.min(start + partSize, total)
         );
+        // eslint-disable-next-line no-await-in-loop -- upload each part before advancing this worker to the next.
         const meta = await attempt(
           (signal) =>
             driver.uploadPart({
@@ -613,11 +618,14 @@ const runOffset = async (
   state.loaded = offset;
   reportProgress(opts.onProgress, { loaded: offset, total });
   while (offset < total) {
+    // eslint-disable-next-line no-await-in-loop -- chunks are offset-chained; each depends on the prior nextOffset.
     await pauseGate(state);
     const end = Math.min(offset + chunkSize, total);
+    // eslint-disable-next-line no-await-in-loop -- slice the current chunk before uploading it.
     const data = await source.slice(offset, end);
     const isLast = end >= total;
     const current = offset;
+    // eslint-disable-next-line no-await-in-loop -- sequential offset upload; nextOffset drives the next iteration.
     const { nextOffset } = await attempt(
       (signal) =>
         driver.uploadAt({

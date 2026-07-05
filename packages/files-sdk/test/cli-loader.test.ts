@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import { describeProvider, loadFiles } from "../src/cli/loader.js";
 import { Files } from "../src/index.js";

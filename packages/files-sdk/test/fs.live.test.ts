@@ -10,7 +10,7 @@
 import { afterAll, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import { fs as fsAdapter } from "../src/fs/index.js";
 import { Files } from "../src/index.js";

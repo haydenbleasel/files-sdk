@@ -698,6 +698,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         );
         let response: Awaited<ReturnType<typeof batchClient.deleteBlobs>>;
         try {
+          // eslint-disable-next-line no-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
           response = await batchClient.deleteBlobs(blobClients);
         } catch (error) {
           // A batch-level failure (auth, transport, malformed batch) fails

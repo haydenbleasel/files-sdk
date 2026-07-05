@@ -18,6 +18,7 @@ const collect = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
+    // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
     const { done, value } = await reader.read();
     if (done) {
       break;

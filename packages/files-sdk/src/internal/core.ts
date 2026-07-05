@@ -405,6 +405,7 @@ export const collectStream = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
     const { done, value } = await reader.read();
     if (done) {
       break;
@@ -525,6 +526,7 @@ export const deleteManyWithFallback = async (
   if (opts?.stopOnError) {
     for (const key of keys) {
       try {
+        // eslint-disable-next-line no-await-in-loop -- stopOnError runs sequentially and returns on first failure.
         await remove(key);
         deleted.push(key);
       } catch (error) {
@@ -558,6 +560,7 @@ export const deleteManyWithFallback = async (
           continue;
         }
         try {
+          // eslint-disable-next-line no-await-in-loop -- worker drains the shared index serially; concurrency is the worker pool.
           await remove(key);
           success[current] = true;
         } catch (error) {
@@ -614,6 +617,7 @@ export const mapMany = async <Item, Out>(
   if (opts?.stopOnError) {
     for (const item of items) {
       try {
+        // eslint-disable-next-line no-await-in-loop -- stopOnError runs sequentially and returns on first failure.
         results.push(await run(item));
       } catch (error) {
         errors.push({ error: mapError(error), key: keyOf(item) });
@@ -645,6 +649,7 @@ export const mapMany = async <Item, Out>(
           continue;
         }
         try {
+          // eslint-disable-next-line no-await-in-loop -- worker drains the shared index serially; concurrency is the worker pool.
           succeeded[current] = await run(item);
           success[current] = true;
         } catch (error) {

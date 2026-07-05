@@ -27,24 +27,27 @@ interface ConvexStorageDoc {
   size: number;
 }
 
-// The subset of `ctx.storage` the adapter touches. Methods are declared
-// (not arrow properties) so TypeScript's method-parameter bivariance lets a
-// real `StorageReader` / `StorageWriter` / `StorageActionWriter` be assigned
-// here despite their `Id<"_storage">` parameters. `getUrl` is the only method
-// present in every function context; the rest are optional because Convex
-// gates them by context (`store`/`get` are action-only; `delete` /
-// `generateUploadUrl` are writer-only) and the adapter feature-detects them.
+// The subset of `ctx.storage` the adapter touches. A real `StorageReader` /
+// `StorageWriter` / `StorageActionWriter` stays structurally assignable here
+// because these parameters (`ConvexStorageId` = `string`) are wider than
+// Convex's `Id<"_storage"> | string`. `getUrl` is the only member present in
+// every function context; the rest are optional because Convex gates them by
+// context (`store`/`get` are action-only; `delete` / `generateUploadUrl` are
+// writer-only) and the adapter feature-detects them.
 interface ConvexStorageLike {
-  getUrl(storageId: ConvexStorageId): Promise<string | null>;
-  store?(blob: Blob, options?: { sha256?: string }): Promise<ConvexStorageId>;
-  get?(storageId: ConvexStorageId): Promise<Blob | null>;
-  getMetadata?(storageId: ConvexStorageId): Promise<{
+  getUrl: (storageId: ConvexStorageId) => Promise<string | null>;
+  store?: (
+    blob: Blob,
+    options?: { sha256?: string }
+  ) => Promise<ConvexStorageId>;
+  get?: (storageId: ConvexStorageId) => Promise<Blob | null>;
+  getMetadata?: (storageId: ConvexStorageId) => Promise<{
     contentType: string | null;
     sha256: string;
     size: number;
   } | null>;
-  delete?(storageId: ConvexStorageId): Promise<void>;
-  generateUploadUrl?(): Promise<string>;
+  delete?: (storageId: ConvexStorageId) => Promise<void>;
+  generateUploadUrl?: () => Promise<string>;
 }
 
 interface ConvexPaginationResult {
@@ -54,10 +57,10 @@ interface ConvexPaginationResult {
 }
 
 interface ConvexSystemQuery {
-  paginate(opts: {
+  paginate: (opts: {
     numItems: number;
     cursor: string | null;
-  }): Promise<ConvexPaginationResult>;
+  }) => Promise<ConvexPaginationResult>;
 }
 
 // `ctx.db.system`, available only in queries and mutations. Used by `list()`
@@ -65,11 +68,17 @@ interface ConvexSystemQuery {
 // source for `head()`. `get` takes the table name first to match Convex's
 // primary `db.get(table, id)` overload.
 interface ConvexSystemReader {
+  // Method syntax (not an arrow property) is deliberate: TypeScript checks
+  // method parameters bivariantly, which lets Convex's real `db.system.get`
+  // (whose `id` is a branded `Id<"_storage">`) be assigned here despite our
+  // widened `string` parameter. An arrow-property/function type would be
+  // checked contravariantly and reject that assignment.
+  // oxlint-disable-next-line typescript/method-signature-style -- see above; method bivariance is required for the real Convex ctx to be assignable.
   get(
     table: "_storage",
     storageId: ConvexStorageId
   ): Promise<ConvexStorageDoc | null>;
-  query(tableName: "_storage"): ConvexSystemQuery;
+  query: (tableName: "_storage") => ConvexSystemQuery;
 }
 
 /**

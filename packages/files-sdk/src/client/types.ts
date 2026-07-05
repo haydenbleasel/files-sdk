@@ -123,57 +123,67 @@ export interface TrashedFile {
 }
 
 export interface FilesClient {
-  upload(file: Blob, opts?: UploadCallOptions): Promise<UploadOutcome>;
-  upload(
-    key: string,
-    body: UploadBody,
-    opts?: UploadCallOptions
-  ): Promise<UploadOutcome>;
-  upload(
-    items: UploadManyClientItem[],
-    opts?: BulkCallOptions
-  ): Promise<UploadManyResult>;
+  upload: {
+    (file: Blob, opts?: UploadCallOptions): Promise<UploadOutcome>;
+    (
+      key: string,
+      body: UploadBody,
+      opts?: UploadCallOptions
+    ): Promise<UploadOutcome>;
+    (
+      items: UploadManyClientItem[],
+      opts?: BulkCallOptions
+    ): Promise<UploadManyResult>;
+  };
 
-  download(key: string, opts?: DownloadCallOptions): Promise<StoredFile>;
-  download(
-    keys: string[],
-    opts?: BulkCallOptions & { as?: "blob" | "stream" }
-  ): Promise<DownloadManyResult>;
+  download: {
+    (key: string, opts?: DownloadCallOptions): Promise<StoredFile>;
+    (
+      keys: string[],
+      opts?: BulkCallOptions & { as?: "blob" | "stream" }
+    ): Promise<DownloadManyResult>;
+  };
 
-  head(key: string, opts?: CallOptions): Promise<StoredFile>;
-  head(keys: string[], opts?: BulkCallOptions): Promise<HeadManyResult>;
+  head: {
+    (key: string, opts?: CallOptions): Promise<StoredFile>;
+    (keys: string[], opts?: BulkCallOptions): Promise<HeadManyResult>;
+  };
 
-  exists(key: string, opts?: CallOptions): Promise<boolean>;
-  exists(keys: string[], opts?: BulkCallOptions): Promise<ExistsManyResult>;
+  exists: {
+    (key: string, opts?: CallOptions): Promise<boolean>;
+    (keys: string[], opts?: BulkCallOptions): Promise<ExistsManyResult>;
+  };
 
-  delete(key: string, opts?: CallOptions): Promise<void>;
-  delete(keys: string[], opts?: BulkCallOptions): Promise<DeleteManyResult>;
+  delete: {
+    (key: string, opts?: CallOptions): Promise<void>;
+    (keys: string[], opts?: BulkCallOptions): Promise<DeleteManyResult>;
+  };
 
-  copy(from: string, to: string, opts?: CallOptions): Promise<void>;
-  move(from: string, to: string, opts?: CallOptions): Promise<void>;
-  url(key: string, opts?: UrlCallOptions): Promise<string>;
-  signedUploadUrl(
+  copy: (from: string, to: string, opts?: CallOptions) => Promise<void>;
+  move: (from: string, to: string, opts?: CallOptions) => Promise<void>;
+  url: (key: string, opts?: UrlCallOptions) => Promise<string>;
+  signedUploadUrl: (
     key: string,
     opts: SignUploadCallOptions
-  ): Promise<SignedUpload>;
-  list(opts?: ListCallOptions): Promise<ListResult>;
-  listAll(opts?: ListCallOptions): AsyncGenerator<StoredFile, void>;
-  search(
+  ) => Promise<SignedUpload>;
+  list: (opts?: ListCallOptions) => Promise<ListResult>;
+  listAll: (opts?: ListCallOptions) => AsyncGenerator<StoredFile, void>;
+  search: (
     pattern: string | RegExp,
     opts?: SearchCallOptions
-  ): AsyncGenerator<StoredFile, void>;
-  capabilities(opts?: CallOptions): Promise<AdapterCapabilities>;
+  ) => AsyncGenerator<StoredFile, void>;
+  capabilities: (opts?: CallOptions) => Promise<AdapterCapabilities>;
 
   // Plugin verbs — resolve only when the server gateway exposes the matching
   // plugin (`versioning()` / `softDelete()`); otherwise they reject with a
   // gateway error. See the relevant plugin docs.
-  versions(key: string, opts?: CallOptions): Promise<FileVersion[]>;
-  restoreVersion(
+  versions: (key: string, opts?: CallOptions) => Promise<FileVersion[]>;
+  restoreVersion: (
     key: string,
     versionId?: string,
     opts?: CallOptions
-  ): Promise<StoredFile>;
-  trashed(opts?: CallOptions): Promise<TrashedFile[]>;
-  restoreTrashed(key: string, opts?: CallOptions): Promise<StoredFile>;
-  purge(key?: string, opts?: CallOptions): Promise<void>;
+  ) => Promise<StoredFile>;
+  trashed: (opts?: CallOptions) => Promise<TrashedFile[]>;
+  restoreTrashed: (key: string, opts?: CallOptions) => Promise<StoredFile>;
+  purge: (key?: string, opts?: CallOptions) => Promise<void>;
 }

@@ -56,6 +56,7 @@ describe("Files class", () => {
     const reader = got.stream().getReader();
     const chunks: Uint8Array[] = [];
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -464,9 +465,7 @@ describe("Files class", () => {
     };
     const files = new Files({ adapter });
     const keys = ["a", "b", "c", "d", "e", "f"];
-    for (const key of keys) {
-      await files.upload(key, key);
-    }
+    await Promise.all(keys.map((key) => files.upload(key, key)));
 
     const result = await files.download(keys, { concurrency: 2 });
 
@@ -660,9 +659,9 @@ describe("Files class", () => {
 
   test("listAll iterates every object across pages", async () => {
     const files = new Files({ adapter: fakeAdapter() });
-    for (let i = 0; i < 5; i += 1) {
-      await files.upload(`f${i}.txt`, String(i));
-    }
+    await Promise.all(
+      [0, 1, 2, 3, 4].map((i) => files.upload(`f${i}.txt`, String(i)))
+    );
 
     const keys: string[] = [];
     // A page size below the total forces listAll to follow the cursor.
@@ -879,6 +878,7 @@ describe("Files class", () => {
       });
 
       try {
+        // eslint-disable-next-line no-await-in-loop -- per-code retry assertion runs against a fresh per-iteration Files/counter
         await files.head(`${code}.txt`);
         throw new Error("should have thrown");
       } catch (error) {
@@ -1682,9 +1682,7 @@ const searchCollect = async (
 };
 
 const searchSeed = async (files: Files, keys: string[]): Promise<void> => {
-  for (const key of keys) {
-    await files.upload(key, key);
-  }
+  await Promise.all(keys.map((key) => files.upload(key, key)));
 };
 
 // A fakeAdapter whose `list` records the prefix it's called with, so tests can

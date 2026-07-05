@@ -88,11 +88,13 @@ export const MultipartUploader = ({
           const onProgress = (p: { fraction: number }) =>
             patch(item.id, { progress: p.fraction });
           const result = prefix
-            ? await files.upload(`${prefix}${item.file.name}`, item.file, {
+            ? // eslint-disable-next-line no-await-in-loop -- bounded-concurrency worker pulls items from a shared queue; each upload runs in order within its worker
+              await files.upload(`${prefix}${item.file.name}`, item.file, {
                 contentType: item.file.type,
                 onProgress,
               })
-            : await files.upload(item.file, { onProgress });
+            : // eslint-disable-next-line no-await-in-loop -- bounded-concurrency worker pulls items from a shared queue; each upload runs in order within its worker
+              await files.upload(item.file, { onProgress });
           patch(item.id, { key: result.key, progress: 1, status: "success" });
           onUploaded?.({ key: result.key, name: item.file.name });
         } catch (error) {

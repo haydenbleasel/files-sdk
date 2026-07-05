@@ -34,6 +34,7 @@ let seedPromise: Promise<unknown> | undefined;
 const ensureSeeded = async (): Promise<void> => {
   seedPromise ??= (async () => {
     for (const body of REVISIONS) {
+      // eslint-disable-next-line no-await-in-loop -- overwrites the same key in order; each write must land before the next to build the version history
       await files.upload("demo/notes.txt", body, {
         contentType: "text/markdown",
       });

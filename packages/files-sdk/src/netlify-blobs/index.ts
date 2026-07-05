@@ -150,7 +150,7 @@ const bodyToStorable = async (
 // status code (e.g. "Netlify Blobs has generated an internal error
 // (401 status code, ID: ...)"). Pattern-match on that since the SDK doesn't
 // expose a structured status field.
-const STATUS_RE = /(\d{3}) status code/u;
+const STATUS_RE = /(?<status>\d{3}) status code/u;
 
 const classifyNetlifyError = (
   err: unknown

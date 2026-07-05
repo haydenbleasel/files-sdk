@@ -95,10 +95,12 @@ export const Dropzone = ({
           continue;
         }
         const result = prefix
-          ? await files.upload(`${prefix}${file.name}`, file, {
+          ? // eslint-disable-next-line no-await-in-loop -- uploads run sequentially to avoid firing an unbounded burst of parallel requests at the server
+            await files.upload(`${prefix}${file.name}`, file, {
               contentType: file.type,
             })
-          : await files.upload(file);
+          : // eslint-disable-next-line no-await-in-loop -- uploads run sequentially to avoid firing an unbounded burst of parallel requests at the server
+            await files.upload(file);
         const entry: UploadedEntry = { key: result.key, name: file.name };
         setUploaded((prev) => [...prev, entry]);
         onUploaded?.(entry);

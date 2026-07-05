@@ -2,7 +2,7 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { fs as fsAdapter, mapFsError } from "../src/fs/index.js";
@@ -30,6 +30,7 @@ const drainStream = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -441,9 +442,9 @@ describe("fs adapter", () => {
     test("paginates with limit + cursor", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
-      for (const k of ["a", "b", "c", "d", "e"]) {
-        await files.upload(`${k}.txt`, "1");
-      }
+      await Promise.all(
+        ["a", "b", "c", "d", "e"].map((k) => files.upload(`${k}.txt`, "1"))
+      );
       const page1 = await files.list({ limit: 2 });
       expect(page1.items.map((i) => i.key)).toEqual(["a.txt", "b.txt"]);
       expect(page1.cursor).toBe("b.txt");
@@ -693,9 +694,11 @@ describe("fs adapter", () => {
         "x.txt.meta.json/",
       ];
       for (const variant of variants) {
+        // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per sidecar-collision variant
         await expect(files.upload(variant, "x")).rejects.toMatchObject({
           code: "Provider",
         });
+        // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per sidecar-collision variant
         await expect(files.delete(variant)).rejects.toMatchObject({
           code: "Provider",
         });

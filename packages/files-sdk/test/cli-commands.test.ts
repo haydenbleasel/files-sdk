@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import {
   runCapabilities,
@@ -501,6 +501,7 @@ describe("cli/commands real (fs adapter)", () => {
   test("search honors --max-results", async () => {
     const local = path.join(root, "in.txt");
     for (const name of ["m/1.txt", "m/2.txt", "m/3.txt"]) {
+      // eslint-disable-next-line no-await-in-loop -- uploads reuse one shared local scratch file
       await uploadFile(name, "x", local);
     }
     cap.stdout.length = 0;

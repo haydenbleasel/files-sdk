@@ -76,15 +76,15 @@ export interface ResponsesFileTools {
    * to `true`. Pass `{ approved: true }` only after your host approval UX has
    * approved this exact call.
    */
-  execute(
+  execute: (
     call: FunctionCallItem,
     options?: ResponsesExecuteOptions
-  ): Promise<FunctionCallOutputItem>;
+  ) => Promise<FunctionCallOutputItem>;
   /**
    * Returns whether the named tool is approval-gated under this config.
    * Read tools always return `false`. Unknown names return `false`.
    */
-  needsApproval(name: string): boolean;
+  needsApproval: (name: string) => boolean;
 }
 
 export interface ResponsesFileToolsOptions {

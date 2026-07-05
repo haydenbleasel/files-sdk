@@ -411,7 +411,7 @@ afterEach(() => {
 const stubFetchToServeStore = () => {
   globalThis.fetch = ((url: string | URL | Request) => {
     const u = typeof url === "string" ? url : url.toString();
-    const m = u.match(/\/([^/]+)$/u);
+    const m = u.match(/\/(?<last>[^/]+)$/u);
     const id = m?.[1];
     if (!id) {
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -571,6 +571,7 @@ describe("box adapter", () => {
     const reader = f.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const { value, done } = await reader.read();
       if (done) {
         break;

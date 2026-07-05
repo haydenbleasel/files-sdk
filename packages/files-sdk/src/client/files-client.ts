@@ -497,6 +497,7 @@ export const createFilesClient = (
     async *listAll(opts?: ListCallOptions) {
       let cursor = opts?.cursor;
       do {
+        // eslint-disable-next-line no-await-in-loop -- pagination: each page's cursor comes from the previous response.
         const page = await client.list({ ...opts, cursor });
         for (const item of page.items) {
           yield item;
