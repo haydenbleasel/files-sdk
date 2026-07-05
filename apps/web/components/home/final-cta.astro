@@ -1,0 +1,33 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import InstallCommand from "./install-command.astro";
+---
+
+<section>
+  <div
+    class="mx-auto flex max-w-6xl flex-col items-center px-6 py-24 text-center"
+  >
+    <h2
+      class="mx-auto max-w-[20ch] text-balance font-medium text-[2.5rem]/[1.05] tracking-tight text-foreground sm:text-6xl lg:text-7xl"
+    >
+      Ship the storage layer once.
+    </h2>
+    <p
+      class="mx-auto mt-6 max-w-[48ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-lg"
+    >
+      Open source, MIT licensed, built around web standards. Drop in an adapter
+      and forget the difference.
+    </p>
+    <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+      <InstallCommand />
+      <a
+        class="inline-flex h-11 items-center gap-1.5 rounded-full px-5 font-medium text-foreground text-sm transition-colors hover:bg-muted"
+        href="/docs/api"
+      >
+        Read the docs
+        <Icon class="size-4" name="arrow-right" />
+      </a>
+    </div>
+  </div>
+</section>

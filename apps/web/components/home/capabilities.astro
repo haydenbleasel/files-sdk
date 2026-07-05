@@ -1,0 +1,67 @@
+---
+import { highlightCode } from "blume/markdown";
+
+import CapabilityPanel from "@/components/landing/capability-panel";
+import { CAPABILITIES } from "@/lib/capabilities-data";
+
+const cards = await Promise.all(
+  CAPABILITIES.map(async (cap) => ({
+    ...cap,
+    html: await highlightCode(cap.code, cap.lang ?? "tsx", { icons: false }),
+  }))
+);
+---
+
+<section>
+  <div class="mx-auto max-w-6xl px-6 py-24">
+    <p class="font-mono text-muted-foreground text-xs">Capabilities</p>
+    <h2
+      class="mt-3 max-w-[30ch] text-balance font-medium text-4xl tracking-tight text-foreground sm:text-5xl"
+    >
+      Everything you do with files.
+    </h2>
+    <p
+      class="mt-5 max-w-[60ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-lg"
+    >
+      A complete set of operations, 40+ adapters behind one interface,
+      ready-made AI tools, and a CLI — plus multipart, live progress, byte
+      ranges, and lifecycle hooks. The same one-line ergonomics on every backend.
+    </p>
+
+    <div class="mt-20 flex flex-col gap-24 sm:gap-28">
+      {
+        cards.map((cap) => (
+          <div>
+            <div class="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+              <div>
+                <h3 class="text-balance font-medium text-2xl tracking-tight text-foreground sm:text-3xl">
+                  {cap.title}
+                </h3>
+                <p class="mt-4 max-w-[60ch] text-pretty text-base text-muted-foreground leading-relaxed">
+                  {cap.description}
+                </p>
+              </div>
+              <a
+                class="inline-flex items-center gap-1.5 self-start font-medium text-foreground text-sm underline-offset-4 hover:underline sm:justify-self-end"
+                href={cap.docHref}
+              >
+                Read the docs →
+              </a>
+            </div>
+            <div class="mt-8 overflow-hidden rounded-xl border border-border bg-card">
+              <div class="grid lg:grid-cols-2">
+                <div
+                  class="prose flush-code max-w-none overflow-x-auto"
+                  set:html={cap.html}
+                />
+                <div class="border-border border-t lg:border-t-0 lg:border-l">
+                  <CapabilityPanel client:visible panel={cap.panel} />
+                </div>
+              </div>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

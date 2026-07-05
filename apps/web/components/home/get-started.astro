@@ -1,0 +1,77 @@
+---
+import CodeBlock from "blume/components/content/CodeBlock.astro";
+import Tab from "blume/components/content/Tab.astro";
+import Tabs from "blume/components/content/Tabs.astro";
+import { highlightCode } from "blume/markdown";
+
+const INSTALL = [
+  { code: "npm install files-sdk", label: "npm" },
+  { code: "pnpm add files-sdk", label: "pnpm" },
+  { code: "bun add files-sdk", label: "bun" },
+  { code: "yarn add files-sdk", label: "yarn" },
+];
+const installTabs = await Promise.all(
+  INSTALL.map(async (i) => ({
+    html: await highlightCode(i.code, "bash", { icons: false }),
+    label: i.label,
+  }))
+);
+
+const FIRST_CALL = `import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+await files.upload("hello.txt", "world");`;
+---
+
+<section>
+  <div class="mx-auto max-w-6xl px-6 py-24">
+    <p class="font-mono text-muted-foreground text-xs">Two steps</p>
+    <h2
+      class="mt-3 max-w-[30ch] text-balance font-medium text-4xl tracking-tight text-foreground sm:text-5xl"
+    >
+      Your first upload in under a minute.
+    </h2>
+    <p
+      class="mt-5 max-w-[48ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-lg"
+    >
+      Install files-sdk and your provider's native client, then construct one
+      Files instance and start calling it.
+    </p>
+    <div class="mt-14 grid gap-12 lg:grid-cols-2">
+      <div class="flex min-w-0 flex-col gap-3">
+        <h3 class="font-mono text-muted-foreground text-xs">1. Install</h3>
+        <Tabs hash={false} sync={false}>
+          {
+            installTabs.map((tab) => (
+              <Tab class="prose flush-code max-w-none" title={tab.label}>
+                <Fragment set:html={tab.html} />
+              </Tab>
+            ))
+          }
+        </Tabs>
+        <p
+          class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
+        >
+          Each adapter's native SDK is an optional peer dependency — install only
+          the ones you actually use.
+        </p>
+      </div>
+      <div class="flex min-w-0 flex-col gap-3">
+        <h3 class="font-mono text-muted-foreground text-xs">
+          2. Make your first call
+        </h3>
+        <CodeBlock code={FIRST_CALL} icons={false} lang="tsx" />
+        <p
+          class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
+        >
+          Construct a Files instance with your provider's adapter, then call
+          upload, download, list, delete on it.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,6 +1,9 @@
 import { defineConfig } from "blume";
 
 export default defineConfig({
+  analytics: {
+    vercel: true,
+  },
   content: {
     sources: [
       // Local docs under docs/ → /docs/* (the marketing homepage owns "/").
@@ -15,6 +18,9 @@ export default defineConfig({
         type: "github-releases",
       },
     ],
+  },
+  deployment: {
+    adapter: "vercel",
   },
   description:
     "A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.",

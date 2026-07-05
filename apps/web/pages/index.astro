@@ -1,266 +1,46 @@
 ---
 import PageLayout from "blume/components/layout/PageLayout.astro";
-import { highlightCode } from "blume/markdown";
 import data from "blume:data";
 
-import CapabilityPanel from "@/components/landing/capability-panel";
-import CodeTabs from "@/components/landing/code-tabs";
-import { InstallCommand } from "@/components/install-command";
-import { Hero } from "@/components/sections/hero";
+import Capabilities from "@/components/home/capabilities.astro";
+import Demo from "@/components/home/demo.astro";
+import FinalCta from "@/components/home/final-cta.astro";
+import Footer from "@/components/home/footer.astro";
+import GetStarted from "@/components/home/get-started.astro";
+import Hero from "@/components/home/hero.astro";
 import { ADAPTERS } from "@/lib/adapters";
-import { CAPABILITIES } from "@/lib/capabilities-data";
 import { getLatestVersion } from "@/lib/version";
 
 const { config } = data;
 const latestVersion = getLatestVersion();
-
-const hl = (code: string, lang = "tsx") =>
-  highlightCode(code, lang, { icons: false });
-
-// Pre-highlight every capability card's code at build time.
-const capabilities = await Promise.all(
-  CAPABILITIES.map(async (cap) => ({
-    ...cap,
-    html: await hl(cap.code, cap.lang ?? "tsx"),
-  }))
-);
-
-// "The exact same code. Any backend." — one upload/download/head/list/delete
-// sequence rendered per adapter.
-const DEMO = [
-  { config: 's3({ bucket: "uploads", region: "us-east-1" })', import: 'import { s3 } from "files-sdk/s3";', label: "S3" },
-  { config: 'r2({ bucket: "uploads", accountId: "..." })', import: 'import { r2 } from "files-sdk/r2";', label: "R2" },
-  { config: "vercelBlob()", import: 'import { vercelBlob } from "files-sdk/vercel-blob";', label: "Vercel Blob" },
-  { config: 'netlifyBlobs({ name: "uploads" })', import: 'import { netlifyBlobs } from "files-sdk/netlify-blobs";', label: "Netlify Blobs" },
-  { config: 'minio({ bucket: "uploads", endpoint: "http://localhost:9000" })', import: 'import { minio } from "files-sdk/minio";', label: "MinIO" },
-];
-const demoCode = (a: (typeof DEMO)[number]) => `import { Files } from "files-sdk";
-${a.import}
-
-const files = new Files({
-  adapter: ${a.config},
-});
-
-await files.upload("hello.txt", "world");
-const file = await files.download("hello.txt");
-const meta = await files.head("hello.txt");
-const items = await files.list();
-await files.delete("hello.txt");`;
-const demoTabs = await Promise.all(
-  DEMO.map(async (a) => ({ html: await hl(demoCode(a)), label: a.label }))
-);
-
-const INSTALL = [
-  { code: "npm install files-sdk", label: "npm" },
-  { code: "pnpm add files-sdk", label: "pnpm" },
-  { code: "bun add files-sdk", label: "bun" },
-  { code: "yarn add files-sdk", label: "yarn" },
-];
-const installTabs = await Promise.all(
-  INSTALL.map(async (i) => ({ html: await hl(i.code, "bash"), label: i.label }))
-);
-
-const FIRST_CALL = `import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
-
-const files = new Files({
-  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
-});
-
-await files.upload("hello.txt", "world");`;
-const firstCallHtml = await hl(FIRST_CALL);
-
-const year = 2026;
-
-const PROJECT_LINKS = [
-  { href: "/docs", label: "Docs" },
-  { href: "/docs/adapters", label: "Adapters" },
-  { href: "/docs/api", label: "API" },
-  { href: "/docs/cli", label: "CLI" },
-];
-const RESOURCE_LINKS = [
-  { href: "https://github.com/haydenbleasel/files-sdk", label: "GitHub" },
-  { href: "https://www.npmjs.com/package/files-sdk", label: "npm" },
-  { href: "https://github.com/haydenbleasel/files-sdk/issues", label: "Issues" },
-];
 ---
 
 <PageLayout
-  site={{ title: config.title, description: config.description }}
-  logo={config.logo}
-  banner={config.banner}
   analytics={config.analytics}
-  navigation={data.navigation}
+  banner={config.banner}
+  clientData={{
+    config: data.config,
+    navigation: data.navigation,
+    page: { route: "/", title: "Home" },
+  }}
   favicon={config.favicon}
   fontCssVars={data.fontCssVars}
-  themeMode={config.theme.mode}
-  searchEnabled={config.search.enabled}
-  siteUrl={config.site}
+  logo={config.logo}
+  navigation={data.navigation}
   ogEnabled={config.og.enabled}
-  page={{ title: "Files SDK — Write once. Store anywhere.", description: config.description }}
-  clientData={{ config: data.config, navigation: data.navigation, page: { route: "/", title: "Home" } }}
+  page={{
+    description: config.description,
+    title: "Files SDK — Write once. Store anywhere.",
+  }}
+  searchEnabled={config.search.enabled}
+  site={{ title: config.title, description: config.description }}
+  siteUrl={config.site}
+  themeMode={config.theme.mode}
 >
-  <Hero client:load adapterCount={ADAPTERS.length} latestVersion={latestVersion} />
-
-  <!-- Live snippet: the same code across five providers -->
-  <section>
-    <div class="mx-auto max-w-6xl px-6 py-24">
-      <p class="font-mono text-xs text-muted-foreground">Live snippet</p>
-      <h2 class="mt-3 max-w-[30ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">
-        The exact same code. Any backend.
-      </h2>
-      <p class="mt-5 max-w-[60ch] text-base leading-relaxed text-pretty text-muted-foreground sm:text-lg">
-        Switch the adapter, keep every call site. Here's the same upload,
-        download, head, list, and delete sequence across five providers.
-      </p>
-      <div class="mt-12">
-        <CodeTabs client:visible tabs={demoTabs} />
-      </div>
-    </div>
-  </section>
-
-  <!-- Capabilities -->
-  <section>
-    <div class="mx-auto max-w-6xl px-6 py-24">
-      <p class="font-mono text-xs text-muted-foreground">Capabilities</p>
-      <h2 class="mt-3 max-w-[30ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">
-        Everything you do with files.
-      </h2>
-      <p class="mt-5 max-w-[60ch] text-base leading-relaxed text-pretty text-muted-foreground sm:text-lg">
-        A complete set of operations, 40+ adapters behind one interface,
-        ready-made AI tools, and a CLI — plus multipart, live progress, byte
-        ranges, and lifecycle hooks. The same one-line ergonomics on every
-        backend.
-      </p>
-
-      <div class="mt-20 flex flex-col gap-24 sm:gap-28">
-        {capabilities.map((cap) => {
-          return (
-            <div>
-              <div class="grid gap-x-8 gap-y-4 sm:grid-cols-2">
-                <div>
-                  <h3 class="text-2xl font-medium tracking-tight text-balance text-foreground sm:text-3xl">
-                    {cap.title}
-                  </h3>
-                  <p class="mt-4 max-w-[60ch] text-base leading-relaxed text-pretty text-muted-foreground">
-                    {cap.description}
-                  </p>
-                </div>
-                <a
-                  class="group inline-flex items-center gap-1.5 self-start text-sm font-medium text-foreground underline-offset-4 hover:underline sm:justify-self-end"
-                  href={cap.docHref}
-                >
-                  Read the docs →
-                </a>
-              </div>
-              <div class="mt-8 overflow-hidden rounded-xl border border-border bg-card">
-                <div class="grid lg:grid-cols-2">
-                  <div class="prose flush-code max-w-none" set:html={cap.html} />
-                  <div class="border-t border-border lg:border-t-0 lg:border-l">
-                    <CapabilityPanel client:visible panel={cap.panel} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  </section>
-
-  <!-- Get started -->
-  <section>
-    <div class="mx-auto max-w-6xl px-6 py-24">
-      <p class="font-mono text-xs text-muted-foreground">Two steps</p>
-      <h2 class="mt-3 max-w-[30ch] text-4xl font-medium tracking-tight text-balance text-foreground sm:text-5xl">
-        Your first upload in under a minute.
-      </h2>
-      <p class="mt-5 max-w-[48ch] text-base leading-relaxed text-pretty text-muted-foreground sm:text-lg">
-        Install files-sdk and your provider's native client, then construct one
-        Files instance and start calling it.
-      </p>
-      <div class="mt-14 grid gap-12 lg:grid-cols-2">
-        <div class="flex min-w-0 flex-col gap-3">
-          <h3 class="font-mono text-xs text-muted-foreground">1. Install</h3>
-          <CodeTabs client:visible tabs={installTabs} />
-          <p class="text-base leading-relaxed text-pretty text-muted-foreground sm:text-sm">
-            Each adapter's native SDK is an optional peer dependency — install
-            only the ones you actually use.
-          </p>
-        </div>
-        <div class="flex min-w-0 flex-col gap-3">
-          <h3 class="font-mono text-xs text-muted-foreground">
-            2. Make your first call
-          </h3>
-          <div class="prose flush-code max-w-none overflow-hidden rounded-xl border border-border bg-card" set:html={firstCallHtml} />
-          <p class="text-base leading-relaxed text-pretty text-muted-foreground sm:text-sm">
-            Construct a Files instance with your provider's adapter, then call
-            upload, download, list, delete on it.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Final CTA -->
-  <section>
-    <div class="mx-auto flex max-w-6xl flex-col items-center px-6 py-24 text-center">
-      <h2 class="mx-auto max-w-[20ch] text-[2.5rem]/[1.05] font-medium tracking-tight text-balance text-foreground sm:text-6xl lg:text-7xl">
-        Ship the storage layer once.
-      </h2>
-      <p class="mx-auto mt-6 max-w-[48ch] text-base leading-relaxed text-pretty text-muted-foreground sm:text-lg">
-        Open source, MIT licensed, built around web standards. Drop in an
-        adapter and forget the difference.
-      </p>
-      <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
-        <InstallCommand client:visible />
-        <a
-          class="inline-flex items-center gap-1.5 rounded-blume px-4 py-2 text-sm font-medium text-foreground underline-offset-4 hover:underline"
-          href="/docs/api"
-        >
-          Read the docs →
-        </a>
-      </div>
-    </div>
-  </section>
-
-  <footer slot="footer" class="border-t border-dotted">
-    <div class="mx-auto max-w-6xl px-6 py-14 sm:py-16">
-      <div class="flex flex-col gap-10 sm:flex-row sm:justify-between sm:gap-16">
-        <div class="flex max-w-[40ch] flex-col gap-2">
-          <p class="text-base font-semibold text-foreground">Files SDK</p>
-          <p class="text-base leading-relaxed text-pretty text-muted-foreground sm:text-sm">
-            A unified storage SDK for object and blob backends. Open source, MIT
-            licensed.
-          </p>
-        </div>
-        <div class="grid grid-cols-2 gap-x-12 gap-y-8 sm:gap-x-16">
-          <div class="flex flex-col gap-3">
-            <p class="font-mono text-xs uppercase tracking-wide text-muted-foreground">Project</p>
-            <ul class="flex flex-col gap-2">
-              {PROJECT_LINKS.map((l) => (
-                <li>
-                  <a class="text-base font-normal text-muted-foreground transition-colors hover:text-foreground sm:text-sm" href={l.href}>{l.label}</a>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div class="flex flex-col gap-3">
-            <p class="font-mono text-xs uppercase tracking-wide text-muted-foreground">Resources</p>
-            <ul class="flex flex-col gap-2">
-              {RESOURCE_LINKS.map((l) => (
-                <li>
-                  <a class="text-base font-normal text-muted-foreground transition-colors hover:text-foreground sm:text-sm" href={l.href} rel="noreferrer" target="_blank">{l.label}</a>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-      <div class="mt-12 flex flex-col gap-3 border-t border-dotted pt-6 sm:flex-row sm:items-center sm:justify-between">
-        <p class="text-xs text-muted-foreground">&copy; {year} Hayden Bleasel</p>
-        <p class="font-mono text-xs text-muted-foreground">MIT License</p>
-      </div>
-    </div>
-  </footer>
+  <Hero adapterCount={ADAPTERS.length} latestVersion={latestVersion} />
+  <Demo />
+  <Capabilities />
+  <GetStarted />
+  <FinalCta />
+  <Footer slot="footer" />
 </PageLayout>
