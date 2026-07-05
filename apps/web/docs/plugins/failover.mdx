@@ -56,7 +56,7 @@ Each operation walks the chain until one backend succeeds. If **every** backend 
 
 ## When does it fail over?
 
-By default, the plugin fails over **only** on a `Provider` [error](/errors) - a network failure, timeout, or 5xx, i.e. "the backend is down" - and **never** on an aborted request. A definitive answer from a _healthy_ backend is surfaced as-is, not masked by probing a replica:
+By default, the plugin fails over **only** on a `Provider` [error](/docs/api/errors) - a network failure, timeout, or 5xx, i.e. "the backend is down" - and **never** on an aborted request. A definitive answer from a _healthy_ backend is surfaced as-is, not masked by probing a replica:
 
 - a `NotFound` stays a `NotFound` - a genuine 404 isn't turned into a slow scan of every replica;
 - an `Unauthorized` / `Conflict` / `ReadOnly` is likewise a real answer, not a reason to try elsewhere.
@@ -65,7 +65,7 @@ This keeps reads honest: the primary is the source of truth, and the secondary o
 
 ### Customising the predicate
 
-Pass `shouldFailover` to change the rule. It receives the error normalized to a [`FilesError`](/errors) (so `code` and `aborted` are always set). For example, to **read through** to a replica on a miss - useful when the secondary is a live mirror that may be ahead of the primary:
+Pass `shouldFailover` to change the rule. It receives the error normalized to a [`FilesError`](/docs/api/errors) (so `code` and `aborted` are always set). For example, to **read through** to a replica on a miss - useful when the secondary is a live mirror that may be ahead of the primary:
 
 ```ts
 failover({
@@ -115,7 +115,7 @@ failover({
 Failover buys **availability**, not consistency. An object written to a secondary while the primary was down lives **only** on that secondary; once the primary recovers, a read hits it first and gets a `NotFound`. Failover doesn't reconcile that gap for you. To converge:
 
 - keep the secondary current with `replication()` (write-through to both), or
-- reconcile after an outage with [`sync`](/sync) / [`transfer`](/transfer), or
+- reconcile after an outage with [`sync`](/docs/api/sync) / [`transfer`](/docs/api/transfer), or
 - pass a `shouldFailover` that also fails over on `NotFound` so reads fall through to the replica.
 
 ## Ordering and prefixes
