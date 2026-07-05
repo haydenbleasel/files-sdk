@@ -33,13 +33,12 @@ export default defineConfig({
   logo: "/logo.svg",
 
   navigation: {
+    sidebar: {
+      display: "group",
+    },
     tabs: [
-      { icon: "plug", label: "Adapters", path: "/docs/adapters" },
-      { icon: "sparkles", label: "AI", path: "/docs/ai" },
-      { icon: "code", label: "API", path: "/docs/api" },
-      { icon: "terminal", label: "CLI", path: "/docs/cli" },
-      { icon: "blocks", label: "Plugins", path: "/docs/plugins" },
-      { icon: "layout-dashboard", label: "UI", path: "/docs/ui" },
+      { label: "Docs", path: "/docs" },
+      { label: "Changelog", path: "/changelog" },
     ],
   },
 
