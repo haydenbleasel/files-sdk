@@ -32,22 +32,28 @@ const NOW = 1_781_000_000_000;
 // icons rather than broken thumbnails (image thumbnails need the gateway).
 const SAMPLE: { key: string; size: number; type: string; age: number }[] = [
   {
-    age: 1,
-    key: "documents/q4-report.pdf",
-    size: 2_411_000,
-    type: "application/pdf",
-  },
-  {
-    age: 3,
-    key: "documents/invoice-2026-06.pdf",
-    size: 184_320,
-    type: "application/pdf",
-  },
-  {
     age: 6,
     key: "documents/meeting-notes.txt",
     size: 4210,
     type: "text/plain",
+  },
+  {
+    age: 1,
+    key: "documents/reports/q4-report.pdf",
+    size: 2_411_000,
+    type: "application/pdf",
+  },
+  {
+    age: 8,
+    key: "documents/reports/annual-2026.pdf",
+    size: 3_120_000,
+    type: "application/pdf",
+  },
+  {
+    age: 3,
+    key: "documents/contracts/invoice-2026-06.pdf",
+    size: 184_320,
+    type: "application/pdf",
   },
   {
     age: 2,
@@ -56,13 +62,6 @@ const SAMPLE: { key: string; size: number; type: string; age: number }[] = [
     type: "video/mp4",
   },
   { age: 9, key: "videos/onboarding.mp4", size: 31_800_000, type: "video/mp4" },
-  {
-    age: 4,
-    key: "backups/db-2026-07.zip",
-    size: 12_040_000,
-    type: "application/zip",
-  },
-  { age: 5, key: "data/analytics-export.csv", size: 96_500, type: "text/csv" },
   { age: 0, key: "README.md", size: 1820, type: "text/markdown" },
   { age: 7, key: "changelog.txt", size: 3140, type: "text/plain" },
 ];

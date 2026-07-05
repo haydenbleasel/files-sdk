@@ -51,6 +51,15 @@
   margin: 0;
 }
 
+/* Blume's `.prose :where(p, ul, ol)` margins aren't guarded against
+   `.not-prose`, so they leak into the component-preview islands (the `<Component>`
+   Preview pane is `not-prose` but still lives inside the page's `.prose`).
+   Reset flow-element spacing inside not-prose — these shadcn components assume a
+   Preflight-style margin reset. */
+.not-prose :where(p, ul, ol, h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+}
+
 /* Geist Mono ligatures shape across Shiki's per-token spans (collapsing glyphs
    like `=== 0`) and bleed past inline-code backgrounds; disable them on code
    and the .font-mono landing animations. */
