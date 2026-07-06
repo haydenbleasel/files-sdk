@@ -8,6 +8,7 @@ import type {
   ListCallOptions,
   SearchCallOptions,
 } from "../client/index.js";
+// oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
 import type { ListResult, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";

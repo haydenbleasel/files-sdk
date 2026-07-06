@@ -104,6 +104,8 @@ export const mapWebdavError = makeErrorMapper({
   providerLabel: "WebDAV error",
 });
 
+const LAST_MODIFIED_HEADER = "last-modified";
+
 const AUTH_TYPES: Readonly<Record<WebdavAuthType, AuthType>> = {
   auto: AuthType.Auto,
   basic: AuthType.Password,
@@ -307,9 +309,11 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           return createStoredFile(
             {
               key,
-              ...(parseLastMod(res.headers.get("last-modified")) !==
+              ...(parseLastMod(res.headers.get(LAST_MODIFIED_HEADER)) !==
                 undefined && {
-                lastModified: parseLastMod(res.headers.get("last-modified")),
+                lastModified: parseLastMod(
+                  res.headers.get(LAST_MODIFIED_HEADER)
+                ),
               }),
               size: contentLength ? Number(contentLength) : 0,
               type: res.headers.get("content-type") ?? inferTypeFromName(key),
@@ -339,7 +343,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         }
         const bytes = toUint8(result.data);
         const lastModified = parseLastMod(
-          headerValue(result.headers, "last-modified")
+          headerValue(result.headers, LAST_MODIFIED_HEADER)
         );
         return createStoredFile(
           {
@@ -409,7 +413,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           if (entry.type === "directory") {
             const childPath =
               dir === "/" ? `/${entry.basename}` : `${dir}/${entry.basename}`;
-            // eslint-disable-next-line no-await-in-loop -- recursive walk: WebDAV has no native prefix scan across collections.
+            // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- recursive walk: WebDAV has no native prefix scan across collections.
             await walk(childPath, childKey);
           } else {
             keys.push(childKey);

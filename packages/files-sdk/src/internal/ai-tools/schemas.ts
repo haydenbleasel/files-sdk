@@ -9,6 +9,8 @@ import { z } from "zod";
 export const DEFAULT_MAX_DOWNLOAD_BYTES = 1024 * 1024;
 export const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024;
 
+const DESTINATION_KEY_DESC = "Destination object key";
+
 const listFilesInput = z.object({
   cursor: z
     .string()
@@ -82,7 +84,7 @@ const uploadFileInput = z.object({
     .enum(["text", "base64"])
     .optional()
     .describe("How to interpret content (default: text)"),
-  key: z.string().describe("Destination object key"),
+  key: z.string().describe(DESTINATION_KEY_DESC),
   metadata: z
     .record(z.string(), z.string())
     .optional()
@@ -95,7 +97,7 @@ const deleteFileInput = z.object({
 
 const copyFileInput = z.object({
   from: z.string().describe("Source object key"),
-  to: z.string().describe("Destination object key"),
+  to: z.string().describe(DESTINATION_KEY_DESC),
 });
 
 const signUploadUrlInput = z.object({
@@ -108,7 +110,7 @@ const signUploadUrlInput = z.object({
     .int()
     .positive()
     .describe("Lifetime of the presigned URL in seconds"),
-  key: z.string().describe("Destination object key"),
+  key: z.string().describe(DESTINATION_KEY_DESC),
   maxSize: z
     .number()
     .int()

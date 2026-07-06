@@ -4,7 +4,7 @@
 // straight through. The HMAC token binds the server-chosen key + size/type so
 // the server stays stateless and the client can't forge or relax it.
 
-import type { Files, SignedUpload } from "../../index.js";
+import type { Files, SignedUpload, UploadResult } from "../../index.js";
 import { FilesError } from "../errors.js";
 import { RouterError } from "../router-core/envelope.js";
 import { signToken, verifyToken } from "../router-core/sign-token.js";
@@ -151,8 +151,9 @@ export const handleComplete = async (
   const completed: WireStoredFile[] = [];
   const errors: WireBulkError[] = [];
 
+  // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- each per-completion validation failure (token, size) records an error and continues to the next
   for (const completion of completions) {
-    // oxlint-disable-next-line no-await-in-loop -- completions verified sequentially; small N.
+    // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- completions verified sequentially; small N
     const verified = await verifyToken(completion.id, cfg.secret, cfg.now());
     if (!verified.ok) {
       errors.push({
@@ -255,11 +256,16 @@ export const handleExplicitUpload = async (
     cfg.maxUploadSize,
     "upload exceeds maxUploadSize"
   );
-  const result = await cfg.files
-    .upload(storageKey, limited.body, contentType ? { contentType } : {})
-    .catch((error: unknown) => {
-      throw limited.getError() ?? FilesError.wrap(error);
-    });
+  let result: UploadResult;
+  try {
+    result = await cfg.files.upload(
+      storageKey,
+      limited.body,
+      contentType ? { contentType } : {}
+    );
+  } catch (error) {
+    throw limited.getError() ?? FilesError.wrap(error);
+  }
   return {
     body: {
       file: {

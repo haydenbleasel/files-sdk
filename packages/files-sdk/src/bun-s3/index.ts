@@ -15,6 +15,8 @@ import {
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
 export interface BunS3OperationOptions {
   bucket?: string;
   region?: string;
@@ -29,6 +31,7 @@ export interface BunS3OperationOptions {
 
 export interface BunS3PresignOptions extends BunS3OperationOptions {
   expiresIn?: number;
+  // oxlint-disable-next-line sonarjs/max-union-size -- fixed set of HTTP methods; a literal union is the clearest representation
   method?: "GET" | "POST" | "PUT" | "DELETE" | "HEAD";
 }
 
@@ -217,7 +220,7 @@ const storedFromStat = (
       key,
       lastModified: stat.lastModified.getTime(),
       size: stat.size,
-      type: stat.type || "application/octet-stream",
+      type: stat.type || DEFAULT_CONTENT_TYPE,
     },
     body
   );
@@ -304,7 +307,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         const source = client.file(from);
         const stat = await source.stat();
         await client.write(to, new Response(source.stream()), {
-          type: stat.type || "application/octet-stream",
+          type: stat.type || DEFAULT_CONTENT_TYPE,
         });
       } catch (error) {
         throw mapBunS3Error(error);
@@ -326,12 +329,8 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         // ByteRange.end maps to end + 1; the sliced handle issues a ranged GET
         // when read. stat() already happened, so derive the slice length from
         // it rather than a second round trip.
-        const target = range
-          ? file.slice(
-              range.start,
-              range.end === undefined ? undefined : range.end + 1
-            )
-          : file;
+        const sliceEnd = range?.end === undefined ? undefined : range.end + 1;
+        const target = range ? file.slice(range.start, sliceEnd) : file;
         if (downloadOpts?.as === "stream") {
           return storedFromStat(
             key,
@@ -394,7 +393,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
                   ? undefined
                   : lastModified,
               size: obj.size ?? 0,
-              type: "application/octet-stream",
+              type: DEFAULT_CONTENT_TYPE,
             },
             {
               factory: () => bytesFromFile(client.file(obj.key)),
@@ -416,7 +415,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // before a resumable upload reaches here — Bun.s3 exposes neither.
       let uploadId: string | undefined;
-      let contentType = "application/octet-stream";
+      let contentType = DEFAULT_CONTENT_TYPE;
       const requirePending = () => {
         const entry =
           uploadId === undefined ? undefined : pending.get(uploadId);
@@ -544,7 +543,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         contentType =
           typeof body === "string"
             ? "text/plain; charset=utf-8"
-            : "application/octet-stream";
+            : DEFAULT_CONTENT_TYPE;
         if (body instanceof Blob && body.type) {
           contentType = body.type;
         }

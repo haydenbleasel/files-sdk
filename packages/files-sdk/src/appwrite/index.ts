@@ -102,6 +102,7 @@ const assertAppwriteKey = (key: string, label = "key"): void => {
 };
 
 const isSupportedBody = (body: unknown): body is Body =>
+  // oxlint-disable-next-line sonarjs/expression-complexity -- a flat body-type guard; each instanceof check is a distinct supported Body shape, splitting would just scatter the union
   typeof body === "string" ||
   body instanceof Uint8Array ||
   body instanceof ArrayBuffer ||

@@ -130,12 +130,16 @@ const loadLibStorage = async () => {
 // Default parts in flight, mirroring lib-storage's own `queueSize` default.
 const MULTIPART_DEFAULT_CONCURRENCY = 4;
 
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
+type MultipartInput = boolean | MultipartOptions | undefined;
+
 /**
  * Translate our {@link MultipartOptions} into the lib-storage `Upload` knobs.
  * `partSize` is omitted when unset so lib-storage's 5 MiB default applies.
  */
 const resolveMultipart = (
-  multipart: boolean | MultipartOptions | undefined
+  multipart: MultipartInput
 ): { partSize?: number; queueSize: number } => {
   const opts = typeof multipart === "object" ? multipart : {};
   return {
@@ -153,7 +157,7 @@ const resolveMultipart = (
 const runLibStorageUpload = async (
   client: S3Client,
   params: PutObjectCommandInput,
-  multipart: boolean | MultipartOptions | undefined,
+  multipart: MultipartInput,
   onProgress: ((progress: UploadProgress) => void) | undefined,
   signal: AbortSignal | undefined
 ): Promise<string | undefined> => {
@@ -186,9 +190,7 @@ const runLibStorageUpload = async (
 // clamp the requested part size up to that floor.
 const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
 
-const resolveResumablePartSize = (
-  multipart: boolean | MultipartOptions | undefined
-): number => {
+const resolveResumablePartSize = (multipart: MultipartInput): number => {
   const partSize =
     typeof multipart === "object" ? multipart.partSize : undefined;
   return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
@@ -276,7 +278,7 @@ const createS3ResumableDriver = (
           new HeadObjectCommand({ Bucket: bucket, Key: key })
         );
         return {
-          contentType: head.ContentType ?? "application/octet-stream",
+          contentType: head.ContentType ?? DEFAULT_CONTENT_TYPE,
           etag: stripEtag(completed.ETag),
           key,
           lastModified: head.LastModified?.getTime(),
@@ -438,6 +440,7 @@ export const mapS3Error = (
   const e = err as { name?: string; Code?: string; message?: string };
   const wrapped = _defaultMapS3Error({
     ...(typeof err === "object" && err ? err : {}),
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips any spread-in message so mapping is by code only; null would be a real message value
     message: undefined,
   });
   const code = wrapped.code as ProviderFilesErrorCode;
@@ -529,6 +532,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         throw wrapErr(error);
       }
     },
+    // oxlint-disable-next-line sonarjs/cognitive-complexity -- two well-separated paths (stopOnError sequential vs chunked batch merge), each test-covered; splitting would obscure the shared result shape
     async deleteMany(
       keys: string[],
       deleteOpts?: DeleteManyOptions
@@ -541,7 +545,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         const errors: NonNullable<DeleteManyResult["errors"]> = [];
         for (const key of keys) {
           try {
-            // eslint-disable-next-line no-await-in-loop -- stopOnError: sequential deletes that early-exit on the first failure
+            // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- stopOnError: sequential deletes that early-exit on the first failure
             await client.send(
               new DeleteObjectCommand({ Bucket: bucket, Key: key })
             );
@@ -560,7 +564,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
       for (let start = 0; start < keys.length; start += S3_DELETE_BATCH_LIMIT) {
         const batch = keys.slice(start, start + S3_DELETE_BATCH_LIMIT);
         try {
-          // eslint-disable-next-line no-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
+          // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
           const result = await client.send(
             new DeleteObjectsCommand({
               Bucket: bucket,
@@ -619,7 +623,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
           key,
           lastModified: result.LastModified?.getTime(),
           metadata: result.Metadata,
-          type: result.ContentType ?? "application/octet-stream",
+          type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
         };
         if (downloadOpts?.as === "stream") {
           const stream = result.Body?.transformToWebStream();
@@ -672,7 +676,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
             lastModified: result.LastModified?.getTime(),
             metadata: result.Metadata,
             size: Number(result.ContentLength ?? 0),
-            type: result.ContentType ?? "application/octet-stream",
+            type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
           },
           {
             factory: async () => {
@@ -710,7 +714,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
               key: objKey,
               lastModified: obj.LastModified?.getTime(),
               size: Number(obj.Size ?? 0),
-              type: "application/octet-stream",
+              type: DEFAULT_CONTENT_TYPE,
             },
             {
               factory: async () => {

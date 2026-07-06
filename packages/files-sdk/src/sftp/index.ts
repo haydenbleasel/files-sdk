@@ -304,7 +304,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       await run(undefined, async (client) => {
         for (const key of keys) {
           try {
-            // eslint-disable-next-line no-await-in-loop -- single connection: concurrent deletes would trip server session limits, and stopOnError early-exits
+            // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- single SFTP connection: concurrent deletes would trip server session limits, and stopOnError early-exits
             await client.delete(keyToRemote(key), true);
             deleted.push(key);
           } catch (error) {
@@ -457,7 +457,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
             const childPath =
               dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
             if (entry.type === "d") {
-              // eslint-disable-next-line no-await-in-loop -- recursive walk over a single shared SFTP connection
+              // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- recursive walk over a single shared SFTP connection that cannot multiplex
               await walk(childPath, childKey);
             } else {
               keys.push(childKey);

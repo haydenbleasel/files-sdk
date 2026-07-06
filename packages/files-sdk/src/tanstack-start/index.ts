@@ -28,7 +28,10 @@ export interface TanStackStartRouteHandlers {
 export const createRouteHandler = (
   router: FilesApi
 ): TanStackStartRouteHandlers => ({
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   GET: ({ request }) => router.handle(request),
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   POST: ({ request }) => router.handle(request),
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   PUT: ({ request }) => router.handle(request),
 });

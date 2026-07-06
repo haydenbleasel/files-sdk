@@ -1823,6 +1823,7 @@ export class Files<A extends Adapter = Adapter> {
     // Generic progress: the adapter does not report it, so the wrapper does.
     // Strip `onProgress` from the options the adapter sees — it would ignore
     // it anyway, and dropping it keeps `total` ownership here.
+    // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit drops onProgress from the options the adapter sees
     const { onProgress: _onProgress, ...rest } = opts ?? {};
     const total = byteLengthOf(body);
 
@@ -1877,7 +1878,7 @@ export class Files<A extends Adapter = Adapter> {
    * orchestrator owns per-chunk retry and abort, so retrying the whole call
    * would restart the upload from zero.
    */
-  #runResumable(
+  async #runResumable(
     path: string,
     body: Body,
     opts: UploadOptions,
@@ -1898,7 +1899,7 @@ export class Files<A extends Adapter = Adapter> {
       (signal): signal is AbortSignal => signal !== undefined
     );
     const timeout = opts.timeout ?? this.#defaults.timeout;
-    return runResumableUpload({
+    const result = await runResumableUpload({
       body,
       control,
       driver,
@@ -1908,7 +1909,8 @@ export class Files<A extends Adapter = Adapter> {
       ...(opts.onProgress && { onProgress: opts.onProgress }),
       retries: opts.retries ?? this.#defaults.retries,
       ...(timeout !== undefined && { timeout }),
-    }).then((result) => this.#uploadResult(result));
+    });
+    return this.#uploadResult(result);
   }
 
   async #uploadMany(
@@ -2144,6 +2146,7 @@ export class Files<A extends Adapter = Adapter> {
       (key) => key,
       (key) =>
         this.#dispatch(
+          // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no per-op options; null would change the dispatch op shape
           { bulk: true, key, kind: "head", options: undefined },
           async (op) => {
             // A plugin re-routing to another verb takes the full single-op
@@ -2215,6 +2218,7 @@ export class Files<A extends Adapter = Adapter> {
       (key) => key,
       async (key) => ({
         exists: await this.#dispatch(
+          // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no per-op options; null would change the dispatch op shape
           { bulk: true, key, kind: "exists", options: undefined },
           (op) => {
             // A plugin re-routing to another verb takes the full single-op
@@ -2303,6 +2307,7 @@ export class Files<A extends Adapter = Adapter> {
         keys,
         (key) =>
           this.#dispatch(
+            // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no per-op options; null would change the dispatch op shape
             { bulk: true, key, kind: "delete", options: undefined },
             (op) => {
               // A plugin re-routing to another verb (e.g. a snapshot `head` +
@@ -2482,6 +2487,7 @@ export class Files<A extends Adapter = Adapter> {
     // `delimiter` would collapse nested keys into folders, so `listAll` would
     // silently walk only the top level. It yields objects, so strip it and
     // always walk the full tree; use `list()` directly for the folder view.
+    // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit strips delimiter so listAll always walks the full tree
     const { delimiter: _delimiter, ...rest } = opts ?? {};
     let { cursor } = rest;
     do {
@@ -2539,11 +2545,10 @@ export class Files<A extends Adapter = Adapter> {
     const matches = buildSearchMatcher(pattern, match, caseInsensitive);
     // Only a glob carries an inferable literal prefix, and only when matching
     // case-sensitively (a provider prefix filter can't be case-folded).
+    const isCaseSensitiveGlob =
+      typeof pattern === "string" && match === "glob" && !caseInsensitive;
     const walkPrefix =
-      prefix ??
-      (typeof pattern === "string" && match === "glob" && !caseInsensitive
-        ? globPrefix(pattern)
-        : "");
+      prefix ?? (isCaseSensitiveGlob ? globPrefix(pattern) : "");
     const listOpts: ListOptions = { ...rest };
     if (walkPrefix) {
       listOpts.prefix = walkPrefix;
@@ -2606,6 +2611,7 @@ export class Files<A extends Adapter = Adapter> {
     retryable = true,
     ctx?: ActionContext
   ): Promise<T> {
+    // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit strips retries/timeout from the options the adapter sees
     const { retries: _retries, timeout: _timeout, ...adapterOpts } = opts ?? {};
     const baseOpts = opts ? (adapterOpts as O) : undefined;
     const retryOptions = opts?.retries ?? this.#defaults.retries;
@@ -2623,7 +2629,7 @@ export class Files<A extends Adapter = Adapter> {
         ? ({ ...baseOpts, signal: runtime.signal } as O)
         : baseOpts;
       try {
-        // eslint-disable-next-line no-await-in-loop -- retry loop: each attempt must resolve before deciding to retry.
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- retry loop is sequential: each attempt must resolve before deciding to retry
         return await runWithSignal(runtime.signal, () => fn(attemptOpts));
       } catch (error) {
         const wrapped = runtime.signal?.aborted

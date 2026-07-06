@@ -19,6 +19,7 @@ import type {
   ListCallOptions,
   SearchCallOptions,
 } from "../client/index.js";
+// oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
 import type { ListResult, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";
@@ -65,6 +66,7 @@ const useQuery = <T>(
     const current = new AbortController();
     controller = current;
     isFetching.value = true;
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the ref's shape
     errorRef.value = undefined;
     void (async () => {
       try {

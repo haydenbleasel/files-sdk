@@ -97,6 +97,7 @@ export type DropboxAdapter = Adapter<DropboxClient> & {
 };
 
 const MAX_TEMPORARY_LINK_DURATION = 14_400;
+const OCTET_STREAM = "application/octet-stream";
 const REFRESH_LEEWAY_MS = 60_000;
 const SIMPLE_UPLOAD_LIMIT_BYTES = 150 * 1024 * 1024;
 const UPLOAD_SESSION_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -356,31 +357,31 @@ const normalizeBody = async (
   }
   if (body instanceof Uint8Array) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof ArrayBuffer) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body),
     };
   }
   if (ArrayBuffer.isView(body)) {
     const view = body as ArrayBufferView;
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
     };
   }
   if (body instanceof Blob) {
     return {
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || OCTET_STREAM),
       data: Buffer.from(await body.arrayBuffer()),
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? OCTET_STREAM,
     data: await collectStream(body),
   };
 };
@@ -425,6 +426,7 @@ const downloadResultToBytes = (
   // Browser/Workers path: SDK attaches a Blob as `fileBlob`.
   const blob = result.fileBlob;
   if (blob instanceof Blob) {
+    // oxlint-disable-next-line github/no-then -- this helper is intentionally non-async and returns Promises across its branches (resolve/reject); making it async just to drop one .then() would restructure every branch
     return blob.arrayBuffer().then((ab) => new Uint8Array(ab));
   }
   return Promise.reject(
@@ -516,6 +518,7 @@ const createRefreshTokenAuth = (
       method: "POST",
     });
     if (!res.ok) {
+      // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
       const text = await res.text().catch(() => "");
       throw new FilesError(
         "Unauthorized",
@@ -878,7 +881,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       | Extract<ResumableUploadSession, { provider: "dropbox" }>
       | undefined;
     let finalItem: files.FileMetadata | undefined;
-    let contentType = "application/octet-stream";
+    let contentType = OCTET_STREAM;
     const requireSession = () => {
       if (!session) {
         throw new FilesError(
@@ -1220,7 +1223,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         let size: number;
         let contentType: string;
         if (body instanceof ReadableStream) {
-          contentType = options?.contentType ?? "application/octet-stream";
+          contentType = options?.contentType ?? OCTET_STREAM;
           ({ item, size } = await uploadSessionFromStream(
             path,
             body,
@@ -1272,6 +1275,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         return joinPublicUrl(publicBaseUrl, key);
       }
       try {
+        // oxlint-disable-next-line react-doctor/async-defer-await -- both branches below need a fresh access token, so this must run before the publicByDefault guard, not after it
         await authHandle.ensureAccessToken();
         if (publicByDefault) {
           return await createPublicSharedLink(key);

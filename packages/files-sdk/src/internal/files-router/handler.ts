@@ -272,10 +272,11 @@ const toWireTrashed = (t: {
 
 // --- JSON op dispatch ---
 
-// oxlint-disable-next-line complexity -- a flat per-op dispatch table; each arm is a thin call.
+// oxlint-disable-next-line complexity -- a flat per-op dispatch table; each arm is a thin call
 const dispatchJson = async (
   ctx: HandlerContext,
   parsed: ParsedRequest
+  // oxlint-disable-next-line sonarjs/cognitive-complexity -- a flat per-op dispatch table; each arm is a thin call
 ): Promise<ResultModel> => {
   const body = asRecord(parsed.json);
   const op = str(body.op, "op");
@@ -597,10 +598,13 @@ const dispatchJson = async (
       // `trashed()` returns the whole trash; under a key-prefix scope, expose
       // only the caller's own keys (and honor a bulk `filterKeys`).
       const all = await plugin.trashed();
-      const visible = all
-        .filter((t) => t.key.startsWith(scope.prefix))
-        .map((t) => toWireTrashed({ ...t, key: unscope(t.key) }))
-        .filter((t) => !scope.filterKeys || scope.filterKeys(t.key));
+      const visible = all.flatMap((t) => {
+        if (!t.key.startsWith(scope.prefix)) {
+          return [];
+        }
+        const wire = toWireTrashed({ ...t, key: unscope(t.key) });
+        return scope.filterKeys && !scope.filterKeys(wire.key) ? [] : [wire];
+      });
       return json({ trashed: visible });
     }
     case "restore-trashed": {
@@ -658,7 +662,7 @@ const dispatchJson = async (
           return !scope.filterKeys || scope.filterKeys(unscoped);
         });
         for (const t of mine) {
-          // eslint-disable-next-line no-await-in-loop -- purge scoped trash entries sequentially; stops on the first failure.
+          // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- purge scoped trash entries sequentially; stops on the first failure
           await plugin.purge(t.key);
         }
       } else {

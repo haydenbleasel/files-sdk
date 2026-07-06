@@ -414,6 +414,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         return result;
       }
       case "move": {
+        // oxlint-disable-next-line react-doctor/async-parallel -- next() must settle before invalidating; the two deletes are ordered after the write, not independent.
         const result = await next(op);
         await store.delete(op.from);
         await store.delete(op.to);

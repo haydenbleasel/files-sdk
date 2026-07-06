@@ -185,6 +185,7 @@ export const createFilesClient = (
     try {
       body = JSON.parse(text);
     } catch {
+      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no parseable body; null would be a distinct wire value
       body = undefined;
     }
     if (status < 200 || status >= 300) {
@@ -401,9 +402,9 @@ export const createFilesClient = (
       await post({ from, op: "copy", to }, opts?.signal);
     },
 
-    delete: ((keyOrKeys: string | string[], opts?: BulkCallOptions) => {
+    delete: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
-        return post<{ deleted: string[]; errors?: WireBulkError[] }>(
+        const r = await post<{ deleted: string[]; errors?: WireBulkError[] }>(
           {
             concurrency: opts?.concurrency,
             keys: keyOrKeys,
@@ -411,11 +412,11 @@ export const createFilesClient = (
             stopOnError: opts?.stopOnError,
           },
           opts?.signal
-        ).then((r) => withErrors({ deleted: r.deleted }, r.errors));
+        );
+        return withErrors({ deleted: r.deleted }, r.errors);
       }
-      return post({ key: keyOrKeys, op: "delete" }, opts?.signal).then(() => {
-        // discard the { ok: true } envelope; single delete resolves to void
-      });
+      // discard the { ok: true } envelope; single delete resolves to void
+      await post({ key: keyOrKeys, op: "delete" }, opts?.signal);
     }) as FilesClient["delete"],
 
     download: ((
@@ -426,9 +427,9 @@ export const createFilesClient = (
         ? downloadMany(keyOrKeys, opts)
         : downloadOne(keyOrKeys, opts)) as FilesClient["download"],
 
-    exists: ((keyOrKeys: string | string[], opts?: BulkCallOptions) => {
+    exists: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
-        return post<{
+        const res = await post<{
           existing: string[];
           missing: string[];
           errors?: WireBulkError[];
@@ -440,19 +441,25 @@ export const createFilesClient = (
             stopOnError: opts?.stopOnError,
           },
           opts?.signal
-        ).then((r) =>
-          withErrors({ existing: r.existing, missing: r.missing }, r.errors)
+        );
+        return withErrors(
+          { existing: res.existing, missing: res.missing },
+          res.errors
         );
       }
-      return post<{ exists: boolean }>(
+      const r = await post<{ exists: boolean }>(
         { key: keyOrKeys, op: "exists" },
         opts?.signal
-      ).then((r) => r.exists);
+      );
+      return r.exists;
     }) as FilesClient["exists"],
 
-    head: ((keyOrKeys: string | string[], opts?: BulkCallOptions) => {
+    head: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
-        return post<{ files: WireStoredFile[]; errors?: WireBulkError[] }>(
+        const res = await post<{
+          files: WireStoredFile[];
+          errors?: WireBulkError[];
+        }>(
           {
             concurrency: opts?.concurrency,
             keys: keyOrKeys,
@@ -460,14 +467,14 @@ export const createFilesClient = (
             stopOnError: opts?.stopOnError,
           },
           opts?.signal
-        ).then((r) =>
-          withErrors({ files: r.files.map(toStoredFile) }, r.errors)
         );
+        return withErrors({ files: res.files.map(toStoredFile) }, res.errors);
       }
-      return post<{ file: WireStoredFile }>(
+      const r = await post<{ file: WireStoredFile }>(
         { key: keyOrKeys, op: "head" },
         opts?.signal
-      ).then((r) => toStoredFile(r.file));
+      );
+      return toStoredFile(r.file);
     }) as FilesClient["head"],
 
     list: async (opts?: ListCallOptions) => {

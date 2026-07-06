@@ -129,6 +129,9 @@ export type OneDriveAdapter = Adapter<OneDriveClient> & {
 };
 
 const GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
+const OCTET_STREAM = "application/octet-stream";
+const MISSING_UPLOAD_URL_MESSAGE =
+  "onedrive: createUploadSession response missing uploadUrl";
 const SIMPLE_UPLOAD_LIMIT_BYTES = 250 * 1024 * 1024;
 const DEFAULT_COPY_TIMEOUT_MS = 60_000;
 const COPY_POLL_INTERVAL_MS = 500;
@@ -189,6 +192,7 @@ export const mapGraphError = (err: unknown): FilesError => {
   if (err instanceof GraphError) {
     const code = classifyGraphError(err.statusCode, err.code);
     const innerMessage =
+      // oxlint-disable-next-line sonarjs/expression-complexity -- narrowing Graph's untyped error body to pull a nested message; splitting would obscure the fallback chain
       (err.body && typeof err.body === "object"
         ? ((err.body as { error?: { message?: string } }).error?.message ??
           (err.body as { message?: string }).message)
@@ -349,31 +353,31 @@ const normalizeBody = async (
   }
   if (body instanceof Uint8Array) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof ArrayBuffer) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body),
     };
   }
   if (ArrayBuffer.isView(body)) {
     const view = body as ArrayBufferView;
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
     };
   }
   if (body instanceof Blob) {
     return {
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || OCTET_STREAM),
       data: Buffer.from(await body.arrayBuffer()),
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? OCTET_STREAM,
     data: await collectStream(body),
   };
 };
@@ -427,7 +431,7 @@ const itemToStoredMeta = (
     lastModified: new Date(item.lastModifiedDateTime).getTime(),
   }),
   size: Number(item.size ?? 0),
-  type: item.file?.mimeType ?? "application/octet-stream",
+  type: item.file?.mimeType ?? OCTET_STREAM,
 });
 
 // Custom TokenCredential for the OAuth refresh-token flow. @azure/identity
@@ -482,6 +486,7 @@ class RefreshTokenCredential implements TokenCredential {
       method: "POST",
     });
     if (!res.ok) {
+      // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
       const text = await res.text().catch(() => "");
       throw new FilesError(
         "Unauthorized",
@@ -697,14 +702,14 @@ export const onedrive = (
       // eslint-disable-next-line no-await-in-loop -- copy-status polling: each poll must observe the prior response before deciding to poll again
       const res = await fetch(monitorUrl);
       if (!res.ok && res.status !== 202) {
-        // eslint-disable-next-line no-await-in-loop -- reading the error body of the current poll response
+        // oxlint-disable-next-line eslint/no-await-in-loop, github/no-then -- reading the error body of the current poll response; catch yields "" so the error is intentionally swallowed
         const text = await res.text().catch(() => "");
         throw new FilesError(
           "Provider",
           `onedrive: copy monitor failed (${res.status}): ${text || res.statusText}`
         );
       }
-      // eslint-disable-next-line no-await-in-loop -- parsing the current poll response body
+      // oxlint-disable-next-line eslint/no-await-in-loop, github/no-then -- parsing the current poll response body; catch yields {} so the parse error is intentionally swallowed
       const json = (await res.json().catch(() => ({}))) as {
         status?: string;
         percentageComplete?: number;
@@ -750,10 +755,7 @@ export const onedrive = (
       })) as { uploadUrl?: string };
     const { uploadUrl } = session;
     if (!uploadUrl) {
-      throw new FilesError(
-        "Provider",
-        "onedrive: createUploadSession response missing uploadUrl"
-      );
+      throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
     }
     const total = data.byteLength;
     let offset = 0;
@@ -771,7 +773,7 @@ export const onedrive = (
         ...(signal && { signal }),
       });
       if (!res.ok) {
-        // eslint-disable-next-line no-await-in-loop -- reading the error body of the current chunk PUT
+        // oxlint-disable-next-line eslint/no-await-in-loop, github/no-then -- reading the error body of the current chunk PUT; catch yields "" so the error is intentionally swallowed
         const text = await res.text().catch(() => "");
         throw new FilesError(
           "Provider",
@@ -816,7 +818,7 @@ export const onedrive = (
       return uploadUrl;
     };
     const result = (item: DriveItem): UploadResult => ({
-      contentType: item.file?.mimeType ?? "application/octet-stream",
+      contentType: item.file?.mimeType ?? OCTET_STREAM,
       ...(item.eTag && { etag: item.eTag.replaceAll('"', "") }),
       key,
       ...(item.lastModifiedDateTime && {
@@ -857,10 +859,7 @@ export const onedrive = (
               },
             })) as { uploadUrl?: string };
           if (!created) {
-            throw new FilesError(
-              "Provider",
-              "onedrive: createUploadSession response missing uploadUrl"
-            );
+            throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
           }
           uploadUrl = trustedHttpsSessionUrl(
             created,
@@ -921,6 +920,7 @@ export const onedrive = (
             ...(signal && { signal }),
           });
           if (!res.ok) {
+            // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
             const text = await res.text().catch(() => "");
             throw new FilesError(
               "Provider",
@@ -1149,10 +1149,7 @@ export const onedrive = (
           })) as { uploadUrl?: string };
         const { uploadUrl } = res;
         if (!uploadUrl) {
-          throw new FilesError(
-            "Provider",
-            "onedrive: createUploadSession response missing uploadUrl"
-          );
+          throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
         }
         return {
           method: "PUT",

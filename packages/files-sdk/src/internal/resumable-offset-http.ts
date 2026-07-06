@@ -96,12 +96,11 @@ export const createOffsetHttpDriver = (params: {
       nextOffset: number;
     }> {
       try {
+        const rangeTotal = isLast ? total : "*";
         const contentRange =
           data.byteLength === 0
             ? `bytes */${total}`
-            : `bytes ${offset}-${offset + data.byteLength - 1}/${
-                isLast ? total : "*"
-              }`;
+            : `bytes ${offset}-${offset + data.byteLength - 1}/${rangeTotal}`;
         const res = await fetch(requireUri(), {
           // A typed array's generic ArrayBufferLike backing doesn't satisfy the
           // DOM BodyInit type, though `fetch` accepts it at runtime.

@@ -120,6 +120,9 @@ const AWS_S3_PEERS = [
   "@aws-sdk/s3-request-presigner",
 ] as const;
 
+const STORAGE_ACCOUNT_NAME_DESC = "Storage account name";
+const ACCESS_TOKEN_LABEL = "Access token";
+
 const GRAPH_PEERS = [
   "@azure/identity",
   "@microsoft/microsoft-graph-client",
@@ -292,7 +295,7 @@ export const PROVIDERS = {
           vars: [
             {
               aliases: ["AZURE_STORAGE_ACCOUNT"],
-              description: "Storage account name",
+              description: STORAGE_ACCOUNT_NAME_DESC,
               key: "AZURE_STORAGE_ACCOUNT_NAME",
               readBy: "files-sdk",
               secret: false,
@@ -311,7 +314,7 @@ export const PROVIDERS = {
           vars: [
             {
               aliases: ["AZURE_STORAGE_ACCOUNT"],
-              description: "Storage account name",
+              description: STORAGE_ACCOUNT_NAME_DESC,
               key: "AZURE_STORAGE_ACCOUNT_NAME",
               readBy: "files-sdk",
               secret: false,
@@ -329,7 +332,7 @@ export const PROVIDERS = {
           vars: [
             {
               aliases: ["AZURE_STORAGE_ACCOUNT"],
-              description: "Storage account name",
+              description: STORAGE_ACCOUNT_NAME_DESC,
               key: "AZURE_STORAGE_ACCOUNT_NAME",
               readBy: "files-sdk",
               secret: false,
@@ -554,7 +557,7 @@ export const PROVIDERS = {
     env: {
       credentialModes: [
         {
-          label: "Access token",
+          label: ACCESS_TOKEN_LABEL,
           vars: [
             {
               description: "Short-lived or long-lived access token",
@@ -1015,7 +1018,7 @@ export const PROVIDERS = {
           ],
         },
         {
-          label: "Access token",
+          label: ACCESS_TOKEN_LABEL,
           vars: [
             {
               description: "Pre-acquired Microsoft Graph access token",
@@ -1326,7 +1329,7 @@ export const PROVIDERS = {
           ],
         },
         {
-          label: "Access token",
+          label: ACCESS_TOKEN_LABEL,
           vars: [
             {
               aliases: ["ONEDRIVE_ACCESS_TOKEN"],

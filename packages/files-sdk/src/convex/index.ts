@@ -113,6 +113,8 @@ export interface ConvexAdapterOptions {
 
 export type ConvexAdapter = Adapter<ConvexCtx>;
 
+const OCTET_STREAM = "application/octet-stream";
+
 // Convex surfaces "missing" mostly as `null` returns (handled inline), so the
 // mapper just classifies thrown errors: not-found phrasing → NotFound, every
 // other failure → Provider with the original preserved as `cause`.
@@ -164,7 +166,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       const doc = await ctx.db.system.get("_storage", key);
       return doc
         ? {
-            contentType: doc.contentType ?? "application/octet-stream",
+            contentType: doc.contentType ?? OCTET_STREAM,
             lastModified: doc._creationTime,
             sha256: doc.sha256,
             size: doc.size,
@@ -175,7 +177,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       const meta = await storage.getMetadata(key);
       return meta
         ? {
-            contentType: meta.contentType ?? "application/octet-stream",
+            contentType: meta.contentType ?? OCTET_STREAM,
             sha256: meta.sha256,
             size: meta.size,
           }
@@ -259,7 +261,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
             lastModified: meta.lastModified,
           }),
           size: meta?.size ?? bytes.byteLength,
-          type: meta?.contentType ?? (blob.type || "application/octet-stream"),
+          type: meta?.contentType ?? (blob.type || OCTET_STREAM),
         },
         { data: bytes, kind: "buffer" }
       );
@@ -288,13 +290,16 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       if (!meta) {
         // No metadata row — confirm existence via getUrl so a present-but-
         // metadata-less file still heads with minimal info rather than 404ing.
-        const url = await storage.getUrl(key).catch((error) => {
+        let url: string | null;
+        try {
+          url = await storage.getUrl(key);
+        } catch (error) {
           throw mapConvexError(error);
-        });
+        }
         if (url === null) {
           throw new FilesError("NotFound", `convex: not found: ${key}`);
         }
-        meta = { contentType: "application/octet-stream", sha256: "", size: 0 };
+        meta = { contentType: OCTET_STREAM, sha256: "", size: 0 };
       }
       return createStoredFile(
         {
@@ -329,20 +334,22 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       // Storage ids are opaque (not hierarchical), so `prefix` is rarely
       // meaningful here; applied as a literal id prefix for consistency.
       const prefix = options?.prefix;
-      const items: StoredFile[] = result.page
-        .filter((doc) => !prefix || doc._id.startsWith(prefix))
-        .map((doc) =>
-          createStoredFile(
-            {
-              etag: doc.sha256,
-              key: doc._id,
-              lastModified: doc._creationTime,
-              size: doc.size,
-              type: doc.contentType ?? "application/octet-stream",
-            },
-            { factory: () => loadBytes(doc._id), kind: "lazy" }
-          )
-        );
+      const items: StoredFile[] = result.page.flatMap((doc) =>
+        prefix && !doc._id.startsWith(prefix)
+          ? []
+          : [
+              createStoredFile(
+                {
+                  etag: doc.sha256,
+                  key: doc._id,
+                  lastModified: doc._creationTime,
+                  size: doc.size,
+                  type: doc.contentType ?? OCTET_STREAM,
+                },
+                { factory: () => loadBytes(doc._id), kind: "lazy" }
+              ),
+            ]
+      );
       return {
         items,
         ...(result.isDone ? {} : { cursor: result.continueCursor }),

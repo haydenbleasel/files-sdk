@@ -10,7 +10,6 @@ import { resolveApproval } from "../internal/ai-tools/approval.js";
 import type { ApprovalConfig } from "../internal/ai-tools/approval.js";
 import { WRITE_TOOL_NAMES } from "../internal/ai-tools/schemas.js";
 import type {
-  FileReadToolName,
   FileToolName,
   FileWriteToolName,
 } from "../internal/ai-tools/schemas.js";
@@ -39,12 +38,12 @@ interface AnyToolDefinition {
   handler: (args: never, extra: unknown) => Promise<unknown>;
 }
 
+export type { ApprovalConfig } from "../internal/ai-tools/approval.js";
 export type {
-  ApprovalConfig,
   FileReadToolName,
   FileToolName,
   FileWriteToolName,
-};
+} from "../internal/ai-tools/schemas.js";
 
 export interface ClaudeFileToolsOptions {
   /**

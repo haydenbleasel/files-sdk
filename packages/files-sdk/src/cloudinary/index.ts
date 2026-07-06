@@ -433,7 +433,7 @@ export const cloudinaryAdapter = (
             if (next) {
               apiOpts.next_cursor = next;
             }
-            // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the next_cursor from the previous response
+            // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- pagination: each page uses the next_cursor from the previous response
             const resp = (await sdk.api.resources(apiOpts)) as {
               resources?: CloudinaryResource[];
               next_cursor?: string;

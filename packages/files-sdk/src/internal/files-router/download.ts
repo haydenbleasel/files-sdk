@@ -75,6 +75,7 @@ export const handleDownload = async (
   rangeHeader: string | null,
   scope: Scope,
   signal: AbortSignal
+  // oxlint-disable-next-line sonarjs/cognitive-complexity -- download flow (redirect vs proxy, range, disposition, conditional headers) is cohesive; splitting it would scatter tightly-coupled response logic
 ): Promise<ResultModel> => {
   const caps = cfg.files.capabilities;
   const disposition =

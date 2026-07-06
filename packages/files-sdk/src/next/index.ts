@@ -13,7 +13,10 @@ export interface NextRouteHandlers {
 }
 
 export const createRouteHandler = (router: FilesApi): NextRouteHandlers => ({
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   GET: (req) => router.handle(req),
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   POST: (req) => router.handle(req),
+  // oxlint-disable-next-line sonarjs/function-name -- framework requires this exact handler export name
   PUT: (req) => router.handle(req),
 });

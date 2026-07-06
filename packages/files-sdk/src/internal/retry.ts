@@ -128,11 +128,15 @@ export const runWithSignal = async <T>(
   return await new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(abortError(signal.reason));
     signal.addEventListener("abort", onAbort, { once: true });
-    fn()
-      .then(resolve, reject)
-      .finally(() => {
+    (async () => {
+      try {
+        resolve(await fn());
+      } catch (error) {
+        reject(error);
+      } finally {
         signal.removeEventListener("abort", onAbort);
-      });
+      }
+    })();
   });
 };
 

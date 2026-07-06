@@ -66,6 +66,7 @@ const META_SIZE = "__size";
 const META_LAST_MODIFIED = "__lastModified";
 const META_CACHE_CONTROL = "__cacheControl";
 const META_USER = "__user";
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 interface PackedMetadata {
   [META_CONTENT_TYPE]?: string;
@@ -225,7 +226,7 @@ const readPackedMetadata = (
     contentType:
       typeof m[META_CONTENT_TYPE] === "string"
         ? m[META_CONTENT_TYPE]
-        : "application/octet-stream",
+        : DEFAULT_CONTENT_TYPE,
     lastModified:
       typeof m[META_LAST_MODIFIED] === "number"
         ? m[META_LAST_MODIFIED]
@@ -479,7 +480,7 @@ export const netlifyBlobs = (
             // Netlify's list response only carries key + etag. Rich metadata
             // (size, contentType, lastModified) requires a per-item head().
             size: 0,
-            type: "application/octet-stream",
+            type: DEFAULT_CONTENT_TYPE,
           },
           {
             factory: async () => {
@@ -517,7 +518,7 @@ export const netlifyBlobs = (
     // No native copy — `copy()` reads the source and re-writes the body.
     supportsServerSideCopy: false,
     async upload(key, body, options): Promise<UploadResult> {
-      const contentType = options?.contentType ?? "application/octet-stream";
+      const contentType = options?.contentType ?? DEFAULT_CONTENT_TYPE;
       let storable: Awaited<ReturnType<typeof bodyToStorable>>;
       try {
         storable = await bodyToStorable(body, options?.contentType);

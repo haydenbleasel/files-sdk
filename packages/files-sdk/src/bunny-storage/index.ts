@@ -1,3 +1,4 @@
+// oxlint-disable-next-line sonarjs/no-wildcard-import -- the SDK's API is namespaced (BunnyStorageSDK.file.list/upload/...); no flat named exports.
 import * as BunnyStorageSDK from "@bunny.net/storage-sdk";
 
 import type {
@@ -346,17 +347,24 @@ export const bunnyStorage = (
       try {
         const prefix = options?.prefix?.replace(/^\/+/u, "") ?? "";
         const offset = options?.cursor
-          ? Number.parseInt(options.cursor, 10)
+          ? // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix-10 parse of a numeric cursor is clearer than Math.trunc(Number(...)).
+            Number.parseInt(options.cursor, 10)
           : 0;
         const limit = options?.limit;
         const entries = await BunnyStorageSDK.file.list(
           client,
           listDirectoryForPrefix(prefix)
         );
-        const files = entries
-          .filter((entry) => !entry.isDirectory)
-          .map((entry) => toStoredFile(entry))
-          .filter((entry) => !prefix || entry.key.startsWith(prefix));
+        const files: StoredFile[] = [];
+        for (const entry of entries) {
+          if (entry.isDirectory) {
+            continue;
+          }
+          const stored = toStoredFile(entry);
+          if (!prefix || stored.key.startsWith(prefix)) {
+            files.push(stored);
+          }
+        }
         const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
         const end = limit === undefined ? undefined : start + limit;
         const items = files.slice(start, end);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import type { Dirent } from "node:fs";
+// oxlint-disable-next-line sonarjs/no-wildcard-import -- namespace import of node:fs/promises; many members (readdir/stat/rename/mkdir/...) are used.
 import * as fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -52,6 +53,7 @@ export interface FsAdapterOptions {
 
 export type FsAdapter = Adapter<{ root: string }> & { readonly root: string };
 
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const SIDECAR_SUFFIX = ".meta.json";
 // Partial body of an in-progress resumable upload. Reserved like the sidecar:
 // `walk()` skips it so a paused upload's partial never surfaces in `list()`,
@@ -142,7 +144,7 @@ const defaultContentType = (body: Body, override?: string): string => {
   if (body instanceof Blob && body.type) {
     return body.type;
   }
-  return "application/octet-stream";
+  return DEFAULT_CONTENT_TYPE;
 };
 
 const sha1Etag = (bytes: Uint8Array): string => {
@@ -299,6 +301,7 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
       }
       throw error;
     }
+    // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- the guard-continues (recurse dirs, skip non-files, skip sidecars) are the clearest form of this filter.
     for (const entry of entries) {
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -395,7 +398,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       lastModified: sidecar?.lastModified ?? mtimeMs,
       ...(sidecar?.metadata && { metadata: sidecar.metadata }),
       size,
-      type: sidecar?.contentType ?? "application/octet-stream",
+      type: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
     };
     return createStoredFile(meta, {
       factory: async () => {
@@ -452,7 +455,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           key,
           lastModified: sidecar?.lastModified ?? stat.mtimeMs,
           ...(sidecar?.metadata && { metadata: sidecar.metadata }),
-          type: sidecar?.contentType ?? "application/octet-stream",
+          type: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
         };
         const range = downloadOpts?.range;
         // Node's createReadStream takes inclusive `start`/`end` byte offsets,
@@ -561,7 +564,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       for (const key of page.keys) {
         const bodyPath = path.join(root, ...key.split("/"));
         try {
-          // eslint-disable-next-line no-await-in-loop -- sequential stat per page key; small bounded page, order preserved.
+          // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- sequential stat per page key; small bounded page, order preserved.
           const stat = await fsp.stat(bodyPath);
           // eslint-disable-next-line no-await-in-loop -- sidecar read follows this key's stat within the same page iteration.
           const sidecar = await readSidecar(bodyPath);
@@ -612,7 +615,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const bodyPath = resolveKeyPath(root, key);
       const tempPath = bodyPath + RESUMABLE_SUFFIX;
-      let contentType = "application/octet-stream";
+      let contentType = DEFAULT_CONTENT_TYPE;
       return {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "fs") {

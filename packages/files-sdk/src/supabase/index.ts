@@ -85,6 +85,7 @@ export type SupabaseAdapter = Adapter<StorageClient> & {
 };
 
 const DEFAULT_LIST_LIMIT = 100;
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 const SUPABASE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NotFound",
@@ -174,7 +175,7 @@ const normalizeBody = async (
   if (body instanceof Uint8Array) {
     return {
       contentLength: body.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data: body,
       isBlob: false,
     };
@@ -183,7 +184,7 @@ const normalizeBody = async (
     const data = new Uint8Array(body);
     return {
       contentLength: data.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data,
       isBlob: false,
     };
@@ -193,7 +194,7 @@ const normalizeBody = async (
     const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     return {
       contentLength: data.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data,
       isBlob: false,
     };
@@ -215,13 +216,13 @@ const normalizeBody = async (
     }
     return {
       contentLength: body.size,
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || DEFAULT_CONTENT_TYPE),
       data: body,
       isBlob: true,
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
     data: body,
     isBlob: false,
   };
@@ -352,6 +353,7 @@ interface SupabaseInfoLike {
 }
 
 const toMs = (
+  // oxlint-disable-next-line sonarjs/max-union-size -- Supabase returns timestamps as string, number, or Date; all three shapes are handled here.
   value: string | number | Date | undefined
 ): number | undefined => {
   if (value === undefined || value === null) {
@@ -452,7 +454,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           metadata: stringifyMetadata(meta.metadata),
         }),
         size: meta?.size ?? 0,
-        type: meta?.contentType ?? "application/octet-stream",
+        type: meta?.contentType ?? DEFAULT_CONTENT_TYPE,
       },
       {
         factory: () => stream,
@@ -483,7 +485,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     let metadata: Record<string, string> | undefined;
     if (!type) {
       const meta = await safeInfo(bucketRef, key);
-      type = meta?.contentType ?? "application/octet-stream";
+      type = meta?.contentType ?? DEFAULT_CONTENT_TYPE;
       etag = stripEtag(meta?.etag);
       lastModified = toMs(meta?.lastModified);
       metadata = stringifyMetadata(meta?.metadata);
@@ -581,7 +583,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             metadata: stringifyMetadata(info.metadata),
           }),
           size: info.size ?? 0,
-          type: info.contentType ?? "application/octet-stream",
+          type: info.contentType ?? DEFAULT_CONTENT_TYPE,
         },
         {
           factory: () => downloadAsBytes(key),
@@ -613,7 +615,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
               metadata: stringifyMetadata(meta as Record<string, unknown>),
             }),
             size: meta.size ?? meta.contentLength ?? 0,
-            type: meta.mimetype ?? "application/octet-stream",
+            type: meta.mimetype ?? DEFAULT_CONTENT_TYPE,
           },
           { factory: () => downloadAsBytes(fullKey), kind: "lazy" }
         );
@@ -677,7 +679,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const tus = resolveTusConfig(opts);
       let uri: string | undefined;
-      let contentType = "application/octet-stream";
+      let contentType = DEFAULT_CONTENT_TYPE;
       let lastOffset = 0;
       const requireTus = () => {
         if (!tus) {

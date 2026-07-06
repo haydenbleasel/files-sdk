@@ -337,7 +337,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       await run(undefined, async (client) => {
         for (const key of keys) {
           try {
-            // eslint-disable-next-line no-await-in-loop -- single connection: concurrent removes would trip FTP session limits, and stopOnError early-exits
+            // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- single FTP control connection cannot multiplex; concurrent removes would corrupt the protocol, and stopOnError early-exits
             await client.remove(keyToRemote(key), true);
             deleted.push(key);
           } catch (error) {
@@ -408,7 +408,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           }
           // Kick off the transfer without awaiting; basic-ftp pipes the data
           // socket into `pass` and resolves when it completes.
-          // oxlint-disable-next-line promise/prefer-await-to-then, promise/prefer-await-to-callbacks -- fire-and-forget: errors surface on the returned stream.
+          // oxlint-disable-next-line promise/prefer-await-to-then, promise/prefer-await-to-callbacks, github/no-then -- fire-and-forget: errors surface on the returned stream.
           client.downloadTo(pass, remote).catch((error: unknown) => {
             pass.destroy(error as Error);
           });
@@ -432,6 +432,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       }
       return run(downloadOpts?.signal, async (client) => {
         const buf = await downloadToBuffer(client, remote);
+        // oxlint-disable-next-line react-doctor/server-sequential-independent-await -- single FTP control connection cannot multiplex; these commands must run one at a time
         const lastModified = await tryLastMod(client, remote);
         const bytes = new Uint8Array(
           buf.buffer,
@@ -463,6 +464,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       const remote = keyToRemote(key);
       return run(opts2?.signal, async (client) => {
         const size = await client.size(remote);
+        // oxlint-disable-next-line react-doctor/server-sequential-independent-await -- single FTP control connection cannot multiplex; these commands must run one at a time
         const lastModified = await tryLastMod(client, remote);
         return createStoredFile(
           {
@@ -488,7 +490,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
             }
             const childKey = prefix ? `${prefix}/${entry.name}` : entry.name;
             if (entry.isDirectory) {
-              // eslint-disable-next-line no-await-in-loop -- recursive walk over a single shared FTP connection
+              // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- recursive walk over a single FTP control connection that cannot multiplex
               await walk(childListPath(dir, entry.name), childKey);
             } else {
               keys.push(childKey);
@@ -590,6 +592,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         complete(): Promise<UploadResult> {
           return run(undefined, async (client) => {
             const size = await client.size(remote);
+            // oxlint-disable-next-line react-doctor/server-sequential-independent-await -- single FTP control connection cannot multiplex; these commands must run one at a time
             const lastModified = await tryLastMod(client, remote);
             return {
               contentType: inferTypeFromName(key),

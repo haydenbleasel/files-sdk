@@ -200,6 +200,7 @@ const metaToStored = (
 // either form via `opts.app` for parity with how other adapters accept
 // pre-built clients.
 const isBucket = (candidate: unknown): candidate is Bucket =>
+  // oxlint-disable-next-line sonarjs/expression-complexity -- structural type-guard: the &&-chain of shape checks is the predicate.
   typeof candidate === "object" &&
   candidate !== null &&
   "file" in candidate &&

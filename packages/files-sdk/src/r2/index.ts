@@ -32,6 +32,8 @@ import { createStoredFile } from "../internal/stored-file.js";
 // `loadHttpAdapter` below.
 import type { S3Adapter, S3AdapterOptions } from "../s3/index.js";
 
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
 export interface R2HttpOptions {
   /** R2 bucket name. */
   bucket: string;
@@ -139,14 +141,14 @@ const normalizeForR2 = async (
     ) as ArrayBuffer;
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data: buf,
     };
   }
   if (body instanceof ArrayBuffer) {
     return {
       contentLength: body.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data: body,
     };
   }
@@ -158,7 +160,7 @@ const normalizeForR2 = async (
     ) as ArrayBuffer;
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
       data: buf,
     };
   }
@@ -166,12 +168,12 @@ const normalizeForR2 = async (
     const buf = await body.arrayBuffer();
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || DEFAULT_CONTENT_TYPE),
       data: buf,
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
     data: body,
   };
 };
@@ -190,7 +192,7 @@ const r2ObjectToStoredFile = (
     // `obj.size` is the full object size even on a ranged get; the body holds
     // only the slice, so report the slice length to match.
     size: range ? rangedSize(obj.size, range) : obj.size,
-    type: obj.httpMetadata?.contentType ?? "application/octet-stream",
+    type: obj.httpMetadata?.contentType ?? DEFAULT_CONTENT_TYPE,
   };
   if ("body" in obj && obj.body) {
     if (downloadOpts?.as === "stream") {
@@ -268,6 +270,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   // calls share one adapter instance.
   const httpBucket = (opts as Partial<R2HttpOptions>).bucket;
   const hybrid =
+    // oxlint-disable-next-line sonarjs/expression-complexity -- the inline && chain is what narrows each opt to a non-undefined string inside the branch; extracting the guard loses that narrowing
     opts.accountId && opts.accessKeyId && opts.secretAccessKey && httpBucket
       ? lazyS3({
           bucket: httpBucket,
@@ -403,7 +406,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
             lastModified: obj.uploaded.getTime(),
             metadata: obj.customMetadata,
             size: obj.size,
-            type: obj.httpMetadata?.contentType ?? "application/octet-stream",
+            type: obj.httpMetadata?.contentType ?? DEFAULT_CONTENT_TYPE,
           },
           {
             factory: async () => {

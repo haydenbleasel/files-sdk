@@ -41,6 +41,8 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
 export interface AzureAdapterOptions {
   /**
    * Azure container name. Surfaced as `bucket` on the returned adapter for
@@ -279,7 +281,7 @@ const createAzureResumableDriver = (
     typeof opts.multipart === "object" && opts.multipart.partSize
       ? opts.multipart.partSize
       : AZURE_DEFAULT_BLOCK_SIZE;
-  let contentType = "application/octet-stream";
+  let contentType = DEFAULT_CONTENT_TYPE;
   return {
     adopt(session: ResumableUploadSession) {
       if (session.provider !== "azure") {
@@ -698,7 +700,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         );
         let response: Awaited<ReturnType<typeof batchClient.deleteBlobs>>;
         try {
-          // eslint-disable-next-line no-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
+          // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
           response = await batchClient.deleteBlobs(blobClients);
         } catch (error) {
           // A batch-level failure (auth, transport, malformed batch) fails
@@ -759,7 +761,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
           ...(result.metadata && {
             metadata: result.metadata as Record<string, string>,
           }),
-          type: result.contentType ?? "application/octet-stream",
+          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
         };
         const size = Number(result.contentLength ?? 0);
         if (downloadOpts?.as === "stream") {
@@ -832,7 +834,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
               metadata: props.metadata as Record<string, string>,
             }),
             size: Number(props.contentLength ?? 0),
-            type: props.contentType ?? "application/octet-stream",
+            type: props.contentType ?? DEFAULT_CONTENT_TYPE,
           },
           {
             factory: async () => {
@@ -863,7 +865,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
                 metadata: item.metadata,
               }),
               size: Number(props.contentLength ?? 0),
-              type: props.contentType ?? "application/octet-stream",
+              type: props.contentType ?? DEFAULT_CONTENT_TYPE,
             },
             {
               factory: async () => {

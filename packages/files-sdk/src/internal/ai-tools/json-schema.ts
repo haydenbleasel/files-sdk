@@ -13,6 +13,7 @@ export const toOpenAIJsonSchema = (
   schema: ZodType
 ): Record<string, unknown> => {
   const json = toJSONSchema(schema) as Record<string, unknown>;
+  // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit strips $schema from the JSON Schema before returning
   const { $schema: _ignored, ...rest } = json;
   return rest;
 };

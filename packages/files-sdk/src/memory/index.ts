@@ -28,6 +28,7 @@ export type MemorySeed =
   | ArrayBuffer
   | ArrayBufferView
   | {
+      // oxlint-disable-next-line sonarjs/max-union-size -- a seed body may be any of the 4 byte-source shapes we accept.
       body: string | Uint8Array | ArrayBuffer | ArrayBufferView;
       contentType?: string;
       metadata?: Record<string, string>;
@@ -114,6 +115,7 @@ const inferContentType = (body: Body, override?: string): string => {
 
 // Bytes-shaped seed values convert synchronously; the constructor cannot await.
 const seedBytes = (
+  // oxlint-disable-next-line sonarjs/max-union-size -- a seed body may be any of the 4 byte-source shapes we accept.
   body: string | Uint8Array | ArrayBuffer | ArrayBufferView
 ): Uint8Array => {
   if (typeof body === "string") {
@@ -327,9 +329,9 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         );
         const pageKeys = new Set(page.items);
         return Promise.resolve({
-          items: sorted
-            .filter(([key]) => pageKeys.has(key))
-            .map(([key, entry]) => toStored(key, entry)),
+          items: sorted.flatMap(([key, entry]) =>
+            pageKeys.has(key) ? [toStored(key, entry)] : []
+          ),
           ...(page.cursor && { cursor: page.cursor }),
           ...(page.prefixes.length && { prefixes: page.prefixes }),
         });
@@ -493,7 +495,8 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
           );
         }
         const query = params.toString();
-        return `memory://${key}${query ? `?${query}` : ""}`;
+        const queryPart = query ? `?${query}` : "";
+        return `memory://${key}${queryPart}`;
       });
     },
   };

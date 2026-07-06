@@ -112,6 +112,7 @@ export const paginateHierarchy = (
   let activeGroup: string | undefined;
   let scanned = 0;
 
+  // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- group-collapse walk needs both the continue (consume a group member) and the break (budget exhausted)
   for (const key of slice) {
     if (activeGroup !== undefined && key.startsWith(activeGroup)) {
       lastConsumedKey = key;
@@ -121,6 +122,7 @@ export const paginateHierarchy = (
     if (budget === 0) {
       break;
     }
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined resets the active-group marker; null would not match the string | undefined type
     activeGroup = undefined;
     const rest = key.slice(prefix.length);
     const d = rest.indexOf(delimiter);

@@ -25,6 +25,7 @@ import type { OutputOpts } from "./io.js";
 import type { GlobalCliOptions } from "./loader.js";
 // Type-only — runtime load is the dynamic `import("./mcp.js")` below so the
 // optional `@modelcontextprotocol/sdk` dep stays lazy.
+// oxlint-disable-next-line sonarjs/no-wildcard-import -- type-only namespace import of the lazily-loaded MCP module; the runtime load stays a dynamic import()
 import type * as McpModule from "./mcp.js";
 import { PROVIDER_NAMES } from "./registry.js";
 
@@ -33,6 +34,15 @@ const pkg = createRequire(import.meta.url)("../../package.json") as {
 };
 const VERSION = pkg.version;
 
+// Flag/description literals reused across many commands, hoisted to keep the
+// option definitions consistent (and satisfy no-duplicate-string).
+const CONCURRENCY_FLAG = "--concurrency <n>";
+const STOP_ON_ERROR_FLAG = "--stop-on-error";
+const STOP_FIRST_FAILURE_MANY_DESC = "stop at the first failure (many keys)";
+const PREFIX_FLAG = "--prefix <prefix>";
+const LIMIT_FLAG = "--limit <n>";
+const TO_JSON_FLAG = "--to <json>";
+
 const intArg = (raw: string): number => {
   // Strict: `parseInt` would silently truncate trailing garbage, turning
   // `--part-size 5MB` into 5 bytes, `--timeout 1s` into 1ms, `--limit 1.9`
@@ -40,6 +50,7 @@ const intArg = (raw: string): number => {
   if (!/^-?\d+$/u.test(raw.trim())) {
     throw new TypeError(`expected an integer, got: ${raw}`);
   }
+  // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix parseInt is clearer here than Math.trunc(Number(raw))
   return Number.parseInt(raw, 10);
 };
 
@@ -366,8 +377,8 @@ export const buildProgram = (
       "parts uploaded in parallel (implies --multipart)",
       intArg
     )
-    .option("--concurrency <n>", "parallel uploads for --dir", intArg)
-    .option("--stop-on-error", "stop at the first failure (--dir)")
+    .option(CONCURRENCY_FLAG, "parallel uploads for --dir", intArg)
+    .option(STOP_ON_ERROR_FLAG, "stop at the first failure (--dir)")
     .action(
       wrap(runUpload as (opts: never) => Promise<void>, (args, common) => {
         const [key, opts] = args as [
@@ -419,8 +430,8 @@ export const buildProgram = (
       "--range <start-end>",
       "download a byte range (0-based, inclusive), e.g. 0-1023 or 1024- (single key)"
     )
-    .option("--concurrency <n>", "parallel downloads for many keys", intArg)
-    .option("--stop-on-error", "stop at the first failure (many keys)")
+    .option(CONCURRENCY_FLAG, "parallel downloads for many keys", intArg)
+    .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
     .action(
       wrap(runDownload as (opts: never) => Promise<void>, (args, common) => {
         const [keys, opts] = args as [string[], Record<string, unknown>];
@@ -442,8 +453,8 @@ export const buildProgram = (
     .description(
       "fetch object metadata (no body); one key throws on failure, many returns a structured result and exits non-zero on any failure"
     )
-    .option("--concurrency <n>", "parallel lookups for many keys", intArg)
-    .option("--stop-on-error", "stop at the first failure (many keys)")
+    .option(CONCURRENCY_FLAG, "parallel lookups for many keys", intArg)
+    .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
     .action(wrap(runHead as (opts: never) => Promise<void>, bulkBuilder));
 
   program
@@ -451,8 +462,8 @@ export const buildProgram = (
     .description(
       "check whether keys exist (one key: exit 0 = exists, 1 = missing; many: exit 0 only if every key exists)"
     )
-    .option("--concurrency <n>", "parallel checks for many keys", intArg)
-    .option("--stop-on-error", "stop at the first hard error (many keys)")
+    .option(CONCURRENCY_FLAG, "parallel checks for many keys", intArg)
+    .option(STOP_ON_ERROR_FLAG, "stop at the first hard error (many keys)")
     .action(wrap(runExists as (opts: never) => Promise<void>, bulkBuilder));
 
   program
@@ -460,8 +471,8 @@ export const buildProgram = (
     .description(
       "delete one or many objects (one key throws on failure; many returns a structured result and exits non-zero on any failure; idempotency is adapter-dependent)"
     )
-    .option("--concurrency <n>", "parallel deletes for many keys", intArg)
-    .option("--stop-on-error", "stop at the first failure (many keys)")
+    .option(CONCURRENCY_FLAG, "parallel deletes for many keys", intArg)
+    .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
     .action(wrap(runDelete as (opts: never) => Promise<void>, bulkBuilder));
 
   program
@@ -501,10 +512,10 @@ export const buildProgram = (
   program
     .command("list")
     .description("list objects (optionally under --prefix, paginated)")
-    .option("--prefix <prefix>", "filter by key prefix")
+    .option(PREFIX_FLAG, "filter by key prefix")
     .option("--cursor <cursor>", "continuation cursor from a prior page")
     .option(
-      "--limit <n>",
+      LIMIT_FLAG,
       "max items per page (page size, not a total cap)",
       intArg
     )
@@ -541,11 +552,11 @@ export const buildProgram = (
     )
     .option("--regex", "shorthand for --match regex")
     .option(
-      "--prefix <prefix>",
+      PREFIX_FLAG,
       "scope the walk to this key prefix (required to bound a regex/substring/case-insensitive search)"
     )
     .option(
-      "--limit <n>",
+      LIMIT_FLAG,
       "page size for the underlying walk (not a cap on results)",
       intArg
     )
@@ -624,14 +635,14 @@ export const buildProgram = (
       "copy every object from the configured (source) provider to another (--to), streaming each body across backends"
     )
     .requiredOption(
-      "--to <json>",
+      TO_JSON_FLAG,
       'destination provider options as JSON (same shape as the global flags, e.g. \'{"provider":"r2","bucket":"new","accountId":"..."}\')'
     )
-    .option("--prefix <prefix>", "only transfer keys under this prefix")
+    .option(PREFIX_FLAG, "only transfer keys under this prefix")
     .option("--no-overwrite", "skip keys already present at the destination")
-    .option("--limit <n>", "page size for the source walk", intArg)
-    .option("--concurrency <n>", "parallel transfers", intArg)
-    .option("--stop-on-error", "stop at the first failure")
+    .option(LIMIT_FLAG, "page size for the source walk", intArg)
+    .option(CONCURRENCY_FLAG, "parallel transfers", intArg)
+    .option(STOP_ON_ERROR_FLAG, "stop at the first failure")
     .action(
       wrap(runTransfer as (opts: never) => Promise<void>, (args, common) => {
         const [opts] = args as [Record<string, unknown>];
@@ -653,10 +664,10 @@ export const buildProgram = (
       "mirror the configured (source) provider onto another (--to): upload new or changed objects, skip unchanged ones, and optionally prune extraneous destination keys"
     )
     .requiredOption(
-      "--to <json>",
+      TO_JSON_FLAG,
       'destination provider options as JSON (same shape as the global flags, e.g. \'{"provider":"r2","bucket":"backup","accountId":"..."}\')'
     )
-    .option("--prefix <prefix>", "only mirror keys under this prefix")
+    .option(PREFIX_FLAG, "only mirror keys under this prefix")
     .option(
       "--dest-prefix <prefix>",
       "scope the destination walk (compare + prune) to this prefix (defaults to --prefix)"
@@ -672,12 +683,12 @@ export const buildProgram = (
       ).choices(["etag", "size"])
     )
     .option(
-      "--limit <n>",
+      LIMIT_FLAG,
       "page size for the source and destination walks",
       intArg
     )
-    .option("--concurrency <n>", "parallel uploads", intArg)
-    .option("--stop-on-error", "stop at the first failure")
+    .option(CONCURRENCY_FLAG, "parallel uploads", intArg)
+    .option(STOP_ON_ERROR_FLAG, "stop at the first failure")
     .action(
       wrap(runSync as (opts: never) => Promise<void>, (args, common) => {
         const [opts] = args as [Record<string, unknown>];
@@ -703,7 +714,7 @@ export const buildProgram = (
       "also expose mutating MCP tools: upload, delete, copy, move, sign-upload; transfer and sync require --to"
     )
     .option(
-      "--to <json>",
+      TO_JSON_FLAG,
       "operator-trusted destination provider options for MCP transfer/sync"
     )
     .action(async (opts, cmd) => {

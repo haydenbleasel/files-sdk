@@ -85,6 +85,7 @@ export type PocketBaseAdapter = Adapter<PocketBaseClient> & {
   readonly collection: string;
 };
 
+const OCTET_STREAM = "application/octet-stream";
 const DEFAULT_KEY_FIELD = "key";
 const DEFAULT_FILE_FIELD = "file";
 const DEFAULT_LIST_PER_PAGE = 30;
@@ -141,6 +142,7 @@ const buildClient = (opts: PocketBaseAdapterOptions): PocketBaseClient => {
 };
 
 const isSupportedBody = (body: unknown): body is Body =>
+  // oxlint-disable-next-line sonarjs/expression-complexity -- a flat body-type guard; each instanceof check is a distinct supported Body shape, splitting would just scatter the union
   typeof body === "string" ||
   body instanceof Uint8Array ||
   body instanceof ArrayBuffer ||
@@ -235,6 +237,7 @@ export const pocketbase = (
       await doAuth();
     } catch (error) {
       // Reset on failure so a transient auth error doesn't stick.
+      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the memoized auth promise so the next call re-auths; null would be a cached value
       authPromise = undefined;
       throw error;
     }
@@ -322,7 +325,7 @@ export const pocketbase = (
         // surface 0/octet-stream as the documented unknown values. Callers
         // that need exact size should call `.arrayBuffer()` or `.blob()`.
         size: 0,
-        type: "application/octet-stream",
+        type: OCTET_STREAM,
       },
       {
         factory: () => downloadBytes(record),
@@ -343,7 +346,7 @@ export const pocketbase = (
         formData.append(
           fileField,
           new Blob([bytes as BlobPart], {
-            type: "application/octet-stream",
+            type: OCTET_STREAM,
           }),
           filename
         );
@@ -387,7 +390,7 @@ export const pocketbase = (
               recordId: record.id,
             },
             size: bytes.byteLength,
-            type: "application/octet-stream",
+            type: OCTET_STREAM,
             ...(updated !== undefined &&
               Number.isFinite(updated) && { lastModified: updated }),
           },
@@ -416,7 +419,8 @@ export const pocketbase = (
         await ensureAuth();
         const perPage = listOpts?.limit ?? DEFAULT_LIST_PER_PAGE;
         const page = listOpts?.cursor
-          ? Number.parseInt(listOpts.cursor, 10)
+          ? // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix-10 parse of a numeric page cursor is clearer than Math.trunc(Number(...))
+            Number.parseInt(listOpts.cursor, 10)
           : 1;
         if (!Number.isFinite(page) || page < 1) {
           throw new FilesError(

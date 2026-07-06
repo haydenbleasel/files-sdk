@@ -1,3 +1,4 @@
+// oxlint-disable-next-line sonarjs/no-wildcard-import -- @vercel/blob's API is namespaced (blob.put/head/list/del/...); a flat named import would be noisier.
 import * as blob from "@vercel/blob";
 
 import type {
@@ -109,6 +110,8 @@ export interface VercelBlobAdapterOptions {
 }
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+const PROVIDER = "vercel-blob" as const;
 
 const withTimeoutSignal = (
   signal: AbortSignal | undefined,
@@ -387,7 +390,7 @@ export const vercelBlob = (
           etag: result.etag,
           key: result.pathname,
           lastModified: result.uploadedAt?.getTime(),
-          type: result.contentType ?? "application/octet-stream",
+          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
         };
         if (access === "private") {
           const got = await getPrivateBody(key, downloadOpts?.signal);
@@ -419,7 +422,7 @@ export const vercelBlob = (
           );
         }
         if (range) {
-          assertRangeHonored(res.status, "vercel-blob");
+          assertRangeHonored(res.status, PROVIDER);
         }
         if (downloadOpts?.as === "stream" && res.body) {
           const stream = res.body;
@@ -460,7 +463,7 @@ export const vercelBlob = (
           key: result.pathname,
           lastModified: result.uploadedAt?.getTime(),
           size: result.size,
-          type: result.contentType ?? "application/octet-stream",
+          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
         },
         {
           factory: async () => {
@@ -480,7 +483,7 @@ export const vercelBlob = (
     async list(options): Promise<ListResult> {
       try {
         if (options?.delimiter) {
-          assertSlashDelimiter("vercel-blob", options.delimiter);
+          assertSlashDelimiter(PROVIDER, options.delimiter);
         }
         const result = await blob.list({
           ...(options?.signal && { abortSignal: options.signal }),
@@ -497,7 +500,7 @@ export const vercelBlob = (
               key: b.pathname,
               lastModified: b.uploadedAt?.getTime(),
               size: b.size,
-              type: "application/octet-stream",
+              type: DEFAULT_CONTENT_TYPE,
             },
             {
               factory: async () => {
@@ -524,7 +527,7 @@ export const vercelBlob = (
         throw mapBlobError(error);
       }
     },
-    name: "vercel-blob",
+    name: PROVIDER,
     raw: blob,
     reportsUploadProgress: true,
     resumableUpload(key, resumableOpts): PartsResumableDriver {
@@ -552,7 +555,7 @@ export const vercelBlob = (
         requestedPart && requestedPart > minPart ? requestedPart : minPart;
       return {
         adopt(adopted: ResumableUploadSession) {
-          if (adopted.provider !== "vercel-blob") {
+          if (adopted.provider !== PROVIDER) {
             throw new FilesError(
               "Provider",
               `Cannot resume a ${adopted.provider} session on a vercel-blob adapter.`
@@ -579,7 +582,7 @@ export const vercelBlob = (
               key,
               partSize,
               parts: [],
-              provider: "vercel-blob",
+              provider: PROVIDER,
               storageKey: created.key,
               uploadId: created.uploadId,
             };
@@ -608,7 +611,7 @@ export const vercelBlob = (
               contentType:
                 result.contentType ??
                 active.contentType ??
-                "application/octet-stream",
+                DEFAULT_CONTENT_TYPE,
               etag: result.etag,
               key: result.pathname,
               lastModified: Date.now(),
@@ -710,9 +713,7 @@ export const vercelBlob = (
         }
         return {
           contentType:
-            result.contentType ??
-            options?.contentType ??
-            "application/octet-stream",
+            result.contentType ?? options?.contentType ?? DEFAULT_CONTENT_TYPE,
           etag: result.etag,
           key: result.pathname,
           lastModified,

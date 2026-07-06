@@ -8,7 +8,6 @@ import {
   WRITE_TOOL_NAMES,
 } from "../internal/ai-tools/schemas.js";
 import type {
-  FileReadToolName,
   FileToolName,
   FileWriteToolName,
 } from "../internal/ai-tools/schemas.js";
@@ -322,4 +321,8 @@ export const createResponsesFileTools = ({
   };
 };
 
-export type { FileReadToolName, FileToolName, FileWriteToolName };
+export type {
+  FileReadToolName,
+  FileToolName,
+  FileWriteToolName,
+} from "../internal/ai-tools/schemas.js";

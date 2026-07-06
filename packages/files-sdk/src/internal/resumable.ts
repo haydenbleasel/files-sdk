@@ -259,6 +259,7 @@ export class UploadControl {
         // Best-effort cleanup — the upload is already cancelled.
       }
     }
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the session slot; null would not match the optional session field
     state.session = undefined;
   }
 }
@@ -446,7 +447,7 @@ const pauseGate = async (
   // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- `runSignal.aborted` flips externally (sibling worker failure), not in the loop body.
   while (state.paused && state.status !== "aborted" && !runSignal?.aborted) {
     state.status = "paused";
-    // oxlint-disable-next-line promise/avoid-new, no-await-in-loop -- resolved by resume()/abort(); blocks until then, so the await must stay in the loop.
+    // oxlint-disable-next-line promise/avoid-new, no-await-in-loop, react-doctor/async-await-in-loop -- resolved by resume()/abort(); blocks until then, so the await must stay in the loop.
     await new Promise<void>((resolve) => {
       state.resumeWaiters.push(resolve);
       runSignal?.addEventListener("abort", () => resolve(), { once: true });
@@ -471,7 +472,7 @@ const attempt = async <T>(
   for (let n = 0; ; n += 1) {
     const runtime = mergeSignals(signals, opts.timeout);
     try {
-      // eslint-disable-next-line no-await-in-loop -- retry loop: each attempt must resolve before deciding to retry.
+      // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- retry loop: each attempt must resolve before deciding to retry
       return await runWithSignal(runtime.signal, () => fn(runtime.signal));
     } catch (error) {
       const wrapped = runtime.signal?.aborted
@@ -534,7 +535,7 @@ const runParts = async (
       if (partNumber === undefined) {
         return;
       }
-      // eslint-disable-next-line no-await-in-loop -- worker drains parts serially; concurrency comes from multiple workers.
+      // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-defer-await -- pauseGate is a synchronization barrier that must block before the failure check; concurrency comes from multiple workers
       await pauseGate(state, runAbort.signal);
       if (failure !== undefined) {
         return;
@@ -569,6 +570,7 @@ const runParts = async (
     }
   };
 
+  // oxlint-disable-next-line react-doctor/async-defer-await -- this await IS the work (draining all part-upload workers); its side effects, not its value, gate the throw below
   await Promise.all(
     Array.from(
       { length: Math.min(resolveConcurrency(opts.multipart), numParts) },
@@ -708,7 +710,9 @@ export const runResumableUpload = async (
       } catch {
         // Best-effort cleanup — the upload is already cancelled.
       }
+      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the discard/session slots; null would not match their optional fields
       state.discard = undefined;
+      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the discard/session slots; null would not match their optional fields
       state.session = undefined;
       throw abortError(state.abortController.signal.reason);
     }

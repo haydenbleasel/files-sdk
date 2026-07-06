@@ -212,4 +212,8 @@ export function createAgentsFileTools({
   ) as ReadOnlyAgentsFileTools;
 }
 
-export type { FileReadToolName, FileToolName, FileWriteToolName };
+export type {
+  FileReadToolName,
+  FileToolName,
+  FileWriteToolName,
+} from "../internal/ai-tools/schemas.js";

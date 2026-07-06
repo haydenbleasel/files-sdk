@@ -11,6 +11,7 @@ import type {
   ListCallOptions,
   SearchCallOptions,
 } from "../client/index.js";
+// oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
 import type { ListResult, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";
@@ -26,6 +27,7 @@ export interface QueryResult<T> {
   refetch: () => void;
 }
 
+/* oxlint-disable react/react-compiler, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo, the live `ref.current = …` config sync, and the effect's setState (aborting the in-flight query on dep-change) are required correctness, not dead weight */
 const useClient = (config?: QueryConfig): FilesClient => {
   const ref = useRef(config);
   ref.current = config;
@@ -66,6 +68,7 @@ const useQuery = <T>(
       return;
     }
     const controller = new AbortController();
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the state shape
     setState((prev) => ({ ...prev, error: undefined, isFetching: true }));
     const load = async () => {
       try {
@@ -97,6 +100,7 @@ const useQuery = <T>(
     refetch: () => setTick((t) => t + 1),
   };
 };
+/* oxlint-enable react/react-compiler, react-doctor/react-compiler-no-manual-memoization */
 
 export const useList = (
   opts: ListCallOptions = {},
@@ -104,6 +108,7 @@ export const useList = (
 ): QueryResult<ListResult> => {
   const client = useClient(config);
   const enabled = config?.enabled ?? true;
+  // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips the non-serializable signal from the cache key
   const key = JSON.stringify({ kind: "list", ...opts, signal: undefined });
   return useQuery(key, (signal) => client.list({ ...opts, signal }), enabled);
 };
@@ -135,6 +140,7 @@ export const useSearch = (
         ? `re:${pattern.source}:${pattern.flags}`
         : pattern,
     ...opts,
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips the non-serializable signal from the cache key
     signal: undefined,
   });
   return useQuery(

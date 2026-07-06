@@ -9,6 +9,7 @@ import type {
   UploadBody,
   UploadCallOptions,
 } from "../client/index.js";
+// oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
 import { defaultTransport } from "../client/transport.js";
 import { FilesError } from "../internal/errors.js";
@@ -93,6 +94,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
     c?: unknown
   ): Promise<unknown> => {
     inFlight.value += 1;
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the ref's shape
     errorRef.value = undefined;
     try {
       if (Array.isArray(a)) {
@@ -143,6 +145,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
       if (root.signal.aborted) {
         root = new AbortController();
       }
+      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the ref's shape
       errorRef.value = undefined;
       uploads.value = [];
     },

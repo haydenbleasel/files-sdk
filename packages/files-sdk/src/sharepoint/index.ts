@@ -217,9 +217,10 @@ const resolveSiteId = async (
     : `/sites/${hostname}`;
   const site = (await client.api(path).get()) as GraphSite;
   if (!site.id) {
+    const sitePathSuffix = sitePath ? `/${sitePath}` : "";
     throw new FilesError(
       "Provider",
-      `sharepoint: site lookup for "${hostname}${sitePath ? `/${sitePath}` : ""}" returned no id.`
+      `sharepoint: site lookup for "${hostname}${sitePathSuffix}" returned no id.`
     );
   }
   return site.id;
@@ -236,8 +237,7 @@ const resolveDriveId = async (
   const match = (drives.value ?? []).find((d) => d.name === documentLibrary);
   if (!match?.id) {
     const available = (drives.value ?? [])
-      .map((d) => d.name)
-      .filter(Boolean)
+      .flatMap((d) => (d.name ? [d.name] : []))
       .join(", ");
     throw new FilesError(
       "Provider",
@@ -313,6 +313,7 @@ export const sharepoint = (
         });
       } catch (error) {
         // Don't cache failures — let a subsequent call re-attempt resolution.
+        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the memoized promise so the next call re-resolves; null would be a cached (falsy) value
         resolved = undefined;
         throw error;
       }

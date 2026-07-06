@@ -100,6 +100,8 @@ export type GoogleDriveAdapter = Adapter<GoogleDriveClient> & {
 };
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+const OCTET_STREAM = "application/octet-stream";
+const PROVIDER = "google-drive";
 const DEFAULT_CACHE_SIZE = 1024;
 const RESUMABLE_INITIATE_URL =
   "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true";
@@ -255,7 +257,7 @@ const normalizeBody = async (
     const buf = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       stream: Readable.from(buf),
     };
   }
@@ -263,7 +265,7 @@ const normalizeBody = async (
     const buf = Buffer.from(body);
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       stream: Readable.from(buf),
     };
   }
@@ -272,7 +274,7 @@ const normalizeBody = async (
     const buf = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       stream: Readable.from(buf),
     };
   }
@@ -280,12 +282,12 @@ const normalizeBody = async (
     const buf = Buffer.from(await body.arrayBuffer());
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || OCTET_STREAM),
       stream: Readable.from(buf),
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? OCTET_STREAM,
     stream: Readable.fromWeb(body as never),
   };
 };
@@ -341,8 +343,7 @@ const fileToStoredMeta = (
       userMeta[k] = v;
     }
   }
-  const ct =
-    props[CONTENT_TYPE_PROP] ?? file.mimeType ?? "application/octet-stream";
+  const ct = props[CONTENT_TYPE_PROP] ?? file.mimeType ?? OCTET_STREAM;
   return {
     ...(file.md5Checksum && { etag: file.md5Checksum }),
     ...(file.modifiedTime && {
@@ -430,6 +431,7 @@ export const googleDrive = (
     driveClient = opts.client;
     // No reliable public surface to recover the auth from a pre-built
     // client, so signedUploadUrl() will refuse with a clear message.
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no auth handle available; null would misrepresent it as an intentional value
     authForTokens = undefined;
   } else {
     const built = buildAuth(opts);
@@ -627,7 +629,7 @@ export const googleDrive = (
             ),
           ]);
           if (range) {
-            assertRangeHonored(mediaRes.status, "google-drive");
+            assertRangeHonored(mediaRes.status, PROVIDER);
           }
           const m = fileToStoredMeta(metaRes.data);
           const node = mediaRes.data as unknown as Readable;
@@ -659,7 +661,7 @@ export const googleDrive = (
           ),
         ]);
         if (range) {
-          assertRangeHonored(mediaRes.status, "google-drive");
+          assertRangeHonored(mediaRes.status, PROVIDER);
         }
         const m = fileToStoredMeta(metaRes.data);
         const bytes = toUint8(mediaRes.data as unknown);
@@ -782,10 +784,10 @@ export const googleDrive = (
         const items: StoredFile[] = [];
         for (const f of driveFiles) {
           const fsdkKey = keyOf(f);
-          if (!fsdkKey) {
-            continue;
-          }
-          if (options?.prefix && !fsdkKey.startsWith(options.prefix)) {
+          if (
+            !fsdkKey ||
+            (options?.prefix && !fsdkKey.startsWith(options.prefix))
+          ) {
             continue;
           }
           items.push(toItem(f, fsdkKey));
@@ -796,10 +798,10 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
     },
-    name: "google-drive",
+    name: PROVIDER,
     raw: driveClient,
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
-      let contentType = "application/octet-stream";
+      let contentType = OCTET_STREAM;
       let total = 0;
       return createOffsetHttpDriver({
         async open(meta) {
@@ -860,6 +862,7 @@ export const googleDrive = (
             }
           );
           if (!res.ok) {
+            // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
             const text = await res.text().catch(() => "");
             throw new FilesError(
               "Provider",
@@ -880,7 +883,7 @@ export const googleDrive = (
             ["googleapis.com"]
           );
           return {
-            session: { key, provider: "google-drive", uri: trustedUri },
+            session: { key, provider: PROVIDER, uri: trustedUri },
             uri: trustedUri,
           };
         },
@@ -905,7 +908,7 @@ export const googleDrive = (
         partSize:
           resumableChunkSize(resumableOpts.multipart) ?? 8 * 1024 * 1024,
         resume(session: ResumableUploadSession): string {
-          if (session.provider !== "google-drive") {
+          if (session.provider !== PROVIDER) {
             throw new FilesError(
               "Provider",
               `Cannot resume a ${session.provider} session on a google-drive adapter.`
@@ -983,6 +986,7 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
       if (!res.ok) {
+        // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
         const text = await res.text().catch(() => "");
         throw mapDriveError({
           message:

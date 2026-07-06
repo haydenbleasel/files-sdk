@@ -1,5 +1,8 @@
 import type { Adapter } from "../index.js";
 
+/** Repeated required-flag label, hoisted to satisfy no-duplicate-string. */
+const ENDPOINT_FLAG = "--endpoint";
+
 /**
  * One registry entry per provider. Each entry knows how to lazy-import its
  * adapter module and construct an instance from a flat opts blob.
@@ -140,7 +143,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       const { akamai } = await import("../akamai/index.js");
       return cast(akamai, merge(s3LikeOpts(opts), opts.extra));
     },
-    required: ["--bucket", "--endpoint"],
+    required: ["--bucket", ENDPOINT_FLAG],
   },
   alibaba: {
     load: async (opts) => {
@@ -343,21 +346,21 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       const { ibmCos } = await import("../ibm-cos/index.js");
       return cast(ibmCos, merge(s3LikeOpts(opts), opts.extra));
     },
-    required: ["--bucket", "--endpoint"],
+    required: ["--bucket", ENDPOINT_FLAG],
   },
   "idrive-e2": {
     load: async (opts) => {
       const { idriveE2 } = await import("../idrive-e2/index.js");
       return cast(idriveE2, merge(s3LikeOpts(opts), opts.extra));
     },
-    required: ["--bucket", "--endpoint"],
+    required: ["--bucket", ENDPOINT_FLAG],
   },
   minio: {
     load: async (opts) => {
       const { minio } = await import("../minio/index.js");
       return cast(minio, merge(s3LikeOpts(opts), opts.extra));
     },
-    required: ["--bucket", "--endpoint"],
+    required: ["--bucket", ENDPOINT_FLAG],
   },
   neon: {
     load: async (opts) => {
@@ -399,7 +402,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       const { oracleCloud } = await import("../oracle-cloud/index.js");
       return cast(oracleCloud, merge(s3LikeOpts(opts), opts.extra));
     },
-    required: ["--bucket", "--region", "--endpoint"],
+    required: ["--bucket", "--region", ENDPOINT_FLAG],
   },
   ovhcloud: {
     load: async (opts) => {

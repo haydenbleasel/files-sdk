@@ -225,7 +225,7 @@ export const versioning = (
     // the sorted list is the oldest.
     const excess = own.toSorted().slice(0, own.length - max);
     for (const versionKey of excess) {
-      // eslint-disable-next-line no-await-in-loop -- prune oldest-first sequentially; stops at the first delete failure.
+      // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- prune oldest-first sequentially; stops at the first delete failure.
       await next({ key: versionKey, kind: "delete" });
     }
   };

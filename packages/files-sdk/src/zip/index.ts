@@ -370,7 +370,7 @@ const zipChunks = async function* zipChunks(
   const central: CentralEntry[] = [];
   let offset = 0;
   for (const entry of entries) {
-    // eslint-disable-next-line no-await-in-loop -- archive is streamed record by record with a running offset.
+    // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- archive is streamed record by record with a running offset.
     const file = await files.download(entry.key);
     // Fail before streaming gigabytes that can't be represented anyway.
     assertFits(file.size, `entry "${entry.key}"`);
@@ -758,6 +758,7 @@ export const zip = (): FilesPlugin<ZipApi> => ({
         }
         const results: UploadResult[] = [];
         let totalSize = 0;
+        // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- the guard-continues (skip dir entries, skip filtered names) are the clearest form of this extract loop.
         for (const entry of entries) {
           // A trailing slash marks a directory entry — nothing to store.
           if (entry.name.endsWith("/")) {
@@ -777,10 +778,10 @@ export const zip = (): FilesPlugin<ZipApi> => ({
               `zip: "${key}" exceeds the configured unzip total size limit`
             );
           }
-          // eslint-disable-next-line no-await-in-loop -- decompress entries one at a time to bound memory; running total-size guard is order-sensitive.
+          // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- decompress entries one at a time to bound memory; running total-size guard is order-sensitive.
           const data = await extractEntry(bytes, entry, key, maxEntrySize);
           results.push(
-            // eslint-disable-next-line no-await-in-loop -- upload each extracted entry in order after its size is accounted.
+            // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- upload each extracted entry in order after its size is accounted.
             await files.upload(into + entry.name, data, {
               contentType: inferTypeFromName(entry.name),
             })

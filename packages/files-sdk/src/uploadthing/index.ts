@@ -73,6 +73,8 @@ export interface UploadThingAdapterOptions {
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
 const DEFAULT_REGION = "sea1";
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+const ACL_PUBLIC_READ = "public-read" as const;
 
 const withTimeoutSignal = (
   signal: AbortSignal | undefined,
@@ -166,7 +168,7 @@ const bodyToBlob = async (
   body: Body,
   contentType: string | undefined
 ): Promise<Blob> => {
-  const type = contentType ?? "application/octet-stream";
+  const type = contentType ?? DEFAULT_CONTENT_TYPE;
   if (body instanceof Blob) {
     return contentType && body.type !== contentType
       ? new Blob([body], { type })
@@ -212,6 +214,7 @@ const classifyUploadThingError = (
     return "NotFound";
   }
   if (
+    // oxlint-disable-next-line sonarjs/expression-complexity -- flat OR of the equivalent 401/403 status + error-code + message signals; splitting hurts readability.
     status === 401 ||
     status === 403 ||
     code === "FORBIDDEN" ||
@@ -298,7 +301,7 @@ export const uploadthing = (
   const decoded = decodeToken(token);
   const { apiKey, appId } = decoded;
   const region = config.region ?? decoded.regions?.[0] ?? DEFAULT_REGION;
-  const acl = config.acl ?? "public-read";
+  const acl = config.acl ?? ACL_PUBLIC_READ;
   const downloadTimeoutMs =
     config.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   const defaultExpiresIn = config.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
@@ -318,7 +321,7 @@ export const uploadthing = (
   // For public, we synthesize the CDN URL from appId + customId — no API
   // round trip. For private we ask UploadThing for a short-lived signed URL.
   const resolveFetchUrl = async (key: string): Promise<string> => {
-    if (acl === "public-read") {
+    if (acl === ACL_PUBLIC_READ) {
       return publicUrl(key);
     }
     const { ufsUrl } = await utapi.generateSignedURL(key, {
@@ -357,7 +360,7 @@ export const uploadthing = (
         ? Date.parse(lastModifiedHeader) || undefined
         : undefined,
       size: lengthHeader ? Number(lengthHeader) : 0,
-      type: res.headers.get("content-type") ?? "application/octet-stream",
+      type: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
     };
   };
 
@@ -454,7 +457,7 @@ export const uploadthing = (
           ? Date.parse(lastModifiedHeader) || undefined
           : undefined,
         size: lengthHeader ? Number(lengthHeader) : 0,
-        type: res.headers.get("content-type") ?? "application/octet-stream",
+        type: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
       };
       if (downloadOpts?.as === "stream" && res.body) {
         const stream = res.body;
@@ -542,7 +545,7 @@ export const uploadthing = (
             key: itemKey,
             lastModified: f.uploadedAt,
             size: f.size,
-            type: "application/octet-stream",
+            type: DEFAULT_CONTENT_TYPE,
           },
           {
             factory: async () => {
@@ -644,7 +647,7 @@ export const uploadthing = (
       // sizeOf() finds them too.
       const localSize = sizeOf(body);
       return {
-        contentType: data.type || contentType || "application/octet-stream",
+        contentType: data.type || contentType || DEFAULT_CONTENT_TYPE,
         etag: data.fileHash,
         key,
         lastModified: data.lastModified ?? Date.now(),
@@ -662,7 +665,7 @@ export const uploadthing = (
           "uploadthing: `responseContentDisposition` is not supported. UploadThing has no override for the Content-Disposition header on signed or CDN URLs."
         );
       }
-      if (acl === "public-read") {
+      if (acl === ACL_PUBLIC_READ) {
         return publicUrl(key);
       }
       const expiresIn = urlOpts?.expiresIn ?? defaultExpiresIn;

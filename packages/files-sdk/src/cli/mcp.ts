@@ -26,7 +26,7 @@ const stopOnErrorArg = z
 
 const bulkOpts = (
   concurrency?: number,
-  stopOnError?: boolean
+  stopOnError = false
 ): { concurrency?: number; stopOnError?: boolean } | undefined => {
   const opts: { concurrency?: number; stopOnError?: boolean } = {};
   if (concurrency !== undefined) {

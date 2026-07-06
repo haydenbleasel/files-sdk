@@ -8,6 +8,7 @@ import type {
   UploadBody,
   UploadCallOptions,
 } from "../client/index.js";
+// oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
 import { defaultTransport } from "../client/transport.js";
 import { FilesError } from "../internal/errors.js";
@@ -34,6 +35,7 @@ export interface UseFilesResult extends FilesClient {
   abort: (reason?: unknown) => void;
 }
 
+/* oxlint-disable react/react-compiler, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo and the lazy ref-init pattern (`if (ref.current === null) ref.current = …`) are required correctness, not dead weight */
 export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
   const optsRef = useRef(opts);
   optsRef.current = opts;
@@ -134,6 +136,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       c?: unknown
     ): Promise<unknown> => {
       store.patch({
+        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the store shape
         error: undefined,
         inFlight: store.getState().inFlight + 1,
       });
@@ -199,3 +202,4 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
     };
   }, [client, store, state]);
 };
+/* oxlint-enable react/react-compiler, react-doctor/react-compiler-no-manual-memoization */

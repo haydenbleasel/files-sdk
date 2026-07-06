@@ -196,9 +196,9 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       return result;
     }
     const marker = `${store}/`;
-    const items = result.items
-      .filter((file) => !file.key.startsWith(marker))
-      .map(correctMeta);
+    const items = result.items.flatMap((file) =>
+      file.key.startsWith(marker) ? [] : [correctMeta(file)]
+    );
     const prefixes = result.prefixes?.filter(
       (entry) => !entry.startsWith(marker)
     );
@@ -233,6 +233,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         options: {
           ...op.options,
           contentType: normalized.contentType,
+          // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = "no metadata on the blob write"; null would change the op shape.
           metadata: undefined,
         },
       });
@@ -251,6 +252,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
           [META.ref]: hash,
           [META.size]: String(bytes.byteLength),
         },
+        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = "drop progress on the pointer write"; null would change the op shape.
         onProgress: undefined,
       },
     });

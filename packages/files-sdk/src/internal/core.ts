@@ -209,6 +209,9 @@ export interface NormalizedBody {
   contentLength?: number;
 }
 
+/** Fallback MIME type for binary bodies with no caller-supplied hint. */
+const DEFAULT_BINARY_CONTENT_TYPE = "application/octet-stream";
+
 /**
  * Convert a {@link Body} into a uniform shape adapters can hand to their
  * underlying SDK.
@@ -233,7 +236,7 @@ export const normalizeBody = async (
   if (body instanceof Uint8Array) {
     return {
       contentLength: body.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_BINARY_CONTENT_TYPE,
       data: body,
     };
   }
@@ -241,7 +244,7 @@ export const normalizeBody = async (
     const data = new Uint8Array(body);
     return {
       contentLength: data.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_BINARY_CONTENT_TYPE,
       data,
     };
   }
@@ -250,7 +253,7 @@ export const normalizeBody = async (
     const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     return {
       contentLength: data.byteLength,
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? DEFAULT_BINARY_CONTENT_TYPE,
       data,
     };
   }
@@ -258,12 +261,13 @@ export const normalizeBody = async (
     const buf = new Uint8Array(await body.arrayBuffer());
     return {
       contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType:
+        contentTypeHint ?? (body.type || DEFAULT_BINARY_CONTENT_TYPE),
       data: buf,
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? DEFAULT_BINARY_CONTENT_TYPE,
     data: body,
   };
 };
@@ -526,7 +530,7 @@ export const deleteManyWithFallback = async (
   if (opts?.stopOnError) {
     for (const key of keys) {
       try {
-        // eslint-disable-next-line no-await-in-loop -- stopOnError runs sequentially and returns on first failure.
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- stopOnError runs sequentially and returns on first failure
         await remove(key);
         deleted.push(key);
       } catch (error) {
@@ -617,7 +621,7 @@ export const mapMany = async <Item, Out>(
   if (opts?.stopOnError) {
     for (const item of items) {
       try {
-        // eslint-disable-next-line no-await-in-loop -- stopOnError runs sequentially and returns on first failure.
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- stopOnError runs sequentially and returns on first failure
         results.push(await run(item));
       } catch (error) {
         errors.push({ error: mapError(error), key: keyOf(item) });

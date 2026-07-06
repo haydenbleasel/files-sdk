@@ -117,12 +117,13 @@ export interface BoxAdapterOptions {
   jwt?: BoxJwtOptions;
 }
 
-export type { BoxClient };
+export type { BoxClient } from "box-typescript-sdk-gen";
 export type BoxAdapter = Adapter<BoxClient> & {
   readonly rootFolderId: string;
 };
 
 const DEFAULT_ROOT_FOLDER_ID = "0";
+const OCTET_STREAM = "application/octet-stream";
 const SIMPLE_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 
 const NOT_FOUND_CODES = new Set([
@@ -291,31 +292,31 @@ const normalizeBody = async (
   }
   if (body instanceof Uint8Array) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof ArrayBuffer) {
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(body),
     };
   }
   if (ArrayBuffer.isView(body)) {
     const view = body as ArrayBufferView;
     return {
-      contentType: contentTypeHint ?? "application/octet-stream",
+      contentType: contentTypeHint ?? OCTET_STREAM,
       data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
     };
   }
   if (body instanceof Blob) {
     return {
-      contentType: contentTypeHint ?? (body.type || "application/octet-stream"),
+      contentType: contentTypeHint ?? (body.type || OCTET_STREAM),
       data: Buffer.from(await body.arrayBuffer()),
     };
   }
   return {
-    contentType: contentTypeHint ?? "application/octet-stream",
+    contentType: contentTypeHint ?? OCTET_STREAM,
     data: await collectStream(body),
   };
 };
@@ -345,10 +346,10 @@ const TYPE_BY_EXT: Readonly<Record<string, string>> = {
 const inferTypeFromName = (name: string): string => {
   const idx = name.lastIndexOf(".");
   if (idx === -1) {
-    return "application/octet-stream";
+    return OCTET_STREAM;
   }
   const ext = name.slice(idx + 1).toLowerCase();
-  return TYPE_BY_EXT[ext] ?? "application/octet-stream";
+  return TYPE_BY_EXT[ext] ?? OCTET_STREAM;
 };
 
 interface BoxFileLike {
@@ -543,6 +544,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const resolveFolderId = async (
     parents: readonly string[],
     options: { create: boolean }
+    // oxlint-disable-next-line sonarjs/cognitive-complexity -- sequential folder-walk with per-segment cache hits, conflict/create branches, and error mapping; the branches are cohesive and test-covered, splitting would scatter the walk state
   ): Promise<string> => {
     if (parents.length === 0) {
       return rootFolderId;
@@ -555,6 +557,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
 
     let currentId = rootFolderId;
     const walked: string[] = [];
+    // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- the two continues (cache hit, found-folder) are distinct fast paths; folding them would obscure the walk
     for (const segment of parents) {
       walked.push(segment);
       const partialKey = folderCacheKey(walked);
@@ -939,7 +942,8 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         }
         const limit = options?.limit ?? 1000;
         const offset = options?.cursor
-          ? Number.parseInt(options.cursor, 10)
+          ? // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix-10 parse of a numeric cursor string is clearer than Math.trunc(Number(...))
+            Number.parseInt(options.cursor, 10)
           : 0;
         if (Number.isNaN(offset) || offset < 0) {
           throw new FilesError(
@@ -1008,7 +1012,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     raw: client,
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       let uploadId: string | undefined;
-      let contentType = "application/octet-stream";
+      let contentType = OCTET_STREAM;
       const requirePending = () => {
         const entry =
           uploadId === undefined ? undefined : pending.get(uploadId);

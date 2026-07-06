@@ -19,12 +19,12 @@ import {
 } from "./tools.js";
 import type { ToolOverrides } from "./types.js";
 
+export type { ApprovalConfig } from "../internal/ai-tools/approval.js";
 export type {
-  ApprovalConfig,
   FileReadToolName,
   FileToolName,
   FileWriteToolName,
-};
+} from "../internal/ai-tools/schemas.js";
 
 export interface FileToolsOptions {
   /**
