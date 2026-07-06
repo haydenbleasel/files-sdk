@@ -1,5 +1,39 @@
 # files-sdk
 
+## 2.1.0
+
+### Minor Changes
+
+- 6ee0980: Add `files-sdk/tanstack-start` server adapter — `createRouteHandler` mounts the Files gateway in a TanStack Start server route (`server.handlers`).
+- 5f7c09b: Add a WebDAV adapter (`files-sdk/webdav`) backed by the `webdav` client. HTTP-based, with native server-side `copy`/`move`, ranged and streaming downloads, and content-type round-tripping. Works against Nextcloud, ownCloud, Apache `mod_dav`, `sabre/dav`, and other WebDAV servers. Available in the CLI and MCP as the `webdav` provider.
+
+### Patch Changes
+
+- 77ae3a8: Reject Cloudinary signed upload URLs when a server-enforced max size is requested.
+- 8d4e235: Disable Convex signed upload URLs because generated upload capabilities cannot bind SDK keys or upload limits.
+- 283f658: Remove public fallback upload-token secrets from the docs demo routes.
+- 4ea52ce: Cap public docs demo uploads on the `/api/files` in-memory route.
+- 763bc47: Cap public docs demo uploads on the `/api/files-trash` in-memory route.
+- 79c8c60: Cap public docs demo uploads on the `/api/files-versions` in-memory route.
+- 63607ba: Disable fs signed upload URLs because the adapter cannot signature-bind upload constraints.
+- dd12299: Reject filesystem adapter reads when symlinks resolve outside the configured root.
+- 8a0bf64: Bind MCP transfer and sync destinations at server startup instead of accepting provider config from tool calls.
+- 8d396d2: Enforce approval-gated OpenAI Responses write tool calls inside execute().
+- 6d29787: Encode public URL dot segments so keys cannot escape configured base paths.
+- 0703817: Validate persisted resumable upload session URLs before resuming provider uploads.
+- d54f272: Honor router authorization maxResults when serving list requests.
+- 92e5700: Require same-origin requests by default for state-changing files router operations.
+- 52bf6f9: Enforce router upload byte limits while streaming bodies without content-length headers.
+- 2fc4d87: Force safe attachment dispositions for gateway URL requests unless server authorization overrides them.
+- 9c41388: Assemble the search ReDoS test pattern at runtime to clear a CodeQL `js/redos` false positive; no runtime behavior change.
+- a33b424: Reject unsafe regular expressions in search APIs before walking provider keys.
+- f1f0012: Match stateful (`g`/`y`) `RegExp` search patterns against every key independently, and rebuild caller-supplied regexes so search never mutates the original instance.
+- f1891ad: Clamp router signed upload URL size limits to the configured max upload size.
+- 737f82f: Pin signedUrlPolicy upload URL expiry to maxExpiresIn when runtime callers omit expiresIn.
+- 6f5ea66: Apply router `filterKeys` authorization to soft-delete purge operations.
+- 5bbf406: Reject UploadThing signed upload URLs when a server-enforced max size is requested.
+- ee4f6f9: Limit ZIP extraction entry counts and decompressed sizes before uploading entries.
+
 ## 2.0.0
 
 ### Major Changes
