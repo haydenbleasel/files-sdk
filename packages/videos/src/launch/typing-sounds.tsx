@@ -59,15 +59,18 @@ export const TypingSounds: React.FC<TypingSoundsProps> = ({
     }
     const pressFrame = Math.round(startFrame + i * frameStep);
     const volJitter = 0.82 + 0.22 * pseudoRandom(i + 7);
-    events.push({
-      frame: pressFrame,
-      src: pressSampleFor(ch, i),
-      volume: baseVolume * volJitter,
-    }, {
-      frame: pressFrame + releaseDelayFrames,
-      src: releaseSampleFor(ch),
-      volume: baseVolume * volJitter * 0.65,
-    });
+    events.push(
+      {
+        frame: pressFrame,
+        src: pressSampleFor(ch, i),
+        volume: baseVolume * volJitter,
+      },
+      {
+        frame: pressFrame + releaseDelayFrames,
+        src: releaseSampleFor(ch),
+        volume: baseVolume * volJitter * 0.65,
+      }
+    );
   }
   const tail = Math.max(2, Math.ceil(fps * 0.3));
   return (

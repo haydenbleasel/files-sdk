@@ -503,9 +503,9 @@ export const pocketbase = (
           }
         }
 
+        const formData = new FormData();
         let record: FileRecord;
         if (existing) {
-          const formData = new FormData();
           formData.append(fileField, blob, filename);
           record = await records().update(
             existing.id,
@@ -513,7 +513,6 @@ export const pocketbase = (
             sendOpts(uploadOpts?.signal)
           );
         } else {
-          const formData = new FormData();
           formData.append(keyField, key);
           formData.append(fileField, blob, filename);
           record = await records().create(

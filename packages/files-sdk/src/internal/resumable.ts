@@ -676,6 +676,10 @@ export const runResumableUpload = async (
   try {
     if (state.session) {
       driver.adopt(state.session);
+      // Each branch calls `probe()` separately on purpose: its return type is
+      // discriminated by `driver.mode`, so hoisting the call would widen it to
+      // a union and lose the narrowing.
+      // oxlint-disable-next-line oxc/branches-sharing-code -- see above.
       if (driver.mode === "parts") {
         const probed = await driver.probe();
         ({ committedParts } = probed);

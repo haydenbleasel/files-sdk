@@ -43,7 +43,12 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
     rootRef.current = new AbortController();
   }
 
-  const storeRef = useRef(createStore());
+  const storeRef = useRef<ReturnType<typeof createStore>>(
+    null as unknown as ReturnType<typeof createStore>
+  );
+  if (storeRef.current === null) {
+    storeRef.current = createStore();
+  }
   const store = storeRef.current;
   const state = useSyncExternalStore(
     store.subscribe,

@@ -80,7 +80,9 @@ afterEach(() => {
 
 const streamBody = (bytes: Uint8Array | string) => {
   const buf =
-    typeof bytes === "string" ? Buffer.from(bytes) : Buffer.from(bytes);
+    typeof bytes === "string"
+      ? Buffer.from(bytes, "utf-8")
+      : Buffer.from(bytes);
   return sdkStreamMixin(Readable.from(buf));
 };
 

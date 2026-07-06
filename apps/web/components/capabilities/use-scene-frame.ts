@@ -60,6 +60,7 @@ export const useSceneFrame = (
       // Rewind so a non-looping scene replays from the start next time it
       // scrolls back into view.
       if (!loop) {
+        // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- rAF scene controller: frame is driven by scroll/motion state, not derivable during render.
         setFrame(0);
       }
       return;

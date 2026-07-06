@@ -79,7 +79,7 @@ const connectWithAccessKeyMock = mock(
   })
 );
 
-const getMock = mock((storageZone: unknown, path: string) => {
+const getMock = mock((_storageZone: unknown, path: string) => {
   const key = stripPath(path);
   const entry = backing.get(key);
   if (!entry) {

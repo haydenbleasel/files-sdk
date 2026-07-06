@@ -562,6 +562,7 @@ export const cloudinaryAdapter = (
             offset: 0,
             // Cloudinary ties a chunked upload together by this header value.
             provider: "cloudinary",
+            // oxlint-disable-next-line sonarjs/pseudo-random -- non-crypto: just a unique-enough tag to correlate chunks of one upload.
             uploadId: `fls-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           };
           return Promise.resolve(session);

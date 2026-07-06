@@ -14,6 +14,7 @@ import { createStoredFile } from "../internal/stored-file.js";
 // caller never chooses it. So the adapter treats that id as the unified
 // `key`. We type ids as plain `string` here — a real `Id<"_storage">` is a
 // branded string and assignable to it.
+// oxlint-disable-next-line sonarjs/redundant-type-aliases -- names the domain concept (a Convex `_storage` id) at every use site; not dead weight.
 type ConvexStorageId = string;
 
 // A row of the `_storage` system table. Fields are fixed by Convex: there is
@@ -372,7 +373,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     signedUrl: { supported: false },
     // Convex storage ids are immutable — `copy()` is unsupported (throws).
     supportsServerSideCopy: false,
-    async upload(key, body, options): Promise<UploadResult> {
+    async upload(_key, body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter sets neither `supportsMetadata` nor `supportsCacheControl`)
       // — Convex's _storage table is fixed to contentType/sha256/size.

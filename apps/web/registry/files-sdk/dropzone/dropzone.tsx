@@ -6,6 +6,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -111,17 +112,20 @@ export const Dropzone = ({
 
   const open = useCallback(() => inputRef.current?.click(), []);
 
+  const contextValue = useMemo(
+    () => ({
+      accept,
+      isUploading: files.isUploading,
+      maxFiles,
+      maxSize,
+      open,
+      uploaded,
+    }),
+    [accept, files.isUploading, maxFiles, maxSize, open, uploaded]
+  );
+
   return (
-    <DropzoneContext.Provider
-      value={{
-        accept,
-        isUploading: files.isUploading,
-        maxFiles,
-        maxSize,
-        open,
-        uploaded,
-      }}
-    >
+    <DropzoneContext.Provider value={contextValue}>
       <Button
         className={cn(
           "relative flex h-auto w-full flex-col items-center justify-center gap-2 overflow-hidden p-8",

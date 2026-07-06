@@ -1122,16 +1122,12 @@ describe("r2 resumable uploads (HTTP path delegates to the lazy s3 driver)", () 
   });
 
   test("the Workers binding path has no resumableUpload (throws unsupported)", async () => {
-    const store = new Map<string, ArrayBuffer>();
     const bucket = {
       delete: () => Promise.resolve(),
       get: () => Promise.resolve(null),
       head: () => Promise.resolve(null),
       list: () => Promise.resolve({ objects: [], truncated: false }),
-      put: (key: string) => {
-        store.set(key, new ArrayBuffer(0));
-        return Promise.resolve({});
-      },
+      put: () => Promise.resolve({}),
     };
     const files = new Files({
       adapter: r2({

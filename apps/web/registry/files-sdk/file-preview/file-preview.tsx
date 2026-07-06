@@ -57,7 +57,11 @@ const Body = ({
         className="h-72 w-full"
         data={src}
         type="application/pdf"
-      />
+      >
+        <a href={src} rel="noreferrer" target="_blank">
+          Open PDF preview
+        </a>
+      </object>
     );
   }
   if (src) {
