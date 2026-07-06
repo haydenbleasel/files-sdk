@@ -36,7 +36,7 @@
     "oxlint-plugin-react-doctor": "^0.7.1",
     "turbo": "^2.10.3",
     "typescript": "^6",
-    "ultracite": "7.9.1"
+    "ultracite": "7.9.2"
   },
   "overrides": {
     "astro": "^7"
