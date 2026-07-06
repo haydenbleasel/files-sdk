@@ -48,15 +48,10 @@ export default defineConfig({
     ],
   },
 
-  // The Adapters and AI tabs point at folders with no index page, so send the
-  // bare tab route to a sensible first page. (Old root URLs → /docs/* live in
-  // vercel.json, since Blume redirects can't wildcard.)
-  redirects: [
-    { from: "/docs/adapters", status: 302, to: "/docs/adapters/s3" },
-    { from: "/docs/ai", status: 302, to: "/docs/ai/openai" },
-    // Overview is now the docs index (/docs).
-    { from: "/docs/overview", status: 301, to: "/docs" },
-  ],
+  // All redirects (old root URLs → /docs/*, the index-less tab targets, and
+  // /docs/overview → /docs) live in vercel.json — one source of truth. Vercel
+  // reads that at the project root, not Blume's emitted output, so keeping a
+  // second copy here would only apply to local dev.
 
   theme: {
     accent: "blue",
