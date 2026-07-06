@@ -96,6 +96,18 @@ const ensureBuilt = () => {
 };
 
 test(
+  "vercel-blob bundle does not statically import @vercel/blob",
+  () => {
+    ensureBuilt();
+    const externals = staticExternals(
+      path.resolve(distDir, "vercel-blob/index.js")
+    );
+    expect(externals.has("@vercel/blob")).toBe(false);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+test(
   "react bundle is a `use client` module importing only react",
   () => {
     ensureBuilt();

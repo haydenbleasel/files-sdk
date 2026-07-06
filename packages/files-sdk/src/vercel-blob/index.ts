@@ -1,6 +1,3 @@
-// oxlint-disable-next-line sonarjs/no-wildcard-import -- @vercel/blob's API is namespaced (blob.put/head/list/del/...); a flat named import would be noisier.
-import * as blob from "@vercel/blob";
-
 import type {
   Adapter,
   Body,
@@ -138,9 +135,16 @@ const fetchWithTimeout = (
   return fetch(url, init);
 };
 
-export type VercelBlobClient = typeof blob;
+const importVercelBlob = () => import("@vercel/blob");
 
-export type VercelBlobAdapter = Adapter<VercelBlobClient>;
+export type VercelBlobClient = Awaited<ReturnType<typeof importVercelBlob>>;
+
+export type VercelBlobAdapter = Adapter<() => Promise<VercelBlobClient>>;
+
+let vercelBlobPeer: Promise<VercelBlobClient> | undefined;
+
+const loadVercelBlob = (): Promise<VercelBlobClient> =>
+  (vercelBlobPeer ??= importVercelBlob());
 
 const sizeOf = (body: Body): number | undefined => {
   if (typeof body === "string") {
@@ -311,6 +315,7 @@ export const vercelBlob = (
     stream: ReadableStream<Uint8Array>;
   }> => {
     const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
+    const blob = await loadVercelBlob();
     const got = await blob.get(key, {
       access: "private",
       ...auth,
@@ -346,6 +351,7 @@ export const vercelBlob = (
 
   const headRaw = async (key: string, signal?: AbortSignal) => {
     try {
+      const blob = await loadVercelBlob();
       return await blob.head(key, {
         ...(signal && { abortSignal: signal }),
         ...auth,
@@ -358,6 +364,7 @@ export const vercelBlob = (
   return {
     async copy(from, to, operationOpts) {
       try {
+        const blob = await loadVercelBlob();
         await blob.copy(from, to, {
           access,
           addRandomSuffix,
@@ -373,6 +380,7 @@ export const vercelBlob = (
     },
     async delete(key, operationOpts) {
       try {
+        const blob = await loadVercelBlob();
         await blob.del(key, {
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
@@ -485,6 +493,7 @@ export const vercelBlob = (
         if (options?.delimiter) {
           assertSlashDelimiter(PROVIDER, options.delimiter);
         }
+        const blob = await loadVercelBlob();
         const result = await blob.list({
           ...(options?.signal && { abortSignal: options.signal }),
           ...auth,
@@ -528,7 +537,7 @@ export const vercelBlob = (
       }
     },
     name: PROVIDER,
-    raw: blob,
+    raw: loadVercelBlob,
     reportsUploadProgress: true,
     resumableUpload(key, resumableOpts): PartsResumableDriver {
       // Vercel Blob has no list-parts or abort primitive, so the session token
@@ -571,6 +580,7 @@ export const vercelBlob = (
         },
         async begin(meta): Promise<ResumableUploadSession> {
           try {
+            const blob = await loadVercelBlob();
             const created = await blob.createMultipartUpload(key, {
               access,
               addRandomSuffix,
@@ -594,6 +604,7 @@ export const vercelBlob = (
         async complete(parts: PartMeta[]): Promise<UploadResult> {
           const active = requireSession();
           try {
+            const blob = await loadVercelBlob();
             const result = await blob.completeMultipartUpload(
               key,
               parts.map((part) => ({
@@ -634,6 +645,7 @@ export const vercelBlob = (
         async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
           const active = requireSession();
           try {
+            const blob = await loadVercelBlob();
             const part = await blob.uploadPart(
               key,
               data as unknown as Parameters<typeof blob.uploadPart>[1],
@@ -681,6 +693,7 @@ export const vercelBlob = (
     supportsServerSideCopy: true,
     async upload(key, body, options) {
       try {
+        const blob = await loadVercelBlob();
         const result = await blob.put(key, body as Blob | string, {
           access,
           addRandomSuffix,
