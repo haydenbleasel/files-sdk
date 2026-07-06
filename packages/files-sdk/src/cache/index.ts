@@ -57,13 +57,15 @@ export interface CacheRecord {
  */
 export interface CacheStore {
   /** Read a key's record, or `undefined` on a miss. */
-  get(key: string): CacheRecord | undefined | Promise<CacheRecord | undefined>;
+  get: (
+    key: string
+  ) => CacheRecord | undefined | Promise<CacheRecord | undefined>;
   /** Write (replace) a key's record. */
-  set(key: string, record: CacheRecord): void | Promise<void>;
+  set: (key: string, record: CacheRecord) => void | Promise<void>;
   /** Drop a key's record — the unit of invalidation. */
-  delete(key: string): void | Promise<void>;
+  delete: (key: string) => void | Promise<void>;
   /** Drop every record. */
-  clear(): void | Promise<void>;
+  clear: () => void | Promise<void>;
 }
 
 export interface CacheOptions {
@@ -133,11 +135,11 @@ export type CacheApi = {
    * through a presigned URL, or directly against the provider), to stop serving
    * stale reads.
    */
-  invalidateCache(key?: string): Promise<void>;
+  invalidateCache: (key?: string) => Promise<void>;
   /** A fresh snapshot of cache hit/miss counts since construction (or last reset). */
-  cacheStats(): CacheStats;
+  cacheStats: () => CacheStats;
   /** Zero the hit/miss counters, starting a fresh accounting window. */
-  resetCacheStats(): void;
+  resetCacheStats: () => void;
 };
 
 /** Point-in-time hit/miss tally from {@link CacheApi.cacheStats}. */

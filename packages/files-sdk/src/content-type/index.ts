@@ -270,6 +270,7 @@ const peekStream = async (
   let total = 0;
   let ended = false;
   while (total < n) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially until we have n bytes.
     const { done, value } = await reader.read();
     if (done) {
       ended = true;

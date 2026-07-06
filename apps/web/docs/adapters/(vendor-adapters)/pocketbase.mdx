@@ -1,0 +1,56 @@
+---
+title: PocketBase
+description: PocketBase via the official JS SDK. Maps the unified key/blob API onto a dedicated collection with a unique key field and a single-file body field.
+---
+
+## Installation
+
+`pocketbase` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk pocketbase
+```
+
+## Usage
+
+PocketBase via the official `pocketbase` JS SDK. PocketBase has no object-store primitive - files live as field values on records inside collections. The adapter maps the unified key/blob API onto a dedicated collection: each upload becomes (or updates) a record whose configurable _key field_ holds the user-facing string key and whose configurable _file field_ holds the body.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { pocketbase } from "files-sdk/pocketbase";
+
+const files = new Files({
+  adapter: pocketbase({
+    collection: "files",
+    // Auto-loads url + auth from POCKETBASE_URL,
+    // POCKETBASE_ADMIN_EMAIL + POCKETBASE_ADMIN_PASSWORD, or
+    // POCKETBASE_AUTH_TOKEN. Or pass an existing PocketBase client.
+    //
+    // Collection must already exist with a unique-indexed text `key`
+    // field and a single-value `file` field. Field names are
+    // configurable via `keyField` / `fileField`.
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/pocketbase/index.ts"
+  name="PocketBaseAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | :----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Stream bodies are buffered up-front - the SDK uploads via multipart `FormData` with a Blob, which has no streaming form. User `metadata` and `cacheControl` throw - PocketBase has no per-file HTTP cache headers and no arbitrary-metadata field on the file; add extra typed columns to the collection and write via `raw` if you need them. Existing keys are updated in place (no duplicate-key error); new keys create a new record. Resumable uploads (`control`) are not supported — PocketBase uploads in a single multipart request. |
+| `download`        |   ⚠️   | No streaming primitive - PocketBase's JS SDK has no binary download API, so the adapter resolves the record, mints a short-lived file token via `pb.files.getToken()` when authenticated, and fetches the file URL with `fetch()`. Size and content-type come back from the HTTP response, not the record - PB doesn't store them on the record itself.                                                                                                                                                                                       |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `list`            |   ⚠️   | PocketBase's stable list API is offset/limit (page/perPage), not cursor-based. The adapter encodes the next page number as a numeric cursor string so the unified API works unchanged. `prefix` is matched server-side via the `~` operator on the configured `keyField`. List items expose lazy bodies (one fetch per `.text()`/`.arrayBuffer()` call) — PocketBase records don't carry size or content-type, so list entries return `size: 0` and `type: 'application/octet-stream'` until the body is read.                                |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `head`            |   ⚠️   | PocketBase records don't carry size, content-type, or etag for their file fields, so `head()` returns `size: 0` and `type: 'application/octet-stream'` until the body is read via the lazy body factory. `lastModified` is sourced from the record's `updated` field. The filename PocketBase generated on upload is exposed under `metadata.filename`.                                                                                                                                                                                       |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `copy`            |   ⚠️   | Read-then-write — PocketBase has no server-side copy primitive, so the source record's file is downloaded and uploaded as a new record under the destination key. Costs an egress + an ingest; not atomic.                                                                                                                                                                                                                                                                                                                                    |
+| `url`             |   ⚠️   | Default returns `pb.files.getURL(record, filename)` — permanent for public collections, threaded with a short-lived file token from `pb.files.getToken()` when the client is authenticated. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `expiresIn` is silently ignored — PocketBase fixes the file-token TTL server-side. `responseContentDisposition` always throws — PB has no per-URL Content-Disposition override; use `raw` and the `?download=true` query string instead.                                                   |
+| `signedUploadUrl` |   ❌   | Throws — PocketBase has no presigned upload primitive. Writes always go through the authenticated API; mint a short-lived auth token for the client and call `create`/`update` directly, or proxy uploads through your application.                                                                                                                                                                                                                                                                                                           |

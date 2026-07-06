@@ -1,0 +1,94 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import { ADAPTER_LOGOS } from "@/lib/adapter-logos";
+import InstallCommand from "./install-command.astro";
+
+interface Props {
+  adapterCount: number;
+  latestVersion: string;
+}
+
+const { adapterCount, latestVersion } = Astro.props;
+const releaseUrl = `https://github.com/haydenbleasel/files-sdk/releases/tag/${encodeURIComponent(
+  `files-sdk@${latestVersion}`
+)}`;
+const marquee = [...ADAPTER_LOGOS, ...ADAPTER_LOGOS];
+---
+
+<section class="relative overflow-hidden">
+  <div
+    class="mx-auto flex max-w-5xl flex-col items-center px-6 pt-24 pb-20 text-center sm:pt-32 sm:pb-24 lg:pt-40 lg:pb-28"
+  >
+    <a
+      class="group inline-flex items-center gap-2 font-mono text-muted-foreground text-xs transition-colors hover:text-foreground"
+      href={releaseUrl}
+      rel="noreferrer"
+      target="_blank"
+    >
+      <span class="inline-block size-1.5 rounded-full bg-emerald-500"></span>
+      Latest update — v{latestVersion} released
+      <Icon
+        class="size-3 transition-transform group-hover:translate-x-0.5"
+        name="arrow-right"
+      />
+    </a>
+
+    <h1
+      class="mt-8 max-w-[18ch] text-balance font-medium text-[2.5rem]/[1.05] tracking-tight text-foreground sm:text-7xl lg:text-8xl"
+    >
+      Write once. Store anywhere.
+    </h1>
+
+    <p
+      class="mt-7 max-w-[46ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-xl"
+    >
+      A unified SDK for S3, R2, GCS, Azure, and every other object or blob store.
+      One small API, web standards, and an escape hatch when you need the native
+      client.
+    </p>
+
+    <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+      <InstallCommand />
+      <a
+        class="inline-flex h-11 items-center gap-1.5 rounded-full px-5 font-medium text-foreground text-sm transition-colors hover:bg-muted"
+        href="/docs/api"
+      >
+        Read the docs
+        <Icon class="size-4" name="arrow-right" />
+      </a>
+    </div>
+  </div>
+
+  <div class="relative mx-auto max-w-6xl px-6 pb-24 sm:pb-32">
+    <div
+      class="overflow-x-clip py-2 [-webkit-mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)] [mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)]"
+    >
+      <div
+        class="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-7 sm:gap-10"
+      >
+        {
+          marquee.map((logo) => (
+            <img
+              alt={logo.alt}
+              class="size-10 shrink-0 rounded transition-transform duration-200 hover:-translate-y-1 sm:size-14"
+              height="56"
+              loading="lazy"
+              src={logo.src}
+              width="56"
+            />
+          ))
+        }
+      </div>
+    </div>
+    <p class="mt-8 text-center font-mono text-muted-foreground text-xs">
+      and {adapterCount - ADAPTER_LOGOS.length} more —{" "}
+      <a
+        class="text-foreground underline-offset-4 hover:underline"
+        href="/docs/adapters"
+      >
+        see every adapter →
+      </a>
+    </p>
+  </div>
+</section>

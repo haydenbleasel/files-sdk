@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import path from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
 
@@ -15,9 +15,9 @@ import pkg from "../package.json" with { type: "json" };
 // The cold-start build (tsgo included) can take a while on CI runners.
 const COLD_BUILD_TIMEOUT_MS = 120_000;
 
-const pkgRoot = resolve(import.meta.dirname, "..");
-const distDir = resolve(pkgRoot, "dist");
-const cliBundle = resolve(distDir, "cli/index.js");
+const pkgRoot = path.resolve(import.meta.dirname, "..");
+const distDir = path.resolve(pkgRoot, "dist");
+const cliBundle = path.resolve(distDir, "cli/index.js");
 
 const optionalPeers = Object.entries(pkg.peerDependenciesMeta ?? {})
   .filter(([, meta]) => (meta as { optional?: boolean }).optional)
@@ -42,7 +42,7 @@ const staticExternals = (entry: string): Set<string> => {
         continue;
       }
       if (imp.path.startsWith(".")) {
-        queue.push(resolve(dirname(file), imp.path));
+        queue.push(path.resolve(path.dirname(file), imp.path));
       } else {
         externals.add(imp.path);
       }
@@ -99,7 +99,7 @@ test(
   "react bundle is a `use client` module importing only react",
   () => {
     ensureBuilt();
-    const reactBundle = resolve(distDir, "react/index.js");
+    const reactBundle = path.resolve(distDir, "react/index.js");
     expect(readFileSync(reactBundle, "utf-8").startsWith('"use client";')).toBe(
       true
     );
@@ -119,7 +119,7 @@ test(
       "hono/index.js",
       "next/index.js",
     ]) {
-      const externals = [...staticExternals(resolve(distDir, sub))];
+      const externals = [...staticExternals(path.resolve(distDir, sub))];
       expect(externals.filter((e) => e.startsWith("node:"))).toEqual([]);
     }
   },
@@ -132,9 +132,11 @@ test(
     ensureBuilt();
     // vue imports only `vue`; svelte uses an inline store + a type-only
     // `Readable`, so it imports nothing external at all.
-    const vue = [...staticExternals(resolve(distDir, "vue/index.js"))];
+    const vue = [...staticExternals(path.resolve(distDir, "vue/index.js"))];
     expect(vue.filter((e) => e !== "vue")).toEqual([]);
-    const svelte = [...staticExternals(resolve(distDir, "svelte/index.js"))];
+    const svelte = [
+      ...staticExternals(path.resolve(distDir, "svelte/index.js")),
+    ];
     expect(svelte).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
@@ -159,10 +161,10 @@ test(
       ["svelte", ["useFiles", "useList", "useFile", "useSearch"]],
     ];
     for (const [sub, names] of cases) {
-      const mod = (await import(resolve(distDir, sub, "index.js"))) as Record<
-        string,
-        unknown
-      >;
+      // eslint-disable-next-line no-await-in-loop -- imports each built subpath and asserts its exports in turn
+      const mod = (await import(
+        path.resolve(distDir, sub, "index.js")
+      )) as Record<string, unknown>;
       for (const name of names) {
         expect(typeof mod[name]).toBe("function");
       }

@@ -1,0 +1,29 @@
+---
+title: Wiring agents
+description: Three patterns for handing storage access to an agent - CLI exploration, programmatic JSON loops, and the MCP server - ordered by trust extended.
+---
+
+Three patterns, ordered by how much trust you're extending to the agent.
+
+```bash lineNumbers
+# 1. Quick exploration — let an agent inspect a bucket without writing code
+files --provider s3 --bucket uploads list --prefix invoices/ --limit 20 | jq '.items[].key'
+
+# 2. Programmatic loop — feed JSON straight to the next step
+cursor=""
+while :; do
+  page=$(files --provider s3 --bucket uploads list --prefix logs/ --limit 100 \
+    ${cursor:+--cursor "$cursor"})
+  echo "$page" | jq -r '.items[].key' | while read key; do
+    files --provider s3 --bucket uploads download "$key" --stdout | gunzip | grep ERROR
+  done
+  cursor=$(echo "$page" | jq -r '.cursor // empty')
+  [ -z "$cursor" ] && break
+done
+
+# 3. Provider override via env — agents don't need to thread --provider everywhere
+export FILES_SDK_PROVIDER=fs
+files --root ./sandbox list
+```
+
+For read-only investigation, the JSON output piped through `jq` is usually enough. For multi-step workflows, the [MCP server](/docs/cli/mcp) keeps tool calls structured and avoids quoting bugs in shell composition. For everything in between, the plain CLI with `--dry-run` gates is the path of least surprise.

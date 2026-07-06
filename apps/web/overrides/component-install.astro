@@ -1,0 +1,19 @@
+---
+import CodeBlock from "blume/components/content/CodeBlock.astro";
+import data from "blume:data";
+
+interface Props {
+  /** Registry item name, e.g. `"dropzone"`. */
+  name: string;
+}
+
+const { name } = Astro.props;
+
+// `config.site` is auto-filled by Blume — the dev server URL locally, the
+// Vercel deployment URL in production — so the printed `shadcn add` command
+// points at this site's own registry (`/r/<name>.json`).
+const base = (data.config.site ?? "").replace(/\/$/u, "");
+const command = `npx shadcn@latest add ${base}/r/${name}.json`;
+---
+
+<CodeBlock code={command} icons={false} lang="bash" />

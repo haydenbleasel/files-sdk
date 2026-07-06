@@ -95,7 +95,7 @@ export type TieringApi = {
    * tier does. Checks the routed tier first, then the other (regardless of
    * {@link TieringOptions.fallback}, so it always gives a definitive answer).
    */
-  tierOf(key: string): Promise<Tier | undefined>;
+  tierOf: (key: string) => Promise<Tier | undefined>;
   /**
    * Move `key` to `target`, streaming the object across adapters and removing
    * the source copy. A no-op when it's already there. Throws `NotFound` when
@@ -103,7 +103,7 @@ export type TieringApi = {
    * list, check `lastModified`, and `tier(key, "cold")` what's gone cold. Pair
    * it with `fallback: true` so reads still find what you've moved.
    */
-  tier(key: string, target: Tier): Promise<void>;
+  tier: (key: string, target: Tier) => Promise<void>;
 };
 
 /**
@@ -113,16 +113,23 @@ export type TieringApi = {
  * verbs the same way.
  */
 interface TierRunner {
-  exists(key: string, opts?: OperationOptions): Promise<boolean>;
-  download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
-  head(key: string, opts?: OperationOptions): Promise<StoredFile>;
-  url(key: string, opts?: UrlOptions): Promise<string>;
-  upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
-  delete(key: string, opts?: OperationOptions): Promise<void>;
-  copy(from: string, to: string, opts?: OperationOptions): Promise<void>;
-  move(from: string, to: string, opts?: OperationOptions): Promise<void>;
-  list(opts?: ListOptions): Promise<ListResult>;
-  signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
+  exists: (key: string, opts?: OperationOptions) => Promise<boolean>;
+  download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
+  url: (key: string, opts?: UrlOptions) => Promise<string>;
+  upload: (
+    key: string,
+    body: Body,
+    opts?: UploadOptions
+  ) => Promise<UploadResult>;
+  delete: (key: string, opts?: OperationOptions) => Promise<void>;
+  copy: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
+  move: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
+  list: (opts?: ListOptions) => Promise<ListResult>;
+  signedUploadUrl: (
+    key: string,
+    opts: SignUploadOptions
+  ) => Promise<SignedUpload>;
 }
 
 /** Compose a {@link TierRunner} from a {@link Files} instance (the cold tier). */

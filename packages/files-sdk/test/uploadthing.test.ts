@@ -324,6 +324,7 @@ describe("uploadthing adapter", () => {
     const reader = got.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -667,6 +668,7 @@ describe("uploadthing adapter", () => {
     ];
     for (const { body } of inputs) {
       uploadFilesMock.mockClear();
+      // eslint-disable-next-line no-await-in-loop -- shared mock is cleared+asserted per body, so uploads must run sequentially
       const out = await files.upload("a.bin", body);
       expect(out.size).toBeGreaterThan(0);
       expect(uploadFilesMock).toHaveBeenCalledTimes(1);

@@ -1,0 +1,53 @@
+---
+title: Cancellation
+description: An AbortSignal always fails the call fast at the Files layer; whether the underlying provider request is also cancelled depends on the adapter.
+---
+
+Pass a `signal` to bind a call to an `AbortController`. The moment it aborts, the in-flight call rejects with a `FilesError` carrying `aborted: true` — for **every** adapter, whether or not the provider's SDK supports cancellation.
+
+```ts lineNumbers
+const controller = new AbortController();
+
+const upload = files.upload("avatars/abc.png", file, {
+  signal: controller.signal,
+});
+
+// Later, abort it — the call rejects immediately.
+controller.abort();
+```
+
+## Detecting an abort
+
+An aborted call rejects with a `Provider` [`FilesError`](/docs/api/errors) whose `aborted` flag is `true`. That flag, not the `code`, is what distinguishes a cancellation (or a [timeout](/docs/timeouts)) from a real provider failure.
+
+```ts lineNumbers
+import { FilesError } from "files-sdk";
+
+try {
+  await files.download("big.zip", { signal: controller.signal });
+} catch (err) {
+  if (err instanceof FilesError && err.aborted) {
+    return; // expected — the caller (or a timeout) aborted it
+  }
+  throw err;
+}
+```
+
+## Constructor and per-call signals
+
+`signal` can also be set on the constructor, where it applies to every single-key operation the instance runs — handy for tearing down all in-flight work when a request or job ends. When both a constructor signal and a per-call signal are present, **either** one aborting cancels the call.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  signal: req.signal, // bind every operation to the request lifecycle
+});
+```
+
+The array forms (`upload([…])`, `delete([…])`, …) don't take a per-call `signal`; they manage work through `concurrency` / `stopOnError` instead. Cancellation is a single-key concern.
+
+## What the adapter does downstream
+
+Failing fast at the `Files` layer is guaranteed; cancelling the _provider request_ underneath is not. Adapters whose SDK exposes cancellation forward the signal directly — the S3 adapter and the whole S3-compatible catalog (R2 over HTTP, MinIO, Spaces, and every regional / budget / decentralised wrapper), Vercel Blob, and UploadThing's fetch-backed reads. Adapters whose SDK has no cancellation primitive (for example UploadThing's `delete`) still reject at the `Files` layer the instant the signal aborts, but the provider request may run to completion in the background.
+
+Aborts are never retried — see [Retries](/docs/retries) — and a [`timeout`](/docs/timeouts) aborts the call the same way when it fires.

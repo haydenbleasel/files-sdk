@@ -22,7 +22,7 @@ type RangeParse =
   | { kind: "unsatisfiable" };
 
 const parseRangeHeader = (header: string, size: number): RangeParse => {
-  const match = /^bytes=(\d*)-(\d*)$/u.exec(header.trim());
+  const match = /^bytes=(?<start>\d*)-(?<end>\d*)$/u.exec(header.trim());
   if (!match) {
     return { kind: "full" };
   }

@@ -1,0 +1,42 @@
+---
+title: API
+description: The plugin contract types and helpers - FilesPlugin, FilesOperation, handlers, and createFiles. See the overview for how they compose.
+---
+
+The types and helpers that make up the plugin system. See the [overview](/docs/plugins) for how `wrap`, `extend`, and the pipeline fit together.
+
+## FilesPlugin
+
+The plugin object you pass to `plugins`. A `name` plus up to two optional capabilities - `wrap` and `extend`.
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="FilesPlugin"
+/>
+
+## FilesOperation
+
+The discriminated union handed to `wrap` - one variant per public verb, carrying the caller-facing inputs. The array forms of `upload` / `download` / `head` / `exists` / `delete` set `bulk: true` on each fanned-out item.
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="FilesOperation"
+/>
+
+## handlers
+
+```ts
+function handlers(map: PluginHandlers): FilesPlugin["wrap"];
+```
+
+Builds a [`wrap`](/docs/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
+
+## createFiles
+
+```ts
+function createFiles(
+  opts: FilesOptions & { plugins?: FilesPlugin[] }
+): Files & ExtensionsOf<plugins>;
+```
+
+Constructs a `Files` instance whose type includes every plugin's [`extend`](/docs/plugins#extend-new-methods) surface. Runtime-identical to `new Files(opts)` - it exists only to surface the added methods on the type.

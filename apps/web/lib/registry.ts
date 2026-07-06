@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import path from "node:path";
 
 export interface RegistryFileRef {
   path: string;
@@ -32,7 +32,10 @@ export type ResolvedRegistryItem = Omit<RegistryItemMeta, "files"> & {
 // Read from disk rather than `import`ing the JSON — the source `.tsx` files are
 // read the same way, and it sidesteps the bundler's JSON-alias resolution.
 const loadRegistry = async (): Promise<RegistryIndex> => {
-  const raw = await readFile(join(process.cwd(), "registry.json"), "utf-8");
+  const raw = await readFile(
+    path.join(process.cwd(), "registry.json"),
+    "utf-8"
+  );
   return JSON.parse(raw) as RegistryIndex;
 };
 
@@ -72,7 +75,11 @@ export const getRegistryItem = async (
       // literal `"registry"` segment lets Node File Trace bundle just that
       // directory instead of conservatively tracing the whole project.
       content: await readFile(
-        join(process.cwd(), "registry", file.path.replace(/^registry\//u, "")),
+        path.join(
+          process.cwd(),
+          "registry",
+          file.path.replace(/^registry\//u, "")
+        ),
         "utf-8"
       ),
     }))

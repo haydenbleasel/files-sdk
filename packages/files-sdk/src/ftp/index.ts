@@ -337,6 +337,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       await run(undefined, async (client) => {
         for (const key of keys) {
           try {
+            // eslint-disable-next-line no-await-in-loop -- single connection: concurrent removes would trip FTP session limits, and stopOnError early-exits
             await client.remove(keyToRemote(key), true);
             deleted.push(key);
           } catch (error) {
@@ -487,6 +488,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
             }
             const childKey = prefix ? `${prefix}/${entry.name}` : entry.name;
             if (entry.isDirectory) {
+              // eslint-disable-next-line no-await-in-loop -- recursive walk over a single shared FTP connection
               await walk(childListPath(dir, entry.name), childKey);
             } else {
               keys.push(childKey);

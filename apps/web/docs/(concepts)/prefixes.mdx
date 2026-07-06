@@ -1,0 +1,32 @@
+---
+title: Prefixes
+description: Pass a prefix to the constructor and every key resolves relative to it - prepended going in, stripped coming out - so your code stays in its own namespace.
+---
+
+Pass `prefix` to the constructor and every key is resolved relative to it — reads, writes, copies, listings, URLs, and signed uploads. The prefix is prepended to the keys you pass in and stripped back off the keys returned in results, so the rest of your application code works in its own namespace and never repeats the base path.
+
+```ts lineNumbers
+const users = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  prefix: "users",
+});
+
+await users.upload("123/avatar.png", file); // writes users/123/avatar.png
+const stored = await users.head("123/avatar.png"); // reads users/123/avatar.png
+stored.key; // "123/avatar.png" - prefix stripped from the result
+stored.name; // "123/avatar.png" - kept consistent with key
+
+const { items } = await users.list(); // scoped to users/, keys returned relative
+```
+
+## Slash normalization
+
+Leading and trailing slashes are normalized: `"/users/"`, `"users/"`, and `"users"` all behave identically, and a leading slash on a key is ignored, so the prefix and key always join with exactly one separator (`users/123/avatar.png`, never `users//123` or a literal-leading-slash `/users/...` that S3 and R2 would store under an empty-named folder).
+
+## Listing under a prefix
+
+`list()` scopes the underlying provider query to the prefix and matches on a path boundary, so a `Files` constructed with `prefix: "users"` lists objects under `users/` but never the sibling `users-archive/`. Cursor pagination and the per-call `list({ prefix })` filter compose with the constructor prefix.
+
+## What stays caller-facing
+
+The prefix is an internal detail — it never leaks back to you. Results (`key`, `name`) come back relative, and [hook](/docs/api/onaction) payloads report the `key` / `keys` you passed, never the prefixed path the adapter saw. The same holds in the [bulk](/docs/bulk) forms: keys are resolved under the prefix on the way in and stripped on the way out, just as in the single-key forms.

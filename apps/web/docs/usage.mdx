@@ -1,0 +1,163 @@
+---
+title: Usage
+description: Construct a Files instance with an adapter, then call the same ten methods on it - swap the adapter to switch backends.
+---
+
+## How it works
+
+The shape is class + adapter injection. You construct a `Files` instance with an adapter, then call methods on the instance.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+await files.upload("avatars/abc.png", file, { contentType: "image/png" });
+const stored = await files.download("avatars/abc.png");
+const url = await files.url("avatars/abc.png", { expiresIn: 60 });
+```
+
+Swap the adapter to switch backends - everything below the constructor stays the same:
+
+```ts lineNumbers
+import { r2 } from "files-sdk/r2";
+import { vercelBlob } from "files-sdk/vercel-blob";
+
+const files = new Files({ adapter: r2({ accountId, bucket: "uploads" }) });
+// or
+const files = new Files({
+  adapter: vercelBlob({ token: process.env.BLOB_READ_WRITE_TOKEN! }),
+});
+```
+
+Reads return a `StoredFile` - a `File`-shaped value with `key`, `etag`, and `metadata` added on top. Body accessors (`arrayBuffer`, `text`, `stream`, `blob`) are lazy on results from `head` and `list`, so listing a thousand objects doesn't fetch their bodies.
+
+## Quick start
+
+```ts lineNumbers
+import { Files, FilesError } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+// Upload
+await files.upload("reports/q1.pdf", file, {
+  contentType: "application/pdf",
+  cacheControl: "public, max-age=31536000",
+  metadata: { userId: "123" },
+});
+
+// List with cursor pagination
+const { items, cursor } = await files.list({ prefix: "reports/", limit: 50 });
+
+// Sign a short-lived read URL
+const url = await files.url("reports/q1.pdf", { expiresIn: 300 });
+
+// Hand back a browser-direct upload contract
+const upload = await files.signedUploadUrl("reports/q2.pdf", {
+  expiresIn: 600,
+  contentType: "application/pdf",
+  maxSize: 25_000_000,
+});
+
+// Handle normalized errors
+try {
+  await files.download("missing.pdf");
+} catch (err) {
+  if (err instanceof FilesError && err.code === "NotFound") return null;
+  throw err;
+}
+```
+
+## File handles
+
+When the same key comes up again and again, bind it once with `files.file(key)` and drop the repeated argument. A `FileHandle` is a thin wrapper over the same adapter methods - same behavior, just scoped to one key.
+
+```ts lineNumbers
+const avatar = files.file("avatars/abc.png");
+
+await avatar.upload(file, { contentType: "image/png" });
+
+if (await avatar.exists()) {
+  const meta = await avatar.head();
+  const url = await avatar.url({ expiresIn: 300 });
+}
+
+await avatar.delete();
+```
+
+## Read-only instances
+
+Pass `readonly: true` to the constructor, or derive a locked view from an existing client with `files.readonly()`, when a caller should be able to read but never mutate storage:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  readonly: true,
+});
+
+const readOnlyFiles = files.readonly();
+```
+
+Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
+
+## Working in bulk
+
+`upload`, `download`, `head`, and `exists` each take a single key or an array, and `delete` takes one key or many. The array form fans out with bounded concurrency and returns a structured result that keeps successes and failures separate, in input order - so one bad key never sinks the whole batch.
+
+```ts lineNumbers
+// Upload several objects in one call
+const { uploaded, errors } = await files.upload([
+  { key: "a.txt", body: "alpha" },
+  { key: "b.txt", body: "beta", contentType: "text/plain" },
+]);
+```
+
+See [Bulk actions](/docs/bulk) for the per-method result shapes, partial-failure handling, and how `concurrency` and `stopOnError` tune the fan-out.
+
+## Configuring the client
+
+The constructor takes more than an adapter. Set a `prefix` to namespace every key, default `timeout` and `retries` for every call, or `hooks` to observe operations as they run - all optional, all overridable per call.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  prefix: "users", // every key resolves under users/
+  timeout: 10_000, // default per-attempt timeout
+  retries: 3, // retry provider failures
+});
+```
+
+See [Prefixes](/docs/prefixes) and the per-operation options ([Timeouts](/docs/timeouts), [Retries](/docs/retries), [Cancellation](/docs/cancellations), [Hooks](#hooks)) for the full behavior.
+
+## Hooks
+
+Pass `hooks` to the constructor to observe operations as they run - one place to wire logging, metrics, error reporting, and retry telemetry without wrapping every call. Each hook is **fire-and-forget**, like the [`onProgress`](/docs/api/onprogress) upload callback: the SDK calls it but never awaits it, and a hook that throws can't fail the operation it observes. Payloads are caller-facing - the public `key` / `keys` you passed, never the internal prefixed path.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  hooks: {
+    onAction(event) {
+      logger.info("files", event.type, event.status, event.key ?? event.keys);
+    },
+    onError(event) {
+      reportError(event.error, { action: event.type, key: event.key });
+    },
+    onRetry(event) {
+      metrics.increment("files.retry", { action: event.type });
+    },
+  },
+});
+```
+
+Three hooks live on the constructor: [`onAction`](/docs/api/onaction) runs when a call settles, [`onError`](/docs/api/onerror) when it rejects, and [`onRetry`](/docs/api/onretry) before each scheduled retry. A fourth callback, [`onProgress`](/docs/api/onprogress), is a per-call upload option rather than a constructor hook, but follows the same fire-and-forget contract.
+
+<AutoTypeTable path="../../packages/files-sdk/src/index.ts" name="FilesHooks" />
+
+For the complete method surface and options, see the [API reference](/docs/api).

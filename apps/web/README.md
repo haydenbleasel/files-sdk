@@ -1,36 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Files SDK — website & docs
 
-## Getting Started
+The marketing site and documentation for [Files SDK](https://github.com/haydenbleasel/files-sdk), built with [Blume](https://useblume.dev) (a markdown-first docs framework on Astro). Output is a fully static site.
 
-First, run the development server:
+## Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+bun install        # from the repo root
+bun run dev        # from apps/web — builds the shadcn registry, then runs `blume dev`
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:4321](http://localhost:4321).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Docs** live in `docs/` as Markdown/MDX. Navigation is derived from the file tree; `meta.ts` files order each group, and parenthesized `(group)/` folders add sidebar sections without a URL segment. Docs serve under `/docs/*`; the marketing homepage owns `/`.
+- **Landing page** is `pages/index.astro` (+ `components/home/*.astro`), with React islands only for the animated capability panels (`components/capabilities/*`).
+- **Config** is `blume.config.ts`; theme overrides are in `theme.css`.
+- **Component registry** — the shadcn UI components live in `registry/files-sdk/`; `scripts/build-registry.ts` emits `public/r/*.json` (a prebuild step) so `npx shadcn add <site>/r/<name>.json` works. Component previews render against a `lib/demo-files.ts` mock (no live gateway).
+- **Changelog** at `/changelog` is generated from the repo's GitHub releases (see `content.sources` in `blume.config.ts`).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Build
 
-## Learn More
+```bash
+bun run build      # bun scripts/build-registry.ts && blume build → dist/
+bun run preview    # serve the built dist/
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Deploy (Vercel)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Static output goes to `dist/`. Redirects and `/r/*` CORS headers live in `vercel.json`. Two settings must be configured in the Vercel project dashboard (they can't be committed):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Root Directory** = `apps/web`
+- **Node version** = 22+

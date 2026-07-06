@@ -56,7 +56,7 @@ export interface CreateFilesRouterOptions {
 
 export interface FilesApi {
   /** The framework-agnostic core every binding calls. */
-  handle(req: Request): Promise<Response>;
+  handle: (req: Request) => Promise<Response>;
 }
 
 const resolveSecret = (secret: string | undefined): string => {

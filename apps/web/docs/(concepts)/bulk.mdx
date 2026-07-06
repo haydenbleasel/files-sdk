@@ -1,0 +1,64 @@
+---
+title: Bulk actions
+description: Pass an array instead of a key to act on many objects at once - a bounded fan-out that keeps successes and failures separate, never failing the whole batch.
+---
+
+`upload`, `download`, `head`, and `exists` each take a single key or an array; `delete` takes one key or many. The array form fans out with bounded concurrency (8 by default) and returns a structured result that keeps successes and failures separate, in input order — so one bad key never sinks the whole batch.
+
+```ts lineNumbers
+// Upload several objects in one call
+const { uploaded, errors } = await files.upload([
+  { key: "a.txt", body: "alpha" },
+  { key: "b.txt", body: "beta", contentType: "text/plain" },
+]);
+
+// exists() splits the keys into present and absent
+const { existing, missing } = await files.exists(["a.txt", "b.txt", "c.txt"]);
+
+// delete() reports what it removed
+const { deleted } = await files.delete(["a.txt", "b.txt"]);
+```
+
+Each method returns a result shaped for what it does, and every one carries an optional `errors` array — omitted entirely when every item succeeded:
+
+| Method     | Array form returns               |
+| ---------- | -------------------------------- |
+| `upload`   | `{ uploaded, errors? }`          |
+| `download` | `{ downloaded, errors? }`        |
+| `head`     | `{ files, errors? }`             |
+| `exists`   | `{ existing, missing, errors? }` |
+| `delete`   | `{ deleted, errors? }`           |
+
+The success arrays come back in the order you supplied the keys. Each entry in `errors` is `{ key, error }`, where `error` is a normalized [`FilesError`](/docs/api/errors). Invalid keys (empty, or containing null bytes) are reported there too, never thrown.
+
+## Partial failure
+
+By default the array forms don't throw on a partial failure — every item is attempted and per-key failures collect in `errors`. Pass `stopOnError: true` to bail at the first failure and return the results gathered so far plus that error (this path runs sequentially), or `concurrency` to tune the fan-out.
+
+```ts lineNumbers
+const result = await files.upload(items, {
+  concurrency: 16,
+  stopOnError: false,
+});
+
+if (result.errors) {
+  for (const { key, error } of result.errors) {
+    logger.warn("upload failed", key, error.code);
+  }
+}
+```
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="BulkOptions"
+/>
+
+## Native bulk vs. fan-out
+
+`upload`, `download`, `head`, and `exists` have no provider batch primitive, so the SDK always fans out to per-key calls under the concurrency limit. `delete` is the exception: adapters with a native bulk primitive (S3 `DeleteObjects`, chunked into batches of 1000; Supabase; UploadThing) remove everything in a single request and ignore `concurrency`, while the rest fall back to bounded fan-out. When a native bulk provider only reports that the whole request failed, that error is mapped onto each affected key.
+
+## Retries and hooks
+
+Bulk calls are **not** retried — `retries` applies to single-operation calls only — so [`onRetry`](/docs/api/onretry) never fires for them. [`onAction`](/docs/api/onaction) emits one event for the whole call, carrying the caller's `keys` and the aggregated result; the per-item failures inside `errors` are not rejections, so they don't fire [`onError`](/docs/api/onerror).
+
+The client's [`prefix`](/docs/prefixes) is honored throughout: keys are resolved under it on the way in and stripped back off on the way out, just as in the single-key forms.

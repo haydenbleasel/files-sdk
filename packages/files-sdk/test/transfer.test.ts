@@ -83,9 +83,9 @@ describe("transfer", () => {
   test("forwards an active signal and honors the page-size limit", async () => {
     const source = newFiles();
     const dest = newFiles();
-    for (const key of ["a", "b", "c", "d", "e"]) {
-      await source.upload(key, key);
-    }
+    await Promise.all(
+      ["a", "b", "c", "d", "e"].map((key) => source.upload(key, key))
+    );
     const controller = new AbortController();
 
     const result = await transfer(source, dest, {
@@ -232,9 +232,7 @@ describe("transfer", () => {
   test("respects an explicit concurrency", async () => {
     const source = newFiles();
     const dest = newFiles();
-    for (const key of ["a", "b", "c"]) {
-      await source.upload(key, key);
-    }
+    await Promise.all(["a", "b", "c"].map((key) => source.upload(key, key)));
 
     const result = await transfer(source, dest, { concurrency: 2 });
 

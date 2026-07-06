@@ -255,6 +255,7 @@ const collectStream = async (
   let total = 0;
   const reader = stream.getReader();
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- stream reader: each read() pulls the next chunk sequentially
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -384,7 +385,7 @@ const fileMetaFromBox = (item: BoxFileLike): FileMeta => {
 };
 
 interface AuthHandle {
-  ensureReady(): Promise<void>;
+  ensureReady: () => Promise<void>;
 }
 
 const noopAuthHandle: AuthHandle = {

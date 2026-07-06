@@ -14,6 +14,7 @@ const drainStream = async (
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -53,9 +54,7 @@ const bytesOf = async (adapter: Adapter, key: string): Promise<Uint8Array> => {
 };
 
 const seedKeys = async (adapter: Adapter, keys: string[]): Promise<void> => {
-  for (const key of keys) {
-    await adapter.upload(key, key);
-  }
+  await Promise.all(keys.map((key) => adapter.upload(key, key)));
 };
 
 describe("memory adapter", () => {

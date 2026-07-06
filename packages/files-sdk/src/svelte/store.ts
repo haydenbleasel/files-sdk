@@ -6,12 +6,12 @@
 
 export interface ReadableStore<T> {
   /** Svelte store contract: subscribe, get an unsubscribe back. */
-  subscribe(run: (value: T) => void): () => void;
+  subscribe: (run: (value: T) => void) => () => void;
 }
 
 export interface WritableStore<T> extends ReadableStore<T> {
-  set(value: T): void;
-  get(): T;
+  set: (value: T) => void;
+  get: () => T;
 }
 
 export const writable = <T>(initial?: T): WritableStore<T> => {

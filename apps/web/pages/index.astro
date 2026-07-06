@@ -1,0 +1,47 @@
+---
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import data from "blume:data";
+
+import Capabilities from "@/components/home/capabilities.astro";
+import Demo from "@/components/home/demo.astro";
+import FinalCta from "@/components/home/final-cta.astro";
+import Footer from "@/components/home/footer.astro";
+import GetStarted from "@/components/home/get-started.astro";
+import Hero from "@/components/home/hero.astro";
+import { ADAPTERS } from "@/lib/adapters";
+import { getLatestVersion } from "@/lib/version";
+
+const { config } = data;
+const latestVersion = getLatestVersion();
+---
+
+<PageLayout
+  analytics={config.analytics}
+  banner={config.banner}
+  clientData={{
+    config: data.config,
+    navigation: data.navigation,
+    page: { route: "/", title: "Home" },
+  }}
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  logo={config.logo}
+  navigation={data.navigation}
+  ogEnabled={config.og.enabled}
+  page={{
+    description: config.description,
+    title: "Files SDK — Write once. Store anywhere.",
+  }}
+  searchEnabled={config.search.enabled}
+  site={{ title: config.title, description: config.description }}
+  siteUrl={config.site}
+  themeMode={config.theme.mode}
+  ui={data.ui}
+>
+  <Hero adapterCount={ADAPTERS.length} latestVersion={latestVersion} />
+  <Demo />
+  <Capabilities />
+  <GetStarted />
+  <FinalCta />
+  <Footer slot="footer" />
+</PageLayout>

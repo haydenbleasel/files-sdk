@@ -29,9 +29,9 @@ export interface UseFilesResult extends FilesClient {
   /** The last error from any verb. */
   error: FilesError | undefined;
   /** Clear the ambient error + upload state (and re-arm after an `abort`). */
-  reset(): void;
+  reset: () => void;
   /** Abort every in-flight call this hook started. */
-  abort(reason?: unknown): void;
+  abort: (reason?: unknown) => void;
 }
 
 export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {

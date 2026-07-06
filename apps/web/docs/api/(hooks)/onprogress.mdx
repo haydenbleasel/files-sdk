@@ -1,0 +1,49 @@
+---
+title: onProgress
+description: A per-call upload callback, modeled on the constructor hooks - called as bytes go out so you can drive a progress bar.
+---
+
+Unlike the constructor [hooks](/docs/usage#hooks) ([`onAction`](/docs/api/onaction), [`onError`](/docs/api/onerror), [`onRetry`](/docs/api/onretry)), `onProgress` isn't set in the constructor `hooks` - it's a per-call option on [`upload`](/docs/api/upload) (both the single and [array forms](/docs/bulk)), since progress only makes sense for uploads. It's the original fire-and-forget callback the hooks are modeled on: called as bytes go out so you can drive a progress bar, never awaited, and safe to throw from.
+
+Granularity depends on the body and the adapter. A buffered body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) reports `{ loaded: 0, total }` then `{ loaded: total, total }`; a `ReadableStream` is reported byte-by-byte, with `total` omitted when the length isn't known. S3 and the S3-compatible adapters report true byte-level progress for every body type (multipart included) through `@aws-sdk/lib-storage`, an optional peer dependency. It fires only while the upload is in flight and on success - a failed upload emits no final event, and progress restarts on retry. The [array form](/docs/bulk) adds the item's `key` to each report so you can attribute it when several files upload at once.
+
+```ts lineNumbers
+await files.upload("report.pdf", body, {
+  onProgress({ loaded, total }) {
+    bar.update(total ? loaded / total : loaded);
+  },
+});
+```
+
+## When `total` is unknown
+
+`total` is present for buffered bodies and omitted for a `ReadableStream` of unknown length - there's no content length to divide by, so you only get `loaded`. Branch on it: show a percentage when you can, fall back to bytes-so-far when you can't.
+
+```ts lineNumbers
+await files.upload("export.csv", stream, {
+  onProgress({ loaded, total }) {
+    setLabel(
+      total
+        ? `${Math.round((loaded / total) * 100)}%`
+        : `${(loaded / 1_000_000).toFixed(1)} MB`
+    );
+  },
+});
+```
+
+## Many files at once
+
+The [array form of `upload`](/docs/bulk) takes the same callback, with the item's `key` added to every report - so you can attribute progress when several files upload concurrently and update the right row.
+
+```ts lineNumbers
+await files.upload(items, {
+  onProgress({ key, loaded, total }) {
+    rows.get(key)?.update(total ? loaded / total : loaded);
+  },
+});
+```
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="UploadProgress"
+/>

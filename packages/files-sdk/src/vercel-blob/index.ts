@@ -159,7 +159,7 @@ const sizeOf = (body: Body): number | undefined => {
 };
 
 const parseCacheControlMaxAge = (header: string): number | undefined => {
-  const match = /max-age=(\d+)/u.exec(header);
+  const match = /max-age=(?<maxAge>\d+)/u.exec(header);
   return match?.[1] ? Number(match[1]) : undefined;
 };
 

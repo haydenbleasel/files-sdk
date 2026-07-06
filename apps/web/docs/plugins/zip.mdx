@@ -1,0 +1,89 @@
+---
+title: zip
+description: Stream many stored objects as one ZIP archive, store archives back as objects, and extract archives into individual keys - standard ZIP with deflate via the platform CompressionStream, no native dependencies.
+---
+
+The built-in `zip()` plugin bundles stored objects into ZIP archives — and back out of them — entirely through the `Files` instance. It's an [`extend`](/docs/plugins/api#filesplugin)-only plugin: it intercepts nothing and adds three methods.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { zip } from "files-sdk/zip";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [zip()],
+});
+
+// Stream a folder as one download — pipe it straight into a Response:
+return new Response(files.zip({ prefix: "reports/2026/" }), {
+  headers: {
+    "Content-Type": "application/zip",
+    "Content-Disposition": 'attachment; filename="reports.zip"',
+  },
+});
+```
+
+Archives are standard, classic ZIP: every mainstream tool opens them, and compression uses the platform `CompressionStream` (`deflate`), so the plugin has **no native dependencies** and works on any adapter.
+
+## The three methods
+
+| Method                            | What it does                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `zip(selection, options?)`        | Returns a `ReadableStream<Uint8Array>` of the archive. Entries download lazily, one at a time, as it's read.  |
+| `zipTo(key, selection, options?)` | Builds the same archive and stores it at `key` (as `application/zip`). Returns the `UploadResult`.            |
+| `unzip(key, options?)`            | Extracts a stored archive: each file entry becomes an object. Returns one `UploadResult` per extracted entry. |
+
+A **selection** is either an explicit array of keys or `{ prefix }` (resolved with `listAll`, so it spans pages — `{}` selects the whole bucket):
+
+```ts lineNumbers
+await files.zipTo("exports/all.zip", ["a.csv", "b.csv"]);
+await files.zipTo("exports/docs.zip", { prefix: "docs/" });
+
+const entries = await files.unzip("incoming/batch.zip", { into: "imported/" });
+// → [{ key: "imported/data.csv", ... }, ...]
+```
+
+## Options
+
+### `zip` / `zipTo`
+
+| Option   | Default     | What it does                                                                                                          |
+| -------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `method` | `"deflate"` | How entry bodies are stored. `"store"` writes bytes verbatim — right for already-compressed sources (JPEG, video).    |
+| `name`   | the key     | Derive an entry's archive path from its key — strip a prefix, flatten folders. Duplicate resulting names fail closed. |
+
+```ts lineNumbers
+files.zip(
+  { prefix: "exports/" },
+  {
+    method: "store", // sources are already-compressed media
+    name: (key) => key.slice("exports/".length),
+  }
+);
+```
+
+### `unzip`
+
+| Option   | Default | What it does                                                                    |
+| -------- | ------- | ------------------------------------------------------------------------------- |
+| `into`   | `""`    | Key prefix extracted entries land under (a trailing `/` is added when missing). |
+| `filter` | —       | `(name) => boolean` — keep only matching entries, judged by their archive path. |
+
+Extracted entries get a content type inferred from their extension; directory entries are skipped.
+
+## Composition
+
+Everything goes through the fully-wrapped instance, so `zip()` composes with the rest of the pipeline: with [`encryption()`](/docs/plugins/encryption) installed, zipped entries are read as **plaintext**, and an archive stored via `zipTo` is encrypted at rest. Because there's no `wrap`, the plugin's position in the array doesn't matter.
+
+```ts
+plugins: [zip(), compression(), encryption(key)];
+```
+
+## Things to keep in mind
+
+- **`zip()` streams; `unzip()` buffers.** Writing needs only one entry in flight at a time, so archiving many objects runs with flat memory and an unconsumed or cancelled stream does no further work. Reading needs the central directory at the _end_ of the file, so `unzip` downloads the whole archive into memory first.
+- **No ZIP64.** Archives are classic ZIP: at most 65,535 entries and 4 GiB per entry / per archive. Limits fail closed — a clear error, never a silently corrupt archive — and reading a ZIP64 archive throws too.
+- **Entry names are validated on both sides.** Writing rejects duplicate names, `..` segments, backslashes, and absolute paths; extraction rejects the same (the classic [zip-slip](https://security.snyk.io/research/zip-slip-vulnerability) escape), and refuses encrypted entries and unknown compression methods rather than guessing. Extracted data is verified against each entry's recorded CRC-32 and size.
+- **`"store"` is for already-compressed sources.** The default `"deflate"` shrinks text well, but JPEGs, videos, and encrypted-at-rest objects read back as high-entropy bytes — `method: "store"` skips the wasted CPU.
+- **Selection errors surface on the stream.** `zip()` returns its stream synchronously; a missing key, an unsafe name, or an oversized entry rejects the first read (and `zipTo` / the consuming `Response`).

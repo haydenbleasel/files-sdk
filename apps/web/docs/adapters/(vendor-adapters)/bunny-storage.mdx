@@ -1,0 +1,52 @@
+---
+title: Bunny Storage
+description: Bunny Storage via @bunny.net/storage-sdk. Connects to a Storage Zone with its zone password / access key, auto-loading the BUNNY_STORAGE_* env vars.
+---
+
+## Installation
+
+`@bunny.net/storage-sdk` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @bunny.net/storage-sdk
+```
+
+## Usage
+
+Bunny Storage via the official `@bunny.net/storage-sdk`. The adapter connects to a Storage Zone with its zone password / API access key and uses Bunny's HTTP Storage API for reads, writes, listing, and deletes. Auto-loads from `BUNNY_STORAGE_ZONE`, `BUNNY_STORAGE_ACCESS_KEY`, and `BUNNY_STORAGE_REGION`; also accepts `STORAGE_ZONE`, `STORAGE_ACCESS_KEY`, and `STORAGE_REGION` as aliases (the names used in the Bunny SDK's README example).
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { bunnyStorage } from "files-sdk/bunny-storage";
+
+const files = new Files({
+  adapter: bunnyStorage({
+    zone: "uploads",
+    region: "de",
+    // accessKey auto-loaded from BUNNY_STORAGE_ACCESS_KEY
+    // publicBaseUrl: "https://files.example.com",
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/bunny-storage/index.ts"
+  name="BunnyStorageAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | :----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Custom `metadata` and `cacheControl` throw — the Bunny Storage TypeScript SDK exposes content-type/checksum but no arbitrary object metadata or per-object cache-control field. Configure cache behavior on the Pull Zone/CDN. Resumable uploads (`control`) are not supported — Bunny Storage uploads in a single PUT. |
+| `download`        |   ✅   |                                                                                                                                                                                                                                                                                                                         |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                         |
+| `list`            |   ⚠️   | Bunny lists a directory, not a recursive object-prefix scan. The adapter chooses the nearest directory for `prefix`, filters that page client-side, and encodes numeric offsets as cursors after fetching the directory listing.                                                                                        |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                              |
+| `head`            |   ✅   |                                                                                                                                                                                                                                                                                                                         |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                         |
+| `copy`            |   ⚠️   | Read-then-write — Bunny Storage's TypeScript SDK has no server-side copy primitive, so the source is downloaded and re-uploaded. Not server-side atomic.                                                                                                                                                                |
+| `url`             |   ⚠️   | Requires `publicBaseUrl` (for example a Bunny Pull Zone or custom CDN hostname) and returns `<publicBaseUrl>/<key>`. Without it, throws because the Storage API URL requires an `AccessKey` header. `expiresIn` is ignored and `responseContentDisposition` throws — Bunny Storage has no signed-read URL primitive.    |
+| `signedUploadUrl` |   ❌   | Throws — Bunny Storage has no presigned upload primitive. Writes go through the Storage API with an `AccessKey` header, so upload server-side via the SDK or proxy through your application.                                                                                                                            |

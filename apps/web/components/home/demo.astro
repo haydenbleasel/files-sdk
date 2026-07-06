@@ -1,0 +1,82 @@
+---
+import Tab from "blume/components/content/Tab.astro";
+import Tabs from "blume/components/content/Tabs.astro";
+import { highlightCode } from "blume/markdown";
+
+// The same upload/download/head/list/delete sequence rendered per adapter.
+const DEMO = [
+  {
+    config: 's3({ bucket: "uploads", region: "us-east-1" })',
+    import: 'import { s3 } from "files-sdk/s3";',
+    label: "S3",
+  },
+  {
+    config: 'r2({ bucket: "uploads", accountId: "..." })',
+    import: 'import { r2 } from "files-sdk/r2";',
+    label: "R2",
+  },
+  {
+    config: "vercelBlob()",
+    import: 'import { vercelBlob } from "files-sdk/vercel-blob";',
+    label: "Vercel Blob",
+  },
+  {
+    config: 'netlifyBlobs({ name: "uploads" })',
+    import: 'import { netlifyBlobs } from "files-sdk/netlify-blobs";',
+    label: "Netlify Blobs",
+  },
+  {
+    config: 'minio({ bucket: "uploads", endpoint: "http://localhost:9000" })',
+    import: 'import { minio } from "files-sdk/minio";',
+    label: "MinIO",
+  },
+];
+
+const code = (a: (typeof DEMO)[number]) => `import { Files } from "files-sdk";
+${a.import}
+
+const files = new Files({
+  adapter: ${a.config},
+});
+
+await files.upload("hello.txt", "world");
+const file = await files.download("hello.txt");
+const meta = await files.head("hello.txt");
+const items = await files.list();
+await files.delete("hello.txt");`;
+
+const tabs = await Promise.all(
+  DEMO.map(async (a) => ({
+    html: await highlightCode(code(a), "tsx", { icons: false }),
+    label: a.label,
+  }))
+);
+---
+
+<section>
+  <div class="mx-auto max-w-6xl px-6 py-24">
+    <p class="font-mono text-muted-foreground text-xs">Live snippet</p>
+    <h2
+      class="mt-3 max-w-[30ch] text-balance font-medium text-4xl tracking-tight text-foreground sm:text-5xl"
+    >
+      The exact same code. Any backend.
+    </h2>
+    <p
+      class="mt-5 max-w-[60ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-lg"
+    >
+      Switch the adapter, keep every call site. Here's the same upload, download,
+      head, list, and delete sequence across five providers.
+    </p>
+    <div class="mt-12">
+      <Tabs hash={false} sync={false}>
+        {
+          tabs.map((tab) => (
+            <Tab class="prose flush-code max-w-none" title={tab.label}>
+              <Fragment set:html={tab.html} />
+            </Tab>
+          ))
+        }
+      </Tabs>
+    </div>
+  </div>
+</section>

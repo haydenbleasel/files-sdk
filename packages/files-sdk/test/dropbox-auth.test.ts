@@ -5,8 +5,8 @@ import type { Dropbox } from "dropbox";
 import { dropbox } from "../src/dropbox/index.js";
 
 interface AuthHandleLike {
-  ensureAccessToken(): Promise<void>;
-  getAccessToken(): Promise<string>;
+  ensureAccessToken: () => Promise<void>;
+  getAccessToken: () => Promise<string>;
 }
 
 const handleOf = (adapter: ReturnType<typeof dropbox>): AuthHandleLike =>

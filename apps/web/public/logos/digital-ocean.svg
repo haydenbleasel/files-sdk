@@ -1,0 +1,30 @@
+<svg
+    viewBox="0 0 48 48"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <title>DigitalOcean</title>
+    <rect width="48" height="48" fill="#0080FF" />
+    <path
+      d="M24.0023 40V33.795C30.5701 33.795 35.6683 27.2816 33.1464 20.3691C32.2211 17.8291 30.1709 15.7789 27.6128 14.8536C20.7002 12.3498 14.1868 17.4299 14.1868 23.9977H8C8 13.5291 18.1239 5.3647 29.1005 8.79375C33.8903 10.2996 37.7185 14.1097 39.2062 18.8995C42.6353 29.8761 34.4709 40 24.0023 40Z"
+      fill="white"
+    />
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M24.0204 33.8313H17.8336V27.6445H24.0204V33.8313Z"
+      fill="white"
+    />
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M17.8336 38.5667H13.0982V33.8313L17.8336 33.8313L17.8336 38.5667Z"
+      fill="white"
+    />
+    <path
+      fill-rule="evenodd"
+      clip-rule="evenodd"
+      d="M13.0982 33.8313L9.12488 33.8313V29.8579H13.0982L13.0982 33.8313Z"
+      fill="white"
+    />
+  </svg>

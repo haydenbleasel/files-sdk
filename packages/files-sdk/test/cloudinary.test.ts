@@ -938,7 +938,7 @@ const cldFinalJson = (bytes: number) =>
   });
 // bytes start-end/total → true when this chunk completes the file.
 const cldIsFinal = (range: string): boolean => {
-  const match = /bytes \d+-(\d+)\/(\d+)/u.exec(range);
+  const match = /bytes \d+-(?<end>\d+)\/(?<total>\d+)/u.exec(range);
   return match ? Number(match[1]) + 1 === Number(match[2]) : false;
 };
 

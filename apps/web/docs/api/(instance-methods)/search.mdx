@@ -1,0 +1,104 @@
+---
+title: search
+description: Find objects whose key matches a glob (default), regex, substring, or exact pattern. Streams matches as an async iterable, walking every page like listAll, with a glob's literal prefix pushed down automatically.
+---
+
+`files.search(pattern, options?)`
+
+Find objects whose **key** matches `pattern`, walking every page like [`listAll`](/docs/api/list#walking-every-page-with-listall). It's a streaming async iterable of [`StoredFile`](/docs/api/stored-file), so it stays memory-bounded on large buckets and you can `break` to stop early.
+
+```ts lineNumbers
+// Glob is the default: `*` stays within a path segment, `?` matches one char.
+for await (const file of files.search("avatars/*.png")) {
+  console.log(file.key, file.size);
+}
+
+// Collect into an array when you want them all at once:
+const pdfs = await Array.fromAsync(files.search("invoices/2024/*.pdf"));
+```
+
+Matching is against the caller-facing key, so a [client `prefix`](/docs/prefixes) on the instance is already stripped before the pattern is tested.
+
+## Glob syntax
+
+`"glob"` mode uses standard glob semantics, powered by [picomatch](https://github.com/micromatch/picomatch):
+
+- `*` — any run of characters **within** a path segment (does not cross `/`).
+- `**` — a globstar segment that **spans** path segments. Write it as its own segment: `photos/**/*.jpg` matches at any depth, including zero subfolders.
+- `?` — a single non-`/` character.
+- `[a-z]`, `{a,b}` — character classes and brace alternation.
+- `!pattern` — negation (matches everything except).
+
+The pattern is anchored to the **whole key**, and dotfiles are matched (object keys are opaque, not hidden files). A glob with no wildcards is an **exact** match, not a substring — `files.search("report.pdf")` matches the key `report.pdf` and nothing else. Use `match: "substring"` for "contains".
+
+```ts lineNumbers
+// Every JPEG at any depth under photos/:
+for await (const file of files.search("photos/**/*.jpg")) {
+  // photos/cover.jpg, photos/2024/spain/beach.jpg, ...
+}
+```
+
+## Match modes
+
+Pass a `match` mode to change how a string `pattern` is interpreted, or pass a `RegExp` directly (which always matches by regex and ignores `match`):
+
+```ts lineNumbers
+// Regular expression (string form):
+files.search("\\.(png|jpe?g)$", { match: "regex" });
+
+// ...or a RegExp instance:
+files.search(/\.(png|jpe?g)$/);
+
+// Substring — key contains the text anywhere:
+files.search("report", { match: "substring" });
+
+// Exact — key equals the text:
+files.search("invoices/2024/q1.pdf", { match: "exact" });
+
+// Case-insensitive (any mode):
+files.search("*.PNG", { caseInsensitive: true });
+```
+
+An invalid `regex` pattern throws a [`FilesError`](/docs/api/errors) before the walk begins.
+
+## Scoping the walk with `prefix`
+
+`search` reads every page under a prefix, following the cursor. For a **glob**, the literal head of the pattern is pushed down automatically as that prefix, so `files.search("uploads/2024/*.pdf")` scopes the walk to the `uploads/2024` prefix rather than the whole bucket.
+
+Other modes carry no inferable prefix, so for a `regex`, `substring`, or `caseInsensitive` search over a large bucket, pass `prefix` yourself to bound the walk:
+
+```ts lineNumbers
+// Only walk logs/ — then regex-match within it:
+files.search("error|panic", { match: "regex", prefix: "logs/" });
+```
+
+A glob's auto push-down is disabled when `caseInsensitive` is set (a provider's prefix filter is case-sensitive), so combine `caseInsensitive` with an explicit `prefix` to scope it.
+
+## Stopping early
+
+`maxResults` caps the number of matches yielded; because the walk is lazy, it also stops paging once the cap is hit. Equivalently, `break` out of the loop.
+
+```ts lineNumbers
+// First 10 matches, then stop fetching pages:
+const recent = await Array.fromAsync(
+  files.search("**/*.log", { maxResults: 10 })
+);
+```
+
+## Provider support
+
+`search` runs on **every adapter**, since it's built on [`listAll`](/docs/api/list#walking-every-page-with-listall) — there's no per-provider search capability and nothing to gate. The two `listAll` caveats carry over: on [Netlify Blobs](/docs/adapters/netlify-blobs) omit `limit` to walk everything, and the non-recursive [Box](/docs/adapters/box) / [OneDrive](/docs/adapters/onedrive) / [SharePoint](/docs/adapters/sharepoint) adapters only see the immediate children of the root folder. An unbounded search with no `prefix` walks the whole bucket by design.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="SearchOptions"
+/>
+
+The `match` mode is one of:
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="SearchMatch"
+/>

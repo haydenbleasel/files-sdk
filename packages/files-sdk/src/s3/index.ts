@@ -314,6 +314,7 @@ const createS3ResumableDriver = (
         const committedParts: PartMeta[] = [];
         let marker: string | undefined;
         for (;;) {
+          // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the PartNumberMarker from the previous response
           const page = await client.send(
             new ListPartsCommand({
               Bucket: bucket,
@@ -540,6 +541,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
         const errors: NonNullable<DeleteManyResult["errors"]> = [];
         for (const key of keys) {
           try {
+            // eslint-disable-next-line no-await-in-loop -- stopOnError: sequential deletes that early-exit on the first failure
             await client.send(
               new DeleteObjectCommand({ Bucket: bucket, Key: key })
             );
@@ -558,6 +560,7 @@ export const s3 = (opts: S3AdapterOptions): S3Adapter => {
       for (let start = 0; start < keys.length; start += S3_DELETE_BATCH_LIMIT) {
         const batch = keys.slice(start, start + S3_DELETE_BATCH_LIMIT);
         try {
+          // eslint-disable-next-line no-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
           const result = await client.send(
             new DeleteObjectsCommand({
               Bucket: bucket,

@@ -1,0 +1,114 @@
+---
+title: upload
+description: Write a body to a key - a single object or many in one call, with optional progress tracking and multipart uploads.
+---
+
+`files.upload(key, body, options?)` · `files.upload(items)`
+
+Writes a body to `key`. Accepts native `File`, `Blob`, `ReadableStream`, `ArrayBuffer`, or `string`. Content type is inferred from the input when possible.
+
+```ts lineNumbers
+await files.upload("avatars/abc.png", file, {
+  contentType: "image/png",
+  cacheControl: "public, max-age=31536000",
+  metadata: { userId: "123" },
+});
+// → { key, size, contentType, etag, lastModified }
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="UploadOptions"
+/>
+
+## Progress tracking
+
+Pass `onProgress` to drive a progress bar as bytes are sent:
+
+```ts lineNumbers
+await files.upload("big.zip", stream, {
+  onProgress: ({ loaded, total }) => {
+    const pct = total ? Math.round((loaded / total) * 100) : null;
+    console.log(pct === null ? `${loaded} bytes` : `${pct}%`);
+  },
+});
+```
+
+Every adapter calls `onProgress`. How fine-grained it is depends on the body and the adapter:
+
+- A **`ReadableStream`** body is reported byte-by-byte on **every** adapter, as the bytes are consumed. Its length is unknown, so `total` is omitted — you get `loaded` only.
+- A **buffered** body (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) is handed to the provider whole, so by default it reports `{ loaded: 0, total }` then `{ loaded: total, total }`.
+- Some adapters report **true byte-level progress for every body type** (buffered included) by tapping their SDK's native upload-progress hook: **S3** and the **S3-compatible** adapters, **R2** (HTTP), **Azure Blob**, **Google Cloud Storage**, **Firebase Storage**, **Vercel Blob**, and **FTP**. Notes:
+  - The S3 family (incl. R2 over HTTP) needs the optional [`@aws-sdk/lib-storage`](https://www.npmjs.com/package/@aws-sdk/lib-storage) package installed; it also enables multipart for large files.
+  - GCS and Firebase Storage switch to a **resumable** upload when `onProgress` is set (only that path emits progress) — one extra round trip versus the default simple upload.
+- The remaining adapters (Supabase, Convex, Dropbox, Box, OneDrive, Google Drive, SharePoint, Cloudinary, Bunny, Appwrite, PocketBase, Netlify Blobs, UploadThing, SFTP) send buffered bodies in a single request with no progress signal, so those report only the start/finish pair above. Stream bodies still get byte-level.
+
+`onProgress` fires only while the upload is in flight and on success; a failed upload emits no final event, and a retry restarts progress. In the array form, each report also carries the item's `key`.
+
+## Multipart uploads
+
+Pass `multipart` to upload a large body in parallel parts instead of a single request — the robust path for objects beyond the single-request limit (5 GB on S3) and for `ReadableStream` bodies of unknown length:
+
+```ts lineNumbers
+// Defaults: 5 MiB parts, 4 in flight.
+await files.upload("backups/db.tar", stream, { multipart: true });
+
+// Or tune it:
+await files.upload("backups/db.tar", stream, {
+  multipart: { partSize: 16 * 1024 * 1024, concurrency: 8 },
+});
+```
+
+- **S3 and the S3-compatible adapters** (incl. R2 over HTTP) run multipart through the optional [`@aws-sdk/lib-storage`](https://www.npmjs.com/package/@aws-sdk/lib-storage) package, falling back to a single `PutObject` when the body fits in one part. Unknown-length streams use multipart **automatically**, even without the flag.
+- **OneDrive** uploads above 250 MB (and any `multipart` request) go through a chunked upload session — large files that previously failed now just work.
+- **GCS** and **Firebase Storage** switch to a resumable upload; `partSize` maps to the chunk size.
+- **Azure Blob** already splits large bodies into parallel blocks; `multipart` only tunes the block size and concurrency.
+- **Dropbox** streams `ReadableStream` bodies through its upload session chunk-by-chunk, so a large stream is never buffered whole; `partSize` (rounded to a 4 MiB multiple) tunes the chunk size.
+- Other adapters already stream natively or only accept a fully-buffered body, so they ignore the option.
+
+## Pause and resume
+
+Pass a `control` ([`UploadControl`](/docs/resumable)) to pause, resume, or abort a large upload — and to resume it later, even in a new process, from a serializable session token. It's supported on every adapter whose provider exposes a resumable session — S3 and the S3-compatible adapters, GCS, Firebase Storage, Google Drive, Azure, OneDrive, Dropbox, Vercel Blob, the local filesystem, FTP/SFTP, Supabase, Appwrite, and Cloudinary (Box, bun-s3, and memory pause in-process only); the rest throw. See [Resumable uploads](/docs/resumable) for the full walkthrough.
+
+```ts lineNumbers
+import { UploadControl } from "files-sdk";
+
+const control = new UploadControl();
+const result = files.upload("big.iso", file, { control });
+control.pause();
+control.resume();
+await result;
+```
+
+## Many items
+
+Pass an array of `{ key, body, ...options }` to upload many in one call. Each item carries its own `contentType` / `cacheControl` / `metadata` / `multipart`. The call returns a structured result instead of throwing on partial failure: successes land in `uploaded`, per-item failures (including invalid keys) in `errors`, both in the order supplied. It honors the client's `prefix` and fans out with bounded `concurrency` (default 8); `stopOnError: true` stops at the first failure.
+
+```ts lineNumbers
+const result = await files.upload(
+  [
+    { key: "avatars/a.png", body: a, contentType: "image/png" },
+    { key: "avatars/b.png", body: b },
+  ],
+  { concurrency: 8, stopOnError: false }
+);
+
+result.uploaded; // UploadResult[] — successes, in the order supplied
+result.errors; // undefined when every item succeeded
+```
+
+### Item (array form)
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="UploadManyItem"
+/>
+
+### Options (array form)
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="UploadManyOptions"
+/>

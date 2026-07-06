@@ -1,0 +1,113 @@
+---
+title: sync
+description: Mirror one Files instance onto another - skip unchanged keys, prune extraneous ones, and dry-run the plan first. The incremental sibling of transfer.
+---
+
+[`transfer`](/docs/api/transfer) is a one-shot copy: it streams every object across, every time. `sync(source, dest, options?)` is the mirror. It reconciles the destination against the source — uploading only what's new or changed, optionally pruning what the source no longer has, and able to preview the whole plan before touching anything. It's what backup and incremental-migration workflows actually reach for.
+
+```ts lineNumbers
+import { Files, sync } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
+
+const from = new Files({ adapter: s3({ bucket: "live" }) });
+const to = new Files({
+  adapter: r2({ bucket: "backup", accountId, accessKeyId, secretAccessKey }),
+});
+
+// Incremental, pruning mirror — re-running only moves the delta.
+const { uploaded, deleted } = await sync(from, to, {
+  prefix: "uploads/",
+  prune: true,
+  compare: "size", // cross-provider — see the caveat below
+});
+```
+
+Both arguments are full [`Files`](/docs/api) instances, so each leg honors its own instance's `prefix`, retries, timeouts, and [hooks](/docs/api/onaction). Changed objects are streamed download-to-upload, exactly like `transfer`, so the destination never sees a buffered copy of a large file. Only the body, content type, and user metadata travel with each object.
+
+Both sides are walked in full before any work begins — `sync` runs two listings up front (the destination walk drives both the comparison and the prune). That's the cost of a two-sided reconcile; if you only want a cheap one-shot copy, use `transfer` instead.
+
+## What counts as changed
+
+`compare` decides whether an object already at the destination is up to date:
+
+| `compare`  | Skips when…                                | Use for                                       |
+| ---------- | ------------------------------------------ | --------------------------------------------- |
+| `"etag"`   | size **and** etag both match _(default)_   | same-provider mirrors (S3 → S3)               |
+| `"size"`   | byte length matches                        | cross-provider mirrors                        |
+| a function | `(source, dest) => boolean` returns `true` | custom rules (a checksum header, a timestamp) |
+
+**etags are only comparable within one scheme.** S3-to-S3 single-part uploads produce matching etags, but across heterogeneous backends (S3 → R2 / GCS / Azure) or for multipart objects, etags differ even for byte-identical content — so the default `"etag"` conservatively re-uploads them. For a cross-provider mirror, use `compare: "size"` (or a custom comparator that reads a checksum you control). `lastModified` is deliberately never used: the destination stamps its own upload time, so it would never match the source and every run would re-upload everything.
+
+## Mirror mode
+
+With `prune: true`, after the uploads `sync` deletes every destination key (within the destination scope) that no source key maps onto — leaving the destination an exact mirror. Uploads run **before** prunes, so an interrupted run never leaves the destination missing data it was about to gain.
+
+> Prune is destructive. An **empty source** with `prune: true` deletes the
+> entire destination scope. Scope it deliberately with `prefix` / `destPrefix`,
+> and `dryRun` it first.
+
+When `transformKey` re-homes keys under a different namespace, set `destPrefix` so prune only ever considers the mirror's own keys (it defaults to `prefix`).
+
+## Dry run
+
+`dryRun: true` lists both sides and returns the real reconciliation plan — what _would_ be uploaded, skipped, and deleted — without uploading or deleting anything. `onProgress` doesn't fire, because nothing settles.
+
+```ts lineNumbers
+const plan = await sync(from, to, { prune: true, dryRun: true });
+console.log(
+  `${plan.uploaded.length} to upload, ${plan.deleted?.length} to prune`
+);
+```
+
+## Result shape
+
+Like the [bulk actions](/docs/bulk), `sync` does **not** throw on a partial failure. Successes, skips, and failures come back separated:
+
+```ts lineNumbers
+const { uploaded, skipped, deleted, errors } = await sync(from, to, {
+  prune: true,
+});
+```
+
+| Field      | Contents                                                                   |
+| ---------- | -------------------------------------------------------------------------- |
+| `uploaded` | Source keys written to the destination (new or changed).                   |
+| `skipped`  | Source keys left untouched because the destination copy was current.       |
+| `deleted`  | Destination keys pruned. Present only when `prune` is set.                 |
+| `errors`   | Per-key `{ key, error }` failures (uploads and prunes). Omitted when none. |
+
+`error` is always a normalized [`FilesError`](/docs/api/errors).
+
+## Options
+
+```ts lineNumbers
+await sync(from, to, {
+  prefix: "uploads/", // only mirror keys under this prefix (scopes the source walk)
+  destPrefix: "uploads/", // scope the destination walk (compare + prune); defaults to prefix
+  transformKey: (key) => `archive/${key}`, // remap each key for the destination
+  prune: true, // delete destination keys the source no longer has
+  compare: "size", // change detection: "etag" (default) | "size" | (s, d) => boolean
+  dryRun: false, // compute the plan without mutating
+  concurrency: 16, // uploads in flight at once (default 8)
+  limit: 500, // page size for both walks
+  stopOnError: true, // bail at the first upload failure (prune is then skipped)
+  signal: controller.signal, // abort the sync
+  onProgress: ({ done, total, key, status }) => {},
+});
+```
+
+`concurrency` bounds how many objects stream at once. Under `stopOnError` the run is sequential and a failed upload **skips the prune phase**, so the destination is never trimmed against a half-applied source. `signal` is forwarded to every `list` / `download` / `upload` (the bulk `delete` carries no signal).
+
+## Progress
+
+`onProgress` fires once per key as it settles — skips first, then uploads as each streams through, then prunes — carrying a running `done` count, the `total` (uploads + skips + prunes), the `key`, and a `status` of `"uploaded"`, `"skipped"`, or `"deleted"`. It does not fire under `dryRun`.
+
+```ts lineNumbers
+await sync(from, to, {
+  prune: true,
+  onProgress: ({ done, total, key, status }) => {
+    console.log(`${done}/${total}: ${key} (${status})`);
+  },
+});
+```

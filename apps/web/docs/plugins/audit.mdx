@@ -1,0 +1,106 @@
+---
+title: audit
+description: Write a structured who/what/when record of every mutation to an awaited sink - the durable, awaitable counterpart to the fire-and-forget onAction hook. One record per operation carrying the verb, caller-facing key, actor, time, duration, and outcome. Body-transparent, no metadata, no native dependencies.
+---
+
+The built-in `audit()` plugin writes a structured **who / what / when** record of every mutation to a sink you provide. Unlike the fire-and-forget [`onAction`](/docs/api/onaction) hook, the sink is **awaited** - the operation doesn't resolve until the record is written, so you get ordering, back-pressure, and a write failure you can actually see.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { audit } from "files-sdk/audit";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [
+    audit({
+      actor: () => currentUser()?.id, // read from your request context
+      sink: (record) => db.insert("audit_log", record), // awaited
+    }),
+  ],
+});
+
+await files.delete("notes.txt");
+// → sink({ action: "delete", key: "notes.txt", actor: "u_42",
+//          at: 1717…, durationMs: 12, status: "success" })
+```
+
+## The record
+
+Each audited operation produces one [`AuditRecord`](#the-record):
+
+| Field        | Always? | What it is                                                           |
+| ------------ | ------- | -------------------------------------------------------------------- |
+| `action`     | yes     | The verb (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`, …). |
+| `key`        | —       | Caller-facing key, for every verb except `copy` / `move` / `list`.   |
+| `from`, `to` | —       | Source / destination, for `copy` and `move`.                         |
+| `actor`      | —       | Who performed it, from the [`actor`](#options) resolver.             |
+| `at`         | yes     | When the operation started (ms since epoch).                         |
+| `durationMs` | yes     | Wall-clock duration of the logical operation.                        |
+| `status`     | yes     | `"success"` or `"error"`.                                            |
+| `size`       | —       | Stored byte size, on a successful `upload`.                          |
+| `bulk`       | —       | `true` when the record is one item of a bulk (`[...]`) call.         |
+| `error`      | —       | `{ code, message }`, on `status: "error"`.                           |
+
+Keys are always the caller-facing ones, never the internal [prefixed](/docs/prefixes) path.
+
+## Awaited, not fire-and-forget
+
+A [`hook`](/docs/api/onaction) is called but never awaited; a hook that's slow or throws can't affect the operation. `audit()` is the opposite by design:
+
+- **The operation waits for the sink.** `await files.delete(...)` doesn't resolve until your sink resolves, so records land in order and a slow sink applies back-pressure.
+- **On success, a rejecting sink fails the call.** The mutation already happened but wasn't recorded - rather than silently drop the entry, the call rejects so you decide what to do (retry, alert). Fail closed.
+- **On failure, the operation's error always wins.** When the operation itself throws, the record is written best-effort; a sink that _also_ rejects while recording the failure is suppressed so it can never mask why the call failed.
+
+If you'd rather audit best-effort, `catch` inside your own sink - then it never rejects and never fails a call.
+
+## Options
+
+| Option   | Default      | What it does                                                                                                  |
+| -------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| `sink`   | _(required)_ | `(record) => void \| Promise<void>`, **awaited**. Where each record is written.                               |
+| `actor`  | —            | `(op) => string \| undefined`. Resolve **who** - typically read synchronously from an `AsyncLocalStorage`.    |
+| `events` | `"writes"`   | Which verbs to record: `"writes"`, `"all"` (reads included), or an explicit list like `["upload", "delete"]`. |
+| `clock`  | `Date.now`   | The clock used for `at` and `durationMs`. Inject a fake for deterministic tests or a trusted time source.     |
+
+### Which operations are recorded
+
+By default `audit()` records the **mutating** verbs - `upload`, `delete`, `copy`, `move`, and `signedUploadUrl` (minting an upload capability is a write worth logging). Pass `events: "all"` to also record reads (`download`, `head`, `exists`, `list`, `url`), or an explicit list to record exactly the verbs you name:
+
+```ts
+audit({ sink, events: ["upload", "delete"] }); // only these two
+```
+
+### Attributing the actor
+
+The `actor` resolver receives the full [operation](/docs/plugins/api#filesoperation), so you can read it from request context or derive it from the key:
+
+```ts lineNumbers
+audit({
+  sink,
+  actor: (op) => {
+    const user = requestContext.get()?.user; // e.g. an AsyncLocalStorage
+    return user?.id;
+  },
+});
+```
+
+Return `undefined` to leave `actor` off a record; omit the option to never set one.
+
+## Ordering
+
+Put `audit()` **first** (outermost) so it records the caller's **logical intent**. A `delete` that an inner [`softDelete()`](/docs/plugins/soft-delete) turns into a `move` is still audited as the `delete` the caller asked for; a body an inner [`encryption()`](/docs/plugins/encryption) seals is still recorded at its logical size.
+
+```ts
+plugins: [audit({ sink }), softDelete(), encryption(key)];
+```
+
+Placed **last** (innermost) it instead records the physical operations the pipeline above expands into - the `move` soft-delete actually issued, the encrypted byte size. Both are valid; pick the layer whose history you want.
+
+## Things to keep in mind
+
+- **One record per logical operation.** Plugins run [outside retries](/docs/retries), so a call that retries three times is still **one** record - its `durationMs` spans the retries.
+- **Bulk fans out to one record per item.** `upload([...])` / `delete([...])` record each key individually, flagged `bulk: true`, with per-item success/error - exactly the granularity an audit log wants.
+- **Body-transparent, works on any adapter.** It never buffers, transforms, or reads the body (`size` comes from the upload result's declared metadata, not the bytes), so streaming, range downloads, `url()`, and `signedUploadUrl()` all keep working. It writes no object metadata and has no native dependencies.
+- **Not a security boundary.** It records operations made **through the instance**; a direct presigned `PUT` to the bucket bypasses it. Pair it with [`signedUrlPolicy()`](/docs/plugins/signed-url-policy) to keep the URLs you mint tight.
+- **`wrap`-only.** It adds no methods, so plain `new Files({ plugins })` works - though `createFiles` is fine too and keeps you consistent with the [extend](/docs/plugins/api#createfiles)-based plugins.

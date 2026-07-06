@@ -69,32 +69,32 @@ export type BunS3WritableBody =
   | Response;
 
 export interface BunS3FileLike {
-  bytes?(): Promise<Uint8Array>;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  stream(): ReadableStream<Uint8Array>;
-  stat(): Promise<BunS3Stats>;
+  bytes?: () => Promise<Uint8Array>;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+  stream: () => ReadableStream<Uint8Array>;
+  stat: () => Promise<BunS3Stats>;
   /**
    * Bun's `S3File.slice(begin, end)` — `Blob`-style, so `end` is exclusive.
    * Returns a handle that fetches only that byte range when read. Used to
    * honor {@link DownloadOptions.range}.
    */
-  slice(begin?: number, end?: number, contentType?: string): BunS3FileLike;
+  slice: (begin?: number, end?: number, contentType?: string) => BunS3FileLike;
 }
 
 export interface BunS3ClientLike {
-  file(path: string): BunS3FileLike;
-  write(
+  file: (path: string) => BunS3FileLike;
+  write: (
     path: string,
     data: BunS3WritableBody,
     options?: BunS3OperationOptions
-  ): Promise<number>;
-  delete(path: string): Promise<void>;
-  exists(path: string): Promise<boolean>;
-  stat(path: string): Promise<BunS3Stats>;
-  list(
+  ) => Promise<number>;
+  delete: (path: string) => Promise<void>;
+  exists: (path: string) => Promise<boolean>;
+  stat: (path: string) => Promise<BunS3Stats>;
+  list: (
     input?: BunS3ListObjectsOptions | null
-  ): Promise<BunS3ListObjectsResponse>;
-  presign(path: string, options?: BunS3PresignOptions): string;
+  ) => Promise<BunS3ListObjectsResponse>;
+  presign: (path: string, options?: BunS3PresignOptions) => string;
 }
 
 export interface BunS3AdapterOptions {

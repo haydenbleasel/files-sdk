@@ -1,0 +1,67 @@
+---
+title: download
+description: Read an object - a Blob-backed StoredFile by default, or a ReadableStream for large objects - one key or many.
+---
+
+`files.download(key, options?)` · `files.download(keys)`
+
+Reads an object. Returns a [`StoredFile`](/docs/api/stored-file) by default (Blob-backed). Pass `{ as: "stream" }` to opt into a `ReadableStream` for large objects.
+
+```ts lineNumbers
+const file = await files.download("avatars/abc.png");
+// → StoredFile (Blob-backed)
+
+const stream = await files.download("avatars/abc.png", { as: "stream" });
+// → ReadableStream
+```
+
+## Byte ranges
+
+Pass `range` to download only a contiguous slice of the object — the primitive behind video seeking and resumable downloads. Both bounds are **0-based**, and `end` is **inclusive**, matching the HTTP `Range` header (`bytes=start-end`) this maps to. The returned `StoredFile` carries just the requested bytes, and its `size` is the range length, not the full object.
+
+```ts lineNumbers
+// Bytes 0–1023 (the first 1 KiB). end is inclusive, so this is 1024 bytes.
+const head = await files.download("video.mp4", {
+  range: { start: 0, end: 1023 },
+});
+head.size; // 1024
+
+// Omit end to read from an offset to the end — e.g. resume a download.
+const rest = await files.download("video.mp4", { range: { start: 1024 } });
+
+// Streaming works too, so you never buffer the whole slice.
+const chunk = await files.download("video.mp4", {
+  as: "stream",
+  range: { start: 0, end: 65_535 },
+});
+```
+
+`range` combines with `as: "stream"`, `signal`, `timeout`, and `retries` like any other download option.
+
+**Supported** almost everywhere — the SDK threads the range through whatever primitive each provider exposes:
+
+- **Native byte ranges** — AWS S3 and every S3-compatible adapter (Cloudflare R2 over HTTP, MinIO, DigitalOcean Spaces, Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, Scaleway, OVHcloud, iDrive e2, Vultr, Filebase, Exoscale, Oracle Cloud, IBM COS, Tencent COS, Alibaba OSS, Yandex), Bun S3, Google Cloud Storage, Firebase Storage, Azure Blob, the **R2 Workers binding** (native `range` option), the local `fs` adapter, and the in-memory adapter.
+- **HTTP `Range` header** — UploadThing, Box, Vercel Blob (public), Cloudinary, PocketBase, Dropbox (via its temporary link), OneDrive, SharePoint, and Google Drive issue a `Range` request against the underlying URL/content endpoint.
+- **Native read offsets** — SFTP threads the range through ssh2 read-stream `start`/`end` byte offsets. FTP begins the transfer at the `REST` start offset and trims a bounded `end` client-side, so an open-ended `{ start }` range transfers only the bytes from the offset on (a bounded `end` still reads to EOF before trimming the tail).
+
+For the HTTP-header adapters the SDK verifies the response came back `206 Partial Content` and **throws if the host answered `200`** (i.e. ignored the range and sent the whole object), so a ranged read never silently transfers — and bills you for — the full file.
+
+**Throws** a [`FilesError`](/docs/api/errors) on adapters whose provider has no range primitive at all — Supabase, Appwrite, Netlify Blobs, Bunny Storage, Convex, and Vercel Blob **private** blobs (read through the SDK, which can't range). The SDK fails loudly rather than downloading the whole object and slicing it client-side, so the bandwidth saving is never quietly lost. Branch on the adapter's `supportsRange` flag to handle both at runtime:
+
+```ts lineNumbers
+const opts = files.adapter.supportsRange ? { range: { start, end } } : {};
+const file = await files.download(key, opts);
+```
+
+An out-of-shape range (`start` negative or non-integer, or `end` below `start`) throws before any provider call.
+
+## Many keys
+
+Pass an array to download many in one call. Returns `{ downloaded, errors? }` instead of throwing on partial failure; a missing key lands in `errors`. `as` applies to every download, and the call fans out with bounded `concurrency` (default 8) / `stopOnError`.
+
+```ts lineNumbers
+const result = await files.download(["avatars/a.png", "avatars/b.png"]);
+
+result.downloaded; // StoredFile[] — successes, in the order supplied
+result.errors; // undefined when every key succeeded
+```

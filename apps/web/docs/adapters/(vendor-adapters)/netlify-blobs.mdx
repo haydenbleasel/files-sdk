@@ -1,0 +1,56 @@
+---
+title: Netlify Blobs
+description: Netlify Blobs via @netlify/blobs. Auto-detects siteID and token on Netlify runtimes; falls back to env vars elsewhere.
+---
+
+## Installation
+
+`@netlify/blobs` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @netlify/blobs
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { netlifyBlobs } from "files-sdk/netlify-blobs";
+
+// On Netlify Functions / Edge / build runtimes, siteID + token are
+// auto-detected from NETLIFY_BLOBS_CONTEXT - pass them explicitly only
+// when running outside Netlify (e.g. local scripts, your own server).
+const files = new Files({
+  adapter: netlifyBlobs({
+    name: "uploads",
+    // siteID: process.env.NETLIFY_SITE_ID,
+    // token: process.env.NETLIFY_API_TOKEN,
+    // deployScoped: false,           // true uses getDeployStore()
+    // consistency: "eventual",       // or "strong"
+  }),
+});
+```
+
+Netlify Blobs has no native size, content-type, or last-modified fields, so the adapter packs them - plus `cacheControl` and user `metadata` - into Netlify's metadata map at upload time. `head()` and `download()` read them back, so the unified `StoredFile` shape works the same as on the cloud adapters.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/netlify-blobs/index.ts"
+  name="NetlifyBlobsAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------- | :----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Stream bodies are buffered up-front - Netlify's `set()` has no streaming form, so streaming uploads can't avoid materializing the body in memory. Resumable uploads (`control`) are not supported — Netlify Blobs has no chunked/resumable upload primitive.                                                                                                                                                                                    |
+| `download`        |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `list`            |   ⚠️   | Netlify's list response only carries key + etag - size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. The unified `cursor` is not honoured because Netlify's pagination cursor is internal to the SDK; the adapter iterates the SDK's paginated form and stops once `limit` is satisfied, so `limit` does bound server-side I/O. |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                                                                                                                                                      |
+| `head`            |   ⚠️   | Netlify Blobs has no native size, content-type, or last-modified - the adapter packs them into Netlify's metadata at upload time and reads them back via `getMetadata`. Blobs written outside the SDK come back with `size: 0` and `type: 'application/octet-stream'` because the embedded fields are absent.                                                                                                                                   |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `copy`            |   ⚠️   | Read-then-write - Netlify Blobs has no server-side copy primitive, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected.                                                                                                                                                                                                                                  |
+| `url`             |   ❌   | No URL primitive - Netlify Blobs has no public URL or signing endpoint; reads always go through the SDK with the token. Use `download()` instead, or proxy the body through your application.                                                                                                                                                                                                                                                   |
+| `signedUploadUrl` |   ❌   | No presigned upload primitive - Netlify Blobs writes go through the SDK with the token. Upload server-side via the SDK or proxy uploads through your application.                                                                                                                                                                                                                                                                               |

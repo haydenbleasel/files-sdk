@@ -1,0 +1,43 @@
+---
+title: Express
+description: Mount the Files gateway on a Node server. Bridges IncomingMessage/ServerResponse to the Web Request/Response the gateway speaks - also works with Connect and a raw http server.
+---
+
+`files-sdk/express` mounts a [`createFilesRouter`](/docs/ui/server/gateway) on a Node server. It bridges a Node `IncomingMessage`/`ServerResponse` to the Web `Request`/`Response` the gateway speaks (`Readable.toWeb`/`fromWeb` + `pipeline`). It's typed against `node:http`, so it also serves **Connect** and a raw **`http.createServer`**. A client disconnect is wired through to abort the upstream read on a proxied download.
+
+```ts title="server.ts" lineNumbers
+import express from "express";
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/express";
+
+const router = createFilesRouter({
+  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  allowedOrigins: ["https://app.example.com"],
+  authorize: async ({ req }) => {
+    /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
+  },
+});
+
+const app = express();
+
+// Mount the gateway BEFORE any body parser (see below).
+app.all("/api/files", createRouteHandler(router));
+
+// Body parsers for the rest of your app come after.
+app.use(express.json());
+
+app.listen(3000);
+```
+
+:::warning
+A body parser (`express.json()`, `express.urlencoded()`, …) consumes the
+request stream. The gateway reads the raw body itself — both for the JSON
+verbs and for the proxy/explicit-key `PUT` upload — so a parser that runs
+first leaves it empty: JSON verbs fail and uploads break. Mount the gateway
+**before** any global body parser (as above), or scope the parser so it skips
+this route.
+:::
+
+See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

@@ -48,11 +48,13 @@ const seedVersioned = async () => {
 
 const seedTrashed = async (keys: string[]) => {
   const files = createFiles({ adapter: memory(), plugins: [softDelete()] });
-  for (const key of keys) {
-    await files.upload(key, key);
-    // A soft-delete relocates the object into the trash prefix.
-    await files.delete(key);
-  }
+  await Promise.all(
+    keys.map(async (key) => {
+      await files.upload(key, key);
+      // A soft-delete relocates the object into the trash prefix.
+      await files.delete(key);
+    })
+  );
   return files;
 };
 

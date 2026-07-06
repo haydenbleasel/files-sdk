@@ -1,0 +1,53 @@
+---
+title: Tigris
+description: Tigris globally-distributed object storage via the S3-compatible API. Fixed global endpoint, region defaults to auto.
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { tigris } from "files-sdk/tigris";
+
+const files = new Files({
+  adapter: tigris({
+    bucket: "uploads",
+    // endpoint defaults to https://fly.storage.tigris.dev
+    // region defaults to "auto" (Tigris routes globally)
+    // accessKeyId / secretAccessKey auto-loaded from
+    // TIGRIS_ACCESS_KEY_ID / TIGRIS_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+Tigris globally-distributed object storage via its S3-compatible API. A thin wrapper around the S3 adapter - fixed global endpoint, region defaults to `"auto"` for signing, virtual-hosted-style addressing, errors relabelled. Auto-loads from `TIGRIS_ACCESS_KEY_ID` and `TIGRIS_SECRET_ACCESS_KEY`. Generate access keys in the Tigris console (or via the Fly CLI: `fly storage create`).
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/tigris/index.ts"
+  name="TigrisAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

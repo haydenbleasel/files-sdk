@@ -524,6 +524,7 @@ describe("vercel-blob adapter", () => {
     const reader = got.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -844,6 +845,7 @@ describe("vercel-blob adapter", () => {
       const reader = got.stream().getReader();
       let total = 0;
       while (true) {
+        // eslint-disable-next-line no-await-in-loop -- stream reader pulls are inherently sequential
         const { value, done } = await reader.read();
         if (done) {
           break;

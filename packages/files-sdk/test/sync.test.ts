@@ -331,6 +331,7 @@ describe("sync", () => {
     const source = newFiles();
     const dest = newFiles();
     for (const key of ["a", "b", "c", "d", "e"]) {
+      // eslint-disable-next-line no-await-in-loop -- seeds keys in order to assert deterministic sync ordering
       await source.upload(key, key);
     }
 

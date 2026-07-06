@@ -757,6 +757,7 @@ describe("resumable guardrails", () => {
       { body: new Blob([bytes], { type: "image/png" }), name: "blob", size: 8 },
     ];
     for (const { name, body, size } of cases) {
+      // eslint-disable-next-line no-await-in-loop -- sequential multipart uploads share one mock server's part state
       const result = await files.upload(name, body, {
         control: new UploadControl(),
         multipart: { partSize: 4 },

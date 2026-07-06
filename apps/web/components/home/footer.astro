@@ -1,0 +1,86 @@
+---
+const year = 2026;
+
+const PROJECT_LINKS = [
+  { href: "/docs", label: "Docs" },
+  { href: "/docs/adapters", label: "Adapters" },
+  { href: "/docs/api", label: "API" },
+  { href: "/docs/cli", label: "CLI" },
+];
+const RESOURCE_LINKS = [
+  { href: "https://github.com/haydenbleasel/files-sdk", label: "GitHub" },
+  { href: "https://www.npmjs.com/package/files-sdk", label: "npm" },
+  {
+    href: "https://github.com/haydenbleasel/files-sdk/issues",
+    label: "Issues",
+  },
+];
+---
+
+<footer class="border-border border-dotted border-t">
+  <div class="mx-auto max-w-6xl px-6 py-14 sm:py-16">
+    <div class="flex flex-col gap-10 sm:flex-row sm:justify-between sm:gap-16">
+      <div class="flex max-w-[40ch] flex-col gap-2">
+        <p class="font-semibold text-base text-foreground">Files SDK</p>
+        <p
+          class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
+        >
+          A unified storage SDK for object and blob backends. Open source, MIT
+          licensed.
+        </p>
+      </div>
+      <div class="grid grid-cols-2 gap-x-12 gap-y-8 sm:gap-x-16">
+        <div class="flex flex-col gap-3">
+          <p
+            class="font-mono text-muted-foreground text-xs uppercase tracking-wide"
+          >
+            Project
+          </p>
+          <ul class="flex flex-col gap-2">
+            {
+              PROJECT_LINKS.map((l) => (
+                <li>
+                  <a
+                    class="font-normal text-base text-muted-foreground transition-colors hover:text-foreground sm:text-sm"
+                    href={l.href}
+                  >
+                    {l.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+        <div class="flex flex-col gap-3">
+          <p
+            class="font-mono text-muted-foreground text-xs uppercase tracking-wide"
+          >
+            Resources
+          </p>
+          <ul class="flex flex-col gap-2">
+            {
+              RESOURCE_LINKS.map((l) => (
+                <li>
+                  <a
+                    class="font-normal text-base text-muted-foreground transition-colors hover:text-foreground sm:text-sm"
+                    href={l.href}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {l.label}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div
+      class="mt-12 flex flex-col gap-3 border-border border-dotted border-t pt-6 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <p class="text-muted-foreground text-xs">&copy; {year} Hayden Bleasel</p>
+      <p class="font-mono text-muted-foreground text-xs">MIT License</p>
+    </div>
+  </div>
+</footer>

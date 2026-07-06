@@ -1,0 +1,50 @@
+---
+title: onError
+description: Runs only when a public call rejects - the constructor hook to wire to Sentry or Datadog when you want only true call failures.
+---
+
+A constructor [`hook`](/docs/usage#hooks) that runs only when a public call **rejects** - validation failures, adapter failures, timeouts, and aborts - just before the matching [`onAction({ status: "error" })`](/docs/api/onaction). Partial failures collected inside a bulk result's `errors[]` are not rejections, so they don't fire it; this is the hook to wire to Sentry or Datadog when you want only true call failures.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: s3({ bucket: "uploads" }),
+  hooks: {
+    onError(event) {
+      Sentry.captureException(event.error, {
+        tags: { action: event.type, code: event.error.code },
+        extra: { key: event.key, durationMs: event.durationMs },
+      });
+    },
+  },
+});
+```
+
+The payload mirrors [`onAction`](/docs/api/onaction) - `type`, the caller-facing `key` / `keys` (or `from` / `to` for `copy` and `move`), and `durationMs` - but `error` is always present and typed as a [`FilesError`](/docs/api/errors), not optional.
+
+## Filtering out aborts
+
+A [cancellation](/docs/cancellations) and a [timeout](/docs/timeouts) both reject, so both reach `onError` - usually as noise you don't want paging anyone. They carry `aborted: true`; branch on it before reporting.
+
+```ts lineNumbers
+hooks: {
+  onError(event) {
+    if (event.error.aborted) {
+      return; // caller cancelled, or a timeout fired - expected
+    }
+    reportError(event.error, { action: event.type, key: event.key });
+  },
+},
+```
+
+The `code` is one of the normalized [error codes](/docs/api/errors#codes), so you can route by class - swallow `NotFound`, handle `ReadOnly`, alert on `Provider`, and so on - rather than parsing messages.
+
+## Not fired for bulk partial failures
+
+The array forms don't reject when only some keys fail - they resolve with the bad keys in `result.errors`. So `onError` stays quiet for a partial batch failure; the whole batch still settles through [`onAction`](/docs/api/onaction). Inspect the returned `errors[]` (or `onAction`'s `result`) to catch per-key failures. See [Bulk actions](/docs/bulk#retries-and-hooks).
+
+`onError` is **fire-and-forget**, like the other hooks: it runs, then the same `FilesError` is thrown to your `await`. The hook can't suppress, replace, or delay that rejection.
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="FilesErrorEvent"
+/>

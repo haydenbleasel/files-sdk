@@ -47,7 +47,7 @@ const config = (adapter: Adapter) => {
 
 /** Read a Svelte store's current value synchronously. */
 const read = <T>(store: {
-  subscribe(run: (value: T) => void): () => void;
+  subscribe: (run: (value: T) => void) => () => void;
 }): T => {
   let value: T | undefined;
   const unsubscribe = store.subscribe((v) => {

@@ -17,8 +17,8 @@ const sizeRoute: TierRouter = ({ size }) =>
 
 interface Harness {
   files: ReturnType<typeof createFiles> & {
-    tierOf(key: string): Promise<"hot" | "cold" | undefined>;
-    tier(key: string, target: "hot" | "cold"): Promise<void>;
+    tierOf: (key: string) => Promise<"hot" | "cold" | undefined>;
+    tier: (key: string, target: "hot" | "cold") => Promise<void>;
   };
   hot: FakeAdapter;
   cold: FakeAdapter;
@@ -291,6 +291,7 @@ describe("tiering — merged listing", () => {
       plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
     });
     for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+      // eslint-disable-next-line no-await-in-loop -- seeds a fixed per-page order the merge assertion depends on
       await hot.upload(`k${n}`, `hot-${n}`);
     }
     await cold.upload("k5", "cold-5");
@@ -329,6 +330,7 @@ describe("tiering — merged listing", () => {
     const keys: string[] = [];
     let cursor: string | undefined;
     do {
+      // eslint-disable-next-line no-await-in-loop -- pagination follows the previous page's cursor
       const page = await files.list({
         delimiter: "/",
         ...(cursor !== undefined && { cursor }),
@@ -385,6 +387,7 @@ describe("tiering — merged listing", () => {
       plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
     });
     for (const n of [1, 2, 3, 4, 5, 9]) {
+      // eslint-disable-next-line no-await-in-loop -- seeds a fixed per-page order the merge assertion depends on
       await hot.upload(`k${n}`, `hot-${n}`);
     }
     await cold.upload("k9", "cold-9");

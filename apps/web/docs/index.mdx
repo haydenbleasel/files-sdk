@@ -1,0 +1,29 @@
+---
+title: Overview
+description: Files SDK is a unified storage API for 40+ providers - one class, ten methods, a typed escape hatch, and an agent-friendly CLI.
+---
+
+## What is Files SDK?
+
+A single TypeScript API for object storage that works the same way across AWS S3, Cloudflare R2, Vercel Blob, Google Cloud Storage, Azure, Supabase, the S3-compatible long tail (MinIO, Backblaze, Wasabi, R2, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive, Vultr, IBM COS, Oracle, Exoscale, DigitalOcean Spaces), the consumer-style providers (Dropbox, Box, Google Drive, OneDrive, SharePoint), the upload-focused services (UploadThing, Cloudinary), the BaaS stack (Appwrite, PocketBase, Firebase Storage), and a local `fs` adapter for tests.
+
+Ten methods cover the surface area you actually use: `upload`, `download`, `head`, `exists` (each taking one key or an array for bulk), `delete` (one key or an array for bulk), `copy`, `move`, `list` (or `listAll` to walk every page), `url`, `signedUploadUrl`. When you need provider-specific power - S3 versioning, lifecycle rules, multipart, ACLs - drop down to the native client via `files.raw`, which stays typed per adapter.
+
+## Why Files SDK?
+
+Every storage SDK ships with its own shape: `PutObjectCommand`, `put()`, `uploadStream`, `createWriteStream`, presigner factories, ACL nouns, error envelopes. Switching providers - or supporting more than one - means rewriting the call sites and re-learning the error model.
+
+Files SDK collapses that into one class and one error type:
+
+- **One API** - same call shape across every adapter. The code that uploads to S3 is the code that uploads to Vercel Blob.
+- **Normalized errors** - `FilesError` with a small enum of codes (`NotFound`, `Unauthorized`, `Conflict`, `ReadOnly`, `Provider`), with the original error preserved on `cause`.
+- **Lazy SDK loading** - adapters are subpath exports (`files-sdk/s3`, `files-sdk/r2`, ...). The provider SDK you don't use isn't bundled.
+- **Typed escape hatch** - `files.raw` is typed as the underlying client (S3Client, R2Bucket, VercelBlobClient, ...), so the unified API never traps you.
+- **Agent-friendly CLI** - one `files` binary, JSON output, stdin/stdout streaming, plus a built-in [MCP](https://modelcontextprotocol.io) server. Same semantics as the SDK.
+
+## Next steps
+
+- [Installation](/docs/installation) - install the SDK and the adapter peer dependencies.
+- [Usage](/docs/usage) - construct a `Files` instance and run the core methods.
+- [API reference](/docs/api) - the full method surface, options, and the `StoredFile` type.
+- [Adapters](/docs/adapters/s3) - per-provider setup, options, and gotchas.

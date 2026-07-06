@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import path from "node:path";
 
 import {
   CLI_EXCLUDED_PROVIDERS,
@@ -15,7 +15,7 @@ import {
 } from "../src/providers/index.js";
 import type { EnvVar } from "../src/providers/index.js";
 
-const ROOT = join(import.meta.dir, "..");
+const ROOT = path.join(import.meta.dir, "..");
 
 // Compare as plain strings: PROVIDER_NAMES is typed as the literal slug union,
 // which doesn't line up with the `string[]` derived from package.json/Object.keys.
@@ -61,7 +61,7 @@ const NON_PROVIDER_EXPORTS = new Set([
 ]);
 
 const packageJson = JSON.parse(
-  readFileSync(join(ROOT, "package.json"), "utf-8")
+  readFileSync(path.join(ROOT, "package.json"), "utf-8")
 ) as { exports: Record<string, unknown> };
 
 const allEnvNames = (vars: EnvVar[]): Set<string> => {
@@ -115,11 +115,11 @@ describe("providers catalog", () => {
     for (const slug of PROVIDER_NAMES) {
       test(slug, () => {
         const source = readFileSync(
-          join(ROOT, "src", slug, "index.ts"),
+          path.join(ROOT, "src", slug, "index.ts"),
           "utf-8"
         );
         const readKeys = [
-          ...source.matchAll(/readEnv\(\s*["']([^"']+)["']\s*\)/gu),
+          ...source.matchAll(/readEnv\(\s*["'](?<env>[^"']+)["']\s*\)/gu),
         ].map((match) => match[1]);
         const declared = allEnvNames(listEnvVars(slug));
         for (const key of readKeys) {

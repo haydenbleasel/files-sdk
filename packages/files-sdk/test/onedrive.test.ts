@@ -52,7 +52,7 @@ const parseItemPath = (
   if (tail === "/root/children") {
     return { suffix: "children", virtualPath: "" };
   }
-  const m = /^\/root:\/([^:]*):(?:\/(.+))?$/u.exec(tail);
+  const m = /^\/root:\/(?<path>[^:]*):(?:\/(?<rest>.+))?$/u.exec(tail);
   if (!m) {
     return null;
   }
@@ -552,6 +552,7 @@ describe("onedrive adapter", () => {
     const reader = f.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const { value, done } = await reader.read();
       if (done) {
         break;

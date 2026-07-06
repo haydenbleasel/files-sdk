@@ -1,0 +1,53 @@
+---
+title: Oracle Cloud Object Storage
+description: Oracle Cloud Infrastructure Object Storage via the S3 compatibility layer. Auth uses HMAC Customer Secret Keys, not regular API keys.
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { oracleCloud } from "files-sdk/oracle-cloud";
+
+const files = new Files({
+  adapter: oracleCloud({
+    bucket: "uploads",
+    namespace: "axoki12345", // tenancy Object Storage namespace
+    region: "us-ashburn-1",
+    // accessKeyId / secretAccessKey auto-loaded from
+    // OCI_ACCESS_KEY_ID / OCI_SECRET_ACCESS_KEY (Customer Secret Keys)
+  }),
+});
+```
+
+Oracle Cloud Infrastructure Object Storage via its S3 compatibility layer. A thin wrapper around the S3 adapter - endpoint derived from your tenancy namespace and region (`<namespace>.compat.objectstorage.<region>.oraclecloud.com`), path-style addressing on (OCI's TLS cert doesn't cover bucket subdomains under the namespace prefix), errors relabelled. Auth uses OCI's HMAC _Customer Secret Keys_, not regular API signing keys - generate them under Profile -> User Settings -> Customer Secret Keys. Auto-loads from `OCI_ACCESS_KEY_ID` and `OCI_SECRET_ACCESS_KEY`.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/oracle-cloud/index.ts"
+  name="OracleCloudAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

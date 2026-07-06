@@ -1,6 +1,5 @@
 "use client";
 
-import { R2, S3 } from "@/components/sections/icons";
 import { cn } from "@/lib/utils";
 
 import { PANEL_CLASS } from "./panel";
@@ -97,10 +96,10 @@ export const Sync = () => {
       <div className="flex items-center justify-between px-5 pt-4 font-mono text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           Syncing
-          <S3 className="size-4 rounded-[3px]" />
+          <img alt="S3" className="size-4 rounded-[3px]" src="/logos/s3.svg" />
           <span className="text-foreground">S3</span>
           to
-          <R2 className="size-4 rounded-[3px]" />
+          <img alt="R2" className="size-4 rounded-[3px]" src="/logos/r2.svg" />
           <span className="text-foreground">R2</span>
         </span>
         <span

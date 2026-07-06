@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -532,6 +532,7 @@ describe("cli/mcp tools (error paths)", () => {
       ["sign-upload", { expiresIn: 60, key: "k.txt" }],
     ];
     for (const [name, args] of cases) {
+      // eslint-disable-next-line no-await-in-loop -- each request goes through the shared MCP client sequentially
       const res = await call(h.client, name, args);
       expect(res.isError).toBe(true);
       expect(res.data.error).toBeDefined();

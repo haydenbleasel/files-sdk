@@ -1,0 +1,84 @@
+---
+title: tracing
+description: Open an OpenTelemetry span around every operation on a Files instance - one span per call, named files.<verb>, with the key, size, and outcome as attributes and errors recorded with an ERROR status. Spans nest under your active request span. Uses the optional @opentelemetry/api peer dependency.
+---
+
+The built-in `tracing()` plugin opens an [OpenTelemetry](https://opentelemetry.io) span around every operation on a `Files` instance. Each call becomes one span named `files.<verb>` carrying the caller-facing key, a cheap result attribute, and — on failure — the recorded exception and an `ERROR` status.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { tracing } from "files-sdk/tracing";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [tracing()], // uses the global tracer
+});
+
+await files.upload("a.txt", "hello");
+// → span "files.upload" { files.operation: "upload", files.key: "a.txt", files.size: 5 }
+```
+
+`@opentelemetry/api` is an **optional peer dependency**. By default the plugin creates spans on the global tracer (`trace.getTracer("files-sdk")`), so once you've registered an OpenTelemetry SDK in your app it just works. Until then the global tracer is a no-op, so installing the plugin costs nothing.
+
+```bash
+npm install @opentelemetry/api
+```
+
+Pass your own `tracer` to scope the instrumentation name/version, or to inject one in tests:
+
+```ts
+import { trace } from "@opentelemetry/api";
+
+tracing({ tracer: trace.getTracer("my-app", "1.0.0") });
+```
+
+## How it works
+
+Spans are opened with `startActiveSpan`, so they **nest** correctly: each op span is a child of whatever span is active when you call (your incoming-request span, say), and any sub-operation an inner plugin issues — or an [`extend`](/docs/plugins/api#filesplugin) method calling back into the instance — becomes a child of the op span in turn.
+
+- **Every verb** opens a span named `files.<verb>` with `files.operation` and the caller-facing `files.key` (or `files.from` / `files.to` for `copy` / `move`). Bulk items carry `files.bulk: true`.
+- **On success** a cheap, body-transparent attribute is added: `files.size` on `upload` / `download` / `head` (read from declared metadata, never the bytes), `files.exists` on `exists`, `files.count` on `list`.
+- **On failure** the thrown error is recorded with `recordException`, the status is set to `ERROR`, and the error is re-thrown untouched. The span is always ended, success or failure.
+
+Span **names stay low-cardinality** — the key lives in an attribute, not the name — so traces group cleanly by verb. Bulk `upload([...])` / `download([...])` open one span **per item**.
+
+## Options
+
+| Option       | Default                        | What it does                                                                          |
+| ------------ | ------------------------------ | ------------------------------------------------------------------------------------- |
+| `tracer`     | `trace.getTracer("files-sdk")` | The tracer spans are created on. Pass your own to scope the name/version or fake it.  |
+| `spanPrefix` | `"files."`                     | Prefix for span names. `op.kind` is appended, so the default yields `files.upload`.   |
+| `attributes` | —                              | `(op) => attributes` merged **over** the built-ins. Add context, or redact a default. |
+
+### Custom attributes and redaction
+
+The `attributes` hook receives the full [operation](/docs/plugins/api#filesoperation) and is merged over the built-ins, so it can attach context or **redact** a built-in by overriding it with `undefined` (which OpenTelemetry ignores):
+
+```ts lineNumbers
+tracing({
+  attributes: (op) => ({
+    "files.key": undefined, // keys can be sensitive — keep them out of traces
+    "tenant.id": currentTenant(),
+  }),
+});
+```
+
+Object keys can carry user ids, tenant names, or filenames, and spans get exported to third-party backends — redact the key when that matters to you.
+
+## Ordering
+
+Put `tracing()` **first** (outermost) so the span wraps the caller-facing operation and the work of inner plugins shows up **nested beneath it** — a [`dedup()`](/docs/plugins/dedup) internal `exists`, an [`encryption()`](/docs/plugins/encryption) seal — each its own child span.
+
+```ts
+plugins: [tracing(), dedup(), encryption(key)];
+```
+
+Placed **last** (innermost) it instead times only the provider call, with the plugin pipeline above it untraced. Both are valid — pick the layer whose timings you want.
+
+## Things to keep in mind
+
+- **The default tracer is a no-op until you register an SDK.** With no OpenTelemetry SDK set up, `trace.getTracer()` returns a no-op tracer, so the plugin is a cheap pass-through until you wire up an exporter.
+- **One span per logical operation.** Plugins run [outside retries](/docs/retries), so a call that retries three times is still **one** span, not three — the span covers the whole logical call.
+- **Body-transparent, works on any adapter.** It never buffers, transforms, or reads the body (`files.size` comes from declared metadata, not bytes), so streaming, range downloads, `url()`, and `signedUploadUrl()` all keep working.
+- **`wrap`-only.** It adds no methods, so plain `new Files({ plugins })` works — though `createFiles` is fine too and keeps you consistent with the [extend](/docs/plugins/api#createfiles)-based plugins.

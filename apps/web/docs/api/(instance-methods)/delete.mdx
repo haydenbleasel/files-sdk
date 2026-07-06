@@ -1,0 +1,46 @@
+---
+title: delete
+description: Remove an object - a single key resolving to void, or an array returning a structured result that never throws on partial failure.
+---
+
+`files.delete(key)` · `files.delete(keys)`
+
+Pass a single key to remove one object, or an array to remove many in one call. The two forms differ in how failures surface.
+
+**One key** removes a single object and resolves to `void`. No-op friendly: a missing key resolves successfully on providers that treat delete as idempotent, and throws [`FilesError`](/docs/api/errors) with `code: "NotFound"` on ones that don't.
+
+```ts lineNumbers
+await files.delete("avatars/abc.png");
+```
+
+## Many keys
+
+Returns a structured result instead of throwing on partial failure. Adapters with a native bulk primitive (S3 `DeleteObjects`, Azure's Blob Batch API, Supabase, UploadThing) delete in a single request — the S3 path chunks into batches of 1000 and Azure into batches of 256, the respective provider limits — while the rest fan out to single deletes with bounded concurrency (FTP and SFTP reuse one connection for the sequence). Like the single form, it honors the client's `prefix` and is no-op friendly on providers that treat a missing key as success.
+
+```ts lineNumbers
+const result = await files.delete(
+  ["avatars/a.png", "avatars/b.png", "avatars/c.png"],
+  { concurrency: 8, stopOnError: false }
+);
+
+result.deleted; // string[] — keys removed, in the order supplied
+result.errors; // undefined when every key succeeded
+```
+
+The array form always resolves to an object of this shape:
+
+```ts
+type DeleteManyResult = {
+  deleted: string[];
+  errors?: Array<{ key: string; error: FilesError }>;
+};
+```
+
+With the default `stopOnError: false`, every key is attempted and per-key failures are collected in `errors`. With `stopOnError: true`, the call stops at the first failure and returns the keys deleted so far plus that error. Invalid keys (empty, or containing null bytes) are reported in `errors` rather than thrown. When a native bulk provider only reports that the whole request failed, the provider error is mapped onto each affected key.
+
+### Options (array form)
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/index.ts"
+  name="DeleteManyOptions"
+/>

@@ -34,7 +34,7 @@ The repo is a Bun + Turbo monorepo:
     - `stored-file.ts` — the `createStoredFile` wrapper returned from `download()`
     - `env.ts` — environment-variable lookup
   - `test/` — Bun tests, including a `fake-adapter.ts` for exercising the `Files` class without a real backend
-- `apps/web` — the Next.js docs/marketing site at [files-sdk.dev](https://files-sdk.dev)
+- `apps/web` — the Blume docs/marketing site at [files-sdk.dev](https://files-sdk.dev)
 
 ## Getting Started
 

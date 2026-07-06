@@ -1,0 +1,77 @@
+---
+title: compression
+description: Transparently compress object bodies at rest with gzip, deflate, or deflate-raw. The original size and algorithm ride along in metadata, and reads decompress automatically - provider-agnostic, no native dependencies.
+---
+
+The built-in `compression()` plugin compresses every body **at rest** and decompresses it on the way back out - transparently, for single and [bulk](/docs/bulk) calls alike. It's a textbook [wrap plugin](/docs/plugins#wrap-intercepting-operations): it transforms the body on `upload`, reverses it on `download`, and round-trips its bookkeeping through the object's `metadata`.
+
+It uses only the [Compression Streams API](https://developer.mozilla.org/en-US/docs/Web/API/Compression_Streams_API), so it has **no native dependencies** and runs anywhere the SDK does - Node, Bun, Deno, edge runtimes, and the browser. It works on any adapter that [supports metadata](/docs/api/upload).
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { compression } from "files-sdk/compression";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [compression()],
+});
+
+await files.upload("notes.txt", "a".repeat(10_000)); // stored gzipped
+await (await files.download("notes.txt")).text(); // the original 10k string
+```
+
+## How it works
+
+1. On `upload`, the body is compressed with the configured algorithm (gzip by default).
+2. If the compressed form is **smaller**, it's stored, and the algorithm plus the original byte length are recorded in the object's `metadata`. If it **wouldn't shrink** - already-compressed inputs like JPEG, ZIP, or encrypted blobs - the original bytes are stored verbatim and marked `identity`, so the plugin never inflates your storage.
+3. On `download`, the recorded algorithm decompresses the body back to the original bytes and hands you a normal [`StoredFile`](/docs/api/stored-file) - with its `size` reporting the **original** length and the internal metadata fields hidden.
+
+Because the algorithm is stored per object, reads always decompress with the right one. Changing the `format` option later never breaks objects written under the old format.
+
+## Choosing a format
+
+`compression()` defaults to gzip. Pass `format` to pick another:
+
+```ts lineNumbers
+import { compression } from "files-sdk/compression";
+
+compression(); // gzip (default)
+compression({ format: "deflate" }); // zlib-wrapped deflate
+compression({ format: "deflate-raw" }); // bare deflate, no framing
+```
+
+:::note
+Brotli is intentionally not offered. It isn't part of the Compression Streams
+standard, so supporting it would mean a native dependency and break the
+plugin's run-anywhere promise. The three formats above are the ones every
+platform ships.
+:::
+
+## Ordering
+
+Compression should run **before** encryption, so it sees plaintext - encrypted bytes are effectively random and don't compress. Put it **earlier** in the array:
+
+```ts
+plugins: [compression(), encryption(key)];
+```
+
+Because reads unwind the [onion](/docs/plugins#wrap-intercepting-operations) in reverse, a download automatically runs decrypt → decompress. You never hand-manage the symmetry.
+
+## Things to keep in mind
+
+:::warning
+The plugin **buffers the entire body in memory** to compare the compressed and
+original sizes. It's unsuitable for unknown-length streams and [resumable
+uploads](/docs/resumable), which re-read the original body.
+:::
+
+- **Range downloads throw.** A byte range of the original maps to no fixed slice of the compressed bytes, so a [`download`](/docs/api/download) with a `range` is refused.
+- **`url()` and `signedUploadUrl()` throw.** A presigned GET hands out compressed bytes with no `Content-Encoding`, so a client receives them as-is and can't read them; a presigned PUT would silently bypass compression and store uncompressed bytes. Both fail closed - upload and download through the instance instead.
+- **`copy` and `move` just work.** They operate on the stored bytes server-side, and the algorithm marker rides along in the object's metadata, so the copy still decompresses.
+- **Mixed buckets are safe.** On read, objects without this plugin's marker (pre-existing data, or anything written elsewhere) pass straight through unchanged, so you can enable it on a bucket that already holds plain objects.
+- **It needs metadata support.** The algorithm and original size are stored as object metadata, so the adapter must [support metadata](/docs/api/upload) - an `upload` to one that doesn't throws before any bytes move.
+
+## What it stores in metadata
+
+Each object this plugin writes carries two `fscmp_`-prefixed metadata fields: `fscmp_alg` (the algorithm, or `identity` when stored verbatim) and `fscmp_size` (the original, uncompressed byte length). They're stripped from the `StoredFile` you get back on `download`, `head`, and `list`, so your own metadata is all you see.

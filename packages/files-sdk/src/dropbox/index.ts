@@ -139,6 +139,7 @@ const makeStreamChunker = (
 
   const fill = async (): Promise<void> => {
     while (pendingBytes < chunkBytes && !done) {
+      // eslint-disable-next-line no-await-in-loop -- stream reader: each read() pulls the next chunk sequentially until the target size is buffered
       const { value, done: d } = await reader.read();
       if (d) {
         done = true;
@@ -319,6 +320,7 @@ const collectStream = async (
   let total = 0;
   const reader = stream.getReader();
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- stream reader: each read() pulls the next chunk sequentially
     const { value, done } = await reader.read();
     if (done) {
       break;
@@ -435,9 +437,9 @@ const downloadResultToBytes = (
 
 interface AuthHandle {
   /** Mutates `client.auth.accessToken` (when applicable) so subsequent SDK calls use a fresh token. */
-  ensureAccessToken(): Promise<void>;
+  ensureAccessToken: () => Promise<void>;
   /** Internal — returns the current access token. Test-only / for custom auth flows. */
-  getAccessToken(): Promise<string>;
+  getAccessToken: () => Promise<string>;
 }
 
 // `Dropbox.auth` exists at runtime (constructor stores it as `this.auth`)
@@ -445,8 +447,8 @@ interface AuthHandle {
 // `as any`.
 type DropboxWithAuth = Dropbox & {
   auth: {
-    setAccessToken(token: string): void;
-    getAccessToken(): string;
+    setAccessToken: (token: string) => void;
+    getAccessToken: () => string;
   };
 };
 

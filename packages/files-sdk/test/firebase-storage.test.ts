@@ -461,6 +461,7 @@ describe("firebase-storage adapter", () => {
     expect(createReadStreamMock).toHaveBeenCalledTimes(1);
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const { value, done } = await reader.read();
       if (done) {
         break;

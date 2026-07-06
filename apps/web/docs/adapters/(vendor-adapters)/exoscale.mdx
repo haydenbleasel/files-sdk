@@ -1,0 +1,52 @@
+---
+title: Exoscale Object Storage
+description: Exoscale Object Storage (SOS) via the S3-compatible API. Endpoint derived from the zone code (ch-gva-2, de-fra-1, ...).
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { exoscale } from "files-sdk/exoscale";
+
+const files = new Files({
+  adapter: exoscale({
+    bucket: "uploads",
+    region: "ch-gva-2", // or "de-fra-1", "at-vie-1", "bg-sof-1", ...
+    // accessKeyId / secretAccessKey auto-loaded from
+    // EXOSCALE_API_KEY / EXOSCALE_API_SECRET
+  }),
+});
+```
+
+Exoscale Object Storage (SOS) via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the zone code (`ch-gva-2`, `ch-dk-2`, `de-fra-1`, `de-muc-1`, `at-vie-1`, `at-vie-2`, `bg-sof-1`), virtual-hosted-style addressing, errors relabelled. Pass the zone as `region` - Exoscale calls them zones but they fill the SigV4 region slot. Auto-loads from `EXOSCALE_API_KEY` and `EXOSCALE_API_SECRET`. Generate IAM keys in the Exoscale Portal under IAM -> API Keys.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/exoscale/index.ts"
+  name="ExoscaleAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes |
+| ----------------- | :----: | ----- |
+| `upload`          |   ✅   |       |
+| `download`        |   ✅   |       |
+| `delete`          |   ✅   |       |
+| `list`            |   ✅   |       |
+| `search`          |   ✅   |       |
+| `head`            |   ✅   |       |
+| `exists`          |   ✅   |       |
+| `copy`            |   ✅   |       |
+| `url`             |   ✅   |       |
+| `signedUploadUrl` |   ✅   |       |

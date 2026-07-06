@@ -1,0 +1,58 @@
+---
+title: Dropbox
+description: Dropbox via the official SDK. Path-addressable, virtual keys map directly to Dropbox paths - no cache.
+---
+
+## Installation
+
+`dropbox` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk dropbox
+```
+
+## Usage
+
+Dropbox via the official `dropbox` SDK. Path-addressable like OneDrive (`/folder/file.txt`), so virtual keys map directly to Dropbox paths - no virtual-key cache, no bookkeeping. Four auth shapes (pre-built client, static or dynamic access token, OAuth refresh token + app key, or env-var fallback) cover personal Dropbox, Dropbox Business, and team-space deployments.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { dropbox } from "files-sdk/dropbox";
+
+// OAuth2 refresh-token flow (recommended for server-side apps).
+// The adapter exchanges the refresh token at api.dropboxapi.com/oauth2/token
+// and caches the access token until ~60s before expiry.
+const files = new Files({
+  adapter: dropbox({
+    refreshToken: process.env.DROPBOX_REFRESH_TOKEN!,
+    appKey: process.env.DROPBOX_APP_KEY!,
+    appSecret: process.env.DROPBOX_APP_SECRET, // omit for PKCE public clients
+    rootFolderPath: "/Uploads",
+    // publicByDefault: true → upload() also creates a public shared link
+    //                       and url() returns it (rewritten to ?dl=1 for
+    //                       direct download).
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/dropbox/index.ts"
+  name="DropboxAdapterOptions"
+/>
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------- | :----: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | Single-call `filesUpload` up to Dropbox's 150 MB limit; bodies above that automatically switch to `filesUploadSession*` (chunked, up to 350 GB) buffered into memory. Stream bodies are buffered up-front since the SDK has no streaming form. User `metadata` and `cacheControl` throw - Dropbox has no native arbitrary-metadata field; use `raw` with `property_groups` (registered template required) if you need it.                                                                                                                                                                                                    |
+| `download`        |   ⚠️   | `filesDownload` buffers the full body - the SDK has no streaming download primitive. For `as: 'stream'`, the adapter mints a temporary link and fetches it via standard HTTP, which exposes a `ReadableStream` body.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `list`            |   ⚠️   | Recursive listing under `rootFolderPath` via `filesListFolder({ recursive: true })`; folder entries are filtered out. `prefix` is matched client-side within the returned page and can under-return when the prefix isn't satisfied within a single page. Pagination uses Dropbox's opaque cursor via `filesListFolderContinue`.                                                                                                                                                                                                                                                                                             |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `head`            |   ⚠️   | Dropbox doesn't store user-supplied content types - `filesUpload` accepts no Content-Type. `head()` returns a type inferred from the filename extension (or `application/octet-stream` when unknown). `etag` is Dropbox's `rev` field.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `exists`          |   ⚠️   | Resolves via `filesGetMetadata` and returns `false` for folder or deleted entries at the path - matches Dropbox's semantics where the same path can hold a folder or a tombstone. Only true file entries return `true`.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `copy`            |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `url`             |   ⚠️   | Default mints a 4-hour temporary link via `filesGetTemporaryLink` - the API takes no expiry parameter, so `expiresIn` is **validated only**: values above Dropbox's 14400s (4h) fixed lifetime throw, values below are accepted but the link still lives ~4h. Don't rely on a short `expiresIn` as a security control here. With `publicByDefault: true`, `upload()` creates a public shared link and `url()` returns it (rewritten to `?dl=1` for direct download). With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` always throws - Dropbox links have no Content-Disposition override. |
+| `signedUploadUrl` |   ❌   | Throws - Dropbox's `filesGetTemporaryUploadLink` returns a URL that expects POST with a raw body, which fits neither the SDK's PUT-with-headers nor POST-with-form-fields shape. Use `upload()` or drop to `raw.filesGetTemporaryUploadLink(...)` for client-side uploads.                                                                                                                                                                                                                                                                                                                                                   |

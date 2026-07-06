@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
-import * as path from "node:path";
+import path from "node:path";
 
 import * as realMcp from "../src/cli/mcp.js";
 import { buildProgram } from "../src/cli/program.js";
@@ -267,6 +267,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
       ["url", "k", "--expires-in", "60"],
     ]) {
       cap.stdout.length = 0;
+      // eslint-disable-next-line no-await-in-loop -- each run asserts against the shared stdout capture it just reset
       await run("--provider", "fs", "--root", root, "--dry-run", ...argv);
       expect(lastJson(cap.stdout).dryRun).toBe(true);
     }

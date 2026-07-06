@@ -1,0 +1,50 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+interface Props {
+  command?: string;
+  class?: string;
+}
+
+const { command = "npm install files-sdk", class: className } = Astro.props;
+---
+
+<button
+  aria-label="Copy install command"
+  class:list={[
+    "group inline-flex h-11 items-center gap-3 rounded-full border border-border bg-card px-5 font-mono text-sm text-foreground transition-colors hover:bg-muted",
+    className,
+  ]}
+  data-command={command}
+  data-install-command
+  type="button"
+>
+  <span class="text-muted-foreground">$</span>
+  <span>{command}</span>
+  <Icon class="copy-icon size-4 text-muted-foreground" name="copy" />
+  <Icon class="check-icon hidden size-4 text-emerald-500" name="check" />
+</button>
+
+<script>
+  for (const btn of document.querySelectorAll<HTMLButtonElement>(
+    "[data-install-command]"
+  )) {
+    const copy = btn.querySelector(".copy-icon");
+    const check = btn.querySelector(".check-icon");
+    let timer: ReturnType<typeof setTimeout>;
+    btn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.command ?? "");
+      } catch {
+        // Clipboard access can be blocked; fail silently.
+      }
+      copy?.classList.add("hidden");
+      check?.classList.remove("hidden");
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        copy?.classList.remove("hidden");
+        check?.classList.add("hidden");
+      }, 1800);
+    });
+  }
+</script>

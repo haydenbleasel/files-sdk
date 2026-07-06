@@ -246,6 +246,7 @@ describe("versioning plugin — limit", () => {
   test("prunes the oldest versions beyond the limit", async () => {
     const files = withVersioning({ limit: 2 });
     for (const value of ["1", "2", "3", "4", "5"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential overwrites build ordered version history
       await files.upload("k", value);
     }
     const versions = await files.versions("k");
@@ -308,6 +309,7 @@ describe("versioning plugin — paginated history", () => {
       plugins: [versioning({ limit: 2 })],
     });
     for (const value of ["1", "2", "3", "4", "5"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential overwrites build ordered version history
       await files.upload("k", value);
     }
     const versions = await files.versions("k");
@@ -391,6 +393,7 @@ describe("versioning plugin — nested keys", () => {
     // a/b accrues two snapshots first, so they'd be counted (and the parent's
     // own snapshot pruned) if the nested dir leaked into a's listing.
     for (const value of ["1", "2", "3"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential overwrites build ordered version history
       await files.upload("a/b", value);
     }
     await files.upload("a", "a-v1");

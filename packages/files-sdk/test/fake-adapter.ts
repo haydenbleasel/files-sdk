@@ -27,7 +27,7 @@ interface Entry {
 }
 
 export interface FakeAdapter extends Adapter<Map<string, Entry>> {
-  has(key: string): boolean;
+  has: (key: string) => boolean;
 }
 
 const bytesOf = async (body: Body): Promise<Uint8Array> => {
@@ -52,6 +52,7 @@ const bytesOf = async (body: Body): Promise<Uint8Array> => {
   const chunks: Uint8Array[] = [];
   let total = 0;
   while (true) {
+    // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
     const { value, done } = await reader.read();
     if (done) {
       break;

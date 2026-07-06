@@ -14,4 +14,11 @@ export default defineConfig({
     // trips JS-only rules (`export let` props, etc.).
     "packages/files-sdk/test/fixtures",
   ],
+  rules: {
+    // Plugins are middleware: `next` is a continuation that we await mid-op and
+    // whose result we transform, not a Node-style error-first callback. The
+    // rule (deprecated in ESLint core) can't tell the difference and fires on
+    // every plugin verb, so it's off here.
+    "node/callback-return": "off",
+  },
 });

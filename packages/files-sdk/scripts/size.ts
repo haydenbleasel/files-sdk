@@ -28,6 +28,7 @@ const results: Row[] = [];
 
 for (const { subpath, src } of entries) {
   try {
+    // eslint-disable-next-line no-await-in-loop -- entries built one at a time to keep the size report deterministic and memory bounded
     const built = await Bun.build({
       entrypoints: [src],
       external: peerExternals,
@@ -50,6 +51,7 @@ for (const { subpath, src } of entries) {
     let minified = 0;
     let gzipped = 0;
     for (const output of built.outputs) {
+      // eslint-disable-next-line no-await-in-loop -- outputs read sequentially to accumulate the running byte totals
       const bytes = new Uint8Array(await output.arrayBuffer());
       minified += bytes.length;
       gzipped += gzipSync(bytes).length;

@@ -1,0 +1,141 @@
+---
+title: React
+description: One hook, every Files verb. Imperative methods with upload progress and ambient error state, plus optional reactive useList / useFile / useSearch.
+---
+
+`files-sdk/react` brings the full Files API to the browser as a React hook. `useFiles` returns one method per `Files` verb against the [gateway](/docs/ui/server/gateway) you mounted, plus ambient upload/error state. Keys are plain strings (relative to your [authorized prefix](/docs/ui/server/authorization)).
+
+```tsx lineNumbers
+const files = useFiles({
+  endpoint: "/api/files", // default "/api/files"
+  headers: () => ({ authorization: token }), // sent on every call (static or lazy)
+});
+```
+
+## The verbs
+
+```ts lineNumbers
+// Reads
+await files.head("docs/a.txt"); // → StoredFile (lazy body)
+await files.exists("docs/a.txt"); // → boolean
+await files.list({ prefix: "docs/" }); // → { items, prefixes?, cursor? }
+await files.url("img.png"); // → string (for <img src>)
+await files.capabilities(); // → AdapterCapabilities
+
+// Writes
+await files.upload(file); // → { key, size, type, etag }
+await files.delete("old.txt");
+await files.copy("a.txt", "b.txt");
+await files.move("a.txt", "c.txt");
+
+// Streaming iterators
+for await (const f of files.listAll()) {
+  /* every object */
+}
+for await (const f of files.search("docs/*.pdf")) {
+  /* glob/regex */
+}
+```
+
+Every verb mirrors the SDK's signature, including the bulk array forms — `files.delete([a, b])`, `files.head([a, b])`, `files.download([a, b])` — which return the same partial-result shapes (`{ deleted, errors? }`, …) and never throw on a single bad key.
+
+## Uploading
+
+`upload` has three forms, resolved by argument shape:
+
+```ts lineNumbers
+// Keyless - the server mints the key (the common case).
+const { key } = await files.upload(file);
+
+// Explicit key - you choose it (subject to the authorized prefix).
+await files.upload("avatars/me.png", file, { contentType: "image/png" });
+
+// Bulk - pooled at the configured concurrency.
+await files.upload([
+  { key: "a.txt", body: "one" },
+  { key: "b.txt", body: "two" },
+]);
+```
+
+Track progress per call, or read the hook's ambient state:
+
+```tsx lineNumbers
+await files.upload(file, {
+  onProgress: (p) => console.log(p.fraction), // 0 → 1
+});
+
+// or, ambient across any in-flight upload this hook started:
+files.isUploading; // boolean
+files.progress; // { loaded, total, fraction }
+files.uploads; // per-file FileUploadState[]
+```
+
+## Downloading vs linking
+
+Two tools, two jobs:
+
+```ts lineNumbers
+// download(key) → StoredFile: the bytes flow through your gateway. Works on
+// every adapter. Use it when you need the data programmatically.
+const file = await files.download("report.pdf");
+const blob = await file.blob(); // lazy - only fetched on access
+const text = await file.text();
+const chunk = await files.download("video.mp4", {
+  range: { start: 0, end: 1023 },
+});
+
+// url(key) → string: a direct link. Use it for <img src> / <a href> / <video>.
+// Only meaningful when the adapter can sign (capabilities.signedUrl.supported).
+const src = await files.url("avatar.png");
+```
+
+The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/docs/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `type`, `etag`, `metadata`.
+
+## Errors & cancellation
+
+A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"`), rebuilt from the wire envelope. The last error is also mirrored to `files.error` for render-time display:
+
+```tsx lineNumbers
+try {
+  await files.delete(key);
+} catch (e) {
+  // e instanceof FilesError
+}
+{
+  files.error && (
+    <p>
+      {files.error.code}: {files.error.message}
+    </p>
+  );
+}
+```
+
+The hook owns an `AbortController` merged into every call. `files.abort()` cancels everything in flight; unmounting does the same automatically. `files.reset()` clears the ambient error/upload state and re-arms after an abort. Pass a per-call `signal` (or a hook-level `signal` option) to cancel selectively.
+
+## Reactive reads
+
+For a file browser you usually want declarative state, not imperative calls. Three optional hooks wrap the read verbs with `data` / `error` / `isLoading` / `isFetching` / `refetch`, aborting their in-flight request on dependency change or unmount:
+
+```tsx lineNumbers
+import { useList, useFile, useSearch } from "files-sdk/react";
+
+const { data, isLoading, refetch } = useList({ prefix: "docs/" });
+const file = useFile(selectedKey); // head() for a preview; disabled without a key
+const hits = useSearch(query, { match: "substring" });
+```
+
+They are deliberately cache-free and dependency-light. For shared caching, bring React Query or SWR and call `useFiles()` inside your `queryFn` — the imperative methods are designed for exactly that.
+
+## Outside React
+
+The hook is a thin shell over `createFilesClient` from `files-sdk/client` — the same verb set, framework-agnostic, usable from Node, a worker, or a Vue/Svelte binding:
+
+```ts lineNumbers
+import { createFilesClient } from "files-sdk/client";
+
+const client = createFilesClient({
+  endpoint: "https://app.example.com/api/files",
+});
+
+const file = await client.download("report.pdf");
+```

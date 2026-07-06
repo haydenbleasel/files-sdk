@@ -1,6 +1,6 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
-import * as path from "node:path";
+import path from "node:path";
 import type { Writable } from "node:stream";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -201,6 +201,7 @@ export const walkDir = async (root: string): Promise<WalkedFile[]> => {
       const abs = path.join(dir, entry.name);
       const key = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
+        // eslint-disable-next-line no-await-in-loop -- recursive directory descent accumulating into a shared list.
         await walk(abs, key);
       } else if (entry.isFile()) {
         out.push({ absPath: abs, key });
@@ -273,7 +274,7 @@ export const parseRange = (raw?: string): ByteRange | undefined => {
   if (!raw) {
     return undefined;
   }
-  const match = /^(\d+)-(\d*)$/u.exec(raw);
+  const match = /^(?<start>\d+)-(?<end>\d*)$/u.exec(raw);
   if (!match) {
     throw new FilesError(
       "Provider",

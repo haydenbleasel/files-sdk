@@ -45,20 +45,20 @@ export type SoftDeleteApi = {
    * `key` you'd pass to {@link SoftDeleteApi.restore}. Returns an empty array
    * when the trash is empty.
    */
-  trashed(): Promise<TrashedFile[]>;
+  trashed: () => Promise<TrashedFile[]>;
   /**
    * Bring a soft-deleted object back to its original key, removing it from the
    * trash. Resolves to the restored {@link StoredFile} (via `head`). Throws when
    * nothing is trashed for `key`. A live object at `key` (e.g. one re-created
    * after the delete) is overwritten.
    */
-  restore(key: string): Promise<StoredFile>;
+  restore: (key: string) => Promise<StoredFile>;
   /**
    * Permanently delete a trashed object — the one for `key`, or the **entire**
    * trash when `key` is omitted. Idempotent: purging a key with nothing trashed
    * is a no-op. This is the only way the data actually leaves storage.
    */
-  purge(key?: string): Promise<void>;
+  purge: (key?: string) => Promise<void>;
 };
 
 export interface SoftDeleteOptions {

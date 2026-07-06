@@ -60,11 +60,11 @@ export interface UsageOptions {
 // oxlint-disable-next-line typescript/consistent-type-definitions -- must be a type alias for the Record<string, unknown> constraint above.
 export type UsageApi = {
   /** Snapshot the totals, aggregated across every group. */
-  usage(): UsageStats;
+  usage: () => UsageStats;
   /** Snapshot the totals per group, keyed by the {@link UsageOptions.group} label. */
-  usageByGroup(): Record<string, UsageStats>;
+  usageByGroup: () => Record<string, UsageStats>;
   /** Zero every counter, starting a fresh accounting window. */
-  resetUsage(): void;
+  resetUsage: () => void;
 };
 
 const emptyByKind = (): Record<(typeof KINDS)[number], number> => {

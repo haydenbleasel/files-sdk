@@ -7,9 +7,9 @@
 import type { FilesApi } from "../api/index.js";
 
 export interface NextRouteHandlers {
-  GET(req: Request): Promise<Response>;
-  POST(req: Request): Promise<Response>;
-  PUT(req: Request): Promise<Response>;
+  GET: (req: Request) => Promise<Response>;
+  POST: (req: Request) => Promise<Response>;
+  PUT: (req: Request) => Promise<Response>;
 }
 
 export const createRouteHandler = (router: FilesApi): NextRouteHandlers => ({

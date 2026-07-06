@@ -1,0 +1,136 @@
+---
+title: Cloudflare R2
+description: Cloudflare R2 over the S3-compatible HTTP API. Auto-loads R2_* env vars or accepts an R2Bucket binding inside Workers.
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+Over the HTTP API, `upload` reports true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
+
+## Usage
+
+Cloudflare R2 over the S3-compatible HTTP API. Auto-loads from `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Inside Cloudflare Workers you can pass an `R2Bucket` binding directly instead.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+
+const files = new Files({
+  adapter: r2({
+    bucket: "uploads",
+    accountId: process.env.R2_ACCOUNT_ID!,
+    // accessKeyId / secretAccessKey auto-loaded
+    // from R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+  }),
+});
+```
+
+`publicBaseUrl` - optional, an `r2.dev` subdomain or custom domain bound to the bucket. When set, `url()` returns `` `${publicBaseUrl}/${key}` `` and skips signing.
+
+## Options
+
+`R2AdapterOptions` is a union of two shapes depending on whether you have a Workers `R2Bucket` binding available.
+
+### HTTP mode
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/r2/index.ts"
+  name="R2HttpOptions"
+/>
+
+### Binding mode (inside a Worker)
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/r2/index.ts"
+  name="R2BindingOptions"
+/>
+
+## Hybrid: binding + HTTP credentials
+
+Inside a Worker, you can pass _both_ a binding and HTTP credentials. Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through the HTTP signer because a Worker binding has no signing primitive. The S3 client is lazy-loaded - bindings-only Workers don't pull `@aws-sdk/client-s3` into their bundle.
+
+```ts lineNumbers
+// Inside a Cloudflare Worker. The binding handles uploads/downloads
+// (intra-Worker, no egress fees). The HTTP credentials let url() and
+// signedUploadUrl() sign presigned URLs the binding alone can't produce.
+const files = new Files({
+  adapter: r2({
+    binding: env.UPLOADS,
+    bucket: "uploads",
+    accountId: env.R2_ACCOUNT_ID,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+  }),
+});
+```
+
+## Signed uploads and `maxSize`
+
+[`signedUploadUrl()`](/docs/api/signed-upload-url) returns a presigned **PUT** URL. Unlike S3, R2 does **not** implement the S3 `POST Object` API, so it has no `content-length-range` policy to enforce an upload size cap at the bucket. Passing `maxSize` throws a `Provider` error rather than handing back a POST form that R2 would reject with `501 Not Implemented` at upload time.
+
+```ts lineNumbers
+// ✅ presigned PUT — the browser uploads with fetch(url, { method: "PUT", body: file })
+const upload = await files.signedUploadUrl("avatars/abc.png", {
+  expiresIn: 60,
+  contentType: "image/png",
+});
+
+// ❌ throws: R2 has no server-enforced size limit
+await files.signedUploadUrl("avatars/abc.png", {
+  expiresIn: 60,
+  maxSize: 5_000_000,
+});
+```
+
+To cap upload sizes on R2, enforce the limit at your application gateway before issuing the URL.
+
+## Compatibility
+
+### HTTP mode
+
+| Method            | Status | Notes                                                                                                                                                                                                                              |
+| ----------------- | :----: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                                                                    |
+| `download`        |   ✅   |                                                                                                                                                                                                                                    |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                    |
+| `list`            |   ✅   |                                                                                                                                                                                                                                    |
+| `search`          |   ✅   |                                                                                                                                                                                                                                    |
+| `head`            |   ✅   |                                                                                                                                                                                                                                    |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                    |
+| `copy`            |   ✅   |                                                                                                                                                                                                                                    |
+| `url`             |   ✅   |                                                                                                                                                                                                                                    |
+| `signedUploadUrl` |   ⚠️   | PUT URL only - Cloudflare R2 doesn't implement the S3 POST Object API, so `maxSize` throws (no `content-length-range` policy; a presigned POST would 501 at upload time). Enforce upload caps at your application gateway instead. |
+
+### Binding mode
+
+| Method            | Status | Notes                                                                                                                                                                                                                   |
+| ----------------- | :----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                                                         |
+| `download`        |   ✅   |                                                                                                                                                                                                                         |
+| `delete`          |   ✅   |                                                                                                                                                                                                                         |
+| `list`            |   ✅   |                                                                                                                                                                                                                         |
+| `head`            |   ✅   |                                                                                                                                                                                                                         |
+| `exists`          |   ✅   |                                                                                                                                                                                                                         |
+| `copy`            |   ⚠️   | Read-then-write - Workers bindings have no native copy command, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected.             |
+| `url`             |   ❌   | Throws unless `publicBaseUrl` is set on the adapter (an r2.dev subdomain or a custom domain). For a presigned URL from a Worker, switch to hybrid mode by also passing `accountId` + `accessKeyId` + `secretAccessKey`. |
+| `signedUploadUrl` |   ❌   | Workers bindings can't sign uploads - the secret access key is not available to the runtime. Use hybrid mode (binding + HTTP credentials) to issue presigned upload URLs.                                               |
+
+### Hybrid mode
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                           |
+| ----------------- | :----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                                                                                                 |
+| `download`        |   ✅   |                                                                                                                                                                                                                                                                 |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                 |
+| `list`            |   ✅   |                                                                                                                                                                                                                                                                 |
+| `head`            |   ✅   |                                                                                                                                                                                                                                                                 |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                 |
+| `copy`            |   ⚠️   | Read-then-write - copy goes through the binding (no native copy command on Workers).                                                                                                                                                                            |
+| `url`             |   ✅   |                                                                                                                                                                                                                                                                 |
+| `signedUploadUrl` |   ⚠️   | PUT URL only - signing routes through the HTTP signer. R2 doesn't implement the S3 POST Object API, so `maxSize` throws (no `content-length-range` policy; a presigned POST would 501 at upload time). Enforce upload caps at your application gateway instead. |

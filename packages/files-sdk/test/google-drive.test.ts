@@ -112,7 +112,7 @@ const filesListMock = mock((params: unknown) => {
   // 1) `appProperties has { key='K' and value='V' } and trashed=false`
   // 2) `'<folderId>' in parents and trashed=false`
   const propMatch =
-    /appProperties has \{ key='([^']+)' and value='([^']*(?:\\'[^']*)*)' \}/u.exec(
+    /appProperties has \{ key='(?<key>[^']+)' and value='(?<value>[^']*(?:\\'[^']*)*)' \}/u.exec(
       q
     );
   if (propMatch) {
@@ -122,7 +122,7 @@ const filesListMock = mock((params: unknown) => {
       (f) => (f.appProperties ?? {})[wantKey] === wantValue
     );
   }
-  const parentsMatch = /'([^']+)' in parents/u.exec(q);
+  const parentsMatch = /'(?<parent>[^']+)' in parents/u.exec(q);
   if (parentsMatch) {
     const [, wantParent = ""] = parentsMatch;
     matches = matches.filter((f) => (f.parents ?? []).includes(wantParent));
@@ -144,7 +144,7 @@ const filesGetMock = mock((params: unknown, requestOpts?: unknown) => {
     const full = Buffer.from(`body-${file.id}`);
     let body = full;
     if (rangeHeader) {
-      const m = /bytes=(\d+)-(\d*)/u.exec(rangeHeader);
+      const m = /bytes=(?<start>\d+)-(?<end>\d*)/u.exec(rangeHeader);
       const start = Number(m?.[1] ?? 0);
       const end = m?.[2] ? Number(m[2]) : full.length - 1;
       body = full.subarray(start, end + 1);
@@ -410,6 +410,7 @@ describe("google-drive adapter", () => {
     const reader = f.stream().getReader();
     let total = 0;
     while (true) {
+      // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
       const { value, done } = await reader.read();
       if (done) {
         break;

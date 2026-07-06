@@ -1,0 +1,74 @@
+/*
+ * Blume's last-cascade-layer overrides: maps the shadcn-flavored tokens the
+ * landing islands and registry components reference onto Blume's palette, and
+ * adds the hero marquee keyframe. (Landing code blocks are themed by Blume's
+ * `highlightCode` + `.prose`, so no manual Shiki swap is needed.)
+ */
+
+@theme {
+  /*
+   * shadcn-flavored tokens the ported landing islands and registry components
+   * use that Blume doesn't define. Blume ships background/foreground/muted/
+   * accent/border; the rest are mapped onto Blume's palette here so the
+   * components stay styled (a Tailwind utility with an undefined color token
+   * silently emits no CSS).
+   */
+  --color-card: var(--blume-background);
+  --color-card-foreground: var(--blume-foreground);
+  --color-popover: var(--blume-background);
+  --color-popover-foreground: var(--blume-foreground);
+  --color-primary: var(--blume-foreground);
+  --color-primary-foreground: var(--blume-background);
+  --color-secondary: var(--blume-muted);
+  --color-secondary-foreground: var(--blume-foreground);
+  --color-input: var(--blume-muted);
+  --color-ring: var(--blume-accent);
+  --color-sidebar: var(--blume-background);
+  --color-sidebar-foreground: var(--blume-foreground);
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --color-destructive-foreground: oklch(0.985 0 0);
+  --radius-4xl: 2rem;
+}
+
+/* Hero adapter marquee. */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* The landing page and CodeTabs wrap `highlightCode` output in their own
+   bordered `bg-card` shell, but Blume's `.prose pre` also carries a border,
+   radius, and block margin — so the code renders a second, inset border with a
+   gap. Strip the inner `pre`'s chrome wherever it's flagged `flush-code` so it
+   sits flush inside the card (docs code fences keep their own border). */
+.prose.flush-code :where(pre) {
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+
+/* Blume's `.prose :where(p, ul, ol)` margins aren't guarded against
+   `.not-prose`, so they leak into the component-preview islands (the `<Component>`
+   Preview pane is `not-prose` but still lives inside the page's `.prose`).
+   Reset flow-element spacing inside not-prose — these shadcn components assume a
+   Preflight-style margin reset. */
+.not-prose :where(p, ul, ol, h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+}
+
+/* Geist Mono ligatures shape across Shiki's per-token spans (collapsing glyphs
+   like `=== 0`) and bleed past inline-code backgrounds; disable them on code
+   and the .font-mono landing animations. */
+code,
+.font-mono,
+.astro-code,
+.astro-code code {
+  font-feature-settings:
+    "liga" 0,
+    "calt" 0;
+  font-variant-ligatures: none;
+}

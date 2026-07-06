@@ -1,15 +1,15 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
 import { UploadIcon } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { demoFiles } from "@/lib/demo-files";
 import { FilePreview } from "@/registry/files-sdk/file-preview/file-preview";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
   const inputRef = useRef<HTMLInputElement>(null);
   // Start on a seeded image so the preview is populated; uploading swaps it out.
   const [key, setKey] = useState<string>("photos/sunset.jpg");

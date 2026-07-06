@@ -1,11 +1,10 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
-
+import { demoFiles } from "@/lib/demo-files";
 import { ShareDialog } from "@/registry/files-sdk/share-dialog/share-dialog";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
 
   return <ShareDialog files={files} fileKey="photos/sunset.jpg" />;
 };

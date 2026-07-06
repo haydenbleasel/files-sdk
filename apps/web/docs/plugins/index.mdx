@@ -1,0 +1,150 @@
+---
+title: Overview
+description: Wrap every operation on a Files instance in an ordered pipeline - transform, veto, or observe - and contribute new namespaced methods. The interceptable superset of hooks.
+---
+
+A [`hook`](/docs/api/onaction) can only watch an operation go by. A **plugin** can change it. Plugins are an opt-in, ordered pipeline you pass to the constructor; each one wraps every operation on the instance and can transform the inputs, veto the call, observe the result - or add entirely new methods.
+
+```ts lineNumbers
+import { createFiles, handlers } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [
+    {
+      name: "uppercase",
+      wrap: handlers({
+        upload: (op, next) =>
+          next({ ...op, body: (op.body as string).toUpperCase() }),
+      }),
+    },
+  ],
+});
+
+await files.upload("a.txt", "hello"); // stored as "HELLO"
+```
+
+Reach for a plugin when you need to **change** behavior - envelope-encrypt bodies at rest, gate uploads through a virus scanner, meter bandwidth, mirror writes to a backup region. Keep [hooks](/docs/api/onaction) for lightweight, fire-and-forget observability; a plugin's `wrap` is the interceptable superset that can transform and veto where hooks only watch.
+
+## The two capabilities
+
+A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to two optional capabilities. A plugin can use either or both.
+
+| Capability | What it does                                                                            | Changes the instance type?                                 |
+| ---------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `wrap`     | Intercept every operation - transform the inputs, veto by throwing, or wrap the result. | No                                                         |
+| `extend`   | Contribute new namespaced methods (e.g. `files.usage()`).                               | Yes - via [`createFiles`](#typing-extend-with-createfiles) |
+
+Because `wrap` doesn't touch the instance type, plugins that only wrap work with plain `new Files({ plugins })`. Only `extend` adds surface, and that's the one case [`createFiles`](/docs/plugins/api#createfiles) exists for.
+
+## wrap: intercepting operations
+
+`wrap(op, next)` receives the current [operation](/docs/plugins/api#filesoperation) and a `next` function that continues inward. Call `next(op)` to run the rest of the pipeline (and ultimately the real call); pass a modified `op` to transform it, return a modified result to rewrite the output, or throw to veto.
+
+```ts lineNumbers
+const plugin: FilesPlugin = {
+  name: "logger",
+  wrap: async (op, next) => {
+    console.log("→", op.kind);
+    const result = await next(op); // continue inward
+    console.log("←", op.kind);
+    return result;
+  },
+};
+```
+
+Plugins compose as **ordered, nested layers**: `plugins[0]` is the outermost. With `[a, b]`, a write runs `a` → `b` → the real operation → `b` → `a`. A nice property falls out for free: because the innermost layer wraps the real read, **read-side inverses self-order**. Given `[validate, compress, encrypt]`, a download unwinds decrypt → decompress → validate automatically - you never hand-manage the symmetry.
+
+### Where plugins sit
+
+Plugins run **inside** the [`onAction`](/docs/api/onaction) / [`onError`](/docs/api/onerror) hooks but **outside** [retries](/docs/retries) and [key prefixing](/docs/prefixes):
+
+- A `wrap` runs **once per logical operation**, not once per retry attempt. Encryption seals the body once; a retry resends the bytes the plugin already produced.
+- Plugins see **caller-facing keys** - never the internal [prefixed](/docs/prefixes) path. A key-rewriting plugin rewrites before prefixing.
+- The hooks still fire around the whole thing, so `onAction` reports the final, plugin-produced result.
+
+### Bulk operations too
+
+`wrap` intercepts both single and bulk calls. The array forms of `upload`, `download`, `head`, `exists`, and `delete` fan out to **one operation per item**, each carrying `bulk: true` so a plugin can tell a batch element from a standalone call. This means an `encryption()` plugin encrypts `upload(key, body)` and every item of `upload([...])` - no silent plaintext footgun.
+
+> When any wrapping plugin is installed, `delete([...])` fans out to per-key
+> deletes through each plugin instead of the adapter's native batch primitive, so
+> every key is intercepted. Without plugins, the native batch path is unchanged.
+
+### handlers(): per-verb wraps
+
+A raw `wrap` is right for cross-cutting plugins that touch every verb (logging, metering, tracing). For transforms that only care about one or two operations, [`handlers`](/docs/plugins/api#handlers) lets you write a per-verb map - each handler is typed to its own operation, and any verb you don't list passes straight through:
+
+```ts lineNumbers
+import { handlers } from "files-sdk";
+
+const encryption = (key: CryptoKey): FilesPlugin => ({
+  name: "encryption",
+  wrap: handlers({
+    // typed as the upload op; `next` is typed to the upload result
+    upload: (op, next) =>
+      seal(op.body, key).then(({ body, iv }) =>
+        next({
+          ...op,
+          body,
+          options: { ...op.options, metadata: { ...op.options?.metadata, iv } },
+        })
+      ),
+    download: (op, next) => next(op).then((file) => unseal(file, key)),
+    // head, exists, delete, copy, move, list, url, signedUploadUrl: untouched
+  }),
+});
+```
+
+:::note
+You don't have to write this plugin yourself - we ship
+[`encryption()`](/docs/plugins/encryption) out of the box.
+:::
+
+## extend: new methods
+
+`extend(files)` returns an object of methods grafted onto the instance. It runs once at construction against the **fully-wrapped** instance, so an extension method that calls back into `files.upload(...)` also passes through every plugin.
+
+```ts lineNumbers
+const usage = (): FilesPlugin<{ usage: () => number }> => {
+  let bytes = 0;
+  return {
+    name: "usage",
+    wrap: async (op, next) => {
+      const result = await next(op);
+      if (op.kind === "upload") {
+        bytes += result.size;
+      }
+      return result;
+    },
+    extend: () => ({ usage: () => bytes }),
+  };
+};
+```
+
+An extension key that collides with an existing `Files` method, a getter, or another plugin's extension **throws at construction** rather than silently shadowing it - so a plugin can never quietly break `upload` or make the instance un-`await`able.
+
+### Typing extend with createFiles
+
+`new Files({ plugins })` works at runtime regardless, but a class constructor can't return `this & Ext` keyed off its arguments - so the extra methods won't show up on the **type**. [`createFiles`](/docs/plugins/api#createfiles) is the seam that surfaces them. It's identical to `new Files()` at runtime; it just carries the plugins' `extend` return types onto the result.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [usage()],
+});
+
+files.usage(); // ✅ typed
+```
+
+The built-in [`versioning()`](/docs/plugins/versioning) plugin is a real example of this - it uses `extend` to add `files.versions()` and `files.restore()`, so you construct it with `createFiles`.
+
+## Things to keep in mind
+
+- **Order is the contract.** `[compress, encrypt]` compresses then encrypts (encrypted bytes don't compress); `[validate, scan, transform]` fails fast before doing work. Document each plugin's place even though reads self-order.
+- **Buffering transforms break streaming.** Encrypt / compress / scan need the whole body in memory, which is incompatible with unknown-length streams and [resumable uploads](/docs/resumable) (which re-read the original body). Gate those plugins the way the core already gates streams.
+- **Metadata-stashing needs adapter support.** A plugin that round-trips state through `options.metadata` (an encryption IV, say) only works on adapters that [support metadata](/docs/api/upload) - the same gate a direct `metadata` upload hits.
+- **`wrap` runs outside the timeout.** Per-attempt [timeouts](/docs/timeouts) bound the adapter call, not a slow plugin. The caller's `options` (including `signal`) ride on the operation, so a plugin can opt into cancellation itself.

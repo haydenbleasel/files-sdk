@@ -1,0 +1,59 @@
+---
+title: Azure Blob Storage
+description: Azure Blob Storage via @azure/storage-blob. Five credential modes - connection string, account key, token credential, SAS token, or anonymous.
+---
+
+## Installation
+
+`@azure/storage-blob` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @azure/storage-blob
+```
+
+## Usage
+
+Azure Blob Storage via the official `@azure/storage-blob` SDK. Five credential modes: connection string, account name + account key, account name + token credential, account name + SAS token, or anonymous (public-read containers only). Connection-string parsing recovers the account name + key so signing methods keep working.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+import { DefaultAzureCredential } from "@azure/identity";
+
+const files = new Files({
+  adapter: azure({
+    container: "uploads",
+    // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
+    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
+    // Pass connectionString / accountKey / credential / sasToken to override.
+    // accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
+    // credential: new DefaultAzureCredential(), // Azure AD / Managed Identity
+  }),
+});
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/azure/index.ts"
+  name="AzureAdapterOptions"
+/>
+
+## Limitations
+
+Azure AD / Managed Identity is supported via the `credential` option (install `@azure/identity`); it authenticates SDK calls and mints User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and `copy()`. The principal needs blob data access plus permission to call `generateUserDelegationKey`.
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `download`        |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `delete`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `list`            |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `search`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `head`            |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `exists`          |   ✅   |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `copy`            |   ⚠️   | Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS.                                                                                                                                                                                                                                                    |
+| `url`             |   ⚠️   | Signs a SAS read URL. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). Pass `accountKey` + `accountName`, a connection string with an account key, `credential` + `accountName`, or set `publicBaseUrl` for a public container.                                                                                                                                                                          |
+| `signedUploadUrl` |   ⚠️   | PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy, and `contentType` throws because Azure SAS does not bind Content-Type into the signature; enforce those checks at your application gateway instead. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). The returned headers include the required `x-ms-blob-type: BlockBlob`. |

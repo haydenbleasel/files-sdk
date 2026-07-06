@@ -238,10 +238,10 @@ export interface StoredFile {
   size: number;
   type: string;
   lastModified?: number;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-  stream(): ReadableStream<Uint8Array>;
-  blob(): Promise<Blob>;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+  text: () => Promise<string>;
+  stream: () => ReadableStream<Uint8Array>;
+  blob: () => Promise<Blob>;
   key: string;
   etag?: string;
   metadata?: Record<string, string>;
@@ -731,13 +731,17 @@ export interface Adapter<Raw = unknown> {
    * Advisory only; it does not gate `url()`.
    */
   readonly signedUrl?: SignedUrlCapability;
-  upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
+  upload: (
+    key: string,
+    body: Body,
+    opts?: UploadOptions
+  ) => Promise<UploadResult>;
   /**
    * Download an object's body and metadata. When {@link DownloadOptions.range}
    * is set, adapters that advertise {@link Adapter.supportsRange} must return
    * only the requested bytes, with `size` set to the range length.
    */
-  download(key: string, opts?: DownloadOptions): Promise<StoredFile>;
+  download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
   /**
    * Fetch metadata only — does not transfer the body.
    *
@@ -746,7 +750,7 @@ export interface Adapter<Raw = unknown> {
    * issue a full GET on first use. If you only want metadata, don't call
    * the body accessors. They are not free.
    */
-  head(key: string, opts?: OperationOptions): Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
   /**
    * Check whether `key` exists without fetching its body.
    *
@@ -754,18 +758,18 @@ export interface Adapter<Raw = unknown> {
    * `NotFound`, and rethrows every other error (permissions, transport
    * failures, bad credentials, etc.).
    */
-  exists(key: string, opts?: OperationOptions): Promise<boolean>;
-  delete(key: string, opts?: OperationOptions): Promise<void>;
+  exists: (key: string, opts?: OperationOptions) => Promise<boolean>;
+  delete: (key: string, opts?: OperationOptions) => Promise<void>;
   /**
    * Delete many keys in one call. Optional: when an adapter omits it, the
    * SDK fans out to `delete()` with bounded concurrency. Adapters that
    * implement it should use a native bulk primitive where one exists.
    */
-  deleteMany?(
+  deleteMany?: (
     keys: string[],
     opts?: DeleteManyOptions
-  ): Promise<DeleteManyResult>;
-  copy(from: string, to: string, opts?: OperationOptions): Promise<void>;
+  ) => Promise<DeleteManyResult>;
+  copy: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
   /**
    * Move (rename) `from` to `to`. Optional: when an adapter omits it, the SDK
    * falls back to `copy()` then `delete()`. Adapters should implement it when
@@ -773,8 +777,8 @@ export interface Adapter<Raw = unknown> {
    * the body (the local filesystem, FTP, SFTP) — the copy+delete fallback on
    * those round-trips the bytes.
    */
-  move?(from: string, to: string, opts?: OperationOptions): Promise<void>;
-  list(opts?: ListOptions): Promise<ListResult>;
+  move?: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
+  list: (opts?: ListOptions) => Promise<ListResult>;
   /**
    * Return a URL the caller can use to fetch `key`.
    *
@@ -800,8 +804,11 @@ export interface Adapter<Raw = unknown> {
    * validate or `encodeURIComponent`-style escape segments before
    * passing it in.
    */
-  url(key: string, opts?: UrlOptions): Promise<string>;
-  signedUploadUrl(key: string, opts: SignUploadOptions): Promise<SignedUpload>;
+  url: (key: string, opts?: UrlOptions) => Promise<string>;
+  signedUploadUrl: (
+    key: string,
+    opts: SignUploadOptions
+  ) => Promise<SignedUpload>;
   /**
    * Build a {@link ResumableDriver} for a pause-able / resumable upload of
    * `key`. Optional: only adapters whose provider exposes a resumable or
@@ -811,7 +818,10 @@ export interface Adapter<Raw = unknown> {
    * {@link Adapter.supportsRange} gate). The returned driver is synchronous to
    * construct; it establishes the provider session lazily in `begin()`.
    */
-  resumableUpload?(key: string, opts: ResumableDriverOptions): ResumableDriver;
+  resumableUpload?: (
+    key: string,
+    opts: ResumableDriverOptions
+  ) => ResumableDriver;
 }
 
 /** The public {@link Files} method a hook event describes. */
@@ -960,19 +970,19 @@ export interface FilesOptions<A extends Adapter> extends OperationOptions {
 
 export interface FileHandle {
   readonly key: string;
-  upload(body: Body, opts?: UploadOptions): Promise<UploadResult>;
-  download(opts?: DownloadOptions): Promise<StoredFile>;
-  head(opts?: OperationOptions): Promise<StoredFile>;
-  exists(opts?: OperationOptions): Promise<boolean>;
-  delete(opts?: OperationOptions): Promise<void>;
-  url(opts?: UrlOptions): Promise<string>;
-  signedUploadUrl(opts: SignUploadOptions): Promise<SignedUpload>;
-  copyTo(destinationKey: string, opts?: OperationOptions): Promise<void>;
-  copyFrom(sourceKey: string, opts?: OperationOptions): Promise<void>;
+  upload: (body: Body, opts?: UploadOptions) => Promise<UploadResult>;
+  download: (opts?: DownloadOptions) => Promise<StoredFile>;
+  head: (opts?: OperationOptions) => Promise<StoredFile>;
+  exists: (opts?: OperationOptions) => Promise<boolean>;
+  delete: (opts?: OperationOptions) => Promise<void>;
+  url: (opts?: UrlOptions) => Promise<string>;
+  signedUploadUrl: (opts: SignUploadOptions) => Promise<SignedUpload>;
+  copyTo: (destinationKey: string, opts?: OperationOptions) => Promise<void>;
+  copyFrom: (sourceKey: string, opts?: OperationOptions) => Promise<void>;
   /** Move this key to `destinationKey`. See {@link Files.move}. */
-  moveTo(destinationKey: string, opts?: OperationOptions): Promise<void>;
+  moveTo: (destinationKey: string, opts?: OperationOptions) => Promise<void>;
   /** Move `sourceKey` onto this key. See {@link Files.move}. */
-  moveFrom(sourceKey: string, opts?: OperationOptions): Promise<void>;
+  moveFrom: (sourceKey: string, opts?: OperationOptions) => Promise<void>;
 }
 
 /**
@@ -2475,6 +2485,7 @@ export class Files<A extends Adapter = Adapter> {
     const { delimiter: _delimiter, ...rest } = opts ?? {};
     let { cursor } = rest;
     do {
+      // eslint-disable-next-line no-await-in-loop -- pagination: each page's cursor comes from the previous response.
       const page = await this.list(cursor ? { ...rest, cursor } : rest);
       yield* page.items;
       ({ cursor } = page);
@@ -2612,6 +2623,7 @@ export class Files<A extends Adapter = Adapter> {
         ? ({ ...baseOpts, signal: runtime.signal } as O)
         : baseOpts;
       try {
+        // eslint-disable-next-line no-await-in-loop -- retry loop: each attempt must resolve before deciding to retry.
         return await runWithSignal(runtime.signal, () => fn(attemptOpts));
       } catch (error) {
         const wrapped = runtime.signal?.aborted
@@ -2635,6 +2647,7 @@ export class Files<A extends Adapter = Adapter> {
         }
         const wait = mergeSignals(signals);
         try {
+          // eslint-disable-next-line no-await-in-loop -- sequential backoff between retry attempts.
           await sleep(delayMs, wait.signal);
         } finally {
           wait.cleanup?.();

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/adapters/:path*",
+      "destination": "/docs/adapters/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/ai/:path*",
+      "destination": "/docs/ai/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/docs/api/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/cli/:path*",
+      "destination": "/docs/cli/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/plugins/:path*",
+      "destination": "/docs/plugins/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/ui/:path*",
+      "destination": "/docs/ui/:path*",
+      "permanent": true
+    },
+    { "source": "/overview", "destination": "/docs", "permanent": true },
+    {
+      "source": "/:page(installation|usage|bulk|multipart|resumable|prefixes|retries|timeouts|cancellations|readonly|receipts|escape-hatch|capabilities|provider-gaps|faq|troubleshooting|providers)",
+      "destination": "/docs/:page",
+      "permanent": true
+    },
+    {
+      "source": "/docs/adapters",
+      "destination": "/docs/adapters/s3",
+      "permanent": false
+    },
+    {
+      "source": "/docs/ai",
+      "destination": "/docs/ai/openai",
+      "permanent": false
+    },
+    { "source": "/docs/overview", "destination": "/docs", "permanent": true }
+  ],
+  "headers": [
+    {
+      "source": "/r/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, OPTIONS" }
+      ]
+    }
+  ]
+}

@@ -100,7 +100,7 @@ const generateUserDelegationSasUrlMock = mock(
     opts: {
       contentDisposition?: string;
       expiresOn: Date;
-      permissions: { toString(): string };
+      permissions: { toString: () => string };
     },
     _delegationKey: unknown
   ) => {
@@ -307,7 +307,7 @@ const generateBlobSASQueryParametersMock = mock(
     opts: {
       blobName: string;
       containerName: string;
-      permissions: { toString(): string };
+      permissions: { toString: () => string };
       expiresOn: Date;
       contentDisposition?: string;
     },
@@ -731,6 +731,7 @@ describe("azure adapter", () => {
       const reader = got.stream().getReader();
       let total = 0;
       while (true) {
+        // eslint-disable-next-line no-await-in-loop -- sequentially draining a stream reader
         const { value, done } = await reader.read();
         if (done) {
           break;

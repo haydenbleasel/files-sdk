@@ -1,15 +1,15 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
 import { UploadIcon } from "lucide-react";
 import type { ChangeEvent } from "react";
 import { useEffect, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
+import { demoFiles } from "@/lib/demo-files";
 import { UploadProgress } from "@/registry/files-sdk/upload-progress/upload-progress";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Read `files` via a ref so this one-shot effect never re-runs on store
@@ -35,6 +35,7 @@ const Example = () => {
       return;
     }
     for (const file of picked) {
+      // eslint-disable-next-line no-await-in-loop -- demo uploads files one at a time so progress reads cleanly
       await files.upload(`demo/${file.name}`, file, {
         contentType: file.type,
       });

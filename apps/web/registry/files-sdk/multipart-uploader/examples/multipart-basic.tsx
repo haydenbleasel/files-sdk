@@ -1,11 +1,10 @@
 "use client";
 
-import { useFiles } from "files-sdk/react";
-
+import { demoFiles } from "@/lib/demo-files";
 import { MultipartUploader } from "@/registry/files-sdk/multipart-uploader/multipart-uploader";
 
 const Example = () => {
-  const files = useFiles({ endpoint: "/api/files" });
+  const files = demoFiles;
 
   return <MultipartUploader files={files} prefix="demo/" />;
 };
