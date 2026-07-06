@@ -1529,6 +1529,56 @@ export const PROVIDERS = {
     peerDeps: AWS_S3_PEERS,
     slug: "wasabi",
   },
+  webdav: {
+    description:
+      "WebDAV (Nextcloud, ownCloud, Apache mod_dav, …) via the webdav client. HTTP-based, with native server-side copy/move; url() needs an HTTP front (publicBaseUrl).",
+    env: {
+      config: ["baseUrl", "root"],
+      credentialModes: [
+        {
+          label: "Username + password",
+          vars: [
+            {
+              aliases: ["WEBDAV_USER"],
+              description: "WebDAV username",
+              key: "WEBDAV_USERNAME",
+              readBy: "files-sdk",
+              secret: false,
+            },
+            {
+              description: "WebDAV password",
+              key: "WEBDAV_PASSWORD",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "HTTP-based (works in Node and edge/browser runtimes). COPY / MOVE run server-side. `url()` and `signedUploadUrl()` require `publicBaseUrl` — a WebDAV GET needs authentication and the protocol has no signing primitive.",
+      optional: [
+        {
+          description:
+            'Auth strategy — "basic" (default), "digest", "token", or "none"',
+          key: "WEBDAV_AUTH_TYPE",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+      required: [
+        {
+          aliases: ["WEBDAV_BASE_URL"],
+          description: "WebDAV server base URL",
+          key: "WEBDAV_URL",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "WebDAV",
+    peerDeps: ["webdav"],
+    slug: "webdav",
+  },
   yandex: {
     description:
       "Yandex Object Storage via the S3-compatible API. Fixed global endpoint, region defaults to ru-central1.",

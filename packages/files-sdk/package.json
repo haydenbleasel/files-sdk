@@ -286,6 +286,10 @@
       "types": "./dist/sftp/index.d.ts",
       "import": "./dist/sftp/index.js"
     },
+    "./webdav": {
+      "types": "./dist/webdav/index.d.ts",
+      "import": "./dist/webdav/index.js"
+    },
     "./uploadthing": {
       "types": "./dist/uploadthing/index.d.ts",
       "import": "./dist/uploadthing/index.js"
@@ -417,6 +421,7 @@
     "typescript": "^6",
     "uploadthing": "^7",
     "vue": "^3.5.0",
+    "webdav": "^5.10.0",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
@@ -463,6 +468,7 @@
     "svelte": "^4.0.0 || ^5.0.0",
     "uploadthing": "^7",
     "vue": "^3.4.0",
+    "webdav": "^5.10.0",
     "zod": "^3.23.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -593,6 +599,9 @@
       "optional": true
     },
     "vue": {
+      "optional": true
+    },
+    "webdav": {
       "optional": true
     },
     "zod": {

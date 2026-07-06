@@ -1,0 +1,83 @@
+---
+title: WebDAV
+description: WebDAV (Nextcloud, ownCloud, Apache mod_dav, …) via the webdav client. HTTP-based, with native server-side copy/move; url() needs an HTTP front.
+---
+
+## Installation
+
+`webdav` is an optional peer dependency of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk webdav
+```
+
+## Usage
+
+WebDAV via the [`webdav`](https://www.npmjs.com/package/webdav) library. Virtual keys map to paths under a configurable `root` on the server, with a `..` traversal guard. Because WebDAV is plain HTTP (`PROPFIND` / `GET` / `PUT` / `COPY` / `MOVE` / `DELETE`), the adapter is transport-agnostic and works against Nextcloud, ownCloud, Apache `mod_dav`, `sabre/dav`, box.com, and most NAS boxes.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { webdav } from "files-sdk/webdav";
+
+const files = new Files({
+  adapter: webdav({
+    baseUrl: "https://cloud.example.com/remote.php/dav/files/alice",
+    username: process.env.WEBDAV_USERNAME!,
+    password: process.env.WEBDAV_PASSWORD!,
+    // authType: "digest", // "basic" (default) | "digest" | "token" | "none"
+    root: "/uploads", // virtual keys resolve under here; defaults to "/"
+  }),
+});
+
+await files.upload("reports/q1.csv", csv, { contentType: "text/csv" });
+const file = await files.download("reports/q1.csv");
+```
+
+Config falls back to `WEBDAV_URL` (alias `WEBDAV_BASE_URL`), `WEBDAV_USERNAME` (alias `WEBDAV_USER`), `WEBDAV_PASSWORD`, and `WEBDAV_AUTH_TYPE` when the matching option is omitted. For OAuth, pass `authType: "token"` with a `token` object.
+
+### Reusing a client
+
+The `webdav` client is stateless - it holds config and issues a fresh HTTP request per call - so there's no connection to pool. Pass a pre-configured `client` when you want to control its options (custom headers, a shared instance) directly:
+
+```ts
+import { createClient } from "webdav";
+
+const client = createClient(
+  "https://cloud.example.com/remote.php/dav/files/alice",
+  {
+    username,
+    password,
+  }
+);
+
+const files = new Files({ adapter: webdav({ client }) });
+```
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/webdav/index.ts"
+  name="WebdavAdapterOptions"
+/>
+
+## Limitations
+
+`list` walks the collection tree with one `PROPFIND` per directory rather than a single `Depth: infinity` request - many servers disable infinite-depth listing, so the walk is the portable choice, but a large tree means many round-trips per `list()` call.
+
+There's no resumable/chunked upload: WebDAV has no portable append primitive, so `upload({ control })` is unsupported and unknown-length streams are buffered before the `PUT`.
+
+## Compatibility
+
+| Method            | Status | Notes                                                                                                                                                                                                                                                                                                          |
+| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `upload`          |   ⚠️   | User `metadata` and `cacheControl` throw - WebDAV has no arbitrary-metadata or cache-header field. `contentType` is sent as the `PUT` `Content-Type`, so servers that persist it round-trip it on read. Stream bodies are buffered (no chunked upload).                                                        |
+| `download`        |   ✅   | Ranged reads issue a `Range` request; `as: "stream"` streams the response body without buffering. A server that ignores `Range` throws rather than silently returning the whole object.                                                                                                                        |
+| `delete`          |   ✅   | Idempotent - a missing file is not an error.                                                                                                                                                                                                                                                                   |
+| `list`            |   ⚠️   | Walks the collection tree recursively (one `PROPFIND` per directory). `prefix`/`limit`/`cursor`/`delimiter` are applied client-side over the full walk. `size`/`lastModified`/`type` come from the `PROPFIND` props.                                                                                           |
+| `search`          |   ⚠️   | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact).                                                                                                                                                                                     |
+| `head`            |   ⚠️   | `size` and `lastModified` come from `PROPFIND`; the content type is the server's `getcontenttype` prop, falling back to the key's extension. No etag surfaced.                                                                                                                                                 |
+| `exists`          |   ✅   | A collection (directory) reports `false` - `exists` answers for file keys.                                                                                                                                                                                                                                     |
+| `copy`            |   ✅   | Native server-side `COPY` - no body round-trip through this process.                                                                                                                                                                                                                                           |
+| `move`            |   ✅   | Native server-side `MOVE`.                                                                                                                                                                                                                                                                                     |
+| `url`             |   ❌   | Throws unless `publicBaseUrl` is set (an HTTP server fronting the same tree), in which case it returns `<publicBaseUrl>/<key>`. A WebDAV `GET` needs authentication and the protocol has no signing primitive. `responseContentDisposition` always throws because the HTTP-front URL cannot bind the override. |
+| `signedUploadUrl` |   ❌   | Throws - WebDAV has no presigned-upload concept. Use `upload()`.                                                                                                                                                                                                                                               |

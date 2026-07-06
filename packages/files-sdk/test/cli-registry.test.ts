@@ -208,6 +208,10 @@ const cases: Record<string, Case> = {
   },
   vultr: { expectedName: "vultr", opts: baseS3 },
   wasabi: { expectedName: "wasabi", opts: baseS3 },
+  webdav: {
+    expectedName: "webdav",
+    opts: { configJson: { baseUrl: "https://dav.example.com" } },
+  },
   yandex: { expectedName: "yandex", opts: baseS3 },
 };
 

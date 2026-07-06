@@ -561,6 +561,18 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     },
     required: ["--bucket", "--region"],
   },
+  webdav: {
+    load: async (opts) => {
+      const { webdav } = await import("../webdav/index.js");
+      return cast(
+        webdav,
+        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
+      );
+    },
+    notes:
+      "connection via --config-json (baseUrl, username, password, authType, root) or WEBDAV_* env vars",
+    required: [],
+  },
   yandex: {
     load: async (opts) => {
       const { yandex } = await import("../yandex/index.js");
