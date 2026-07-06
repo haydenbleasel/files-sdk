@@ -24,12 +24,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 ```
 
 :::warning
-The endpoint must run per-request, not at build time. Set `export const
-prerender = false` on the route (or `output: "server"` in `astro.config.mjs`)
-and install an [SSR
-adapter](https://docs.astro.build/en/guides/on-demand-rendering/)
-(`@astrojs/node`, `@astrojs/vercel`, …) — otherwise Astro tries to prerender
-it and the upload/download paths never reach a server.
+The endpoint must run per-request, not at build time. Set `export const prerender = false` on the route (or `output: "server"` in `astro.config.mjs`) and install an [SSR adapter](https://docs.astro.build/en/guides/on-demand-rendering/) (`@astrojs/node`, `@astrojs/vercel`, …) — otherwise Astro tries to prerender it and the upload/download paths never reach a server.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

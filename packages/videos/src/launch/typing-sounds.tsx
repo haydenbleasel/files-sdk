@@ -63,8 +63,7 @@ export const TypingSounds: React.FC<TypingSoundsProps> = ({
       frame: pressFrame,
       src: pressSampleFor(ch, i),
       volume: baseVolume * volJitter,
-    });
-    events.push({
+    }, {
       frame: pressFrame + releaseDelayFrames,
       src: releaseSampleFor(ch),
       volume: baseVolume * volJitter * 0.65,

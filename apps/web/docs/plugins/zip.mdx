@@ -28,11 +28,11 @@ Archives are standard, classic ZIP: every mainstream tool opens them, and compre
 
 ## The three methods
 
-| Method                            | What it does                                                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `zip(selection, options?)`        | Returns a `ReadableStream<Uint8Array>` of the archive. Entries download lazily, one at a time, as it's read.  |
-| `zipTo(key, selection, options?)` | Builds the same archive and stores it at `key` (as `application/zip`). Returns the `UploadResult`.            |
-| `unzip(key, options?)`            | Extracts a stored archive: each file entry becomes an object. Returns one `UploadResult` per extracted entry. |
+| Method | What it does |
+| --- | --- |
+| `zip(selection, options?)` | Returns a `ReadableStream<Uint8Array>` of the archive. Entries download lazily, one at a time, as it's read. |
+| `zipTo(key, selection, options?)` | Builds the same archive and stores it at `key` (as `application/zip`). Returns the `UploadResult`. |
+| `unzip(key, options?)` | Extracts a stored archive: each file entry becomes an object. Returns one `UploadResult` per extracted entry. |
 
 A **selection** is either an explicit array of keys or `{ prefix }` (resolved with `listAll`, so it spans pages — `{}` selects the whole bucket):
 
@@ -48,10 +48,10 @@ const entries = await files.unzip("incoming/batch.zip", { into: "imported/" });
 
 ### `zip` / `zipTo`
 
-| Option   | Default     | What it does                                                                                                          |
-| -------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| `method` | `"deflate"` | How entry bodies are stored. `"store"` writes bytes verbatim — right for already-compressed sources (JPEG, video).    |
-| `name`   | the key     | Derive an entry's archive path from its key — strip a prefix, flatten folders. Duplicate resulting names fail closed. |
+| Option | Default | What it does |
+| --- | --- | --- |
+| `method` | `"deflate"` | How entry bodies are stored. `"store"` writes bytes verbatim — right for already-compressed sources (JPEG, video). |
+| `name` | the key | Derive an entry's archive path from its key — strip a prefix, flatten folders. Duplicate resulting names fail closed. |
 
 ```ts lineNumbers
 files.zip(
@@ -65,10 +65,10 @@ files.zip(
 
 ### `unzip`
 
-| Option   | Default | What it does                                                                    |
-| -------- | ------- | ------------------------------------------------------------------------------- |
-| `into`   | `""`    | Key prefix extracted entries land under (a trailing `/` is added when missing). |
-| `filter` | —       | `(name) => boolean` — keep only matching entries, judged by their archive path. |
+| Option | Default | What it does |
+| --- | --- | --- |
+| `into` | `""` | Key prefix extracted entries land under (a trailing `/` is added when missing). |
+| `filter` | — | `(name) => boolean` — keep only matching entries, judged by their archive path. |
 
 Extracted entries get a content type inferred from their extension; directory entries are skipped.
 

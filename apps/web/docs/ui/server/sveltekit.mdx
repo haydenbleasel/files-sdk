@@ -23,10 +23,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 ```
 
 :::note
-This is the **server** binding — distinct from the
-[`files-sdk/svelte`](/docs/ui/client/svelte) client store that drives the upload
-UI. One `+server.ts` backs every client binding; the gateway dispatches on the
-method internally (GET = download, POST = the JSON verbs, PUT = upload).
+This is the **server** binding — distinct from the [`files-sdk/svelte`](/docs/ui/client/svelte) client store that drives the upload UI. One `+server.ts` backs every client binding; the gateway dispatches on the method internally (GET = download, POST = the JSON verbs, PUT = upload).
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

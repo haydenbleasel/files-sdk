@@ -42,10 +42,7 @@ compression({ format: "deflate-raw" }); // bare deflate, no framing
 ```
 
 :::note
-Brotli is intentionally not offered. It isn't part of the Compression Streams
-standard, so supporting it would mean a native dependency and break the
-plugin's run-anywhere promise. The three formats above are the ones every
-platform ships.
+Brotli is intentionally not offered. It isn't part of the Compression Streams standard, so supporting it would mean a native dependency and break the plugin's run-anywhere promise. The three formats above are the ones every platform ships.
 :::
 
 ## Ordering
@@ -61,9 +58,7 @@ Because reads unwind the [onion](/docs/plugins#wrap-intercepting-operations) in 
 ## Things to keep in mind
 
 :::warning
-The plugin **buffers the entire body in memory** to compare the compressed and
-original sizes. It's unsuitable for unknown-length streams and [resumable
-uploads](/docs/resumable), which re-read the original body.
+The plugin **buffers the entire body in memory** to compare the compressed and original sizes. It's unsuitable for unknown-length streams and [resumable uploads](/docs/resumable), which re-read the original body.
 :::
 
 - **Range downloads throw.** A byte range of the original maps to no fixed slice of the compressed bytes, so a [`download`](/docs/api/download) with a `range` is refused.

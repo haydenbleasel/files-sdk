@@ -1,7 +1,6 @@
 # Files SDK videos
 
-Remotion project holding every Files SDK launch and release video as a separate
-composition. Run `npm run dev` and pick a composition from the Studio sidebar.
+Remotion project holding every Files SDK launch and release video as a separate composition. Run `npm run dev` and pick a composition from the Studio sidebar.
 
 ## Compositions
 
@@ -19,14 +18,8 @@ composition. Run `npm run dev` and pick a composition from the Studio sidebar.
 
 ## Layout
 
-- `src/shared/` — components shared across videos (`Background`, `IntroScene`,
-  `Outro`, `CodeWindow`, the `code` data, `typewriter`). `IntroScene`, `Outro`,
-  and `Background` are parameterized per video. `highlight` (a small TS/JSX
-  tokenizer so code panes can be authored as plain strings) and `animation`
-  (`fadeUp`/`fadeInOut`) back the newer `v2-0` tabbed editor.
-- `src/launch/`, `src/v1-3/` … `src/v1-8/` — each video's bespoke scenes,
-  panels, `composition.tsx`, and `timings.ts`. Launch keeps its own
-  `code.ts`/`code-window.tsx` (they diverge from the release set).
+- `src/shared/` — components shared across videos (`Background`, `IntroScene`, `Outro`, `CodeWindow`, the `code` data, `typewriter`). `IntroScene`, `Outro`, and `Background` are parameterized per video. `highlight` (a small TS/JSX tokenizer so code panes can be authored as plain strings) and `animation` (`fadeUp`/`fadeInOut`) back the newer `v2-0` tabbed editor.
+- `src/launch/`, `src/v1-3/` … `src/v1-8/` — each video's bespoke scenes, panels, `composition.tsx`, and `timings.ts`. Launch keeps its own `code.ts`/`code-window.tsx` (they diverge from the release set).
 - `src/root.tsx` — registers every composition.
 
 ## Commands

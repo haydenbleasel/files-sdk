@@ -69,10 +69,7 @@ A few providers expose no serializable session, so they support pause/resume **i
 
 Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, and the rest — throws a clear "not supported" [`FilesError`](/docs/api/errors) when `control` is passed, the same way an unsupported [range download](/docs/api/download) does. `control` is a single-key option; it isn't available in the [array form](/docs/bulk) of `upload`.
 
-> The Supabase (TUS), Appwrite, and Cloudinary drivers are built to each
-> provider's documented chunked-upload protocol and covered by mocked tests,
-> but haven't been exercised against a live account — verify them end-to-end
-> before relying on them in production.
+> The Supabase (TUS), Appwrite, and Cloudinary drivers are built to each provider's documented chunked-upload protocol and covered by mocked tests, but haven't been exercised against a live account — verify them end-to-end before relying on them in production.
 
 ## Parts, retries, and progress
 

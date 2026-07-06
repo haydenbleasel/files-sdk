@@ -51,9 +51,7 @@ encryption(Buffer.from(process.env.FILES_ENCRYPTION_KEY!, "base64"));
 ```
 
 :::warning
-The master key is the only thing that can decrypt your data. If you lose it,
-the objects are unrecoverable; if it leaks, they're exposed. Store it in a
-secret manager - never in source control.
+The master key is the only thing that can decrypt your data. If you lose it, the objects are unrecoverable; if it leaks, they're exposed. Store it in a secret manager - never in source control.
 :::
 
 ## Ordering
@@ -69,9 +67,7 @@ Because reads unwind the [onion](/docs/plugins#wrap-intercepting-operations) in 
 ## Things to keep in mind
 
 :::warning
-AES-GCM authenticates the whole ciphertext, so the plugin **buffers the entire
-body in memory** to encrypt or decrypt it. It's unsuitable for unknown-length
-streams and [resumable uploads](/docs/resumable), which re-read the original body.
+AES-GCM authenticates the whole ciphertext, so the plugin **buffers the entire body in memory** to encrypt or decrypt it. It's unsuitable for unknown-length streams and [resumable uploads](/docs/resumable), which re-read the original body.
 :::
 
 - **Range downloads throw.** A slice of a GCM ciphertext can't be decrypted, so a [`download`](/docs/api/download) with a `range` is refused.

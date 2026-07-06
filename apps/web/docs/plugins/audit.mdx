@@ -29,18 +29,18 @@ await files.delete("notes.txt");
 
 Each audited operation produces one [`AuditRecord`](#the-record):
 
-| Field        | Always? | What it is                                                           |
-| ------------ | ------- | -------------------------------------------------------------------- |
-| `action`     | yes     | The verb (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`, …). |
-| `key`        | —       | Caller-facing key, for every verb except `copy` / `move` / `list`.   |
-| `from`, `to` | —       | Source / destination, for `copy` and `move`.                         |
-| `actor`      | —       | Who performed it, from the [`actor`](#options) resolver.             |
-| `at`         | yes     | When the operation started (ms since epoch).                         |
-| `durationMs` | yes     | Wall-clock duration of the logical operation.                        |
-| `status`     | yes     | `"success"` or `"error"`.                                            |
-| `size`       | —       | Stored byte size, on a successful `upload`.                          |
-| `bulk`       | —       | `true` when the record is one item of a bulk (`[...]`) call.         |
-| `error`      | —       | `{ code, message }`, on `status: "error"`.                           |
+| Field | Always? | What it is |
+| --- | --- | --- |
+| `action` | yes | The verb (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`, …). |
+| `key` | — | Caller-facing key, for every verb except `copy` / `move` / `list`. |
+| `from`, `to` | — | Source / destination, for `copy` and `move`. |
+| `actor` | — | Who performed it, from the [`actor`](#options) resolver. |
+| `at` | yes | When the operation started (ms since epoch). |
+| `durationMs` | yes | Wall-clock duration of the logical operation. |
+| `status` | yes | `"success"` or `"error"`. |
+| `size` | — | Stored byte size, on a successful `upload`. |
+| `bulk` | — | `true` when the record is one item of a bulk (`[...]`) call. |
+| `error` | — | `{ code, message }`, on `status: "error"`. |
 
 Keys are always the caller-facing ones, never the internal [prefixed](/docs/prefixes) path.
 
@@ -56,12 +56,12 @@ If you'd rather audit best-effort, `catch` inside your own sink - then it never 
 
 ## Options
 
-| Option   | Default      | What it does                                                                                                  |
-| -------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
-| `sink`   | _(required)_ | `(record) => void \| Promise<void>`, **awaited**. Where each record is written.                               |
-| `actor`  | —            | `(op) => string \| undefined`. Resolve **who** - typically read synchronously from an `AsyncLocalStorage`.    |
-| `events` | `"writes"`   | Which verbs to record: `"writes"`, `"all"` (reads included), or an explicit list like `["upload", "delete"]`. |
-| `clock`  | `Date.now`   | The clock used for `at` and `durationMs`. Inject a fake for deterministic tests or a trusted time source.     |
+| Option | Default | What it does |
+| --- | --- | --- |
+| `sink` | _(required)_ | `(record) => void \| Promise<void>`, **awaited**. Where each record is written. |
+| `actor` | — | `(op) => string \| undefined`. Resolve **who** - typically read synchronously from an `AsyncLocalStorage`. |
+| `events` | `"writes"` | Which verbs to record: `"writes"`, `"all"` (reads included), or an explicit list like `["upload", "delete"]`. |
+| `clock` | `Date.now` | The clock used for `at` and `durationMs`. Inject a fake for deterministic tests or a trusted time source. |
 
 ### Which operations are recorded
 

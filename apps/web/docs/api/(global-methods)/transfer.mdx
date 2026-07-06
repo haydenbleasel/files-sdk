@@ -38,11 +38,11 @@ Like the [bulk actions](/docs/bulk), `transfer` does **not** throw on a partial 
 const { transferred, skipped, errors } = await transfer(from, to);
 ```
 
-| Field         | Contents                                                        |
-| ------------- | --------------------------------------------------------------- |
-| `transferred` | Source keys copied to the destination.                          |
-| `skipped`     | Keys skipped because they already existed. Omitted when none.   |
-| `errors`      | Per-key `{ key, error }` failures. Omitted when every key wins. |
+| Field | Contents |
+| --- | --- |
+| `transferred` | Source keys copied to the destination. |
+| `skipped` | Keys skipped because they already existed. Omitted when none. |
+| `errors` | Per-key `{ key, error }` failures. Omitted when every key wins. |
 
 `error` is always a normalized [`FilesError`](/docs/api/errors).
 

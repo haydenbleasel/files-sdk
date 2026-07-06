@@ -26,11 +26,7 @@ const app = new Elysia()
 ```
 
 :::warning
-Elysia eagerly parses the request body before your handler runs, and a Web
-`Request` body can only be read once — so without `parse: "none"` the gateway
-sees an already-consumed stream ("body already used"). This affects the JSON
-verbs and the proxy/explicit-key `PUT` upload, both of which read the raw
-body.
+Elysia eagerly parses the request body before your handler runs, and a Web `Request` body can only be read once — so without `parse: "none"` the gateway sees an already-consumed stream ("body already used"). This affects the JSON verbs and the proxy/explicit-key `PUT` upload, both of which read the raw body.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

@@ -33,8 +33,8 @@ Bulk `upload([...])` / `download([...])` are de-duplicated per item. Objects wit
 
 ## Options
 
-| Option   | Default    | What it does                                                  |
-| -------- | ---------- | ------------------------------------------------------------- |
+| Option | Default | What it does |
+| --- | --- | --- |
 | `prefix` | `".dedup"` | Where the content-addressed blobs live. Hidden from `list()`. |
 
 Objects under `prefix` are never themselves de-duplicated and are hidden from `list()` (unless you list within the prefix). Don't store your own data there.

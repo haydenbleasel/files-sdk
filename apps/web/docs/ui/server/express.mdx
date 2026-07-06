@@ -32,12 +32,7 @@ app.listen(3000);
 ```
 
 :::warning
-A body parser (`express.json()`, `express.urlencoded()`, …) consumes the
-request stream. The gateway reads the raw body itself — both for the JSON
-verbs and for the proxy/explicit-key `PUT` upload — so a parser that runs
-first leaves it empty: JSON verbs fail and uploads break. Mount the gateway
-**before** any global body parser (as above), or scope the parser so it skips
-this route.
+A body parser (`express.json()`, `express.urlencoded()`, …) consumes the request stream. The gateway reads the raw body itself — both for the JSON verbs and for the proxy/explicit-key `PUT` upload — so a parser that runs first leaves it empty: JSON verbs fail and uploads break. Mount the gateway **before** any global body parser (as above), or scope the parser so it skips this route.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

@@ -45,11 +45,11 @@ Span **names stay low-cardinality** — the key lives in an attribute, not the n
 
 ## Options
 
-| Option       | Default                        | What it does                                                                          |
-| ------------ | ------------------------------ | ------------------------------------------------------------------------------------- |
-| `tracer`     | `trace.getTracer("files-sdk")` | The tracer spans are created on. Pass your own to scope the name/version or fake it.  |
-| `spanPrefix` | `"files."`                     | Prefix for span names. `op.kind` is appended, so the default yields `files.upload`.   |
-| `attributes` | —                              | `(op) => attributes` merged **over** the built-ins. Add context, or redact a default. |
+| Option | Default | What it does |
+| --- | --- | --- |
+| `tracer` | `trace.getTracer("files-sdk")` | The tracer spans are created on. Pass your own to scope the name/version or fake it. |
+| `spanPrefix` | `"files."` | Prefix for span names. `op.kind` is appended, so the default yields `files.upload`. |
+| `attributes` | — | `(op) => attributes` merged **over** the built-ins. Add context, or redact a default. |
 
 ### Custom attributes and redaction
 

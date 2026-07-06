@@ -106,10 +106,10 @@ const { transferred, skipped, errors } = await transfer(from, to, {
 });
 ```
 
-| Field         | Contents                                                        |
-| ------------- | --------------------------------------------------------------- |
-| `transferred` | Source keys copied to the destination.                          |
-| `skipped`     | Keys skipped because they already existed. Omitted when none.   |
-| `errors`      | Per-key `{ key, error }` failures. Omitted when every key wins. |
+| Field | Contents |
+| --- | --- |
+| `transferred` | Source keys copied to the destination. |
+| `skipped` | Keys skipped because they already existed. Omitted when none. |
+| `errors` | Per-key `{ key, error }` failures. Omitted when every key wins. |
 
 Each object is streamed download-to-upload — the destination never buffers a whole large file. **Body, content type, and user metadata travel; `etag`/`lastModified` are destination-assigned and `Cache-Control` is not carried.** Metadata a destination adapter rejects (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the run. Like the bulk forms, `transfer` doesn't throw on partial failure. `transformKey` maps the _logical_ key (each instance applies its own `prefix` independently). There's no `total` in progress — the source is walked lazily. Also exposed as the CLI `transfer` command and an MCP `transfer` tool (with `--allow-writes`).

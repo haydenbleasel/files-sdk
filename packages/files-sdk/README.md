@@ -2,9 +2,7 @@
 
 A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.
 
-![npm](https://img.shields.io/npm/dm/files-sdk?style=flat&colorA=000000&colorB=000000)
-[![npm version](https://img.shields.io/npm/v/files-sdk.svg?style=flat&colorA=000000&colorB=000000)](https://www.npmjs.com/package/files-sdk)
-[![GitHub stars](https://img.shields.io/github/stars/haydenbleasel/files-sdk?style=flat&colorA=000000&colorB=000000)](https://github.com/haydenbleasel/files-sdk/stargazers)
+![npm](https://img.shields.io/npm/dm/files-sdk?style=flat&colorA=000000&colorB=000000) [![npm version](https://img.shields.io/npm/v/files-sdk.svg?style=flat&colorA=000000&colorB=000000)](https://www.npmjs.com/package/files-sdk) [![GitHub stars](https://img.shields.io/github/stars/haydenbleasel/files-sdk?style=flat&colorA=000000&colorB=000000)](https://github.com/haydenbleasel/files-sdk/stargazers)
 
 ## Install
 
@@ -83,10 +81,7 @@ A growing set of subpaths wrap a configured `Files` instance as ready-made tools
 
 ## Live tests
 
-Most tests mock the provider. A few `*.live.test.ts` suites exercise a real
-backend instead. They are **skipped by default** and only run with
-`LIVE_TESTS=1`; suites that need credentials also skip when those env vars are
-absent, so the default `bun test` stays fast, offline, and credential-free.
+Most tests mock the provider. A few `*.live.test.ts` suites exercise a real backend instead. They are **skipped by default** and only run with `LIVE_TESTS=1`; suites that need credentials also skip when those env vars are absent, so the default `bun test` stays fast, offline, and credential-free.
 
 ```sh
 # fs needs no credentials — runs against a real temp dir.
@@ -97,10 +92,7 @@ LIVE_TESTS=1 S3_LIVE_BUCKET=my-bucket AWS_REGION=us-east-1 \
   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... bun test s3.live
 ```
 
-Live tests never run on `pull_request` from forks. In CI they run only when a
-maintainer triggers the `Live tests` workflow manually (`workflow_dispatch`) —
-typically against `main` after a PR has merged — with credentials from repo
-secrets.
+Live tests never run on `pull_request` from forks. In CI they run only when a maintainer triggers the `Live tests` workflow manually (`workflow_dispatch`) — typically against `main` after a PR has merged — with credentials from repo secrets.
 
 ## License
 

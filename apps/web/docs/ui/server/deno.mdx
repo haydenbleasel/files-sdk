@@ -30,10 +30,7 @@ Deno.serve({ port: 3000 }, (req) => {
 ```
 
 :::note
-Deno is sandboxed — run with network and environment access: `deno run
---allow-net --allow-env main.ts`. The adapter reads credentials (e.g.
-`AWS_ACCESS_KEY_ID`) and the gateway its `FILES_API_SECRET` from the
-environment, so `--allow-env` is required.
+Deno is sandboxed — run with network and environment access: `deno run --allow-net --allow-env main.ts`. The adapter reads credentials (e.g. `AWS_ACCESS_KEY_ID`) and the gateway its `FILES_API_SECRET` from the environment, so `--allow-env` is required.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

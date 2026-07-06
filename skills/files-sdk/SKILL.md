@@ -47,22 +47,22 @@ Swap the adapter import and the rest of the code stays the same.
 
 All methods live on the `Files` instance; the single-key forms are also available on a key-scoped `FileHandle` from `files.file(key)`. The `upload`/`download`/`head`/`exists`/`delete` methods are **overloaded** — pass one key for a single result, or an array for the bulk form (see [Bulk operations](#bulk-operations)).
 
-| Method                       | Returns                         | Notes                                                                                                                                           |
-| ---------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `upload(key, body, opts?)`   | `UploadResult`                  | `opts`: `contentType`, `cacheControl`, `metadata`, `onProgress`, `multipart`, `control`. Array form → `{ uploaded, errors? }`.                  |
-| `download(key, opts?)`       | `StoredFile`                    | `opts.as` is `"blob"` or `"stream"`; `opts.range` for a byte slice. Array form → `{ downloaded, errors? }`.                                     |
-| `head(key, opts?)`           | `StoredFile`                    | Metadata only. The returned object still has `text()`/`blob()`/`arrayBuffer()`/`stream()` but they lazy-GET. Array form → `{ files, errors? }`. |
-| `exists(key, opts?)`         | `boolean`                       | `false` only on `NotFound`. Auth/transport errors still throw. Array form → `{ existing, missing, errors? }`.                                   |
-| `delete(key, opts?)`         | `void`                          | Array form → `{ deleted, errors? }` (uses native batch delete on S3/Supabase/UploadThing).                                                      |
-| `copy(from, to, opts?)`      | `void`                          | Within one adapter.                                                                                                                             |
-| `move(from, to, opts?)`      | `void`                          | Rename. Native rename where available (`fs`, Cloudinary), else copy+delete. Throws on immutable stores (Convex).                                |
-| `list(opts?)`                | `{ items, prefixes?, cursor? }` | `opts`: `prefix`, `cursor`, `limit`, `delimiter`. `delimiter` returns folder `prefixes` — see [Folder listing](#folder-listing).                |
-| `listAll(opts?)`             | `AsyncGenerator<StoredFile>`    | Walks every page for you, following the cursor. `for await (const f of files.listAll({ prefix }))`.                                             |
-| `url(key, opts?)`            | `string`                        | See [URL behavior](#url-behavior) — varies by adapter.                                                                                          |
-| `signedUploadUrl(key, opts)` | `SignedUpload`                  | See [Signed upload URLs](#signed-upload-urls) — pass `maxSize`.                                                                                 |
-| `file(key)`                  | `FileHandle`                    | Same single-key methods, key pre-bound. Also `copyTo`/`copyFrom`/`moveTo`/`moveFrom`.                                                           |
-| `raw` / `adapter` (getters)  | native client / `Adapter`       | Escape hatch — see [Escape hatch](#escape-hatch).                                                                                               |
-| `readonly()` (method)        | `Files`                         | A read-only view reusing the same adapter/prefix/hooks — see [Instance options](#instance-options).                                             |
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `upload(key, body, opts?)` | `UploadResult` | `opts`: `contentType`, `cacheControl`, `metadata`, `onProgress`, `multipart`, `control`. Array form → `{ uploaded, errors? }`. |
+| `download(key, opts?)` | `StoredFile` | `opts.as` is `"blob"` or `"stream"`; `opts.range` for a byte slice. Array form → `{ downloaded, errors? }`. |
+| `head(key, opts?)` | `StoredFile` | Metadata only. The returned object still has `text()`/`blob()`/`arrayBuffer()`/`stream()` but they lazy-GET. Array form → `{ files, errors? }`. |
+| `exists(key, opts?)` | `boolean` | `false` only on `NotFound`. Auth/transport errors still throw. Array form → `{ existing, missing, errors? }`. |
+| `delete(key, opts?)` | `void` | Array form → `{ deleted, errors? }` (uses native batch delete on S3/Supabase/UploadThing). |
+| `copy(from, to, opts?)` | `void` | Within one adapter. |
+| `move(from, to, opts?)` | `void` | Rename. Native rename where available (`fs`, Cloudinary), else copy+delete. Throws on immutable stores (Convex). |
+| `list(opts?)` | `{ items, prefixes?, cursor? }` | `opts`: `prefix`, `cursor`, `limit`, `delimiter`. `delimiter` returns folder `prefixes` — see [Folder listing](#folder-listing). |
+| `listAll(opts?)` | `AsyncGenerator<StoredFile>` | Walks every page for you, following the cursor. `for await (const f of files.listAll({ prefix }))`. |
+| `url(key, opts?)` | `string` | See [URL behavior](#url-behavior) — varies by adapter. |
+| `signedUploadUrl(key, opts)` | `SignedUpload` | See [Signed upload URLs](#signed-upload-urls) — pass `maxSize`. |
+| `file(key)` | `FileHandle` | Same single-key methods, key pre-bound. Also `copyTo`/`copyFrom`/`moveTo`/`moveFrom`. |
+| `raw` / `adapter` (getters) | native client / `Adapter` | Escape hatch — see [Escape hatch](#escape-hatch). |
+| `readonly()` (method) | `Files` | A read-only view reusing the same adapter/prefix/hooks — see [Instance options](#instance-options). |
 
 Plus a top-level `transfer(source, dest, opts?)` for cross-provider migration — see [Bulk, move & transfer](#bulk-move--transfer).
 
@@ -226,11 +226,11 @@ See [references/cli-and-mcp.md](references/cli-and-mcp.md). (This MCP server is 
 
 Three subpaths expose a configured `Files` instance as in-process tools for AI agents. All share the same eight operations (`listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl`, `uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) and the same approval-gating defaults (the four writes are gated; reads are not). `downloadFile` takes a `maxBytes` guard so a model can't pull an unbounded object into context.
 
-| Subpath            | For                                                           | Factory                                              |
-| ------------------ | ------------------------------------------------------------- | ---------------------------------------------------- |
-| `files-sdk/ai-sdk` | Vercel AI SDK (`generateText`, `streamText`, `ToolLoopAgent`) | `createFileTools`                                    |
-| `files-sdk/openai` | OpenAI Responses API and Agents SDK                           | `createResponsesFileTools` / `createAgentsFileTools` |
-| `files-sdk/claude` | Anthropic Claude Agent SDK                                    | `createClaudeFileTools`                              |
+| Subpath | For | Factory |
+| --- | --- | --- |
+| `files-sdk/ai-sdk` | Vercel AI SDK (`generateText`, `streamText`, `ToolLoopAgent`) | `createFileTools` |
+| `files-sdk/openai` | OpenAI Responses API and Agents SDK | `createResponsesFileTools` / `createAgentsFileTools` |
+| `files-sdk/claude` | Anthropic Claude Agent SDK | `createClaudeFileTools` |
 
 ```ts
 import { Files } from "files-sdk";

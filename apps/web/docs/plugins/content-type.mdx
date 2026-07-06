@@ -33,10 +33,10 @@ You can run the same detection yourself with the exported `detectContentType(byt
 
 ## Options
 
-| Option       | Values                            | What it does                                                   |
-| ------------ | --------------------------------- | -------------------------------------------------------------- |
+| Option | Values | What it does |
+| --- | --- | --- |
 | `onMismatch` | `"correct"` (default), `"reject"` | What to do when the sniffed type contradicts the declared one. |
-| `onUnknown`  | `"trust"` (default), `"reject"`   | What to do when the bytes match no known signature.            |
+| `onUnknown` | `"trust"` (default), `"reject"` | What to do when the bytes match no known signature. |
 
 ### onMismatch
 
@@ -48,12 +48,7 @@ When the bytes disagree with the type the caller declared (or that the key's ext
 A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's left **exactly** as you set it, so a `text/html; charset=utf-8` keeps its `charset` parameter.
 
 :::warning
-`onMismatch: "correct"` makes the stored type _honest_; it does not make a
-dangerous file safe. Detecting that an upload is really HTML and storing it as
-`text/html` still leaves it executable if you serve it inline. To **block**
-mislabeled active content, use `onMismatch: "reject"`; to serve user uploads
-safely, pair this with a forced `attachment` disposition on
-[`url()`](/docs/api/url).
+`onMismatch: "correct"` makes the stored type _honest_; it does not make a dangerous file safe. Detecting that an upload is really HTML and storing it as `text/html` still leaves it executable if you serve it inline. To **block** mislabeled active content, use `onMismatch: "reject"`; to serve user uploads safely, pair this with a forced `attachment` disposition on [`url()`](/docs/api/url).
 :::
 
 ### onUnknown

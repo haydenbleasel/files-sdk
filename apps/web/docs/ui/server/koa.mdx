@@ -31,12 +31,7 @@ app.listen(3000);
 ```
 
 :::warning
-A body parser (`koa-bodyparser`, `@koa/bodyparser`, …) consumes the request
-stream. The gateway reads the raw body itself — both for the JSON verbs and
-for the proxy/explicit-key `PUT` upload — so a parser that runs first leaves
-it empty. Mount the gateway **before** any global body parser, or scope the
-parser so it skips this route. The binding sets `ctx.respond = false` and
-writes `ctx.res` directly, so don't read `ctx.body` after it.
+A body parser (`koa-bodyparser`, `@koa/bodyparser`, …) consumes the request stream. The gateway reads the raw body itself — both for the JSON verbs and for the proxy/explicit-key `PUT` upload — so a parser that runs first leaves it empty. Mount the gateway **before** any global body parser, or scope the parser so it skips this route. The binding sets `ctx.respond = false` and writes `ctx.res` directly, so don't read `ctx.body` after it.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

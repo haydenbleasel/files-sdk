@@ -21,13 +21,13 @@ class FilesError extends Error {
 
 `code` is the field worth branching on:
 
-| Code           | Meaning                                                                          |
-| -------------- | -------------------------------------------------------------------------------- |
-| `NotFound`     | The object or key (or bucket/container) does not exist.                          |
-| `Unauthorized` | Credentials are missing, wrong, or lack the required permission.                 |
-| `Conflict`     | Precondition failed — e.g. `If-Match` mismatch, create-only collision.           |
-| `ReadOnly`     | A write was attempted on a `new Files({ readonly: true })` / `files.readonly()`. |
-| `Provider`     | Catch-all for anything else (transport, throttling, malformed input, timeouts).  |
+| Code | Meaning |
+| --- | --- |
+| `NotFound` | The object or key (or bucket/container) does not exist. |
+| `Unauthorized` | Credentials are missing, wrong, or lack the required permission. |
+| `Conflict` | Precondition failed — e.g. `If-Match` mismatch, create-only collision. |
+| `ReadOnly` | A write was attempted on a `new Files({ readonly: true })` / `files.readonly()`. |
+| `Provider` | Catch-all for anything else (transport, throttling, malformed input, timeouts). |
 
 Codes map from the provider's own error/HTTP status (`404` → `NotFound`, `401`/`403` → `Unauthorized`, `409`/`412` → `Conflict`); `ReadOnly` is the one SDK-native code. Only `Provider` is retried — the rest are deterministic and returned immediately.
 

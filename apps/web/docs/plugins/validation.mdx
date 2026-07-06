@@ -31,12 +31,12 @@ await files.upload("notes.txt", "..."); // throws: type not allowed
 
 Every option is independent - set any combination, and with none set the plugin is a no-op pass-through.
 
-| Option         | What it does                                                                  |
-| -------------- | ----------------------------------------------------------------------------- |
-| `maxSize`      | Reject uploads larger than this many bytes.                                   |
-| `minSize`      | Reject uploads smaller than this many bytes - e.g. `1` to refuse empty files. |
-| `allowedTypes` | Reject uploads whose MIME type isn't in the list.                             |
-| `key`          | Reject `upload` (and `copy` / `move` destinations) whose key fails the rule.  |
+| Option | What it does |
+| --- | --- |
+| `maxSize` | Reject uploads larger than this many bytes. |
+| `minSize` | Reject uploads smaller than this many bytes - e.g. `1` to refuse empty files. |
+| `allowedTypes` | Reject uploads whose MIME type isn't in the list. |
+| `key` | Reject `upload` (and `copy` / `move` destinations) whose key fails the rule. |
 
 ### Sizes
 
@@ -94,11 +94,7 @@ plugins: [validation({ maxSize }), compression(), encryption(key)];
 ## Things to keep in mind
 
 :::warning
-`signedUploadUrl()` hands upload capability to a client that writes
-**directly** to the store, bypassing the plugin. When a size or type rule is
-set, minting one would be a silent hole - so `signedUploadUrl()` **fails
-closed** and throws. (A key-only policy still mints the URL, after checking
-the requested key.)
+`signedUploadUrl()` hands upload capability to a client that writes **directly** to the store, bypassing the plugin. When a size or type rule is set, minting one would be a silent hole - so `signedUploadUrl()` **fails closed** and throws. (A key-only policy still mints the URL, after checking the requested key.)
 :::
 
 - **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only guards writes; it transforms nothing, so there's nothing to reverse on download.

@@ -31,11 +31,11 @@ await files.upload("invoice.pdf", body); // lands on the first reachable backend
 
 These three Tier B plugins all take a second adapter, but they do different jobs:
 
-| Plugin                               | What it does                                                               |
-| ------------------------------------ | -------------------------------------------------------------------------- |
-| `failover()`                         | Try the primary; fall back to a secondary **only when a backend is down**. |
-| `replication()`                      | Write **every** mutation to all backends (fan-out).                        |
-| [`tiering()`](/docs/plugins/tiering) | **Partition** objects across backends by key / size / age.                 |
+| Plugin | What it does |
+| --- | --- |
+| `failover()` | Try the primary; fall back to a secondary **only when a backend is down**. |
+| `replication()` | Write **every** mutation to all backends (fan-out). |
+| [`tiering()`](/docs/plugins/tiering) | **Partition** objects across backends by key / size / age. |
 
 `failover()` treats each secondary as a **full replica** of one namespace, so it never splits or merges data across backends. It's the availability lever: keep serving against whatever backend is up.
 
@@ -76,9 +76,7 @@ failover({
 ```
 
 :::warning
-Failing over on `NotFound` means a `delete` that only reached one backend can
-be "resurrected" on the next read from another. Reach for it only when your
-secondaries are genuine replicas kept in sync.
+Failing over on `NotFound` means a `delete` that only reached one backend can be "resurrected" on the next read from another. Reach for it only when your secondaries are genuine replicas kept in sync.
 :::
 
 ## What each verb does

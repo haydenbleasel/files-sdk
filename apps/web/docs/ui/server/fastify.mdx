@@ -34,15 +34,7 @@ app.listen({ port: 3000 });
 ```
 
 :::warning
-Fastify runs its content-type parsers **before** your handler, and the
-built-in `application/json`/`text/plain` parsers consume the request body the
-gateway needs — both for the JSON verbs and for the proxy/explicit-key `PUT`
-upload. Drop them (`removeAllContentTypeParsers()`) and add the no-op
-catch-all (`addContentTypeParser("*", …)`, as above) so the raw body reaches
-the gateway. If you don't want that app-wide, register the route inside an
-[encapsulated
-plugin](https://fastify.dev/docs/latest/Reference/Encapsulation/) with its own
-parsers.
+Fastify runs its content-type parsers **before** your handler, and the built-in `application/json`/`text/plain` parsers consume the request body the gateway needs — both for the JSON verbs and for the proxy/explicit-key `PUT` upload. Drop them (`removeAllContentTypeParsers()`) and add the no-op catch-all (`addContentTypeParser("*", …)`, as above) so the raw body reaches the gateway. If you don't want that app-wide, register the route inside an [encapsulated plugin](https://fastify.dev/docs/latest/Reference/Encapsulation/) with its own parsers.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

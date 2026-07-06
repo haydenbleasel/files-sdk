@@ -31,10 +31,10 @@ Reach for a plugin when you need to **change** behavior - envelope-encrypt bodie
 
 A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to two optional capabilities. A plugin can use either or both.
 
-| Capability | What it does                                                                            | Changes the instance type?                                 |
-| ---------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `wrap`     | Intercept every operation - transform the inputs, veto by throwing, or wrap the result. | No                                                         |
-| `extend`   | Contribute new namespaced methods (e.g. `files.usage()`).                               | Yes - via [`createFiles`](#typing-extend-with-createfiles) |
+| Capability | What it does | Changes the instance type? |
+| --- | --- | --- |
+| `wrap` | Intercept every operation - transform the inputs, veto by throwing, or wrap the result. | No |
+| `extend` | Contribute new namespaced methods (e.g. `files.usage()`). | Yes - via [`createFiles`](#typing-extend-with-createfiles) |
 
 Because `wrap` doesn't touch the instance type, plugins that only wrap work with plain `new Files({ plugins })`. Only `extend` adds surface, and that's the one case [`createFiles`](/docs/plugins/api#createfiles) exists for.
 
@@ -68,9 +68,7 @@ Plugins run **inside** the [`onAction`](/docs/api/onaction) / [`onError`](/docs/
 
 `wrap` intercepts both single and bulk calls. The array forms of `upload`, `download`, `head`, `exists`, and `delete` fan out to **one operation per item**, each carrying `bulk: true` so a plugin can tell a batch element from a standalone call. This means an `encryption()` plugin encrypts `upload(key, body)` and every item of `upload([...])` - no silent plaintext footgun.
 
-> When any wrapping plugin is installed, `delete([...])` fans out to per-key
-> deletes through each plugin instead of the adapter's native batch primitive, so
-> every key is intercepted. Without plugins, the native batch path is unchanged.
+> When any wrapping plugin is installed, `delete([...])` fans out to per-key deletes through each plugin instead of the adapter's native batch primitive, so every key is intercepted. Without plugins, the native batch path is unchanged.
 
 ### handlers(): per-verb wraps
 
@@ -98,8 +96,7 @@ const encryption = (key: CryptoKey): FilesPlugin => ({
 ```
 
 :::note
-You don't have to write this plugin yourself - we ship
-[`encryption()`](/docs/plugins/encryption) out of the box.
+You don't have to write this plugin yourself - we ship [`encryption()`](/docs/plugins/encryption) out of the box.
 :::
 
 ## extend: new methods

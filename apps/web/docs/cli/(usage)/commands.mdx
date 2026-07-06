@@ -5,21 +5,21 @@ description: Each CLI command maps to an SDK method - upload, download, head, ex
 
 Each command maps to a `Files` method. Same semantics, same `FilesError` codes, same `StoredFile` fields on the way out (emitted as flat JSON).
 
-| Command        | SDK method                                       | What it does                                          |
-| -------------- | ------------------------------------------------ | ----------------------------------------------------- |
-| `upload`       | [`upload`](/docs/api/upload)                     | Write a file or piped stdin to a key                  |
-| `download`     | [`download`](/docs/api/download)                 | Read a key to disk or stream it to stdout             |
-| `head`         | [`head`](/docs/api/head)                         | Fetch metadata without the body                       |
-| `exists`       | [`exists`](/docs/api/exists)                     | Test a key — prints `{ exists, key }`, sets exit code |
-| `list`         | [`list`](/docs/api/list)                         | Page through keys under a prefix                      |
-| `copy`         | [`copy`](/docs/api/copy)                         | Copy a key to a new key                               |
-| `move`         | [`move`](/docs/api/move)                         | Move (rename) a key                                   |
-| `delete`       | [`delete`](/docs/api/delete)                     | Delete one or more keys                               |
-| `url`          | [`url`](/docs/api/url)                           | Get a read URL — presigned or public                  |
-| `sign-upload`  | [`signedUploadUrl`](/docs/api/signed-upload-url) | Mint a browser-direct upload policy                   |
-| `transfer`     | [`transfer`](/docs/api/transfer)                 | Stream every object to another provider               |
-| `sync`         | [`sync`](/docs/api/sync)                         | Mirror onto another provider (skip-unchanged, prune)  |
-| `capabilities` | [`capabilities`](/docs/capabilities)             | Print what the configured adapter can do, as JSON     |
+| Command | SDK method | What it does |
+| --- | --- | --- |
+| `upload` | [`upload`](/docs/api/upload) | Write a file or piped stdin to a key |
+| `download` | [`download`](/docs/api/download) | Read a key to disk or stream it to stdout |
+| `head` | [`head`](/docs/api/head) | Fetch metadata without the body |
+| `exists` | [`exists`](/docs/api/exists) | Test a key — prints `{ exists, key }`, sets exit code |
+| `list` | [`list`](/docs/api/list) | Page through keys under a prefix |
+| `copy` | [`copy`](/docs/api/copy) | Copy a key to a new key |
+| `move` | [`move`](/docs/api/move) | Move (rename) a key |
+| `delete` | [`delete`](/docs/api/delete) | Delete one or more keys |
+| `url` | [`url`](/docs/api/url) | Get a read URL — presigned or public |
+| `sign-upload` | [`signedUploadUrl`](/docs/api/signed-upload-url) | Mint a browser-direct upload policy |
+| `transfer` | [`transfer`](/docs/api/transfer) | Stream every object to another provider |
+| `sync` | [`sync`](/docs/api/sync) | Mirror onto another provider (skip-unchanged, prune) |
+| `capabilities` | [`capabilities`](/docs/capabilities) | Print what the configured adapter can do, as JSON |
 
 All examples use `--provider s3 --bucket uploads`; swap in any [provider](/docs/providers) and its flags.
 
@@ -142,10 +142,7 @@ files --provider s3 --bucket uploads capabilities
 
 ### transfer
 
-Stream every object from the configured (source) provider to another provider,
-given as a JSON config. The source uses the normal global flags (so
-`--key-prefix` scopes it); `--prefix` filters the walk, and `--no-overwrite`
-skips keys already present at the destination.
+Stream every object from the configured (source) provider to another provider, given as a JSON config. The source uses the normal global flags (so `--key-prefix` scopes it); `--prefix` filters the walk, and `--no-overwrite` skips keys already present at the destination.
 
 ```bash lineNumbers
 # Migrate an S3 prefix to R2, skipping anything already copied
@@ -189,9 +186,7 @@ files --provider s3 --bucket uploads --timeout 10000 --retries 3 \
 
 ## Many keys at once
 
-`head`, `exists`, and `delete` take multiple keys and return a structured result
-instead of throwing on partial failure. `--concurrency` and `--stop-on-error`
-tune the fan-out:
+`head`, `exists`, and `delete` take multiple keys and return a structured result instead of throwing on partial failure. `--concurrency` and `--stop-on-error` tune the fan-out:
 
 ```bash lineNumbers
 files --provider s3 --bucket uploads head a.txt b.txt c.txt
@@ -214,9 +209,7 @@ files --provider s3 --bucket uploads \
 
 ## Directories
 
-Upload a whole local tree, or download many keys into a directory. Each file is
-keyed by (or written to) its relative path; content types are inferred per file
-on upload.
+Upload a whole local tree, or download many keys into a directory. Each file is keyed by (or written to) its relative path; content types are inferred per file on upload.
 
 ```bash lineNumbers
 # Upload every file under ./build, keyed by relative path (composes with --key-prefix)

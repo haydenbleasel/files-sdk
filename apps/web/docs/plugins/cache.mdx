@@ -24,10 +24,7 @@ await files.head("a.png"); // miss → provider again
 ```
 
 :::note
-`invalidateCache()`, `cacheStats()`, and `resetCacheStats()` are contributed
-by the plugin's `extend`, so they only appear on the **type** when you
-construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new
-Files()` at runtime).
+`invalidateCache()`, `cacheStats()`, and `resetCacheStats()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime).
 :::
 
 ## What gets cached
@@ -85,9 +82,7 @@ files.resetCacheStats();
 By default the cache is a **bounded in-memory LRU** keyed by object key, holding `maxEntries` keys (default 1000) before evicting the least-recently-used. Each key's record bundles every cached verb together, which is what makes invalidation a single delete.
 
 :::warning
-Worst-case memory is roughly `maxEntries * maxBytes` once `download` caching
-is on. The default set (`head` + `url`) stores only small metadata, so the
-entry count is the only thing to size.
+Worst-case memory is roughly `maxEntries * maxBytes` once `download` caching is on. The default set (`head` + `url`) stores only small metadata, so the entry count is the only thing to size.
 :::
 
 Pass your own `store` to share the cache across instances or processes - e.g. a Redis-backed `CacheStore` that serializes each record:

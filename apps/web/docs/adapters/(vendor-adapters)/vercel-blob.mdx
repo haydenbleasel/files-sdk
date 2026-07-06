@@ -57,29 +57,29 @@ User `metadata` isn't supported by the underlying API, so passing a non-empty `m
 
 ### Public access
 
-| Method            | Status | Notes                                                                                                                                                                                                                                              |
-| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `upload`          |   ✅   |                                                                                                                                                                                                                                                    |
-| `download`        |   ✅   |                                                                                                                                                                                                                                                    |
-| `delete`          |   ✅   |                                                                                                                                                                                                                                                    |
-| `list`            |   ✅   |                                                                                                                                                                                                                                                    |
-| `search`          |   ✅   |                                                                                                                                                                                                                                                    |
-| `head`            |   ✅   |                                                                                                                                                                                                                                                    |
-| `exists`          |   ✅   |                                                                                                                                                                                                                                                    |
-| `copy`            |   ✅   |                                                                                                                                                                                                                                                    |
-| `url`             |   ⚠️   | Returns the permanent CDN URL. `expiresIn` is silently ignored (no signing primitive); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
-| `signedUploadUrl` |   ❌   | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads.                                                                                                                                                |
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ✅ |  |
+| `download` | ✅ |  |
+| `delete` | ✅ |  |
+| `list` | ✅ |  |
+| `search` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ⚠️ | Returns the permanent CDN URL. `expiresIn` is silently ignored (no signing primitive); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
+| `signedUploadUrl` | ❌ | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads. |
 
 ### Private access
 
-| Method            | Status | Notes                                                                                                                                                                                        |
-| ----------------- | :----: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `upload`          |   ✅   |                                                                                                                                                                                              |
-| `download`        |   ✅   |                                                                                                                                                                                              |
-| `delete`          |   ✅   |                                                                                                                                                                                              |
-| `list`            |   ✅   |                                                                                                                                                                                              |
-| `head`            |   ✅   |                                                                                                                                                                                              |
-| `exists`          |   ✅   |                                                                                                                                                                                              |
-| `copy`            |   ✅   |                                                                                                                                                                                              |
-| `url`             |   ❌   | No URL primitive for private blobs - the underlying SDK requires an authenticated `blob.get()` call with the token. Use `download()` instead, or instantiate a second public-access adapter. |
-| `signedUploadUrl` |   ❌   | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads.                                                                                          |
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ✅ |  |
+| `download` | ✅ |  |
+| `delete` | ✅ |  |
+| `list` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ❌ | No URL primitive for private blobs - the underlying SDK requires an authenticated `blob.get()` call with the token. Use `download()` instead, or instantiate a second public-access adapter. |
+| `signedUploadUrl` | ❌ | No presigned upload primitive. Use `handleUpload()` from `@vercel/blob/client` for browser uploads. |

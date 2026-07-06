@@ -35,16 +35,16 @@ interface AdapterCapabilities {
 }
 ```
 
-| Field            | `true` means                                                             | Maps to               |
-| ---------------- | ------------------------------------------------------------------------ | --------------------- |
-| `rangeRead`      | `download({ range })` returns only the requested bytes                   | `download`            |
-| `uploadProgress` | `upload({ onProgress })` reports byte-level progress natively            | `upload`              |
-| `delimiter`      | `list({ delimiter })` returns S3-style common prefixes                   | `list`                |
-| `metadata`       | `upload({ metadata })` persists arbitrary user metadata                  | `upload`              |
-| `cacheControl`   | `upload({ cacheControl })` stores a `Cache-Control` header               | `upload`              |
-| `multipart`      | the adapter exposes a resumable / multipart upload primitive             | `upload({ control })` |
-| `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy`                |
-| `signedUrl`      | `url()` can mint a signed or tokenized URL — see below                   | `url`                 |
+| Field | `true` means | Maps to |
+| --- | --- | --- |
+| `rangeRead` | `download({ range })` returns only the requested bytes | `download` |
+| `uploadProgress` | `upload({ onProgress })` reports byte-level progress natively | `upload` |
+| `delimiter` | `list({ delimiter })` returns S3-style common prefixes | `list` |
+| `metadata` | `upload({ metadata })` persists arbitrary user metadata | `upload` |
+| `cacheControl` | `upload({ cacheControl })` stores a `Cache-Control` header | `upload` |
+| `multipart` | the adapter exposes a resumable / multipart upload primitive | `upload({ control })` |
+| `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy` |
+| `signedUrl` | `url()` can mint a signed or tokenized URL — see below | `url` |
 
 Every field mirrors an operation the unified API actually has. There are deliberately no flags for `raw`-only territory (object versioning, checksums, conditional writes, POST policies) — advertising a flag for a non-operation would turn the matrix into a back-door spec, where a wrong flag is worse than no flag.
 

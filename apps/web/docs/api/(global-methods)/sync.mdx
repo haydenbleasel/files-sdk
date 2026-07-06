@@ -31,10 +31,10 @@ Both sides are walked in full before any work begins — `sync` runs two listing
 
 `compare` decides whether an object already at the destination is up to date:
 
-| `compare`  | Skips when…                                | Use for                                       |
-| ---------- | ------------------------------------------ | --------------------------------------------- |
-| `"etag"`   | size **and** etag both match _(default)_   | same-provider mirrors (S3 → S3)               |
-| `"size"`   | byte length matches                        | cross-provider mirrors                        |
+| `compare` | Skips when… | Use for |
+| --- | --- | --- |
+| `"etag"` | size **and** etag both match _(default)_ | same-provider mirrors (S3 → S3) |
+| `"size"` | byte length matches | cross-provider mirrors |
 | a function | `(source, dest) => boolean` returns `true` | custom rules (a checksum header, a timestamp) |
 
 **etags are only comparable within one scheme.** S3-to-S3 single-part uploads produce matching etags, but across heterogeneous backends (S3 → R2 / GCS / Azure) or for multipart objects, etags differ even for byte-identical content — so the default `"etag"` conservatively re-uploads them. For a cross-provider mirror, use `compare: "size"` (or a custom comparator that reads a checksum you control). `lastModified` is deliberately never used: the destination stamps its own upload time, so it would never match the source and every run would re-upload everything.
@@ -43,9 +43,7 @@ Both sides are walked in full before any work begins — `sync` runs two listing
 
 With `prune: true`, after the uploads `sync` deletes every destination key (within the destination scope) that no source key maps onto — leaving the destination an exact mirror. Uploads run **before** prunes, so an interrupted run never leaves the destination missing data it was about to gain.
 
-> Prune is destructive. An **empty source** with `prune: true` deletes the
-> entire destination scope. Scope it deliberately with `prefix` / `destPrefix`,
-> and `dryRun` it first.
+> Prune is destructive. An **empty source** with `prune: true` deletes the entire destination scope. Scope it deliberately with `prefix` / `destPrefix`, and `dryRun` it first.
 
 When `transformKey` re-homes keys under a different namespace, set `destPrefix` so prune only ever considers the mirror's own keys (it defaults to `prefix`).
 
@@ -70,12 +68,12 @@ const { uploaded, skipped, deleted, errors } = await sync(from, to, {
 });
 ```
 
-| Field      | Contents                                                                   |
-| ---------- | -------------------------------------------------------------------------- |
-| `uploaded` | Source keys written to the destination (new or changed).                   |
-| `skipped`  | Source keys left untouched because the destination copy was current.       |
-| `deleted`  | Destination keys pruned. Present only when `prune` is set.                 |
-| `errors`   | Per-key `{ key, error }` failures (uploads and prunes). Omitted when none. |
+| Field | Contents |
+| --- | --- |
+| `uploaded` | Source keys written to the destination (new or changed). |
+| `skipped` | Source keys left untouched because the destination copy was current. |
+| `deleted` | Destination keys pruned. Present only when `prune` is set. |
+| `errors` | Per-key `{ key, error }` failures (uploads and prunes). Omitted when none. |
 
 `error` is always a normalized [`FilesError`](/docs/api/errors).
 

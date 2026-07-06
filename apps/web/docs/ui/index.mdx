@@ -87,18 +87,15 @@ The browser never holds storage credentials. Calls go to **your** endpoint, whic
 
 ## The two halves
 
-|            | Package                                                                                                                                   | What it is                                                                                                                                                            |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Client** | [`files-sdk/react`](/docs/ui/client/react), [`files-sdk/vue`](/docs/ui/client/vue), [`files-sdk/svelte`](/docs/ui/client/svelte)          | A `useFiles` binding for your framework — every verb (imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`.                   |
+|  | Package | What it is |
+| --- | --- | --- |
+| **Client** | [`files-sdk/react`](/docs/ui/client/react), [`files-sdk/vue`](/docs/ui/client/vue), [`files-sdk/svelte`](/docs/ui/client/svelte) | A `useFiles` binding for your framework — every verb (imperative, with upload progress) plus optional reactive `useList` / `useFile` / `useSearch`. |
 | **Server** | `files-sdk/api` + a framework adapter ([Next.js](/docs/ui/server/next), [Hono](/docs/ui/server/hono), [Express](/docs/ui/server/express)) | A [gateway](/docs/ui/server/gateway) you mount at `/api/files` that exposes the `Files` API over HTTP, gated by an [`authorize`](/docs/ui/server/authorization) hook. |
 
 The same gateway backs all three bindings. A framework-agnostic core, `createFilesClient` from `files-sdk/client`, sits under them for non-framework (Node, worker) callers.
 
 :::warning
-The gateway proxies `download`, `list`, `delete`, and `move` to the browser —
-it is effectively a remote storage console. It is **deny-by-default**: nothing
-is exposed until you configure [`authorize`](/docs/ui/server/authorization) or
-`operations`. Read that page before shipping.
+The gateway proxies `download`, `list`, `delete`, and `move` to the browser — it is effectively a remote storage console. It is **deny-by-default**: nothing is exposed until you configure [`authorize`](/docs/ui/server/authorization) or `operations`. Read that page before shipping.
 :::
 
 ## Quick start

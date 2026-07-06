@@ -20,19 +20,19 @@ Pick the provider with `--provider <name>` on every call (or set `FILES_SDK_PROV
 
 Each maps to a `Files` method:
 
-| Command       | Method            | Notes                                                            |
-| ------------- | ----------------- | ---------------------------------------------------------------- |
-| `upload`      | `upload`          | `--file ./x` or `--stdin`; `--content-type` (else inferred)      |
-| `download`    | `download`        | `--out ./x` to disk, `--stdout` to pipe; `--range start-end`     |
-| `head`        | `head`            | metadata as JSON; takes multiple keys                            |
-| `exists`      | `exists`          | no output — exit 0 = exists, 1 = missing; takes multiple keys    |
-| `list`        | `list`            | `--prefix`, `--limit`, `--all` (follow cursor to the end)        |
-| `copy`        | `copy`            |                                                                  |
-| `move`        | `move`            |                                                                  |
-| `delete`      | `delete`          | takes multiple keys                                              |
-| `url`         | `url`             | `--expires-in <sec>`                                             |
-| `sign-upload` | `signedUploadUrl` | `--expires-in`, `--max-size`, `--content-type`                   |
-| `transfer`    | `transfer`        | `--to '<json>'` destination config; `--prefix`, `--no-overwrite` |
+| Command | Method | Notes |
+| --- | --- | --- |
+| `upload` | `upload` | `--file ./x` or `--stdin`; `--content-type` (else inferred) |
+| `download` | `download` | `--out ./x` to disk, `--stdout` to pipe; `--range start-end` |
+| `head` | `head` | metadata as JSON; takes multiple keys |
+| `exists` | `exists` | no output — exit 0 = exists, 1 = missing; takes multiple keys |
+| `list` | `list` | `--prefix`, `--limit`, `--all` (follow cursor to the end) |
+| `copy` | `copy` |  |
+| `move` | `move` |  |
+| `delete` | `delete` | takes multiple keys |
+| `url` | `url` | `--expires-in <sec>` |
+| `sign-upload` | `signedUploadUrl` | `--expires-in`, `--max-size`, `--content-type` |
+| `transfer` | `transfer` | `--to '<json>'` destination config; `--prefix`, `--no-overwrite` |
 
 ```sh
 files --provider s3 --bucket uploads upload reports/q1.pdf --file ./q1.pdf --content-type application/pdf

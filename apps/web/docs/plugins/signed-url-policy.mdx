@@ -28,11 +28,11 @@ await files.signedUploadUrl("avatar.png", { expiresIn: 3600 }); // <= 15 min, <=
 
 Every option is independent. With **none** set the plugin still applies the headline default: `url()` forces an `attachment` disposition.
 
-| Option          | Applies to                    | What it does                                                                     |
-| --------------- | ----------------------------- | -------------------------------------------------------------------------------- |
-| `disposition`   | `url()`                       | Force a download `Content-Disposition`. Defaults to `"attachment"`.              |
-| `maxExpiresIn`  | `url()` + `signedUploadUrl()` | Clamp the URL lifetime (in seconds) down to this ceiling.                        |
-| `maxUploadSize` | `signedUploadUrl()`           | Guarantee a server-enforced `maxSize` (in bytes) is always present, capped here. |
+| Option | Applies to | What it does |
+| --- | --- | --- |
+| `disposition` | `url()` | Force a download `Content-Disposition`. Defaults to `"attachment"`. |
+| `maxExpiresIn` | `url()` + `signedUploadUrl()` | Clamp the URL lifetime (in seconds) down to this ceiling. |
+| `maxUploadSize` | `signedUploadUrl()` | Guarantee a server-enforced `maxSize` (in bytes) is always present, capped here. |
 
 ### Disposition
 
@@ -53,11 +53,7 @@ await files.url("doc.pdf", {
 Pass a full `'attachment; filename="..."'` string to set a default filename, or `disposition: false` to disable the guard entirely (you keep the expiry cap and lose the XSS protection).
 
 :::warning
-On signing adapters, setting a `Content-Disposition` **forces the signing
-path** even when `publicBaseUrl` is configured - a permanent CDN URL has no
-signature to bind the override into. That's the [documented, safe-by-default
-behavior](/docs/api/url): the security override wins. If you rely on permanent
-public URLs and don't want this, set `disposition: false`.
+On signing adapters, setting a `Content-Disposition` **forces the signing path** even when `publicBaseUrl` is configured - a permanent CDN URL has no signature to bind the override into. That's the [documented, safe-by-default behavior](/docs/api/url): the security override wins. If you rely on permanent public URLs and don't want this, set `disposition: false`.
 :::
 
 ### Expiry
@@ -86,12 +82,7 @@ await files.signedUploadUrl("a", { expiresIn: 60, maxSize: 4096 }); // left at 4
 ```
 
 :::warning
-Enforcing a `maxSize` makes supporting adapters mint a presigned **POST** form
-(with a `content-length-range` policy) instead of a PUT, and adapters whose
-direct-upload primitive can't bind a size limit **fail closed** - they throw
-rather than hand out an unbounded URL. A size policy therefore turns an
-unenforceable provider into a loud error instead of a silent hole, which is
-the point.
+Enforcing a `maxSize` makes supporting adapters mint a presigned **POST** form (with a `content-length-range` policy) instead of a PUT, and adapters whose direct-upload primitive can't bind a size limit **fail closed** - they throw rather than hand out an unbounded URL. A size policy therefore turns an unenforceable provider into a loud error instead of a silent hole, which is the point.
 :::
 
 ## Ordering

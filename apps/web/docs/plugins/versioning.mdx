@@ -25,10 +25,7 @@ await files.restore("notes.txt", previous.versionId); // back to "v1"
 ```
 
 :::note
-`versions()` and `restore()` are contributed by the plugin's `extend`, so they
-only appear on the **type** when you construct with
-[`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at
-runtime). `versioning()` is the first built-in plugin to use `extend`.
+`versions()` and `restore()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime). `versioning()` is the first built-in plugin to use `extend`.
 :::
 
 ## How it works
