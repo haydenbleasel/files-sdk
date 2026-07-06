@@ -1,4 +1,4 @@
 bun run check
 bun run types
-bun run test
+bun run test:coverage
 bun run build --filter files-sdk

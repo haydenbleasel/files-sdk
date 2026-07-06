@@ -340,6 +340,23 @@ describe("upload edges", () => {
     ).toBe("size");
     expect(await files.exists("k")).toBe(false);
   });
+
+  test("explicit upload without a size cap surfaces the provider error", async () => {
+    const adapter: Adapter = {
+      ...fakeAdapter(),
+      upload: () => Promise.reject(new Error("provider write failed")),
+    };
+    const router = mk({
+      adapter,
+      allowedOrigins: () => true,
+      operations: ["upload"],
+    });
+    const res = await router.handle(put("op=upload&key=k", "hello"));
+    expect(res.status).toBe(500);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toContain("provider write failed");
+  });
 });
 
 describe("origin predicate path", () => {
