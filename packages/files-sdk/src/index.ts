@@ -2620,6 +2620,7 @@ export class Files<A extends Adapter = Adapter> {
       (signal): signal is AbortSignal => signal !== undefined
     );
 
+    // oxlint-disable-next-line eslint/no-unreachable-loop -- retry loop: the catch branch falls through to the next attempt, which the rule's CFG can't see
     for (let attempt = 0; ; attempt += 1) {
       const runtime = mergeSignals(
         signals,

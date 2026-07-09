@@ -369,6 +369,7 @@ const zipChunks = async function* zipChunks(
   const method = options.method === "store" ? METHOD_STORE : METHOD_DEFLATE;
   const central: CentralEntry[] = [];
   let offset = 0;
+  // oxlint-disable-next-line eslint/no-unreachable-loop -- streams every entry in turn; the generator body's inner loop confuses the rule's CFG
   for (const entry of entries) {
     // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- archive is streamed record by record with a running offset.
     const file = await files.download(entry.key);

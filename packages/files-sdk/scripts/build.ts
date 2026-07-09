@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import { watch as fsWatch } from "node:fs";
-// Build the package: JS via Bun's bundler, .d.ts via tsgo, then mirror the docs.
+// Build the package: JS via Bun's bundler, .d.ts via tsc, then mirror the docs.
 // Replaces tsup. Bun bundles entries with shared chunks enabled so dynamic
-// imports stay lazy; externals stay external. tsgo emits per-file declarations
-// into the same dist/ tree.
+// imports stay lazy; externals stay external. tsc (TypeScript 7's native Go
+// compiler) emits per-file declarations into the same dist/ tree.
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -100,9 +100,9 @@ const run = async (cmd: string[], label: string) => {
   }
 };
 
-// tsgo (TypeScript native preview) emits one .d.ts (+ map) per source file.
+// tsc (TypeScript 7 native compiler) emits one .d.ts (+ map) per source file.
 const buildTypes = () =>
-  run(["bun", "x", "tsgo", "-p", "tsconfig.build.json"], "tsgo");
+  run(["bun", "x", "tsc", "-p", "tsconfig.build.json"], "tsc");
 
 // Reuse the existing docs-mirroring script so it stays the single source.
 const copyDocs = () => run(["bun", "scripts/copy-docs.ts"], "copy-docs");

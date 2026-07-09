@@ -12,7 +12,7 @@ import pkg from "../package.json" with { type: "json" };
 // walks the transitive *static* import graph of dist/cli/index.js — dynamic
 // imports are exactly the lazy boundary, so they're not followed.
 
-// The cold-start build (tsgo included) can take a while on CI runners.
+// The cold-start build (tsc included) can take a while on CI runners.
 const COLD_BUILD_TIMEOUT_MS = 120_000;
 
 const pkgRoot = path.resolve(import.meta.dirname, "..");

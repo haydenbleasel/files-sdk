@@ -469,6 +469,7 @@ const attempt = async <T>(
   signals: AbortSignal[]
 ): Promise<T> => {
   const max = maxRetries(opts.retries, true);
+  // oxlint-disable-next-line eslint/no-unreachable-loop -- retry loop: the catch branch falls through to the next attempt, which the rule's CFG can't see
   for (let n = 0; ; n += 1) {
     const runtime = mergeSignals(signals, opts.timeout);
     try {
