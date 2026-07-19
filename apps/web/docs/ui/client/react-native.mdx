@@ -1,0 +1,63 @@
+---
+title: React Native
+description: The same useFiles hook in React Native / Expo — absolute endpoint, picker-to-Blob uploads with real progress, buffered downloads.
+---
+
+`files-sdk/react` has no DOM dependency, so `useFiles` works in React Native and Expo as-is — same verbs, same progress and error state, talking to the same [gateway](/docs/ui/server/gateway) your web app uses. Two platform differences matter: the endpoint must be absolute, and upload bodies come from the picker as Blobs.
+
+```tsx lineNumbers
+const files = useFiles({
+  endpoint: "https://app.example.com/api/files", // React Native fetch needs an absolute URL
+  headers: () => ({ authorization: `Bearer ${token}` }), // your auth token
+});
+```
+
+## Uploading from a picker
+
+`expo-document-picker` / `expo-image-picker` hand you a local `uri`; fetch it to get a Blob the client can send:
+
+```tsx lineNumbers
+import * as DocumentPicker from "expo-document-picker";
+
+const pick = async () => {
+  const result = await DocumentPicker.getDocumentAsync();
+  if (result.canceled) {
+    return;
+  }
+  const blob = await fetch(result.assets[0].uri).then((r) => r.blob());
+  const { key } = await files.upload(blob, {
+    onProgress: (p) => setProgress(p.fraction), // 0 → 1
+  });
+};
+```
+
+Progress is real: React Native ships `XMLHttpRequest` with upload progress events, so the default transport reports byte-level progress exactly as in the browser. Byte bodies also work — `files.upload(key, bytes)` detects that React Native's `Blob` cannot wrap an `ArrayBuffer` and sends the bytes raw instead.
+
+## Downloading
+
+React Native's `fetch` has no response streaming, so `download()` transparently buffers the body — `blob()` and `arrayBuffer()` behave exactly as on the web:
+
+```tsx lineNumbers
+const file = await files.download("report.pdf");
+const bytes = await file.arrayBuffer();
+```
+
+For displaying or saving media, skip the byte round-trip and use a signed URL:
+
+```tsx lineNumbers
+import * as FileSystem from "expo-file-system";
+
+<Image source={{ uri: avatarUrl }} />; // from await files.url("avatar.png")
+
+await FileSystem.downloadAsync(
+  await files.url("report.pdf"),
+  FileSystem.documentDirectory + "report.pdf"
+);
+```
+
+## Caveats
+
+- `StoredFile.stream()` needs a `ReadableStream` polyfill (Hermes has none) — prefer `blob()` / `arrayBuffer()`.
+- `StoredFile.text()` relies on `TextDecoder`, present on recent Hermes; polyfill it on older runtimes.
+- Presigned **POST** upload targets don't work: React Native's `FormData` cannot carry a Blob part. Presigned **PUT** targets — the common case, including every S3-family adapter and UploadThing — work fine, as does the default through-the-gateway path.
+- The [UI components](/docs/ui/components) are React DOM + Tailwind, so they are web-only; the hook state (`uploads`, `progress`, `error`) maps directly onto your native components instead.
