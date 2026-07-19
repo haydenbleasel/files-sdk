@@ -52,11 +52,23 @@ const parseOutput = (result: CallResult): unknown => {
   }
 };
 
-const callCanUseTool = (canUseTool: CanUseTool, name: string, input = {}) =>
-  canUseTool(name, input, {
+const callCanUseTool = async (
+  canUseTool: CanUseTool,
+  name: string,
+  input = {}
+) => {
+  const result = await canUseTool(name, input, {
+    requestId: "test-request",
     signal: new AbortController().signal,
     toolUseID: "test-call",
   });
+  // `CanUseTool` may resolve to `null` (the SDK skips its own transport write),
+  // but our bundled `canUseTool` always returns a concrete decision.
+  if (result === null) {
+    throw new Error("canUseTool unexpectedly returned null");
+  }
+  return result;
+};
 
 describe("createClaudeFileTools", () => {
   test("returns the expected bundle shape", () => {

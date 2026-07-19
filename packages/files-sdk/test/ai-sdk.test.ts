@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ToolExecutionOptions } from "ai";
-
 import { createFileTools } from "../src/ai-sdk/index.js";
 import { Files, FilesError } from "../src/index.js";
 import { MAX_DOWNLOAD_BYTES } from "../src/internal/ai-tools/schemas.js";
@@ -12,10 +10,19 @@ import { fakeAdapter } from "./fake-adapter.js";
 // accept the differently-shaped tools returned by `createFileTools`. The
 // tests only poke at `execute` / `needsApproval` / etc., so we view each
 // tool through this minimal structural shape.
+// Minimal structural stand-in for `ai`'s `ToolExecutionOptions`. The file tools'
+// executors only read `toolCallId`/`messages`, and importing the real type
+// couples this test to `ai`'s evolving generic signature — it now requires a
+// `CONTEXT` type argument and a `context` field that the tools never use.
+interface ExecOptions {
+  toolCallId: string;
+  messages: unknown[];
+}
+
 interface AnyTool {
   execute?: (
     input: Record<string, unknown>,
-    options: ToolExecutionOptions
+    options: ExecOptions
   ) => Promise<unknown> | unknown;
   needsApproval?: unknown;
   description?: unknown;
@@ -23,7 +30,7 @@ interface AnyTool {
   inputSchema?: unknown;
 }
 
-const stubExecOptions = (): ToolExecutionOptions => ({
+const stubExecOptions = (): ExecOptions => ({
   messages: [],
   toolCallId: "test-call",
 });
