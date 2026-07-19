@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+// oxlint-disable max-classes-per-file, unicorn/consistent-function-scoping -- in-test Blob/FileReader mock classes and fixture helpers.
+import { afterEach, describe, expect, test } from "bun:test";
 
 import { createStoredFile } from "../src/internal/stored-file.js";
 
@@ -108,7 +109,7 @@ describe("createStoredFile", () => {
     const userBranch = sf.stream();
     const out = await collectStream(userBranch);
     expect(new TextDecoder().decode(out)).toBe("hello");
-    expect(sf.text()).rejects.toThrow(/already consumed/u);
+    await expect(sf.text()).rejects.toThrow(/already consumed/u);
     expect(factoryCalls).toBe(1);
   });
 
@@ -212,5 +213,143 @@ describe("createStoredFile", () => {
     expect(sf.etag).toBe("e1");
     expect(sf.lastModified).toBe(42);
     expect(sf.metadata).toEqual({ foo: "bar" });
+  });
+});
+
+// React Native's Blob rejects ArrayBuffer/TypedArray parts, so blob() falls
+// back to the source's native Blob (a Response.blob()) when one is provided.
+describe("createStoredFile on a byte-rejecting Blob runtime", () => {
+  const RealBlob = globalThis.Blob;
+  const realFileReader = (globalThis as { FileReader?: unknown }).FileReader;
+  afterEach(() => {
+    globalThis.Blob = RealBlob;
+    (globalThis as { FileReader?: unknown }).FileReader = realFileReader;
+  });
+
+  const installByteRejectingBlob = () => {
+    globalThis.Blob = class extends RealBlob {
+      constructor(parts?: BlobPart[], opts?: BlobPropertyBag) {
+        if (
+          parts?.some((p) => p instanceof ArrayBuffer || ArrayBuffer.isView(p))
+        ) {
+          throw new Error(
+            "Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported"
+          );
+        }
+        super(parts, opts);
+      }
+    };
+  };
+
+  const lazySource = (text: string) => ({
+    factory: () => Promise.resolve(new TextEncoder().encode(text)),
+    kind: "lazy" as const,
+  });
+
+  test("blob() consumes the native Blob; byte accessors read back through it", async () => {
+    installByteRejectingBlob();
+    let calls = 0;
+    const native = new RealBlob(["hello"], { type: "text/plain" });
+    const sf = createStoredFile(
+      { key: "k", size: 5, type: "text/plain" },
+      lazySource("unused"),
+      () => {
+        calls += 1;
+        return Promise.resolve(native);
+      }
+    );
+    expect(await sf.blob()).toBe(native);
+    // Second call reuses the consumed Blob instead of re-reading the source.
+    expect(await sf.blob()).toBe(native);
+    expect(calls).toBe(1);
+    // Bytes are derived from the Blob, not the (already-consumed) source.
+    expect(await sf.text()).toBe("hello");
+    const buf = await sf.arrayBuffer();
+    expect(new TextDecoder().decode(new Uint8Array(buf))).toBe("hello");
+  });
+
+  test("stream() after a native blob() drains the Blob's bytes", async () => {
+    installByteRejectingBlob();
+    const sf = createStoredFile(
+      { key: "k", size: 5, type: "text/plain" },
+      lazySource("unused"),
+      () => Promise.resolve(new RealBlob(["hello"], { type: "text/plain" }))
+    );
+    await sf.blob();
+    const reader = sf.stream().getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop -- sequential drain
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+    }
+    expect(new TextDecoder().decode(chunks[0])).toBe("hello");
+  });
+
+  test("blob() without a native source throws a clear FilesError", async () => {
+    installByteRejectingBlob();
+    const sf = createStoredFile(
+      { key: "k", size: 3, type: "text/plain" },
+      lazySource("abc")
+    );
+    await expect(sf.blob()).rejects.toThrow(/cannot wrap bytes/u);
+  });
+
+  test("blob() after a byte accessor throws a clear FilesError", async () => {
+    installByteRejectingBlob();
+    const sf = createStoredFile(
+      { key: "k", size: 3, type: "text/plain" },
+      lazySource("abc"),
+      () => Promise.resolve(new RealBlob(["abc"]))
+    );
+    expect(await sf.text()).toBe("abc");
+    await expect(sf.blob()).rejects.toThrow(/blob\(\) before/u);
+  });
+
+  test("Blobs without arrayBuffer() are read via FileReader", async () => {
+    installByteRejectingBlob();
+    const bytes = new TextEncoder().encode("hi");
+    class FakeReader {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      error: Error | null = null;
+      result: ArrayBuffer | null = null;
+      readAsArrayBuffer(_blob: unknown) {
+        this.result = bytes.buffer as ArrayBuffer;
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    (globalThis as { FileReader?: unknown }).FileReader = FakeReader;
+    const sf = createStoredFile(
+      { key: "k", size: 2, type: "text/plain" },
+      lazySource("unused"),
+      () => Promise.resolve({ size: 2, type: "text/plain" } as Blob)
+    );
+    await sf.blob();
+    expect(await sf.text()).toBe("hi");
+  });
+
+  test("FileReader failures reject the byte read", async () => {
+    installByteRejectingBlob();
+    class FailingReader {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      error: Error | null = null;
+      result: ArrayBuffer | null = null;
+      readAsArrayBuffer(_blob: unknown) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    }
+    (globalThis as { FileReader?: unknown }).FileReader = FailingReader;
+    const sf = createStoredFile(
+      { key: "k", size: 2, type: "text/plain" },
+      lazySource("unused"),
+      () => Promise.resolve({ size: 2, type: "text/plain" } as Blob)
+    );
+    await sf.blob();
+    await expect(sf.text()).rejects.toThrow(/FileReader failed/u);
   });
 });

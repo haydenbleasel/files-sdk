@@ -1,9 +1,9 @@
 ---
 title: React Native
-description: The same useFiles hook in React Native / Expo — absolute endpoint, picker-to-Blob uploads with real progress, buffered downloads.
+description: The same useFiles hook in React Native / Expo — absolute endpoint, picker-descriptor uploads with real progress, buffered downloads.
 ---
 
-`files-sdk/react` has no DOM dependency, so `useFiles` works in React Native and Expo as-is — same verbs, same progress and error state, talking to the same [gateway](/docs/ui/server/gateway) your web app uses. Two platform differences matter: the endpoint must be absolute, and upload bodies come from the picker as Blobs.
+`files-sdk/react` has no DOM dependency, so `useFiles` works in React Native and Expo as-is — same verbs, same progress and error state, talking to the same [gateway](/docs/ui/server/gateway) your web app uses. Two platform differences matter: the endpoint must be absolute, and uploads take the picker's `{ uri, name, type }` descriptor directly.
 
 ```tsx lineNumbers
 const files = useFiles({
@@ -38,7 +38,7 @@ Progress is real: React Native ships `XMLHttpRequest` with upload progress event
 
 ## Downloading
 
-React Native's `fetch` has no response streaming, so `download()` transparently buffers the body — `blob()` and `arrayBuffer()` behave exactly as on the web:
+React Native's `fetch` has no response streaming, so `download()` transparently buffers the body — `arrayBuffer()` and `text()` behave exactly as on the web, and `blob()` hands back the response's native Blob. One ordering caveat: React Native's `Blob` cannot wrap raw bytes, so call `blob()` _before_ `arrayBuffer()`/`text()` if you need one — once a byte accessor has drained the response, `blob()` throws:
 
 ```tsx lineNumbers
 const file = await files.download("report.pdf");

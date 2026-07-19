@@ -544,3 +544,80 @@ describe("s3-fetch core — error handling", () => {
     }
   });
 });
+
+describe("s3-fetch core — dot-segment keys fail closed", () => {
+  // WHATWG URL (inside aws4fetch and fetch) collapses `.`/`..` path segments
+  // before signing, so such keys would silently target a different key — the
+  // adapter refuses them instead.
+  test("upload with a `..` segment rejects permanently", async () => {
+    const { adapter, fake } = withFake();
+    const error = await expectCode(
+      adapter.upload("a/../b.txt", "x"),
+      "Provider"
+    );
+    expect(error.permanent).toBe(true);
+    expect(error.message).toMatch(/cannot address/u);
+    expect(fake.requests.length).toBe(0);
+  });
+
+  test("url with a `.` segment rejects", async () => {
+    const { adapter } = withFake();
+    const error = await expectCode(adapter.url("./x.txt"), "Provider");
+    expect(error.message).toMatch(/aws-sdk client/u);
+  });
+
+  test("copy refuses dot segments in the source key", async () => {
+    const { adapter, fake } = withFake();
+    await expectCode(adapter.copy("../evil.txt", "safe.txt"), "Provider");
+    expect(fake.requests.length).toBe(0);
+  });
+});
+
+describe("s3-fetch core — post-dispatch failures map to FilesError", () => {
+  test("a download body dying mid-read maps to Provider", async () => {
+    const adapter = makeAdapter({
+      fetch: () =>
+        Promise.resolve(new Response(erroringBody(), { status: 200 })),
+    });
+    const error = await expectCode(adapter.download("a.txt"), "Provider");
+    expect(error.message).toBe("body broke");
+  });
+
+  test("a list body dying mid-read maps to Provider", async () => {
+    const adapter = makeAdapter({
+      fetch: () =>
+        Promise.resolve(new Response(erroringBody(), { status: 200 })),
+    });
+    await expectCode(adapter.list(), "Provider");
+  });
+
+  test("a lazy head() body dying mid-read maps to Provider", async () => {
+    let call = 0;
+    const adapter = makeAdapter({
+      fetch: () => {
+        call += 1;
+        return Promise.resolve(
+          call === 1
+            ? new Response(null, {
+                headers: { "content-length": "1" },
+                status: 200,
+              })
+            : new Response(erroringBody(), { status: 200 })
+        );
+      },
+    });
+    const file = await adapter.head("a.txt");
+    await expectCode(file.text(), "Provider");
+  });
+
+  test("signing failures in presign map to Provider", async () => {
+    const { adapter } = withFake();
+    await expectCode(
+      adapter.signedUploadUrl("a.txt", {
+        contentType: "bad\nvalue",
+        expiresIn: 60,
+      }),
+      "Provider"
+    );
+  });
+});

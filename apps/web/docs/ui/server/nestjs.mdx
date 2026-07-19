@@ -35,7 +35,7 @@ await app.listen(3000);
 ```
 
 :::warning
-On the **Express adapter**, Nest registers `body-parser` globally _before_ any consumer middleware, and a parser consumes the raw request stream the gateway needs (for the JSON verbs and the proxy/explicit-key `PUT` upload). Create the app with `bodyParser: false` and re-register parsers scoped to your own routes (e.g. `app.use("/api", express.json())`).
+On the **Express adapter**, Nest registers `body-parser` globally _before_ any consumer middleware, and a parser consumes the raw request stream the gateway needs (for the JSON verbs and the proxy/explicit-key `PUT` upload). Create the app with `bodyParser: false` and re-register parsers scoped to your own routes — with a prefix that does **not** cover the gateway mount (e.g. `app.use("/api/users", express.json())`; `app.use("/api", express.json())` would swallow `/api/files` bodies and reintroduce exactly this problem).
 
 The **Fastify adapter** needs no flag: Nest middleware runs at `onRequest`, before Fastify's content-type parsers, so the stream reaches the gateway untouched.
 :::

@@ -51,6 +51,9 @@ export const decodeDownload = (
       : {
           factory: async () => new Uint8Array(await res.arrayBuffer()),
           kind: "lazy",
-        }
+        },
+    // On the buffering (React Native) path, hand blob() the Response's own
+    // native Blob — RN's Blob cannot be constructed from raw bytes.
+    body ? undefined : () => res.blob()
   );
 };

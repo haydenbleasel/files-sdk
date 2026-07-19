@@ -157,7 +157,25 @@ const drainText = async (res: Response): Promise<string> => {
 };
 
 const encodeKey = (key: string): string =>
-  key.split("/").map(encodeURIComponent).join("/");
+  key
+    .split("/")
+    .map((segment) => {
+      if (segment === "." || segment === "..") {
+        // WHATWG `URL` — inside both aws4fetch's signer and `fetch` itself —
+        // collapses `.`/`..` path segments (even percent-encoded ones), so the
+        // request would be signed and sent for a *different*, normalized key,
+        // and `..` can escape the bucket under path-style addressing. No
+        // encoding survives normalization; fail closed instead.
+        throw new FilesError(
+          "Provider",
+          `key contains a "${segment}" path segment, which the fetch client cannot address — URL normalization would silently target a different key. Use the aws-sdk client for dot-segment keys.`,
+          undefined,
+          { permanent: true }
+        );
+      }
+      return encodeURIComponent(segment);
+    })
+    .join("/");
 
 interface ListEntry {
   key: string;
@@ -259,6 +277,19 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
   const errorFromResponse = async (res: Response): Promise<FilesError> =>
     errorFromXml(await drainText(res), res.status);
 
+  /**
+   * Run a step whose failures should surface as mapped `FilesError`s — body
+   * reads that can die mid-stream, and signing. `send()` wraps only the
+   * dispatch; anything after it that touches the wire goes through here.
+   */
+  const mapped = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      throw mapError(error);
+    }
+  };
+
   const send = async (
     method: string,
     url: string,
@@ -287,7 +318,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     if (!res.ok) {
       throw await errorFromResponse(res);
     }
-    return new Uint8Array(await res.arrayBuffer());
+    return new Uint8Array(await mapped(() => res.arrayBuffer()));
   };
 
   const headResponse = async (
@@ -339,14 +370,16 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     for (const [name, value] of Object.entries(extras.query ?? {})) {
       url.searchParams.set(name, value);
     }
-    const request = await client.sign(url.toString(), {
-      method,
-      ...(extras.headers && { headers: extras.headers }),
-      // `allHeaders` opts `content-type` into the signed-header set (aws4fetch
-      // skips it by default), which is what makes a presigned PUT actually
-      // *enforce* the content type rather than merely suggest it.
-      aws: { allHeaders: true, signQuery: true },
-    });
+    const request = await mapped(() =>
+      client.sign(url.toString(), {
+        method,
+        ...(extras.headers && { headers: extras.headers }),
+        // `allHeaders` opts `content-type` into the signed-header set (aws4fetch
+        // skips it by default), which is what makes a presigned PUT actually
+        // *enforce* the content type rather than merely suggest it.
+        aws: { allHeaders: true, signQuery: true },
+      })
+    );
     return request.url;
   };
 
@@ -403,7 +436,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
             : { data: new Uint8Array(), kind: "buffer" }
         );
       }
-      const bytes = new Uint8Array(await res.arrayBuffer());
+      const bytes = new Uint8Array(await mapped(() => res.arrayBuffer()));
       // Prefer the real byte length over Content-Length so the size surfaced
       // always matches the bytes the caller can read.
       return createStoredFile(
@@ -428,7 +461,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       if (!res.ok) {
         throw await errorFromResponse(res);
       }
-      const xml = await res.text();
+      const xml = await mapped(() => res.text());
       const items: StoredFile[] = [];
       for (const match of xml.matchAll(XML_CONTENTS_RE)) {
         const entry = parseListEntry(match.groups?.block ?? "");

@@ -94,7 +94,11 @@ export interface R2HttpOptions {
 export interface R2BindingOptions {
   /** Workers `R2Bucket` binding. Reads and writes go through the binding. */
   binding: R2Bucket;
-  /** R2 bucket name. Only used to label errors when reading via the binding. */
+  /**
+   * R2 bucket name. Required for hybrid signing — it names the bucket in the
+   * signed URL path that `url()` / `signedUploadUrl()` produce. Without it,
+   * the HTTP credentials below are ignored and signing throws with guidance.
+   */
   bucket?: string;
   /**
    * Origin used to build URLs from `url()` — typically an `r2.dev`
@@ -451,12 +455,17 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     },
     name: "r2-binding",
     raw: bucket,
-    signedUploadUrl(key, signOpts: SignUploadOptions): Promise<SignedUpload> {
+    // `async` so misconfiguration (no hybrid creds) rejects instead of
+    // throwing synchronously — direct adapter callers attach `.catch` after.
+    async signedUploadUrl(
+      key,
+      signOpts: SignUploadOptions
+    ): Promise<SignedUpload> {
       // getSigner() first: a binding without HTTP creds can't sign at all,
       // which is the more fundamental thing to fix than `maxSize`.
       const signer = getSigner();
       assertNoMaxSize(signOpts);
-      return signer.signedUploadUrl(key, signOpts);
+      return await signer.signedUploadUrl(key, signOpts);
     },
     // A Workers binding can't sign on its own: `url()` signs only in hybrid
     // mode (HTTP credentials also passed); a bare `publicBaseUrl` is a
@@ -495,10 +504,13 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         throw mapR2Error(error);
       }
     },
-    url(key, urlOpts: UrlOptions = {}): Promise<string> {
+    // `async` so misconfiguration rejects instead of throwing synchronously —
+    // direct adapter callers attach `.catch` after; every other method here
+    // already rejects.
+    async url(key, urlOpts: UrlOptions = {}): Promise<string> {
       // `responseContentDisposition` requires signing — bypass the
       // publicBaseUrl path and route through hybrid signing if available.
-      // No hybrid? Throw rather than silently dropping the security ask.
+      // No hybrid? Fail rather than silently dropping the security ask.
       const wantsDisposition = Boolean(urlOpts.responseContentDisposition);
       if (wantsDisposition && !hybrid) {
         throw new FilesError(
@@ -509,12 +521,12 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       // Order: explicit `publicBaseUrl` wins (cheapest, no network call) —
       // unless the caller asked for `responseContentDisposition`, which
       // forces signing. After that, hybrid HTTP creds let url() sign.
-      // Without either, throw with guidance.
+      // Without either, fail with guidance.
       if (publicBaseUrl && !wantsDisposition) {
-        return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
+        return joinPublicUrl(publicBaseUrl, key);
       }
       if (hybrid) {
-        return hybrid.url(key, {
+        return await hybrid.url(key, {
           expiresIn: urlOpts.expiresIn ?? defaultUrlExpiresIn,
           ...(urlOpts.responseContentDisposition && {
             responseContentDisposition: urlOpts.responseContentDisposition,

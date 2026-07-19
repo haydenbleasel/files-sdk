@@ -72,6 +72,14 @@ export interface FilesModuleOptions extends Omit<
   path?: string;
 }
 
+/**
+ * What `forRootAsync`'s factory returns: everything but `global`, which the
+ * `DynamicModule` needs *before* the factory runs and so lives on
+ * `FilesModuleAsyncOptions` itself — a `global` returned from the factory
+ * could only be silently ignored, so the type forbids it.
+ */
+export type FilesModuleFactoryResult = Omit<FilesModuleOptions, "global">;
+
 export interface FilesModuleAsyncOptions extends Pick<
   ModuleMetadata,
   "imports"
@@ -81,7 +89,7 @@ export interface FilesModuleAsyncOptions extends Pick<
   inject?: FactoryProvider["inject"];
   useFactory: (
     ...args: never[]
-  ) => FilesModuleOptions | Promise<FilesModuleOptions>;
+  ) => FilesModuleFactoryResult | Promise<FilesModuleFactoryResult>;
 }
 
 /** Constructor-parameter decorator injecting the configured `Files` instance. */

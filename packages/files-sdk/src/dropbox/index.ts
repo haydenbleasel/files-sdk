@@ -518,7 +518,7 @@ const createRefreshTokenAuth = (
       method: "POST",
     });
     if (!res.ok) {
-      // oxlint-disable-next-line github/no-then -- fire-and-forget fallback: swallow the body-read error and use "" when building the failure message
+      // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
       const text = await res.text().catch(() => "");
       throw new FilesError(
         "Unauthorized",

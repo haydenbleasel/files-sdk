@@ -28,23 +28,25 @@ describe("client error mapping", () => {
     ["Mystery", 500, "Provider"],
   ];
   for (const [wire, status, mapped] of cases) {
-    test(`${wire} → ${mapped}`, () => {
+    test(`${wire} → ${mapped}`, async () => {
       const client = createFilesClient({
         endpoint: ENDPOINT,
         fetchImpl: fetchReturning(() =>
           Response.json({ error: { code: wire, message: wire } }, { status })
         ),
       });
-      expect(client.exists("k")).rejects.toMatchObject({ code: mapped });
+      await expect(client.exists("k")).rejects.toMatchObject({ code: mapped });
     });
   }
 
-  test("non-JSON error body falls back to Provider", () => {
+  test("non-JSON error body falls back to Provider", async () => {
     const client = createFilesClient({
       endpoint: ENDPOINT,
       fetchImpl: fetchReturning(() => new Response("boom", { status: 500 })),
     });
-    expect(client.exists("k")).rejects.toMatchObject({ code: "Provider" });
+    await expect(client.exists("k")).rejects.toMatchObject({
+      code: "Provider",
+    });
   });
 });
 
@@ -56,7 +58,7 @@ describe("upload edge paths", () => {
       return Promise.resolve(Response.json(body, { status: 200 }));
     }) as unknown as typeof fetch;
 
-  test("sendToTarget throws on a non-2xx storage response", () => {
+  test("sendToTarget throws on a non-2xx storage response", async () => {
     const transport: Transport = () =>
       Promise.resolve({ status: 500, text: "" });
     const client = createFilesClient({
@@ -66,21 +68,23 @@ describe("upload edge paths", () => {
       ]),
       transport,
     });
-    expect(client.upload(new Blob(["x"]))).rejects.toMatchObject({
+    await expect(client.upload(new Blob(["x"]))).rejects.toMatchObject({
       code: "Provider",
     });
   });
 
-  test("empty presign result throws", () => {
+  test("empty presign result throws", async () => {
     const client = createFilesClient({
       endpoint: ENDPOINT,
       fetchImpl: presignFetch([]),
       transport: () => Promise.resolve({ status: 200, text: "" }),
     });
-    expect(client.upload(new Blob(["x"]))).rejects.toThrow(/no upload target/u);
+    await expect(client.upload(new Blob(["x"]))).rejects.toThrow(
+      /no upload target/u
+    );
   });
 
-  test("complete error surfaces", () => {
+  test("complete error surfaces", async () => {
     const client = createFilesClient({
       endpoint: ENDPOINT,
       fetchImpl: presignFetch(
@@ -102,12 +106,12 @@ describe("upload edge paths", () => {
       ),
       transport: () => Promise.resolve({ status: 200, text: "" }),
     });
-    expect(client.upload(new Blob(["x"]))).rejects.toMatchObject({
+    await expect(client.upload(new Blob(["x"]))).rejects.toMatchObject({
       message: "boom",
     });
   });
 
-  test("explicit upload surfaces a gateway error", () => {
+  test("explicit upload surfaces a gateway error", async () => {
     const transport: Transport = () =>
       Promise.resolve({
         status: 403,
@@ -120,12 +124,12 @@ describe("upload edge paths", () => {
       fetchImpl: okStub,
       transport,
     });
-    expect(client.upload("k", "body")).rejects.toMatchObject({
+    await expect(client.upload("k", "body")).rejects.toMatchObject({
       code: "Unauthorized",
     });
   });
 
-  test("explicit upload non-JSON failure → Provider", () => {
+  test("explicit upload non-JSON failure → Provider", async () => {
     const transport: Transport = () =>
       Promise.resolve({ status: 500, text: "oops" });
     const client = createFilesClient({
@@ -133,7 +137,7 @@ describe("upload edge paths", () => {
       fetchImpl: okStub,
       transport,
     });
-    expect(client.upload("k", new ArrayBuffer(2))).rejects.toMatchObject({
+    await expect(client.upload("k", new ArrayBuffer(2))).rejects.toMatchObject({
       code: "Provider",
     });
   });
@@ -214,6 +218,42 @@ describe("download edge paths", () => {
     const file = decodeDownload(res, "k");
     expect(file.size).toBe(5);
     expect(await file.text()).toBe("hello");
+  });
+
+  test("decodeDownload hands blob() the Response's native Blob on RN", async () => {
+    // React Native: no `Response.body`, and Blob rejects byte parts — blob()
+    // must consume `Response.blob()` instead of constructing from bytes.
+    const RealBlob = globalThis.Blob;
+    globalThis.Blob = class extends RealBlob {
+      constructor(parts?: BlobPart[], opts?: BlobPropertyBag) {
+        if (
+          parts?.some((p) => p instanceof ArrayBuffer || ArrayBuffer.isView(p))
+        ) {
+          throw new Error(
+            "Creating blobs from 'ArrayBuffer' and 'ArrayBufferView' are not supported"
+          );
+        }
+        super(parts, opts);
+      }
+    };
+    try {
+      const native = new RealBlob(["hello"], { type: "text/plain" });
+      const res = {
+        arrayBuffer: () => Promise.reject(new Error("already consumed")),
+        blob: () => Promise.resolve(native),
+        body: null,
+        headers: new Headers({
+          "content-length": "5",
+          "content-type": "text/plain",
+        }),
+      } as unknown as Response;
+      const file = decodeDownload(res, "k");
+      expect(await file.blob()).toBe(native);
+      // Byte accessors afterwards read back through the Blob, not the Response.
+      expect(await file.text()).toBe("hello");
+    } finally {
+      globalThis.Blob = RealBlob;
+    }
   });
 });
 
@@ -382,19 +422,19 @@ describe("xhrTransport failure + abort", () => {
       }
     };
 
-  test("rejects on a network error", () => {
+  test("rejects on a network error", async () => {
     const Err = class extends baseXhr() {
       override send() {
         this.dispatch("error");
       }
     };
     (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = Err;
-    expect(
+    await expect(
       xhrTransport({ body: new Blob(["x"]), method: "PUT", url: "u" })
     ).rejects.toMatchObject({ code: "Provider" });
   });
 
-  test("aborts when a live signal fires", () => {
+  test("aborts when a live signal fires", async () => {
     const Pending = class extends baseXhr() {
       override send() {
         /* never resolves on its own */
@@ -409,7 +449,7 @@ describe("xhrTransport failure + abort", () => {
       url: "u",
     });
     controller.abort(new Error("stop"));
-    expect(promise).rejects.toMatchObject({ aborted: true });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
   });
 });
 
@@ -555,7 +595,7 @@ describe("native file refs", () => {
     expect(sent?.headers?.["content-type"]).toBe("image/webp");
   });
 
-  test("an unreadable ref uri rejects with a Provider error", () => {
+  test("an unreadable ref uri rejects with a Provider error", async () => {
     const failing = ((input: RequestInfo | URL) =>
       Promise.resolve(
         String(input).startsWith("file://")
@@ -566,14 +606,14 @@ describe("native file refs", () => {
       endpoint: ENDPOINT,
       fetchImpl: failing,
     });
-    expect(client.upload("k", { uri: "file:///gone.png" })).rejects.toThrow(
-      /could not read upload source/u
-    );
+    await expect(
+      client.upload("k", { uri: "file:///gone.png" })
+    ).rejects.toThrow(/could not read upload source/u);
   });
 
-  test("a raw-body transport path rejects an unresolved ref", () => {
+  test("a raw-body transport path rejects an unresolved ref", async () => {
     const transport = fetchTransport(okStub);
-    expect(
+    await expect(
       transport({ body: { uri: REF_URI }, method: "PUT", url: "https://s/up" })
     ).rejects.toThrow(/requires a presigned-POST target/u);
   });
