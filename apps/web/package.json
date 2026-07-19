@@ -11,7 +11,7 @@
     "test": "echo 'no tests'"
   },
   "dependencies": {
-    "blume": "^1.1.0",
+    "blume": "^1.1.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "files-sdk": "workspace:*",
@@ -28,7 +28,7 @@
     "@types/node": "^26",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^5.9.3"
+    "typescript": "^7"
   },
   "ignoreScripts": [
     "sharp",
