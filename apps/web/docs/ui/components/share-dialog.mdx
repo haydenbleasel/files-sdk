@@ -25,7 +25,7 @@ export function Row({ fileKey }: { fileKey: string }) {
 }
 ```
 
-The component reads [`capabilities()`](/docs/capabilities) when it opens, so the expiry presets are clamped to the adapter's `signedUrl.maxExpiresIn` and it warns when the backend can only return a permanent public URL. Pass `mode="upload"` to hand out a presigned upload target instead, or a custom trigger via `children`.
+The component reads [`capabilities()`](/docs/capabilities) when it opens, so the expiry presets are clamped to the adapter's `signedUrl.maxExpiresIn` and it warns when the backend can only return a permanent public URL. Pass `mode="upload"` to hand out a presigned upload target instead, or custom trigger content via `children` (rendered inside the trigger button, which you can style through `className`).
 
 ## Props
 

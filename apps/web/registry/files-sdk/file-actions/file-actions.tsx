@@ -12,7 +12,7 @@ import {
 import type { ReactNode } from "react";
 import { useCallback, useState } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 export interface FileActionsProps {
   /** A `useFiles()` instance — every action runs through it. */
@@ -37,7 +38,7 @@ export interface FileActionsProps {
   fileKey: string;
   /** Called after a successful copy/rename/move/delete so the parent can refresh. */
   onChanged?: () => void;
-  /** Custom trigger. Defaults to a `⋯` icon button. */
+  /** Custom trigger content, rendered inside the trigger button. Defaults to a styled `⋯` icon. */
   children?: ReactNode;
   className?: string;
 }
@@ -127,17 +128,21 @@ export const FileActions = ({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+        {/* Styled via buttonVariants instead of asChild-wrapping a Button: the
+            trigger must work with both the Radix and Base UI shadcn flavors,
+            and Base UI has no asChild (nesting a Button renders <button> inside
+            <button>). */}
+        <DropdownMenuTrigger
+          className={cn(
+            !children && buttonVariants({ size: "icon-sm", variant: "ghost" }),
+            className
+          )}
+        >
           {children ?? (
-            <Button
-              className={className}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
+            <>
               <MoreHorizontalIcon />
               <span className="sr-only">Actions</span>
-            </Button>
+            </>
           )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">

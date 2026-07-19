@@ -6,7 +6,7 @@ import { CheckIcon, CopyIcon, Link2Icon, Loader2Icon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 export interface ShareDialogProps {
   /** A `useFiles()` instance — the link is minted through it. */
@@ -26,7 +27,7 @@ export interface ShareDialogProps {
   mode?: "download" | "upload";
   /** Initial expiry in seconds. Default `3600` (1 hour). */
   defaultExpiresIn?: number;
-  /** Custom trigger. Defaults to a "Share" button. */
+  /** Custom trigger content, rendered inside the trigger button. Defaults to a styled "Share" label. */
   children?: ReactNode;
   className?: string;
 }
@@ -125,17 +126,21 @@ export const ShareDialog = ({
 
   return (
     <Dialog onOpenChange={setOpen} open={open}>
-      <DialogTrigger asChild>
+      {/* Styled via buttonVariants instead of asChild-wrapping a Button: the
+          trigger must work with both the Radix and Base UI shadcn flavors, and
+          Base UI has no asChild (nesting a Button renders <button> inside
+          <button>). */}
+      <DialogTrigger
+        className={cn(
+          !children && buttonVariants({ size: "sm", variant: "outline" }),
+          className
+        )}
+      >
         {children ?? (
-          <Button
-            className={className}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
+          <>
             <Link2Icon />
             Share
-          </Button>
+          </>
         )}
       </DialogTrigger>
       <DialogContent>
