@@ -7,6 +7,10 @@
 
 import { FilesError } from "../internal/errors.js";
 import { abortError } from "../internal/retry.js";
+import type { NativeFileRef } from "./types.js";
+import { isNativeFileRef } from "./types.js";
+
+export type SendBody = Blob | Uint8Array<ArrayBuffer> | NativeFileRef;
 
 export interface SendRequest {
   url: string;
@@ -17,8 +21,10 @@ export interface SendRequest {
   /**
    * `Uint8Array` appears only on runtimes whose `Blob` cannot wrap raw bytes
    * (React Native); both XHR and fetch accept it as a request body directly.
+   * A `NativeFileRef` appears only on the presigned-POST path in React
+   * Native, whose `FormData` streams the descriptor from disk.
    */
-  body: Blob | Uint8Array<ArrayBuffer> | null;
+  body: SendBody | null;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
 }
@@ -30,14 +36,38 @@ export interface SendResult {
 
 export type Transport = (req: SendRequest) => Promise<SendResult>;
 
-const bodySize = (body: Blob | Uint8Array<ArrayBuffer>): number =>
-  body instanceof Blob ? body.size : body.byteLength;
+const bodySize = (body: SendBody): number => {
+  if (body instanceof Blob) {
+    return body.size;
+  }
+  return isNativeFileRef(body) ? (body.size ?? 0) : body.byteLength;
+};
 
-// The multipart `file` part must be a Blob. A raw-byte body only exists on
-// runtimes whose Blob rejects byte parts (React Native), where presigned-POST
-// multipart is unusable anyway — the wrap below throws there, accurately.
-const asFilePart = (body: Blob | Uint8Array<ArrayBuffer>): Blob =>
-  body instanceof Blob ? body : new Blob([body as BlobPart]);
+// The multipart `file` part: Blobs pass through; a NativeFileRef is handed to
+// FormData untouched (React Native streams it from disk — the cast covers the
+// web type, where refs never appear); raw bytes get wrapped — they only exist
+// on runtimes whose Blob rejects byte parts (React Native), where the wrap
+// throws, accurately.
+const asFilePart = (body: SendBody): Blob => {
+  if (body instanceof Blob || isNativeFileRef(body)) {
+    return body as Blob;
+  }
+  return new Blob([body as BlobPart]);
+};
+
+// A raw (non-multipart) request body. A NativeFileRef here is a client bug —
+// `files-client` resolves refs to Blobs for every non-POST-fields path.
+const asRawBody = (
+  body: SendBody | null
+): Blob | Uint8Array<ArrayBuffer> | null => {
+  if (isNativeFileRef(body)) {
+    throw new FilesError(
+      "Provider",
+      "a NativeFileRef body requires a presigned-POST target; resolve it to a Blob first"
+    );
+  }
+  return body;
+};
 
 const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {
   if (req.method === "POST" && req.fields) {
@@ -50,7 +80,7 @@ const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {
     }
     return form;
   }
-  return req.body;
+  return asRawBody(req.body);
 };
 
 export const xhrTransport: Transport = (req) =>
@@ -106,7 +136,7 @@ export const fetchTransport =
       }
       body = form;
     } else {
-      ({ body } = req);
+      body = asRawBody(req.body);
     }
     const res = await fetchImpl(req.url, {
       body,

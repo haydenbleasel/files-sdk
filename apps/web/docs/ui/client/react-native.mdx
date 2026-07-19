@@ -14,7 +14,7 @@ const files = useFiles({
 
 ## Uploading from a picker
 
-`expo-document-picker` / `expo-image-picker` hand you a local `uri`; fetch it to get a Blob the client can send:
+Pass the picker asset straight to `upload` as a `NativeFileRef` — the `{ uri, name, type }` shape `expo-document-picker` / `expo-image-picker` already return:
 
 ```tsx lineNumbers
 import * as DocumentPicker from "expo-document-picker";
@@ -24,14 +24,17 @@ const pick = async () => {
   if (result.canceled) {
     return;
   }
-  const blob = await fetch(result.assets[0].uri).then((r) => r.blob());
-  const { key } = await files.upload(blob, {
-    onProgress: (p) => setProgress(p.fraction), // 0 → 1
-  });
+  const { uri, name, mimeType, size } = result.assets[0];
+  const { key } = await files.upload(
+    { uri, name, type: mimeType, size },
+    { onProgress: (p) => setProgress(p.fraction) } // 0 → 1
+  );
 };
 ```
 
-Progress is real: React Native ships `XMLHttpRequest` with upload progress events, so the default transport reports byte-level progress exactly as in the browser. Byte bodies also work — `files.upload(key, bytes)` detects that React Native's `Blob` cannot wrap an `ArrayBuffer` and sends the bytes raw instead.
+The client picks the right wire form per target: a presigned **POST** target appends the descriptor to React Native's `FormData`, which streams it from disk without buffering; every other path (presigned PUT, the through-the-gateway upload) resolves the `uri` to a Blob first. Explicit keys work the same way — `files.upload("avatars/me.png", { uri, type: mimeType })`.
+
+Progress is real: React Native ships `XMLHttpRequest` with upload progress events, so the default transport reports byte-level progress exactly as in the browser. Blob bodies (`fetch(uri).then((r) => r.blob())`) still work, and byte bodies do too — `files.upload(key, bytes)` detects that React Native's `Blob` cannot wrap an `ArrayBuffer` and sends the bytes raw instead.
 
 ## Downloading
 
@@ -59,5 +62,5 @@ await FileSystem.downloadAsync(
 
 - `StoredFile.stream()` needs a `ReadableStream` polyfill (Hermes has none) — prefer `blob()` / `arrayBuffer()`.
 - `StoredFile.text()` relies on `TextDecoder`, present on recent Hermes; polyfill it on older runtimes.
-- Presigned **POST** upload targets don't work: React Native's `FormData` cannot carry a Blob part. Presigned **PUT** targets — the common case, including every S3-family adapter and UploadThing — work fine, as does the default through-the-gateway path.
+- Presigned **POST** upload targets (S3-family adapters with a `maxUploadSize` gateway cap) require a `NativeFileRef` body — React Native's `FormData` cannot carry a Blob part, but it streams a descriptor natively. Presigned **PUT** targets and the through-the-gateway path accept any body form.
 - The [UI components](/docs/ui/components) are React DOM + Tailwind, so they are web-only; the hook state (`uploads`, `progress`, `error`) maps directly onto your native components instead.
