@@ -1,6 +1,6 @@
 ---
 title: TanStack Start
-description: Mount the Files gateway in a TanStack Start server route. createRouteHandler returns { GET, POST, PUT } over the Web Request - Web-native, runs on every deploy target.
+description: Mount the Files gateway in a TanStack Start server route. createRouteHandler returns { GET, POST, PUT } over the Web Request - runs on every deploy target.
 ---
 
 `files-sdk/tanstack-start` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a TanStack Start server route. TanStack Start hands each method handler a Web `Request` on `{ request }`, so — like [`files-sdk/next`](/docs/ui/server/next) — `createRouteHandler` returns a `{ GET, POST, PUT }` handlers object: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on **every TanStack Start deployment target**.

@@ -1,6 +1,6 @@
 ---
 title: validation
-description: A fail-closed guard that vets every upload before any bytes move - enforce a max/min size, an allowed-MIME-type list, and a key-naming rule. Provider-agnostic, no native dependencies, no metadata.
+description: A fail-closed guard that vets every upload before any bytes move - enforce a max/min size, an allowed-MIME-type list, and a key-naming rule.
 ---
 
 The built-in `validation()` plugin is a **fail-closed guard**: it checks each write against the rules you set and rejects a bad one by throwing, so no bytes ever reach the adapter. It's the simplest kind of [wrap plugin](/docs/plugins#wrap-intercepting-operations) - it vetoes rather than transforms.

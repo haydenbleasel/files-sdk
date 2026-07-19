@@ -1,6 +1,6 @@
 ---
 title: cache
-description: An LRU/KV cache in front of head(), url(), and small download()s. Repeat reads of an unchanged key are served from memory; writes through the instance invalidate the affected key. Body-transparent, no native dependencies, works on any adapter.
+description: An LRU or KV cache in front of head(), url(), and small download()s - repeat reads of an unchanged key are served from memory, writes invalidate the key.
 ---
 
 The built-in `cache()` plugin puts an LRU (or your own KV) in front of the cheap read verbs. A repeat [`head()`](/docs/api/head) or [`url()`](/docs/api/url) - and, opt-in, a small [`download()`](/docs/api/download) - for an unchanged key is served from memory instead of round-tripping to the provider. Any write **through the instance** ([`upload`](/docs/api/upload), [`delete`](/docs/api/delete), [`copy`](/docs/api/copy), [`move`](/docs/api/move)) invalidates the affected key, so the next read re-fetches.

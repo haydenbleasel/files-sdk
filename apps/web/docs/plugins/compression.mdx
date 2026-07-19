@@ -1,6 +1,6 @@
 ---
 title: compression
-description: Transparently compress object bodies at rest with gzip, deflate, or deflate-raw. The original size and algorithm ride along in metadata, and reads decompress automatically - provider-agnostic, no native dependencies.
+description: Transparently compress object bodies at rest with gzip, deflate, or deflate-raw - reads decompress automatically, no native dependencies.
 ---
 
 The built-in `compression()` plugin compresses every body **at rest** and decompresses it on the way back out - transparently, for single and [bulk](/docs/bulk) calls alike. It's a textbook [wrap plugin](/docs/plugins#wrap-intercepting-operations): it transforms the body on `upload`, reverses it on `download`, and round-trips its bookkeeping through the object's `metadata`.

@@ -1,6 +1,6 @@
 ---
 title: audit
-description: Write a structured who/what/when record of every mutation to an awaited sink - the durable, awaitable counterpart to the fire-and-forget onAction hook. One record per operation carrying the verb, caller-facing key, actor, time, duration, and outcome. Body-transparent, no metadata, no native dependencies.
+description: Write a structured who/what/when record of every mutation to an awaited sink - the durable, awaitable counterpart to the fire-and-forget onAction hook.
 ---
 
 The built-in `audit()` plugin writes a structured **who / what / when** record of every mutation to a sink you provide. Unlike the fire-and-forget [`onAction`](/docs/api/onaction) hook, the sink is **awaited** - the operation doesn't resolve until the record is written, so you get ordering, back-pressure, and a write failure you can actually see.

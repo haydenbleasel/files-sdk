@@ -1,6 +1,6 @@
 ---
 title: contentType
-description: A security guard that decides each upload's Content-Type from its bytes, not the client's claim. Magic-byte sniffing stops a mislabeled .png that's really HTML or SVG from being stored as an image and served inline. No metadata, no native dependencies, and it never buffers the whole body.
+description: Decide each upload's Content-Type from its bytes, not the client's claim - magic-byte sniffing stops mislabeled HTML or SVG being stored as an image.
 ---
 
 The built-in `contentType()` plugin sets an upload's `Content-Type` from what the bytes **actually are**, not what the client said they were. On `upload` it magic-byte-sniffs the body and either corrects the stored type to match (the default) or rejects a mismatch — so a `.png` whose bytes are really HTML or SVG can't be stored under an image type and later served inline. It's the [wrap plugin](/docs/plugins#wrap-intercepting-operations) counterpart to [`validation()`](/docs/plugins/validation): validation vets the _declared_ type, `contentType()` verifies the _real_ one.

@@ -1,6 +1,6 @@
 ---
 title: File Browser
-description: A folder-aware browser that descends into common prefixes with a breadcrumb trail — driven by useFiles.
+description: A folder-aware browser that descends into common prefixes via list({ delimiter }), with a breadcrumb trail and cursor-based load more - driven by useFiles.
 ---
 
 Lists a folder with `list({ delimiter })`, so common prefixes surface as folders you can click into. A breadcrumb trail tracks where you are, and cursor-based "load more" pages through large folders. On adapters that can't delimit, everything simply appears as files at the root.

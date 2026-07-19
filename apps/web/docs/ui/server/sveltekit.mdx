@@ -1,6 +1,6 @@
 ---
 title: SvelteKit
-description: Mount the Files gateway in a SvelteKit +server.ts endpoint. createRouteHandler returns { GET, POST, PUT } over the Web Request - runs on the Node and edge adapters.
+description: Mount the Files gateway in a SvelteKit +server.ts endpoint. createRouteHandler returns { GET, POST, PUT } over the Web Request, on Node and edge alike.
 ---
 
 `files-sdk/sveltekit` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a SvelteKit `+server.ts` endpoint. SvelteKit hands each route a Web `Request` on `event.request` and wants named per-method exports, so — like [`files-sdk/next`](/docs/ui/server/next) — `createRouteHandler` returns `{ GET, POST, PUT }`: `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handlers are Web-native, so the route runs on the **Node and edge adapters alike**.

@@ -1,6 +1,6 @@
 ---
 title: signed-url-policy
-description: A fail-safe guard that enforces safe defaults on url() and signedUploadUrl() - force a download disposition, cap expiry, and require a server-enforced upload size limit. Provider-agnostic, no native dependencies, no metadata.
+description: A fail-safe guard that enforces safe defaults on url() and signedUploadUrl() - force a download disposition, cap expiry, and cap the signed upload size.
 ---
 
 The built-in `signedUrlPolicy()` plugin turns the security caveats the [`url()`](/docs/api/url) and [`signedUploadUrl()`](/docs/api/signed-upload-url) docs spell out into the **default**. It's a [wrap plugin](/docs/plugins#wrap-intercepting-operations) that rewrites the options of those two operations before the adapter signs - so it never throws of its own accord, never touches the body, and lets every other verb pass straight through. It has **no native dependencies** and works on any adapter.

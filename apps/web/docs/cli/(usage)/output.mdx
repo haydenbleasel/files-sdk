@@ -1,6 +1,6 @@
 ---
 title: JSON output
-description: JSON-by-default output on stdout, a stable error envelope on stderr, and meaningful exit codes for scripting.
+description: JSON-by-default output on stdout, a stable error envelope on stderr, and meaningful exit codes for scripting - pipe straight to jq.
 ---
 
 Every command emits one JSON line on success. Errors go to `stderr` with a stable `{ error: { code, message } }` envelope, never mixed with the success channel — so a JSON parser downstream sees either a clean record or nothing.

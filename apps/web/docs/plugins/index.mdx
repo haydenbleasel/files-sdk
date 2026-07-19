@@ -1,6 +1,6 @@
 ---
-title: Overview
-description: Wrap every operation on a Files instance in an ordered pipeline - transform, veto, or observe - and contribute new namespaced methods. The interceptable superset of hooks.
+title: Plugins overview
+description: Wrap every operation on a Files instance in an ordered pipeline - transform, veto, or observe - and contribute new namespaced methods.
 ---
 
 A [`hook`](/docs/api/onaction) can only watch an operation go by. A **plugin** can change it. Plugins are an opt-in, ordered pipeline you pass to the constructor; each one wraps every operation on the instance and can transform the inputs, veto the call, observe the result - or add entirely new methods.
@@ -26,6 +26,28 @@ await files.upload("a.txt", "hello"); // stored as "HELLO"
 ```
 
 Reach for a plugin when you need to **change** behavior - envelope-encrypt bodies at rest, gate uploads through a virus scanner, meter bandwidth, mirror writes to a backup region. Keep [hooks](/docs/api/onaction) for lightweight, fire-and-forget observability; a plugin's `wrap` is the interceptable superset that can transform and veto where hooks only watch.
+
+## Available plugins
+
+A set of plugins ships with the SDK, each as its own subpath export:
+
+- [`encryption()`](/docs/plugins/encryption) - envelope AES-256-GCM encryption at rest.
+- [`compression()`](/docs/plugins/compression) - gzip/deflate bodies via Compression Streams.
+- [`validation()`](/docs/plugins/validation) - fail-closed size, MIME, and key guards on writes.
+- [`versioning()`](/docs/plugins/versioning) - snapshot on overwrite/delete, with `versions()` and `restore()`.
+- [`contentType()`](/docs/plugins/content-type) - magic-byte sniffing that sets and guards `Content-Type`.
+- [`dedup()`](/docs/plugins/dedup) - content-addressed storage that shares identical blobs.
+- [`usage()`](/docs/plugins/usage) - meter operations and bytes up/down, optionally grouped.
+- [`tracing()`](/docs/plugins/tracing) - an OpenTelemetry span per operation.
+- [`softDelete()`](/docs/plugins/soft-delete) - a trash-prefix recycle bin with restore and purge.
+- [`audit()`](/docs/plugins/audit) - a durable who/what/when log of mutations.
+- [`cache()`](/docs/plugins/cache) - LRU/KV caching for `head()`, `url()`, and small downloads.
+- [`tiering()`](/docs/plugins/tiering) - route hot and cold keys to different backends.
+- [`failover()`](/docs/plugins/failover) - retry provider errors against replica backends.
+- [`signedUrlPolicy()`](/docs/plugins/signed-url-policy) - safe defaults for `url()` and `signedUploadUrl()`.
+- [`zip()`](/docs/plugins/zip) - bundle stored objects into ZIP archives and extract them back.
+
+The [plugin API reference](/docs/plugins/api) covers the `FilesPlugin` type, `handlers()`, and `createFiles`.
 
 ## The two capabilities
 

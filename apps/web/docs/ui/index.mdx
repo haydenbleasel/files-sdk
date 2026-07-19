@@ -1,5 +1,5 @@
 ---
-title: Overview
+title: UI overview
 description: The whole Files API in the browser, over one endpoint — a React hook, a Vue composable, or Svelte stores, backed by a server gateway you mount in minutes.
 ---
 
@@ -123,3 +123,24 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 **2. Use your binding.** Drop the component above into your app — that's the whole loop: uploads stream directly to storage (or proxy through your endpoint for adapters that can't presign), and reads run against your gateway. Keys the client sends are relative to the authorized prefix, so the browser can never address another user's files. For a file browser, the reactive reads (`useList` / `useFile` / `useSearch`) wrap the read verbs with `data` / `isLoading` / `refetch`.
 
 Next: pick your binding — [React](/docs/ui/client/react), [Vue](/docs/ui/client/vue), or [Svelte](/docs/ui/client/svelte) — then set up the [gateway](/docs/ui/server/gateway) and its [authorization](/docs/ui/server/authorization).
+
+## Server adapters
+
+The gateway mounts on any of these with a one-line adapter: [Next.js](/docs/ui/server/next), [Hono](/docs/ui/server/hono), [Express](/docs/ui/server/express), [Fastify](/docs/ui/server/fastify), [Koa](/docs/ui/server/koa), [Elysia](/docs/ui/server/elysia), [Nitro](/docs/ui/server/nitro), [SvelteKit](/docs/ui/server/sveltekit), [Astro](/docs/ui/server/astro), [TanStack Start](/docs/ui/server/tanstack-start), [Bun](/docs/ui/server/bun), and [Deno](/docs/ui/server/deno).
+
+## Prebuilt components
+
+On top of the React hook there's a [shadcn](https://ui.shadcn.com) registry of SDK-wired components you can `npx shadcn add` and own:
+
+- [File browser](/docs/ui/components/file-browser) - list, navigate, and manage a prefix.
+- [File list](/docs/ui/components/file-list) - a lightweight table of stored files.
+- [Dropzone](/docs/ui/components/dropzone) - drag-and-drop uploads.
+- [Upload progress](/docs/ui/components/upload-progress) - per-file progress UI.
+- [Multipart uploader](/docs/ui/components/multipart-uploader) - large-file uploads in parts.
+- [File preview](/docs/ui/components/file-preview) - inline previews for stored objects.
+- [File search](/docs/ui/components/file-search) - key search over the gateway.
+- [File actions](/docs/ui/components/file-actions) - a per-file dropdown of verbs.
+- [Share dialog](/docs/ui/components/share-dialog) - mint signed URLs with expiry presets.
+- [Capabilities badges](/docs/ui/components/capabilities-badges) - show what the backend supports.
+- [Version history](/docs/ui/components/version-history) - browse and restore versions.
+- [Trash bin](/docs/ui/components/trash-bin) - soft-deleted files with restore and purge.

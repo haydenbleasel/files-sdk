@@ -1,6 +1,6 @@
 ---
 title: encryption
-description: Envelope-encrypt object bodies at rest with AES-256-GCM. A per-object data key encrypts the body and your master key wraps it into metadata - provider-agnostic, no native dependencies, decrypted transparently on download.
+description: Envelope-encrypt object bodies at rest with AES-256-GCM - your master key wraps a per-object data key into metadata, decrypted transparently on download.
 ---
 
 The built-in `encryption()` plugin encrypts every body **at rest** and decrypts it on the way back out - transparently, for single and [bulk](/docs/bulk) calls alike. It's the canonical [wrap plugin](/docs/plugins#wrap-intercepting-operations): it transforms the body on `upload`, reverses it on `download`, and round-trips its key material through the object's `metadata`.

@@ -1,6 +1,6 @@
 ---
 title: Capabilities
-description: Query what an adapter can do up front with files.capabilities — branch on range reads, signed URLs, server-side copy, and more instead of waiting for a throw at call time.
+description: Query what an adapter can do up front with files.capabilities - branch on range reads, signed URLs, and server-side copy instead of catching a throw.
 ---
 
 The unified surface is the common subset every adapter implements, but adapters differ at the edges: some honor byte-range reads, some can mint a signed URL, some copy server-side. The wrapper already gates on these per-adapter — pass a `range` to an adapter that has no range primitive and it throws _before_ any provider call. `files.capabilities` turns that implicit knowledge into a queryable surface, so you can branch up front instead of discovering a limit by catching an error.

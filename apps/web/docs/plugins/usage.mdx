@@ -1,6 +1,6 @@
 ---
 title: usage
-description: Meter storage, bandwidth, and operation counts across a Files instance, and read the running totals back with files.usage(). Counts the bytes you actually read out of a download lazily, optionally bucketed per tenant or prefix. No native dependencies; works on any adapter.
+description: Meter operation counts and bytes up/down across a Files instance, with lazy stream-level download counting - read totals back with files.usage().
 ---
 
 The built-in `usage()` plugin tallies every operation on a `Files` instance and surfaces the running totals as `files.usage()`. Each call counts as one operation, `upload` adds its size to `bytesUp`, and `download` / `head` wrap the returned body so the bytes you **actually read** add to `bytesDown` — the lazy, stream-level accounting a fire-and-forget [hook](/docs/api/onaction) can't do.

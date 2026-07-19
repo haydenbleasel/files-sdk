@@ -1,6 +1,6 @@
 ---
 title: tiering
-description: Route operations between a hot and a cold adapter by size, prefix, or age. Uploads land in the right store, reads transparently find them again, and tier() moves objects between stores - body-transparent, no native dependencies.
+description: Route operations between a hot and a cold adapter by size, prefix, or age - reads transparently find objects and tier() moves them between stores.
 ---
 
 The built-in `tiering()` plugin spreads one logical bucket across two adapters - a **hot** tier for what you reach for often and a **cold** tier for what you rarely touch. An [`upload`](/docs/api/upload) lands in the tier your `route` function picks; every read transparently finds it again. The hot tier is the instance's own adapter (reached through the rest of the pipeline); the cold tier is a second adapter you pass in.

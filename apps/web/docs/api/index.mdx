@@ -1,5 +1,5 @@
 ---
-title: Overview
+title: API reference
 description: The full Files SDK API - ten unified methods plus a key-bound handle, the shared per-operation options, and the StoredFile return type.
 ---
 
@@ -30,7 +30,7 @@ Pass `prefix` to the constructor and every key is resolved relative to it — pr
 
 ## Read-only instances
 
-Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create a view that still allows reads (`download`, `head`, `exists`, `list`, `listAll`, `url`) but rejects writes (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`) with `FilesError { code: "ReadOnly" }`.
+Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create a view that still allows reads (`download`, `head`, `exists`, `list`, `listAll`, `url`) but rejects writes (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`) with `FilesError { code: "ReadOnly" }`. See [Read-only](/docs/readonly) for the full behavior.
 
 ## Per-operation options
 

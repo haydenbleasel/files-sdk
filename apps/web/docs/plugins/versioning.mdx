@@ -1,6 +1,6 @@
 ---
 title: versioning
-description: Snapshot an object's prior bytes before every overwrite or delete, and roll a key back with versions() and restore(). Server-side copies under a hidden prefix - body-transparent, no native dependencies, works on any adapter.
+description: Snapshot an object's prior bytes before every overwrite or delete and roll a key back with versions() and restore() - server-side, body-transparent.
 ---
 
 The built-in `versioning()` plugin keeps a history of every object. Before an [`upload`](/docs/api/upload), [`delete`](/docs/api/delete), or the destination of a [`copy`](/docs/api/copy) / [`move`](/docs/api/move) clobbers an existing object, it server-side-copies the current bytes to a time-stamped key under a hidden version prefix. Two new methods - `versions()` and `restore()` - let you list that history and roll a key back.

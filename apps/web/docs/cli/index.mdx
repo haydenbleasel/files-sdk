@@ -1,5 +1,5 @@
 ---
-title: Overview
+title: CLI overview
 description: Agent-friendly CLI for files-sdk. One binary, every provider, JSON-by-default output, stdin/stdout streaming, and a built-in MCP server.
 ---
 
@@ -72,3 +72,10 @@ Pass `--provider <name>` on every call, or set `FILES_SDK_PROVIDER` once. Provid
 </div>
 
 Common short flags cover the obvious fields (`--bucket`, `--region`, `--endpoint`, `--root`, `--container`, `--token`, etc.). For the long tail, `--config-json '{...}'` accepts the raw adapter options blob — anything the SDK factory accepts, the CLI can pass through.
+
+## Next steps
+
+- [Commands](/docs/cli/commands) - every command, flag by flag.
+- [Output](/docs/cli/output) - the JSON-by-default output contract and `--pretty`.
+- [Streaming](/docs/cli/streaming) - piping bodies through stdin and stdout.
+- [Agents](/docs/cli/agents) - using the CLI from coding agents, plus the built-in MCP server.

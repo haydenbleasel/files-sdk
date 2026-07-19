@@ -96,10 +96,22 @@ export const Sync = () => {
       <div className="flex items-center justify-between px-5 pt-4 font-mono text-xs">
         <span className="flex items-center gap-1.5 text-muted-foreground">
           Syncing
-          <img alt="S3" className="size-4 rounded-[3px]" src="/logos/s3.svg" />
+          <img
+            alt="S3"
+            className="size-4 rounded-[3px]"
+            height={16}
+            src="/logos/s3.svg"
+            width={16}
+          />
           <span className="text-foreground">S3</span>
           to
-          <img alt="R2" className="size-4 rounded-[3px]" src="/logos/r2.svg" />
+          <img
+            alt="R2"
+            className="size-4 rounded-[3px]"
+            height={16}
+            src="/logos/r2.svg"
+            width={16}
+          />
           <span className="text-foreground">R2</span>
         </span>
         <span

@@ -1,6 +1,6 @@
 ---
 title: tracing
-description: Open an OpenTelemetry span around every operation on a Files instance - one span per call, named files.<verb>, with the key, size, and outcome as attributes and errors recorded with an ERROR status. Spans nest under your active request span. Uses the optional @opentelemetry/api peer dependency.
+description: Open an OpenTelemetry span named files.<verb> around every operation, with key, size, and outcome attributes - optional @opentelemetry/api peer dependency.
 ---
 
 The built-in `tracing()` plugin opens an [OpenTelemetry](https://opentelemetry.io) span around every operation on a `Files` instance. Each call becomes one span named `files.<verb>` carrying the caller-facing key, a cheap result attribute, and — on failure — the recorded exception and an `ERROR` status.

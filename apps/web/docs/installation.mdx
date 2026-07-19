@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install files-sdk and the optional peer dependencies for the adapter you're using - nothing else is bundled.
+description: Install files-sdk and the optional peer dependencies for the adapter you're using - anything you don't import is never bundled. ESM only, Node 18+ and Bun.
 ---
 
 `files-sdk` itself is small - one runtime dependency (`commander`, for the CLI) behind a tree of subpath exports. Install the package, then add the peer dependencies for the adapter you're wiring up. Anything you don't import is never bundled.

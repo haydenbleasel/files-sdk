@@ -1,6 +1,6 @@
 ---
 title: failover
-description: Read and write the primary adapter, and fall back to one or more secondary adapters when a backend is down. A live, per-operation failover chain - body-transparent, no native dependencies.
+description: Read and write the primary adapter and fall back to one or more secondary adapters when a backend is down - a live, per-operation failover chain.
 ---
 
 The built-in `failover()` plugin keeps a `Files` instance serving while a backend is down. Every operation tries the **primary** first; if it throws because the backend is unreachable, the plugin retries against a **secondary** - and the next, and the next - until one succeeds. The primary is the instance's own adapter (reached through the rest of the pipeline); the secondaries are backup adapters you pass in.

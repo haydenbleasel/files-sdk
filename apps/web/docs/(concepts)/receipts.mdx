@@ -1,6 +1,6 @@
 ---
 title: Receipts
-description: Opt into a provenance Receipt for every mutating call - op, provider, key, bytes, etag, timing, and an optional SHA-256 - delivered on the onAction hook. Off by default, and never hashes unless you ask.
+description: Opt into a provenance Receipt for every mutating call - op, provider, key, bytes, etag, timing, optional SHA-256 - delivered on the onAction hook.
 ---
 
 A **receipt** is a provenance record for a single mutating call (`upload`, `delete`, `copy`, `move`): what landed where, how big it was, how long it took, and - when you ask - a SHA-256 fingerprint of the content you upload. It's built for tool wrappers and agents that need to attest "this exact content was written to this key", without bolting on a separate operation or a middleware layer.

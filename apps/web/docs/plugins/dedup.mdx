@@ -1,6 +1,6 @@
 ---
 title: dedup
-description: Content-address object bodies by their hash so identical content is stored only once. Re-uploading the same bytes skips the upload, and copies share a single stored blob. No native dependencies; works on any adapter that supports metadata.
+description: Content-address object bodies by SHA-256 hash so identical content is stored only once - re-uploads skip the byte upload and copies share one blob.
 ---
 
 The built-in `dedup()` plugin stores each distinct body **once**. On `upload` it hashes the bytes (SHA-256), writes them a single time to a content-addressed blob under a store prefix (`.dedup/` by default), and leaves a tiny pointer at your logical key. Upload the same content again — under any key — and the byte upload is **skipped**; only the pointer is written.
