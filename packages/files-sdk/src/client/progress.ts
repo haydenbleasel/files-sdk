@@ -11,8 +11,14 @@ export type FileUploadStatus =
   | "error"
   | "aborted";
 
+/**
+ * The body a `FileUploadState` tracks. `Uint8Array` appears only on runtimes
+ * whose `Blob` cannot wrap raw bytes (React Native).
+ */
+export type UploadStateBody = Blob | Uint8Array;
+
 export interface FileUploadState {
-  file: Blob;
+  file: UploadStateBody;
   name: string;
   size: number;
   type: string;
@@ -44,16 +50,19 @@ export const aggregate = (
   return { fraction: total === 0 ? 0 : loaded / total, loaded, total };
 };
 
-export const fileName = (file: Blob): string =>
+export const fileName = (file: UploadStateBody): string =>
   file instanceof File ? file.name : "blob";
 
-export const initialState = (file: Blob): FileUploadState => ({
-  file,
-  loaded: 0,
-  name: fileName(file),
-  progress: 0,
-  size: file.size,
-  status: "pending",
-  total: file.size,
-  type: file.type || "application/octet-stream",
-});
+export const initialState = (file: UploadStateBody): FileUploadState => {
+  const size = file instanceof Blob ? file.size : file.byteLength;
+  return {
+    file,
+    loaded: 0,
+    name: fileName(file),
+    progress: 0,
+    size,
+    status: "pending",
+    total: size,
+    type: (file instanceof Blob && file.type) || "application/octet-stream",
+  };
+};

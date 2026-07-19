@@ -14,7 +14,11 @@ export interface SendRequest {
   headers?: Record<string, string>;
   /** Presigned-POST form fields, appended in order before the file. */
   fields?: Record<string, string>;
-  body: Blob | null;
+  /**
+   * `Uint8Array` appears only on runtimes whose `Blob` cannot wrap raw bytes
+   * (React Native); both XHR and fetch accept it as a request body directly.
+   */
+  body: Blob | Uint8Array | null;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
 }
@@ -26,6 +30,15 @@ export interface SendResult {
 
 export type Transport = (req: SendRequest) => Promise<SendResult>;
 
+const bodySize = (body: Blob | Uint8Array): number =>
+  body instanceof Blob ? body.size : body.byteLength;
+
+// The multipart `file` part must be a Blob. A raw-byte body only exists on
+// runtimes whose Blob rejects byte parts (React Native), where presigned-POST
+// multipart is unusable anyway — the wrap below throws there, accurately.
+const asFilePart = (body: Blob | Uint8Array): Blob =>
+  body instanceof Blob ? body : new Blob([body as BlobPart]);
+
 const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {
   if (req.method === "POST" && req.fields) {
     const form = new FormData();
@@ -33,7 +46,7 @@ const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {
       form.append(key, value);
     }
     if (req.body) {
-      form.append("file", req.body);
+      form.append("file", asFilePart(req.body));
     }
     return form;
   }
@@ -80,7 +93,7 @@ export const xhrTransport: Transport = (req) =>
 export const fetchTransport =
   (fetchImpl: typeof fetch): Transport =>
   async (req) => {
-    const total = req.body?.size ?? 0;
+    const total = req.body ? bodySize(req.body) : 0;
     req.onProgress?.(0, total);
     let body: BodyInit | null;
     if (req.method === "POST" && req.fields) {
@@ -89,7 +102,7 @@ export const fetchTransport =
         form.append(key, value);
       }
       if (req.body) {
-        form.append("file", req.body);
+        form.append("file", asFilePart(req.body));
       }
       body = form;
     } else {

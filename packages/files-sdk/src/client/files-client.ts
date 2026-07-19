@@ -84,16 +84,46 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
   return revived ? { ...base, errors: revived } : base;
 };
 
-const toBlob = (body: UploadBody, contentType?: string): Blob => {
+interface NormalizedBody {
+  body: Blob | Uint8Array;
+  size: number;
+  type: string;
+}
+
+const fromBlob = (blob: Blob): NormalizedBody => ({
+  body: blob,
+  size: blob.size,
+  type: blob.type,
+});
+
+const asBytes = (body: ArrayBuffer | ArrayBufferView): Uint8Array =>
+  body instanceof ArrayBuffer
+    ? new Uint8Array(body)
+    : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+
+const toBody = (body: UploadBody, contentType?: string): NormalizedBody => {
   if (body instanceof Blob) {
-    return contentType && body.type !== contentType
-      ? new Blob([body], { type: contentType })
-      : body;
+    return fromBlob(
+      contentType && body.type !== contentType
+        ? new Blob([body], { type: contentType })
+        : body
+    );
   }
-  return new Blob(
-    [body as BlobPart],
-    contentType ? { type: contentType } : undefined
-  );
+  if (typeof body === "string") {
+    return fromBlob(
+      new Blob([body], contentType ? { type: contentType } : undefined)
+    );
+  }
+  const bytes = asBytes(body);
+  try {
+    return fromBlob(
+      new Blob([bytes as BlobPart], contentType ? { type: contentType } : undefined)
+    );
+  } catch {
+    // React Native's Blob cannot be constructed from ArrayBuffer parts; the
+    // transports accept raw bytes, so pass them through instead.
+    return { body: bytes, size: bytes.byteLength, type: contentType ?? "" };
+  }
 };
 
 export const createFilesClient = (
@@ -279,21 +309,21 @@ export const createFilesClient = (
     body: UploadBody,
     opts?: UploadCallOptions
   ): Promise<UploadOutcome> => {
-    const blob = toBlob(body, opts?.contentType);
+    const norm = toBody(body, opts?.contentType);
     const result = await transport({
-      body: blob,
+      body: norm.body,
       headers: {
-        "content-type": blob.type || "application/octet-stream",
+        "content-type": norm.type || "application/octet-stream",
         ...(await resolveHeaders()),
       },
       method: "PUT",
       onProgress: opts?.onProgress
         ? (loaded, total) => {
-            const state = initialState(blob);
+            const state = initialState(norm.body);
             state.key = key;
             state.status = "uploading";
             state.loaded = loaded;
-            state.total = total || blob.size;
+            state.total = total || norm.size;
             state.progress = state.total ? loaded / state.total : 0;
             opts.onProgress?.(aggregate([state]), [state]);
           }
