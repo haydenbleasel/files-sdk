@@ -2,8 +2,10 @@
 // returns, reusing `createStoredFile` so `blob()/text()/arrayBuffer()/stream()`
 // behave identically (including the single-consumption guard). The body is a
 // streaming `BodySource` over `Response.body` — a large download isn't buffered
-// unless an accessor asks for the bytes. Metadata with no HTTP-header home
-// (`key`, `metadata`) rides in the base64 `X-Files-Meta` header.
+// unless an accessor asks for the bytes. On runtimes whose fetch never exposes
+// `Response.body` (React Native), it falls back to a lazy `arrayBuffer()`
+// buffer instead. Metadata with no HTTP-header home (`key`, `metadata`) rides
+// in the base64 `X-Files-Meta` header.
 
 import type { StoredFile } from "../index.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -34,6 +36,7 @@ export const decodeDownload = (
   const meta = decodeMeta(res.headers.get("x-files-meta"));
   const lengthHeader = res.headers.get("content-length");
   const size = lengthHeader === null ? 0 : Number(lengthHeader);
+  const { body } = res;
   return createStoredFile(
     {
       etag: res.headers.get("etag") ?? meta.etag,
@@ -43,6 +46,11 @@ export const decodeDownload = (
       size,
       type: res.headers.get("content-type") ?? "application/octet-stream",
     },
-    { factory: () => res.body ?? new ReadableStream(), kind: "stream" }
+    body
+      ? { factory: () => body, kind: "stream" }
+      : {
+          factory: async () => new Uint8Array(await res.arrayBuffer()),
+          kind: "lazy",
+        }
   );
 };

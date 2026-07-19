@@ -45,10 +45,12 @@ const clientFor = (adapter: Adapter, opts: { headers?: HeadersInit } = {}) => {
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
     router.handle(new Request(input, init))) as typeof fetch;
   const transport: Transport = async (req: SendRequest) => {
-    req.onProgress?.(req.body?.size ?? 0, req.body?.size ?? 0);
+    const raw = req.body as Blob | Uint8Array<ArrayBuffer> | null;
+    const total = raw instanceof Blob ? raw.size : (raw?.byteLength ?? 0);
+    req.onProgress?.(total, total);
     const res = await router.handle(
       new Request(req.url, {
-        body: req.body,
+        body: raw,
         headers: req.headers,
         method: req.method,
       })
@@ -374,7 +376,7 @@ describe("createFilesClient — plugin verbs", () => {
     const transport: Transport = async (req: SendRequest) => {
       const res = await router.handle(
         new Request(req.url, {
-          body: req.body,
+          body: req.body as Blob | Uint8Array<ArrayBuffer> | null,
           headers: req.headers,
           method: req.method,
         })

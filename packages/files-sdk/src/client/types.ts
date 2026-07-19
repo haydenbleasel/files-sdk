@@ -91,7 +91,34 @@ export interface UploadOutcome {
   lastModified?: number;
 }
 
-export type UploadBody = Blob | ArrayBuffer | ArrayBufferView | string;
+/**
+ * A React Native file reference — the `{ uri, name, type }` shape Expo's
+ * pickers return and React Native's `FormData` streams from disk. Pass one
+ * anywhere an upload body goes; on a presigned-POST target it rides the form
+ * untouched (native streaming), on every other path the client resolves the
+ * `uri` to a Blob first. Only meaningful in React Native — on the web, pass a
+ * `Blob`/`File` instead.
+ */
+export interface NativeFileRef {
+  uri: string;
+  name?: string;
+  type?: string;
+  /** Bytes, when the picker reports it; informs presign info and progress totals. */
+  size?: number;
+}
+
+export const isNativeFileRef = (body: unknown): body is NativeFileRef =>
+  typeof body === "object" &&
+  body !== null &&
+  !(body instanceof Blob) &&
+  typeof (body as NativeFileRef).uri === "string";
+
+export type UploadBody =
+  | Blob
+  | ArrayBuffer
+  | ArrayBufferView
+  | string
+  | NativeFileRef;
 
 export interface UploadManyClientItem {
   key: string;
@@ -124,7 +151,10 @@ export interface TrashedFile {
 
 export interface FilesClient {
   upload: {
-    (file: Blob, opts?: UploadCallOptions): Promise<UploadOutcome>;
+    (
+      file: Blob | NativeFileRef,
+      opts?: UploadCallOptions
+    ): Promise<UploadOutcome>;
     (
       key: string,
       body: UploadBody,

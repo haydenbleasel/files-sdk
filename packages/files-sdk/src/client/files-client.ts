@@ -33,6 +33,7 @@ import type {
   FilesClient,
   FilesClientConfig,
   ListCallOptions,
+  NativeFileRef,
   SearchCallOptions,
   SignUploadCallOptions,
   TrashedFile,
@@ -42,6 +43,7 @@ import type {
   UploadOutcome,
   UrlCallOptions,
 } from "./types.js";
+import { isNativeFileRef } from "./types.js";
 
 const DEFAULT_ENDPOINT = "/api/files";
 const DEFAULT_CONCURRENCY = 4;
@@ -84,16 +86,60 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
   return revived ? { ...base, errors: revived } : base;
 };
 
-const toBlob = (body: UploadBody, contentType?: string): Blob => {
+interface NormalizedBody {
+  body: Blob | Uint8Array<ArrayBuffer>;
+  size: number;
+  type: string;
+}
+
+const fromBlob = (blob: Blob): NormalizedBody => ({
+  body: blob,
+  size: blob.size,
+  type: blob.type,
+});
+
+const asBytes = (
+  body: ArrayBuffer | ArrayBufferView
+): Uint8Array<ArrayBuffer> =>
+  body instanceof ArrayBuffer
+    ? new Uint8Array(body)
+    : new Uint8Array(
+        body.buffer as ArrayBuffer,
+        body.byteOffset,
+        body.byteLength
+      );
+
+// Refs are excluded: every caller resolves a `NativeFileRef` to a Blob before
+// normalizing (raw request bodies always need real bytes).
+const toBody = (
+  body: Exclude<UploadBody, NativeFileRef>,
+  contentType?: string
+): NormalizedBody => {
   if (body instanceof Blob) {
-    return contentType && body.type !== contentType
-      ? new Blob([body], { type: contentType })
-      : body;
+    return fromBlob(
+      contentType && body.type !== contentType
+        ? new Blob([body], { type: contentType })
+        : body
+    );
   }
-  return new Blob(
-    [body as BlobPart],
-    contentType ? { type: contentType } : undefined
-  );
+  if (typeof body === "string") {
+    return fromBlob(
+      new Blob([body], contentType ? { type: contentType } : undefined)
+    );
+  }
+  const bytes = asBytes(body);
+  try {
+    return fromBlob(
+      new Blob(
+        [bytes as BlobPart],
+        contentType ? { type: contentType } : undefined
+      )
+    );
+  } catch {
+    // React Native's Blob cannot be constructed from ArrayBuffer parts; the
+    // transports accept raw bytes, so pass them through instead.
+    return { body: bytes, size: bytes.byteLength, type: contentType ?? "" };
+  }
 };
 
 export const createFilesClient = (
@@ -104,6 +150,20 @@ export const createFilesClient = (
   const transport = config.transport ?? defaultTransport(fetchImpl);
   const concurrency = config.concurrency ?? DEFAULT_CONCURRENCY;
   const sep = endpoint.includes("?") ? "&" : "?";
+
+  // Read a React Native picker asset into a Blob — needed whenever the bytes
+  // themselves must be sent (raw PUT bodies); only the presigned-POST path can
+  // stream the descriptor via RN's FormData without touching the bytes.
+  const resolveRef = async (ref: NativeFileRef): Promise<Blob> => {
+    const res = await fetchImpl(ref.uri);
+    if (!res.ok) {
+      throw new FilesError(
+        "Provider",
+        `could not read upload source ${ref.uri} (${res.status})`
+      );
+    }
+    return res.blob();
+  };
 
   const resolveHeaders = async (): Promise<Record<string, string>> => {
     const raw =
@@ -199,7 +259,7 @@ export const createFilesClient = (
 
   const sendToTarget = async (
     target: PresignedUpload["target"],
-    body: Blob,
+    body: Blob | NativeFileRef,
     signal: AbortSignal | undefined,
     onProgress?: (loaded: number, total: number) => void
   ): Promise<void> => {
@@ -219,12 +279,12 @@ export const createFilesClient = (
   };
 
   const uploadKeyless = async (
-    file: Blob,
+    file: Blob | NativeFileRef,
     opts?: UploadCallOptions
   ): Promise<UploadOutcome> => {
     const info = {
       name: fileName(file),
-      size: file.size,
+      size: file.size ?? 0,
       type: file.type || "application/octet-stream",
     };
     const presign = await post<{ uploads: PresignedUpload[] }>(
@@ -241,13 +301,20 @@ export const createFilesClient = (
     }
     const { id, key, target } = first;
 
+    // A descriptor can ride RN's FormData only on a POST target; a raw PUT
+    // needs the actual bytes, so resolve the uri to a Blob first.
+    const body =
+      isNativeFileRef(file) && target.method === "PUT"
+        ? await resolveRef(file)
+        : file;
+
     const state = initialState(file);
     state.status = "uploading";
     state.key = key;
     const states: FileUploadState[] = [state];
-    await sendToTarget(target, file, opts?.signal, (loaded, total) => {
+    await sendToTarget(target, body, opts?.signal, (loaded, total) => {
       state.loaded = loaded;
-      state.total = total || file.size;
+      state.total = total || state.size;
       state.progress = state.total ? loaded / state.total : 0;
       opts?.onProgress?.(aggregate(states), states);
     });
@@ -279,21 +346,25 @@ export const createFilesClient = (
     body: UploadBody,
     opts?: UploadCallOptions
   ): Promise<UploadOutcome> => {
-    const blob = toBlob(body, opts?.contentType);
+    // The through-endpoint is a raw PUT, so a picker ref becomes a Blob here;
+    // its declared type fills in when no explicit contentType is given.
+    const norm = isNativeFileRef(body)
+      ? toBody(await resolveRef(body), opts?.contentType ?? body.type)
+      : toBody(body, opts?.contentType);
     const result = await transport({
-      body: blob,
+      body: norm.body,
       headers: {
-        "content-type": blob.type || "application/octet-stream",
+        "content-type": norm.type || "application/octet-stream",
         ...(await resolveHeaders()),
       },
       method: "PUT",
       onProgress: opts?.onProgress
         ? (loaded, total) => {
-            const state = initialState(blob);
+            const state = initialState(norm.body);
             state.key = key;
             state.status = "uploading";
             state.loaded = loaded;
-            state.total = total || blob.size;
+            state.total = total || norm.size;
             state.progress = state.total ? loaded / state.total : 0;
             opts.onProgress?.(aggregate([state]), [state]);
           }
@@ -594,7 +665,7 @@ export const createFilesClient = (
     },
 
     upload: ((
-      a: Blob | string | UploadManyClientItem[],
+      a: Blob | NativeFileRef | string | UploadManyClientItem[],
       b?: UploadBody | UploadCallOptions | BulkCallOptions,
       c?: UploadCallOptions
     ) => {
