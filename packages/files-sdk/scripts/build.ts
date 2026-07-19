@@ -89,12 +89,27 @@ const buildJs = async ({
 };
 
 const run = async (cmd: string[], label: string) => {
+  // Capture both streams so a failure surfaces the tool's diagnostics even when
+  // this script is spawned with piped stdio (e.g. build-output.test.ts only
+  // re-throws the child's stderr). tsc prints its `error TS…` lines to stdout,
+  // so without this they would be swallowed and the failure would read as a
+  // bare "exit 2". On success the output is streamed through unchanged.
   const proc = Bun.spawn(cmd, {
     cwd: root,
-    stderr: "inherit",
-    stdout: "inherit",
+    stderr: "pipe",
+    stdout: "pipe",
   });
-  const code = await proc.exited;
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (stdout) {
+    process.stdout.write(stdout);
+  }
+  if (stderr) {
+    process.stderr.write(stderr);
+  }
   if (code !== 0) {
     throw new Error(`${label} failed (exit ${code})`);
   }
