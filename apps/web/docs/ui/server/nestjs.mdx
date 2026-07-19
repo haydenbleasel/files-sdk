@@ -1,0 +1,96 @@
+---
+title: NestJS
+description: First-class NestJS integration - a dynamic FilesModule that mounts the gateway, plus InjectFiles() for sharing the Files instance through DI.
+---
+
+`files-sdk/nestjs` wraps the [gateway](/docs/ui/server/gateway) in an idiomatic NestJS module. `FilesModule.forRoot()` (or `forRootAsync()`) configures [`createFilesRouter`](/docs/ui/server/gateway), mounts it at a configurable path via Nest's middleware layer, and exposes the `Files` instance through dependency injection — inject it anywhere with `@InjectFiles()`. Both the Express and Fastify platform adapters are supported.
+
+```ts title="app.module.ts" lineNumbers
+import { Module } from "@nestjs/common";
+import { createFiles } from "files-sdk";
+import { FilesModule } from "files-sdk/nestjs";
+import { s3 } from "files-sdk/s3";
+
+@Module({
+  imports: [
+    FilesModule.forRoot({
+      files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+      path: "/api/files", // the default
+      allowedOrigins: ["https://app.example.com"],
+      operations: ["upload", "download", "list", "delete", "url"],
+      secret: process.env.FILES_API_SECRET,
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+```ts title="main.ts" lineNumbers
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+
+// Express adapter: disable the global body parser (see below).
+const app = await NestFactory.create(AppModule, { bodyParser: false });
+await app.listen(3000);
+```
+
+:::warning
+On the **Express adapter**, Nest registers `body-parser` globally _before_ any consumer middleware, and a parser consumes the raw request stream the gateway needs (for the JSON verbs and the proxy/explicit-key `PUT` upload). Create the app with `bodyParser: false` and re-register parsers scoped to your own routes (e.g. `app.use("/api", express.json())`).
+
+The **Fastify adapter** needs no flag: Nest middleware runs at `onRequest`, before Fastify's content-type parsers, so the stream reaches the gateway untouched.
+:::
+
+## Async configuration
+
+`forRootAsync()` follows the standard Nest pattern — `imports`, `inject`, and a `useFactory` that returns the same options:
+
+```ts title="app.module.ts" lineNumbers
+import { Module } from "@nestjs/common";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import { createFiles } from "files-sdk";
+import { FilesModule } from "files-sdk/nestjs";
+import { s3 } from "files-sdk/s3";
+
+@Module({
+  imports: [
+    ConfigModule.forRoot(),
+    FilesModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        files: createFiles({
+          adapter: s3({ bucket: config.getOrThrow("S3_BUCKET") }),
+        }),
+        secret: config.getOrThrow("FILES_API_SECRET"),
+        allowedOrigins: [config.getOrThrow("APP_ORIGIN")],
+        operations: ["upload", "download", "list", "delete", "url"],
+      }),
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+## Injecting the `Files` instance
+
+The module registers globally by default (`global: false` to opt out), so any provider can inject the shared instance without importing `FilesModule`:
+
+```ts title="uploads.service.ts" lineNumbers
+import { Injectable } from "@nestjs/common";
+import type { Files } from "files-sdk";
+import { InjectFiles } from "files-sdk/nestjs";
+
+@Injectable()
+export class UploadsService {
+  constructor(@InjectFiles() private readonly files: Files) {}
+
+  async uploadAvatar(userId: string, file: Blob) {
+    return await this.files.upload(`avatars/${userId}.png`, file, {
+      contentType: file.type,
+    });
+  }
+}
+```
+
+The configured gateway router is also available under the `FILES_API` token for manual wiring or tests.
+
+Options beyond `path` and `global` are the [gateway options](/docs/ui/server/gateway) (minus the per-request `files` factory form — mount [`files-sdk/express`](/docs/ui/server/express) manually for multi-tenant routing), and the endpoint speaks the same protocol as every other binding: point [`useFiles`](/docs/ui/client/react) or [`createFilesClient`](/docs/ui) at your mount path and lock it down with [`authorize`](/docs/ui/server/authorization).
