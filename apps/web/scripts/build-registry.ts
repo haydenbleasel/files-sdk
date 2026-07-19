@@ -34,7 +34,27 @@ const main = async () => {
     })
   );
 
-  console.log(`Wrote ${items.length + 1} registry files to public/r/`);
+  // A synthetic bundle: `shadcn add .../r/all.json` installs every component in
+  // one run by listing each item as a URL registryDependency. The URLs must be
+  // absolute (bare names resolve against shadcn's own registry), so they point
+  // at the production site regardless of where this build runs.
+  const all = {
+    $schema: "https://ui.shadcn.com/schema/registry-item.json",
+    description: "Every files-sdk registry component in one install.",
+    files: [],
+    name: "all",
+    registryDependencies: items.map(
+      (meta) => `https://files-sdk.dev/r/${meta.name}.json`
+    ),
+    title: "All components",
+    type: "registry:block",
+  };
+  await writeFile(
+    path.join(OUT, "all.json"),
+    `${JSON.stringify(all, null, 2)}\n`
+  );
+
+  console.log(`Wrote ${items.length + 2} registry files to public/r/`);
 };
 
 await main();
