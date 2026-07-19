@@ -18,7 +18,7 @@ export interface SendRequest {
    * `Uint8Array` appears only on runtimes whose `Blob` cannot wrap raw bytes
    * (React Native); both XHR and fetch accept it as a request body directly.
    */
-  body: Blob | Uint8Array | null;
+  body: Blob | Uint8Array<ArrayBuffer> | null;
   signal?: AbortSignal;
   onProgress?: (loaded: number, total: number) => void;
 }
@@ -30,13 +30,13 @@ export interface SendResult {
 
 export type Transport = (req: SendRequest) => Promise<SendResult>;
 
-const bodySize = (body: Blob | Uint8Array): number =>
+const bodySize = (body: Blob | Uint8Array<ArrayBuffer>): number =>
   body instanceof Blob ? body.size : body.byteLength;
 
 // The multipart `file` part must be a Blob. A raw-byte body only exists on
 // runtimes whose Blob rejects byte parts (React Native), where presigned-POST
 // multipart is unusable anyway — the wrap below throws there, accurately.
-const asFilePart = (body: Blob | Uint8Array): Blob =>
+const asFilePart = (body: Blob | Uint8Array<ArrayBuffer>): Blob =>
   body instanceof Blob ? body : new Blob([body as BlobPart]);
 
 const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {

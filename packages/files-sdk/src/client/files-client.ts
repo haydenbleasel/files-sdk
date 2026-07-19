@@ -85,7 +85,7 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
 };
 
 interface NormalizedBody {
-  body: Blob | Uint8Array;
+  body: Blob | Uint8Array<ArrayBuffer>;
   size: number;
   type: string;
 }
@@ -96,10 +96,16 @@ const fromBlob = (blob: Blob): NormalizedBody => ({
   type: blob.type,
 });
 
-const asBytes = (body: ArrayBuffer | ArrayBufferView): Uint8Array =>
+const asBytes = (
+  body: ArrayBuffer | ArrayBufferView
+): Uint8Array<ArrayBuffer> =>
   body instanceof ArrayBuffer
     ? new Uint8Array(body)
-    : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    : new Uint8Array(
+        body.buffer as ArrayBuffer,
+        body.byteOffset,
+        body.byteLength
+      );
 
 const toBody = (body: UploadBody, contentType?: string): NormalizedBody => {
   if (body instanceof Blob) {
@@ -117,7 +123,10 @@ const toBody = (body: UploadBody, contentType?: string): NormalizedBody => {
   const bytes = asBytes(body);
   try {
     return fromBlob(
-      new Blob([bytes as BlobPart], contentType ? { type: contentType } : undefined)
+      new Blob(
+        [bytes as BlobPart],
+        contentType ? { type: contentType } : undefined
+      )
     );
   } catch {
     // React Native's Blob cannot be constructed from ArrayBuffer parts; the

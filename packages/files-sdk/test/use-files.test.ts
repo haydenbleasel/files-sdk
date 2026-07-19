@@ -57,7 +57,9 @@ const config = (adapter: Adapter) => {
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
     router.handle(new Request(input, init))) as typeof fetch;
   const transport: Transport = async (req) => {
-    req.onProgress?.(req.body?.size ?? 0, req.body?.size ?? 0);
+    const total =
+      req.body instanceof Blob ? req.body.size : (req.body?.byteLength ?? 0);
+    req.onProgress?.(total, total);
     const res = await router.handle(
       new Request(req.url, {
         body: req.body,
