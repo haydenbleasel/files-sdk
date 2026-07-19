@@ -19,6 +19,8 @@ import { FilesSdk19 } from "./v1-9/composition";
 import { TOTAL_DURATION as V19_DURATION } from "./v1-9/timings";
 import { FilesSdk20 } from "./v2-0/composition";
 import { TOTAL_DURATION as V20_DURATION } from "./v2-0/timings";
+import { FilesSdk22 } from "./v2-2/composition";
+import { TOTAL_DURATION as V22_DURATION } from "./v2-2/timings";
 
 const VIDEOS = [
   {
@@ -34,6 +36,7 @@ const VIDEOS = [
   { component: FilesSdk18, duration: V18_DURATION, id: "FilesSdk18" },
   { component: FilesSdk19, duration: V19_DURATION, id: "FilesSdk19" },
   { component: FilesSdk20, duration: V20_DURATION, id: "FilesSdk20" },
+  { component: FilesSdk22, duration: V22_DURATION, id: "FilesSdk22" },
 ];
 
 export const RemotionRoot: React.FC = () => (
