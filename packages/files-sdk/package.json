@@ -1,6 +1,6 @@
 {
   "name": "files-sdk",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Unified storage SDK for object/blob backends.",
   "homepage": "https://github.com/haydenbleasel/files-sdk#readme",
   "bugs": {
