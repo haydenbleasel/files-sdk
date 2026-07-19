@@ -6,11 +6,12 @@
     "dev": "bun scripts/build-registry.ts && blume dev",
     "build": "bun scripts/build-registry.ts && blume build",
     "preview": "blume preview",
+    "audit": "blume audit",
     "types": "tsc --noEmit",
     "test": "echo 'no tests'"
   },
   "dependencies": {
-    "blume": "^0.7.0",
+    "blume": "^1.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "files-sdk": "workspace:*",
