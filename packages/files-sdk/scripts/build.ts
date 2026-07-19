@@ -2,8 +2,8 @@
 import { watch as fsWatch } from "node:fs";
 // Build the package: JS via Bun's bundler, .d.ts via tsc, then mirror the docs.
 // Replaces tsup. Bun bundles entries with shared chunks enabled so dynamic
-// imports stay lazy; externals stay external. tsc (TypeScript 7's native Go
-// compiler) emits per-file declarations into the same dist/ tree.
+// imports stay lazy; externals stay external. tsc emits per-file declarations
+// into the same dist/ tree.
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
@@ -115,7 +115,7 @@ const run = async (cmd: string[], label: string) => {
   }
 };
 
-// tsc (TypeScript 7 native compiler) emits one .d.ts (+ map) per source file.
+// tsc emits one .d.ts (+ map) per source file.
 const buildTypes = () =>
   run(["bun", "x", "tsc", "-p", "tsconfig.build.json"], "tsc");
 
