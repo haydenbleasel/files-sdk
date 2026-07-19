@@ -16,10 +16,12 @@ import {
 } from "@aws-sdk/client-s3";
 import { sdkStreamMixin } from "@smithy/util-stream";
 import { mockClient } from "aws-sdk-client-mock";
+import { AwsClient } from "aws4fetch";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { r2 } from "../src/r2/index.js";
+import { makeFakeS3 } from "./fake-s3-server.js";
 
 const makeAdapter = () =>
   r2({
@@ -1142,5 +1144,132 @@ describe("r2 resumable uploads (HTTP path delegates to the lazy s3 driver)", () 
     await expect(
       files.upload("x.bin", "data", { control: new UploadControl() })
     ).rejects.toThrow(/not supported/iu);
+  });
+});
+
+const makeFetchAdapter = (fake = makeFakeS3()) => ({
+  adapter: r2({
+    accessKeyId: "K",
+    accountId: "ACCT",
+    bucket: "uploads",
+    client: "fetch",
+    fetch: fake.fetchImpl,
+    secretAccessKey: "S",
+  }),
+  fake,
+});
+
+describe('r2 adapter — HTTP path with client: "fetch"', () => {
+  test("identifies as r2-http-fetch with an AwsClient raw and no multipart", () => {
+    const { adapter } = makeFetchAdapter();
+    expect(adapter.name).toBe("r2-http-fetch");
+    expect(adapter.raw).toBeInstanceOf(AwsClient);
+    expect(adapter.resumableUpload).toBeUndefined();
+    const files = new Files({ adapter });
+    expect(files.capabilities.multipart).toBe(false);
+    expect(files.capabilities.signedUrl.supported).toBe(true);
+  });
+
+  test("round-trips uploads and downloads against the R2 S3 endpoint", async () => {
+    const { adapter, fake } = makeFetchAdapter();
+    const files = new Files({ adapter });
+    await files.upload("hello.txt", "hi from fetch", {
+      contentType: "text/plain",
+    });
+    const put = fake.requests[0] as Request;
+    expect(new URL(put.url).hostname).toBe("acct.r2.cloudflarestorage.com");
+    expect(new URL(put.url).pathname).toBe("/uploads/hello.txt");
+    const file = await files.download("hello.txt");
+    expect(await file.text()).toBe("hi from fetch");
+    await files.delete("hello.txt");
+    expect(await files.exists("hello.txt")).toBe(false);
+  });
+
+  test("bulk deletes fan out per key (no native deleteMany)", async () => {
+    const { adapter, fake } = makeFetchAdapter();
+    const files = new Files({ adapter });
+    await files.upload("b/1.txt", "1");
+    await files.upload("b/2.txt", "2");
+    const result = await files.delete(["b/1.txt", "b/2.txt"]);
+    expect(result.deleted).toEqual(["b/1.txt", "b/2.txt"]);
+    expect(fake.store.size).toBe(0);
+  });
+
+  test("url() presigns without any @aws-sdk import", async () => {
+    const { adapter } = makeFetchAdapter();
+    const files = new Files({ adapter });
+    const url = await files.url("a.txt");
+    expect(url).toContain("X-Amz-Signature=");
+    expect(url).toContain("X-Amz-Expires=3600");
+    expect(url).toContain("acct.r2.cloudflarestorage.com/uploads/a.txt");
+  });
+
+  test("publicBaseUrl is honored by url()", async () => {
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        bucket: "uploads",
+        client: "fetch",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+  });
+
+  test("signedUploadUrl works, and maxSize throws the R2-specific error", async () => {
+    const { adapter } = makeFetchAdapter();
+    const files = new Files({ adapter });
+    const out = await files.signedUploadUrl("up.bin", {
+      contentType: "image/png",
+      expiresIn: 60,
+    });
+    expect(out.method).toBe("PUT");
+    if (out.method === "PUT") {
+      expect(out.url).toContain("X-Amz-Signature=");
+      expect(out.headers).toEqual({ "Content-Type": "image/png" });
+    }
+    await expect(
+      files.signedUploadUrl("up.bin", { expiresIn: 60, maxSize: 1024 })
+    ).rejects.toThrow(/maxSize.*not supported.*R2/su);
+  });
+
+  test("multipart uploads throw instead of silently buffering", async () => {
+    const { adapter } = makeFetchAdapter();
+    const files = new Files({ adapter });
+    await expect(
+      files.upload("big.bin", "x", { multipart: true })
+    ).rejects.toThrow(/multipart uploads are not supported/u);
+  });
+
+  test("falls back to R2_* env credentials", async () => {
+    const old = {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID,
+      accountId: process.env.R2_ACCOUNT_ID,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    };
+    process.env.R2_ACCOUNT_ID = "envacct";
+    process.env.R2_ACCESS_KEY_ID = "ENVKEY";
+    process.env.R2_SECRET_ACCESS_KEY = "ENVSECRET";
+    try {
+      const adapter = r2({ bucket: "uploads", client: "fetch" });
+      const url = await adapter.url("a.txt");
+      expect(url).toContain("envacct.r2.cloudflarestorage.com");
+      expect(url).toContain("X-Amz-Credential=ENVKEY");
+    } finally {
+      process.env.R2_ACCOUNT_ID = old.accountId ?? "";
+      process.env.R2_ACCESS_KEY_ID = old.accessKeyId ?? "";
+      process.env.R2_SECRET_ACCESS_KEY = old.secretAccessKey ?? "";
+      if (!old.accountId) {
+        delete process.env.R2_ACCOUNT_ID;
+      }
+      if (!old.accessKeyId) {
+        delete process.env.R2_ACCESS_KEY_ID;
+      }
+      if (!old.secretAccessKey) {
+        delete process.env.R2_SECRET_ACCESS_KEY;
+      }
+    }
   });
 });

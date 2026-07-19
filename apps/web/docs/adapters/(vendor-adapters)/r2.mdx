@@ -5,13 +5,19 @@ description: Cloudflare R2 over the S3-compatible HTTP API. Auto-loads R2_* env 
 
 ## Installation
 
-`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+The `@aws-sdk/*` packages are only needed for the default `"aws-sdk"` HTTP client. The Workers binding path, hybrid signing, and the [lightweight fetch client](#lightweight-fetch-client) need none of them - `files-sdk` alone is enough:
+
+```package-install
+files-sdk
+```
+
+For the default `"aws-sdk"` HTTP client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-Over the HTTP API, `upload` reports true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
+Over the HTTP API with the `"aws-sdk"` client, `upload` reports true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding and the fetch client the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
 
 ## Usage
 
@@ -33,6 +39,27 @@ const files = new Files({
 
 `publicBaseUrl` - optional, an `r2.dev` subdomain or custom domain bound to the bucket. When set, `url()` returns `` `${publicBaseUrl}/${key}` `` and skips signing.
 
+## Lightweight fetch client
+
+Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). No `@aws-sdk/*` packages are installed or bundled - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: r2({
+    bucket: "uploads",
+    accountId: process.env.R2_ACCOUNT_ID!,
+    client: "fetch",
+  }),
+});
+```
+
+The fetch client covers `upload`, `download` (including [ranges](/docs/api/download#byte-ranges)), `head`, `exists`, `delete`, `list` (including `delimiter` folding), server-side `copy`, presigned `url()`, and `signedUploadUrl()`. Trade-offs against the default `"aws-sdk"` client:
+
+- `ReadableStream` bodies are buffered in memory before a single PUT (a lone PUT needs a `Content-Length`, and single-request uploads cap at 5&nbsp;GB on R2).
+- `multipart` and resumable (`control`) uploads throw instead of engaging the S3 multipart API.
+- Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests.
+- Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
+
 ## Options
 
 `R2AdapterOptions` is a union of two shapes depending on whether you have a Workers `R2Bucket` binding available.
@@ -53,7 +80,7 @@ const files = new Files({
 
 ## Hybrid: binding + HTTP credentials
 
-Inside a Worker, you can pass _both_ a binding and HTTP credentials. Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through the HTTP signer because a Worker binding has no signing primitive. The S3 client is lazy-loaded - bindings-only Workers don't pull `@aws-sdk/client-s3` into their bundle.
+Inside a Worker, you can pass _both_ a binding and HTTP credentials. Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through an S3-compatible SigV4 signer because a Worker binding has no signing primitive. Hybrid signing runs on [aws4fetch](https://github.com/mhart/aws4fetch) (Web Crypto only), so neither the binding path nor hybrid mode ever pulls `@aws-sdk/*` packages into the Worker bundle.
 
 ```ts lineNumbers
 // Inside a Cloudflare Worker. The binding handles uploads/downloads
@@ -106,6 +133,21 @@ To cap upload sizes on R2, enforce the limit at your application gateway before 
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
 | `signedUploadUrl` | ⚠️ | PUT URL only - Cloudflare R2 doesn't implement the S3 POST Object API, so `maxSize` throws (no `content-length-range` policy; a presigned POST would 501 at upload time). Enforce upload caps at your application gateway instead. |
+
+### HTTP mode (`client: "fetch"`)
+
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ⚠️ | Single PUT - `ReadableStream` bodies are buffered in memory first, and `multipart` / resumable `control` uploads throw. Use the `"aws-sdk"` client for multipart. |
+| `download` | ✅ |  |
+| `delete` | ✅ | Bulk deletes fan out per key (no batched `DeleteObjects`). |
+| `list` | ✅ |  |
+| `search` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ✅ |  |
+| `signedUploadUrl` | ⚠️ | PUT URL only - same `maxSize` limitation as above. |
 
 ### Binding mode
 

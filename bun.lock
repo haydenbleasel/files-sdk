@@ -49,6 +49,7 @@
         "files": "./dist/cli/index.js",
       },
       "dependencies": {
+        "aws4fetch": "^1.0.20",
         "commander": "^15.0.0",
         "picomatch": "^4.0.5",
         "safe-regex2": "^5.1.1",
@@ -1901,6 +1902,8 @@
     "avvio": ["avvio@9.2.0", "", { "dependencies": { "@fastify/error": "^4.0.0", "fastq": "^1.17.1" } }, "sha512-2t/sy01ArdHHE0vRH5Hsay+RtCZt3dLPji7W7/MMOCEgze5b7SNDC4j5H6FnVgPkI1MTNFGzHdHrVXDDl7QSSQ=="],
 
     "aws-sdk-client-mock": ["aws-sdk-client-mock@4.1.0", "", { "dependencies": { "@types/sinon": "^17.0.3", "sinon": "^18.0.1", "tslib": "^2.1.0" } }, "sha512-h/tOYTkXEsAcV3//6C1/7U4ifSpKyJvb6auveAepqqNJl6TdZaPFEtKjBQNf8UxQdDP850knB2i/whq4zlsxJw=="],
+
+    "aws4fetch": ["aws4fetch@1.0.20", "", {}, "sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g=="],
 
     "axobject-query": ["axobject-query@4.1.0", "", {}, "sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ=="],
 

@@ -4,6 +4,7 @@ import type {
   R2Object,
   R2ObjectBody,
 } from "@cloudflare/workers-types";
+import type { AwsClient } from "aws4fetch";
 
 import type {
   Adapter,
@@ -25,11 +26,13 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import type { S3FetchAdapter } from "../internal/s3-fetch.js";
+import { s3FetchAdapter } from "../internal/s3-fetch.js";
 import { createStoredFile } from "../internal/stored-file.js";
-// Note: the s3 adapter is *not* imported eagerly. The HTTP and hybrid paths
-// load it via dynamic import on first use so that a binding-only Worker
-// bundle never pulls in @aws-sdk/client-s3 (~500KB+). See
-// `loadHttpAdapter` below.
+// Note: the s3 adapter is *not* imported eagerly. The aws-sdk HTTP path
+// loads it via dynamic import on first use so that a Worker bundle on the
+// binding or fetch paths never pulls in @aws-sdk/client-s3 (~500KB+). See
+// `lazyS3` below.
 import type { S3Adapter, S3AdapterOptions } from "../s3/index.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -64,6 +67,28 @@ export interface R2HttpOptions {
    * Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
+  /**
+   * Which HTTP engine backs the adapter.
+   *
+   * - `"aws-sdk"` (default): `@aws-sdk/client-s3` — the full surface,
+   *   including multipart/resumable uploads, byte-level upload progress, and
+   *   batched `deleteMany`. Requires the `@aws-sdk/*` optional peer
+   *   dependencies. Loaded lazily on first use.
+   * - `"fetch"`: SigV4-signed `fetch` via `aws4fetch` (~2.5 KB) — no
+   *   `@aws-sdk/*` install needed, ideal for Workers and other edge
+   *   runtimes. Covers upload, download (+ ranges), head, exists, delete,
+   *   list (+ delimiter), server-side copy, presigned `url()`, and
+   *   `signedUploadUrl()`. Trade-offs: `ReadableStream` bodies are buffered
+   *   before the single PUT, `multipart`/`control` uploads throw, and bulk
+   *   deletes fan out per-key instead of batching.
+   */
+  client?: "aws-sdk" | "fetch";
+  /**
+   * Override the `fetch` implementation used by the `"fetch"` client — for
+   * tests, or runtimes that hand out a bound/instrumented fetch. Defaults to
+   * `globalThis.fetch`. Ignored by the `"aws-sdk"` client.
+   */
+  fetch?: (request: Request) => Promise<Response>;
 }
 
 export interface R2BindingOptions {
@@ -81,10 +106,11 @@ export interface R2BindingOptions {
   /**
    * Hybrid mode: Cloudflare account ID, used alongside `accessKeyId` +
    * `secretAccessKey` so `url()` and `signedUploadUrl()` can fall back to
-   * the S3-compatible HTTP signer instead of throwing. Reads and writes
-   * still go through the binding so they stay intra-Worker (no egress
-   * fees). Useful for Workers that need browser-facing presigned URLs
-   * without giving up the binding's I/O performance.
+   * an S3-compatible SigV4 signer (aws4fetch — no `@aws-sdk/*` install
+   * needed) instead of throwing. Reads and writes still go through the
+   * binding so they stay intra-Worker (no egress fees). Useful for Workers
+   * that need browser-facing presigned URLs without giving up the binding's
+   * I/O performance.
    */
   accountId?: string;
   /** Hybrid mode: R2 access key ID. See `accountId`. */
@@ -100,7 +126,7 @@ export interface R2BindingOptions {
 
 export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
 
-export type R2Adapter = Adapter<S3Client | R2Bucket>;
+export type R2Adapter = Adapter<S3Client | R2Bucket | AwsClient>;
 
 // Lazy-load the s3 adapter via dynamic import so a binding-only Worker
 // bundle doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). The
@@ -263,38 +289,33 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
-  // Hybrid mode: when full HTTP creds are passed alongside the binding,
-  // build (lazily, once) an inner s3 adapter to handle URL signing. Reads
-  // and writes still go through the binding — only the signing surface
-  // delegates. The opts object is reused as the cache key so repeated
-  // calls share one adapter instance.
+  // Hybrid mode: when full HTTP creds are passed alongside the binding, an
+  // aws4fetch-backed signer handles the URL surface. Reads and writes still
+  // go through the binding — only signing delegates. Pure Web Crypto, so a
+  // hybrid Worker needs no `@aws-sdk/*` packages at all.
   const httpBucket = (opts as Partial<R2HttpOptions>).bucket;
   const hybrid =
     // oxlint-disable-next-line sonarjs/expression-complexity -- the inline && chain is what narrows each opt to a non-undefined string inside the branch; extracting the guard loses that narrowing
     opts.accountId && opts.accessKeyId && opts.secretAccessKey && httpBucket
-      ? lazyS3({
+      ? s3FetchAdapter({
+          accessKeyId: opts.accessKeyId,
           bucket: httpBucket,
-          credentials: {
-            accessKeyId: opts.accessKeyId,
-            secretAccessKey: opts.secretAccessKey,
-          },
-          defaultProviderMessage: "R2 error",
-          ...(opts.defaultUrlExpiresIn !== undefined && {
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-          }),
           endpoint: `https://${opts.accountId}.r2.cloudflarestorage.com`,
           forcePathStyle: true,
+          name: "r2-hybrid-signer",
+          providerLabel: "R2 error",
           region: "auto",
+          secretAccessKey: opts.secretAccessKey,
         })
       : null;
-  const getSigner = (): Promise<S3Adapter> => {
+  const getSigner = (): S3FetchAdapter => {
     if (!hybrid) {
       throw new FilesError(
         "Provider",
         "r2 binding: signing requires either `publicBaseUrl` (for url()) or HTTP credentials (`accountId`, `accessKeyId`, `secretAccessKey`, `bucket`) for presigned URLs. See https://developers.cloudflare.com/r2/api/s3/tokens/."
       );
     }
-    return hybrid();
+    return hybrid;
   };
 
   return {
@@ -430,13 +451,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     },
     name: "r2-binding",
     raw: bucket,
-    async signedUploadUrl(
-      key,
-      signOpts: SignUploadOptions
-    ): Promise<SignedUpload> {
+    signedUploadUrl(key, signOpts: SignUploadOptions): Promise<SignedUpload> {
       // getSigner() first: a binding without HTTP creds can't sign at all,
       // which is the more fundamental thing to fix than `maxSize`.
-      const signer = await getSigner();
+      const signer = getSigner();
       assertNoMaxSize(signOpts);
       return signer.signedUploadUrl(key, signOpts);
     },
@@ -477,7 +495,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         throw mapR2Error(error);
       }
     },
-    async url(key, urlOpts: UrlOptions = {}): Promise<string> {
+    url(key, urlOpts: UrlOptions = {}): Promise<string> {
       // `responseContentDisposition` requires signing — bypass the
       // publicBaseUrl path and route through hybrid signing if available.
       // No hybrid? Throw rather than silently dropping the security ask.
@@ -493,11 +511,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       // forces signing. After that, hybrid HTTP creds let url() sign.
       // Without either, throw with guidance.
       if (publicBaseUrl && !wantsDisposition) {
-        return joinPublicUrl(publicBaseUrl, key);
+        return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       if (hybrid) {
-        const signer = await getSigner();
-        return signer.url(key, {
+        return hybrid.url(key, {
           expiresIn: urlOpts.expiresIn ?? defaultUrlExpiresIn,
           ...(urlOpts.responseContentDisposition && {
             responseContentDisposition: urlOpts.responseContentDisposition,
@@ -529,6 +546,34 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       "Provider",
       "r2 adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY."
     );
+  }
+
+  // The lightweight engine: aws4fetch-signed fetch, no @aws-sdk/* anywhere.
+  // The only R2-specific bit layered on top is the friendlier `maxSize`
+  // rejection (the shared core fails closed too, but without the R2 context).
+  if (opts.client === "fetch") {
+    const inner = s3FetchAdapter({
+      accessKeyId,
+      bucket: opts.bucket,
+      ...(opts.defaultUrlExpiresIn !== undefined && {
+        defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+      }),
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      ...(opts.fetch && { fetch: opts.fetch }),
+      forcePathStyle: true,
+      name: "r2-http-fetch",
+      providerLabel: "R2 error",
+      ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
+      region: "auto",
+      secretAccessKey,
+    });
+    return {
+      ...inner,
+      signedUploadUrl(key, signOpts) {
+        assertNoMaxSize(signOpts);
+        return inner.signedUploadUrl(key, signOpts);
+      },
+    };
   }
 
   // The s3 adapter is loaded lazily via dynamic import — every method on
