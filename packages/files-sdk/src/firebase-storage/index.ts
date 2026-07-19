@@ -225,6 +225,17 @@ const resolveBucketName = (
   );
 };
 
+// firebase-admin bundles its own (often older) copy of `@google-cloud/storage`,
+// so `getStorage().bucket()` is typed against that copy's `Bucket`. It is the
+// same runtime object as the SDK's `@google-cloud/storage` `Bucket`, so re-type
+// it as ours to keep the adapter's types consistent regardless of which copy
+// each dependency resolves to. Without this, the build's tsc fails on Linux CI
+// where the two copies diverge (7.19 vs 7.21) even though it passes on macOS.
+const adminBucket = (app: App, name?: string): Bucket =>
+  (name
+    ? getStorage(app).bucket(name)
+    : getStorage(app).bucket()) as unknown as Bucket;
+
 const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
   if (opts.app) {
     if (isBucket(opts.app)) {
@@ -235,9 +246,7 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
       readEnv("FIREBASE_STORAGE_BUCKET") ??
       (opts.app.options as { storageBucket?: string }).storageBucket ??
       "";
-    return bucketName
-      ? getStorage(opts.app).bucket(bucketName)
-      : getStorage(opts.app).bucket();
+    return adminBucket(opts.app, bucketName || undefined);
   }
 
   const projectId =
@@ -300,7 +309,7 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
       appName
     );
 
-  return getStorage(app).bucket(storageBucket);
+  return adminBucket(app, storageBucket);
 };
 
 export const firebaseStorage = (
