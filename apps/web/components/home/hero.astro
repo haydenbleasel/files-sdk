@@ -10,9 +10,6 @@ interface Props {
 }
 
 const { adapterCount, latestVersion } = Astro.props;
-const releaseUrl = `https://github.com/haydenbleasel/files-sdk/releases/tag/${encodeURIComponent(
-  `files-sdk@${latestVersion}`
-)}`;
 const marquee = [...ADAPTER_LOGOS, ...ADAPTER_LOGOS];
 ---
 
@@ -22,9 +19,7 @@ const marquee = [...ADAPTER_LOGOS, ...ADAPTER_LOGOS];
   >
     <a
       class="group inline-flex items-center gap-2 font-mono text-muted-foreground text-xs transition-colors hover:text-foreground"
-      href={releaseUrl}
-      rel="noreferrer"
-      target="_blank"
+      href="/changelog"
     >
       <span class="inline-block size-1.5 rounded-full bg-emerald-500"></span>
       Latest update — v{latestVersion} released
