@@ -2,7 +2,7 @@
 
 A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.
 
-[![npm version](https://img.shields.io/npm/v/files-sdk.svg)](https://www.npmjs.com/package/files-sdk) [![npm downloads](https://img.shields.io/npm/dm/files-sdk.svg)](https://www.npmjs.com/package/files-sdk) [![license](https://img.shields.io/npm/l/files-sdk.svg)](#license) [![Socket Badge](https://socket.dev/api/badge/npm/package/files-sdk)](https://socket.dev/npm/package/files-sdk) ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/haydenbleasel/files-sdk?utm_source=oss&utm_medium=github&utm_campaign=haydenbleasel%2Ffiles-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
+[![npm downloads](https://img.shields.io/npm/dm/files-sdk.svg)](https://www.npmjs.com/package/files-sdk) [![Socket Badge](https://socket.dev/api/badge/npm/package/files-sdk)](https://socket.dev/npm/package/files-sdk) ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/haydenbleasel/files-sdk?utm_source=oss&utm_medium=github&utm_campaign=haydenbleasel%2Ffiles-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 ## Install
 
