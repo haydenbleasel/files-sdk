@@ -24,8 +24,18 @@ const optionalPeers = Object.entries(pkg.peerDependenciesMeta ?? {})
   .filter(([, meta]) => (meta as { optional?: boolean }).optional)
   .map(([name]) => name);
 
-/** Collect every external specifier reachable from `entry` via static imports. */
-const staticExternals = (entry: string): Set<string> => {
+/**
+ * Collect every external specifier that appears in a *static* import
+ * reachable from `entry`. By default the walk stops at dynamic imports —
+ * they are the lazy boundary for the Node CLI. `followDynamic` also walks
+ * through relative dynamic imports (still only recording static externals):
+ * that is the consumer-bundler view, where dynamically-reached chunks are
+ * resolved at build time too (#105).
+ */
+const staticExternals = (
+  entry: string,
+  { followDynamic = false } = {}
+): Set<string> => {
   const transpiler = new Bun.Transpiler({ loader: "js" });
   const visited = new Set<string>();
   const externals = new Set<string>();
@@ -39,12 +49,13 @@ const staticExternals = (entry: string): Set<string> => {
     // The CLI entry starts with a shebang, which the transpiler rejects.
     const source = readFileSync(file, "utf-8").replace(/^#![^\n]*\n/u, "");
     for (const imp of transpiler.scanImports(source)) {
-      if (imp.kind !== "import-statement") {
+      const isStatic = imp.kind === "import-statement";
+      if (!(isStatic || (followDynamic && imp.kind === "dynamic-import"))) {
         continue;
       }
       if (imp.path.startsWith(".")) {
         queue.push(path.resolve(path.dirname(file), imp.path));
-      } else {
+      } else if (isStatic) {
         externals.add(imp.path);
       }
     }
@@ -53,8 +64,11 @@ const staticExternals = (entry: string): Set<string> => {
 };
 
 /** Optional peers reachable from `bundle` via static imports — must be []. */
-const offendingOptionalPeers = (bundle: string): string[] => {
-  const externals = staticExternals(bundle);
+const offendingOptionalPeers = (
+  bundle: string,
+  opts?: { followDynamic?: boolean }
+): string[] => {
+  const externals = staticExternals(bundle, opts);
   return optionalPeers.filter((peer) =>
     [...externals].some(
       (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
@@ -108,6 +122,26 @@ test(
     expect(typeof mod.loadFiles).toBe("function");
 
     expect(offendingOptionalPeers(loaderBundle)).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// Regression guard for #105: consumer bundlers (rolldown-vite + the
+// Cloudflare Vite plugin, …) resolve the whole module graph at build time,
+// including chunks reached only through dynamic imports — so a *static*
+// `@aws-sdk/*` import anywhere behind the r2 entry's lazy `import()` boundary
+// hard-errors (MISSING_EXPORT) against the bundler's optional-peer
+// placeholder, even though that code never runs on the binding/fetch paths.
+// Walk the r2 graph the way a bundler does — through dynamic imports — and
+// require that optional peers only ever appear as dynamic specifiers.
+test(
+  "r2 bundle never statically imports an optional peer, even across dynamic chunks (#105)",
+  () => {
+    ensureBuilt();
+    const r2Bundle = path.resolve(distDir, "r2/index.js");
+    expect(offendingOptionalPeers(r2Bundle, { followDynamic: true })).toEqual(
+      []
+    );
   },
   COLD_BUILD_TIMEOUT_MS
 );
