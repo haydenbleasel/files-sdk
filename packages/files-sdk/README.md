@@ -47,8 +47,7 @@ Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …
 
 ### Runtime provider selection
 
-Node.js tools that choose a provider at runtime can use the lazy loader instead
-of maintaining their own adapter registry:
+Node.js tools that choose a provider at runtime can use the lazy loader instead of maintaining their own adapter registry:
 
 ```ts
 import { loadFiles } from "files-sdk/loader";
@@ -61,8 +60,7 @@ const { files, provider } = await loadFiles({
 ```
 
 Set `FILES_SDK_PROVIDER` (for example, `r2`) or pass `provider` directly.
-Provider credentials continue to come from each adapter's environment-variable
-conventions, and only the selected adapter is imported.
+Provider credentials continue to come from each adapter's environment-variable conventions, and only the selected adapter is imported.
 
 ## File handles
 
