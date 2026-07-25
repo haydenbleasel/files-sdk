@@ -4,6 +4,7 @@ import type { StoredFile } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -14,6 +15,19 @@ export interface FilePreviewProps {
   file: string | StoredFile;
   /** Endpoint for the gateway download-proxy fallback. Default `"/api/files"`. */
   endpoint?: string;
+  /**
+   * Replace the built-in preview with a custom viewer (e.g. a PDF, DOCX or
+   * CSV viewer component). Called once metadata resolves, with the same `src`
+   * and `text` the built-in preview would use — except that when this is set,
+   * a `src` is resolved for **every** non-text type, not just images and
+   * PDFs, so viewers for formats the built-in preview can't render still get
+   * a URL. PDFs arrive as a `blob:` URL; other types as a signed or proxy URL.
+   */
+  renderPreview?: (preview: {
+    file: StoredFile;
+    src?: string;
+    text?: string;
+  }) => ReactNode;
   className?: string;
 }
 
@@ -91,14 +105,16 @@ const Body = ({
 };
 
 /**
- * Lazy preview of a single stored file. Images and PDFs prefer a direct
- * `url()`, falling back to the gateway download proxy; text is fetched and
- * shown inline. Bytes are only loaded when the component mounts.
+ * Lazy preview of a single stored file. Images prefer a direct `url()`,
+ * falling back to the gateway download proxy; PDFs are downloaded and shown
+ * from a `blob:` URL; text is fetched and shown inline. Bytes are only loaded
+ * when the component mounts.
  */
 export const FilePreview = ({
   files,
   file,
   endpoint = "/api/files",
+  renderPreview,
   className,
 }: FilePreviewProps) => {
   const key = typeof file === "string" ? file : file.key;
@@ -117,8 +133,14 @@ export const FilePreview = ({
   const filesRef = useRef(files);
   filesRef.current = files;
 
+  // The effect only cares whether a custom renderer exists (it widens which
+  // types get a `src`), not about the callback's identity — an inline arrow
+  // would re-run it every render.
+  const hasCustomRenderer = renderPreview !== undefined;
+
   useEffect(() => {
     const controller = new AbortController();
+    let objectUrl: string | undefined;
 
     const run = async () => {
       setLoadError(undefined);
@@ -142,10 +164,23 @@ export const FilePreview = ({
           if (!controller.signal.aborted) {
             setText(body);
           }
-        } else if (
-          resolved.type.startsWith("image/") ||
-          resolved.type === "application/pdf"
-        ) {
+        } else if (resolved.type === "application/pdf") {
+          // The gateway forces `Content-Disposition: attachment` on both
+          // `url()` and the download proxy (its stored-XSS guard), and
+          // browsers download an <object>'s document instead of rendering it
+          // when that header is present. A `blob:` URL carries no headers, so
+          // fetch the bytes and preview those.
+          const downloaded = await filesRef.current.download(key);
+          const blob = await downloaded.blob();
+          if (!controller.signal.aborted) {
+            objectUrl = URL.createObjectURL(
+              blob.type === "application/pdf"
+                ? blob
+                : new Blob([blob], { type: "application/pdf" })
+            );
+            setSrc(objectUrl);
+          }
+        } else if (resolved.type.startsWith("image/") || hasCustomRenderer) {
           // Prefer a signed/direct URL, but only when the adapter can actually
           // sign — otherwise `url()` returns a non-loadable placeholder. Fall
           // back to the gateway download proxy, which works on every adapter.
@@ -177,8 +212,13 @@ export const FilePreview = ({
     };
 
     void run();
-    return () => controller.abort();
-  }, [endpoint, file, key]);
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [endpoint, file, key, hasCustomRenderer]);
 
   return (
     <figure
@@ -188,13 +228,17 @@ export const FilePreview = ({
       )}
     >
       <div className="flex min-h-40 items-center justify-center bg-muted/30 p-4">
-        <Body
-          error={loadError}
-          isLoading={isLoading}
-          src={src}
-          text={text}
-          type={meta?.type}
-        />
+        {renderPreview && !isLoading && !loadError && meta ? (
+          renderPreview({ file: meta, src, text })
+        ) : (
+          <Body
+            error={loadError}
+            isLoading={isLoading}
+            src={src}
+            text={text}
+            type={meta?.type}
+          />
+        )}
       </div>
       <figcaption className="border-border border-t px-3 py-2">
         <p className="truncate font-medium text-sm">{key}</p>

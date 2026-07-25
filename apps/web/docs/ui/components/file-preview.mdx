@@ -3,7 +3,7 @@ title: File Preview
 description: A lazy preview of a single stored file — image, PDF or text — with metadata, resolving bytes only when it mounts.
 ---
 
-Previews one stored file by key (or a resolved `StoredFile`). Images and PDFs prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; text is fetched and shown inline. Bytes load only when the component mounts.
+Previews one stored file by key (or a resolved `StoredFile`). Images prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; PDFs are downloaded and rendered from a `blob:` URL; text is fetched and shown inline. Bytes load only when the component mounts.
 
 <Component path="file-preview/examples/file-preview-basic" />
 
@@ -26,6 +26,32 @@ export function Preview({ fileKey }: { fileKey: string }) {
 ```
 
 The footer shows the key, size, type and etag. Pass either a key string (the component `head()`s it for metadata) or an already-resolved `StoredFile` to skip that round-trip.
+
+## Why PDFs use a `blob:` URL
+
+The [gateway](/docs/ui/server/gateway) forces `Content-Disposition: attachment` on both `url()` and the download proxy — its stored-XSS guard against user-uploaded HTML and script-bearing SVGs. Browsers honor that header even for a document loaded inside an `<object>` tag, so a gateway URL would trigger a download instead of an inline PDF render. `FilePreview` sidesteps this by fetching the bytes through `download()` and previewing a `blob:` URL, which carries no headers — no server configuration needed, and the XSS guard stays intact. If you'd rather serve PDFs inline directly (e.g. for a full-page viewer), return `disposition: "inline"` from your [`authorize`](/docs/ui/server/authorization) scope for the keys and operations where that's safe.
+
+## Custom viewers
+
+Pass `renderPreview` to replace the built-in preview with your own viewer component — a PDF, DOCX or CSV viewer, for example. When it's set, a `src` is resolved for every non-text type (not just images and PDFs), so viewers for formats the built-in preview can't render still get a URL:
+
+```tsx lineNumbers
+<FilePreview
+  file={fileKey}
+  files={files}
+  renderPreview={({ file, src, text }) => {
+    if (file.type === "application/pdf" && src) {
+      return <PDFViewer className="h-[640px]" src={src} />;
+    }
+    if (file.type === "text/csv" && text) {
+      return <CsvTable data={text} />;
+    }
+    return <p className="text-muted-foreground text-sm">No preview</p>;
+  }}
+/>
+```
+
+The callback receives the resolved `StoredFile` plus the same `src` and `text` the built-in preview would use. PDFs arrive as a `blob:` URL; other types as a signed or proxy URL.
 
 ## Props
 
