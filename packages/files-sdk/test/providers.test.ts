@@ -41,6 +41,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./fastify",
   "./hono",
   "./koa",
+  "./loader",
   "./nestjs",
   "./next",
   "./nitro",

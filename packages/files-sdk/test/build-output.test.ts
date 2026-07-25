@@ -18,6 +18,7 @@ const COLD_BUILD_TIMEOUT_MS = 120_000;
 const pkgRoot = path.resolve(import.meta.dirname, "..");
 const distDir = path.resolve(pkgRoot, "dist");
 const cliBundle = path.resolve(distDir, "cli/index.js");
+const loaderBundle = path.resolve(distDir, "loader/index.js");
 
 const optionalPeers = Object.entries(pkg.peerDependenciesMeta ?? {})
   .filter(([, meta]) => (meta as { optional?: boolean }).optional)
@@ -51,6 +52,16 @@ const staticExternals = (entry: string): Set<string> => {
   return externals;
 };
 
+/** Optional peers reachable from `bundle` via static imports — must be []. */
+const offendingOptionalPeers = (bundle: string): string[] => {
+  const externals = staticExternals(bundle);
+  return optionalPeers.filter((peer) =>
+    [...externals].some(
+      (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
+    )
+  );
+};
+
 test(
   "CLI bundle never statically imports an optional peer dependency (#67)",
   () => {
@@ -71,19 +82,13 @@ test(
     // Sanity: an empty list would make the assertion below pass vacuously.
     expect(optionalPeers.length).toBeGreaterThan(0);
 
-    const externals = staticExternals(cliBundle);
-    const offenders = optionalPeers.filter((peer) =>
-      [...externals].some(
-        (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
-      )
-    );
-    expect(offenders).toEqual([]);
+    expect(offendingOptionalPeers(cliBundle)).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );
 
 const ensureBuilt = () => {
-  if (!existsSync(cliBundle)) {
+  if (!(existsSync(cliBundle) && existsSync(loaderBundle))) {
     const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
       cwd: pkgRoot,
       stderr: "pipe",
@@ -94,6 +99,18 @@ const ensureBuilt = () => {
     }
   }
 };
+
+test(
+  "public loader exports loadFiles without eager optional peer imports",
+  async () => {
+    ensureBuilt();
+    const mod = (await import(loaderBundle)) as Record<string, unknown>;
+    expect(typeof mod.loadFiles).toBe("function");
+
+    expect(offendingOptionalPeers(loaderBundle)).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
 
 test(
   "react bundle is a `use client` module importing only react",
