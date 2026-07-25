@@ -29,11 +29,11 @@ import { FilesError } from "../internal/errors.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
 import { s3FetchAdapter } from "../internal/s3-fetch.js";
 import { createStoredFile } from "../internal/stored-file.js";
-// Note: the s3 adapter is *not* imported eagerly. The aws-sdk HTTP path
-// loads it via dynamic import on first use so that a Worker bundle on the
-// binding or fetch paths never pulls in @aws-sdk/client-s3 (~500KB+). See
-// `lazyS3` below.
-import type { S3Adapter, S3AdapterOptions } from "../s3/index.js";
+// Note: the s3 engine is *not* imported eagerly (and only its types are
+// referenced here). The aws-sdk HTTP path loads it via dynamic import on
+// first use so that a Worker bundle on the binding or fetch paths never
+// pulls in @aws-sdk/client-s3 (~500KB+). See `lazyS3` below.
+import type { S3Adapter, S3AdapterOptions } from "../s3/core.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
@@ -132,17 +132,31 @@ export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
 
 export type R2Adapter = Adapter<S3Client | R2Bucket | AwsClient>;
 
-// Lazy-load the s3 adapter via dynamic import so a binding-only Worker
-// bundle doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). The
-// returned function is single-shot: it builds the adapter once on first
-// call and returns the same promise on subsequent calls.
+// Lazy-load the s3 engine via dynamic imports so a binding-only Worker
+// bundle doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). This goes
+// through the SDK-parameterized ../s3/core.js rather than ../s3/index.js:
+// consumer bundlers resolve even dynamically-reached chunks at build time,
+// so the entry's *static* `@aws-sdk/*` imports would hard-error against an
+// optional-peer placeholder when the SDK isn't installed (#105). Dynamic
+// specifiers stay unexecuted on the binding/fetch paths, so the placeholder
+// never throws. The returned function is single-shot: it builds the adapter
+// once on first call and returns the same promise on subsequent calls.
 const lazyS3 = (config: S3AdapterOptions): (() => Promise<S3Adapter>) => {
   let promise: Promise<S3Adapter> | null = null;
   return () => {
     if (!promise) {
       promise = (async () => {
-        const { s3 } = await import("../s3/index.js");
-        return s3(config);
+        const [core, clientS3, presignedPost, requestPresigner] =
+          await Promise.all([
+            import("../s3/core.js"),
+            import("@aws-sdk/client-s3"),
+            import("@aws-sdk/s3-presigned-post"),
+            import("@aws-sdk/s3-request-presigner"),
+          ]);
+        return core.createS3Adapter(
+          { clientS3, presignedPost, requestPresigner },
+          config
+        );
       })();
     }
     return promise;

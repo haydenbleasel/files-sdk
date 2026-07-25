@@ -1,0 +1,945 @@
+import type * as ClientS3 from "@aws-sdk/client-s3";
+import type { PutObjectCommandInput, S3ClientConfig } from "@aws-sdk/client-s3";
+import type * as PresignedPost from "@aws-sdk/s3-presigned-post";
+import type * as RequestPresigner from "@aws-sdk/s3-request-presigner";
+
+import type {
+  Adapter,
+  DeleteManyOptions,
+  DeleteManyResult,
+  MultipartOptions,
+  PartMeta,
+  PartsResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
+  SignedUpload,
+  StoredFile,
+  UploadProgress,
+  UploadResult,
+} from "../index.js";
+import {
+  DEFAULT_URL_EXPIRES_IN,
+  existsByProbe,
+  httpRangeHeader,
+  isMultipartRequested,
+  joinPublicUrl,
+  makeErrorMapper,
+  normalizeBody,
+  resolveUrlStrategy,
+} from "../internal/core.js";
+import { readEnv } from "../internal/env.js";
+import { FilesError } from "../internal/errors.js";
+import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { createStoredFile } from "../internal/stored-file.js";
+
+/**
+ * The subset of the `@aws-sdk/*` modules the S3 engine is built from. This
+ * module only ever imports the SDK's *types* — the runtime values arrive
+ * through this bundle, so nothing here puts `@aws-sdk/*` in the static import
+ * graph. `files-sdk/s3` fills it from ordinary static imports (its consumers
+ * install the SDK anyway); the r2 adapter's lazy aws-sdk engine fills it from
+ * dynamic imports, because consumer bundlers resolve even dynamically-reached
+ * chunks at build time and hard-error on a *static* import of an absent
+ * optional peer (rolldown-vite's optional-peer-dep placeholder, #105).
+ */
+export interface S3Sdk {
+  clientS3: Pick<
+    typeof ClientS3,
+    | "AbortMultipartUploadCommand"
+    | "CompleteMultipartUploadCommand"
+    | "CopyObjectCommand"
+    | "CreateMultipartUploadCommand"
+    | "DeleteObjectCommand"
+    | "DeleteObjectsCommand"
+    | "GetObjectCommand"
+    | "HeadObjectCommand"
+    | "ListObjectsV2Command"
+    | "ListPartsCommand"
+    | "PutObjectCommand"
+    | "S3Client"
+    | "UploadPartCommand"
+  >;
+  presignedPost: Pick<typeof PresignedPost, "createPresignedPost">;
+  requestPresigner: Pick<typeof RequestPresigner, "getSignedUrl">;
+}
+
+export interface S3AdapterOptions {
+  /** S3 bucket name. The adapter scopes all operations to it. */
+  bucket: string;
+  /**
+   * AWS region the bucket lives in (e.g. `us-east-1`). Falls back to
+   * `AWS_REGION`; required if no env var is set.
+   */
+  region?: string;
+  /**
+   * Override the S3 service endpoint. Use this to point at S3-compatible
+   * services (DigitalOcean Spaces, Wasabi, Backblaze B2, LocalStack, etc.).
+   */
+  endpoint?: string;
+  /**
+   * Use path-style addressing (`https://endpoint/bucket/key`) instead of
+   * virtual-hosted style (`https://bucket.endpoint/key`). Required by some
+   * S3-compatible services and by LocalStack.
+   */
+  forcePathStyle?: boolean;
+  /**
+   * Static credentials. Skip to use the AWS credential chain (env vars,
+   * IAM role, shared profile, EC2/ECS/EKS instance metadata).
+   */
+  credentials?: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
+  /**
+   * Origin used to build URLs from `url()`. When set, `url(key)` returns
+   * `${publicBaseUrl}/${key}` and skips signing — appropriate for buckets
+   * fronted by a CDN, public-read policy, or custom domain. When unset,
+   * `url()` falls back to a presigned `GetObject` URL (see
+   * {@link defaultUrlExpiresIn}).
+   *
+   * The base is concatenated as-is. Trailing slashes are tolerated. Keys
+   * are embedded literally — caller is responsible for URL-encoding
+   * untrusted segments.
+   */
+  publicBaseUrl?: string;
+  /**
+   * Default expiry, in seconds, for the presigned URLs returned by
+   * `url()` when `publicBaseUrl` is not set. Defaults to 3600 (1 hour).
+   * Per-call `url(key, { expiresIn })` overrides.
+   */
+  defaultUrlExpiresIn?: number;
+  /**
+   * Override the fallback message used when an unknown error has no
+   * `message` of its own. Internal — set by the r2-http adapter so its
+   * users see "R2 error" instead of "S3 error".
+   * @internal
+   */
+  defaultProviderMessage?: string;
+}
+
+export type S3Adapter = Adapter<ClientS3.S3Client> & {
+  readonly bucket: string;
+};
+
+const stripEtag = (etag: string | undefined): string | undefined => {
+  if (!etag) {
+    return;
+  }
+  return etag.replaceAll(/^"+|"+$/gu, "");
+};
+
+// `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
+// upload needs the multipart/progress path. Loaded lazily (the return type is
+// inferred from the dynamic import) so it isn't required by callers who only do
+// plain single-request PutObject uploads; surfaces a clear error when missing.
+const loadLibStorage = async () => {
+  try {
+    return await import("@aws-sdk/lib-storage");
+  } catch {
+    throw new FilesError(
+      "Provider",
+      "Multipart and progress uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options."
+    );
+  }
+};
+
+// Default parts in flight, mirroring lib-storage's own `queueSize` default.
+const MULTIPART_DEFAULT_CONCURRENCY = 4;
+
+const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
+type MultipartInput = boolean | MultipartOptions | undefined;
+
+/**
+ * Translate our {@link MultipartOptions} into the lib-storage `Upload` knobs.
+ * `partSize` is omitted when unset so lib-storage's 5 MiB default applies.
+ */
+const resolveMultipart = (
+  multipart: MultipartInput
+): { partSize?: number; queueSize: number } => {
+  const opts = typeof multipart === "object" ? multipart : {};
+  return {
+    ...(opts.partSize !== undefined && { partSize: opts.partSize }),
+    queueSize: opts.concurrency ?? MULTIPART_DEFAULT_CONCURRENCY,
+  };
+};
+
+/**
+ * Upload via `@aws-sdk/lib-storage`'s `Upload`, which transparently switches to
+ * multipart for large bodies and falls back to a single PutObject for small
+ * ones. Used for explicit `multipart`, for progress reporting, and for
+ * unknown-length streams. Returns the (quote-stripped) ETag.
+ */
+const runLibStorageUpload = async (
+  client: ClientS3.S3Client,
+  params: PutObjectCommandInput,
+  multipart: MultipartInput,
+  onProgress: ((progress: UploadProgress) => void) | undefined,
+  signal: AbortSignal | undefined
+): Promise<string | undefined> => {
+  const { Upload } = await loadLibStorage();
+  const { partSize, queueSize } = resolveMultipart(multipart);
+  const upload = new Upload({
+    client,
+    params,
+    queueSize,
+    ...(partSize !== undefined && { partSize }),
+    // Abort cleanly on failure so we don't leave dangling parts behind.
+    leavePartsOnError: false,
+  });
+  if (onProgress) {
+    upload.on("httpUploadProgress", (progress) => {
+      onProgress({
+        loaded: progress.loaded ?? 0,
+        ...(progress.total !== undefined && { total: progress.total }),
+      });
+    });
+  }
+  // The Upload runs its own requests, so wire the abort signal to its abort()
+  // rather than relying on a per-command abortSignal.
+  signal?.addEventListener("abort", () => void upload.abort(), { once: true });
+  const result = await upload.done();
+  return stripEtag(result.ETag);
+};
+
+// Every multipart part except the last must be at least 5 MiB (S3 rule), so
+// clamp the requested part size up to that floor.
+const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
+
+const resolveResumablePartSize = (multipart: MultipartInput): number => {
+  const partSize =
+    typeof multipart === "object" ? multipart.partSize : undefined;
+  return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
+};
+
+/**
+ * Drive a pause-able / resumable upload over S3's native multipart API
+ * (`CreateMultipartUpload` → `UploadPart` → `CompleteMultipartUpload`), with
+ * `ListParts` for resume and `AbortMultipartUpload` for discard. Unlike the
+ * `@aws-sdk/lib-storage` path used by plain `upload()`, this exposes the
+ * `UploadId` so the session survives in a serializable token.
+ */
+const createS3ResumableDriver = (
+  sdk: S3Sdk["clientS3"],
+  client: ClientS3.S3Client,
+  bucket: string,
+  key: string,
+  driverOpts: ResumableDriverOptions,
+  wrapErr: (err: unknown) => FilesError
+): PartsResumableDriver => {
+  const {
+    AbortMultipartUploadCommand,
+    CompleteMultipartUploadCommand,
+    CreateMultipartUploadCommand,
+    HeadObjectCommand,
+    ListPartsCommand,
+    UploadPartCommand,
+  } = sdk;
+  let partSize = resolveResumablePartSize(driverOpts.multipart);
+  let uploadId: string | undefined;
+  const requireUploadId = (): string => {
+    if (uploadId === undefined) {
+      throw new FilesError("Provider", "S3 resumable upload has no session.");
+    }
+    return uploadId;
+  };
+  return {
+    adopt(session: ResumableUploadSession) {
+      if (session.provider !== "s3") {
+        throw new FilesError(
+          "Provider",
+          `Cannot resume a ${session.provider} session on an S3 adapter.`
+        );
+      }
+      if (session.bucket !== bucket || session.key !== key) {
+        throw new FilesError(
+          "Provider",
+          "Resume token does not match this upload's bucket/key."
+        );
+      }
+      ({ uploadId } = session);
+      ({ partSize } = session);
+    },
+    async begin(meta): Promise<ResumableUploadSession> {
+      try {
+        const result = await client.send(
+          new CreateMultipartUploadCommand({
+            Bucket: bucket,
+            ContentType: meta.contentType,
+            Key: key,
+            ...(driverOpts.cacheControl && {
+              CacheControl: driverOpts.cacheControl,
+            }),
+            ...(driverOpts.metadata && { Metadata: driverOpts.metadata }),
+          })
+        );
+        if (!result.UploadId) {
+          throw new FilesError("Provider", "S3 did not return an UploadId.");
+        }
+        uploadId = result.UploadId;
+        return { bucket, key, partSize, provider: "s3", uploadId };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async complete(parts: PartMeta[]): Promise<UploadResult> {
+      try {
+        const completed = await client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            MultipartUpload: {
+              Parts: parts.map((part) => ({
+                ETag: part.etag,
+                PartNumber: part.partNumber,
+              })),
+            },
+            UploadId: requireUploadId(),
+          })
+        );
+        // CompleteMultipartUpload doesn't return size/contentType; head the
+        // object for authoritative metadata, mirroring upload()'s stream path.
+        const head = await client.send(
+          new HeadObjectCommand({ Bucket: bucket, Key: key })
+        );
+        return {
+          contentType: head.ContentType ?? DEFAULT_CONTENT_TYPE,
+          etag: stripEtag(completed.ETag),
+          key,
+          lastModified: head.LastModified?.getTime(),
+          size: Number(
+            head.ContentLength ?? parts.reduce((sum, p) => sum + p.size, 0)
+          ),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async discard() {
+      if (uploadId === undefined) {
+        return;
+      }
+      try {
+        await client.send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            UploadId: uploadId,
+          })
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    mode: "parts",
+    get partSize() {
+      return partSize;
+    },
+    async probe(): Promise<{ committedParts: PartMeta[] }> {
+      try {
+        const id = requireUploadId();
+        const committedParts: PartMeta[] = [];
+        let marker: string | undefined;
+        for (;;) {
+          // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the PartNumberMarker from the previous response
+          const page = await client.send(
+            new ListPartsCommand({
+              Bucket: bucket,
+              Key: key,
+              UploadId: id,
+              ...(marker !== undefined && { PartNumberMarker: marker }),
+            })
+          );
+          for (const part of page.Parts ?? []) {
+            if (part.PartNumber !== undefined) {
+              committedParts.push({
+                partNumber: part.PartNumber,
+                size: Number(part.Size ?? 0),
+                ...(part.ETag && { etag: part.ETag }),
+              });
+            }
+          }
+          if (page.IsTruncated && page.NextPartNumberMarker) {
+            marker = page.NextPartNumberMarker;
+          } else {
+            break;
+          }
+        }
+        return { committedParts };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
+      try {
+        const result = await client.send(
+          new UploadPartCommand({
+            Body: data,
+            Bucket: bucket,
+            Key: key,
+            PartNumber: partNumber,
+            UploadId: requireUploadId(),
+          }),
+          signal ? { abortSignal: signal } : undefined
+        );
+        return {
+          partNumber,
+          size: data.byteLength,
+          ...(result.ETag && { etag: result.ETag }),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+  };
+};
+
+const emptyStream = (): ReadableStream<Uint8Array> =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.close();
+    },
+  });
+
+const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
+  "NoSuchKey",
+  "NotFound",
+]);
+const S3_UNAUTH_CODES: ReadonlySet<string> = new Set(["AccessDenied"]);
+const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
+// `DeleteObjects` rejects requests with more than 1000 keys, so the bulk path
+// has to chunk longer key lists into separate requests.
+const S3_DELETE_BATCH_LIMIT = 1000;
+
+const extractS3Error = (
+  err: unknown
+): { code?: string; status?: number; message?: string } => {
+  const e = err as {
+    name?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+    message?: string;
+  };
+  return {
+    ...((e?.name ?? e?.Code) ? { code: e?.name ?? e?.Code } : {}),
+    ...(e?.message && { message: e.message }),
+    ...(e?.$metadata?.httpStatusCode !== undefined && {
+      status: e.$metadata.httpStatusCode,
+    }),
+  };
+};
+
+const buildMapS3Error = (providerLabel = "S3 error") =>
+  makeErrorMapper({
+    codes: {
+      conflict: S3_CONFLICT_CODES,
+      notFound: S3_NOT_FOUND_CODES,
+      unauthorized: S3_UNAUTH_CODES,
+    },
+    extract: extractS3Error,
+    providerLabel,
+  });
+
+const _defaultMapS3Error = buildMapS3Error();
+
+/**
+ * Map an `@aws-sdk/client-s3` error (or any thrown value with the same
+ * shape) to a {@link FilesError}. The optional `messages` argument
+ * overrides the per-code fallback strings — used by the S3-compatible
+ * wrappers (R2 HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai)
+ * so their unknown-error messages read with the right provider name.
+ */
+export const mapS3Error = (
+  err: unknown,
+  messages?: Partial<Record<ProviderFilesErrorCode, string>>
+): FilesError => {
+  if (!messages) {
+    return _defaultMapS3Error(err);
+  }
+  if (err instanceof FilesError) {
+    return err;
+  }
+  // 2-arg form: the caller has provided per-code fallback strings.
+  // Re-derive code/status, then prefer the original error's own message
+  // (so server-side reasons surface) and fall back to the caller's table.
+  const e = err as { name?: string; Code?: string; message?: string };
+  const wrapped = _defaultMapS3Error({
+    ...(typeof err === "object" && err ? err : {}),
+    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips any spread-in message so mapping is by code only; null would be a real message value
+    message: undefined,
+  });
+  const code = wrapped.code as ProviderFilesErrorCode;
+  return new FilesError(
+    code,
+    e?.message ?? messages[code] ?? wrapped.message,
+    err
+  );
+};
+
+export const createS3Adapter = (
+  sdk: S3Sdk,
+  opts: S3AdapterOptions
+): S3Adapter => {
+  const {
+    clientS3: {
+      CopyObjectCommand,
+      DeleteObjectCommand,
+      DeleteObjectsCommand,
+      GetObjectCommand,
+      HeadObjectCommand,
+      ListObjectsV2Command,
+      PutObjectCommand,
+      S3Client,
+    },
+    presignedPost: { createPresignedPost },
+    requestPresigner: { getSignedUrl },
+  } = sdk;
+  const region =
+    opts.region ?? readEnv("AWS_REGION") ?? readEnv("AWS_DEFAULT_REGION");
+  if (!region) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: missing region. Pass `region` or set AWS_REGION."
+    );
+  }
+
+  const config: S3ClientConfig = {
+    region,
+    ...(opts.endpoint && { endpoint: opts.endpoint }),
+    ...(opts.forcePathStyle !== undefined && {
+      forcePathStyle: opts.forcePathStyle,
+    }),
+    ...(opts.credentials && { credentials: opts.credentials }),
+  };
+
+  const client = new S3Client(config);
+  const { bucket } = opts;
+  const { publicBaseUrl } = opts;
+  const defaultUrlExpiresIn =
+    opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+  const wrapErr = opts.defaultProviderMessage
+    ? buildMapS3Error(opts.defaultProviderMessage)
+    : mapS3Error;
+
+  const signGet = (
+    key: string,
+    expiresIn: number,
+    responseContentDisposition?: string
+  ): Promise<string> =>
+    getSignedUrl(
+      client,
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...(responseContentDisposition && {
+          ResponseContentDisposition: responseContentDisposition,
+        }),
+      }),
+      { expiresIn }
+    );
+
+  return {
+    bucket,
+    async copy(from, to, operationOpts) {
+      try {
+        // CopySource must be URL-encoded per
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
+        // S3 bucket naming rules don't require encoding in practice, but we
+        // encode both halves defensively in case a custom endpoint (e.g.
+        // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
+        // signs and serializes it as part of the request, not as a URL value.
+        await client.send(
+          new CopyObjectCommand({
+            Bucket: bucket,
+            CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+            Key: to,
+          }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async delete(key, operationOpts) {
+      try {
+        await client.send(
+          new DeleteObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    // oxlint-disable-next-line sonarjs/cognitive-complexity -- two well-separated paths (stopOnError sequential vs chunked batch merge), each test-covered; splitting would obscure the shared result shape
+    async deleteMany(
+      keys: string[],
+      deleteOpts?: DeleteManyOptions
+    ): Promise<DeleteManyResult> {
+      if (keys.length === 0) {
+        return { deleted: [] };
+      }
+      if (deleteOpts?.stopOnError) {
+        const deleted: string[] = [];
+        const errors: NonNullable<DeleteManyResult["errors"]> = [];
+        for (const key of keys) {
+          try {
+            // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- stopOnError: sequential deletes that early-exit on the first failure
+            await client.send(
+              new DeleteObjectCommand({ Bucket: bucket, Key: key })
+            );
+            deleted.push(key);
+          } catch (error) {
+            errors.push({ error: wrapErr(error), key });
+            return { deleted, errors };
+          }
+        }
+        return { deleted };
+      }
+      const deletedKeys = new Set<string>();
+      const errors: NonNullable<DeleteManyResult["errors"]> = [];
+      // `DeleteObjects` caps each request at 1000 keys; send in chunks and
+      // merge the per-key results so callers see one combined result.
+      for (let start = 0; start < keys.length; start += S3_DELETE_BATCH_LIMIT) {
+        const batch = keys.slice(start, start + S3_DELETE_BATCH_LIMIT);
+        try {
+          // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
+          const result = await client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: { Objects: batch.map((key) => ({ Key: key })) },
+            })
+          );
+          for (const item of result.Deleted ?? []) {
+            if (item.Key !== undefined) {
+              deletedKeys.add(item.Key);
+            }
+          }
+          for (const item of result.Errors ?? []) {
+            errors.push({
+              error: wrapErr({
+                Code: item.Code,
+                message: item.Message ?? item.Code ?? "Delete failed",
+                name: item.Code,
+              }),
+              key: item.Key ?? "",
+            });
+          }
+        } catch (error) {
+          // The whole batch failed — S3 doesn't tell us which keys, so map
+          // the error onto every key in this batch and keep going.
+          const mapped = wrapErr(error);
+          for (const key of batch) {
+            errors.push({ error: mapped, key });
+          }
+        }
+      }
+      const deleted = keys.filter((key) => deletedKeys.has(key));
+      if (errors.length === 0) {
+        return { deleted };
+      }
+      return { deleted, errors };
+    },
+    async download(key, downloadOpts) {
+      try {
+        const result = await client.send(
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            // S3 replies 206 with ContentLength set to the slice length and a
+            // ranged body, so the size/byte handling below needs no special
+            // casing — the range just rides along on the GET.
+            ...(downloadOpts?.range && {
+              Range: httpRangeHeader(downloadOpts.range),
+            }),
+          }),
+          downloadOpts?.signal
+            ? { abortSignal: downloadOpts.signal }
+            : undefined
+        );
+        const baseMeta = {
+          etag: stripEtag(result.ETag),
+          key,
+          lastModified: result.LastModified?.getTime(),
+          metadata: result.Metadata,
+          type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+        };
+        if (downloadOpts?.as === "stream") {
+          const stream = result.Body?.transformToWebStream();
+          // Stream path: we trust S3's ContentLength header. Falls back to 0
+          // only if the header is missing, which is rare in practice.
+          return createStoredFile(
+            { ...baseMeta, size: Number(result.ContentLength ?? 0) },
+            {
+              factory: () => stream ?? emptyStream(),
+              kind: "stream",
+            }
+          );
+        }
+        const bytes =
+          (await result.Body?.transformToByteArray()) ?? new Uint8Array();
+        // Buffer path: prefer the real byte length over ContentLength so the
+        // size we surface always matches the bytes the caller can actually read.
+        return createStoredFile(
+          { ...baseMeta, size: bytes.byteLength },
+          { data: bytes, kind: "buffer" }
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    exists(key, operationOpts) {
+      return existsByProbe(
+        () =>
+          client.send(
+            new HeadObjectCommand({ Bucket: bucket, Key: key }),
+            operationOpts?.signal
+              ? { abortSignal: operationOpts.signal }
+              : undefined
+          ),
+        wrapErr
+      );
+    },
+    async head(key, operationOpts) {
+      try {
+        const result = await client.send(
+          new HeadObjectCommand({ Bucket: bucket, Key: key }),
+          operationOpts?.signal
+            ? { abortSignal: operationOpts.signal }
+            : undefined
+        );
+        return createStoredFile(
+          {
+            etag: stripEtag(result.ETag),
+            key,
+            lastModified: result.LastModified?.getTime(),
+            metadata: result.Metadata,
+            size: Number(result.ContentLength ?? 0),
+            type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+          },
+          {
+            factory: async () => {
+              const get = await client.send(
+                new GetObjectCommand({ Bucket: bucket, Key: key })
+              );
+              return (
+                (await get.Body?.transformToByteArray()) ?? new Uint8Array()
+              );
+            },
+            kind: "lazy",
+          }
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async list(options) {
+      try {
+        const result = await client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            ...(options?.prefix && { Prefix: options.prefix }),
+            ...(options?.limit !== undefined && { MaxKeys: options.limit }),
+            ...(options?.cursor && { ContinuationToken: options.cursor }),
+            ...(options?.delimiter && { Delimiter: options.delimiter }),
+          }),
+          options?.signal ? { abortSignal: options.signal } : undefined
+        );
+        const items: StoredFile[] = (result.Contents ?? []).map((obj) => {
+          const objKey = obj.Key ?? "";
+          return createStoredFile(
+            {
+              etag: stripEtag(obj.ETag),
+              key: objKey,
+              lastModified: obj.LastModified?.getTime(),
+              size: Number(obj.Size ?? 0),
+              type: DEFAULT_CONTENT_TYPE,
+            },
+            {
+              factory: async () => {
+                const get = await client.send(
+                  new GetObjectCommand({ Bucket: bucket, Key: objKey })
+                );
+                return (
+                  (await get.Body?.transformToByteArray()) ?? new Uint8Array()
+                );
+              },
+              kind: "lazy",
+            }
+          );
+        });
+        const prefixes = (result.CommonPrefixes ?? [])
+          .map((p) => p.Prefix)
+          .filter((p): p is string => p !== undefined);
+        return {
+          cursor: result.IsTruncated ? result.NextContinuationToken : undefined,
+          items,
+          ...(prefixes.length && { prefixes }),
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    name: "s3",
+    raw: client,
+    reportsUploadProgress: true,
+    resumableUpload(key, resumableOpts) {
+      return createS3ResumableDriver(
+        sdk.clientS3,
+        client,
+        bucket,
+        key,
+        resumableOpts,
+        wrapErr
+      );
+    },
+    async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+      try {
+        if (signOpts.maxSize !== undefined) {
+          const minSize = signOpts.minSize ?? 1;
+          const conditions: (
+            | [string, ...unknown[]]
+            | Record<string, string>
+          )[] = [["content-length-range", minSize, signOpts.maxSize]];
+          if (signOpts.contentType) {
+            conditions.push(["eq", "$Content-Type", signOpts.contentType]);
+          }
+          const post = await createPresignedPost(client, {
+            Bucket: bucket,
+            Conditions: conditions as Parameters<
+              typeof createPresignedPost
+            >[1]["Conditions"],
+            Expires: signOpts.expiresIn,
+            Key: key,
+            ...(signOpts.contentType && {
+              Fields: { "Content-Type": signOpts.contentType },
+            }),
+          });
+          return { fields: post.fields, method: "POST", url: post.url };
+        }
+        const url = await getSignedUrl(
+          client,
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ...(signOpts.contentType && { ContentType: signOpts.contentType }),
+          }),
+          { expiresIn: signOpts.expiresIn }
+        );
+        return {
+          headers: signOpts.contentType
+            ? { "Content-Type": signOpts.contentType }
+            : undefined,
+          method: "PUT",
+          url,
+        };
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    // `url()` SigV4-signs a GetObject request. AWS caps presigned-URL lifetime
+    // at 604800s, but that is a soft infra limit AWS rejects at request time —
+    // not enforced here, and S3-compatible providers (MinIO, Wasabi, …) differ
+    // — so no `maxExpiresIn`; the AWS limit lives in the provider-gaps page.
+    signedUrl: { supported: true },
+    supportsCacheControl: true,
+    supportsDelimiter: true,
+    supportsMetadata: true,
+    supportsRange: true,
+    // `copy()` issues a CopyObject — server-side, no body round-trip.
+    supportsServerSideCopy: true,
+    async upload(key, body, options) {
+      const { cacheControl, metadata, multipart, onProgress, signal } =
+        options ?? {};
+      const { data, contentType, contentLength } = await normalizeBody(
+        body,
+        options?.contentType
+      );
+      const params = {
+        Body: data,
+        Bucket: bucket,
+        ContentType: contentType,
+        Key: key,
+        ...(cacheControl && { CacheControl: cacheControl }),
+        ...(metadata && { Metadata: metadata }),
+        ...(contentLength !== undefined && { ContentLength: contentLength }),
+      };
+      // lib-storage's Upload is the path for explicit multipart, for progress
+      // reporting, and for unknown-length streams — a single PutObject can't
+      // reliably send a stream without a Content-Length, so auto-engage there.
+      const isUnsizedStream =
+        data instanceof ReadableStream && contentLength === undefined;
+      const useUpload =
+        Boolean(onProgress) ||
+        isMultipartRequested(multipart) ||
+        isUnsizedStream;
+      const abortOpt = signal ? { abortSignal: signal } : undefined;
+      try {
+        let etag: string | undefined;
+        if (useUpload) {
+          etag = await runLibStorageUpload(
+            client,
+            params,
+            multipart,
+            onProgress,
+            signal
+          );
+        } else {
+          const result = await client.send(
+            new PutObjectCommand(params),
+            abortOpt
+          );
+          etag = stripEtag(result.ETag);
+        }
+        let size = contentLength;
+        let lastModified: number | undefined;
+        // Stream bodies have no locally computed length; PutObject's response
+        // doesn't carry size either. Do a follow-up head() to surface the
+        // authoritative size and lastModified instead of silently returning 0.
+        if (size === undefined) {
+          try {
+            const head = await client.send(
+              new HeadObjectCommand({ Bucket: bucket, Key: key }),
+              abortOpt
+            );
+            size = Number(head.ContentLength ?? 0);
+            lastModified = head.LastModified?.getTime();
+          } catch {
+            size = 0;
+          }
+        }
+        return {
+          contentType,
+          etag,
+          key,
+          lastModified,
+          size,
+        } satisfies UploadResult;
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+    async url(key, urlOpts) {
+      const strategy = resolveUrlStrategy({
+        publicBaseUrl,
+        responseContentDisposition: urlOpts?.responseContentDisposition,
+      });
+      if (strategy === "public" && publicBaseUrl) {
+        return joinPublicUrl(publicBaseUrl, key);
+      }
+      try {
+        return await signGet(
+          key,
+          urlOpts?.expiresIn ?? defaultUrlExpiresIn,
+          urlOpts?.responseContentDisposition
+        );
+      } catch (error) {
+        throw wrapErr(error);
+      }
+    },
+  };
+};
