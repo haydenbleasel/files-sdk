@@ -12,7 +12,7 @@ const Example = () => {
   const files = demoFiles;
 
   return (
-    <Dropzone accept="image/*" files={files} maxFiles={3} prefix="demo/">
+    <Dropzone directory files={files} prefix="skills/">
       <DropzoneContent />
       <DropzoneEmptyState />
       <DropzoneError />

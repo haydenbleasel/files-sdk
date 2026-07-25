@@ -1,6 +1,6 @@
 ---
 title: Dropzone
-description: A drag-and-drop (or click) upload area wired to useFiles - streams bytes straight to your gateway, with composable empty and uploaded states.
+description: A drag-and-drop (or click) upload area wired to useFiles - streams bytes straight to your gateway, with composable success, prompt and error states.
 ---
 
 A compound dropzone that uploads through a [`useFiles`](/docs/ui/client/react) instance. Drag files in or click to open the picker; bytes stream straight to your [gateway](/docs/ui/server/gateway).
@@ -20,6 +20,7 @@ import {
   Dropzone,
   DropzoneContent,
   DropzoneEmptyState,
+  DropzoneError,
 } from "@/components/files-sdk/dropzone";
 
 export function Uploader() {
@@ -27,14 +28,58 @@ export function Uploader() {
 
   return (
     <Dropzone accept="image/*" files={files} prefix="docs/" maxFiles={5}>
-      <DropzoneEmptyState />
       <DropzoneContent />
+      <DropzoneEmptyState />
+      <DropzoneError />
     </Dropzone>
   );
 }
 ```
 
-`DropzoneEmptyState` renders the prompt until something uploads; `DropzoneContent` renders the result afterwards. Pass your own children to either to override the default look.
+`DropzoneEmptyState` renders the prompt — and keeps rendering it after uploads, so users can keep adding files. `DropzoneContent` shows a success summary ("3 files uploaded") once something lands, and `DropzoneError` surfaces failures (rejected files, oversize files, files over the `maxFiles` limit). Pass your own children to any of them to override the default look, or wire `onUploaded` / `onError` to render state outside the dropzone entirely.
+
+## Folder uploads
+
+Set `directory` to accept whole folders. The click-to-browse picker becomes a directory picker, dropped folders are traversed recursively, and each file keeps its relative path in the key: dropping `my-skill/` with `prefix="skills/"` uploads `skills/my-skill/references/api-guide.md`, ready for a tree view in [`FileBrowser`](/docs/ui/components/file-browser).
+
+<Component path="dropzone/examples/dropzone-folder" />
+
+To let users pick the destination themselves, drive `prefix` from an input:
+
+```tsx lineNumbers
+import { useState } from "react";
+import { useFiles } from "files-sdk/react";
+
+import { Input } from "@/components/ui/input";
+import {
+  Dropzone,
+  DropzoneContent,
+  DropzoneEmptyState,
+  DropzoneError,
+} from "@/components/files-sdk/dropzone";
+
+export function FolderUploader() {
+  const files = useFiles({ endpoint: "/api/files" });
+  const [destination, setDestination] = useState("references/");
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Input
+        aria-label="Destination folder"
+        onChange={(event) => setDestination(event.target.value)}
+        value={destination}
+      />
+      <Dropzone directory files={files} prefix={destination}>
+        <DropzoneContent />
+        <DropzoneEmptyState />
+        <DropzoneError />
+      </Dropzone>
+    </div>
+  );
+}
+```
+
+With `directory` set, `maxFiles` defaults to unlimited; pass a number to cap the total file count per drop.
 
 ## Props
 
@@ -45,4 +90,4 @@ export function Uploader() {
   name="DropzoneProps"
 />
 
-`<DropzoneEmptyState>` and `<DropzoneContent>` each accept `className` and `children` to override the default look.
+`<DropzoneContent>`, `<DropzoneEmptyState>` and `<DropzoneError>` each accept `className` and `children` to override the default look.
