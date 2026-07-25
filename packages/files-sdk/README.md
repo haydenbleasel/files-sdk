@@ -45,6 +45,25 @@ const exists = await files.exists("avatars/abc.png");
 
 Swap the adapter import (`files-sdk/r2`, `files-sdk/gcs`, `files-sdk/azure`, …) and the rest of your code stays the same.
 
+### Runtime provider selection
+
+Node.js tools that choose a provider at runtime can use the lazy loader instead
+of maintaining their own adapter registry:
+
+```ts
+import { loadFiles } from "files-sdk/loader";
+
+const { files, provider } = await loadFiles({
+  bucket: "uploads",
+  retries: 3,
+  timeout: 10_000,
+});
+```
+
+Set `FILES_SDK_PROVIDER` (for example, `r2`) or pass `provider` directly.
+Provider credentials continue to come from each adapter's environment-variable
+conventions, and only the selected adapter is imported.
+
 ## File handles
 
 Use `files.file(key)` when your application code works with the same object repeatedly:

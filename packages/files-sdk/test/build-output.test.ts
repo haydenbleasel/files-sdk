@@ -18,6 +18,7 @@ const COLD_BUILD_TIMEOUT_MS = 120_000;
 const pkgRoot = path.resolve(import.meta.dirname, "..");
 const distDir = path.resolve(pkgRoot, "dist");
 const cliBundle = path.resolve(distDir, "cli/index.js");
+const loaderBundle = path.resolve(distDir, "loader/index.js");
 
 const optionalPeers = Object.entries(pkg.peerDependenciesMeta ?? {})
   .filter(([, meta]) => (meta as { optional?: boolean }).optional)
@@ -83,7 +84,7 @@ test(
 );
 
 const ensureBuilt = () => {
-  if (!existsSync(cliBundle)) {
+  if (!(existsSync(cliBundle) && existsSync(loaderBundle))) {
     const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
       cwd: pkgRoot,
       stderr: "pipe",
@@ -94,6 +95,24 @@ const ensureBuilt = () => {
     }
   }
 };
+
+test(
+  "public loader exports loadFiles without eager optional peer imports",
+  async () => {
+    ensureBuilt();
+    const mod = (await import(loaderBundle)) as Record<string, unknown>;
+    expect(typeof mod.loadFiles).toBe("function");
+
+    const externals = staticExternals(loaderBundle);
+    const offenders = optionalPeers.filter((peer) =>
+      [...externals].some(
+        (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
+      )
+    );
+    expect(offenders).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
 
 test(
   "react bundle is a `use client` module importing only react",
