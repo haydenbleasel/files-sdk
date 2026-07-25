@@ -87,3 +87,21 @@ An **`EnvVar`** is a single variable, tagged with any `aliases`, whether it is a
 - **`getProvider(slug)`** - look up one provider; returns `undefined` for unknown slugs.
 - **`listEnvVars(slug)`** - every env var a provider references, flattened across `required`, all credential modes, and `optional`, de-duplicated by key.
 - **`getSecretEnvVars(slug)`** - the subset of `listEnvVars` flagged as secrets.
+
+## Runtime provider selection
+
+Where `files-sdk/providers` describes providers, `files-sdk/loader` constructs one. Node.js tools that pick a provider at runtime - backup CLIs, migration scripts, configuration-driven services - can use the lazy `loadFiles` loader instead of maintaining their own adapter registry:
+
+```ts lineNumbers
+import { loadFiles } from "files-sdk/loader";
+
+const { files, provider } = await loadFiles({
+  bucket: "uploads",
+  retries: 3,
+  timeout: 10_000,
+});
+```
+
+The provider comes from the `provider` option or, when omitted, the `FILES_SDK_PROVIDER` environment variable (for example, `r2`). Credentials still come from each adapter's usual environment-variable conventions - the same ones this catalog documents - and only the selected adapter is imported, so optional peer SDKs for other providers never load.
+
+`loadFiles` accepts the flat option set the [CLI](/docs/cli) exposes as flags: provider config such as `bucket`, `region`, `endpoint`, or `root`, plus instance-level `prefix`, `timeout`, and `retries`. Anything beyond the typed shortcuts can be passed through `configJson`, which reaches the adapter as its extra constructor options.

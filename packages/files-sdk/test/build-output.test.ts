@@ -52,6 +52,16 @@ const staticExternals = (entry: string): Set<string> => {
   return externals;
 };
 
+/** Optional peers reachable from `bundle` via static imports — must be []. */
+const offendingOptionalPeers = (bundle: string): string[] => {
+  const externals = staticExternals(bundle);
+  return optionalPeers.filter((peer) =>
+    [...externals].some(
+      (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
+    )
+  );
+};
+
 test(
   "CLI bundle never statically imports an optional peer dependency (#67)",
   () => {
@@ -72,13 +82,7 @@ test(
     // Sanity: an empty list would make the assertion below pass vacuously.
     expect(optionalPeers.length).toBeGreaterThan(0);
 
-    const externals = staticExternals(cliBundle);
-    const offenders = optionalPeers.filter((peer) =>
-      [...externals].some(
-        (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
-      )
-    );
-    expect(offenders).toEqual([]);
+    expect(offendingOptionalPeers(cliBundle)).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );
@@ -103,13 +107,7 @@ test(
     const mod = (await import(loaderBundle)) as Record<string, unknown>;
     expect(typeof mod.loadFiles).toBe("function");
 
-    const externals = staticExternals(loaderBundle);
-    const offenders = optionalPeers.filter((peer) =>
-      [...externals].some(
-        (specifier) => specifier === peer || specifier.startsWith(`${peer}/`)
-      )
-    );
-    expect(offenders).toEqual([]);
+    expect(offendingOptionalPeers(loaderBundle)).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );

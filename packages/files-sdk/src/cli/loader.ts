@@ -4,6 +4,15 @@ import { FilesError } from "../internal/errors.js";
 import { PROVIDER_NAMES, PROVIDERS } from "./registry.js";
 import type { ProviderOpts } from "./registry.js";
 
+/**
+ * Flat runtime configuration shared by every provider — one optional field per
+ * CLI shortcut flag, plus a `configJson` passthrough blob.
+ *
+ * NOTE: this type (and {@link LoadResult} / {@link loadFiles}) is re-exported
+ * as public API through the `files-sdk/loader` subpath. Renaming or removing a
+ * field here is a breaking change for package consumers, not just a CLI flag
+ * tweak.
+ */
 export interface GlobalCliOptions {
   provider?: string;
   /**
@@ -97,6 +106,10 @@ const toProviderOpts = (opts: GlobalCliOptions): ProviderOpts => ({
   urlBaseUrl: opts.urlBaseUrl,
 });
 
+/**
+ * The constructed client and resolved provider slug. Public API via
+ * `files-sdk/loader` (see the note on {@link GlobalCliOptions}).
+ */
 export interface LoadResult {
   files: Files;
   provider: string;
