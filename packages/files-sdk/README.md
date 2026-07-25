@@ -59,8 +59,7 @@ const { files, provider } = await loadFiles({
 });
 ```
 
-Set `FILES_SDK_PROVIDER` (for example, `r2`) or pass `provider` directly.
-Provider credentials continue to come from each adapter's environment-variable conventions, and only the selected adapter is imported.
+Set `FILES_SDK_PROVIDER` (for example, `r2`) or pass `provider` directly. Provider credentials continue to come from each adapter's environment-variable conventions, and only the selected adapter is imported.
 
 ## File handles
 
