@@ -9,13 +9,6 @@ import type {
   GenerateSignedPostPolicyV4Options,
 } from "@google-cloud/storage";
 import type { App } from "firebase-admin/app";
-import {
-  applicationDefault,
-  cert,
-  getApps,
-  initializeApp,
-} from "firebase-admin/app";
-import { getStorage } from "firebase-admin/storage";
 
 import type {
   Adapter,
@@ -38,6 +31,10 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createGcsResumableDriver } from "../internal/gcs-resumable.js";
 import { createStoredFile } from "../internal/stored-file.js";
+import {
+  loadFirebaseAdminApp,
+  loadFirebaseAdminStorage,
+} from "./firebase-admin-loader.js";
 
 export interface FirebaseStorageAdapterOptions {
   /**
@@ -231,10 +228,12 @@ const resolveBucketName = (
 // it as ours to keep the adapter's types consistent regardless of which copy
 // each dependency resolves to. Without this, the build's tsc fails on Linux CI
 // where the two copies diverge (7.19 vs 7.21) even though it passes on macOS.
-const adminBucket = (app: App, name?: string): Bucket =>
-  (name
+const adminBucket = (app: App, name?: string): Bucket => {
+  const { getStorage } = loadFirebaseAdminStorage();
+  return (name
     ? getStorage(app).bucket(name)
     : getStorage(app).bucket()) as unknown as Bucket;
+};
 
 const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
   if (opts.app) {
@@ -278,6 +277,8 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
   const appName =
     opts.appName ?? `files-sdk:${projectId ?? "default"}:${storageBucket}`;
 
+  const { applicationDefault, cert, getApps, initializeApp } =
+    loadFirebaseAdminApp();
   const existing = getApps().find((a) => a.name === appName);
   const app =
     existing ??

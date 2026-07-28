@@ -109,7 +109,7 @@ const certMock = mock(
 );
 const applicationDefaultMock = mock(() => ({ _kind: "adc" }));
 
-mock.module("firebase-admin/app", () => ({
+const loadFirebaseAdminAppMock = mock(() => ({
   applicationDefault: applicationDefaultMock,
   cert: certMock,
   getApp: getAppMock,
@@ -121,8 +121,13 @@ const getStorageMock = mock((_app?: FakeApp) => ({
   bucket: (_name?: string) => fakeBucket,
 }));
 
-mock.module("firebase-admin/storage", () => ({
+const loadFirebaseAdminStorageMock = mock(() => ({
   getStorage: getStorageMock,
+}));
+
+mock.module("../src/firebase-storage/firebase-admin-loader.js", () => ({
+  loadFirebaseAdminApp: loadFirebaseAdminAppMock,
+  loadFirebaseAdminStorage: loadFirebaseAdminStorageMock,
 }));
 
 const { firebaseStorage, mapFirebaseStorageError } =
@@ -153,6 +158,8 @@ beforeEach(() => {
   certMock.mockClear();
   applicationDefaultMock.mockClear();
   getStorageMock.mockClear();
+  loadFirebaseAdminAppMock.mockClear();
+  loadFirebaseAdminStorageMock.mockClear();
   initializedApps.length = 0;
 
   saveMock.mockImplementation(async () => {});
@@ -204,6 +211,16 @@ beforeEach(() => {
 });
 
 describe("firebase-storage adapter", () => {
+  test("does not load firebase-admin for an injected Bucket", () => {
+    firebaseStorage({
+      app: fakeBucket as unknown as NonNullable<
+        Parameters<typeof firebaseStorage>[0]
+      >["app"],
+    });
+    expect(loadFirebaseAdminAppMock).not.toHaveBeenCalled();
+    expect(loadFirebaseAdminStorageMock).not.toHaveBeenCalled();
+  });
+
   test("missing bucket and projectId throws at construction", () => {
     expect(() => firebaseStorage()).toThrow(/bucket/u);
   });
