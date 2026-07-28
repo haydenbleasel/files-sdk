@@ -1001,6 +1001,25 @@ describe("vercel-blob adapter", () => {
       expect(opts.storeId).toBe("abc123store");
     });
 
+    test("re-resolves rotating OIDC credentials for each operation", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "oidc-before-rotation";
+      process.env.BLOB_STORE_ID = "abc123store";
+      const files = new Files({ adapter: vercelBlob() });
+
+      process.env.VERCEL_OIDC_TOKEN = "oidc-after-rotation";
+      await files.upload("a.txt", "hello");
+
+      const [firstCall] = putMock.mock.calls;
+      if (!firstCall) {
+        throw new Error("expected put to have been called");
+      }
+      const opts = firstCall[2] as AuthOpts;
+      expect(opts.token).toBeUndefined();
+      expect(opts.oidcToken).toBe("oidc-after-rotation");
+      expect(opts.storeId).toBe("abc123store");
+    });
+
     test("explicit oidcToken without storeId throws — no silent RW-token fallback", () => {
       // A caller who explicitly passes `oidcToken` is asking for OIDC. With
       // no resolvable storeId, the adapter must not quietly fall back to the

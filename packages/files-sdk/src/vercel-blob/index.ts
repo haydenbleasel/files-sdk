@@ -28,6 +28,8 @@ import { createStoredFile } from "../internal/stored-file.js";
 export interface VercelBlobAdapterOptions {
   /**
    * Long-lived read-write token. Defaults to `process.env.BLOB_READ_WRITE_TOKEN`.
+   * Environment-provided credentials are resolved for each operation so
+   * changes made after adapter construction are honored.
    *
    * Takes priority over OIDC even when both are present (mirrors the
    * upstream `@vercel/blob` resolution order). For code running on
@@ -37,7 +39,8 @@ export interface VercelBlobAdapterOptions {
   /**
    * Vercel OIDC token. Defaults to `process.env.VERCEL_OIDC_TOKEN`, which
    * Vercel populates automatically on every deployment when a Blob store
-   * is connected to the project.
+   * is connected to the project. Environment-provided credentials are
+   * resolved for each operation so rotated OIDC tokens stay current.
    *
    * OIDC tokens are short-lived and auto-rotated, so they remove the risk
    * that a long-lived `BLOB_READ_WRITE_TOKEN` leaks from your codebase
@@ -243,8 +246,7 @@ const normalizeExplicitStoreId = (id: string): string | undefined => {
 };
 
 // Credentials passed to every `@vercel/blob` call. Mirrors `BlobCommandOptions`
-// (the upstream interface shared across put/get/head/del/copy/list) so a
-// single resolved object can be spread into every call site.
+// (the upstream interface shared across put/get/head/del/copy/list).
 interface BlobAuthOptions {
   token?: string;
   oidcToken?: string;
@@ -255,41 +257,44 @@ export const vercelBlob = (
   config: VercelBlobAdapterOptions = {}
 ): VercelBlobAdapter => {
   const explicitToken = config.token;
-  const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
-  const oidcToken = config.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
-  const explicitStoreId = config.storeId ?? readEnv("BLOB_STORE_ID");
+  const resolveAuth = (): BlobAuthOptions => {
+    const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
+    const oidcToken = config.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
+    const resolvedStoreId = config.storeId ?? readEnv("BLOB_STORE_ID");
 
-  // Mirrors the upstream SDK's resolution order:
-  //   1. explicit `token` (RW or client token) — wins over OIDC
-  //   2. OIDC pair (`oidcToken` + `storeId`, either option or env)
-  //   3. `BLOB_READ_WRITE_TOKEN` env
-  // Anything else is a construction-time error so OIDC misconfigurations
-  // (e.g. only one of the two env vars set) surface immediately rather
-  // than silently falling back to anonymous calls.
-  const auth: BlobAuthOptions = {};
-  if (explicitToken) {
-    auth.token = explicitToken;
-  } else if (oidcToken && explicitStoreId) {
-    auth.oidcToken = oidcToken;
-    auth.storeId = explicitStoreId;
-  } else if (config.oidcToken) {
-    // An explicit `oidcToken` option (vs one picked up from the env) is an
-    // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
-    // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
-    // scheme out from under the caller. Upstream `resolveBlobAuth` throws here
-    // too, ahead of its own read-write-token fallback.
-    throw new FilesError(
-      "Provider",
-      "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
-    );
-  } else if (envToken) {
-    auth.token = envToken;
-  } else {
+    // Mirrors the upstream SDK's resolution order:
+    //   1. explicit `token` (RW or client token) — wins over OIDC
+    //   2. OIDC pair (`oidcToken` + `storeId`, either option or env)
+    //   3. `BLOB_READ_WRITE_TOKEN` env
+    if (explicitToken) {
+      return { token: explicitToken };
+    }
+    if (oidcToken && resolvedStoreId) {
+      return { oidcToken, storeId: resolvedStoreId };
+    }
+    if (config.oidcToken) {
+      // An explicit `oidcToken` option (vs one picked up from the env) is an
+      // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
+      // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
+      // scheme out from under the caller. Upstream `resolveBlobAuth` throws here
+      // too, ahead of its own read-write-token fallback.
+      throw new FilesError(
+        "Provider",
+        "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
+      );
+    }
+    if (envToken) {
+      return { token: envToken };
+    }
     throw new FilesError(
       "Provider",
       "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set both VERCEL_OIDC_TOKEN and BLOB_STORE_ID."
     );
-  }
+  };
+
+  // Preserve construction-time validation while resolving implicit
+  // environment credentials again for every provider operation.
+  const initialAuth = resolveAuth();
 
   const access = config.access ?? "public";
   const addRandomSuffix = config.addRandomSuffix ?? false;
@@ -313,7 +318,7 @@ export const vercelBlob = (
     const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
     const got = await blob.get(key, {
       access: "private",
-      ...auth,
+      ...resolveAuth(),
       ...(abortSignal && { abortSignal }),
     });
     if (!got || got.statusCode !== 200) {
@@ -334,11 +339,12 @@ export const vercelBlob = (
   // from a read-write token (the only credential shape that embeds the
   // storeId) so existing setups keep their no-round-trip URL fast path.
   let storeId: string | undefined;
-  if (explicitStoreId) {
-    storeId = normalizeExplicitStoreId(explicitStoreId);
+  const initialStoreId = config.storeId ?? initialAuth.storeId;
+  if (initialStoreId) {
+    storeId = normalizeExplicitStoreId(initialStoreId);
   }
   if (!storeId) {
-    const rwToken = explicitToken ?? envToken;
+    const rwToken = initialAuth.token;
     if (rwToken) {
       storeId = deriveStoreIdFromToken(rwToken);
     }
@@ -348,7 +354,7 @@ export const vercelBlob = (
     try {
       return await blob.head(key, {
         ...(signal && { abortSignal: signal }),
-        ...auth,
+        ...resolveAuth(),
       });
     } catch (error) {
       throw mapBlobError(error);
@@ -365,7 +371,7 @@ export const vercelBlob = (
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
           }),
-          ...auth,
+          ...resolveAuth(),
         });
       } catch (error) {
         throw mapBlobError(error);
@@ -377,7 +383,7 @@ export const vercelBlob = (
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
           }),
-          ...auth,
+          ...resolveAuth(),
         });
       } catch (error) {
         throw mapBlobError(error);
@@ -487,7 +493,7 @@ export const vercelBlob = (
         }
         const result = await blob.list({
           ...(options?.signal && { abortSignal: options.signal }),
-          ...auth,
+          ...resolveAuth(),
           ...(options?.prefix && { prefix: options.prefix }),
           ...(options?.limit !== undefined && { limit: options.limit }),
           ...(options?.cursor && { cursor: options.cursor }),
@@ -574,7 +580,7 @@ export const vercelBlob = (
             const created = await blob.createMultipartUpload(key, {
               access,
               addRandomSuffix,
-              ...auth,
+              ...resolveAuth(),
               contentType: meta.contentType,
             });
             session = {
@@ -604,7 +610,7 @@ export const vercelBlob = (
                 access,
                 key: active.storageKey,
                 uploadId: active.uploadId,
-                ...auth,
+                ...resolveAuth(),
               }
             );
             return {
@@ -642,7 +648,7 @@ export const vercelBlob = (
                 key: active.storageKey,
                 partNumber,
                 uploadId: active.uploadId,
-                ...auth,
+                ...resolveAuth(),
                 ...(signal && { abortSignal: signal }),
               }
             );
@@ -686,7 +692,7 @@ export const vercelBlob = (
           addRandomSuffix,
           allowOverwrite,
           ...(options?.signal && { abortSignal: options.signal }),
-          ...auth,
+          ...resolveAuth(),
           ...(options?.contentType && { contentType: options.contentType }),
           ...(options?.cacheControl && {
             cacheControlMaxAge: parseCacheControlMaxAge(options.cacheControl),
@@ -706,7 +712,7 @@ export const vercelBlob = (
         if (size === undefined) {
           const { size: headSize, uploadedAt } = await blob.head(result.url, {
             ...(options?.signal && { abortSignal: options.signal }),
-            ...auth,
+            ...resolveAuth(),
           });
           size = headSize;
           lastModified = uploadedAt?.getTime() ?? lastModified;
