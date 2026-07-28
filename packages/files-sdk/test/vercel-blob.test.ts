@@ -437,6 +437,20 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
+  test("url re-resolves a rotated environment read-write token", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_initialstore_random";
+    const files = new Files({ adapter: vercelBlob() });
+
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_rotatedstore_random";
+    headMock.mockClear();
+    const url = await files.url("a.txt");
+
+    expect(url).toBe(
+      "https://rotatedstore.public.blob.vercel-storage.com/a.txt"
+    );
+    expect(headMock).not.toHaveBeenCalled();
+  });
+
   test("url encodes special characters in the key on the storeId fast path", async () => {
     process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_random";
     const files = new Files({ adapter: vercelBlob() });
@@ -1137,6 +1151,44 @@ describe("vercel-blob adapter", () => {
       const url = await files.url("a.txt");
       expect(url).toBe(
         "https://abc123store.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
+    test("url re-resolves a rotated BLOB_STORE_ID", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "oidc-token";
+      process.env.BLOB_STORE_ID = "initialstore";
+      const files = new Files({ adapter: vercelBlob() });
+
+      process.env.BLOB_STORE_ID = "rotatedstore";
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+
+      expect(url).toBe(
+        "https://rotatedstore.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
+    test("url keeps an explicitly configured storeId fixed", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "environment-oidc";
+      process.env.BLOB_STORE_ID = "environmentstore";
+      const files = new Files({
+        adapter: vercelBlob({
+          oidcToken: "explicit-oidc",
+          storeId: "explicitstore",
+        }),
+      });
+
+      process.env.VERCEL_OIDC_TOKEN = "rotated-environment-oidc";
+      process.env.BLOB_STORE_ID = "rotatedstore";
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+
+      expect(url).toBe(
+        "https://explicitstore.public.blob.vercel-storage.com/a.txt"
       );
       expect(headMock).not.toHaveBeenCalled();
     });

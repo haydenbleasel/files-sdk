@@ -257,10 +257,12 @@ export const vercelBlob = (
   config: VercelBlobAdapterOptions = {}
 ): VercelBlobAdapter => {
   const explicitToken = config.token;
+  const explicitOidcToken = config.oidcToken;
+  const explicitStoreId = config.storeId;
   const resolveAuth = (): BlobAuthOptions => {
     const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
-    const oidcToken = config.oidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
-    const resolvedStoreId = config.storeId ?? readEnv("BLOB_STORE_ID");
+    const oidcToken = explicitOidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
+    const resolvedStoreId = explicitStoreId ?? readEnv("BLOB_STORE_ID");
 
     // Mirrors the upstream SDK's resolution order:
     //   1. explicit `token` (RW or client token) — wins over OIDC
@@ -272,7 +274,7 @@ export const vercelBlob = (
     if (oidcToken && resolvedStoreId) {
       return { oidcToken, storeId: resolvedStoreId };
     }
-    if (config.oidcToken) {
+    if (explicitOidcToken) {
       // An explicit `oidcToken` option (vs one picked up from the env) is an
       // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
       // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
@@ -294,7 +296,7 @@ export const vercelBlob = (
 
   // Preserve construction-time validation while resolving implicit
   // environment credentials again for every provider operation.
-  const initialAuth = resolveAuth();
+  resolveAuth();
 
   const access = config.access ?? "public";
   const addRandomSuffix = config.addRandomSuffix ?? false;
@@ -334,21 +336,21 @@ export const vercelBlob = (
     };
   };
 
-  // Prefer the explicit storeId (option or `BLOB_STORE_ID` env) since it
-  // works for OIDC and any future credential shape. Fall back to deriving
-  // from a read-write token (the only credential shape that embeds the
-  // storeId) so existing setups keep their no-round-trip URL fast path.
-  let storeId: string | undefined;
-  const initialStoreId = config.storeId ?? initialAuth.storeId;
-  if (initialStoreId) {
-    storeId = normalizeExplicitStoreId(initialStoreId);
-  }
-  if (!storeId) {
-    const rwToken = initialAuth.token;
-    if (rwToken) {
-      storeId = deriveStoreIdFromToken(rwToken);
+  // Prefer a storeId resolved from the current auth snapshot since it works
+  // for OIDC and any future credential shape. Fall back to deriving it from
+  // a read-write token (the only credential shape that embeds the storeId)
+  // so existing setups keep their no-round-trip URL fast path.
+  const resolveStoreId = (): string | undefined => {
+    const auth = resolveAuth();
+    const resolvedStoreId = explicitStoreId ?? auth.storeId;
+    if (resolvedStoreId) {
+      const normalizedStoreId = normalizeExplicitStoreId(resolvedStoreId);
+      if (normalizedStoreId) {
+        return normalizedStoreId;
+      }
     }
-  }
+    return auth.token ? deriveStoreIdFromToken(auth.token) : undefined;
+  };
 
   const headRaw = async (key: string, signal?: AbortSignal) => {
     try {
@@ -758,11 +760,14 @@ export const vercelBlob = (
       // Fast path: with a known storeId and predictable keys, derive the
       // URL without an API call. `addRandomSuffix: true` makes the actual
       // pathname unknowable in advance, so we have to head() in that case.
-      if (storeId && !addRandomSuffix) {
-        return joinPublicUrl(
-          `https://${storeId}.public.blob.vercel-storage.com`,
-          key
-        );
+      if (!addRandomSuffix) {
+        const storeId = resolveStoreId();
+        if (storeId) {
+          return joinPublicUrl(
+            `https://${storeId}.public.blob.vercel-storage.com`,
+            key
+          );
+        }
       }
       const result = await headRaw(key, urlOpts?.signal);
       if (!result.url) {
