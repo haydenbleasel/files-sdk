@@ -336,13 +336,15 @@ export const vercelBlob = (
     };
   };
 
-  // Prefer a storeId resolved from the current auth snapshot since it works
-  // for OIDC and any future credential shape. Fall back to deriving it from
-  // a read-write token (the only credential shape that embeds the storeId)
-  // so existing setups keep their no-round-trip URL fast path.
+  // Prefer the explicit storeId (option or `BLOB_STORE_ID` env, whatever the
+  // active auth scheme) since it works for OIDC and any future credential
+  // shape. Fall back to deriving it from a read-write token (the only
+  // credential shape that embeds the storeId) so existing setups keep their
+  // no-round-trip URL fast path.
   const resolveStoreId = (): string | undefined => {
     const auth = resolveAuth();
-    const resolvedStoreId = explicitStoreId ?? auth.storeId;
+    const resolvedStoreId =
+      explicitStoreId ?? auth.storeId ?? readEnv("BLOB_STORE_ID");
     if (resolvedStoreId) {
       const normalizedStoreId = normalizeExplicitStoreId(resolvedStoreId);
       if (normalizedStoreId) {

@@ -1155,6 +1155,21 @@ describe("vercel-blob adapter", () => {
       expect(headMock).not.toHaveBeenCalled();
     });
 
+    test("url fast path prefers BLOB_STORE_ID over the RW token's embedded storeId", async () => {
+      // `BLOB_STORE_ID` is the explicit override for any auth scheme — it
+      // must win over (and not require) a derivable RW token, matching the
+      // pre-existing precedence.
+      process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_tokenstore1_random";
+      process.env.BLOB_STORE_ID = "envstore123";
+      const files = new Files({ adapter: vercelBlob() });
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+      expect(url).toBe(
+        "https://envstore123.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
     test("url re-resolves a rotated BLOB_STORE_ID", async () => {
       delete process.env.BLOB_READ_WRITE_TOKEN;
       process.env.VERCEL_OIDC_TOKEN = "oidc-token";
