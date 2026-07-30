@@ -1,5 +1,12 @@
 # files-sdk
 
+## 2.2.2
+
+### Patch Changes
+
+- 82c198e: Avoid loading Firebase Admin when the Firebase Storage adapter receives an initialized bucket.
+- 1082186: Refresh environment-provided Vercel Blob credentials for every operation.
+
 ## 2.2.1
 
 ### Patch Changes
