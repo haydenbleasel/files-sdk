@@ -437,6 +437,20 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
+  test("url re-resolves a rotated environment read-write token", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_initialstore_random";
+    const files = new Files({ adapter: vercelBlob() });
+
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_rotatedstore_random";
+    headMock.mockClear();
+    const url = await files.url("a.txt");
+
+    expect(url).toBe(
+      "https://rotatedstore.public.blob.vercel-storage.com/a.txt"
+    );
+    expect(headMock).not.toHaveBeenCalled();
+  });
+
   test("url encodes special characters in the key on the storeId fast path", async () => {
     process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_random";
     const files = new Files({ adapter: vercelBlob() });
@@ -1001,6 +1015,25 @@ describe("vercel-blob adapter", () => {
       expect(opts.storeId).toBe("abc123store");
     });
 
+    test("re-resolves rotating OIDC credentials for each operation", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "oidc-before-rotation";
+      process.env.BLOB_STORE_ID = "abc123store";
+      const files = new Files({ adapter: vercelBlob() });
+
+      process.env.VERCEL_OIDC_TOKEN = "oidc-after-rotation";
+      await files.upload("a.txt", "hello");
+
+      const [firstCall] = putMock.mock.calls;
+      if (!firstCall) {
+        throw new Error("expected put to have been called");
+      }
+      const opts = firstCall[2] as AuthOpts;
+      expect(opts.token).toBeUndefined();
+      expect(opts.oidcToken).toBe("oidc-after-rotation");
+      expect(opts.storeId).toBe("abc123store");
+    });
+
     test("explicit oidcToken without storeId throws — no silent RW-token fallback", () => {
       // A caller who explicitly passes `oidcToken` is asking for OIDC. With
       // no resolvable storeId, the adapter must not quietly fall back to the
@@ -1118,6 +1151,59 @@ describe("vercel-blob adapter", () => {
       const url = await files.url("a.txt");
       expect(url).toBe(
         "https://abc123store.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
+    test("url fast path prefers BLOB_STORE_ID over the RW token's embedded storeId", async () => {
+      // `BLOB_STORE_ID` is the explicit override for any auth scheme — it
+      // must win over (and not require) a derivable RW token, matching the
+      // pre-existing precedence.
+      process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_tokenstore1_random";
+      process.env.BLOB_STORE_ID = "envstore123";
+      const files = new Files({ adapter: vercelBlob() });
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+      expect(url).toBe(
+        "https://envstore123.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
+    test("url re-resolves a rotated BLOB_STORE_ID", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "oidc-token";
+      process.env.BLOB_STORE_ID = "initialstore";
+      const files = new Files({ adapter: vercelBlob() });
+
+      process.env.BLOB_STORE_ID = "rotatedstore";
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+
+      expect(url).toBe(
+        "https://rotatedstore.public.blob.vercel-storage.com/a.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
+    test("url keeps an explicitly configured storeId fixed", async () => {
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.VERCEL_OIDC_TOKEN = "environment-oidc";
+      process.env.BLOB_STORE_ID = "environmentstore";
+      const files = new Files({
+        adapter: vercelBlob({
+          oidcToken: "explicit-oidc",
+          storeId: "explicitstore",
+        }),
+      });
+
+      process.env.VERCEL_OIDC_TOKEN = "rotated-environment-oidc";
+      process.env.BLOB_STORE_ID = "rotatedstore";
+      headMock.mockClear();
+      const url = await files.url("a.txt");
+
+      expect(url).toBe(
+        "https://explicitstore.public.blob.vercel-storage.com/a.txt"
       );
       expect(headMock).not.toHaveBeenCalled();
     });
