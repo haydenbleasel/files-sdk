@@ -423,7 +423,7 @@
     "hono": "^4.12.27",
     "koa": "^3.2.1",
     "next": "^16.2.10",
-    "node-appwrite": "^26.2.0",
+    "node-appwrite": "^27.1.0",
     "openai": "^6.45.0",
     "pocketbase": "^0.27.0",
     "react": "^19.2.7",
