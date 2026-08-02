@@ -39,15 +39,15 @@ Oracle Cloud Infrastructure Object Storage via its S3 compatibility layer. A thi
 
 ## Compatibility
 
-| Method            | Status | Notes |
-| ----------------- | :----: | ----- |
-| `upload`          |   ✅   |       |
-| `download`        |   ✅   |       |
-| `delete`          |   ✅   |       |
-| `list`            |   ✅   |       |
-| `search`          |   ✅   |       |
-| `head`            |   ✅   |       |
-| `exists`          |   ✅   |       |
-| `copy`            |   ✅   |       |
-| `url`             |   ✅   |       |
-| `signedUploadUrl` |   ✅   |       |
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ✅ |  |
+| `download` | ✅ |  |
+| `delete` | ✅ |  |
+| `list` | ⚠️ | The S3 list API returns no per-object `Content-Type`, so `type` is inferred from the key's extension (`application/octet-stream` when unknown). Use `head()` for the stored value. |
+| `search` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ✅ |  |
+| `signedUploadUrl` | ✅ |  |
