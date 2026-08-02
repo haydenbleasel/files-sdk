@@ -422,6 +422,27 @@ describe("s3 adapter", () => {
     expect(input.MaxKeys).toBe(10);
   });
 
+  test("list infers the content type from the key", async () => {
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [
+        { ETag: '"1"', Key: "a/report.csv", LastModified: new Date(), Size: 1 },
+        { ETag: '"2"', Key: "a/photo.png", LastModified: new Date(), Size: 2 },
+        { ETag: '"3"', Key: "a/blob", LastModified: new Date(), Size: 3 },
+      ],
+      IsTruncated: false,
+    });
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    const out = await files.list({ prefix: "a/" });
+    expect(out.items.map((i) => i.type)).toEqual([
+      "text/csv; charset=utf-8",
+      "image/png",
+      // No extension to go on, so the generic fallback still applies
+      "application/octet-stream",
+    ]);
+  });
+
   test("list passes Delimiter and maps CommonPrefixes to prefixes", async () => {
     s3Mock.on(ListObjectsV2Command).resolves({
       CommonPrefixes: [{ Prefix: "a/b/" }, { Prefix: "a/c/" }, {}],
