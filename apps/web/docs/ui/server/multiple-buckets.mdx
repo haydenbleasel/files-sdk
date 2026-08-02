@@ -1,0 +1,92 @@
+---
+title: Multiple buckets
+description: Serve more than one bucket — a public images bucket and a private files bucket, say — through the gateway and the UI components.
+---
+
+An app often has more than one storage domain: public profile images in one bucket, private personal files in another, each with its own access policy. Every layer of the stack — [`createFilesRouter`](/docs/ui/server/gateway), `createFilesClient`, `useFiles`, and the [UI components](/docs/ui/components) — is parameterized, so multi-bucket needs no special API. There are two patterns.
+
+## One route per bucket (recommended)
+
+Mount one gateway per bucket. Each gets its own `Files` instance and — the real win — its own `authorize` policy:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { minio } from "files-sdk/minio";
+import { createRouteHandler } from "files-sdk/next";
+
+const router = createFilesRouter({
+  files: createFiles({
+    adapter: minio({ bucket: process.env.S3_FILES_BUCKET }),
+  }),
+  authorize: async ({ req }) => {
+    const userId = await requireUser(req); // throw to deny
+    return { keyPrefix: `users/${userId}/` }; // private, per-user
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+```ts title="app/api/images/route.ts" lineNumbers
+const router = createFilesRouter({
+  files: createFiles({
+    adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET }),
+  }),
+  operations: ["download", "url", "head", "list"], // public reads
+  authorize: async ({ operation, req }) => {
+    if (operation === "upload" || operation === "delete") {
+      await requireUser(req);
+    }
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+On the client, point each hook (or `createFilesClient`) at its route and pass it to the components:
+
+```tsx lineNumbers
+const files = useFiles({ endpoint: "/api/files" });
+const images = useFiles({ endpoint: "/api/images" });
+
+<FileBrowser endpoint="/api/files" files={files} />
+<Dropzone files={images} />
+```
+
+Bucket selection is a component prop, so "which bucket" is decided wherever you render — including at runtime.
+
+## One route, selected per request
+
+The gateway also accepts a **per-request factory** — `files: (req) => Files` — so a single route can serve several buckets. Put the selector in the endpoint's query string; the client threads it through every call (JSON verbs, downloads, thumbnails, and the presign/proxy upload round-trip):
+
+```ts title="app/api/files/route.ts" lineNumbers
+const filesInstance = createFiles({
+  adapter: minio({ bucket: process.env.S3_FILES_BUCKET }),
+});
+const imagesInstance = createFiles({
+  adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET }),
+});
+
+const router = createFilesRouter({
+  files: (req) =>
+    new URL(req.url).searchParams.get("bucket") === "images"
+      ? imagesInstance
+      : filesInstance,
+  authorize: async ({ req }) => {
+    // `req` carries the same query — vary policy by bucket here.
+    const bucket = new URL(req.url).searchParams.get("bucket");
+    /* … */
+  },
+});
+```
+
+```ts lineNumbers
+const images = useFiles({ endpoint: "/api/files?bucket=images" });
+```
+
+:::note
+The selector is client-supplied, so treat it as untrusted input: `authorize` must enforce who may touch which bucket, exactly as it does for keys.
+:::
+
+Prefer separate routes when the buckets have genuinely different policies — two small routers are easier to audit than one branching `authorize`. The factory shines when the instances share a policy shape (per-tenant buckets, region routing) or when adding a route per bucket doesn't scale.

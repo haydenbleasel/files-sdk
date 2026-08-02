@@ -107,7 +107,10 @@ export const createFilesRouter = (opts: CreateFilesRouterOptions): FilesApi => {
         typeof opts.files === "function" ? await opts.files(req) : opts.files;
       const proxyUrl = (token: string): string => {
         const url = new URL(req.url);
-        url.search = "";
+        // Keep the caller's own query (e.g. a `?bucket=` hint consumed by a
+        // per-request `files` factory) so the proxy round-trip resolves the
+        // same instance; only the routing params are replaced.
+        url.searchParams.delete("key");
         url.searchParams.set("op", "proxy");
         url.searchParams.set("token", token);
         return url.toString();

@@ -184,7 +184,7 @@ export const FilePreview = ({
           // Prefer a signed/direct URL, but only when the adapter can actually
           // sign — otherwise `url()` returns a non-loadable placeholder. Fall
           // back to the gateway download proxy, which works on every adapter.
-          const proxy = `${endpoint}?op=download&key=${encodeURIComponent(key)}`;
+          const proxy = `${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(key)}`;
           let resolvedSrc = proxy;
           const caps = await filesRef.current.capabilities();
           if (!controller.signal.aborted && caps.signedUrl.supported) {

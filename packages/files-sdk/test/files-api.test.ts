@@ -538,6 +538,60 @@ describe("createFilesRouter — upload", () => {
     expect(await createFiles({ adapter }).exists("hi.txt")).toBe(true);
   });
 
+  test("per-request files factory: ?bucket= survives the proxy round-trip", async () => {
+    const filesInstance = createFiles({ adapter: memory() });
+    const imagesInstance = createFiles({ adapter: memory() });
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      files: (req) =>
+        new URL(req.url).searchParams.get("bucket") === "images"
+          ? imagesInstance
+          : filesInstance,
+      now: () => NOW,
+      operations: ["upload"],
+      secret: SECRET,
+    });
+
+    const presign = await r.handle(
+      new Request(`${ENDPOINT}?bucket=images`, {
+        body: JSON.stringify({
+          files: [{ name: "a.png", size: 5, type: "image/png" }],
+          op: "presign",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    const { uploads } = (await presign.json()) as {
+      uploads: { id: string; key: string; target: { url: string } }[];
+    };
+    // the minted proxy target keeps the caller's routing query
+    const target = new URL(first(uploads).target.url);
+    expect(target.searchParams.get("bucket")).toBe("images");
+    expect(target.searchParams.get("op")).toBe("proxy");
+
+    const up = await r.handle(
+      new Request(target, { body: "hello", method: "PUT" })
+    );
+    expect(up.status).toBe(200);
+
+    const complete = await r.handle(
+      new Request(`${ENDPOINT}?bucket=images`, {
+        body: JSON.stringify({
+          completions: [{ id: first(uploads).id, key: first(uploads).key }],
+          op: "complete",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    expect(complete.status).toBe(200);
+
+    // bytes landed in the images bucket only
+    expect(await imagesInstance.exists(first(uploads).key)).toBe(true);
+    expect(await filesInstance.exists(first(uploads).key)).toBe(false);
+  });
+
   test("proxy upload with a tampered token → 401", async () => {
     const r = router({ allowedOrigins: () => true, operations: ["upload"] });
     const res = await r.handle(put("op=proxy&token=not.a.token", "x"));

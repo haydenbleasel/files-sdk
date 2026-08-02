@@ -58,7 +58,7 @@ const Thumbnail = ({
       <img
         alt={file.key}
         className="size-10 shrink-0 rounded object-cover"
-        src={`${endpoint}?op=download&key=${encodeURIComponent(file.key)}`}
+        src={`${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(file.key)}`}
       />
     );
   }
