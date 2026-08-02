@@ -23,6 +23,10 @@ export interface FileListProps {
   endpoint?: string;
   /** Hide the delete action. */
   readOnly?: boolean;
+  /** Called when a file row is clicked. Rows are inert without it. */
+  onSelect?: (file: StoredFile) => void;
+  /** Called after a successful delete. */
+  onChanged?: () => void;
   className?: string;
 }
 
@@ -75,6 +79,8 @@ export const FileList = ({
   prefix,
   endpoint = "/api/files",
   readOnly = false,
+  onSelect,
+  onChanged,
   className,
 }: FileListProps) => {
   const [items, setItems] = useState<StoredFile[]>([]);
@@ -106,10 +112,14 @@ export const FileList = ({
     void refresh();
   }, [refresh]);
 
-  const remove = useCallback(async (key: string) => {
-    await filesRef.current.delete(key);
-    setItems((prev) => prev.filter((item) => item.key !== key));
-  }, []);
+  const remove = useCallback(
+    async (key: string) => {
+      await filesRef.current.delete(key);
+      setItems((prev) => prev.filter((item) => item.key !== key));
+      onChanged?.();
+    },
+    [onChanged]
+  );
 
   const download = useCallback(async (file: StoredFile) => {
     const downloaded = await filesRef.current.download(file.key);
@@ -168,13 +178,22 @@ export const FileList = ({
             className="flex items-center gap-3 rounded-lg border border-border p-2"
             key={item.key}
           >
-            <Thumbnail endpoint={endpoint} file={item} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-medium text-sm">{item.key}</p>
-              <p className="text-muted-foreground text-xs">
-                {formatBytes(item.size)} · {item.type || "unknown"}
-              </p>
-            </div>
+            <button
+              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+              disabled={!onSelect}
+              onClick={() => onSelect?.(item)}
+              type="button"
+            >
+              <Thumbnail endpoint={endpoint} file={item} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-sm">
+                  {item.key}
+                </span>
+                <span className="block text-muted-foreground text-xs">
+                  {formatBytes(item.size)} · {item.type || "unknown"}
+                </span>
+              </span>
+            </button>
             <Button
               onClick={() => void download(item)}
               size="icon-sm"
