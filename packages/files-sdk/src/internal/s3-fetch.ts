@@ -37,6 +37,7 @@ import {
   resolveUrlStrategy,
 } from "./core.js";
 import { FilesError } from "./errors.js";
+import { inferTypeFromName } from "./mime.js";
 import type { StoredFileMeta } from "./stored-file.js";
 import { createStoredFile } from "./stored-file.js";
 
@@ -470,7 +471,10 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         }
         items.push(
           createStoredFile(
-            { ...entry, type: DEFAULT_CONTENT_TYPE },
+            // A list response carries no `Content-Type`, so approximate it from
+            // the key rather than labelling every object as a binary blob.
+            // Unknown extensions still fall back to `DEFAULT_CONTENT_TYPE`.
+            { ...entry, type: inferTypeFromName(entry.key) },
             { factory: () => fetchBytes(entry.key), kind: "lazy" }
           )
         );

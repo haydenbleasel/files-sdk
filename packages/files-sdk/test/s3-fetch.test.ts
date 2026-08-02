@@ -271,6 +271,21 @@ describe("s3-fetch core — list", () => {
     expect(result.prefixes).toBeUndefined();
   });
 
+  test("list infers the content type from the key", async () => {
+    const { adapter } = withFake();
+    await adapter.upload("docs/report.csv", "a,b");
+    await adapter.upload("docs/photo.png", "x");
+    await adapter.upload("docs/blob", "y");
+    const result = await adapter.list({ prefix: "docs/" });
+    const types = Object.fromEntries(
+      result.items.map((item) => [item.key, item.type])
+    );
+    expect(types["docs/report.csv"]).toBe("text/csv; charset=utf-8");
+    expect(types["docs/photo.png"]).toBe("image/png");
+    // No extension to go on, so the generic fallback still applies
+    expect(types["docs/blob"]).toBe("application/octet-stream");
+  });
+
   test("list items expose a lazy body", async () => {
     const { adapter } = withFake();
     await adapter.upload("lazy.txt", "lazy body");

@@ -30,6 +30,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 /**
@@ -757,7 +758,11 @@ export const createS3Adapter = (
               key: objKey,
               lastModified: obj.LastModified?.getTime(),
               size: Number(obj.Size ?? 0),
-              type: DEFAULT_CONTENT_TYPE,
+              // `ListObjectsV2` carries no `Content-Type`, so approximate it
+              // from the key rather than labelling every object as a binary
+              // blob. Unknown extensions still fall back to
+              // `DEFAULT_CONTENT_TYPE`.
+              type: inferTypeFromName(objKey),
             },
             {
               factory: async () => {
