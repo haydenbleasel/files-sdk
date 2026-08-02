@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
+import { FileActions } from "@/components/files-sdk/file-actions";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,10 @@ export interface FileBrowserProps {
   delimiter?: string;
   /** Called when a file row (not a folder) is clicked. */
   onSelect?: (file: StoredFile) => void;
+  /** Called after a successful copy/rename/move/delete from a row's actions menu. */
+  onChanged?: () => void;
+  /** Hide the per-file actions menu. */
+  readOnly?: boolean;
   className?: string;
 }
 
@@ -61,14 +66,18 @@ const folderName = (
 /**
  * A folder-aware browser for a `useFiles()` instance. Uses `list({ delimiter })`
  * so common prefixes surface as folders you can descend into, with a breadcrumb
- * trail and cursor-based "load more". Falls back gracefully on adapters that
- * can't delimit — everything just appears as files at the root.
+ * trail and cursor-based "load more". Each file row carries a `FileActions` menu
+ * (download, copy, rename, move, delete) unless `readOnly`. Falls back
+ * gracefully on adapters that can't delimit — everything just appears as files
+ * at the root.
  */
 export const FileBrowser = ({
   files,
   initialPrefix = "",
   delimiter = "/",
   onSelect,
+  onChanged,
+  readOnly = false,
   className,
 }: FileBrowserProps) => {
   const [prefix, setPrefix] = useState(initialPrefix);
@@ -112,6 +121,13 @@ export const FileBrowser = ({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A copy/rename/move/delete can move a key out of (or into) the current
+  // folder, so re-list the prefix from scratch rather than splicing locally.
+  const changed = useCallback(() => {
+    void load();
+    onChanged?.();
+  }, [load, onChanged]);
 
   const crumbs = crumbsOf(prefix, delimiter);
   const isEmpty = !(isLoading || folders.length || items.length);
@@ -161,9 +177,12 @@ export const FileBrowser = ({
           </li>
         ))}
         {items.map((item) => (
-          <li key={item.key}>
+          <li
+            className="flex items-center gap-3 rounded-lg border border-border p-2"
+            key={item.key}
+          >
             <button
-              className="flex w-full items-center gap-3 rounded-lg border border-border p-2 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
               disabled={!onSelect}
               onClick={() => onSelect?.(item)}
               type="button"
@@ -180,6 +199,13 @@ export const FileBrowser = ({
                 </span>
               </span>
             </button>
+            {!readOnly && (
+              <FileActions
+                files={files}
+                fileKey={item.key}
+                onChanged={changed}
+              />
+            )}
           </li>
         ))}
       </ul>

@@ -84,7 +84,10 @@
       "title": "File Browser",
       "description": "Folder-aware browser that descends into common prefixes with a breadcrumb trail.",
       "dependencies": ["files-sdk", "lucide-react"],
-      "registryDependencies": ["button"],
+      "registryDependencies": [
+        "button",
+        "https://files-sdk.dev/r/file-actions.json"
+      ],
       "files": [
         {
           "path": "registry/files-sdk/file-browser/file-browser.tsx",

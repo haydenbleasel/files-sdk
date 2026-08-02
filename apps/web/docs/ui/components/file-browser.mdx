@@ -33,6 +33,8 @@ export function Browser() {
 
 Folders come straight from `list()`'s `prefixes`, which the gateway returns whenever the adapter [supports a delimiter](/docs/ui/server/gateway). The component owns its own navigation state; pass `onSelect` to react to file clicks (open a preview, generate a share link, etc.).
 
+Each file row also carries a [File Actions](/docs/ui/components/file-actions) menu — download, copy, rename, move and delete — unless you pass `readOnly`. Mutations re-list the current folder automatically; pass `onChanged` to refresh anything else (a [Trash Bin](/docs/ui/components/trash-bin), a usage meter) alongside it.
+
 ## Props
 
 <AutoTypeTable
