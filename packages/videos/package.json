@@ -19,7 +19,7 @@
     "@remotion/sfx": "4.0.484",
     "@remotion/tailwind-v4": "4.0.501",
     "react": "19.2.8",
-    "react-dom": "19.2.7",
+    "react-dom": "19.2.8",
     "remotion": "4.0.501",
     "tailwindcss": "4.3.2",
     "zod": "4.4.3"
