@@ -26,7 +26,9 @@ const PANELS: Record<string, () => React.JSX.Element> = {
 // can only hydrate a statically-imported component, so the per-capability
 // selection has to happen inside one island rather than via a dynamic
 // `<Panel client:visible />` in the .astro file.
-export default function CapabilityPanel({ panel }: { panel: string }) {
+const CapabilityPanel = ({ panel }: { panel: string }) => {
   const Panel = PANELS[panel];
   return Panel ? <Panel /> : null;
-}
+};
+
+export default CapabilityPanel;

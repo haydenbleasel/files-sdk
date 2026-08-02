@@ -143,6 +143,7 @@ export type R2Adapter = Adapter<S3Client | R2Bucket | AwsClient>;
 // once on first call and returns the same promise on subsequent calls.
 const lazyS3 = (config: S3AdapterOptions): (() => Promise<S3Adapter>) => {
   let promise: Promise<S3Adapter> | null = null;
+  // oxlint-disable-next-line react/function-component-definition -- not a React component; the rule misreads this returned thunk as one.
   return () => {
     if (!promise) {
       promise = (async () => {
