@@ -8,6 +8,7 @@ import FinalCta from "@/components/home/final-cta.astro";
 import Footer from "@/components/home/footer.astro";
 import GetStarted from "@/components/home/get-started.astro";
 import Hero from "@/components/home/hero.astro";
+import Sponsors from "@/components/home/sponsors.astro";
 import { ADAPTERS } from "@/lib/adapters";
 import { getLatestVersion } from "@/lib/version";
 
@@ -43,6 +44,7 @@ const latestVersion = getLatestVersion();
   <Demo />
   <Capabilities />
   <GetStarted />
+  <Sponsors />
   <FinalCta />
   <Footer slot="footer" />
 </PageLayout>
