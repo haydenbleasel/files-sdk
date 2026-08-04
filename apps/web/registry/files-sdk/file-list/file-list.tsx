@@ -43,22 +43,64 @@ const formatBytes = (bytes: number): string => {
 };
 
 const Thumbnail = ({
+  canSign,
   endpoint,
   file,
+  filesRef,
 }: {
+  canSign: boolean | undefined;
   endpoint: string;
   file: StoredFile;
+  filesRef: { current: UseFilesResult };
 }) => {
+  const [src, setSrc] = useState<string>();
+  const [failed, setFailed] = useState(false);
+  const isImage = file.type.startsWith("image/");
+
+  useEffect(() => {
+    if (!isImage || canSign === undefined) {
+      return;
+    }
+    // Prefer a signed/direct URL when the adapter can mint one — some dev
+    // servers (e.g. TanStack Start's nitro dev middleware) treat any
+    // `Sec-Fetch-Dest: image` request to a catch-all route as a static asset
+    // and 404 it before the gateway runs, so an <img> pointed at the download
+    // proxy never loads there. Fall back to the proxy, which works on every
+    // adapter — even ones that can't sign.
+    const proxy = `${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(file.key)}`;
+    if (!canSign) {
+      setSrc(proxy);
+      return;
+    }
+    let cancelled = false;
+    const resolve = async () => {
+      let next = proxy;
+      try {
+        next = await filesRef.current.url(file.key);
+      } catch {
+        next = proxy;
+      }
+      if (!cancelled) {
+        setSrc(next);
+      }
+    };
+    void resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, [canSign, endpoint, file.key, filesRef, isImage]);
+
   // A plain <img> (not next/image) keeps the component portable to any React
-  // app. The gateway download proxy streams the bytes, so it works on every
-  // adapter — even ones that can't mint a public URL.
-  if (file.type.startsWith("image/")) {
+  // app. A load failure degrades to the generic icon instead of the browser's
+  // broken-image glyph.
+  if (isImage && src && !failed) {
     return (
       // eslint-disable-next-line nextjs/no-img-element
       <img
         alt={file.key}
         className="size-10 shrink-0 rounded object-cover"
-        src={`${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(file.key)}`}
+        onError={() => setFailed(true)}
+        src={src}
       />
     );
   }
@@ -85,6 +127,7 @@ export const FileList = ({
 }: FileListProps) => {
   const [items, setItems] = useState<StoredFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [canSign, setCanSign] = useState<boolean>();
 
   // Read `files` through a ref so the fetch effect depends only on `prefix`.
   // The hook returns a fresh object whenever its ambient store changes (e.g. on
@@ -111,6 +154,28 @@ export const FileList = ({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Resolved once per mount: whether thumbnails can use signed/direct URLs.
+  useEffect(() => {
+    let cancelled = false;
+    const resolve = async () => {
+      try {
+        const caps = await filesRef.current.capabilities();
+        if (!cancelled) {
+          setCanSign(caps.signedUrl.supported);
+        }
+      } catch {
+        // Treat an unreachable/denied capabilities op as "can't sign".
+        if (!cancelled) {
+          setCanSign(false);
+        }
+      }
+    };
+    void resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const remove = useCallback(
     async (key: string) => {
@@ -184,7 +249,12 @@ export const FileList = ({
               onClick={() => onSelect?.(item)}
               type="button"
             >
-              <Thumbnail endpoint={endpoint} file={item} />
+              <Thumbnail
+                canSign={canSign}
+                endpoint={endpoint}
+                file={item}
+                filesRef={filesRef}
+              />
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-sm">
                   {item.key}
