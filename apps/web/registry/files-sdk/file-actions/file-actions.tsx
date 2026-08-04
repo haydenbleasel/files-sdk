@@ -146,25 +146,28 @@ export const FileActions = ({
           )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => void download()}>
+          {/* onClick rather than Radix's onSelect: Base UI menu items have no
+              onSelect prop, and Radix items fire a real click on both pointer
+              and keyboard selection, so onClick works with both flavors. */}
+          <DropdownMenuItem onClick={() => void download()}>
             <DownloadIcon />
             Download
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => open("copy")}>
+          <DropdownMenuItem onClick={() => open("copy")}>
             <CopyIcon />
             Copy
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => open("rename")}>
+          <DropdownMenuItem onClick={() => open("rename")}>
             <PencilIcon />
             Rename
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => open("move")}>
+          <DropdownMenuItem onClick={() => open("move")}>
             <CopyIcon />
             Move
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onSelect={() => open("delete")}
+            onClick={() => open("delete")}
             variant="destructive"
           >
             <Trash2Icon />
