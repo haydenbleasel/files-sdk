@@ -54,6 +54,20 @@ describe("r2 adapter — HTTP path", () => {
     expect(endpoint?.hostname).toBe("acct.r2.cloudflarestorage.com");
   });
 
+  test("endpoint override replaces the default R2 hostname (jurisdiction buckets)", async () => {
+    const adapter = r2({
+      accessKeyId: "AKID",
+      accountId: "ACCT",
+      bucket: "uploads",
+      endpoint: "https://acct.eu.r2.cloudflarestorage.com",
+      secretAccessKey: "SECRET",
+    });
+    await adapter.head("touch").catch(() => {});
+    const client = adapter.raw as S3Client;
+    const endpoint = await client.config.endpoint?.();
+    expect(endpoint?.hostname).toBe("acct.eu.r2.cloudflarestorage.com");
+  });
+
   test("missing credentials throws at construction even with accountId set", () => {
     const oldKey = process.env.R2_ACCESS_KEY_ID;
     const oldSecret = process.env.R2_SECRET_ACCESS_KEY;
@@ -662,6 +676,24 @@ describe("r2 adapter — Workers binding path", () => {
     expect(url).toContain("a.txt");
   });
 
+  test("hybrid: endpoint override is honored by the signing fallback", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        endpoint: "https://acct.eu.r2.cloudflarestorage.com",
+        secretAccessKey: "S",
+      }),
+    });
+    await files.upload("a.txt", "via-binding");
+    const url = await files.url("a.txt", { expiresIn: 60 });
+    expect(url).toContain("acct.eu.r2.cloudflarestorage.com");
+    expect(url).toContain("X-Amz-Signature=");
+  });
+
   test("hybrid: responseContentDisposition forces signing through publicBaseUrl", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({
@@ -1202,6 +1234,25 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     expect(url).toContain("X-Amz-Signature=");
     expect(url).toContain("X-Amz-Expires=3600");
     expect(url).toContain("acct.r2.cloudflarestorage.com/uploads/a.txt");
+  });
+
+  test("endpoint override routes fetch-client requests and url() to the custom host", async () => {
+    const fake = makeFakeS3();
+    const adapter = r2({
+      accessKeyId: "K",
+      accountId: "ACCT",
+      bucket: "uploads",
+      client: "fetch",
+      endpoint: "https://acct.eu.r2.cloudflarestorage.com",
+      fetch: fake.fetchImpl,
+      secretAccessKey: "S",
+    });
+    const files = new Files({ adapter });
+    await files.upload("hello.txt", "hi");
+    const put = fake.requests[0] as Request;
+    expect(new URL(put.url).hostname).toBe("acct.eu.r2.cloudflarestorage.com");
+    const url = await files.url("hello.txt");
+    expect(url).toContain("acct.eu.r2.cloudflarestorage.com/uploads/hello.txt");
   });
 
   test("publicBaseUrl is honored by url()", async () => {

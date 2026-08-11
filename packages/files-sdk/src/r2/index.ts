@@ -68,6 +68,14 @@ export interface R2HttpOptions {
    */
   defaultUrlExpiresIn?: number;
   /**
+   * Override the S3 API endpoint. Defaults to
+   * `https://<accountId>.r2.cloudflarestorage.com`. Set it for jurisdiction
+   * buckets, which live on their own hostnames (e.g.
+   * `https://<accountId>.eu.r2.cloudflarestorage.com`), or to point the
+   * adapter at an S3-compatible stand-in (MinIO, LocalStack) in tests.
+   */
+  endpoint?: string;
+  /**
    * Which HTTP engine backs the adapter.
    *
    * - `"aws-sdk"` (default): `@aws-sdk/client-s3` — the full surface,
@@ -126,6 +134,13 @@ export interface R2BindingOptions {
    * signing (hybrid mode without `publicBaseUrl`). Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
+  /**
+   * Hybrid mode: override the S3 API endpoint used for signing. Defaults to
+   * `https://<accountId>.r2.cloudflarestorage.com`. Set it for jurisdiction
+   * buckets, which live on their own hostnames (e.g.
+   * `https://<accountId>.eu.r2.cloudflarestorage.com`).
+   */
+  endpoint?: string;
 }
 
 export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
@@ -319,7 +334,9 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       ? s3FetchAdapter({
           accessKeyId: opts.accessKeyId,
           bucket: httpBucket,
-          endpoint: `https://${opts.accountId}.r2.cloudflarestorage.com`,
+          endpoint:
+            opts.endpoint ??
+            `https://${opts.accountId}.r2.cloudflarestorage.com`,
           forcePathStyle: true,
           name: "r2-hybrid-signer",
           providerLabel: "R2 error",
@@ -585,7 +602,8 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       ...(opts.defaultUrlExpiresIn !== undefined && {
         defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
       }),
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      endpoint:
+        opts.endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
       ...(opts.fetch && { fetch: opts.fetch }),
       forcePathStyle: true,
       name: "r2-http-fetch",
@@ -617,7 +635,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     ...(opts.defaultUrlExpiresIn !== undefined && {
       defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
     }),
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    endpoint: opts.endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
     forcePathStyle: true,
     ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
     region: "auto",
