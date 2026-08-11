@@ -385,9 +385,24 @@ const fakeBinding = () => {
       limit?: number;
       cursor?: string;
       delimiter?: string;
+      include?: ("httpMetadata" | "customMetadata")[];
     }) {
       const prefix = opts?.prefix ?? "";
       const matched = [...map.entries()].filter(([k]) => k.startsWith(prefix));
+      // Like the real R2 binding, only expose the metadata fields the caller
+      // asked for via `include` — list() omits both by default.
+      const project = (entry: [string, BindingEntry]) => {
+        const obj = toBindingObject(entry);
+        return {
+          ...obj,
+          customMetadata: opts?.include?.includes("customMetadata")
+            ? obj.customMetadata
+            : undefined,
+          httpMetadata: opts?.include?.includes("httpMetadata")
+            ? obj.httpMetadata
+            : undefined,
+        };
+      };
       if (opts?.delimiter) {
         const delim = opts.delimiter;
         const objects: ReturnType<typeof toBindingObject>[] = [];
@@ -396,7 +411,7 @@ const fakeBinding = () => {
           const rest = entry[0].slice(prefix.length);
           const idx = rest.indexOf(delim);
           if (idx === -1) {
-            objects.push(toBindingObject(entry));
+            objects.push(project(entry));
           } else {
             delimited.add(prefix + rest.slice(0, idx + delim.length));
           }
@@ -408,7 +423,7 @@ const fakeBinding = () => {
           truncated: false,
         });
       }
-      const objects = matched.map(toBindingObject);
+      const objects = matched.map(project);
       return Promise.resolve({
         cursor: undefined,
         delimitedPrefixes: [],
@@ -794,6 +809,21 @@ describe("r2 adapter — Workers binding path", () => {
       "a/1.txt",
       "a/2.txt",
     ]);
+  });
+
+  test("binding list reports the stored content type and custom metadata, matching head()", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("m/report.csv", "a,b", {
+      contentType: "text/csv",
+      metadata: { source: "test" },
+    });
+    const out = await files.list({ prefix: "m/" });
+    expect(out.items).toHaveLength(1);
+    expect(out.items[0]?.type).toBe("text/csv");
+    expect(out.items[0]?.metadata).toEqual({ source: "test" });
+    const head = await files.head("m/report.csv");
+    expect(out.items[0]?.type).toBe(head.type);
   });
 
   test("binding list with a delimiter returns delimitedPrefixes", async () => {
