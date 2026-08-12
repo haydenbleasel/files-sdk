@@ -93,7 +93,7 @@ export const CapabilitiesBadges = ({
     return (
       <div
         className={cn(
-          "flex items-center gap-2 text-muted-foreground text-sm",
+          "text-muted-foreground flex items-center gap-2 text-sm",
           className
         )}
       >

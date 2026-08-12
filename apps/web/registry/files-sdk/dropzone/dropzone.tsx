@@ -290,7 +290,7 @@ export const Dropzone = ({
       <Button
         className={cn(
           "relative flex h-auto w-full flex-col items-center justify-center gap-2 overflow-hidden p-8",
-          isDragActive && "border-primary ring-1 ring-primary",
+          isDragActive && "border-primary ring-primary ring-1",
           className
         )}
         disabled={files.isUploading}
@@ -372,11 +372,11 @@ export const DropzoneEmptyState = ({
       )}
     >
       {isUploading ? (
-        <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+        <Loader2Icon className="text-muted-foreground size-6 animate-spin" />
       ) : (
-        <UploadIcon className="size-6 text-muted-foreground" />
+        <UploadIcon className="text-muted-foreground size-6" />
       )}
-      <p className="font-medium text-sm">
+      <p className="text-sm font-medium">
         {isUploading ? "Uploading…" : prompt}
       </p>
       <p className="text-muted-foreground text-xs">
@@ -410,9 +410,9 @@ export const DropzoneContent = ({
 
   return (
     <p
-      className={cn("flex items-center gap-1.5 font-medium text-sm", className)}
+      className={cn("flex items-center gap-1.5 text-sm font-medium", className)}
     >
-      <CheckCircle2Icon className="size-4 text-primary" />
+      <CheckCircle2Icon className="text-primary size-4" />
       {uploaded.length === 1
         ? `Uploaded ${uploaded[0].name}`
         : `${uploaded.length} files uploaded`}
@@ -440,7 +440,7 @@ export const DropzoneError = ({ className, children }: DropzoneErrorProps) => {
   return (
     <p
       className={cn(
-        "flex items-center gap-1.5 text-destructive text-sm",
+        "text-destructive flex items-center gap-1.5 text-sm",
         className
       )}
     >

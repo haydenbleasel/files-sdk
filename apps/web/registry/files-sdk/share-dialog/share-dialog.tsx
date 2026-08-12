@@ -153,7 +153,7 @@ export const ShareDialog = ({
 
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <span className="font-medium text-sm">Expires after</span>
+            <span className="text-sm font-medium">Expires after</span>
             <div className="flex flex-wrap gap-1.5">
               {presets.map((preset) => (
                 <Button
@@ -174,7 +174,7 @@ export const ShareDialog = ({
 
           {mode === "download" && (
             <div className="flex flex-col gap-1.5">
-              <span className="font-medium text-sm">Open as</span>
+              <span className="text-sm font-medium">Open as</span>
               <div className="flex flex-wrap gap-1.5">
                 {(["attachment", "inline"] as const).map((value) => (
                   <Button

@@ -30,7 +30,7 @@ const appearAt = (index: number) => RESULTS_START + index * ROW_STEP;
 const TOTAL = appearAt(RESULTS.length - 1) + APPEAR + 8;
 
 const Cursor = () => (
-  <span className="ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-foreground" />
+  <span className="bg-foreground ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse" />
 );
 
 const Row = ({
@@ -63,11 +63,11 @@ const Row = ({
       >
         <span className="flex min-w-0 items-center gap-2">
           <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
-          <span className="truncate font-mono text-sm text-foreground">
+          <span className="text-foreground truncate font-mono text-sm">
             {result.key}
           </span>
         </span>
-        <span className="shrink-0 pl-3 font-mono text-xs text-muted-foreground">
+        <span className="text-muted-foreground shrink-0 pl-3 font-mono text-xs">
           {result.size}
         </span>
       </div>
@@ -91,9 +91,9 @@ export const Search = () => {
 
   return (
     <div className={PANEL_CLASS} ref={ref}>
-      <div className="flex h-12 items-center gap-2 border-b border-border bg-sidebar px-5">
-        <SearchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="flex-1 truncate font-mono text-xs text-foreground">
+      <div className="border-border bg-sidebar flex h-12 items-center gap-2 border-b px-5">
+        <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
+        <span className="text-foreground flex-1 truncate font-mono text-xs">
           {PATTERN.slice(0, typed)}
           {typing && <Cursor />}
         </span>

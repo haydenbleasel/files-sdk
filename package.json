@@ -33,7 +33,7 @@
     "oxlint": "^1.76.0",
     "turbo": "^2.10.3",
     "typescript": "^7",
-    "ultracite": "7.10.0"
+    "ultracite": "7.10.2"
   },
   "overrides": {
     "astro": "^7"

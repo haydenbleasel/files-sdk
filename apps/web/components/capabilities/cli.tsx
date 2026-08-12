@@ -20,7 +20,7 @@ const PROMPT_AT = OUTPUT_START + OUTPUT.length * OUTPUT_STEP;
 const TOTAL = PROMPT_AT + 6;
 
 const Cursor = () => (
-  <span className="ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-foreground" />
+  <span className="bg-foreground ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse" />
 );
 
 export const Cli = () => {

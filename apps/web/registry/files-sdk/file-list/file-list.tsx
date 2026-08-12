@@ -105,7 +105,7 @@ const Thumbnail = ({
     );
   }
   return (
-    <span className="flex size-10 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+    <span className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded">
       <FileIcon className="size-4" />
     </span>
   );
@@ -201,7 +201,7 @@ export const FileList = ({
     return (
       <div
         className={cn(
-          "flex items-center justify-center gap-2 p-8 text-muted-foreground text-sm",
+          "text-muted-foreground flex items-center justify-center gap-2 p-8 text-sm",
           className
         )}
       >
@@ -214,7 +214,7 @@ export const FileList = ({
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-1 p-8 text-center text-muted-foreground text-sm",
+          "text-muted-foreground flex flex-col items-center gap-1 p-8 text-center text-sm",
           className
         )}
       >
@@ -240,11 +240,11 @@ export const FileList = ({
       <ul className="flex flex-col gap-2">
         {items.map((item) => (
           <li
-            className="flex items-center gap-3 rounded-lg border border-border p-2"
+            className="border-border flex items-center gap-3 rounded-lg border p-2"
             key={item.key}
           >
             <button
-              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+              className="hover:bg-muted -m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors disabled:cursor-default disabled:hover:bg-transparent"
               disabled={!onSelect}
               onClick={() => onSelect?.(item)}
               type="button"
@@ -256,10 +256,10 @@ export const FileList = ({
                 filesRef={filesRef}
               />
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-sm">
+                <span className="block truncate text-sm font-medium">
                   {item.key}
                 </span>
-                <span className="block text-muted-foreground text-xs">
+                <span className="text-muted-foreground block text-xs">
                   {formatBytes(item.size)} · {item.type || "unknown"}
                 </span>
               </span>

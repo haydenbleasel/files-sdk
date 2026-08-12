@@ -150,8 +150,8 @@ export const MultipartUploader = ({
           ref={inputRef}
           type="file"
         />
-        <UploadIcon className="size-5 text-muted-foreground" />
-        <span className="font-medium text-sm">Add files</span>
+        <UploadIcon className="text-muted-foreground size-5" />
+        <span className="text-sm font-medium">Add files</span>
         <span className="text-muted-foreground text-xs">
           Large files upload in parts automatically.
         </span>
@@ -162,12 +162,12 @@ export const MultipartUploader = ({
           {queue.map((item) => (
             <li className="flex flex-col gap-1.5" key={item.id}>
               <div className="flex items-center gap-2 text-sm">
-                <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+                <FileIcon className="text-muted-foreground size-4 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">
                   {item.file.name}
                 </span>
                 {item.status === "uploading" ? (
-                  <Loader2Icon className="size-4 animate-spin text-muted-foreground" />
+                  <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
                 ) : (
                   <Button
                     className="text-muted-foreground"

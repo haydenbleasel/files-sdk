@@ -59,13 +59,13 @@ const EventRow = ({
     >
       <span className="flex items-center gap-2.5">
         <span className={cn("size-1.5 rounded-full", DOT_STYLE[event.kind])} />
-        <span className="font-mono text-sm text-foreground">
+        <span className="text-foreground font-mono text-sm">
           files.{event.type}
         </span>
       </span>
       <span className="flex items-baseline gap-3 font-mono text-xs">
         <span className={HOOK_STYLE[event.kind]}>{event.hook}</span>
-        <span className="min-w-[5rem] text-right text-muted-foreground">
+        <span className="text-muted-foreground min-w-[5rem] text-right">
           {event.detail}
         </span>
       </span>

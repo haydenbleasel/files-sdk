@@ -30,8 +30,8 @@ const FileBar = ({ row, frame }: { row: Row; frame: number }) => {
   return (
     <div className="flex flex-col gap-2 px-5 py-2.5">
       <div className="flex items-baseline justify-between">
-        <span className="font-mono text-sm text-foreground">{row.name}</span>
-        <span className="flex items-baseline gap-3 font-mono text-xs text-muted-foreground">
+        <span className="text-foreground font-mono text-sm">{row.name}</span>
+        <span className="text-muted-foreground flex items-baseline gap-3 font-mono text-xs">
           <span>{row.size}</span>
           <span
             className={cn(
@@ -45,7 +45,7 @@ const FileBar = ({ row, frame }: { row: Row; frame: number }) => {
           </span>
         </span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
         <div
           className={cn(
             "h-full rounded-full",

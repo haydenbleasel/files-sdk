@@ -124,13 +124,13 @@ export const TrashBin = ({ files, onChanged, className }: TrashBinProps) => {
       )}
 
       {isLoading && !trashed.length && (
-        <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground text-sm">
+        <div className="text-muted-foreground flex items-center justify-center gap-2 p-8 text-sm">
           <Loader2Icon className="size-4 animate-spin" /> Loading…
         </div>
       )}
 
       {!(isLoading || trashed.length) && (
-        <div className="flex flex-col items-center gap-1 p-8 text-center text-muted-foreground text-sm">
+        <div className="text-muted-foreground flex flex-col items-center gap-1 p-8 text-center text-sm">
           <TrashIcon className="size-6" />
           Trash is empty.
         </div>
@@ -139,14 +139,14 @@ export const TrashBin = ({ files, onChanged, className }: TrashBinProps) => {
       <ul className="flex flex-col gap-2">
         {trashed.map((item) => (
           <li
-            className="flex items-center gap-3 rounded-lg border border-border p-2"
+            className="border-border flex items-center gap-3 rounded-lg border p-2"
             key={item.key}
           >
-            <span className="flex size-9 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+            <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
               <Trash2Icon className="size-4" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate font-medium text-sm">{item.key}</p>
+              <p className="truncate text-sm font-medium">{item.key}</p>
               <p className="text-muted-foreground text-xs">
                 {formatBytes(item.size)}
                 {item.lastModified

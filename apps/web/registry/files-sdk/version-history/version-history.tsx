@@ -83,7 +83,7 @@ export const VersionHistory = ({
     return (
       <div
         className={cn(
-          "flex items-center justify-center gap-2 p-8 text-muted-foreground text-sm",
+          "text-muted-foreground flex items-center justify-center gap-2 p-8 text-sm",
           className
         )}
       >
@@ -96,7 +96,7 @@ export const VersionHistory = ({
     return (
       <div
         className={cn(
-          "flex flex-col items-center gap-1 p-8 text-center text-muted-foreground text-sm",
+          "text-muted-foreground flex flex-col items-center gap-1 p-8 text-center text-sm",
           className
         )}
       >
@@ -110,17 +110,17 @@ export const VersionHistory = ({
     <ol className={cn("flex flex-col gap-2", className)}>
       {versions.map((version, index) => (
         <li
-          className="flex items-center gap-3 rounded-lg border border-border p-2"
+          className="border-border flex items-center gap-3 rounded-lg border p-2"
           key={version.versionId}
         >
-          <span className="flex size-9 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+          <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
             <HistoryIcon className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-medium text-sm">
+            <p className="truncate text-sm font-medium">
               {new Date(version.lastModified).toLocaleString()}
               {index === 0 && (
-                <span className="ml-2 text-muted-foreground text-xs">
+                <span className="text-muted-foreground ml-2 text-xs">
                   latest
                 </span>
               )}

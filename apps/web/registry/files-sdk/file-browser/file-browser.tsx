@@ -145,7 +145,7 @@ export const FileBrowser = ({
         </Button>
         {crumbs.map((crumb) => (
           <Fragment key={crumb.prefix}>
-            <ChevronRightIcon className="size-3 text-muted-foreground" />
+            <ChevronRightIcon className="text-muted-foreground size-3" />
             <Button
               onClick={() => setPrefix(crumb.prefix)}
               size="xs"
@@ -162,39 +162,39 @@ export const FileBrowser = ({
         {folders.map((folder) => (
           <li key={folder}>
             <button
-              className="flex w-full items-center gap-3 rounded-lg border border-border p-2 text-left transition-colors hover:bg-muted"
+              className="border-border hover:bg-muted flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors"
               onClick={() => setPrefix(folder)}
               type="button"
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+              <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
                 <FolderIcon className="size-4" />
               </span>
-              <span className="min-w-0 flex-1 truncate font-medium text-sm">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
                 {folderName(folder, prefix, delimiter)}
               </span>
-              <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+              <ChevronRightIcon className="text-muted-foreground size-4 shrink-0" />
             </button>
           </li>
         ))}
         {items.map((item) => (
           <li
-            className="flex items-center gap-3 rounded-lg border border-border p-2"
+            className="border-border flex items-center gap-3 rounded-lg border p-2"
             key={item.key}
           >
             <button
-              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+              className="hover:bg-muted -m-1 flex min-w-0 flex-1 items-center gap-3 rounded-md p-1 text-left transition-colors disabled:cursor-default disabled:hover:bg-transparent"
               disabled={!onSelect}
               onClick={() => onSelect?.(item)}
               type="button"
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+              <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
                 <FileIcon className="size-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-sm">
+                <span className="block truncate text-sm font-medium">
                   {folderName(item.key, prefix, delimiter) || item.key}
                 </span>
-                <span className="block text-muted-foreground text-xs">
+                <span className="text-muted-foreground block text-xs">
                   {formatBytes(item.size)} · {item.type || "unknown"}
                 </span>
               </span>
@@ -211,13 +211,13 @@ export const FileBrowser = ({
       </ul>
 
       {isLoading && (
-        <div className="flex items-center justify-center gap-2 p-4 text-muted-foreground text-sm">
+        <div className="text-muted-foreground flex items-center justify-center gap-2 p-4 text-sm">
           <Loader2Icon className="size-4 animate-spin" /> Loading…
         </div>
       )}
 
       {isEmpty && (
-        <div className="flex flex-col items-center gap-1 p-8 text-center text-muted-foreground text-sm">
+        <div className="text-muted-foreground flex flex-col items-center gap-1 p-8 text-center text-sm">
           <FolderIcon className="size-6" />
           This folder is empty.
         </div>

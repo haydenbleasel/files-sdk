@@ -58,7 +58,7 @@ const Body = ({
 }) => {
   if (isLoading) {
     return (
-      <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+      <Loader2Icon className="text-muted-foreground size-6 animate-spin" />
     );
   }
   if (error) {
@@ -91,13 +91,13 @@ const Body = ({
   }
   if (text !== undefined) {
     return (
-      <pre className="max-h-72 w-full overflow-auto whitespace-pre-wrap text-xs">
+      <pre className="max-h-72 w-full overflow-auto text-xs whitespace-pre-wrap">
         {text}
       </pre>
     );
   }
   return (
-    <span className="flex flex-col items-center gap-1 text-muted-foreground text-sm">
+    <span className="text-muted-foreground flex flex-col items-center gap-1 text-sm">
       <FileIcon className="size-6" />
       No inline preview
     </span>
@@ -223,11 +223,11 @@ export const FilePreview = ({
   return (
     <figure
       className={cn(
-        "overflow-hidden rounded-lg border border-border bg-card",
+        "border-border bg-card overflow-hidden rounded-lg border",
         className
       )}
     >
-      <div className="flex min-h-40 items-center justify-center bg-muted/30 p-4">
+      <div className="bg-muted/30 flex min-h-40 items-center justify-center p-4">
         {renderPreview && !isLoading && !loadError && meta ? (
           renderPreview({ file: meta, src, text })
         ) : (
@@ -241,7 +241,7 @@ export const FilePreview = ({
         )}
       </div>
       <figcaption className="border-border border-t px-3 py-2">
-        <p className="truncate font-medium text-sm">{key}</p>
+        <p className="truncate text-sm font-medium">{key}</p>
         <p className="text-muted-foreground text-xs">
           {meta ? `${formatBytes(meta.size)} · ${meta.type || "unknown"}` : "—"}
           {meta?.etag ? ` · ${meta.etag}` : ""}

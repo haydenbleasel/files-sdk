@@ -132,13 +132,13 @@ export const FileSearch = ({
             </Button>
           ))}
           <label
-            className="ml-auto flex items-center gap-1.5 text-muted-foreground text-xs"
+            className="text-muted-foreground ml-auto flex items-center gap-1.5 text-xs"
             htmlFor={caseId}
           >
             <input
               aria-label="Case-insensitive"
               checked={caseInsensitive}
-              className="size-3.5 accent-primary"
+              className="accent-primary size-3.5"
               id={caseId}
               onChange={(event) => setCaseInsensitive(event.target.checked)}
               type="checkbox"
@@ -158,19 +158,19 @@ export const FileSearch = ({
         {results.map((file) => (
           <li key={file.key}>
             <button
-              className="flex w-full items-center gap-3 rounded-lg border border-border p-2 text-left transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent"
+              className="border-border hover:bg-muted flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors disabled:cursor-default disabled:hover:bg-transparent"
               disabled={!onSelect}
               onClick={() => onSelect?.(file)}
               type="button"
             >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+              <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
                 <FileIcon className="size-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-sm">
+                <span className="block truncate text-sm font-medium">
                   {file.key}
                 </span>
-                <span className="block text-muted-foreground text-xs">
+                <span className="text-muted-foreground block text-xs">
                   {formatBytes(file.size)} · {file.type || "unknown"}
                 </span>
               </span>

@@ -79,7 +79,7 @@ const opFrame = (i: number) => START + i * STEP;
 const reactFrame = (i: number) => opFrame(i) + REACT_DELAY;
 
 const Cursor = () => (
-  <span className="ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse bg-foreground" />
+  <span className="bg-foreground ml-px inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse" />
 );
 
 const Row = ({ slot, frame }: { slot: Slot; frame: number }) => {
@@ -133,7 +133,7 @@ const Row = ({ slot, frame }: { slot: Slot; frame: number }) => {
         >
           {key}
         </span>
-        <span className="shrink-0 pl-3 font-mono text-xs text-muted-foreground">
+        <span className="text-muted-foreground shrink-0 pl-3 font-mono text-xs">
           {deleted ? "deleted" : slot.size}
         </span>
       </div>
@@ -163,8 +163,8 @@ export const Methods = () => {
 
   return (
     <div className={PANEL_CLASS} ref={ref}>
-      <div className="flex h-12 items-center border-b border-border bg-sidebar px-5">
-        <span className="truncate font-mono text-xs text-muted-foreground">
+      <div className="border-border bg-sidebar flex h-12 items-center border-b px-5">
+        <span className="text-muted-foreground truncate font-mono text-xs">
           {PREFIX.slice(0, typed)}
           <span className={VERB_STYLE[op.verb]}>{verbShown}</span>
           {callShown}

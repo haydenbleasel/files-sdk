@@ -91,7 +91,7 @@ const PartTile = ({ index, frame }: { index: number; frame: number }) => {
           </span>
         )}
       </div>
-      <div className="h-1 w-full overflow-hidden rounded-full bg-foreground/10">
+      <div className="bg-foreground/10 h-1 w-full overflow-hidden rounded-full">
         <div
           className={cn(
             "h-full rounded-full",
@@ -122,8 +122,8 @@ const Footer = ({ frame, doneCount }: { frame: number; doneCount: number }) => {
   }
 
   return (
-    <div className="flex h-14 items-center gap-4 border-t border-border px-5">
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+    <div className="border-border flex h-14 items-center gap-4 border-t px-5">
+      <div className="bg-muted h-1.5 flex-1 overflow-hidden rounded-full">
         <div
           className={cn(
             "h-full rounded-full",

@@ -14,12 +14,12 @@ export interface UploadProgressProps {
 
 const StatusIcon = ({ status }: { status: FileUploadState["status"] }) => {
   if (status === "success") {
-    return <CheckCircle2Icon className="size-4 text-primary" />;
+    return <CheckCircle2Icon className="text-primary size-4" />;
   }
   if (status === "error" || status === "aborted") {
-    return <XCircleIcon className="size-4 text-destructive" />;
+    return <XCircleIcon className="text-destructive size-4" />;
   }
-  return <Loader2Icon className="size-4 animate-spin text-muted-foreground" />;
+  return <Loader2Icon className="text-muted-foreground size-4 animate-spin" />;
 };
 
 const UploadRow = ({ upload }: { upload: FileUploadState }) => (
@@ -56,7 +56,7 @@ export const UploadProgress = ({ files, className }: UploadProgressProps) => {
     <div className={cn("flex flex-col gap-3", className)}>
       {uploads.length > 1 && (
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between text-muted-foreground text-xs">
+          <div className="text-muted-foreground flex items-center justify-between text-xs">
             <span>{uploads.length} files</span>
             <span>{Math.round(progress.fraction * 100)}%</span>
           </div>

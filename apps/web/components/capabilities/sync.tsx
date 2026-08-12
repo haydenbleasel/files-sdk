@@ -61,8 +61,8 @@ const Pill = ({ outcome }: { outcome: Outcome }) => {
 };
 
 const Scanning = () => (
-  <span className="flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 font-mono text-[11px] text-muted-foreground">
-    <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/50" />
+  <span className="bg-muted text-muted-foreground flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[11px]">
+    <span className="bg-muted-foreground/50 size-1.5 animate-pulse rounded-full" />
     comparing…
   </span>
 );
@@ -94,7 +94,7 @@ export const Sync = () => {
   return (
     <div className={PANEL_CLASS} ref={ref}>
       <div className="flex items-center justify-between px-5 pt-4 font-mono text-xs">
-        <span className="flex items-center gap-1.5 text-muted-foreground">
+        <span className="text-muted-foreground flex items-center gap-1.5">
           Syncing
           <img
             alt="S3"
@@ -126,7 +126,7 @@ export const Sync = () => {
       </div>
 
       <div className="px-5 pt-3">
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
           <div
             className={cn(
               "h-full rounded-full",

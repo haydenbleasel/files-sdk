@@ -29,11 +29,11 @@ const fmtTime = (seconds: number): string => {
 const PlayGlyph = ({ playing }: { playing: boolean }) =>
   playing ? (
     <span className="flex gap-1">
-      <span className="h-3.5 w-1 bg-foreground" />
-      <span className="h-3.5 w-1 bg-foreground" />
+      <span className="bg-foreground h-3.5 w-1" />
+      <span className="bg-foreground h-3.5 w-1" />
     </span>
   ) : (
-    <span className="size-0 border-y-[7px] border-l-[12px] border-y-transparent border-l-foreground" />
+    <span className="border-l-foreground size-0 border-y-[7px] border-l-[12px] border-y-transparent" />
   );
 
 export const ByteRange = () => {
@@ -75,29 +75,29 @@ export const ByteRange = () => {
 
       <div className="flex items-center gap-4 px-5 pt-4 pb-3">
         <PlayGlyph playing={playing} />
-        <div className="relative h-1.5 flex-1 rounded-full bg-muted">
+        <div className="bg-muted relative h-1.5 flex-1 rounded-full">
           <div
-            className="h-full rounded-full bg-foreground/25"
+            className="bg-foreground/25 h-full rounded-full"
             style={{ width: `${buffered * 100}%` }}
           />
           <div
-            className="absolute top-0 h-full rounded-full bg-foreground"
+            className="bg-foreground absolute top-0 h-full rounded-full"
             style={{ width: `${pos * 100}%` }}
           />
           <div
-            className="absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-foreground shadow-sm ring-2 ring-card"
+            className="bg-foreground ring-card absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-sm ring-2"
             style={{ left: `${pos * 100}%` }}
           />
         </div>
-        <span className="min-w-[5.5rem] text-right font-mono text-xs text-muted-foreground">
+        <span className="text-muted-foreground min-w-[5.5rem] text-right font-mono text-xs">
           {fmtTime(pos * TOTAL_SECONDS)} / {fmtTime(TOTAL_SECONDS)}
         </span>
       </div>
 
-      <div className="flex h-12 items-center justify-between border-t border-border px-5">
+      <div className="border-border flex h-12 items-center justify-between border-t px-5">
         <span
           className={cn(
-            "-mx-1.5 rounded px-1.5 py-0.5 font-mono text-xs text-foreground transition-colors",
+            "text-foreground -mx-1.5 rounded px-1.5 py-0.5 font-mono text-xs transition-colors",
             justSeeked ? "bg-foreground/10" : "bg-transparent"
           )}
         >

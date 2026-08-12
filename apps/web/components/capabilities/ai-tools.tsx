@@ -81,18 +81,18 @@ const Step = ({
     >
       {/* rail: a node capping the line, which grows down to the next step */}
       <div className="flex flex-col items-center">
-        <span className="z-10 flex size-5 shrink-0 items-center justify-center rounded-full bg-card">
+        <span className="bg-card z-10 flex size-5 shrink-0 items-center justify-center rounded-full">
           <call.Icon
             className={cn(
-              "size-3 text-muted-foreground",
+              "text-muted-foreground size-3",
               pending && "animate-pulse"
             )}
           />
         </span>
-        {!last && <span className="w-px flex-1 bg-border" />}
+        {!last && <span className="bg-border w-px flex-1" />}
       </div>
       <div className={cn("min-w-0", last ? "pb-0" : "pb-5")}>
-        <div className="truncate font-mono text-sm text-foreground">
+        <div className="text-foreground truncate font-mono text-sm">
           {call.tool}
           <span className="text-muted-foreground">{`("${call.arg}")`}</span>
         </div>
@@ -125,7 +125,7 @@ export const AiTools = () => {
           transform: `translateY(${promptLift}px)`,
         }}
       >
-        <p className="max-w-[80%] text-pretty rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm text-primary-foreground">
+        <p className="bg-primary text-primary-foreground max-w-[80%] rounded-2xl rounded-br-md px-3.5 py-2 text-sm text-pretty">
           Archive last month's invoices to /archive.
         </p>
       </div>
