@@ -42,7 +42,8 @@ export interface R2HttpOptions {
   bucket: string;
   /**
    * Cloudflare account ID. Falls back to `R2_ACCOUNT_ID` env var; required
-   * if no env var is set.
+   * if no env var is set — unless an explicit `endpoint` is passed, which
+   * makes `accountId` unnecessary.
    */
   accountId?: string;
   /**
@@ -73,6 +74,7 @@ export interface R2HttpOptions {
    * buckets, which live on their own hostnames (e.g.
    * `https://<accountId>.eu.r2.cloudflarestorage.com`), or to point the
    * adapter at an S3-compatible stand-in (MinIO, LocalStack) in tests.
+   * When set, `accountId` is not required.
    */
   endpoint?: string;
   /**
@@ -122,7 +124,8 @@ export interface R2BindingOptions {
    * needed) instead of throwing. Reads and writes still go through the
    * binding so they stay intra-Worker (no egress fees). Useful for Workers
    * that need browser-facing presigned URLs without giving up the binding's
-   * I/O performance.
+   * I/O performance. An explicit `endpoint` can stand in for `accountId`,
+   * which only feeds the default signing hostname.
    */
   accountId?: string;
   /** Hybrid mode: R2 access key ID. See `accountId`. */
@@ -138,7 +141,8 @@ export interface R2BindingOptions {
    * Hybrid mode: override the S3 API endpoint used for signing. Defaults to
    * `https://<accountId>.r2.cloudflarestorage.com`. Set it for jurisdiction
    * buckets, which live on their own hostnames (e.g.
-   * `https://<accountId>.eu.r2.cloudflarestorage.com`).
+   * `https://<accountId>.eu.r2.cloudflarestorage.com`). When set,
+   * `accountId` is not required for hybrid signing.
    */
   endpoint?: string;
 }
@@ -328,15 +332,20 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   // go through the binding — only signing delegates. Pure Web Crypto, so a
   // hybrid Worker needs no `@aws-sdk/*` packages at all.
   const httpBucket = (opts as Partial<R2HttpOptions>).bucket;
+  // An explicit `endpoint` stands in for `accountId`, which only ever feeds
+  // the default signing hostname.
+  const signerEndpoint =
+    opts.endpoint ??
+    (opts.accountId
+      ? `https://${opts.accountId}.r2.cloudflarestorage.com`
+      : undefined);
   const hybrid =
     // oxlint-disable-next-line sonarjs/expression-complexity -- the inline && chain is what narrows each opt to a non-undefined string inside the branch; extracting the guard loses that narrowing
-    opts.accountId && opts.accessKeyId && opts.secretAccessKey && httpBucket
+    signerEndpoint && opts.accessKeyId && opts.secretAccessKey && httpBucket
       ? s3FetchAdapter({
           accessKeyId: opts.accessKeyId,
           bucket: httpBucket,
-          endpoint:
-            opts.endpoint ??
-            `https://${opts.accountId}.r2.cloudflarestorage.com`,
+          endpoint: signerEndpoint,
           forcePathStyle: true,
           name: "r2-hybrid-signer",
           providerLabel: "R2 error",
@@ -348,7 +357,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     if (!hybrid) {
       throw new FilesError(
         "Provider",
-        "r2 binding: signing requires either `publicBaseUrl` (for url()) or HTTP credentials (`accountId`, `accessKeyId`, `secretAccessKey`, `bucket`) for presigned URLs. See https://developers.cloudflare.com/r2/api/s3/tokens/."
+        "r2 binding: signing requires either `publicBaseUrl` (for url()) or HTTP credentials (`accountId` or `endpoint`, plus `accessKeyId`, `secretAccessKey`, `bucket`) for presigned URLs. See https://developers.cloudflare.com/r2/api/s3/tokens/."
       );
     }
     return hybrid;
@@ -579,10 +588,15 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
   const secretAccessKey =
     opts.secretAccessKey ?? readEnv("R2_SECRET_ACCESS_KEY");
 
-  if (!accountId) {
+  // `accountId` only ever feeds the default endpoint, so an explicit
+  // `endpoint` makes it unnecessary (e.g. MinIO/LocalStack stand-ins).
+  const endpoint =
+    opts.endpoint ??
+    (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : undefined);
+  if (!endpoint) {
     throw new FilesError(
       "Provider",
-      "r2 adapter: missing accountId. Pass `accountId` or set R2_ACCOUNT_ID."
+      "r2 adapter: missing accountId. Pass `accountId`, set R2_ACCOUNT_ID, or pass an explicit `endpoint`."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
@@ -602,8 +616,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       ...(opts.defaultUrlExpiresIn !== undefined && {
         defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
       }),
-      endpoint:
-        opts.endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
+      endpoint,
       ...(opts.fetch && { fetch: opts.fetch }),
       forcePathStyle: true,
       name: "r2-http-fetch",
@@ -635,7 +648,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     ...(opts.defaultUrlExpiresIn !== undefined && {
       defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
     }),
-    endpoint: opts.endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
+    endpoint,
     forcePathStyle: true,
     ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
     region: "auto",

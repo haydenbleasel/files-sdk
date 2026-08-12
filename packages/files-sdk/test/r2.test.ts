@@ -68,6 +68,27 @@ describe("r2 adapter — HTTP path", () => {
     expect(endpoint?.hostname).toBe("acct.eu.r2.cloudflarestorage.com");
   });
 
+  test("endpoint override makes accountId optional (S3-compatible stand-ins)", async () => {
+    const oldId = process.env.R2_ACCOUNT_ID;
+    delete process.env.R2_ACCOUNT_ID;
+    try {
+      const adapter = r2({
+        accessKeyId: "AKID",
+        bucket: "uploads",
+        endpoint: "http://localhost:9000",
+        secretAccessKey: "SECRET",
+      });
+      await adapter.head("touch").catch(() => {});
+      const client = adapter.raw as S3Client;
+      const endpoint = await client.config.endpoint?.();
+      expect(endpoint?.hostname).toBe("localhost");
+    } finally {
+      if (oldId) {
+        process.env.R2_ACCOUNT_ID = oldId;
+      }
+    }
+  });
+
   test("missing credentials throws at construction even with accountId set", () => {
     const oldKey = process.env.R2_ACCESS_KEY_ID;
     const oldSecret = process.env.R2_SECRET_ACCESS_KEY;
@@ -682,6 +703,23 @@ describe("r2 adapter — Workers binding path", () => {
       adapter: r2({
         accessKeyId: "K",
         accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        endpoint: "https://acct.eu.r2.cloudflarestorage.com",
+        secretAccessKey: "S",
+      }),
+    });
+    await files.upload("a.txt", "via-binding");
+    const url = await files.url("a.txt", { expiresIn: 60 });
+    expect(url).toContain("acct.eu.r2.cloudflarestorage.com");
+    expect(url).toContain("X-Amz-Signature=");
+  });
+
+  test("hybrid: endpoint override stands in for accountId", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
         binding: bucket as never,
         bucket: "uploads",
         endpoint: "https://acct.eu.r2.cloudflarestorage.com",
