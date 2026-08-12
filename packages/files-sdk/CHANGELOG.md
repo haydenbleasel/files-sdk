@@ -1,5 +1,12 @@
 # files-sdk
 
+## 2.2.4
+
+### Patch Changes
+
+- 20b9522: Request `httpMetadata` and `customMetadata` when listing through the R2 Workers binding, so list() reports the stored content type and metadata instead of `application/octet-stream` and `undefined`. Completes #116 for the binding path (#128 covered the S3/HTTP paths), and with exact stored values rather than extension inference, since the binding API offers them.
+- e6e6444: Add an optional `endpoint` to the r2 adapter (`R2HttpOptions` and hybrid-mode `R2BindingOptions`), falling back to the default `https://<accountId>.r2.cloudflarestorage.com`. Jurisdiction buckets (`eu`, `fedramp`) live on their own hostnames and were previously unreachable through the r2 adapter; the override also lets tests point the adapter at S3-compatible stand-ins like MinIO or LocalStack. When `endpoint` is set, `accountId` becomes optional — it only ever feeds the default hostname.
+
 ## 2.2.3
 
 ### Patch Changes
