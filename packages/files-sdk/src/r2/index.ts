@@ -460,6 +460,11 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
           ...(options?.limit !== undefined && { limit: options.limit }),
           ...(options?.cursor && { cursor: options.cursor }),
           ...(options?.delimiter && { delimiter: options.delimiter }),
+          // R2 omits httpMetadata/customMetadata from list() results unless
+          // explicitly requested, which would leave every item's `type` at
+          // the octet-stream default. Requesting them makes list() report
+          // the stored content type and metadata, matching head().
+          include: ["httpMetadata", "customMetadata"],
         });
       } catch (error) {
         throw mapR2Error(error);
