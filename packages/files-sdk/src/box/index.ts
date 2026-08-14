@@ -35,6 +35,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface BoxOAuthOptions {
@@ -319,37 +320,6 @@ const normalizeBody = async (
     contentType: contentTypeHint ?? OCTET_STREAM,
     data: await collectStream(body),
   };
-};
-
-const TYPE_BY_EXT: Readonly<Record<string, string>> = {
-  css: "text/css; charset=utf-8",
-  csv: "text/csv; charset=utf-8",
-  gif: "image/gif",
-  htm: "text/html; charset=utf-8",
-  html: "text/html; charset=utf-8",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  js: "text/javascript; charset=utf-8",
-  json: "application/json",
-  mjs: "text/javascript; charset=utf-8",
-  mp3: "audio/mpeg",
-  mp4: "video/mp4",
-  pdf: "application/pdf",
-  png: "image/png",
-  svg: "image/svg+xml",
-  txt: "text/plain; charset=utf-8",
-  webp: "image/webp",
-  xml: "application/xml",
-  zip: "application/zip",
-};
-
-const inferTypeFromName = (name: string): string => {
-  const idx = name.lastIndexOf(".");
-  if (idx === -1) {
-    return OCTET_STREAM;
-  }
-  const ext = name.slice(idx + 1).toLowerCase();
-  return TYPE_BY_EXT[ext] ?? OCTET_STREAM;
 };
 
 interface BoxFileLike {
