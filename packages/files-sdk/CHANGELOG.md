@@ -1,5 +1,13 @@
 # files-sdk
 
+## 2.2.5
+
+### Patch Changes
+
+- 266cda8: Content-type inference from file names (Dropbox, FTP, SFTP, WebDAV, Box, unzip, CLI directory uploads) now uses the `mime` package's full table instead of a hand-rolled 19-extension map. Extensions like `.docx`, `.avif`, `.woff2`, and `.md` resolve to their real types instead of `application/octet-stream`. Conventions are unchanged: text types carry `; charset=utf-8`, and unknown or extension-less names still fall back to octet-stream. The Box adapter's duplicate copy of the old map now shares the same helper.
+- de582d8: The client's bulk upload/download paths now run through `p-map` directly instead of a hand-rolled worker-cursor pool. Results stay in input order and `stopOnError` semantics are unchanged. One edge tightened: a nonsensical `concurrency` (zero, negative, or fractional) now throws p-map's clear `TypeError` instead of being silently clamped to one at a time.
+- 2d52d87: Replace the zip plugin's hand-rolled ZIP record assembly with fflate's streaming writer. Local headers, data descriptors, the central directory, DOS timestamps, and write-side CRC accounting now come from fflate; archives still stream entry by entry with flat memory. Extraction is unchanged and stays hand-rolled on purpose — fflate's unzip does not verify CRC-32 or reject encrypted entries, and the plugin promises fail-closed extraction. Only visible wire change: the UTF-8 name flag is now set per entry (only when the name needs it) instead of always.
+
 ## 2.2.4
 
 ### Patch Changes
