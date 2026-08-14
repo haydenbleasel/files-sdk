@@ -4,6 +4,8 @@
 // wrap this; it never touches React or `window` at module scope. `download`
 // returns the same lazy `StoredFile` the server SDK returns.
 
+import pMap from "p-map";
+
 import type {
   AdapterCapabilities,
   BulkError,
@@ -22,7 +24,6 @@ import type {
 } from "../internal/files-router/protocol.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { decodeDownload } from "./download-decode.js";
-import { pool } from "./pool.js";
 import type { FileUploadState } from "./progress.js";
 import { aggregate, fileName, initialState } from "./progress.js";
 import { defaultTransport } from "./transport.js";
@@ -382,9 +383,8 @@ export const createFilesClient = (
     items: UploadManyClientItem[],
     opts?: BulkCallOptions
   ) => {
-    const results = await pool(
+    const results = await pMap(
       items,
-      opts?.concurrency ?? concurrency,
       async (item) => {
         try {
           const out = await uploadExplicit(item.key, item.body, {
@@ -402,7 +402,8 @@ export const createFilesClient = (
             ok: false as const,
           };
         }
-      }
+      },
+      { concurrency: opts?.concurrency ?? concurrency }
     );
     const uploaded: UploadResult[] = [];
     const errors: BulkError[] = [];
@@ -426,9 +427,8 @@ export const createFilesClient = (
     keys: string[],
     opts?: BulkCallOptions & { as?: "blob" | "stream" }
   ) => {
-    const results = await pool(
+    const results = await pMap(
       keys,
-      opts?.concurrency ?? concurrency,
       async (key) => {
         try {
           return {
@@ -444,7 +444,8 @@ export const createFilesClient = (
           }
           return { error: FilesError.wrap(error), key, ok: false as const };
         }
-      }
+      },
+      { concurrency: opts?.concurrency ?? concurrency }
     );
     const downloaded: StoredFile[] = [];
     const errors: BulkError[] = [];

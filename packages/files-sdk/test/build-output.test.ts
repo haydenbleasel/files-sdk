@@ -24,6 +24,11 @@ const optionalPeers = Object.entries(pkg.peerDependenciesMeta ?? {})
   .filter(([, meta]) => (meta as { optional?: boolean }).optional)
   .map(([name]) => name);
 
+// Hard runtime dependencies ship with every install of the package, so a
+// static import of one is always resolvable — unlike the optional peers and
+// stray externals these assertions exist to catch.
+const runtimeDeps = new Set(Object.keys(pkg.dependencies ?? {}));
+
 /**
  * Collect every external specifier that appears in a *static* import
  * reachable from `entry`. By default the walk stops at dynamic imports —
@@ -171,7 +176,9 @@ test(
       true
     );
     const externals = [...staticExternals(reactBundle)];
-    expect(externals.filter((e) => e !== "react")).toEqual([]);
+    expect(
+      externals.filter((e) => e !== "react" && !runtimeDeps.has(e))
+    ).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );
@@ -198,13 +205,13 @@ test(
   () => {
     ensureBuilt();
     // vue imports only `vue`; svelte uses an inline store + a type-only
-    // `Readable`, so it imports nothing external at all.
+    // `Readable`, so it imports nothing external beyond runtime deps at all.
     const vue = [...staticExternals(path.resolve(distDir, "vue/index.js"))];
-    expect(vue.filter((e) => e !== "vue")).toEqual([]);
+    expect(vue.filter((e) => e !== "vue" && !runtimeDeps.has(e))).toEqual([]);
     const svelte = [
       ...staticExternals(path.resolve(distDir, "svelte/index.js")),
     ];
-    expect(svelte).toEqual([]);
+    expect(svelte.filter((e) => !runtimeDeps.has(e))).toEqual([]);
   },
   COLD_BUILD_TIMEOUT_MS
 );
