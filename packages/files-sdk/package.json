@@ -366,6 +366,7 @@
   "dependencies": {
     "aws4fetch": "^1.0.20",
     "commander": "^15.0.0",
+    "fflate": "^0.8.3",
     "picomatch": "^4.0.5",
     "safe-regex2": "^5.1.1"
   },

@@ -1,4 +1,6 @@
-/* oxlint-disable no-bitwise -- the ZIP format is bit-packed: record flags, MS-DOS timestamps, and CRC-32 are all defined in terms of bit operations. */
+/* oxlint-disable no-bitwise -- reading the ZIP format is bit-packed: record flags and CRC-32 verification are defined in terms of bit operations. */
+import { Zip, ZipDeflate, ZipPassThrough } from "fflate";
+
 import type { Files, FilesPlugin, UploadResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
@@ -12,10 +14,9 @@ export type ZipSelection = readonly string[] | { prefix?: string };
 
 /**
  * How entry bodies are stored in the archive. `"deflate"` (the default)
- * compresses each entry with the platform {@link CompressionStream};
- * `"store"` writes the bytes verbatim — the right choice when the sources are
- * already compressed (JPEG, video, encrypted blobs), where deflate only burns
- * CPU.
+ * compresses each entry; `"store"` writes the bytes verbatim — the right
+ * choice when the sources are already compressed (JPEG, video, encrypted
+ * blobs), where deflate only burns CPU.
  */
 export type ZipMethod = "deflate" | "store";
 
@@ -82,37 +83,26 @@ export type ZipApi = {
   unzip: (key: string, options?: UnzipOptions) => Promise<UploadResult[]>;
 };
 
-/** ZIP record signatures (little-endian on the wire). */
+/** ZIP record signatures the reader recognizes (little-endian on the wire). */
 const SIG_LOCAL = 0x04_03_4b_50;
-const SIG_DESCRIPTOR = 0x08_07_4b_50;
 const SIG_CENTRAL = 0x02_01_4b_50;
 const SIG_EOCD = 0x06_05_4b_50;
 
 /** Fixed record sizes, before the variable-length name/extra/comment fields. */
 const LOCAL_HEADER_SIZE = 30;
-const DESCRIPTOR_SIZE = 16;
 const CENTRAL_RECORD_SIZE = 46;
 const EOCD_SIZE = 22;
 
-/**
- * General-purpose flags we write: bit 3 (sizes/CRC follow the data in a
- * descriptor, which is what lets us stream without knowing them up front) and
- * bit 11 (entry names are UTF-8).
- */
-const FLAG_DESCRIPTOR = 0x00_08;
-const FLAG_UTF8 = 0x08_00;
 /** Bit 0 on a read entry means it's encrypted — we fail closed on those. */
 const FLAG_ENCRYPTED = 0x00_01;
-
-/** "Version needed to extract" 2.0 — plain deflate, no ZIP64 features. */
-const ZIP_VERSION = 20;
 
 const METHOD_STORE = 0;
 const METHOD_DEFLATE = 8;
 
 /**
  * The classic format's hard limits. Crossing any of them requires ZIP64
- * records, which this plugin deliberately doesn't write or read — see the
+ * records, which fflate's writer doesn't emit (it would silently truncate the
+ * 32-bit fields) and this plugin's reader deliberately refuses — see the
  * {@link zip} docs.
  */
 const MAX_UINT16 = 0xff_ff;
@@ -140,7 +130,12 @@ const assertFits = (value: number, what: string): void => {
   }
 };
 
-/** The standard CRC-32 (IEEE 802.3) lookup table. */
+/**
+ * The standard CRC-32 (IEEE 802.3) lookup table, kept for *reading*: fflate's
+ * unzip does not verify CRCs (or reject encrypted entries), and this plugin
+ * promises extraction fails closed on tampered data, so verification stays
+ * hand-rolled here.
+ */
 const CRC_TABLE = ((): Uint32Array => {
   const table = new Uint32Array(256);
   for (let i = 0; i < table.length; i += 1) {
@@ -153,38 +148,27 @@ const CRC_TABLE = ((): Uint32Array => {
   return table;
 })();
 
-/** Fold `bytes` into a running CRC-32. Seed with `0xffffffff`. */
-const crcUpdate = (crc: number, bytes: Uint8Array): number => {
-  let next = crc;
+/** CRC-32 of `bytes`, as the value ZIP records store. */
+const crc32 = (bytes: Uint8Array): number => {
+  let crc = MAX_UINT32;
   for (const byte of bytes) {
-    next = (CRC_TABLE[(next ^ byte) & 0xff] as number) ^ (next >>> 8);
+    crc = (CRC_TABLE[(crc ^ byte) & 0xff] as number) ^ (crc >>> 8);
   }
-  return next;
+  // oxlint-disable-next-line unicorn/prefer-math-trunc -- `>>> 0` reinterprets the signed 32-bit CRC as the unsigned value ZIP stores; Math.trunc would keep it negative.
+  return (crc ^ MAX_UINT32) >>> 0;
 };
 
-/** Finish a running CRC-32 into the value ZIP records store. */
-// oxlint-disable-next-line unicorn/prefer-math-trunc -- `>>> 0` reinterprets the signed 32-bit CRC as the unsigned value ZIP stores; Math.trunc would keep it negative.
-const crcFinish = (crc: number): number => (crc ^ MAX_UINT32) >>> 0;
+/**
+ * fflate packs timestamps into MS-DOS fields and throws outside its supported
+ * 1980–2099 window (in local time); clamp with a day's margin on each side so
+ * no timezone can push a boundary value back out of range. ZIP timestamps
+ * start at 1980, so anything earlier (or missing) clamps up anyway.
+ */
+const DOS_EPOCH = Date.UTC(1980, 0, 2);
+const DOS_MAX = Date.UTC(2099, 11, 30);
 
-/** ZIP timestamps start at 1980; anything earlier (or missing) clamps to it. */
-const DOS_EPOCH = Date.UTC(1980, 0, 1);
-const DOS_YEAR_BITS = 0x7f;
-
-/** Pack an epoch-ms timestamp into MS-DOS date/time fields (2-second steps, UTC). */
-const dosDateTime = (
-  epochMs: number | undefined
-): [date: number, time: number] => {
-  const at = new Date(Math.max(epochMs ?? DOS_EPOCH, DOS_EPOCH));
-  const date =
-    (Math.min(at.getUTCFullYear() - 1980, DOS_YEAR_BITS) << 9) |
-    ((at.getUTCMonth() + 1) << 5) |
-    at.getUTCDate();
-  const time =
-    (at.getUTCHours() << 11) |
-    (at.getUTCMinutes() << 5) |
-    Math.floor(at.getUTCSeconds() / 2);
-  return [date, time];
-};
+const clampDosTime = (epochMs: number | undefined): number =>
+  Math.min(Math.max(epochMs ?? DOS_EPOCH, DOS_EPOCH), DOS_MAX);
 
 /**
  * Reject entry paths that wouldn't round-trip as sane object keys — empty
@@ -214,98 +198,15 @@ const assertSafeEntryName = (name: string, byteLength: number): void => {
   }
 };
 
-/** Allocate a record buffer plus a little-endian view over it. */
-const record = (size: number): [Uint8Array, DataView] => {
-  const bytes = new Uint8Array(size);
-  return [bytes, new DataView(bytes.buffer)];
-};
-
-const localHeader = (
-  name: Uint8Array,
-  method: number,
-  date: number,
-  time: number
-): Uint8Array => {
-  const [bytes, view] = record(LOCAL_HEADER_SIZE + name.byteLength);
-  view.setUint32(0, SIG_LOCAL, true);
-  view.setUint16(4, ZIP_VERSION, true);
-  view.setUint16(6, FLAG_DESCRIPTOR | FLAG_UTF8, true);
-  view.setUint16(8, method, true);
-  view.setUint16(10, time, true);
-  view.setUint16(12, date, true);
-  // CRC and sizes (offsets 14/18/22) stay 0 — the data descriptor carries them.
-  view.setUint16(26, name.byteLength, true);
-  bytes.set(name, LOCAL_HEADER_SIZE);
-  return bytes;
-};
-
-const dataDescriptor = (
-  crc: number,
-  compressedSize: number,
-  size: number
-): Uint8Array => {
-  const [bytes, view] = record(DESCRIPTOR_SIZE);
-  view.setUint32(0, SIG_DESCRIPTOR, true);
-  view.setUint32(4, crc, true);
-  view.setUint32(8, compressedSize, true);
-  view.setUint32(12, size, true);
-  return bytes;
-};
-
-/** Everything the central directory needs to describe one written entry. */
-interface CentralEntry {
-  name: Uint8Array;
-  method: number;
-  date: number;
-  time: number;
-  crc: number;
-  compressedSize: number;
-  size: number;
-  offset: number;
-}
-
-const centralRecord = (entry: CentralEntry): Uint8Array => {
-  const [bytes, view] = record(CENTRAL_RECORD_SIZE + entry.name.byteLength);
-  view.setUint32(0, SIG_CENTRAL, true);
-  view.setUint16(4, ZIP_VERSION, true);
-  view.setUint16(6, ZIP_VERSION, true);
-  view.setUint16(8, FLAG_DESCRIPTOR | FLAG_UTF8, true);
-  view.setUint16(10, entry.method, true);
-  view.setUint16(12, entry.time, true);
-  view.setUint16(14, entry.date, true);
-  view.setUint32(16, entry.crc, true);
-  view.setUint32(20, entry.compressedSize, true);
-  view.setUint32(24, entry.size, true);
-  view.setUint16(28, entry.name.byteLength, true);
-  // Extra/comment lengths, disk number, and file attributes (30–45) stay 0.
-  view.setUint32(42, entry.offset, true);
-  bytes.set(entry.name, CENTRAL_RECORD_SIZE);
-  return bytes;
-};
-
-const endOfCentralDirectory = (
-  count: number,
-  size: number,
-  offset: number
-): Uint8Array => {
-  const [bytes, view] = record(EOCD_SIZE);
-  view.setUint32(0, SIG_EOCD, true);
-  view.setUint16(8, count, true);
-  view.setUint16(10, count, true);
-  view.setUint32(12, size, true);
-  view.setUint32(16, offset, true);
-  return bytes;
-};
-
 interface ResolvedEntry {
   key: string;
-  name: Uint8Array;
+  name: string;
 }
 
 /**
  * Turn a {@link ZipSelection} into the ordered, validated entry list — keys
- * paired with their encoded archive paths, duplicates and unsafe names
- * rejected, count checked against the format's 16-bit entry limit.
+ * paired with their archive paths, duplicates and unsafe names rejected,
+ * count checked against the format's 16-bit entry limit.
  */
 const resolveEntries = async (
   files: Files,
@@ -334,8 +235,7 @@ const resolveEntries = async (
   const seen = new Set<string>();
   return keys.map((key) => {
     const name = nameOf(key);
-    const encoded = ENCODER.encode(name);
-    assertSafeEntryName(name, encoded.byteLength);
+    assertSafeEntryName(name, ENCODER.encode(name).byteLength);
     if (seen.has(name)) {
       throw new FilesError(
         "Provider",
@@ -343,16 +243,17 @@ const resolveEntries = async (
       );
     }
     seen.add(name);
-    return { key, name: encoded };
+    return { key, name };
   });
 };
 
 /**
- * The archive itself, one chunk at a time: for each entry a local header, the
- * (optionally deflated) body, and a data descriptor with the CRC/sizes
- * counted as the bytes flowed — then the central directory and the end
- * record. Entries are downloaded lazily, so an unconsumed or cancelled stream
- * does no further work.
+ * The archive itself, one chunk at a time. Record assembly (local headers,
+ * data descriptors, the central directory, CRC accounting) is fflate's
+ * streaming {@link Zip} writer; this generator drives it entry by entry,
+ * downloading each body lazily so an unconsumed or cancelled stream does no
+ * further work, and guards the classic format's 32-bit limits that fflate
+ * would silently truncate past.
  *
  * @yields {Uint8Array} the archive's bytes, record by record.
  */
@@ -366,55 +267,54 @@ const zipChunks = async function* zipChunks(
     selection,
     options.name ?? ((key) => key)
   );
-  const method = options.method === "store" ? METHOD_STORE : METHOD_DEFLATE;
-  const central: CentralEntry[] = [];
-  let offset = 0;
+  const deflate = options.method !== "store";
+  // fflate pushes finished records through this callback synchronously as
+  // bytes are fed in; they queue here and the generator yields them out.
+  const queue: Uint8Array[] = [];
+  let written = 0;
+  const archive = new Zip((error, chunk) => {
+    if (error) {
+      throw new FilesError("Provider", "zip: failed to write archive", error);
+    }
+    queue.push(chunk);
+    written += chunk.byteLength;
+  });
+  const drain = function* drain(): Generator<Uint8Array, void> {
+    while (queue.length > 0) {
+      yield queue.shift() as Uint8Array;
+    }
+  };
   // oxlint-disable-next-line eslint/no-unreachable-loop -- streams every entry in turn; the generator body's inner loop confuses the rule's CFG
   for (const entry of entries) {
-    // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- archive is streamed record by record with a running offset.
+    // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- archive is streamed record by record, one entry in flight at a time.
     const file = await files.download(entry.key);
     // Fail before streaming gigabytes that can't be represented anyway.
     assertFits(file.size, `entry "${entry.key}"`);
-    const [date, time] = dosDateTime(file.lastModified);
-    const header = localHeader(entry.name, method, date, time);
-    yield header;
+    const writer = deflate
+      ? new ZipDeflate(entry.name)
+      : new ZipPassThrough(entry.name);
+    writer.mtime = clampDosTime(file.lastModified);
+    archive.add(writer);
+    yield* drain();
 
-    let crc = MAX_UINT32;
     let size = 0;
-    let compressedSize = 0;
-    const counted = file.stream().pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          crc = crcUpdate(crc, chunk);
-          size += chunk.byteLength;
-          controller.enqueue(chunk);
-        },
-      })
-    );
-    const body =
-      method === METHOD_DEFLATE
-        ? counted.pipeThrough(
-            // CompressionStream's writable is typed to take any BufferSource,
-            // which pipeThrough's invariant pair type rejects; at runtime it
-            // consumes our Uint8Array chunks just fine.
-            new CompressionStream(
-              "deflate-raw"
-            ) as unknown as ReadableWritablePair<Uint8Array, Uint8Array>
-          )
-        : counted;
-    const reader = body.getReader();
+    const reader = file.stream().getReader();
     let drained = false;
     try {
       for (;;) {
-        // eslint-disable-next-line no-await-in-loop -- single body reader; compressed chunks arrive sequentially.
+        // eslint-disable-next-line no-await-in-loop -- single body reader; chunks arrive sequentially.
         const { done, value } = await reader.read();
         if (done) {
           drained = true;
           break;
         }
-        compressedSize += value.byteLength;
-        assertFits(compressedSize, `entry "${entry.key}" (compressed)`);
-        yield value;
+        size += value.byteLength;
+        assertFits(size, `entry "${entry.key}"`);
+        writer.push(value, false);
+        // `written` includes this entry's compressed bytes so far — catch an
+        // overflowing archive before a wrapped 32-bit field is ever emitted.
+        assertFits(written, `entry "${entry.key}" (compressed)`);
+        yield* drain();
       }
     } finally {
       // An early consumer cancel lands here mid-body; release the source so
@@ -424,29 +324,14 @@ const zipChunks = async function* zipChunks(
         await reader.cancel();
       }
     }
-    assertFits(size, `entry "${entry.key}"`);
-    const finished = crcFinish(crc);
-    yield dataDescriptor(finished, compressedSize, size);
-    central.push({
-      compressedSize,
-      crc: finished,
-      date,
-      method,
-      name: entry.name,
-      offset,
-      size,
-      time,
-    });
-    offset += header.byteLength + compressedSize + DESCRIPTOR_SIZE;
+    writer.push(new Uint8Array(0), true);
+    yield* drain();
   }
-  assertFits(offset, "the archive");
-  let directorySize = 0;
-  for (const entry of central) {
-    const bytes = centralRecord(entry);
-    directorySize += bytes.byteLength;
-    yield bytes;
-  }
-  yield endOfCentralDirectory(central.length, directorySize, offset);
+  // `written` now equals the central directory's start offset, the last value
+  // that must fit a classic 32-bit field.
+  assertFits(written, "the archive");
+  archive.end();
+  yield* drain();
 };
 
 /** Expose the chunk generator as a cancellable byte stream. */
@@ -669,10 +554,7 @@ const extractEntry = async (
       `zip: entry "${entry.name}" in "${key}" uses unsupported compression method ${entry.method}`
     );
   }
-  if (
-    out.byteLength !== entry.size ||
-    crcFinish(crcUpdate(MAX_UINT32, out)) !== entry.crc
-  ) {
+  if (out.byteLength !== entry.size || crc32(out) !== entry.crc) {
     throw corrupt(key, `entry "${entry.name}" failed its CRC/size check`);
   }
   return out;
@@ -682,10 +564,9 @@ const extractEntry = async (
  * Bundle stored objects into ZIP archives — and back out of them — entirely
  * through the instance. An `extend`-only (Tier C) plugin: it intercepts
  * nothing, it adds three methods. `files.zip(selection)` streams many keys as
- * one standard ZIP (deflate via the platform {@link CompressionStream}, no
- * native deps); `files.zipTo(key, selection)` stores that archive back as an
- * object; `files.unzip(key)` extracts an archive's entries into individual
- * objects.
+ * one standard ZIP (record assembly and deflate via `fflate`);
+ * `files.zipTo(key, selection)` stores that archive back as an object;
+ * `files.unzip(key)` extracts an archive's entries into individual objects.
  *
  * Everything goes through the fully-wrapped instance, so it composes with the
  * rest of the pipeline: with `encryption()` installed, zipped entries are
@@ -700,10 +581,13 @@ const extractEntry = async (
  *   flight at a time, so archives of many objects stream with flat memory.
  *   Reading needs the central directory at the end of the file, so `unzip`
  *   downloads the whole archive into memory first.
- * - **Entry names are validated on both sides.** Writing rejects duplicate
- *   names, `..` segments, backslashes, and absolute paths; extraction rejects
- *   the same (zip-slip), and refuses encrypted entries and unknown
- *   compression methods rather than guessing.
+ * - **Extraction verifies, rather than trusts.** Entry names are validated on
+ *   both sides — writing rejects duplicate names, `..` segments, backslashes,
+ *   and absolute paths; extraction rejects the same (zip-slip) — and every
+ *   extracted entry is checked against its recorded CRC-32 and size, with
+ *   encrypted entries and unknown compression methods refused rather than
+ *   guessed at. This is why reading stays hand-rolled: `fflate` writes
+ *   archives here, but its extractor performs none of these checks.
  * - **`store` is for already-compressed sources.** The default `deflate`
  *   shrinks text well, but JPEGs, videos, and `encryption()`-at-rest objects
  *   read back as high-entropy bytes — pass `method: "store"` to skip the

@@ -219,10 +219,11 @@ describe("zip plugin — writing archives", () => {
     const bytes = await collect(files.zip(["a.txt"], { method: "store" }));
     const view = new DataView(bytes.buffer, bytes.byteOffset);
 
-    // Local header: signature, version 2.0, descriptor + UTF-8 flags.
+    // Local header: signature, version 2.0, descriptor flag (fflate sets the
+    // UTF-8 flag only when the name actually needs it — "a.txt" is ASCII).
     expect(view.getUint32(0, true)).toBe(0x04_03_4b_50);
     expect(view.getUint16(4, true)).toBe(20);
-    expect(view.getUint16(6, true)).toBe(0x08_08);
+    expect(view.getUint16(6, true)).toBe(0x00_08);
     // Data descriptor after the 5 stored bytes: CRC matches the independent
     // implementation, sizes match the body.
     const descriptor = 30 + "a.txt".length + 5;

@@ -24,7 +24,7 @@ return new Response(files.zip({ prefix: "reports/2026/" }), {
 });
 ```
 
-Archives are standard, classic ZIP: every mainstream tool opens them, and compression uses the platform `CompressionStream` (`deflate`), so the plugin has **no native dependencies** and works on any adapter.
+Archives are standard, classic ZIP: every mainstream tool opens them. Writing (record assembly and `deflate`) is handled by [`fflate`](https://github.com/101arrowz/fflate), a small pure-JS library, so the plugin has **no native dependencies** and works on any adapter.
 
 ## The three methods
 
