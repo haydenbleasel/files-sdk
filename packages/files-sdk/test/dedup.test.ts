@@ -2,8 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
-import { createFiles } from "../src/index.js";
-import type { Adapter, Files } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  Files,
+  PluginNext,
+} from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
@@ -314,5 +319,57 @@ describe("dedup plugin — options", () => {
 
   test("rejects an empty prefix", () => {
     expect(() => dedup({ prefix: "///" })).toThrow(/must not be empty/u);
+  });
+});
+
+describe("dedup plugin — conditional policy", () => {
+  test("rejects conditional body operations before pointer or blob I/O", async () => {
+    const plugin = dedup();
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("dedup wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operations: ConditionalFilesOperation[] = [
+      { body: "content", key: "a.txt", kind: "upload", mode: "create" },
+      {
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "download",
+        mode: "exact",
+      },
+    ];
+
+    for (const operation of operations) {
+      // eslint-disable-next-line no-await-in-loop -- each rejected operation must be inspected independently
+      const failure = await wrap(operation, next).catch(
+        (error: unknown) => error
+      );
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    }
+    expect(nextCalls).toBe(0);
+
+    const compatible: ConditionalFilesOperation[] = [
+      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "a.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "b.txt",
+      },
+    ];
+    for (const candidate of compatible) {
+      // eslint-disable-next-line no-await-in-loop -- each pointer-only conditional family must pass through once
+      await wrap(candidate, next);
+    }
+    expect(nextCalls).toBe(2);
   });
 });

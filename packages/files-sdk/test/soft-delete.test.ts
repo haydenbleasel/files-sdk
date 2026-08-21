@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFiles } from "../src/index.js";
-import type { Adapter, Files, ListOptions, ListResult } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  Files,
+  ListOptions,
+  ListResult,
+  PluginNext,
+} from "../src/index.js";
 import { softDelete } from "../src/soft-delete/index.js";
 import type { SoftDeleteOptions } from "../src/soft-delete/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -302,5 +309,58 @@ describe("soft-delete plugin — error propagation", () => {
     const files = createFiles({ adapter: broken, plugins: [softDelete()] });
     await files.upload("a.txt", "x");
     await expect(files.delete("a.txt")).rejects.toThrow(/boom/u);
+  });
+});
+
+describe("soft-delete plugin — conditional policy", () => {
+  test("rejects conditional delete before invoking the provider pipeline", async () => {
+    const plugin = softDelete();
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("soft-delete wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operation: ConditionalFilesOperation = {
+      etag: "etag-1",
+      key: "notes.txt",
+      kind: "delete",
+      mode: "match",
+    };
+
+    const failure = await wrap(operation, next).catch(
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(FilesError);
+    expect((failure as FilesError).permanent).toBe(true);
+    expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    expect(nextCalls).toBe(0);
+
+    const compatible: ConditionalFilesOperation[] = [
+      { body: "new", key: "new.txt", kind: "upload", mode: "create" },
+      {
+        etag: "etag-1",
+        key: "notes.txt",
+        kind: "download",
+        mode: "exact",
+      },
+      {
+        destination: { type: "create" },
+        from: "notes.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "copy.txt",
+      },
+    ];
+    for (const candidate of compatible) {
+      // eslint-disable-next-line no-await-in-loop -- each compatible conditional family must pass through once
+      await wrap(candidate, next);
+    }
+    expect(nextCalls).toBe(3);
   });
 });

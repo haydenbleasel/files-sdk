@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
-import { Files } from "../src/index.js";
-import type { Adapter } from "../src/index.js";
+import { createStoredFile, Files } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  FilesOperation,
+  PluginNext,
+} from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const encrypted = async (adapter = fakeAdapter()): Promise<Files> =>
@@ -69,6 +74,130 @@ describe("encryption plugin — round-trips", () => {
     await files.upload("inferred", "hello");
     const inferred = await files.head("inferred");
     expect(inferred.type).toBe("text/plain; charset=utf-8");
+  });
+});
+
+describe("encryption plugin — conditional pipeline", () => {
+  test("encrypts create and replace, then decrypts an exact read", async () => {
+    const plugin = encryption(await generateEncryptionKey());
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("encryption wrap missing");
+    }
+    const stored: {
+      body: Uint8Array;
+      metadata: Record<string, string>;
+      type: string;
+    }[] = [];
+    const uploadNext = ((candidate: FilesOperation) => {
+      if (candidate.kind !== "upload") {
+        throw new Error("expected upload");
+      }
+      if (!(candidate.body instanceof Uint8Array)) {
+        throw new Error("expected buffered ciphertext");
+      }
+      const metadata = candidate.options?.metadata;
+      if (!metadata) {
+        throw new Error("expected encryption metadata");
+      }
+      stored.push({
+        body: candidate.body,
+        metadata,
+        type: candidate.options?.contentType ?? "application/octet-stream",
+      });
+      return Promise.resolve({
+        contentType:
+          candidate.options?.contentType ?? "application/octet-stream",
+        etag: `etag-${stored.length}`,
+        key: candidate.key,
+        size: candidate.body.byteLength,
+      });
+    }) as PluginNext;
+    const createOperation: Extract<
+      ConditionalFilesOperation,
+      { kind: "upload"; mode: "create" }
+    > = {
+      body: "created secret",
+      key: "secret.txt",
+      kind: "upload",
+      mode: "create",
+    };
+    const replaceOperation: Extract<
+      ConditionalFilesOperation,
+      { kind: "upload"; mode: "replace" }
+    > = {
+      body: "replaced secret",
+      etag: "etag-1",
+      key: "secret.txt",
+      kind: "upload",
+      mode: "replace",
+    };
+
+    await wrap(createOperation, uploadNext);
+    const replaced = await wrap(replaceOperation, uploadNext);
+
+    expect(stored).toHaveLength(2);
+    for (const [index, record] of stored.entries()) {
+      const plaintext = index === 0 ? "created secret" : "replaced secret";
+      expect(new TextDecoder().decode(record.body)).not.toBe(plaintext);
+      expect(record.metadata.fsenc_scheme).toBe("aes-gcm/envelope/v1");
+      expect(record.metadata.fsenc_iv).toBeDefined();
+      expect(record.metadata.fsenc_dek).toBeDefined();
+    }
+    expect(replaced.size).toBe("replaced secret".length);
+
+    const [, latest] = stored;
+    if (!latest) {
+      throw new Error("expected replaced ciphertext");
+    }
+    const raw = createStoredFile(
+      {
+        etag: "etag-2",
+        key: "secret.txt",
+        metadata: latest.metadata,
+        size: latest.body.byteLength,
+        type: latest.type,
+      },
+      { data: latest.body, kind: "buffer" }
+    );
+    const exactOperation: Extract<
+      ConditionalFilesOperation,
+      { kind: "download" }
+    > = {
+      etag: "etag-2",
+      key: "secret.txt",
+      kind: "download",
+      mode: "exact",
+    };
+    const exact = await wrap(exactOperation, (() =>
+      Promise.resolve(raw)) as PluginNext);
+
+    expect(await exact.text()).toBe("replaced secret");
+    expect(exact.metadata).toBeUndefined();
+  });
+
+  test("vetoes a ranged exact read before the provider pipeline", async () => {
+    const plugin = encryption(await generateEncryptionKey());
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("encryption wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operation: Extract<ConditionalFilesOperation, { kind: "download" }> =
+      {
+        etag: "etag-1",
+        key: "secret.txt",
+        kind: "download",
+        mode: "exact",
+        options: { range: { end: 3, start: 0 } },
+      };
+
+    await expect(wrap(operation, next)).rejects.toThrow(/range downloads/u);
+    expect(nextCalls).toBe(0);
   });
 });
 

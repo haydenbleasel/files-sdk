@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import { audit } from "../src/audit/index.js";
 import type { AuditOptions, AuditRecord } from "../src/audit/index.js";
-import { createFiles, Files } from "../src/index.js";
-import type { FilesPlugin } from "../src/index.js";
+import { createFiles, Files, FilesError } from "../src/index.js";
+import type {
+  ConditionalFilesOperation,
+  FilesPlugin,
+  PluginNext,
+} from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 
 const bytes = (data: string): Uint8Array => new TextEncoder().encode(data);
@@ -265,5 +269,96 @@ describe("audit", () => {
     });
     await files.upload("a.txt", bytes("hi"));
     expect(records).toHaveLength(1);
+  });
+
+  test("records terminal outcomes for conditional operations", async () => {
+    const records: AuditRecord[] = [];
+    const plugin = audit({
+      events: "all",
+      sink: (record) => {
+        records.push(record);
+      },
+    });
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("audit wrap missing");
+    }
+    const create: Extract<
+      ConditionalFilesOperation,
+      { kind: "upload"; mode: "create" }
+    > = {
+      body: bytes("hello"),
+      key: "a.txt",
+      kind: "upload",
+      mode: "create",
+    };
+    await wrap(create, (() =>
+      Promise.resolve({
+        contentType: "text/plain",
+        etag: "etag-1",
+        key: "a.txt",
+        size: 5,
+      })) as PluginNext);
+    const exact: Extract<ConditionalFilesOperation, { kind: "download" }> = {
+      etag: "stale-etag",
+      key: "a.txt",
+      kind: "download",
+      mode: "exact",
+    };
+    await wrap(exact, (() =>
+      Promise.reject(
+        new FilesError("Conflict", "stale ETag")
+      )) as PluginNext).catch(() => {});
+    const matchedDelete: Extract<
+      ConditionalFilesOperation,
+      { kind: "delete" }
+    > = {
+      etag: "etag-1",
+      key: "delete.txt",
+      kind: "delete",
+      mode: "match",
+    };
+    await wrap(matchedDelete, (() => Promise.resolve()) as PluginNext);
+    const conditionalCopy: Extract<
+      ConditionalFilesOperation,
+      { kind: "copy" }
+    > = {
+      destination: { type: "create" },
+      from: "a.txt",
+      kind: "copy",
+      mode: "conditional",
+      source: { etag: "etag-1" },
+      to: "copy.txt",
+    };
+    await wrap(conditionalCopy, (() => Promise.resolve()) as PluginNext);
+
+    expect(records).toHaveLength(4);
+    expect(records[0]).toMatchObject({
+      action: "upload",
+      condition: "create",
+      key: "a.txt",
+      size: 5,
+      status: "success",
+    });
+    expect(records[1]).toMatchObject({
+      action: "download",
+      condition: "exact-read",
+      error: { code: "Conflict", message: "stale ETag" },
+      key: "a.txt",
+      status: "error",
+    });
+    expect(records[2]).toMatchObject({
+      action: "delete",
+      condition: "match-delete",
+      key: "delete.txt",
+      status: "success",
+    });
+    expect(records[3]).toMatchObject({
+      action: "copy",
+      condition: "conditional-copy",
+      from: "a.txt",
+      status: "success",
+      to: "copy.txt",
+    });
   });
 });

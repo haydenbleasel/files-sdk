@@ -1,0 +1,100 @@
+---
+title: Conditional operations
+description: Use provider-native create, replace, exact-read, delete, and copy predicates without bypassing plugins, hooks, receipts, or client policy.
+---
+
+Conditional operations apply an ETag predicate in the provider's mutation or read request. They are the safe building blocks for create-only writes and compare-and-set updates: the SDK never implements them as `head()` / `exists()` followed by an unconditional operation.
+
+```ts lineNumbers
+// Create only when the key is absent.
+const created = await files.upload("reports/q3.json", body, {
+  condition: { type: "create" },
+});
+
+// Replace only the generation returned by the create.
+const replaced = await files.upload("reports/q3.json", nextBody, {
+  condition: { type: "replace", etag: created.etag },
+});
+
+// Read or delete exactly that replacement.
+const exact = await files.download("reports/q3.json", {
+  condition: { etag: replaced.etag },
+});
+await files.delete("reports/q3.json", {
+  condition: { etag: exact.etag! },
+});
+```
+
+A failed predicate rejects with [`FilesError`](/docs/api/errors) rather than weakening the request. An adapter without the requested native primitive also rejects before provider I/O.
+
+## Conditional copy
+
+A conditional copy checks the source generation and the destination predicate in one native provider request. Both predicates are required: the source must still have its supplied ETag, and the destination must either be absent or match its own supplied ETag.
+
+```ts lineNumbers
+await files.copy("staging/report.json", "published/report.json", {
+  condition: {
+    source: { etag: staging.etag! },
+    destination: { type: "create" },
+  },
+});
+
+await files.copy("staging/report.json", "published/report.json", {
+  condition: {
+    source: { etag: nextStaging.etag! },
+    destination: { type: "replace", etag: published.etag! },
+  },
+});
+```
+
+There is no download-and-upload fallback for conditional copy. Check all of `sourceEtag`, the requested destination mode, and `atomicSourceDestination` under [`files.capabilities.conditional.copy`](/docs/capabilities) before planning one.
+
+## ETag form
+
+Pass the canonical bare strong ETag exposed by a conditional-capable adapter: for example `a1b2c3`, not `"a1b2c3"`. AWS S3 normalizes the values returned by `upload()`, `download()`, `head()`, and `list()` into this form. Empty values, weak validators (`W/…`), wildcards, quoted values, comma-separated lists, control characters, and excessively long values reject before provider I/O. Conditional uploads return a non-optional `etag` for the new generation; a provider commit whose response omits or corrupts that ETag rejects as an ambiguous outcome.
+
+## Capabilities and current support
+
+Each primitive is declared separately under `files.capabilities.conditional`. The declaration is conservative, and invocation checks it again.
+
+These flags describe the adapter's native primitives. They are necessary, not sufficient, after composition: a plugin may still veto a mode when its own side effects cannot preserve the same atomic boundary.
+
+```ts lineNumbers
+const c = files.capabilities.conditional;
+
+if (c.create && c.replace && c.exactRead && c.delete) {
+  // This adapter can support a native single-key CAS workflow.
+}
+
+if (
+  c.copy.sourceEtag &&
+  c.copy.destinationCreate &&
+  c.copy.atomicSourceDestination
+) {
+  // Safe to perform a source-exact, destination-create copy.
+}
+```
+
+The initial implementation supports canonical AWS S3 buckets through the AWS SDK adapter. A configured custom S3 endpoint does not inherit the claim, because S3-compatible services differ in which conditional headers they honor. Cloudflare R2 is not supported.
+
+The local filesystem adapter also reports every conditional capability as `false`. Its body and metadata sidecar are separate files, and a process-local lock plus a read-before-rename would not be compare-and-set against writers in another process. It fails closed until the storage layout can provide one native atomic commit boundary.
+
+Conditional calls are single-key only. Bulk array calls, multipart uploads, resumable `UploadControl`, signed uploads, and `move()` do not accept a condition. Use conditional copy followed by a separately conditioned delete only when your application can tolerate the two distinct commits; the SDK does not present that sequence as an atomic move.
+
+## Plugins use the same operation families
+
+Conditional calls traverse the existing ordered plugin onion under the same `upload`, `download`, `delete`, and `copy` kinds. Their `mode` distinguishes `create`, `replace`, `exact`, `match`, and `conditional` variants. That means existing per-verb encryption, compression, validation, metadata, audit, tracing, and usage handlers see the call instead of silently passing a new verb they do not recognize.
+
+For a conditional root call, the SDK freezes the operation family, mode, and ETag predicates across every `next()` boundary. A plugin may transform the upload body, metadata, or returned value, or veto by throwing before `next()`. It cannot drop or change a predicate, reroute to another verb, call the native operation twice, or synthesize success without a native call. Bundled plugins whose semantics require multiple backends or extra mutations reject the incompatible conditional modes before any of their provider I/O.
+
+The built-in [`encryption()`](/docs/plugins/encryption) plugin is compatible with conditional create, replace, and exact read: conditional uploads store its transformed bytes, and exact reads traverse its inverse transform. As with every use of that plugin, its documented key and plaintext-compatibility policy still applies.
+
+Other bundled plugins keep only the modes whose side effects preserve one native operation. Compression, content-type inference, and validation use their existing same-verb transforms. Exact reads bypass the ordinary cache. Soft delete rejects a conditional delete; versioning rejects conditional writes and copies; deduplication rejects conditional uploads and exact reads; and failover and tiering reject every conditional mode. Those vetoes happen before the plugin performs provider I/O.
+
+## Hooks, receipts, and terminal outcomes
+
+`onAction`, `onError`, and `onRetry` keep their existing once-per-call semantics and include a redacted `condition` label; ETag values are never copied into hook metadata. A successful conditional mutation receives the ordinary upload, delete, or copy receipt with the same condition label. Reads and failed calls have no receipt.
+
+Hooks and receipt delivery are fire-and-forget: a hook that throws cannot change the result after the provider commits. An awaited plugin is different. If it calls `next()`, observes the committed result, and then throws, the public call rejects, `onError` and an error `onAction` fire, and no success receipt is emitted. The provider mutation cannot be rolled back, so treat that outcome as applied-but-unacknowledged and reconcile it with an exact read.
+
+Retries have the same ambiguity at the network boundary. A response can be lost after a provider commit; a retry of the same predicate can then fail because the first request already changed the object. Conditional retries never turn into an unconditional request, but callers that receive an error must still reconcile before assuming nothing changed.

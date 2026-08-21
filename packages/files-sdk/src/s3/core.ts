@@ -5,6 +5,11 @@ import type * as RequestPresigner from "@aws-sdk/s3-request-presigner";
 
 import type {
   Adapter,
+  AdapterDownloadOptions,
+  AdapterUploadOptions,
+  Body,
+  ConditionalUploadResult,
+  CopyCondition,
   DeleteManyOptions,
   DeleteManyResult,
   MultipartOptions,
@@ -15,6 +20,7 @@ import type {
   SignedUpload,
   StoredFile,
   UploadProgress,
+  UploadOptions,
   UploadResult,
 } from "../index.js";
 import {
@@ -128,6 +134,107 @@ const stripEtag = (etag: string | undefined): string | undefined => {
     return;
   }
   return etag.replaceAll(/^"+|"+$/gu, "");
+};
+
+// Conditional requests accept one strong entity tag, not an HTTP list or
+// wildcard. Keep the adapter boundary strict even when callers invoke the
+// optional primitive directly instead of going through `Files` validation.
+const CANONICAL_ETAG = /^(?!\*$)(?!W\/)[\u0021\u0023-\u002B\u002D-\u007E]+$/u;
+const MAX_ETAG_LENGTH = 1024;
+
+const assertCanonicalEtag = (etag: string): string => {
+  if (etag.length > MAX_ETAG_LENGTH || !CANONICAL_ETAG.test(etag)) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: conditional ETags must be canonical bare strong values",
+      undefined,
+      { permanent: true }
+    );
+  }
+  return etag;
+};
+
+const quoteCanonicalEtag = (etag: string): string =>
+  `"${assertCanonicalEtag(etag)}"`;
+
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: true
+): string;
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: false
+): string | undefined;
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: boolean
+): string | undefined {
+  if (etag === undefined) {
+    if (required) {
+      throw new FilesError(
+        "Provider",
+        `S3 returned no ETag after ${operation}; the object may already have been committed`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    return;
+  }
+  const bare =
+    etag.length >= 2 && etag.startsWith('"') && etag.endsWith('"')
+      ? etag.slice(1, -1)
+      : etag;
+  try {
+    return assertCanonicalEtag(bare);
+  } catch (error) {
+    throw new FilesError(
+      "Provider",
+      `S3 returned an invalid ETag after ${operation}`,
+      error,
+      { permanent: true }
+    );
+  }
+}
+
+const reportConditionalProgress = (
+  listener: ((progress: UploadProgress) => void) | undefined,
+  progress: UploadProgress
+): void => {
+  try {
+    listener?.(progress);
+  } catch {
+    // Progress is observational. A callback failure after PutObject commits
+    // must never turn into a retry of the conditional mutation.
+  }
+};
+
+const assertConditionalUploadOptions = (
+  options: AdapterUploadOptions | undefined
+): void => {
+  // AdapterUploadOptions excludes both fields statically; retain a runtime
+  // fail-closed guard for direct JavaScript/structural calls.
+  const untrusted = options as
+    | (AdapterUploadOptions & Pick<UploadOptions, "control" | "multipart">)
+    | undefined;
+  if (isMultipartRequested(untrusted?.multipart)) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: conditional multipart uploads are not supported",
+      undefined,
+      { permanent: true }
+    );
+  }
+  if (untrusted?.control !== undefined) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: resumable upload control is not supported for conditional uploads",
+      undefined,
+      { permanent: true }
+    );
+  }
 };
 
 // `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
@@ -409,6 +516,9 @@ const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
 ]);
 const S3_UNAUTH_CODES: ReadonlySet<string> = new Set(["AccessDenied"]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
+const S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES: ReadonlySet<string> = new Set([
+  "ConditionalRequestConflict",
+]);
 // `DeleteObjects` rejects requests with more than 1000 keys, so the bulk path
 // has to chunk longer key lists into separate requests.
 const S3_DELETE_BATCH_LIMIT = 1000;
@@ -431,8 +541,8 @@ const extractS3Error = (
   };
 };
 
-const buildMapS3Error = (providerLabel = "S3 error") =>
-  makeErrorMapper({
+const buildMapS3Error = (providerLabel = "S3 error") => {
+  const mapDefault = makeErrorMapper({
     codes: {
       conflict: S3_CONFLICT_CODES,
       notFound: S3_NOT_FOUND_CODES,
@@ -441,6 +551,27 @@ const buildMapS3Error = (providerLabel = "S3 error") =>
     extract: extractS3Error,
     providerLabel,
   });
+  return (err: unknown): FilesError => {
+    if (err instanceof FilesError) {
+      return err;
+    }
+    const extracted = extractS3Error(err);
+    // Unlike PreconditionFailed (412), AWS documents this 409 as a transient
+    // race that clients should retry. Keep it Provider-coded so Files' retry
+    // policy can safely reissue the same native conditional request.
+    if (
+      extracted.code &&
+      S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES.has(extracted.code)
+    ) {
+      return new FilesError(
+        "Provider",
+        extracted.message ?? providerLabel,
+        err
+      );
+    }
+    return mapDefault(err);
+  };
+};
 
 const _defaultMapS3Error = buildMapS3Error();
 
@@ -540,8 +671,193 @@ export const createS3Adapter = (
       { expiresIn }
     );
 
+  const conditionalUpload = async (
+    key: string,
+    body: Body,
+    condition: { type: "create" } | { type: "replace"; etag: string },
+    options?: AdapterUploadOptions
+  ): Promise<ConditionalUploadResult> => {
+    assertConditionalUploadOptions(options);
+    const predicate =
+      condition.type === "create"
+        ? { IfNoneMatch: "*" }
+        : { IfMatch: quoteCanonicalEtag(condition.etag) };
+    const { data, contentType, contentLength } = await normalizeBody(
+      body,
+      options?.contentType
+    );
+    if (data instanceof ReadableStream && contentLength === undefined) {
+      throw new FilesError(
+        "Provider",
+        "s3 adapter: conditional uploads require a body with a known length",
+        undefined,
+        { permanent: true }
+      );
+    }
+    const total = contentLength ?? 0;
+    reportConditionalProgress(options?.onProgress, { loaded: 0, total });
+    try {
+      const result = await client.send(
+        new PutObjectCommand({
+          Body: data,
+          Bucket: bucket,
+          ContentType: contentType,
+          Key: key,
+          ...predicate,
+          ...(options?.cacheControl && {
+            CacheControl: options.cacheControl,
+          }),
+          ...(options?.metadata && { Metadata: options.metadata }),
+          ContentLength: total,
+        }),
+        options?.signal ? { abortSignal: options.signal } : undefined
+      );
+      const etag = normalizeConditionalResponseEtag(
+        result.ETag,
+        "a conditional upload",
+        true
+      );
+      reportConditionalProgress(options?.onProgress, {
+        loaded: total,
+        total,
+      });
+      return { contentType, etag, key, size: total };
+    } catch (error) {
+      throw wrapErr(error);
+    }
+  };
+
+  const conditionalDownload = async (
+    key: string,
+    etag: string,
+    downloadOpts?: AdapterDownloadOptions
+  ): Promise<StoredFile> => {
+    const canonicalEtag = assertCanonicalEtag(etag);
+    try {
+      const result = await client.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          IfMatch: quoteCanonicalEtag(canonicalEtag),
+          Key: key,
+          ...(downloadOpts?.range && {
+            Range: httpRangeHeader(downloadOpts.range),
+          }),
+        }),
+        downloadOpts?.signal ? { abortSignal: downloadOpts.signal } : undefined
+      );
+      const responseEtag = normalizeConditionalResponseEtag(
+        result.ETag,
+        "an exact read",
+        false
+      );
+      if (responseEtag !== undefined && responseEtag !== canonicalEtag) {
+        throw new FilesError(
+          "Provider",
+          "S3 returned an ETag that did not match the exact-read predicate",
+          undefined,
+          { permanent: true }
+        );
+      }
+      const baseMeta = {
+        // S3 validated If-Match even when a test double/proxy omits ETag from
+        // the response, so retain the exact canonical predicate as provenance.
+        etag: responseEtag ?? canonicalEtag,
+        key,
+        lastModified: result.LastModified?.getTime(),
+        metadata: result.Metadata,
+        type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+      };
+      if (downloadOpts?.as === "stream") {
+        const stream = result.Body?.transformToWebStream();
+        return createStoredFile(
+          { ...baseMeta, size: Number(result.ContentLength ?? 0) },
+          { factory: () => stream ?? emptyStream(), kind: "stream" }
+        );
+      }
+      const bytes =
+        (await result.Body?.transformToByteArray()) ?? new Uint8Array();
+      return createStoredFile(
+        { ...baseMeta, size: bytes.byteLength },
+        { data: bytes, kind: "buffer" }
+      );
+    } catch (error) {
+      throw wrapErr(error);
+    }
+  };
+
+  const conditional: S3Adapter["conditional"] =
+    opts.endpoint === undefined
+      ? {
+          copy: {
+            atomicSourceDestination: true,
+            destinationCreate: true,
+            destinationReplace: true,
+            async run(
+              from: string,
+              to: string,
+              condition: CopyCondition,
+              operationOpts
+            ): Promise<void> {
+              const sourceEtag = quoteCanonicalEtag(condition.source.etag);
+              const destinationPredicate =
+                condition.destination.type === "create"
+                  ? { IfNoneMatch: "*" }
+                  : {
+                      IfMatch: quoteCanonicalEtag(condition.destination.etag),
+                    };
+              try {
+                await client.send(
+                  new CopyObjectCommand({
+                    Bucket: bucket,
+                    CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+                    CopySourceIfMatch: sourceEtag,
+                    Key: to,
+                    ...destinationPredicate,
+                  }),
+                  operationOpts?.signal
+                    ? { abortSignal: operationOpts.signal }
+                    : undefined
+                );
+              } catch (error) {
+                throw wrapErr(error);
+              }
+            },
+            sourceEtag: true,
+          },
+          create(key, body, options) {
+            return conditionalUpload(key, body, { type: "create" }, options);
+          },
+          async delete(key, etag, operationOpts): Promise<void> {
+            try {
+              await client.send(
+                new DeleteObjectCommand({
+                  Bucket: bucket,
+                  IfMatch: quoteCanonicalEtag(etag),
+                  Key: key,
+                }),
+                operationOpts?.signal
+                  ? { abortSignal: operationOpts.signal }
+                  : undefined
+              );
+            } catch (error) {
+              throw wrapErr(error);
+            }
+          },
+          exactRead: conditionalDownload,
+          replace(key, body, etag, options) {
+            return conditionalUpload(
+              key,
+              body,
+              { etag, type: "replace" },
+              options
+            );
+          },
+        }
+      : undefined;
+
   return {
     bucket,
+    ...(conditional && { conditional }),
     async copy(from, to, operationOpts) {
       try {
         // CopySource must be URL-encoded per

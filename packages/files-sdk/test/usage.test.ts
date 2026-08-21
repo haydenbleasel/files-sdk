@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFiles } from "../src/index.js";
+import { createFiles, createStoredFile, FilesError } from "../src/index.js";
+import type {
+  ConditionalFilesOperation,
+  Files,
+  PluginNext,
+} from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { usage } from "../src/usage/index.js";
 
@@ -210,5 +215,63 @@ describe("usage", () => {
     snap.operationsByKind.upload = 999;
     expect(files.usage().operations).toBe(1);
     expect(files.usage().operationsByKind.upload).toBe(1);
+  });
+
+  test("counts successful conditional calls and excludes terminal errors", async () => {
+    const plugin = usage();
+    const { wrap } = plugin;
+    const { extend } = plugin;
+    if (!(wrap && extend)) {
+      throw new Error("usage plugin surface missing");
+    }
+    const stats = extend({} as Files);
+    const create: Extract<
+      ConditionalFilesOperation,
+      { kind: "upload"; mode: "create" }
+    > = {
+      body: bytes("hello"),
+      key: "a.txt",
+      kind: "upload",
+      mode: "create",
+    };
+    await wrap(create, (() =>
+      Promise.resolve({
+        contentType: "text/plain",
+        etag: "etag-1",
+        key: "a.txt",
+        size: 5,
+      })) as PluginNext);
+    const exact: Extract<ConditionalFilesOperation, { kind: "download" }> = {
+      etag: "etag-1",
+      key: "a.txt",
+      kind: "download",
+      mode: "exact",
+    };
+    const downloaded = await wrap(exact, (() =>
+      Promise.resolve(
+        createStoredFile(
+          { etag: "etag-1", key: "a.txt", size: 5, type: "text/plain" },
+          { data: bytes("hello"), kind: "buffer" }
+        )
+      )) as PluginNext);
+    expect(await downloaded.text()).toBe("hello");
+
+    const deletion: Extract<ConditionalFilesOperation, { kind: "delete" }> = {
+      etag: "stale-etag",
+      key: "a.txt",
+      kind: "delete",
+      mode: "match",
+    };
+    await wrap(deletion, (() =>
+      Promise.reject(
+        new FilesError("Conflict", "stale ETag")
+      )) as PluginNext).catch(() => {});
+
+    expect(stats.usage()).toMatchObject({
+      bytesDown: 5,
+      bytesUp: 5,
+      operations: 2,
+      operationsByKind: { delete: 0, download: 1, upload: 1 },
+    });
   });
 });

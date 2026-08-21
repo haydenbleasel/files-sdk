@@ -13,6 +13,18 @@ Pass a single key to remove one object, or an array to remove many in one call. 
 await files.delete("avatars/abc.png");
 ```
 
+## Delete only the expected generation
+
+The single-key form accepts an exact ETag predicate. The provider removes the object only if that generation is still current; unsupported adapters and stale predicates fail closed.
+
+```ts lineNumbers
+await files.delete("avatars/abc.png", {
+  condition: { etag: current.etag! },
+});
+```
+
+Conditional delete has no array form. See [Conditional operations](/docs/conditional-operations) for capability and retry semantics.
+
 ## Many keys
 
 Returns a structured result instead of throwing on partial failure. Adapters with a native bulk primitive (S3 `DeleteObjects`, Azure's Blob Batch API, Supabase, UploadThing) delete in a single request — the S3 path chunks into batches of 1000 and Azure into batches of 256, the respective provider limits — while the rest fan out to single deletes with bounded concurrency (FTP and SFTP reuse one connection for the sequence). Like the single form, it honors the client's `prefix` and is no-op friendly on providers that treat a missing key as success.

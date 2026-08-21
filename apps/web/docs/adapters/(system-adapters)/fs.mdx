@@ -44,6 +44,8 @@ const files = new Files({
 
 Body at `` `${root}/${key}` ``; sidecar at `` `${root}/${key}.meta.json` ``. Sidecars survive `cp -r` / `git mv` / partial-tree deletion. `list()` hides them. ETag is a SHA-1-derived stable hash computed at upload time. Files written into `root` by hand without a sidecar are still readable - `contentType` falls back to `application/octet-stream` and `etag` is absent.
 
+The separate body and sidecar layout cannot provide a cross-process atomic ETag compare-and-set boundary. The adapter therefore advertises no [conditional operations](/docs/conditional-operations) and rejects them before filesystem I/O; it does not emulate CAS with a read followed by a rename.
+
 ## Compatibility
 
 | Method | Status | Notes |
@@ -58,3 +60,4 @@ Body at `` `${root}/${key}` ``; sidecar at `` `${root}/${key}.meta.json` ``. Sid
 | `copy` | ✅ |  |
 | `url` | ⚠️ | Returns a `file://` URL by default - fine for CLIs and tests, not browsers. With `urlBaseUrl` set, returns `<urlBaseUrl>/<key>` so a dev server (Next.js `/public` mount, `serve-static`, etc.) can deliver the body. `responseContentDisposition` throws because neither `file://` nor static-server URLs have a signature mechanism in which to bind the override. |
 | `signedUploadUrl` | ❌ | Throws - the fs adapter has no built-in upload server, signer, or verifier, so it cannot bind expiry, content type, or size limits into an upload capability. Upload through `files.upload()` or an application route that enforces those controls server-side. |
+| conditional operations | ❌ | Body and metadata are separate files, so there is no honest cross-process native CAS primitive. |
