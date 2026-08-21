@@ -35,6 +35,24 @@ const streamBody = (text: string) =>
   sdkStreamMixin(Readable.from(Buffer.from(text)));
 
 describe("r2 adapter — HTTP path", () => {
+  test("does not advertise native conditional operations", () => {
+    const files = new Files({ adapter: makeAdapter() });
+
+    expect(files.capabilities.conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      exactRead: false,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
+  });
+
   test("uses S3-compatible endpoint with auto region and path-style", async () => {
     const adapter = r2({
       accessKeyId: "AKID",

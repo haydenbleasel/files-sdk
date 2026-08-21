@@ -16,8 +16,13 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 
-import { createFiles, Files } from "../src/index.js";
-import type { FilesPlugin, OperationOptions } from "../src/index.js";
+import { createFiles, Files, FilesError } from "../src/index.js";
+import type {
+  ConditionalFilesOperation,
+  FilesPlugin,
+  OperationOptions,
+  PluginNext,
+} from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { tracing } from "../src/tracing/index.js";
 
@@ -216,6 +221,92 @@ describe("tracing", () => {
     });
     await files.upload("a.txt", bytes("hi"));
     expect(named("files.upload")).toHaveLength(1);
+  });
+
+  test("records redacted conditional success and error outcomes", async () => {
+    const plugin = tracing({ tracer });
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("tracing wrap missing");
+    }
+    const create: Extract<
+      ConditionalFilesOperation,
+      { kind: "upload"; mode: "create" }
+    > = {
+      body: bytes("hello"),
+      key: "a.txt",
+      kind: "upload",
+      mode: "create",
+    };
+    await wrap(create, (() =>
+      Promise.resolve({
+        contentType: "text/plain",
+        etag: "secret-etag",
+        key: "a.txt",
+        size: 5,
+      })) as PluginNext);
+    const exact: Extract<ConditionalFilesOperation, { kind: "download" }> = {
+      etag: "secret-etag",
+      key: "a.txt",
+      kind: "download",
+      mode: "exact",
+    };
+    await wrap(exact, (() =>
+      Promise.reject(
+        new FilesError("Conflict", "stale ETag")
+      )) as PluginNext).catch(() => {});
+    const matchedDelete: Extract<
+      ConditionalFilesOperation,
+      { kind: "delete" }
+    > = {
+      etag: "secret-etag",
+      key: "delete.txt",
+      kind: "delete",
+      mode: "match",
+    };
+    await wrap(matchedDelete, (() => Promise.resolve()) as PluginNext);
+    const conditionalCopy: Extract<
+      ConditionalFilesOperation,
+      { kind: "copy" }
+    > = {
+      destination: { type: "create" },
+      from: "a.txt",
+      kind: "copy",
+      mode: "conditional",
+      source: { etag: "secret-etag" },
+      to: "copy.txt",
+    };
+    await wrap(conditionalCopy, (() => Promise.resolve()) as PluginNext);
+
+    const [upload] = named("files.upload");
+    const [download] = named("files.download");
+    const [remove] = named("files.delete");
+    const [copy] = named("files.copy");
+    expect(upload?.attributes).toMatchObject({
+      "files.condition": "create",
+      "files.operation": "upload",
+      "files.size": 5,
+    });
+    expect(upload?.attributes["files.etag"]).toBeUndefined();
+    expect(download?.attributes).toMatchObject({
+      "files.condition": "exact-read",
+      "files.operation": "download",
+    });
+    expect(download?.attributes["files.etag"]).toBeUndefined();
+    expect(download?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(download?.events.some((event) => event.name === "exception")).toBe(
+      true
+    );
+    expect(remove?.attributes).toMatchObject({
+      "files.condition": "match-delete",
+      "files.operation": "delete",
+    });
+    expect(copy?.attributes).toMatchObject({
+      "files.condition": "conditional-copy",
+      "files.from": "a.txt",
+      "files.operation": "copy",
+      "files.to": "copy.txt",
+    });
   });
 });
 

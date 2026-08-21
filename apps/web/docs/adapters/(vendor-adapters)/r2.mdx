@@ -117,6 +117,10 @@ await files.signedUploadUrl("avatars/abc.png", {
 
 To cap upload sizes on R2, enforce the limit at your application gateway before issuing the URL.
 
+## Conditional operations
+
+R2 does not advertise the SDK's provider-native [conditional operation](/docs/conditional-operations) contract in this release. That includes the AWS-SDK HTTP path: configuring an S3-compatible endpoint does not inherit AWS S3's capability claims. Conditional calls fail before R2 I/O.
+
 ## Compatibility
 
 ### HTTP mode

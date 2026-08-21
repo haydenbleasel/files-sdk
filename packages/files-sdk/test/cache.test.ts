@@ -6,12 +6,14 @@ import type {
   CacheRecord,
   CacheStore,
 } from "../src/cache/index.js";
-import { createFiles } from "../src/index.js";
+import { createFiles, createStoredFile } from "../src/index.js";
 import type {
   Adapter,
+  ConditionalFilesOperation,
   DownloadOptions,
   Files,
   OperationOptions,
+  PluginNext,
   UploadOptions,
   UrlOptions,
 } from "../src/index.js";
@@ -237,6 +239,44 @@ describe("cache plugin — download", () => {
 
     // The ranged read and the full read each hit the provider once.
     expect(calls.download).toEqual(["a.txt", "a.txt"]);
+  });
+
+  test("never serves or populates an exact read from the ordinary cache", async () => {
+    const plugin = cache({ operations: ["download"] });
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("cache wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      const body = `version-${nextCalls}`;
+      return Promise.resolve(
+        createStoredFile(
+          {
+            etag: "etag-1",
+            key: "a.txt",
+            size: body.length,
+            type: "text/plain",
+          },
+          { data: new TextEncoder().encode(body), kind: "buffer" }
+        )
+      );
+    }) as PluginNext;
+    const operation: Extract<ConditionalFilesOperation, { kind: "download" }> =
+      {
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "download",
+        mode: "exact",
+      };
+
+    const first = await wrap(operation, next);
+    const second = await wrap(operation, next);
+
+    expect(await first.text()).toBe("version-1");
+    expect(await second.text()).toBe("version-2");
+    expect(nextCalls).toBe(2);
   });
 });
 

@@ -16,6 +16,22 @@ await files.upload("avatars/abc.png", file, {
 // → { key, size, contentType, etag, lastModified }
 ```
 
+## Create and replace conditions
+
+The single-key form accepts a provider-native create or exact-replace condition. A create succeeds only when the destination is absent; a replace succeeds only while its supplied bare strong ETag is current. The SDK does not probe first, and unsupported adapters fail before provider I/O.
+
+```ts lineNumbers
+const created = await files.upload("reports/q3.json", body, {
+  condition: { type: "create" },
+});
+
+const replaced = await files.upload("reports/q3.json", nextBody, {
+  condition: { type: "replace", etag: created.etag },
+});
+```
+
+Conditional uploads return a non-optional ETag. They are not available for array, multipart, resumable, or signed-upload paths; the initial S3 implementation also rejects unknown-length streams before I/O. See [Conditional operations](/docs/conditional-operations) for capabilities, plugin behavior, and ambiguous retry outcomes.
+
 ## Options
 
 <AutoTypeTable

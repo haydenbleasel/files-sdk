@@ -16,7 +16,7 @@ The plugin object you pass to `plugins`. A `name` plus up to two optional capabi
 
 ## FilesOperation
 
-The discriminated union handed to `wrap` - one variant per public verb, carrying the caller-facing inputs. The array forms of `upload` / `download` / `head` / `exists` / `delete` set `bulk: true` on each fanned-out item.
+The discriminated union handed to `wrap` - one family per public verb, carrying the caller-facing inputs. Native [conditional operations](/docs/conditional-operations) stay in the existing `upload`, `download`, `delete`, and `copy` families and add a `mode` plus their ETag predicate. The array forms of `upload` / `download` / `head` / `exists` / `delete` set `bulk: true` on each fanned-out item; conditional modes are single-key only.
 
 <AutoTypeTable
   path="../../packages/files-sdk/src/index.ts"
@@ -30,6 +30,8 @@ function handlers(map: PluginHandlers): FilesPlugin["wrap"];
 ```
 
 Builds a [`wrap`](/docs/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
+
+An `upload` handler therefore sees overwrite, conditional-create, and conditional-replace modes. Existing body-transforming handlers cover conditional writes automatically. The engine preserves a conditional root's family, mode, and predicate across every `next()` call and requires exactly one native operation before success.
 
 ## createFiles
 

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFiles } from "../src/index.js";
-import type { Adapter, ListOptions, ListResult } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  ListOptions,
+  ListResult,
+  PluginNext,
+} from "../src/index.js";
 import { tiering } from "../src/tiering/index.js";
 import type { TieringOptions, TierRouter } from "../src/tiering/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -541,5 +547,56 @@ describe("tiering — copy with a missing source under fallback", () => {
     const { files } = harness(sizeRoute, { fallback: true });
     // locate() finds nothing, so the routed-tier copy throws the fake's NotFound.
     await expect(files.copy("ghost", "dest")).rejects.toThrow(/not found/u);
+  });
+});
+
+describe("tiering — conditional policy", () => {
+  test("rejects every conditional primitive before touching either tier", async () => {
+    const plugin = tiering({ cold: fakeAdapter(), route: prefixRoute });
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("tiering wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operations: ConditionalFilesOperation[] = [
+      { body: "x", key: "a.txt", kind: "upload", mode: "create" },
+      {
+        body: "x",
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "upload",
+        mode: "replace",
+      },
+      {
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "download",
+        mode: "exact",
+      },
+      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "a.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "b.txt",
+      },
+    ];
+
+    for (const operation of operations) {
+      // eslint-disable-next-line no-await-in-loop -- each rejected operation must be inspected independently
+      const failure = await Promise.resolve()
+        .then(() => wrap(operation, next))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    }
+    expect(nextCalls).toBe(0);
   });
 });

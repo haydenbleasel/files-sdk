@@ -34,7 +34,7 @@ Receipts ride on the existing [`onAction`](/docs/api/onaction) hook as an additi
 - the call is a mutating verb (`upload`, `delete`, `copy`, `move`), and
 - the call **succeeded**.
 
-Reads, `signedUploadUrl`, failures, bulk array calls (which aggregate many objects into one event), and every instance with receipts off leave `event.receipt` unset - so an existing `onAction` consumer that never opted in sees the exact payload it always has.
+Reads, `signedUploadUrl`, failures, bulk array calls (which aggregate many objects into one event), and every instance with receipts off leave `event.receipt` unset - so an existing `onAction` consumer that never opted in sees the exact payload it always has. A successful [conditional mutation](/docs/conditional-operations) uses the ordinary `upload`, `delete`, or `copy` receipt and adds its redacted `condition` label; predicate ETags are never copied into the receipt.
 
 Every field except `sha256` is **derived** from the work the SDK already does for the hook - the timing, the adapter name, the caller-facing key, and `bytes` / `etag` read straight off the [`UploadResult`](/docs/api/upload). Turning receipts on with `receipts: true` therefore adds no per-call cost.
 
@@ -59,6 +59,8 @@ const files = new Files({
 `sha256` is the lowercase-hex SHA-256 of the body **as you pass it to `upload()`**. It is computed **only** when you pass `{ sha256: true }`, and present **only** on an `upload` of a buffered body (a string, `Uint8Array`, `ArrayBuffer`, typed-array view, or `Blob`). A **streaming** upload is handed to the adapter without ever being buffered, so it carries no fingerprint - the SDK won't silently buffer a stream to hash it. `delete`, `copy`, and `move` transfer no content of their own, so they never carry one either.
 
 With `receipts: true` (or `{ sha256: false }`), the body is never read and no hash is taken.
+
+Receipt delivery remains observational. If `onAction` throws, the committed operation still succeeds. If an awaited plugin throws after the native operation has committed, the public call rejects and no success receipt is emitted; reconcile that applied-but-unacknowledged outcome with an exact read.
 
 ### Plugins that transform the body
 

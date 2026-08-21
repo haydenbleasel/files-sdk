@@ -13,7 +13,11 @@ import {
   resolveReceiptsConfig,
   sha256Hex,
 } from "./internal/receipts.js";
-import type { Receipt, ReceiptsConfig } from "./internal/receipts.js";
+import type {
+  ConditionalActionType,
+  Receipt,
+  ReceiptsConfig,
+} from "./internal/receipts.js";
 import { runResumableUpload } from "./internal/resumable.js";
 import type {
   ResumableDriver,
@@ -42,7 +46,11 @@ export type {
   ResumableUploadSession,
   UploadControlStatus,
 } from "./internal/resumable.js";
-export type { Receipt, ReceiptOp } from "./internal/receipts.js";
+export type {
+  ConditionalActionType,
+  Receipt,
+  ReceiptOp,
+} from "./internal/receipts.js";
 export type { BodySource, StoredFileMeta } from "./internal/stored-file.js";
 export { createStoredFile } from "./internal/stored-file.js";
 export {
@@ -111,6 +119,11 @@ export interface OperationOptions {
   retries?: RetryOptions;
 }
 
+/** A native compare-and-set predicate for a single upload. */
+export type UploadCondition =
+  | { type: "create" }
+  | { type: "replace"; etag: string };
+
 /**
  * A single upload-progress report. Passed to {@link UploadOptions.onProgress}
  * (and {@link UploadManyOptions.onProgress}, which also carries the item `key`).
@@ -147,6 +160,13 @@ export interface MultipartOptions {
 }
 
 export interface UploadOptions extends OperationOptions {
+  /**
+   * Apply the upload atomically only when the destination is absent
+   * (`create`) or still has the supplied strong ETag (`replace`). Conditional
+   * uploads require a native adapter primitive and are unavailable for bulk,
+   * multipart, and resumable uploads.
+   */
+  condition?: UploadCondition;
   /**
    * MIME type stored alongside the object and returned to readers in the
    * `Content-Type` response header. Inferred from `File` / `Blob` `type`
@@ -233,6 +253,9 @@ export interface UploadResult {
   lastModified?: number;
 }
 
+/** A conditional upload always returns the new strong ETag. */
+export type ConditionalUploadResult = UploadResult & { etag: string };
+
 export interface StoredFile {
   name: string;
   size: number;
@@ -269,6 +292,8 @@ export interface ByteRange {
 }
 
 export interface DownloadOptions extends OperationOptions {
+  /** Read only the exact object identified by this strong ETag. */
+  condition?: { etag: string };
   as?: "blob" | "stream";
   /**
    * Download only a contiguous slice of the object instead of the whole thing
@@ -292,6 +317,36 @@ export interface DownloadOptions extends OperationOptions {
    */
   range?: ByteRange;
 }
+
+/** Options passed to an adapter's native conditional upload primitive. */
+export type AdapterUploadOptions = Omit<
+  UploadOptions,
+  "condition" | "control" | "multipart"
+>;
+
+/** Options passed to an adapter's native exact-read primitive. */
+export type AdapterDownloadOptions = Omit<DownloadOptions, "condition">;
+
+/** Options for a single delete, including an optional native ETag predicate. */
+export interface DeleteOptions extends OperationOptions {
+  condition?: { etag: string };
+}
+
+/** The source and destination predicates for a native conditional copy. */
+export interface CopyCondition {
+  source: { etag: string };
+  destination: UploadCondition;
+}
+
+/** Options for a copy, including optional atomic source/destination checks. */
+export interface CopyOptions extends OperationOptions {
+  condition?: CopyCondition;
+}
+
+/** The public conditional-upload overload, which excludes unsupported modes. */
+export type ConditionalUploadOptions = AdapterUploadOptions & {
+  condition: UploadCondition;
+};
 
 export interface ListOptions extends OperationOptions {
   /**
@@ -634,6 +689,66 @@ export interface SignedUrlCapability {
   maxExpiresIn?: number;
 }
 
+/** A provider-native conditional copy and the destination predicates it honors. */
+export interface AdapterConditionalCopy {
+  /** The implementation always checks the supplied source ETag. */
+  readonly sourceEtag: true;
+  /** Source and destination predicates settle atomically in one provider call. */
+  readonly atomicSourceDestination: true;
+  /** Whether `destination: { type: "create" }` is supported atomically. */
+  readonly destinationCreate: boolean;
+  /** Whether `destination: { type: "replace" }` is supported atomically. */
+  readonly destinationReplace: boolean;
+  run: (
+    from: string,
+    to: string,
+    condition: CopyCondition,
+    opts?: OperationOptions
+  ) => Promise<void>;
+}
+
+/** Optional native conditional primitives supplied by an adapter. */
+export interface AdapterConditionalOperations {
+  create?: (
+    key: string,
+    body: Body,
+    opts?: AdapterUploadOptions
+  ) => Promise<ConditionalUploadResult>;
+  replace?: (
+    key: string,
+    body: Body,
+    etag: string,
+    opts?: AdapterUploadOptions
+  ) => Promise<ConditionalUploadResult>;
+  exactRead?: (
+    key: string,
+    etag: string,
+    opts?: AdapterDownloadOptions
+  ) => Promise<StoredFile>;
+  delete?: (
+    key: string,
+    etag: string,
+    opts?: OperationOptions
+  ) => Promise<void>;
+  copy?: AdapterConditionalCopy;
+}
+
+/** Queryable native conditional-operation support. */
+export interface ConditionalAdapterCapabilities {
+  create: boolean;
+  replace: boolean;
+  exactRead: boolean;
+  delete: boolean;
+  copy: {
+    sourceEtag: boolean;
+    atomicSourceDestination: boolean;
+    destinationCreate: boolean;
+    destinationReplace: boolean;
+  };
+  /** Conditional multipart is intentionally outside the first API slice. */
+  multipart: { create: false; replace: false };
+}
+
 /**
  * A queryable snapshot of what the underlying adapter can do, exposed via
  * {@link Files.capabilities}. Lets callers, AI tool wrappers, and validators
@@ -665,6 +780,8 @@ export interface AdapterCapabilities {
   serverSideCopy: boolean;
   /** How `url()` produces a download URL. From {@link Adapter.signedUrl}. */
   signedUrl: SignedUrlCapability;
+  /** Native compare-and-set primitives. Unsupported operations fail closed. */
+  conditional: ConditionalAdapterCapabilities;
 }
 
 export interface Adapter<Raw = unknown> {
@@ -731,17 +848,22 @@ export interface Adapter<Raw = unknown> {
    * Advisory only; it does not gate `url()`.
    */
   readonly signedUrl?: SignedUrlCapability;
+  /**
+   * Native conditional primitives. Omitting an operation means it cannot be
+   * implemented atomically and the public call fails before provider I/O.
+   */
+  readonly conditional?: AdapterConditionalOperations;
   upload: (
     key: string,
     body: Body,
-    opts?: UploadOptions
+    opts?: Omit<UploadOptions, "condition">
   ) => Promise<UploadResult>;
   /**
    * Download an object's body and metadata. When {@link DownloadOptions.range}
    * is set, adapters that advertise {@link Adapter.supportsRange} must return
    * only the requested bytes, with `size` set to the range length.
    */
-  download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
+  download: (key: string, opts?: AdapterDownloadOptions) => Promise<StoredFile>;
   /**
    * Fetch metadata only — does not transfer the body.
    *
@@ -852,6 +974,8 @@ type WriteActionType = Extract<
  */
 export interface FilesActionEvent {
   type: FilesActionType;
+  /** Conditional primitive used, without exposing its ETag predicate. */
+  condition?: ConditionalActionType;
   /** Caller-facing key, for single-key operations. */
   key?: string;
   /** Caller-facing keys, for the array form. */
@@ -885,6 +1009,7 @@ export interface FilesActionEvent {
  */
 export interface FilesErrorEvent {
   type: FilesActionType;
+  condition?: ConditionalActionType;
   key?: string;
   keys?: string[];
   from?: string;
@@ -901,6 +1026,7 @@ export interface FilesErrorEvent {
  */
 export interface FilesRetryEvent {
   type: FilesActionType;
+  condition?: ConditionalActionType;
   key?: string;
   from?: string;
   to?: string;
@@ -970,15 +1096,21 @@ export interface FilesOptions<A extends Adapter> extends OperationOptions {
 
 export interface FileHandle {
   readonly key: string;
-  upload: (body: Body, opts?: UploadOptions) => Promise<UploadResult>;
+  upload: {
+    (
+      body: Body,
+      opts: ConditionalUploadOptions
+    ): Promise<ConditionalUploadResult>;
+    (body: Body, opts?: UploadOptions): Promise<UploadResult>;
+  };
   download: (opts?: DownloadOptions) => Promise<StoredFile>;
   head: (opts?: OperationOptions) => Promise<StoredFile>;
   exists: (opts?: OperationOptions) => Promise<boolean>;
-  delete: (opts?: OperationOptions) => Promise<void>;
+  delete: (opts?: DeleteOptions) => Promise<void>;
   url: (opts?: UrlOptions) => Promise<string>;
   signedUploadUrl: (opts: SignUploadOptions) => Promise<SignedUpload>;
-  copyTo: (destinationKey: string, opts?: OperationOptions) => Promise<void>;
-  copyFrom: (sourceKey: string, opts?: OperationOptions) => Promise<void>;
+  copyTo: (destinationKey: string, opts?: CopyOptions) => Promise<void>;
+  copyFrom: (sourceKey: string, opts?: CopyOptions) => Promise<void>;
   /** Move this key to `destinationKey`. See {@link Files.move}. */
   moveTo: (destinationKey: string, opts?: OperationOptions) => Promise<void>;
   /** Move `sourceKey` onto this key. See {@link Files.move}. */
@@ -996,23 +1128,92 @@ export interface FileHandle {
  * single call from one element of a batch. `copy`, `move`, `list`, `url`, and
  * `signedUploadUrl` have no array form and are always single.
  */
-export type FilesOperation =
+export type ConditionalFilesOperation =
   | {
       kind: "upload";
+      mode: "create";
       key: string;
       body: Body;
-      options?: UploadOptions;
+      options?: AdapterUploadOptions;
+    }
+  | {
+      kind: "upload";
+      mode: "replace";
+      etag: string;
+      key: string;
+      body: Body;
+      options?: AdapterUploadOptions;
+    }
+  | {
+      kind: "download";
+      mode: "exact";
+      etag: string;
+      key: string;
+      options?: AdapterDownloadOptions;
+    }
+  | {
+      kind: "delete";
+      mode: "match";
+      etag: string;
+      key: string;
+      options?: OperationOptions;
+    }
+  | {
+      kind: "copy";
+      mode: "conditional";
+      from: string;
+      to: string;
+      source: { etag: string };
+      destination: UploadCondition;
+      options?: OperationOptions;
+    };
+
+export type FilesOperation =
+  | ConditionalFilesOperation
+  | {
+      kind: "upload";
+      mode?: "overwrite";
+      key: string;
+      body: Body;
+      options?: Omit<UploadOptions, "condition">;
       bulk?: true;
     }
-  | { kind: "download"; key: string; options?: DownloadOptions; bulk?: true }
+  | {
+      kind: "download";
+      mode?: "latest";
+      key: string;
+      options?: AdapterDownloadOptions;
+      bulk?: true;
+    }
   | { kind: "head"; key: string; options?: OperationOptions; bulk?: true }
   | { kind: "exists"; key: string; options?: OperationOptions; bulk?: true }
-  | { kind: "delete"; key: string; options?: OperationOptions; bulk?: true }
-  | { kind: "copy"; from: string; to: string; options?: OperationOptions }
+  | {
+      kind: "delete";
+      mode?: "unconditional";
+      key: string;
+      options?: OperationOptions;
+      bulk?: true;
+    }
+  | {
+      kind: "copy";
+      mode?: "unconditional";
+      from: string;
+      to: string;
+      options?: OperationOptions;
+    }
   | { kind: "move"; from: string; to: string; options?: OperationOptions }
   | { kind: "list"; options?: ListOptions }
   | { kind: "url"; key: string; options?: UrlOptions }
   | { kind: "signedUploadUrl"; key: string; options?: SignUploadOptions };
+
+/** Whether an operation carries a native conditional predicate. */
+export const isConditionalOperation = (
+  op: FilesOperation
+): op is ConditionalFilesOperation =>
+  (op.kind === "upload" && (op.mode === "create" || op.mode === "replace")) ||
+  (op.kind === "download" && op.mode === "exact") ||
+  (op.kind === "delete" && op.mode === "match") ||
+  (op.kind === "copy" && op.mode === "conditional");
 
 /**
  * The value a given {@link FilesOperation} resolves to — the result map that
@@ -1023,7 +1224,9 @@ export type FilesOperation =
 export type OperationResult<O extends FilesOperation> = O extends {
   kind: "upload";
 }
-  ? UploadResult
+  ? O extends { mode: "create" | "replace" }
+    ? ConditionalUploadResult
+    : UploadResult
   : O extends { kind: "download" | "head" }
     ? StoredFile
     : O extends { kind: "exists" }
@@ -1138,6 +1341,259 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+const assertCanonicalStrongEtag: (
+  etag: unknown,
+  label?: string
+) => asserts etag is string = (etag, label = "etag") => {
+  if (typeof etag !== "string") {
+    throw new FilesError(
+      "Provider",
+      `${label} must be a canonical bare strong ETag`,
+      undefined,
+      { permanent: true }
+    );
+  }
+  const invalidLength = etag.length === 0 || etag.length > 1024;
+  const invalidForm = etag === "*" || etag.startsWith("W/");
+  let invalidCharacter = false;
+  if (!invalidLength) {
+    for (const character of etag) {
+      const code = character.codePointAt(0) ?? 0;
+      if (code < 0x21 || code > 0x7e || code === 0x22 || code === 0x2c) {
+        invalidCharacter = true;
+        break;
+      }
+    }
+  }
+  if (!(invalidLength || invalidForm || invalidCharacter)) {
+    return;
+  }
+  throw new FilesError(
+    "Provider",
+    `${label} must be a canonical bare strong ETag`,
+    undefined,
+    { permanent: true }
+  );
+};
+
+const assertConditionalUploadResult: (
+  result: unknown
+) => asserts result is ConditionalUploadResult = (result) => {
+  if (result === null || typeof result !== "object" || !("etag" in result)) {
+    throw new FilesError(
+      "Provider",
+      "a conditional upload must return its new canonical strong ETag",
+      undefined,
+      { permanent: true }
+    );
+  }
+  try {
+    assertCanonicalStrongEtag(result.etag);
+  } catch (error) {
+    throw new FilesError(
+      "Provider",
+      "a conditional upload must return its new canonical strong ETag",
+      error,
+      { permanent: true }
+    );
+  }
+};
+
+const toAdapterUploadOptions = (
+  opts: UploadOptions | undefined
+): AdapterUploadOptions | undefined => {
+  if (!opts) {
+    return;
+  }
+  // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit keeps public-only conditional controls out of the adapter contract
+  const {
+    condition: _condition,
+    control: _control,
+    multipart: _multipart,
+    ...adapterOptions
+  } = opts;
+  return adapterOptions;
+};
+
+const toAdapterDownloadOptions = (
+  opts: DownloadOptions | undefined
+): AdapterDownloadOptions | undefined => {
+  if (!opts) {
+    return;
+  }
+  // oxlint-disable-next-line sonarjs/no-unused-vars -- condition is a first-class operation field, never an adapter option
+  const { condition: _condition, ...adapterOptions } = opts;
+  return adapterOptions;
+};
+
+const toOperationOptions = (
+  opts: (OperationOptions & { condition?: unknown }) | undefined
+): OperationOptions | undefined => {
+  if (!opts) {
+    return;
+  }
+  return {
+    ...(opts.retries !== undefined && { retries: opts.retries }),
+    ...(opts.signal !== undefined && { signal: opts.signal }),
+    ...(opts.timeout !== undefined && { timeout: opts.timeout }),
+  };
+};
+
+const invalidCondition = (operation: string): never => {
+  throw new FilesError(
+    "Provider",
+    `${operation} condition is malformed`,
+    undefined,
+    { permanent: true }
+  );
+};
+
+const isConditionRecord = (
+  value: unknown
+): value is Record<PropertyKey, unknown> =>
+  value !== null && typeof value === "object";
+
+const snapshotUploadCondition = (
+  condition: unknown
+): UploadCondition | undefined => {
+  if (condition === undefined) {
+    return;
+  }
+  if (!isConditionRecord(condition)) {
+    return invalidCondition("upload");
+  }
+  if (condition.type === "create") {
+    return { type: "create" };
+  }
+  if (condition.type !== "replace") {
+    return invalidCondition("upload");
+  }
+  assertCanonicalStrongEtag(condition.etag);
+  return { etag: condition.etag, type: "replace" };
+};
+
+const snapshotEtagCondition = (
+  condition: unknown,
+  operation: "delete" | "download"
+): { etag: string } | undefined => {
+  if (condition === undefined) {
+    return;
+  }
+  if (!isConditionRecord(condition)) {
+    return invalidCondition(operation);
+  }
+  assertCanonicalStrongEtag(condition.etag);
+  return { etag: condition.etag };
+};
+
+const snapshotCopyCondition = (
+  condition: unknown
+): CopyCondition | undefined => {
+  if (condition === undefined) {
+    return;
+  }
+  if (!isConditionRecord(condition)) {
+    return invalidCondition("copy");
+  }
+  const { destination, source } = condition;
+  if (!(isConditionRecord(destination) && isConditionRecord(source))) {
+    return invalidCondition("copy");
+  }
+  assertCanonicalStrongEtag(source.etag, "source etag");
+  if (destination.type === "create") {
+    return {
+      destination: { type: "create" },
+      source: { etag: source.etag },
+    };
+  }
+  if (destination.type !== "replace") {
+    return invalidCondition("copy");
+  }
+  assertCanonicalStrongEtag(destination.etag, "destination etag");
+  return {
+    destination: { etag: destination.etag, type: "replace" },
+    source: { etag: source.etag },
+  };
+};
+
+const assertNoBulkCondition = (
+  operation: string,
+  values: readonly unknown[]
+): void => {
+  const hasCondition = values.some(
+    (value) =>
+      value !== null && typeof value === "object" && "condition" in value
+  );
+  if (!hasCondition) {
+    return;
+  }
+  throw new FilesError(
+    "Provider",
+    `${operation} does not support conditional predicates`,
+    undefined,
+    { permanent: true }
+  );
+};
+
+const assertConditionalUploadOptions = (
+  opts: UploadOptions | undefined
+): void => {
+  if (opts?.control === undefined && opts?.multipart === undefined) {
+    return;
+  }
+  throw new FilesError(
+    "Provider",
+    "conditional uploads do not support multipart or resumable controls",
+    undefined,
+    { permanent: true }
+  );
+};
+
+const unreachableOperation = (_op: never): never => {
+  throw new FilesError("Provider", "unsupported Files operation", undefined, {
+    permanent: true,
+  });
+};
+
+const conditionalOperationFingerprint = (
+  op: ConditionalFilesOperation
+): string => {
+  switch (op.kind) {
+    case "upload": {
+      if (op.mode === "replace") {
+        assertCanonicalStrongEtag(op.etag);
+        return JSON.stringify(["upload", "replace", op.etag]);
+      }
+      return JSON.stringify(["upload", "create"]);
+    }
+    case "download": {
+      assertCanonicalStrongEtag(op.etag);
+      return JSON.stringify(["download", "exact", op.etag]);
+    }
+    case "delete": {
+      assertCanonicalStrongEtag(op.etag);
+      return JSON.stringify(["delete", "match", op.etag]);
+    }
+    case "copy": {
+      assertCanonicalStrongEtag(op.source.etag, "source etag");
+      if (op.destination.type === "replace") {
+        assertCanonicalStrongEtag(op.destination.etag, "destination etag");
+        return JSON.stringify([
+          "copy",
+          "conditional",
+          op.source.etag,
+          "replace",
+          op.destination.etag,
+        ]);
+      }
+      return JSON.stringify(["copy", "conditional", op.source.etag, "create"]);
+    }
+    default: {
+      return unreachableOperation(op);
+    }
+  }
+};
+
 // Compile a search pattern into a key predicate once, up front, so the per-key
 // cost during the walk is a single test/compare and an invalid regex throws
 // before any provider call.
@@ -1227,6 +1683,7 @@ const normalizePrefix = (prefix: string | undefined): string => {
  */
 interface ActionContext {
   type: FilesActionType;
+  condition?: ConditionalActionType;
   key?: string;
   keys?: string[];
   from?: string;
@@ -1238,6 +1695,21 @@ interface ActionContext {
  * error is swallowed, and the return value is ignored — hooks are
  * fire-and-forget, like {@link UploadOptions.onProgress}.
  */
+const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
+  value !== null &&
+  (typeof value === "object" || typeof value === "function") &&
+  typeof (value as { then?: unknown }).then === "function";
+
+const consumeHookOutcome = async (
+  outcome: PromiseLike<unknown>
+): Promise<void> => {
+  try {
+    await outcome;
+  } catch {
+    // Observability must not break the operation.
+  }
+};
+
 const emitHook = <E>(
   hook: ((event: E) => void) | undefined,
   event: E
@@ -1246,10 +1718,30 @@ const emitHook = <E>(
     return;
   }
   try {
-    hook(event);
+    const outcome = hook(event) as unknown;
+    if (isPromiseLike(outcome)) {
+      // Hooks are deliberately not awaited, but an async observer still needs
+      // a rejection handler so it cannot escape after the provider settles.
+      void consumeHookOutcome(outcome);
+    }
   } catch {
     // Observability must not break the operation.
   }
+};
+
+const bindFileUpload = <A extends Adapter>(
+  files: Files<A>,
+  key: string
+): FileHandle["upload"] => {
+  function upload(
+    body: Body,
+    opts: ConditionalUploadOptions
+  ): Promise<ConditionalUploadResult>;
+  function upload(body: Body, opts?: UploadOptions): Promise<UploadResult>;
+  function upload(body: Body, opts?: UploadOptions): Promise<UploadResult> {
+    return files.upload(key, body, opts);
+  }
+  return upload;
 };
 
 export class Files<A extends Adapter = Adapter> {
@@ -1353,16 +1845,159 @@ export class Files<A extends Adapter = Adapter> {
     op: O,
     base: InternalNext
   ): Promise<OperationResult<O>> {
-    if (this.#wraps.length === 0) {
-      return base(op) as Promise<OperationResult<O>>;
+    if (!isConditionalOperation(op)) {
+      if (this.#wraps.length === 0) {
+        return base(op) as Promise<OperationResult<O>>;
+      }
+      const rejectIntroducedConditional: InternalNext = (nextOp) => {
+        if (isConditionalOperation(nextOp)) {
+          throw new FilesError(
+            "Provider",
+            "a plugin cannot introduce a conditional predicate into an ordinary operation",
+            undefined,
+            { permanent: true }
+          );
+        }
+        return base(nextOp);
+      };
+      // Fold from the innermost wrap outward so `plugins[0]` ends up outermost.
+      let chain: InternalNext = rejectIntroducedConditional;
+      for (const wrap of this.#wraps.toReversed()) {
+        const next = chain;
+        chain = (nextOp) =>
+          wrap(nextOp, (candidate) => {
+            if (isConditionalOperation(candidate)) {
+              throw new FilesError(
+                "Provider",
+                "a plugin cannot introduce a conditional predicate into an ordinary operation",
+                undefined,
+                { permanent: true }
+              );
+            }
+            return next(candidate);
+          });
+      }
+      return chain(op) as Promise<OperationResult<O>>;
     }
-    // Fold from the innermost wrap outward so `plugins[0]` ends up outermost.
-    let chain: InternalNext = base;
+
+    return this.#dispatchConditional(op, base) as Promise<OperationResult<O>>;
+  }
+
+  /**
+   * Conditional operations are allowed through the same onion as ordinary
+   * calls, but their native predicate is a non-bypassable capability boundary.
+   * Every `next()` must retain it exactly, and a successful chain must settle
+   * exactly one invocation of the real operation.
+   */
+  async #dispatchConditional(
+    op: ConditionalFilesOperation,
+    base: InternalNext
+  ): Promise<unknown> {
+    const fingerprint = conditionalOperationFingerprint(op);
+    const settlement = {
+      state: "idle" as "idle" | "pending" | "success" | "error",
+    };
+    let violation: FilesError | undefined;
+    let postNextFailure: unknown;
+    let hasPostNextFailure = false;
+    let nativeUploadEtag: string | undefined;
+
+    const rejectViolation = (message: string, cause?: unknown): never => {
+      const error = new FilesError("Provider", message, cause, {
+        permanent: true,
+      });
+      violation ??= error;
+      throw error;
+    };
+    const assertSamePredicate = (nextOp: FilesOperation): void => {
+      if (!isConditionalOperation(nextOp)) {
+        return rejectViolation(
+          "a plugin cannot remove or change a conditional operation predicate"
+        );
+      }
+      let nextFingerprint: string;
+      try {
+        nextFingerprint = conditionalOperationFingerprint(nextOp);
+      } catch (error) {
+        return rejectViolation(
+          "a plugin produced an invalid conditional operation predicate",
+          error
+        );
+      }
+      if (nextFingerprint !== fingerprint) {
+        rejectViolation(
+          "a plugin cannot remove or change a conditional operation predicate"
+        );
+      }
+    };
+
+    const guardedBase: InternalNext = async (nextOp) => {
+      assertSamePredicate(nextOp);
+      if (settlement.state !== "idle") {
+        rejectViolation(
+          "a plugin cannot invoke a conditional provider operation more than once"
+        );
+      }
+      settlement.state = "pending";
+      try {
+        const result = await base(nextOp);
+        if (op.kind === "upload") {
+          assertConditionalUploadResult(result);
+          nativeUploadEtag = result.etag;
+        }
+        settlement.state = "success";
+        return result;
+      } catch (error) {
+        settlement.state = "error";
+        throw error;
+      }
+    };
+
+    let chain: InternalNext = guardedBase;
     for (const wrap of this.#wraps.toReversed()) {
       const next = chain;
-      chain = (nextOp) => wrap(nextOp, next);
+      // eslint-disable-next-line no-loop-func -- each iteration captures its own block-scoped wrap/next pair
+      chain = async (nextOp) => {
+        assertSamePredicate(nextOp);
+        try {
+          return await wrap(nextOp, (candidate) => {
+            assertSamePredicate(candidate);
+            return next(candidate);
+          });
+        } catch (error) {
+          if (settlement.state === "success" && !hasPostNextFailure) {
+            postNextFailure = error;
+            hasPostNextFailure = true;
+          }
+          throw error;
+        }
+      };
     }
-    return chain(op) as Promise<OperationResult<O>>;
+
+    const result = await chain(op);
+    if (violation !== undefined) {
+      throw FilesError.wrap(violation);
+    }
+    if (hasPostNextFailure) {
+      throw FilesError.wrap(postNextFailure);
+    }
+    if (settlement.state !== "success") {
+      rejectViolation(
+        "a plugin cannot synthesize a successful conditional operation"
+      );
+    }
+    if (op.kind === "upload") {
+      assertConditionalUploadResult(result);
+      if (result.etag !== nativeUploadEtag) {
+        throw new FilesError(
+          "Provider",
+          "a plugin cannot replace the ETag returned by a conditional upload",
+          undefined,
+          { permanent: true }
+        );
+      }
+    }
+    return result;
   }
 
   /**
@@ -1376,19 +2011,45 @@ export class Files<A extends Adapter = Adapter> {
    * plugin re-routes to, so a cross-kind sub-op behaves the same inside a bulk
    * call as in a single one.
    */
+  // eslint-disable-next-line complexity -- exhaustive provider dispatch keeps every primitive in one auditable boundary
   #perform(op: FilesOperation): Promise<unknown> {
     switch (op.kind) {
       case "upload": {
-        return this.#runUpload(op.key, op.body, op.options, {
-          key: op.key,
-          type: "upload",
-        });
+        return this.#runUpload(
+          op.key,
+          op.body,
+          op.options,
+          {
+            ...(op.mode === "create" && { condition: "create" as const }),
+            ...(op.mode === "replace" && { condition: "replace" as const }),
+            key: op.key,
+            type: "upload",
+          },
+          op.mode === "create" || op.mode === "replace" ? op : undefined
+        );
       }
       case "download": {
-        const ctx: ActionContext = { key: op.key, type: "download" };
+        const ctx: ActionContext = {
+          ...(op.mode === "exact" && { condition: "exact-read" }),
+          key: op.key,
+          type: "download",
+        };
         const path = this.#path(op.key);
         if (op.options?.range) {
           this.#assertRangeSupported(op.options.range);
+        }
+        if (op.mode === "exact") {
+          const exactRead = this.#adapter.conditional?.exactRead;
+          if (!exactRead) {
+            return this.#unsupportedConditional("exact reads");
+          }
+          return this.#run(
+            op.options,
+            async (attemptOpts) =>
+              this.#storedFile(await exactRead(path, op.etag, attemptOpts)),
+            true,
+            ctx
+          );
         }
         return this.#run(
           op.options,
@@ -1420,8 +2081,24 @@ export class Files<A extends Adapter = Adapter> {
         );
       }
       case "delete": {
-        const ctx: ActionContext = { key: op.key, type: "delete" };
+        const ctx: ActionContext = {
+          ...(op.mode === "match" && { condition: "match-delete" }),
+          key: op.key,
+          type: "delete",
+        };
         const path = this.#path(op.key);
+        if (op.mode === "match") {
+          const conditionalDelete = this.#adapter.conditional?.delete;
+          if (!conditionalDelete) {
+            return this.#unsupportedConditional("conditional deletes");
+          }
+          return this.#run(
+            op.options,
+            (attemptOpts) => conditionalDelete(path, op.etag, attemptOpts),
+            true,
+            ctx
+          );
+        }
         return this.#run(
           op.options,
           (attemptOpts) => this.#adapter.delete(path, attemptOpts),
@@ -1430,9 +2107,43 @@ export class Files<A extends Adapter = Adapter> {
         );
       }
       case "copy": {
-        const ctx: ActionContext = { from: op.from, to: op.to, type: "copy" };
+        const ctx: ActionContext = {
+          ...(op.mode === "conditional" && {
+            condition: "conditional-copy" as const,
+          }),
+          from: op.from,
+          to: op.to,
+          type: "copy",
+        };
         const fromPath = this.#path(op.from, "copy source");
         const toPath = this.#path(op.to, "copy destination");
+        if (op.mode === "conditional") {
+          const conditionalCopy = this.#adapter.conditional?.copy;
+          const supportsDestination =
+            op.destination.type === "create"
+              ? conditionalCopy?.destinationCreate === true
+              : conditionalCopy?.destinationReplace === true;
+          if (
+            typeof conditionalCopy?.run !== "function" ||
+            conditionalCopy.sourceEtag !== true ||
+            conditionalCopy.atomicSourceDestination !== true ||
+            !supportsDestination
+          ) {
+            return this.#unsupportedConditional("conditional copies");
+          }
+          return this.#run(
+            op.options,
+            (attemptOpts) =>
+              conditionalCopy.run(
+                fromPath,
+                toPath,
+                { destination: op.destination, source: op.source },
+                attemptOpts
+              ),
+            true,
+            ctx
+          );
+        }
         return this.#run(
           op.options,
           (attemptOpts) => this.#adapter.copy(fromPath, toPath, attemptOpts),
@@ -1464,7 +2175,7 @@ export class Files<A extends Adapter = Adapter> {
           ctx
         );
       }
-      default: {
+      case "signedUploadUrl": {
         const ctx: ActionContext = { key: op.key, type: "signedUploadUrl" };
         const path = this.#path(op.key);
         return this.#run(
@@ -1477,6 +2188,9 @@ export class Files<A extends Adapter = Adapter> {
           true,
           ctx
         );
+      }
+      default: {
+        return unreachableOperation(op);
       }
     }
   }
@@ -1609,6 +2323,7 @@ export class Files<A extends Adapter = Adapter> {
       op,
       provider: this.#adapter.name,
       ts,
+      ...(ctx.condition !== undefined && { condition: ctx.condition }),
       ...(typeof upload?.size === "number" && { bytes: upload.size }),
       ...(typeof upload?.etag === "string" && { etag: upload.etag }),
       ...(sha256 !== undefined && { sha256 }),
@@ -1650,8 +2365,29 @@ export class Files<A extends Adapter = Adapter> {
    */
   get capabilities(): AdapterCapabilities {
     const a = this.#adapter;
+    const conditionalCopy = a.conditional?.copy;
+    const nativeConditionalCopy =
+      typeof conditionalCopy?.run === "function" &&
+      conditionalCopy.sourceEtag === true &&
+      conditionalCopy.atomicSourceDestination === true;
     return {
       cacheControl: a.supportsCacheControl === true,
+      conditional: {
+        copy: {
+          atomicSourceDestination: nativeConditionalCopy,
+          destinationCreate:
+            nativeConditionalCopy && conditionalCopy.destinationCreate === true,
+          destinationReplace:
+            nativeConditionalCopy &&
+            conditionalCopy.destinationReplace === true,
+          sourceEtag: nativeConditionalCopy,
+        },
+        create: typeof a.conditional?.create === "function",
+        delete: typeof a.conditional?.delete === "function",
+        exactRead: typeof a.conditional?.exactRead === "function",
+        multipart: { create: false, replace: false },
+        replace: typeof a.conditional?.replace === "function",
+      },
       delimiter: a.supportsDelimiter === true,
       metadata: a.supportsMetadata === true,
       multipart: typeof a.resumableUpload === "function",
@@ -1691,7 +2427,7 @@ export class Files<A extends Adapter = Adapter> {
       moveFrom: (sourceKey, opts) => this.move(sourceKey, key, opts),
       moveTo: (destinationKey, opts) => this.move(key, destinationKey, opts),
       signedUploadUrl: (opts) => this.signedUploadUrl(key, opts),
-      upload: (body, opts) => this.upload(key, body, opts),
+      upload: bindFileUpload(this, key),
       url: (opts) => this.url(key, opts),
     };
   }
@@ -1748,6 +2484,11 @@ export class Files<A extends Adapter = Adapter> {
    * Both forms honor the client's `prefix`; the array form reports the keys
    * the caller passed, not the internal prefixed paths.
    */
+  upload(
+    key: string,
+    body: Body,
+    opts: ConditionalUploadOptions
+  ): Promise<ConditionalUploadResult>;
   upload(key: string, body: Body, opts?: UploadOptions): Promise<UploadResult>;
   upload(
     items: UploadManyItem[],
@@ -1763,7 +2504,10 @@ export class Files<A extends Adapter = Adapter> {
       const bulkOpts = bodyOrOpts as UploadManyOptions | undefined;
       return this.#writeAction(
         { keys: items.map((item) => item.key), type: "upload" },
-        () => this.#uploadMany(items, bulkOpts)
+        () => {
+          assertNoBulkCondition("bulk upload", [bulkOpts, ...items]);
+          return this.#uploadMany(items, bulkOpts);
+        }
       );
     }
     const body = bodyOrOpts as Body;
@@ -1776,11 +2520,40 @@ export class Files<A extends Adapter = Adapter> {
     // consumer — or one that fails — never reads or hashes the body.
     return this.#writeAction(
       ctx,
-      () =>
-        this.#dispatch(
-          { body, key: keyOrItems, kind: "upload", options: opts },
-          (op) => this.#perform(op)
-        ),
+      () => {
+        const condition = snapshotUploadCondition(opts?.condition);
+        if (!condition) {
+          return this.#dispatch(
+            { body, key: keyOrItems, kind: "upload", options: opts },
+            (op) => this.#perform(op)
+          );
+        }
+        ctx.condition = condition.type;
+        assertConditionalUploadOptions(opts);
+        const options = toAdapterUploadOptions(opts);
+        return condition.type === "create"
+          ? this.#dispatch(
+              {
+                body,
+                key: keyOrItems,
+                kind: "upload",
+                mode: "create",
+                options,
+              },
+              (op) => this.#perform(op)
+            )
+          : this.#dispatch(
+              {
+                body,
+                etag: condition.etag,
+                key: keyOrItems,
+                kind: "upload",
+                mode: "replace",
+                options,
+              },
+              (op) => this.#perform(op)
+            );
+      },
       () => this.#uploadSha256(body)
     );
   }
@@ -1798,23 +2571,74 @@ export class Files<A extends Adapter = Adapter> {
     key: string,
     body: Body,
     opts?: UploadOptions,
-    ctx?: ActionContext
+    ctx?: ActionContext,
+    conditional?: Extract<ConditionalFilesOperation, { kind: "upload" }>
   ): Promise<UploadResult> {
     this.#assertUploadOptionsSupported(opts);
     const path = this.#path(key);
+    if (conditional && (opts?.control || opts?.multipart !== undefined)) {
+      throw new FilesError(
+        "Provider",
+        "conditional uploads do not support multipart or resumable controls",
+        undefined,
+        { permanent: true }
+      );
+    }
+    const nativeConditionalUpload = (() => {
+      if (!conditional) {
+        return;
+      }
+      if (conditional.mode === "create") {
+        return this.#adapter.conditional?.create;
+      }
+      const replace = this.#adapter.conditional?.replace;
+      if (!replace) {
+        return;
+      }
+      return (
+        uploadPath: string,
+        uploadBody: Body,
+        uploadOptions?: AdapterUploadOptions
+      ): Promise<ConditionalUploadResult> =>
+        replace(uploadPath, uploadBody, conditional.etag, uploadOptions);
+    })();
+    if (conditional && !nativeConditionalUpload) {
+      return this.#unsupportedConditional(
+        conditional.mode === "create"
+          ? "conditional creates"
+          : "conditional replaces"
+      );
+    }
     if (opts?.control) {
       return this.#runResumable(path, body, opts, opts.control);
     }
     const isStream = body instanceof ReadableStream;
     const onProgress = opts?.onProgress;
 
+    const upload = async (
+      uploadBody: Body,
+      attemptOpts: UploadOptions | undefined
+    ): Promise<UploadResult> => {
+      if (!nativeConditionalUpload) {
+        return this.#uploadResult(
+          await this.#adapter.upload(path, uploadBody, attemptOpts)
+        );
+      }
+      const result = this.#uploadResult(
+        await nativeConditionalUpload(
+          path,
+          uploadBody,
+          toAdapterUploadOptions(attemptOpts)
+        )
+      );
+      assertConditionalUploadResult(result);
+      return result;
+    };
+
     if (!onProgress || this.#adapter.reportsUploadProgress) {
       return this.#run(
         opts,
-        async (attemptOpts) =>
-          this.#uploadResult(
-            await this.#adapter.upload(path, body, attemptOpts)
-          ),
+        (attemptOpts) => upload(body, attemptOpts),
         !isStream,
         ctx
       );
@@ -1838,10 +2662,7 @@ export class Files<A extends Adapter = Adapter> {
       );
       return this.#run(
         rest,
-        async (attemptOpts) =>
-          this.#uploadResult(
-            await this.#adapter.upload(path, tracked, attemptOpts)
-          ),
+        (attemptOpts) => upload(tracked, attemptOpts),
         false,
         ctx
       );
@@ -1858,9 +2679,7 @@ export class Files<A extends Adapter = Adapter> {
     return this.#run(
       rest,
       async (attemptOpts) => {
-        const result = this.#uploadResult(
-          await this.#adapter.upload(path, body, attemptOpts)
-        );
+        const result = await upload(body, attemptOpts);
         const done = total ?? result.size;
         emitHook(onProgress, { loaded: done, total: done });
         return result;
@@ -1986,21 +2805,44 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<StoredFile | DownloadManyResult> {
     if (Array.isArray(keyOrKeys)) {
       const keys = keyOrKeys;
-      return this.#action({ keys, type: "download" }, () =>
-        this.#downloadMany(keys, opts as DownloadManyOptions | undefined)
-      );
+      return this.#action({ keys, type: "download" }, () => {
+        assertNoBulkCondition("bulk download", [opts]);
+        return this.#downloadMany(
+          keys,
+          opts as DownloadManyOptions | undefined
+        );
+      });
     }
-    const ctx: ActionContext = { key: keyOrKeys, type: "download" };
-    return this.#action(ctx, () =>
-      this.#dispatch(
-        {
-          key: keyOrKeys,
-          kind: "download",
-          options: opts as DownloadOptions | undefined,
-        },
+    const downloadOptions = opts as DownloadOptions | undefined;
+    const ctx: ActionContext = {
+      key: keyOrKeys,
+      type: "download",
+    };
+    return this.#action(ctx, () => {
+      const condition = snapshotEtagCondition(
+        downloadOptions?.condition,
+        "download"
+      );
+      if (condition) {
+        ctx.condition = "exact-read";
+      }
+      return this.#dispatch(
+        condition
+          ? {
+              etag: condition.etag,
+              key: keyOrKeys,
+              kind: "download",
+              mode: "exact",
+              options: toAdapterDownloadOptions(downloadOptions),
+            }
+          : {
+              key: keyOrKeys,
+              kind: "download",
+              options: toAdapterDownloadOptions(downloadOptions),
+            },
         (op) => this.#perform(op)
-      )
-    );
+      );
+    });
   }
 
   /**
@@ -2267,29 +3109,49 @@ export class Files<A extends Adapter = Adapter> {
    * Both forms honor the client's `prefix`; the array form reports the keys
    * the caller passed, not the internal prefixed paths.
    */
-  delete(key: string, opts?: OperationOptions): Promise<void>;
+  delete(key: string, opts?: DeleteOptions): Promise<void>;
   delete(keys: string[], opts?: DeleteManyOptions): Promise<DeleteManyResult>;
   delete(
     key: string | string[],
-    opts?: OperationOptions | DeleteManyOptions
+    opts?: DeleteOptions | DeleteManyOptions
   ): Promise<void | DeleteManyResult> {
     if (Array.isArray(key)) {
       const keys = key;
-      return this.#writeAction({ keys, type: "delete" }, () =>
-        this.#deleteMany(keys, opts as DeleteManyOptions | undefined)
-      );
+      return this.#writeAction({ keys, type: "delete" }, () => {
+        assertNoBulkCondition("bulk delete", [opts]);
+        return this.#deleteMany(keys, opts as DeleteManyOptions | undefined);
+      });
     }
-    const ctx: ActionContext & { type: "delete" } = { key, type: "delete" };
-    return this.#writeAction(ctx, () =>
-      this.#dispatch(
-        {
-          key,
-          kind: "delete",
-          options: opts as OperationOptions | undefined,
-        },
+    const deleteOptions = opts as DeleteOptions | undefined;
+    const ctx: ActionContext & { type: "delete" } = {
+      key,
+      type: "delete",
+    };
+    return this.#writeAction(ctx, () => {
+      const condition = snapshotEtagCondition(
+        deleteOptions?.condition,
+        "delete"
+      );
+      if (condition) {
+        ctx.condition = "match-delete";
+      }
+      return this.#dispatch(
+        condition
+          ? {
+              etag: condition.etag,
+              key,
+              kind: "delete",
+              mode: "match",
+              options: toOperationOptions(deleteOptions),
+            }
+          : {
+              key,
+              kind: "delete",
+              options: toOperationOptions(deleteOptions),
+            },
         (op) => this.#perform(op)
-      )
-    );
+      );
+    });
   }
 
   async #deleteMany(
@@ -2395,17 +3257,37 @@ export class Files<A extends Adapter = Adapter> {
     };
   }
 
-  copy(from: string, to: string, opts?: OperationOptions): Promise<void> {
+  copy(from: string, to: string, opts?: CopyOptions): Promise<void> {
     const ctx: ActionContext & { type: "copy" } = {
       from,
       to,
       type: "copy",
     };
-    return this.#writeAction(ctx, () =>
-      this.#dispatch({ from, kind: "copy", options: opts, to }, (op) =>
-        this.#perform(op)
-      )
-    );
+    return this.#writeAction(ctx, () => {
+      const condition = snapshotCopyCondition(opts?.condition);
+      if (condition) {
+        ctx.condition = "conditional-copy";
+      }
+      return this.#dispatch(
+        condition
+          ? {
+              destination: condition.destination,
+              from,
+              kind: "copy",
+              mode: "conditional",
+              options: toOperationOptions(opts),
+              source: condition.source,
+              to,
+            }
+          : {
+              from,
+              kind: "copy",
+              options: toOperationOptions(opts),
+              to,
+            },
+        (op) => this.#perform(op)
+      );
+    });
   }
 
   /**
@@ -2605,6 +3487,7 @@ export class Files<A extends Adapter = Adapter> {
     );
   }
 
+  // eslint-disable-next-line complexity -- retry, timeout, abort, and hook settlement deliberately share one attempt loop
   async #run<O extends OperationOptions, T>(
     opts: O | undefined,
     fn: (opts: O | undefined) => Promise<T>,
@@ -2643,6 +3526,7 @@ export class Files<A extends Adapter = Adapter> {
         if (ctx && this.#hooks?.onRetry) {
           emitHook(this.#hooks.onRetry, {
             attempt: attempt + 1,
+            ...(ctx.condition !== undefined && { condition: ctx.condition }),
             delayMs,
             error: wrapped,
             from: ctx.from,
@@ -2682,6 +3566,15 @@ export class Files<A extends Adapter = Adapter> {
     throw new FilesError(
       "ReadOnly",
       `Cannot call ${operation}() on a read-only Files instance.`
+    );
+  }
+
+  #unsupportedConditional(operation: string): never {
+    throw new FilesError(
+      "Provider",
+      `${this.#adapter.name}: ${operation} are not supported by this adapter`,
+      undefined,
+      { permanent: true }
     );
   }
 

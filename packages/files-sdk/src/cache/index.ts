@@ -1,4 +1,4 @@
-import { createStoredFile } from "../index.js";
+import { createStoredFile, isConditionalOperation } from "../index.js";
 import type {
   Files,
   FilesOperation,
@@ -398,6 +398,13 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         return enabled.has("url") ? cachedUrl(op, next) : next(op);
       }
       case "download": {
+        // An exact read is a provider precondition, not a cache validator. A
+        // cached body may predate the supplied ETag (or have no trustworthy
+        // relationship to it), so always drive the native conditional read
+        // and never populate the ordinary download cache from its result.
+        if (isConditionalOperation(op)) {
+          return next(op);
+        }
         return enabled.has("download") ? cachedDownload(op, next) : next(op);
       }
       // Writes always invalidate, regardless of which reads are cached — drop

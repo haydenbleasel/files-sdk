@@ -29,6 +29,8 @@ const files = new Files({
 });
 ```
 
+Canonical AWS S3 buckets support provider-native [conditional create, replace, exact read, delete, and copy](/docs/conditional-operations). Conditional copy sends its source ETag and destination create/replace predicate in one `CopyObject` request. A custom `endpoint` does not advertise these capabilities: S3-compatible services differ in conditional-header support and must be verified independently.
+
 ## Options
 
 <AutoTypeTable
@@ -50,3 +52,4 @@ const files = new Files({
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
 | `signedUploadUrl` | ✅ |  |
+| conditional operations | ✅ | Single-object native requests. Bulk, multipart, resumable, and custom-endpoint conditionals are unsupported. |

@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFiles } from "../src/index.js";
-import type { Adapter, Files, ListOptions, ListResult } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  Files,
+  ListOptions,
+  ListResult,
+  PluginNext,
+} from "../src/index.js";
 import { versioning } from "../src/versioning/index.js";
 import type { VersioningOptions } from "../src/versioning/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -420,5 +427,54 @@ describe("versioning plugin — error propagation", () => {
     };
     const files = createFiles({ adapter: broken, plugins: [versioning()] });
     await expect(files.upload("a.txt", "x")).rejects.toThrow(/boom/u);
+  });
+});
+
+describe("versioning plugin — conditional policy", () => {
+  test("rejects conditional mutations before snapshot or provider I/O", async () => {
+    const plugin = versioning();
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("versioning wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operations: ConditionalFilesOperation[] = [
+      { body: "v2", key: "notes.txt", kind: "upload", mode: "create" },
+      { etag: "etag-1", key: "notes.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "staging.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "notes.txt",
+      },
+    ];
+
+    for (const operation of operations) {
+      // eslint-disable-next-line no-await-in-loop -- each rejected operation must be inspected independently
+      const failure = await wrap(operation, next).catch(
+        (error: unknown) => error
+      );
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    }
+    expect(nextCalls).toBe(0);
+
+    await wrap(
+      {
+        etag: "etag-1",
+        key: "notes.txt",
+        kind: "download",
+        mode: "exact",
+      },
+      next
+    );
+    expect(nextCalls).toBe(1);
   });
 });

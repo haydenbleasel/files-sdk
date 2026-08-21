@@ -101,6 +101,7 @@ Placed **last** (innermost) it instead records the physical operations the pipel
 
 - **One record per logical operation.** Plugins run [outside retries](/docs/retries), so a call that retries three times is still **one** record - its `durationMs` spans the retries.
 - **Bulk fans out to one record per item.** `upload([...])` / `delete([...])` record each key individually, flagged `bulk: true`, with per-item success/error - exactly the granularity an audit log wants.
+- **Conditional calls stay under their verb.** Native create/replace/exact-read/delete/copy records keep `action: "upload" | "download" | "delete" | "copy"` and add a redacted `condition`; predicate ETags are never recorded.
 - **Body-transparent, works on any adapter.** It never buffers, transforms, or reads the body (`size` comes from the upload result's declared metadata, not the bytes), so streaming, range downloads, `url()`, and `signedUploadUrl()` all keep working. It writes no object metadata and has no native dependencies.
 - **Not a security boundary.** It records operations made **through the instance**; a direct presigned `PUT` to the bucket bypasses it. Pair it with [`signedUrlPolicy()`](/docs/plugins/signed-url-policy) to keep the URLs you mint tight.
 - **`wrap`-only.** It adds no methods, so plain `new Files({ plugins })` works - though `createFiles` is fine too and keeps you consistent with the [extend](/docs/plugins/api#createfiles)-based plugins.

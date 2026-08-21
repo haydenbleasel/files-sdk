@@ -11,6 +11,21 @@ Copies the object at `from` to `to` and resolves to `void`. Where the provider h
 await files.copy("avatars/abc.png", "avatars/abc.bak.png");
 ```
 
+## Conditional copy
+
+Check a source generation and a destination create/replace predicate in one provider request:
+
+```ts lineNumbers
+await files.copy("staging/report.json", "published/report.json", {
+  condition: {
+    source: { etag: staging.etag! },
+    destination: { type: "create" },
+  },
+});
+```
+
+Conditional copy never uses the read-and-write fallback. The adapter must explicitly declare the requested source and destination checks and that they are atomic together; otherwise the call fails before provider I/O. See [Conditional operations](/docs/conditional-operations).
+
 Both keys are validated, and on a client with a [prefix](/docs/prefixes) both `from` and `to` are resolved against it. The destination is overwritten if it already exists — there is no built-in guard against clobbering. The object's `contentType` and user `metadata` travel with the copy; `lastModified` is set to the time of the copy, since the destination is a fresh write rather than a clone of the source's timestamp. A missing `from` throws [`FilesError`](/docs/api/errors) with `code: "NotFound"`.
 
 ## The read + write fallback

@@ -1,4 +1,7 @@
+import { isConditionalOperation } from "../index.js";
 import type {
+  ConditionalActionType,
+  ConditionalFilesOperation,
   FilesActionType,
   FilesOperation,
   FilesPlugin,
@@ -7,6 +10,21 @@ import type {
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+
+const conditionalAction = (
+  op: ConditionalFilesOperation
+): ConditionalActionType => {
+  if (op.kind === "upload") {
+    return op.mode;
+  }
+  if (op.kind === "download") {
+    return "exact-read";
+  }
+  if (op.kind === "delete") {
+    return "match-delete";
+  }
+  return "conditional-copy";
+};
 
 /**
  * The mutating verbs, audited by default — the same set the SDK treats as
@@ -45,6 +63,8 @@ const ALL_ACTIONS: readonly FilesActionType[] = [
 export interface AuditRecord {
   /** The verb that ran (mirrors {@link FilesActionType}). */
   action: FilesActionType;
+  /** Native conditional primitive, without its ETag predicate. */
+  condition?: ConditionalActionType;
   /** Caller-facing key — present for every verb except `copy` / `move` / `list`. */
   key?: string;
   /** `copy` / `move` source. */
@@ -154,12 +174,18 @@ const buildRecord = (op: FilesOperation, ctx: RecordContext): AuditRecord => {
     status === "success" &&
     op.kind === "upload" &&
     typeof (result as UploadResult).size === "number";
+  const condition: ConditionalActionType | undefined = isConditionalOperation(
+    op
+  )
+    ? conditionalAction(op)
+    : undefined;
   return {
     action: op.kind,
     at,
     durationMs,
     status,
     ...locus,
+    ...(condition !== undefined && { condition }),
     ...(actor !== undefined && { actor }),
     ...("bulk" in op && op.bulk ? { bulk: true } : {}),
     ...(hasSize && { size: (result as UploadResult).size }),

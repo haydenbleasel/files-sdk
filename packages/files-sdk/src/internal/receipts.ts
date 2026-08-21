@@ -9,6 +9,14 @@ import type { Body } from "../index.js";
  */
 export type ReceiptOp = "upload" | "delete" | "copy" | "move";
 
+/** A redacted summary of the conditional primitive used by an action. */
+export type ConditionalActionType =
+  | "create"
+  | "replace"
+  | "exact-read"
+  | "match-delete"
+  | "conditional-copy";
+
 /**
  * The full receipt configuration, after normalizing the
  * `receipts?: boolean | { sha256?: boolean }` constructor option. `enabled`
@@ -63,6 +71,8 @@ export const resolveReceiptsConfig = (
 export interface Receipt {
   /** The mutating verb that produced this receipt. */
   op: ReceiptOp;
+  /** The native conditional primitive, when this was a conditional mutation. */
+  condition?: ConditionalActionType;
   /** The storage provider, from the adapter's `name` (e.g. `"s3"`, `"r2"`). */
   provider: string;
   /**
@@ -88,6 +98,7 @@ export interface Receipt {
 /** The action-derived inputs a {@link Receipt} is assembled from. */
 export interface ReceiptInput {
   op: ReceiptOp;
+  condition?: ConditionalActionType;
   provider: string;
   key: string;
   bytes?: number;
@@ -109,6 +120,7 @@ export const buildReceipt = (input: ReceiptInput): Receipt => ({
   op: input.op,
   provider: input.provider,
   ts: input.ts,
+  ...(input.condition !== undefined && { condition: input.condition }),
   ...(input.bytes !== undefined && { bytes: input.bytes }),
   ...(input.etag !== undefined && { etag: input.etag }),
   ...(input.sha256 !== undefined && { sha256: input.sha256 }),

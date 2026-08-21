@@ -1,3 +1,4 @@
+import { isConditionalOperation } from "../index.js";
 import type {
   FilesOperation,
   FilesPlugin,
@@ -304,6 +305,17 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     op: FilesOperation,
     next: PluginNext
   ): Promise<unknown> => {
+    if (
+      isConditionalOperation(op) &&
+      (op.kind === "upload" || op.kind === "download")
+    ) {
+      throw new FilesError(
+        "Provider",
+        `dedup: conditional ${op.kind} is unsupported because pointer and blob operations cannot share one native compare-and-set`,
+        undefined,
+        { permanent: true }
+      );
+    }
     // Direct traffic to the blob store bypasses the plugin: blobs are stored
     // and read verbatim, never treated as pointers or re-de-duplicated.
     if ("key" in op && isStoreKey(op.key)) {
