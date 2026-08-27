@@ -581,6 +581,87 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     );
   });
 
+  test("conditional flags route through the upload/download/delete/copy builders", async () => {
+    const local = path.join(root, "in.txt");
+    await fsp.writeFile(local, "payload");
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "upload",
+      "k",
+      "--file",
+      local,
+      "--if-match",
+      "abc"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "upload",
+      condition: { etag: "abc", type: "replace" },
+    });
+    cap.stdout.length = 0;
+
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "download",
+      "k",
+      "--out",
+      local,
+      "--if-match",
+      "abc"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "download",
+      condition: { etag: "abc" },
+    });
+    cap.stdout.length = 0;
+
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "delete",
+      "k",
+      "--if-match",
+      "abc"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "delete",
+      condition: { etag: "abc" },
+    });
+    cap.stdout.length = 0;
+
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "copy",
+      "a",
+      "b",
+      "--if-match",
+      "src",
+      "--dest-if-match",
+      "dst"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      action: "copy",
+      condition: {
+        destination: { etag: "dst", type: "replace" },
+        source: { etag: "src" },
+      },
+    });
+  });
+
   test("upload/download new flags route through their builders", async () => {
     const local = path.join(root, "in.txt");
     await fsp.writeFile(local, "payload");

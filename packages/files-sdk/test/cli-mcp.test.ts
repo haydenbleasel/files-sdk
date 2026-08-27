@@ -288,6 +288,70 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(after.data.exists).toBe(false);
   });
 
+  test("condition inputs are forwarded, not stripped, and fail closed on fs", async () => {
+    await call(h.client, "upload", { key: "cas.txt", text: "v1" });
+
+    const create = await call(h.client, "upload", {
+      condition: { type: "create" },
+      key: "cas-new.txt",
+      text: "x",
+    });
+    expect(create.isError).toBe(true);
+    expect((create.data.error as { message: string }).message).toMatch(
+      /conditional/iu
+    );
+    const missing = await call(h.client, "exists", { key: "cas-new.txt" });
+    expect(missing.data.exists).toBe(false);
+
+    const replace = await call(h.client, "upload", {
+      condition: { etag: "abc", type: "replace" },
+      key: "cas.txt",
+      text: "v2",
+    });
+    expect(replace.isError).toBe(true);
+
+    const read = await call(h.client, "download", {
+      condition: { etag: "abc" },
+      key: "cas.txt",
+    });
+    expect(read.isError).toBe(true);
+
+    const remove = await call(h.client, "delete", {
+      condition: { etag: "abc" },
+      key: "cas.txt",
+    });
+    expect(remove.isError).toBe(true);
+
+    const copy = await call(h.client, "copy", {
+      condition: { destination: { type: "create" }, source: { etag: "abc" } },
+      from: "cas.txt",
+      to: "cas-copy.txt",
+    });
+    expect(copy.isError).toBe(true);
+
+    // Nothing above degraded into an unconditional mutation.
+    const body = await call(h.client, "download", { key: "cas.txt" });
+    expect(Buffer.from(body.data.base64 as string, "base64").toString()).toBe(
+      "v1"
+    );
+    const copied = await call(h.client, "exists", { key: "cas-copy.txt" });
+    expect(copied.data.exists).toBe(false);
+  });
+
+  test("bulk delete rejects a condition instead of ignoring it", async () => {
+    await call(h.client, "upload", { key: "bulk-a.txt", text: "x" });
+    const result = await call(h.client, "delete", {
+      condition: { etag: "abc" },
+      key: ["bulk-a.txt"],
+    });
+    expect(result.isError).toBe(true);
+    expect((result.data.error as { message: string }).message).toMatch(
+      /single key/u
+    );
+    const still = await call(h.client, "exists", { key: "bulk-a.txt" });
+    expect(still.data.exists).toBe(true);
+  });
+
   test("copy and move", async () => {
     await call(h.client, "upload", { key: "src.txt", text: "payload" });
 

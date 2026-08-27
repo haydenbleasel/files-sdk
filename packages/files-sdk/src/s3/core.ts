@@ -90,6 +90,21 @@ export interface S3AdapterOptions {
    */
   forcePathStyle?: boolean;
   /**
+   * Whether to expose the native conditional primitives (`If-Match` /
+   * `If-None-Match` create, replace, exact read, delete, and copy).
+   *
+   * Defaults to `true` only when the client will talk to canonical AWS S3:
+   * no `endpoint` here and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`
+   * redirect in the environment. S3-compatible services differ in which
+   * conditional headers they honor, so the adapter fails closed for them
+   * rather than risk an unconditional overwrite.
+   *
+   * Set `true` to opt an explicit AWS-hosted endpoint (VPC, FIPS, GovCloud, a
+   * shared-config `endpoint_url` you know is AWS) back in, or `false` to
+   * disable the primitives on a canonical bucket.
+   */
+  conditional?: boolean;
+  /**
    * Static credentials. Skip to use the AWS credential chain (env vars,
    * IAM role, shared profile, EC2/ECS/EKS instance metadata).
    */
@@ -210,6 +225,43 @@ const reportConditionalProgress = (
     // must never turn into a retry of the conditional mutation.
   }
 };
+
+// Each conditional input field and the wire header it must serialize to. A
+// client whose model predates the field leaves the header out, so the guard
+// compares the built request against the input rather than trusting the
+// peer range.
+const CONDITIONAL_HEADERS: readonly (readonly [string, string])[] = [
+  ["IfMatch", "if-match"],
+  ["IfNoneMatch", "if-none-match"],
+  ["CopySourceIfMatch", "x-amz-copy-source-if-match"],
+];
+
+// Generic over the handler shapes so it slots into `middlewareStack.add` as a
+// build-step middleware without pulling `@smithy/types` in as a dependency.
+const assertConditionalHeadersSerialized =
+  <Args extends { input: unknown; request: unknown }, Result>(
+    next: (args: Args) => Promise<Result>
+  ) =>
+  (args: Args): Promise<Result> => {
+    const input = args.input as Record<string, unknown>;
+    const request = args.request as {
+      headers?: Record<string, string | undefined>;
+    };
+    const sent = new Set(
+      Object.keys(request.headers ?? {}).map((name) => name.toLowerCase())
+    );
+    for (const [field, header] of CONDITIONAL_HEADERS) {
+      if (input[field] !== undefined && !sent.has(header)) {
+        throw new FilesError(
+          "Provider",
+          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; upgrade to a release that supports conditional requests (>= 3.980.0)`,
+          undefined,
+          { permanent: true }
+        );
+      }
+    }
+    return next(args);
+  };
 
 const assertConditionalUploadOptions = (
   options: AdapterUploadOptions | undefined
@@ -646,6 +698,16 @@ export const createS3Adapter = (
   };
 
   const client = new S3Client(config);
+  // One header scan per request, and a no-op unless the command carried a
+  // conditional input. It exists for the SDK-version gap: the peer floor is
+  // advisory (optional peer), and a `@aws-sdk/client-s3` that predates a
+  // conditional input field (CopyObject `IfMatch` / `IfNoneMatch` arrived in
+  // 3.980.0) accepts the field and silently omits the header, turning a
+  // compare-and-set into an unconditional overwrite.
+  client.middlewareStack.add(assertConditionalHeadersSerialized, {
+    name: "filesSdkConditionalHeaderGuard",
+    step: "build",
+  });
   const { bucket } = opts;
   const { publicBaseUrl } = opts;
   const defaultUrlExpiresIn =
@@ -785,55 +847,43 @@ export const createS3Adapter = (
     }
   };
 
-  const conditional: S3Adapter["conditional"] =
-    opts.endpoint === undefined
-      ? {
-          copy: {
-            atomicSourceDestination: true,
-            destinationCreate: true,
-            destinationReplace: true,
-            async run(
-              from: string,
-              to: string,
-              condition: CopyCondition,
-              operationOpts
-            ): Promise<void> {
-              const sourceEtag = quoteCanonicalEtag(condition.source.etag);
-              const destinationPredicate =
-                condition.destination.type === "create"
-                  ? { IfNoneMatch: "*" }
-                  : {
-                      IfMatch: quoteCanonicalEtag(condition.destination.etag),
-                    };
-              try {
-                await client.send(
-                  new CopyObjectCommand({
-                    Bucket: bucket,
-                    CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
-                    CopySourceIfMatch: sourceEtag,
-                    Key: to,
-                    ...destinationPredicate,
-                  }),
-                  operationOpts?.signal
-                    ? { abortSignal: operationOpts.signal }
-                    : undefined
-                );
-              } catch (error) {
-                throw wrapErr(error);
-              }
-            },
-            sourceEtag: true,
-          },
-          create(key, body, options) {
-            return conditionalUpload(key, body, { type: "create" }, options);
-          },
-          async delete(key, etag, operationOpts): Promise<void> {
+  // Canonical AWS only, unless the caller says otherwise: an explicit
+  // `endpoint` or an `AWS_ENDPOINT_URL*` redirect (which `S3Client` honors
+  // on its own) both point at a service whose conditional-header support is
+  // unknown, so the primitives stay off and every conditional call fails
+  // closed before provider I/O.
+  const nativeConditional =
+    opts.conditional ??
+    (opts.endpoint === undefined &&
+      readEnv("AWS_ENDPOINT_URL_S3") === undefined &&
+      readEnv("AWS_ENDPOINT_URL") === undefined);
+  const conditional: S3Adapter["conditional"] = nativeConditional
+    ? {
+        copy: {
+          atomicSourceDestination: true,
+          destinationCreate: true,
+          destinationReplace: true,
+          async run(
+            from: string,
+            to: string,
+            condition: CopyCondition,
+            operationOpts
+          ): Promise<void> {
+            const sourceEtag = quoteCanonicalEtag(condition.source.etag);
+            const destinationPredicate =
+              condition.destination.type === "create"
+                ? { IfNoneMatch: "*" }
+                : {
+                    IfMatch: quoteCanonicalEtag(condition.destination.etag),
+                  };
             try {
               await client.send(
-                new DeleteObjectCommand({
+                new CopyObjectCommand({
                   Bucket: bucket,
-                  IfMatch: quoteCanonicalEtag(etag),
-                  Key: key,
+                  CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+                  CopySourceIfMatch: sourceEtag,
+                  Key: to,
+                  ...destinationPredicate,
                 }),
                 operationOpts?.signal
                   ? { abortSignal: operationOpts.signal }
@@ -843,17 +893,38 @@ export const createS3Adapter = (
               throw wrapErr(error);
             }
           },
-          exactRead: conditionalDownload,
-          replace(key, body, etag, options) {
-            return conditionalUpload(
-              key,
-              body,
-              { etag, type: "replace" },
-              options
+          sourceEtag: true,
+        },
+        create(key, body, options) {
+          return conditionalUpload(key, body, { type: "create" }, options);
+        },
+        async delete(key, etag, operationOpts): Promise<void> {
+          try {
+            await client.send(
+              new DeleteObjectCommand({
+                Bucket: bucket,
+                IfMatch: quoteCanonicalEtag(etag),
+                Key: key,
+              }),
+              operationOpts?.signal
+                ? { abortSignal: operationOpts.signal }
+                : undefined
             );
-          },
-        }
-      : undefined;
+          } catch (error) {
+            throw wrapErr(error);
+          }
+        },
+        exactRead: conditionalDownload,
+        replace(key, body, etag, options) {
+          return conditionalUpload(
+            key,
+            body,
+            { etag, type: "replace" },
+            options
+          );
+        },
+      }
+    : undefined;
 
   return {
     bucket,

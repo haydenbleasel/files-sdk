@@ -37,7 +37,7 @@ cat report.pdf | files --provider s3 --bucket uploads \
   upload reports/2026-q1.pdf --stdin --content-type application/pdf
 ```
 
-For large objects see [multipart](#byte-ranges-and-multipart); to push a whole local tree see [directories](#directories).
+For large objects see [multipart](#byte-ranges-and-multipart); to push a whole local tree see [directories](#directories); for create-only or compare-and-set writes see [conditional predicates](#conditional-predicates).
 
 ### download
 
@@ -113,7 +113,7 @@ Delete a key.
 files --provider s3 --bucket uploads delete reports/archive/q1.pdf
 ```
 
-Pass several keys to delete them in one fan-out; see [many keys at once](#many-keys-at-once).
+Pass several keys to delete them in one fan-out; see [many keys at once](#many-keys-at-once). To delete only a specific generation see [conditional predicates](#conditional-predicates).
 
 ### url
 
@@ -206,6 +206,28 @@ files --provider s3 --bucket uploads download big.mp4 --out head.mp4 --range 0-1
 files --provider s3 --bucket uploads \
   upload big.iso --file ./big.iso --multipart --part-size 16777216
 ```
+
+## Conditional predicates
+
+Single-key `upload`, `download`, `delete`, and `copy` accept the SDK's [conditional predicates](/docs/conditional-operations) as flags. They fail closed on adapters without native support and have no bulk form.
+
+```bash lineNumbers
+# Create only: fail if the key already exists.
+files --provider s3 --bucket uploads upload config.json --file ./config.json --if-none-match
+
+# Replace, read, or delete only the generation with this ETag.
+files --provider s3 --bucket uploads upload config.json --file ./config.json --if-match a1b2c3
+files --provider s3 --bucket uploads download config.json --out ./config.json --if-match a1b2c3
+files --provider s3 --bucket uploads delete config.json --if-match a1b2c3
+
+# Conditional copy checks the source ETag and the destination in one request:
+# --if-match guards the source; --if-none-match (create) or --dest-if-match
+# (replace that generation) guards the destination. Both halves are required.
+files --provider s3 --bucket uploads copy staging/a.json published/a.json --if-match a1b2c3 --if-none-match
+files --provider s3 --bucket uploads copy staging/a.json published/a.json --if-match a1b2c3 --dest-if-match d4e5f6
+```
+
+Pass the canonical bare strong ETag (no quotes, no `W/`), as printed by `head`, `upload`, and `list`. `--dry-run` echoes the resolved `condition`.
 
 ## Directories
 

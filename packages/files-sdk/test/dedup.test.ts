@@ -323,7 +323,7 @@ describe("dedup plugin — options", () => {
 });
 
 describe("dedup plugin — conditional policy", () => {
-  test("rejects conditional body operations before pointer or blob I/O", async () => {
+  test("rejects every conditional mode before pointer or blob I/O", async () => {
     const plugin = dedup();
     const { wrap } = plugin;
     if (!wrap) {
@@ -334,6 +334,11 @@ describe("dedup plugin — conditional policy", () => {
       nextCalls += 1;
       return Promise.resolve();
     }) as PluginNext;
+    // Uploads and exact reads span pointer + blob; delete and copy touch only
+    // the pointer, but a pointer's ETag is the hash of an always-empty body —
+    // identical for every key and unchanged when the pointer is rewritten to
+    // a new blob — so a compare-and-set against it could never fail and would
+    // silently drop or duplicate content that had moved on.
     const operations: ConditionalFilesOperation[] = [
       { body: "content", key: "a.txt", kind: "upload", mode: "create" },
       {
@@ -341,6 +346,15 @@ describe("dedup plugin — conditional policy", () => {
         key: "a.txt",
         kind: "download",
         mode: "exact",
+      },
+      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "a.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "b.txt",
       },
     ];
 
@@ -354,22 +368,17 @@ describe("dedup plugin — conditional policy", () => {
       expect((failure as Error).message).toMatch(/native compare-and-set/u);
     }
     expect(nextCalls).toBe(0);
+  });
 
-    const compatible: ConditionalFilesOperation[] = [
-      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
-      {
-        destination: { type: "create" },
-        from: "a.txt",
-        kind: "copy",
-        mode: "conditional",
-        source: { etag: "etag-1" },
-        to: "b.txt",
-      },
-    ];
-    for (const candidate of compatible) {
-      // eslint-disable-next-line no-await-in-loop -- each pointer-only conditional family must pass through once
-      await wrap(candidate, next);
-    }
-    expect(nextCalls).toBe(2);
+  test("a CAS delete through the Files instance is refused and the content survives", async () => {
+    const files = createFiles({ adapter: fakeAdapter(), plugins: [dedup()] });
+    await files.upload("k.txt", "first");
+    const { etag } = await files.head("k.txt");
+    await files.upload("k.txt", "second");
+    await expect(
+      files.delete("k.txt", { condition: { etag: etag as string } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    const survived = await files.download("k.txt");
+    expect(await survived.text()).toBe("second");
   });
 });

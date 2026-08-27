@@ -6,7 +6,7 @@ import type {
   CacheRecord,
   CacheStore,
 } from "../src/cache/index.js";
-import { createFiles, createStoredFile } from "../src/index.js";
+import { createFiles, createStoredFile, FilesError } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
@@ -281,6 +281,69 @@ describe("cache plugin — download", () => {
 });
 
 describe("cache plugin — invalidation", () => {
+  test("a failed write still invalidates, so a stale ETag cannot poison a CAS retry loop", async () => {
+    const inner = fakeAdapter();
+    let generation = 0;
+    const conditional: Adapter = {
+      ...inner,
+      conditional: {
+        // Always reject: the caller's ETag is stale as far as the provider is
+        // concerned, which is exactly the case where a cached head() must not
+        // keep serving that ETag.
+        replace: () =>
+          Promise.reject(new FilesError("Conflict", "precondition failed")),
+      },
+      head: async (key, opts) => {
+        generation += 1;
+        const meta = await inner.head(key, opts);
+        return { ...meta, etag: `gen-${generation}` };
+      },
+    };
+    const files = createFiles({
+      adapter: conditional,
+      plugins: [cache({ ttl: 60_000 })],
+    });
+    await files.upload("doc.txt", "v1");
+    const first = await files.head("doc.txt");
+    // Served from the cache.
+    const again = await files.head("doc.txt");
+    expect(again.etag).toBe(first.etag);
+
+    await expect(
+      files.upload("doc.txt", "v2", {
+        condition: { etag: first.etag as string, type: "replace" },
+      })
+    ).rejects.toMatchObject({ code: "Conflict" });
+
+    // The conflict proved the cached record stale; the next head() must go to
+    // the provider rather than replaying the ETag that just conflicted.
+    const refreshed = await files.head("doc.txt");
+    expect(refreshed.etag).not.toBe(first.etag);
+  });
+
+  test("a failed ordinary delete and copy invalidate too", async () => {
+    const inner = fakeAdapter();
+    const flaky: Adapter = {
+      ...inner,
+      copy: () => Promise.reject(new Error("copy boom")),
+      delete: () => Promise.reject(new Error("delete boom")),
+    };
+    const { adapter, calls } = counting(flaky);
+    const files = withCache({}, adapter);
+    await files.upload("a.txt", "hello");
+    await files.upload("b.txt", "world");
+    await files.head("a.txt");
+    await files.head("b.txt");
+    expect(calls.head).toEqual(["a.txt", "b.txt"]);
+
+    await expect(files.delete("a.txt")).rejects.toThrow(/delete boom/u);
+    await expect(files.copy("a.txt", "b.txt")).rejects.toThrow(/copy boom/u);
+
+    await files.head("a.txt");
+    await files.head("b.txt");
+    expect(calls.head).toEqual(["a.txt", "b.txt", "a.txt", "b.txt"]);
+  });
+
   test("upload invalidates the cached read", async () => {
     const { adapter, calls } = counting();
     const files = withCache({}, adapter);

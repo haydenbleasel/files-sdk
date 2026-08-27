@@ -430,6 +430,59 @@ describe("s3 adapter", () => {
     expect(s3Mock.calls()).toHaveLength(0);
   });
 
+  test("an AWS_ENDPOINT_URL* redirect hides the primitives; `conditional` overrides either way", () => {
+    const saved = {
+      base: process.env.AWS_ENDPOINT_URL,
+      s3: process.env.AWS_ENDPOINT_URL_S3,
+    };
+    delete process.env.AWS_ENDPOINT_URL;
+    delete process.env.AWS_ENDPOINT_URL_S3;
+    try {
+      // S3Client honors these on its own, so an env-redirected client is an
+      // S3-compatible service as far as conditional-header support goes.
+      process.env.AWS_ENDPOINT_URL_S3 = "http://localhost:9000";
+      expect(
+        s3({ bucket: "b", region: "us-east-1" }).conditional
+      ).toBeUndefined();
+      delete process.env.AWS_ENDPOINT_URL_S3;
+      process.env.AWS_ENDPOINT_URL = "http://localhost:4566";
+      expect(
+        s3({ bucket: "b", region: "us-east-1" }).conditional
+      ).toBeUndefined();
+      // An explicit opt-in wins over both the env redirect and a custom
+      // endpoint (VPC / FIPS / GovCloud hostnames are still AWS).
+      expect(
+        s3({ bucket: "b", conditional: true, region: "us-east-1" }).conditional
+      ).toBeDefined();
+      delete process.env.AWS_ENDPOINT_URL;
+      expect(
+        s3({
+          bucket: "b",
+          conditional: true,
+          endpoint: "https://bucket.vpce-abc.s3.us-east-1.vpce.amazonaws.com",
+          region: "us-east-1",
+        }).conditional
+      ).toBeDefined();
+      // And an explicit opt-out disables them on a canonical bucket.
+      const optedOut = new Files({
+        adapter: s3({ bucket: "b", conditional: false, region: "us-east-1" }),
+      });
+      expect(optedOut.capabilities.conditional.create).toBe(false);
+    } finally {
+      if (saved.base === undefined) {
+        delete process.env.AWS_ENDPOINT_URL;
+      } else {
+        process.env.AWS_ENDPOINT_URL = saved.base;
+      }
+      if (saved.s3 === undefined) {
+        delete process.env.AWS_ENDPOINT_URL_S3;
+      } else {
+        process.env.AWS_ENDPOINT_URL_S3 = saved.s3;
+      }
+    }
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
   test("custom endpoints fail every Files conditional operation before provider I/O", async () => {
     const files = new Files({
       adapter: s3({

@@ -408,24 +408,34 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         return enabled.has("download") ? cachedDownload(op, next) : next(op);
       }
       // Writes always invalidate, regardless of which reads are cached — drop
-      // the affected key(s) only after the mutation actually lands.
+      // the affected key(s) once the mutation has settled, whether or not it
+      // succeeded. A failed write is no proof the cached record is still
+      // current (a conditional replace that hits 412 is proof it isn't), and
+      // serving a stale ETag would make the natural head() → retry loop
+      // conflict on every iteration until the TTL expired.
       case "upload":
       case "delete": {
-        const result = await next(op);
-        await store.delete(op.key);
-        return result;
+        try {
+          return await next(op);
+        } finally {
+          await store.delete(op.key);
+        }
       }
       case "copy": {
-        const result = await next(op);
-        await store.delete(op.to);
-        return result;
+        try {
+          return await next(op);
+        } finally {
+          await store.delete(op.to);
+        }
       }
       case "move": {
-        // oxlint-disable-next-line react-doctor/async-parallel -- next() must settle before invalidating; the two deletes are ordered after the write, not independent.
-        const result = await next(op);
-        await store.delete(op.from);
-        await store.delete(op.to);
-        return result;
+        try {
+          return await next(op);
+        } finally {
+          // oxlint-disable-next-line react-doctor/async-parallel -- ordered after the write settles, not independent work.
+          await store.delete(op.from);
+          await store.delete(op.to);
+        }
       }
       default: {
         return next(op);

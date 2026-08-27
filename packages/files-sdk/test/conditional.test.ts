@@ -500,7 +500,125 @@ describe("native conditional operations", () => {
   });
 });
 
+describe("conditional option handling", () => {
+  test("multipart: false is the documented opt-out, not a multipart request", async () => {
+    const harness = conditionalHarness();
+    const files = new Files({ adapter: harness.adapter });
+    const result = await files.upload("a", "v", {
+      condition: { type: "create" },
+      multipart: false,
+    });
+    expect(result.etag).toBeString();
+    expect(harness.calls.create).toEqual(["a"]);
+    // A real multipart ask is still incompatible.
+    await expect(
+      files.upload("b", "v", {
+        condition: { type: "create" },
+        multipart: { partSize: 5 * 1024 * 1024 },
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(harness.calls.create).toEqual(["a"]);
+  });
+
+  test("bulk calls treat condition: undefined as absent, like a spread of shared options", async () => {
+    const harness = conditionalHarness();
+    const files = new Files({ adapter: harness.adapter });
+    await files.upload("a", "v");
+    await files.upload("b", "v");
+
+    const uploaded = await files.upload([{ body: "x", key: "c" }], {
+      condition: undefined,
+    } as never);
+    expect(uploaded.uploaded.map((item) => item.key)).toEqual(["c"]);
+
+    const downloaded = await files.download(["a", "b"], {
+      as: "buffer",
+      condition: undefined,
+    } as never);
+    expect(downloaded.downloaded).toHaveLength(2);
+
+    const deleted = await files.delete(["a", "b"], {
+      condition: undefined,
+    } as never);
+    expect(deleted.deleted).toEqual(["a", "b"]);
+  });
+
+  test("ordinary delete and copy still pass extra options through to plugins and the adapter", async () => {
+    const harness = conditionalHarness();
+    const seenByPlugin: unknown[] = [];
+    const seenByAdapter: unknown[] = [];
+    const adapter: Adapter = {
+      ...harness.adapter,
+      copy(from, to, opts) {
+        seenByAdapter.push(opts);
+        return harness.adapter.copy(from, to, opts);
+      },
+      delete(key, opts) {
+        seenByAdapter.push(opts);
+        return harness.adapter.delete(key, opts);
+      },
+    };
+    const observe: FilesPlugin = {
+      name: "observe",
+      wrap: (op, next) => {
+        if (op.kind === "delete" || op.kind === "copy") {
+          seenByPlugin.push(op.options);
+        }
+        return next(op);
+      },
+    };
+    const files = new Files({ adapter, plugins: [observe] });
+    await files.upload("a", "v");
+    await files.copy("a", "b", { reason: "audit" } as never);
+    await files.delete("a", { reason: "gdpr" } as never);
+    expect(seenByPlugin).toEqual([{ reason: "audit" }, { reason: "gdpr" }]);
+    expect(seenByAdapter).toEqual([{ reason: "audit" }, { reason: "gdpr" }]);
+
+    // The conditional forms strip only the predicate itself.
+    const { etag } = await files.head("b");
+    await files.delete("b", {
+      condition: { etag: bareEtag(etag) },
+      timeout: 5000,
+    });
+    expect(seenByPlugin.at(-1)).toEqual({ timeout: 5000 });
+  });
+});
+
 describe("conditional plugin boundary", () => {
+  test("a plugin that catches a rejected predicate change and retries correctly gets the committed result", async () => {
+    const harness = conditionalHarness();
+    let rejected: unknown;
+    const retry: FilesPlugin = {
+      name: "catch-then-retry",
+      wrap: handlers({
+        upload: async (op, next) => {
+          try {
+            // Dropping the predicate is a violation, rejected before the
+            // provider is reached.
+            const downgraded = { ...op };
+            Reflect.deleteProperty(downgraded, "mode");
+            return await next(downgraded as typeof op);
+          } catch (error) {
+            rejected = error;
+            // The bad call never reached the provider; this one is exactly
+            // the caller's predicate and must be reported as what it is: a
+            // committed conditional write.
+            return await next(op);
+          }
+        },
+      }),
+    };
+    const files = new Files({ adapter: harness.adapter, plugins: [retry] });
+    const result = await files.upload("a", "v", {
+      condition: { type: "create" },
+    });
+    expect(rejected).toBeInstanceOf(FilesError);
+    expect(harness.calls.create).toEqual(["a"]);
+    expect(harness.calls.uploadBodies).toEqual(["v"]);
+    const committed = await files.head("a");
+    expect(result.etag).toBe(bareEtag(committed.etag));
+  });
+
   test("a plugin cannot introduce a condition into an ordinary operation", async () => {
     const harness = conditionalHarness();
     const ordinaryUpload = mock(harness.adapter.upload);

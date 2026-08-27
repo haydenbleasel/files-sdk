@@ -233,20 +233,25 @@ export const softDelete = (
     op: FilesOperation,
     next: PluginNext
   ): Promise<unknown> => {
-    if (op.kind === "delete" && isConditionalOperation(op)) {
-      throw new FilesError(
-        "Provider",
-        "soft-delete: conditional delete is unsupported because trash routing cannot preserve the native compare-and-set",
-        undefined,
-        { permanent: true }
-      );
-    }
     switch (op.kind) {
       case "delete": {
         // A delete inside the trash is a real delete — this is how `purge()`
-        // and any manual trash cleanup actually remove bytes.
+        // and any manual trash cleanup actually remove bytes. It is forwarded
+        // unchanged, so a conditional one keeps its native compare-and-set
+        // (useful for purging one trashed generation atomically against a
+        // concurrent restore).
         if (isTrashKey(op.key)) {
           return next(op);
+        }
+        // Outside the trash a delete becomes a move, and no single native
+        // predicate spans that copy + delete, so the mode is vetoed.
+        if (isConditionalOperation(op)) {
+          throw new FilesError(
+            "Provider",
+            "soft-delete: conditional delete is unsupported because trash routing cannot preserve the native compare-and-set",
+            undefined,
+            { permanent: true }
+          );
         }
         try {
           // Thread the caller's options through — the re-routed move IS the

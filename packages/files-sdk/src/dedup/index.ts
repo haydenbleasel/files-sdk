@@ -305,13 +305,15 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     op: FilesOperation,
     next: PluginNext
   ): Promise<unknown> => {
-    if (
-      isConditionalOperation(op) &&
-      (op.kind === "upload" || op.kind === "download")
-    ) {
+    // Every conditional mode is vetoed, not just the ones that touch the
+    // blob. A pointer's body is always empty, so its ETag is the same for
+    // every key and never changes when the pointer is rewritten to a new
+    // blob — a compare-and-set delete or copy against it would succeed even
+    // though the key's content had moved on, which is worse than failing.
+    if (isConditionalOperation(op)) {
       throw new FilesError(
         "Provider",
-        `dedup: conditional ${op.kind} is unsupported because pointer and blob operations cannot share one native compare-and-set`,
+        `dedup: conditional ${op.kind} is unsupported because a pointer's ETag never reflects its content, so no native compare-and-set can guard it`,
         undefined,
         { permanent: true }
       );

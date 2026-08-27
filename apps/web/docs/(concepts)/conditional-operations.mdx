@@ -75,21 +75,25 @@ if (
 }
 ```
 
-The initial implementation supports canonical AWS S3 buckets through the AWS SDK adapter. A configured custom S3 endpoint does not inherit the claim, because S3-compatible services differ in which conditional headers they honor. Cloudflare R2 is not supported.
+The initial implementation supports canonical AWS S3 buckets through the AWS SDK adapter. A custom S3 `endpoint`, or an `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` redirect in the environment, does not inherit the claim, because S3-compatible services differ in which conditional headers they honor; the [`s3()` adapter's `conditional` option](/docs/adapters/s3) overrides that detection in either direction. The adapter also checks, per request, that every predicate it set was serialized by the installed `@aws-sdk/client-s3` and rejects the call otherwise. Cloudflare R2 is not supported.
 
 The local filesystem adapter also reports every conditional capability as `false`. Its body and metadata sidecar are separate files, and a process-local lock plus a read-before-rename would not be compare-and-set against writers in another process. It fails closed until the storage layout can provide one native atomic commit boundary.
 
-Conditional calls are single-key only. Bulk array calls, multipart uploads, resumable `UploadControl`, signed uploads, and `move()` do not accept a condition. Use conditional copy followed by a separately conditioned delete only when your application can tolerate the two distinct commits; the SDK does not present that sequence as an atomic move.
+Conditional calls are single-key only. Bulk array calls, multipart uploads (`multipart: false`, the explicit opt-out, is fine), resumable `UploadControl`, signed uploads, and `move()` do not accept a condition. Use conditional copy followed by a separately conditioned delete only when your application can tolerate the two distinct commits; the SDK does not present that sequence as an atomic move.
 
 ## Plugins use the same operation families
 
 Conditional calls traverse the existing ordered plugin onion under the same `upload`, `download`, `delete`, and `copy` kinds. Their `mode` distinguishes `create`, `replace`, `exact`, `match`, and `conditional` variants. That means existing per-verb encryption, compression, validation, metadata, audit, tracing, and usage handlers see the call instead of silently passing a new verb they do not recognize.
 
-For a conditional root call, the SDK freezes the operation family, mode, and ETag predicates across every `next()` boundary. A plugin may transform the upload body, metadata, or returned value, or veto by throwing before `next()`. It cannot drop or change a predicate, reroute to another verb, call the native operation twice, or synthesize success without a native call. Bundled plugins whose semantics require multiple backends or extra mutations reject the incompatible conditional modes before any of their provider I/O.
+For a conditional root call, the SDK freezes the operation family, mode, and ETag predicates across every `next()` boundary. A plugin may transform the upload body, metadata, or returned value, or veto by throwing before `next()`. It cannot drop or change a predicate, reroute to another verb, call the native operation twice, or synthesize success without a native call. A rejected `next()` never reaches the provider, so a plugin that catches one and then calls `next(op)` with the original predicate receives the committed result as a success. Bundled plugins whose semantics require multiple backends or extra mutations reject the incompatible conditional modes before any of their provider I/O.
 
 The built-in [`encryption()`](/docs/plugins/encryption) plugin is compatible with conditional create, replace, and exact read: conditional uploads store its transformed bytes, and exact reads traverse its inverse transform. As with every use of that plugin, its documented key and plaintext-compatibility policy still applies.
 
-Other bundled plugins keep only the modes whose side effects preserve one native operation. Compression, content-type inference, and validation use their existing same-verb transforms. Exact reads bypass the ordinary cache. Soft delete rejects a conditional delete; versioning rejects conditional writes and copies; deduplication rejects conditional uploads and exact reads; and failover and tiering reject every conditional mode. Those vetoes happen before the plugin performs provider I/O.
+Other bundled plugins keep only the modes whose side effects preserve one native operation. Compression, content-type inference, and validation use their existing same-verb transforms. Exact reads bypass the ordinary cache, and the cache invalidates a key after any write settles — including a failed conditional one, since a `Conflict` is proof the cached ETag is stale. Soft delete rejects a conditional delete outside the trash prefix (a delete of an already-trashed key is a real delete and keeps its predicate); versioning rejects conditional writes and copies; deduplication rejects every conditional mode, because a pointer's ETag never reflects its content; and failover and tiering reject every conditional mode. Those vetoes happen before the plugin performs provider I/O.
+
+## CLI and MCP
+
+The [CLI](/docs/cli/commands#conditional-predicates) exposes the same predicates as flags — `--if-none-match` and `--if-match <etag>` on `upload`, `--if-match <etag>` on `download` and `delete`, and `--if-match <etag>` plus `--if-none-match` / `--dest-if-match <etag>` on `copy` — and the [MCP server](/docs/cli/mcp) accepts a `condition` input on `upload`, `download`, `delete`, and `copy` in the SDK's shapes. Both are single-key only and fail closed on adapters without native support, exactly like the SDK.
 
 ## Hooks, receipts, and terminal outcomes
 

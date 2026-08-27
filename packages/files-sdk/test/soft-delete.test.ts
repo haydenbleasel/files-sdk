@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { createFiles, FilesError } from "../src/index.js";
 import type {
+  FilesOperation,
   Adapter,
   ConditionalFilesOperation,
   Files,
@@ -313,6 +314,43 @@ describe("soft-delete plugin — error propagation", () => {
 });
 
 describe("soft-delete plugin — conditional policy", () => {
+  test("a conditional delete of a key already in the trash is forwarded unchanged", async () => {
+    // Trash-key deletes are real deletes (how purge works), forwarded to
+    // `next` as-is — so the native compare-and-set is preserved and a caller
+    // can purge one trashed generation atomically against a concurrent
+    // restore. Only the non-trash path (delete → move) is vetoed.
+    const plugin = softDelete();
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("soft-delete wrap missing");
+    }
+    const forwarded: FilesOperation[] = [];
+    const next = ((op: FilesOperation) => {
+      forwarded.push(op);
+      return Promise.resolve();
+    }) as PluginNext;
+    const trashed: ConditionalFilesOperation = {
+      etag: "etag-1",
+      key: ".trash/notes.txt",
+      kind: "delete",
+      mode: "match",
+    };
+    await wrap(trashed, next);
+    expect(forwarded).toEqual([trashed]);
+
+    const live: ConditionalFilesOperation = {
+      etag: "etag-1",
+      key: "notes.txt",
+      kind: "delete",
+      mode: "match",
+    };
+    await expect(wrap(live, next)).rejects.toMatchObject({
+      code: "Provider",
+      permanent: true,
+    });
+    expect(forwarded).toHaveLength(1);
+  });
+
   test("rejects conditional delete before invoking the provider pipeline", async () => {
     const plugin = softDelete();
     const { wrap } = plugin;

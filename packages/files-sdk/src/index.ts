@@ -2,6 +2,7 @@ import {
   byteLengthOf,
   countingStream,
   deleteManyWithFallback,
+  isMultipartRequested,
   mapMany,
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
@@ -1426,17 +1427,19 @@ const toAdapterDownloadOptions = (
   return adapterOptions;
 };
 
+// Strip only the predicate: `condition` is a first-class operation field, but
+// every other option keeps flowing to plugins (`op.options`) and adapters
+// exactly as it did before conditional operations existed, so a custom
+// adapter or third-party plugin that reads its own extra field still sees it.
 const toOperationOptions = (
   opts: (OperationOptions & { condition?: unknown }) | undefined
 ): OperationOptions | undefined => {
   if (!opts) {
     return;
   }
-  return {
-    ...(opts.retries !== undefined && { retries: opts.retries }),
-    ...(opts.signal !== undefined && { signal: opts.signal }),
-    ...(opts.timeout !== undefined && { timeout: opts.timeout }),
-  };
+  // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit keeps the predicate out of the options bag
+  const { condition: _condition, ...operationOptions } = opts;
+  return operationOptions;
 };
 
 const invalidCondition = (operation: string): never => {
@@ -1520,9 +1523,13 @@ const assertNoBulkCondition = (
   operation: string,
   values: readonly unknown[]
 ): void => {
+  // `condition: undefined` is how a spread of shared options spells "absent"
+  // — treat it the same way the single-key snapshots do, not as a predicate.
   const hasCondition = values.some(
     (value) =>
-      value !== null && typeof value === "object" && "condition" in value
+      value !== null &&
+      typeof value === "object" &&
+      (value as { condition?: unknown }).condition !== undefined
   );
   if (!hasCondition) {
     return;
@@ -1538,7 +1545,9 @@ const assertNoBulkCondition = (
 const assertConditionalUploadOptions = (
   opts: UploadOptions | undefined
 ): void => {
-  if (opts?.control === undefined && opts?.multipart === undefined) {
+  // `multipart: false` is the documented opt-out, not a request — only an
+  // actual multipart ask (or a resumable control) is incompatible.
+  if (opts?.control === undefined && !isMultipartRequested(opts?.multipart)) {
     return;
   }
   throw new FilesError(
@@ -1975,16 +1984,23 @@ export class Files<A extends Adapter = Adapter> {
     }
 
     const result = await chain(op);
-    if (violation !== undefined) {
-      throw FilesError.wrap(violation);
-    }
-    if (hasPostNextFailure) {
-      throw FilesError.wrap(postNextFailure);
-    }
     if (settlement.state !== "success") {
+      // A latched violation is only decisive when nothing committed. Every
+      // violation is rejected *before* the guarded base runs, so a plugin
+      // that caught one and then called `next(op)` correctly has committed
+      // exactly one native request with the caller's predicate — reporting
+      // that as a failure would hide an applied write behind a misleading
+      // message. When no native call landed at all, the first violation is
+      // the most useful error to surface.
+      if (violation !== undefined) {
+        throw FilesError.wrap(violation);
+      }
       rejectViolation(
         "a plugin cannot synthesize a successful conditional operation"
       );
+    }
+    if (hasPostNextFailure) {
+      throw FilesError.wrap(postNextFailure);
     }
     if (op.kind === "upload") {
       assertConditionalUploadResult(result);
@@ -2576,7 +2592,10 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<UploadResult> {
     this.#assertUploadOptionsSupported(opts);
     const path = this.#path(key);
-    if (conditional && (opts?.control || opts?.multipart !== undefined)) {
+    if (
+      conditional &&
+      (opts?.control !== undefined || isMultipartRequested(opts?.multipart))
+    ) {
       throw new FilesError(
         "Provider",
         "conditional uploads do not support multipart or resumable controls",

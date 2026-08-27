@@ -38,6 +38,7 @@ const VERSION = pkg.version;
 // option definitions consistent (and satisfy no-duplicate-string).
 const CONCURRENCY_FLAG = "--concurrency <n>";
 const STOP_ON_ERROR_FLAG = "--stop-on-error";
+const IF_MATCH_FLAG = "--if-match <etag>";
 const STOP_FIRST_FAILURE_MANY_DESC = "stop at the first failure (many keys)";
 const PREFIX_FLAG = "--prefix <prefix>";
 const LIMIT_FLAG = "--limit <n>";
@@ -379,6 +380,18 @@ export const buildProgram = (
     )
     .option(CONCURRENCY_FLAG, "parallel uploads for --dir", intArg)
     .option(STOP_ON_ERROR_FLAG, "stop at the first failure (--dir)")
+    .addOption(
+      new Option(
+        "--if-none-match",
+        "create only: fail if the key already exists (single key)"
+      ).conflicts(["ifMatch", "dir"])
+    )
+    .addOption(
+      new Option(
+        IF_MATCH_FLAG,
+        "replace only the generation with this ETag (single key)"
+      ).conflicts(["ifNoneMatch", "dir"])
+    )
     .action(
       wrap(runUpload as (opts: never) => Promise<void>, (args, common) => {
         const [key, opts] = args as [
@@ -392,6 +405,8 @@ export const buildProgram = (
           contentType: opts.contentType as string | undefined,
           dir: opts.dir as string | undefined,
           file: opts.file as string | undefined,
+          ifMatch: opts.ifMatch as string | undefined,
+          ifNoneMatch: opts.ifNoneMatch as boolean | undefined,
           key,
           metadata: opts.metadata as readonly string[] | undefined,
           multipart: opts.multipart as boolean | undefined,
@@ -432,12 +447,17 @@ export const buildProgram = (
     )
     .option(CONCURRENCY_FLAG, "parallel downloads for many keys", intArg)
     .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
+    .option(
+      IF_MATCH_FLAG,
+      "read only the generation with this ETag (single key)"
+    )
     .action(
       wrap(runDownload as (opts: never) => Promise<void>, (args, common) => {
         const [keys, opts] = args as [string[], Record<string, unknown>];
         return {
           ...common,
           concurrency: opts.concurrency as number | undefined,
+          ifMatch: opts.ifMatch as string | undefined,
           keys,
           out: opts.out as string | undefined,
           outDir: opts.outDir as string | undefined,
@@ -473,15 +493,53 @@ export const buildProgram = (
     )
     .option(CONCURRENCY_FLAG, "parallel deletes for many keys", intArg)
     .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
-    .action(wrap(runDelete as (opts: never) => Promise<void>, bulkBuilder));
+    .option(
+      IF_MATCH_FLAG,
+      "delete only the generation with this ETag (single key)"
+    )
+    .action(
+      wrap(runDelete as (opts: never) => Promise<void>, (args, common) => {
+        const [, opts] = args as [string[], Record<string, unknown>];
+        return {
+          ...bulkBuilder(args, common),
+          ifMatch: opts.ifMatch as string | undefined,
+        } as CommonRunOpts;
+      })
+    );
 
   program
     .command("copy <from> <to>")
-    .description("server-side copy from one key to another")
+    .description(
+      "server-side copy from one key to another (conditional with --if-match plus --if-none-match or --dest-if-match)"
+    )
+    .option(IF_MATCH_FLAG, "copy only while the source has this ETag")
+    .addOption(
+      new Option(
+        "--if-none-match",
+        "create the destination: fail if it already exists"
+      ).conflicts(["destIfMatch"])
+    )
+    .addOption(
+      new Option(
+        "--dest-if-match <etag>",
+        "replace only the destination generation with this ETag"
+      ).conflicts(["ifNoneMatch"])
+    )
     .action(
       wrap(runCopy as (opts: never) => Promise<void>, (args, common) => {
-        const [from, to] = args as [string, string];
-        return { ...common, from, to } as CommonRunOpts;
+        const [from, to, opts] = args as [
+          string,
+          string,
+          Record<string, unknown>,
+        ];
+        return {
+          ...common,
+          destIfMatch: opts.destIfMatch as string | undefined,
+          from,
+          ifMatch: opts.ifMatch as string | undefined,
+          ifNoneMatch: opts.ifNoneMatch as boolean | undefined,
+          to,
+        } as CommonRunOpts;
       })
     );
 
