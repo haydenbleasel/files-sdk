@@ -289,6 +289,37 @@ describe("memory adapter", () => {
       expect(await file.text()).toBe("89");
       expect(file.size).toBe(2);
     });
+    test("mutating a streamed chunk does not corrupt the stored object", async () => {
+      const adapter = memory();
+      await adapter.upload("a.bin", new Uint8Array([1, 2, 3]));
+      // stream() enqueues the buffer it was handed, so the adapter must hand
+      // out a copy — otherwise this write lands in the store without
+      // touching the etag.
+      const first = await adapter.download("a.bin");
+      const { value } = await first.stream().getReader().read();
+      if (!value) {
+        throw new Error("expected a chunk");
+      }
+      value[0] = 99;
+      const ranged = await adapter.download("a.bin", { range: { start: 1 } });
+      const { value: tail } = await ranged.stream().getReader().read();
+      if (!tail) {
+        throw new Error("expected a ranged chunk");
+      }
+      tail[0] = 77;
+      const viaHead = await adapter.head("a.bin");
+      const { value: headChunk } = await viaHead.stream().getReader().read();
+      if (!headChunk) {
+        throw new Error("expected a head chunk");
+      }
+      headChunk[2] = 55;
+
+      const again = await adapter.download("a.bin");
+      expect(new Uint8Array(await again.arrayBuffer())).toEqual(
+        new Uint8Array([1, 2, 3])
+      );
+      expect(again.etag).toBe(first.etag);
+    });
   });
 
   describe("head", () => {

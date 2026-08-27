@@ -142,6 +142,13 @@ describe("getProvider", () => {
   test("returns undefined for an unknown slug", () => {
     expect(getProvider("not-a-real-provider")).toBeUndefined();
   });
+
+  test("backblaze-b2 lists region as required config (no env fallback)", () => {
+    expect(getProvider("backblaze-b2")?.env.config).toEqual([
+      "bucket",
+      "region",
+    ]);
+  });
 });
 
 describe("listEnvVars", () => {

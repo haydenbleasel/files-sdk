@@ -143,6 +143,7 @@ const keyFromStorageFile = (
 };
 
 const toStoredFile = (
+  client: BunnyStorageClient,
   entry: BunnyStorageSDK.file.StorageFile,
   body?:
     | { kind: "lazy" }
@@ -171,9 +172,16 @@ const toStoredFile = (
       kind: "stream",
     });
   }
+  // Download by the entry's full key rather than through `entry.data()`:
+  // for listing entries the SDK builds `data` from `Path`, which is the
+  // *containing directory*, so it would fetch the directory listing instead
+  // of the file body.
   return createStoredFile(meta, {
     factory: async () => {
-      const result = await entry.data();
+      const result = await BunnyStorageSDK.file.download(
+        client,
+        toBunnyPath(meta.key)
+      );
       return bytesFromStream(result.stream);
     },
     kind: "lazy",
@@ -318,9 +326,12 @@ export const bunnyStorage = (
         const entry = await BunnyStorageSDK.file.get(client, toBunnyPath(key));
         const result = await entry.data();
         if (downloadOpts?.as === "stream") {
-          return toStoredFile(entry, { kind: "stream", stream: result.stream });
+          return toStoredFile(client, entry, {
+            kind: "stream",
+            stream: result.stream,
+          });
         }
-        return toStoredFile(entry, {
+        return toStoredFile(client, entry, {
           data: await bytesFromStream(result.stream),
           kind: "buffer",
         });
@@ -337,6 +348,7 @@ export const bunnyStorage = (
     async head(key) {
       try {
         return toStoredFile(
+          client,
           await BunnyStorageSDK.file.get(client, toBunnyPath(key))
         );
       } catch (error) {
@@ -360,7 +372,7 @@ export const bunnyStorage = (
           if (entry.isDirectory) {
             continue;
           }
-          const stored = toStoredFile(entry);
+          const stored = toStoredFile(client, entry);
           if (!prefix || stored.key.startsWith(prefix)) {
             files.push(stored);
           }

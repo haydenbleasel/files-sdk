@@ -43,10 +43,12 @@ class FakeUpload {
   static instances = 0;
   static lastOptions: UploadOpts | undefined;
   static aborted = 0;
+  static completed = 0;
   static reset(): void {
     FakeUpload.instances = 0;
     FakeUpload.lastOptions = undefined;
     FakeUpload.aborted = 0;
+    FakeUpload.completed = 0;
   }
   #listeners: ProgressListener[] = [];
   constructor(options: UploadOpts) {
@@ -59,6 +61,7 @@ class FakeUpload {
     }
   }
   done(): Promise<{ ETag: string }> {
+    FakeUpload.completed += 1;
     for (const notify of this.#listeners) {
       notify({ loaded: 5, total: 10 });
       notify({ loaded: 10, total: 10 });
@@ -1619,6 +1622,24 @@ describe("s3 adapter", () => {
     });
     expect(events.length).toBeGreaterThan(0);
     expect(FakeUpload.aborted).toBe(1);
+  });
+
+  test("a signal already aborted before Upload is built aborts instead of uploading", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    // The signal can flip during the awaits that precede the Upload (body
+    // normalization, the lazy lib-storage import); an "abort" listener never
+    // fires for an already-aborted signal, so the upload used to proceed.
+    await expect(
+      adapter.upload("big.bin", "hello", {
+        multipart: true,
+        signal: controller.signal,
+      })
+    ).rejects.toMatchObject({ aborted: true });
+    expect(FakeUpload.instances).toBe(1);
+    expect(FakeUpload.aborted).toBe(1);
+    expect(FakeUpload.completed).toBe(0);
   });
 });
 

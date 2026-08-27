@@ -351,7 +351,7 @@ export const PROVIDERS = {
     env: s3Compatible(
       "B2_APPLICATION_KEY_ID",
       "B2_APPLICATION_KEY",
-      ["bucket"],
+      ["bucket", "region"],
       {
         accessKeyDescription: "B2 application key ID",
         secretKeyDescription: "B2 application key",

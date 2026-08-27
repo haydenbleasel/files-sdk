@@ -183,7 +183,11 @@ const toStored = (key: string, entry: MemoryEntry): StoredFile =>
       size: entry.bytes.byteLength,
       type: entry.contentType,
     },
-    { data: entry.bytes, kind: "buffer" }
+    // Copy the bytes out as well. `arrayBuffer()` copies on its own, but
+    // `stream()` enqueues the buffer it was given, so handing out the store's
+    // own array would let a reader mutate a chunk and corrupt the stored
+    // object without changing its etag.
+    { data: new Uint8Array(entry.bytes), kind: "buffer" }
   );
 
 interface PendingUpload {
@@ -281,9 +285,10 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         if (!range) {
           return toStored(key, entry);
         }
-        // subarray is a view over the same buffer — no copy — and createStoredFile
-        // narrows to the view's bytes when it reads. `end` is inclusive, so +1.
-        const sliced = entry.bytes.subarray(
+        // `slice` copies just the requested window, so a reader can't reach
+        // the stored bytes through `stream()` (see toStored). `end` is
+        // inclusive, so +1.
+        const sliced = entry.bytes.slice(
           range.start,
           range.end === undefined ? undefined : range.end + 1
         );

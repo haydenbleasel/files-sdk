@@ -123,9 +123,17 @@ export interface OneDriveAdapterOptions {
 }
 
 export type OneDriveClient = Client;
-export type OneDriveAdapter = Adapter<OneDriveClient> & {
+export type OneDriveAdapter = Omit<
+  Adapter<OneDriveClient>,
+  "resumableUpload"
+> & {
   readonly basePath: string;
   readonly rootFolderPath: string;
+  /** Always present — Graph upload sessions back every OneDrive adapter. */
+  readonly resumableUpload: (
+    key: string,
+    opts: ResumableDriverOptions
+  ) => OffsetResumableDriver;
 };
 
 const GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default";
@@ -136,9 +144,13 @@ const SIMPLE_UPLOAD_LIMIT_BYTES = 250 * 1024 * 1024;
 const DEFAULT_COPY_TIMEOUT_MS = 60_000;
 const COPY_POLL_INTERVAL_MS = 500;
 // Graph requires every upload-session fragment except the last to be a multiple
-// of 320 KiB. Default to ~10 MiB (already a clean multiple) and round any
-// caller-supplied `partSize` down to a valid multiple (never below one unit).
+// of 320 KiB and no larger than 60 MiB. Default to ~10 MiB (already a clean
+// multiple) and clamp any caller-supplied `partSize` down to a valid multiple
+// (never below one unit, never above the largest multiple that fits the cap).
 const GRAPH_FRAGMENT_MULTIPLE = 320 * 1024;
+const GRAPH_FRAGMENT_MAX_BYTES =
+  Math.floor((60 * 1024 * 1024) / GRAPH_FRAGMENT_MULTIPLE) *
+  GRAPH_FRAGMENT_MULTIPLE;
 const DEFAULT_UPLOAD_SESSION_RANGE_BYTES = 10 * 1024 * 1024;
 
 const resolveRangeSize = (
@@ -151,7 +163,10 @@ const resolveRangeSize = (
   }
   const rounded =
     Math.floor(requested / GRAPH_FRAGMENT_MULTIPLE) * GRAPH_FRAGMENT_MULTIPLE;
-  return Math.max(rounded, GRAPH_FRAGMENT_MULTIPLE);
+  return Math.min(
+    Math.max(rounded, GRAPH_FRAGMENT_MULTIPLE),
+    GRAPH_FRAGMENT_MAX_BYTES
+  );
 };
 
 const NOT_FOUND_CODES = new Set(["itemNotFound"]);
@@ -221,6 +236,22 @@ export const mapGraphError = (err: unknown): FilesError => {
     e?.message ?? DEFAULT_MESSAGES[errorCode],
     err
   );
+};
+
+interface GraphErrorBody {
+  error?: { code?: string; message?: string };
+}
+
+// Best-effort parse of a raw (unparsed) Graph error response; Graph answers
+// with JSON, but a proxy or throttling layer may not.
+const readGraphErrorBody = async (
+  res: Response
+): Promise<GraphErrorBody | null> => {
+  try {
+    return (await res.json()) as GraphErrorBody;
+  } catch {
+    return null;
+  }
 };
 
 const basename = (key: string): string => {
@@ -984,19 +1015,25 @@ export const onedrive = (
             name: basename(to),
             parentReference: parentRef,
           })) as Response;
-        // Graph returns 202 + Location header pointing to a monitor URL.
+        // `ResponseType.RAW` hands back the fetch Response as-is — the Graph
+        // client only turns non-2xx responses into GraphErrors for the parsed
+        // response types — so classify the failure here (404 → NotFound,
+        // 409 → Conflict, …) instead of surfacing a generic provider error.
+        if (!res.ok) {
+          const errorBody = await readGraphErrorBody(res);
+          const code = classifyGraphError(res.status, errorBody?.error?.code);
+          throw new FilesError(
+            code,
+            errorBody?.error?.message ?? `onedrive: copy returned ${res.status}`
+          );
+        }
+        // Graph returns 202 + Location header pointing to a monitor URL. Some
+        // configurations return 200 with the new item directly — treat a 2xx
+        // without one as success.
         const monitorUrl =
           res.headers.get("location") ?? res.headers.get("Location");
         if (!monitorUrl) {
-          // Some configurations return 200 with the new item directly — treat
-          // as success.
-          if (res.status >= 200 && res.status < 300) {
-            return;
-          }
-          throw new FilesError(
-            "Provider",
-            `onedrive: copy returned ${res.status} without monitor URL`
-          );
+          return;
         }
         await pollCopyMonitor(monitorUrl);
       } catch (error) {
@@ -1026,16 +1063,22 @@ export const onedrive = (
         if (downloadOpts?.as === "stream") {
           const [meta, stream] = await Promise.all([
             client.api(itemApiPath(key)).get() as Promise<DriveItem>,
-            contentReq()
-              .responseType(ResponseType.STREAM)
-              .get() as Promise<Readable>,
+            contentReq().responseType(ResponseType.STREAM).get() as Promise<
+              Readable | ReadableStream<Uint8Array>
+            >,
           ]);
           const m = itemToStoredMeta(meta);
           return createStoredFile(
             { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
+              // `ResponseType.STREAM` yields the fetch Response body — already
+              // a web ReadableStream in every runtime the Graph client runs
+              // on. Only a custom client that hands back a Node Readable needs
+              // converting; `Readable.toWeb` throws on a web stream.
               factory: () =>
-                Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>,
+                (stream instanceof Readable
+                  ? Readable.toWeb(stream)
+                  : stream) as unknown as ReadableStream<Uint8Array>,
               kind: "stream",
             }
           );

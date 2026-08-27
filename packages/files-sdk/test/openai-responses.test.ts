@@ -110,6 +110,103 @@ describe("createResponsesFileTools", () => {
     expect(upload?.strict).toBe(true);
   });
 
+  test("strict: true emits a strict-mode-valid parameters schema", () => {
+    // OpenAI strict mode 400s unless every property is in `required` and
+    // every object has `additionalProperties: false`; free-form maps are
+    // unrepresentable and must be dropped.
+    type Schema = Record<string, unknown>;
+    const assertStrictObject = (node: Schema): void => {
+      expect(node.type).toBe("object");
+      expect(node.additionalProperties).toBe(false);
+      const props = node.properties as Record<string, Schema>;
+      expect(node.required).toEqual(Object.keys(props));
+      for (const prop of Object.values(props)) {
+        expect(prop.propertyNames).toBeUndefined();
+        const branches = Array.isArray(prop.anyOf)
+          ? (prop.anyOf as Schema[])
+          : [prop];
+        for (const branch of branches) {
+          if (branch.type === "object") {
+            assertStrictObject(branch);
+          }
+        }
+      }
+    };
+    const ft = createResponsesFileTools({
+      files: newFiles(),
+      overrides: {
+        copyFile: { strict: true },
+        deleteFile: { strict: true },
+        downloadFile: { strict: true },
+        getFileMetadata: { strict: true },
+        getFileUrl: { strict: true },
+        listFiles: { strict: true },
+        signUploadUrl: { strict: true },
+        uploadFile: { strict: true },
+      },
+    });
+    expect(ft.definitions).toHaveLength(8);
+    for (const def of ft.definitions) {
+      expect(def.strict).toBe(true);
+      assertStrictObject(def.parameters);
+    }
+
+    const upload = ft.definitions.find((d) => d.name === "uploadFile");
+    const props = upload?.parameters.properties as Record<string, Schema>;
+    expect(props.metadata).toBeUndefined();
+    expect(props.key).toEqual({
+      description: "Destination object key",
+      type: "string",
+    });
+    expect(props.contentType).toEqual({
+      anyOf: [{ type: "string" }, { type: "null" }],
+      description: "MIME type recorded with the object",
+    });
+    expect(upload?.parameters.required).toEqual([
+      "cacheControl",
+      "content",
+      "contentType",
+      "encoding",
+      "key",
+    ]);
+
+    // A schema with no required keys at all must still list every property.
+    const list = ft.definitions.find((d) => d.name === "listFiles");
+    expect(list?.parameters.required).toEqual(["cursor", "limit", "prefix"]);
+  });
+
+  test("execute treats null for an optional field as absent (strict-mode arguments)", async () => {
+    const files = newFiles();
+    const ft = createResponsesFileTools({
+      files,
+      overrides: { listFiles: { strict: true }, uploadFile: { strict: true } },
+    });
+    const uploadOut = await ft.execute(
+      call("uploadFile", {
+        cacheControl: null,
+        content: "hi",
+        contentType: null,
+        encoding: null,
+        key: "n.txt",
+      }),
+      approved
+    );
+    expect(JSON.parse(uploadOut.output)).toMatchObject({ key: "n.txt" });
+
+    const listOut = await ft.execute(
+      call("listFiles", { cursor: null, limit: null, prefix: null })
+    );
+    expect(JSON.parse(listOut.output)).toMatchObject({
+      items: [{ key: "n.txt" }],
+    });
+
+    // Non-object arguments are left alone and fail validation as before.
+    const bad = await ft.execute(call("listFiles", "[]"));
+    expect(JSON.parse(bad.output)).toMatchObject({
+      error: "Argument validation failed",
+    });
+  });
+
   test("execute round-trip: upload → list → download → delete", async () => {
     const files = newFiles();
     const ft = createResponsesFileTools({ files });

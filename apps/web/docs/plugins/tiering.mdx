@@ -114,6 +114,7 @@ Two things to know: a page can hold up to the sum of both tiers' page sizes (eac
   ```
 
 - **Address objects by caller-facing keys.** The cold adapter does **not** receive the instance `prefix`, so configure its own bucket / container and avoid a client `prefix` on a tiering instance.
+- **Instance defaults apply to both tiers.** The `timeout`, `retries`, and `signal` you pass to the constructor govern the cold tier (and `tierOf()` / `tier()`) as well as the hot tier, so a hung cold backend is cut off rather than stalling the operation.
 
 ## Things to keep in mind
 

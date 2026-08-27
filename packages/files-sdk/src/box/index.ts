@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 
 import {
@@ -459,6 +460,73 @@ const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
 
 const bufferToReadable = (buf: Buffer): Readable => Readable.from(buf);
 
+type BoxUploadPart = NonNullable<
+  Awaited<ReturnType<BoxClient["chunkedUploads"]["uploadFilePart"]>>["part"]
+>;
+
+// Box's chunked-upload digests: RFC 3230 `sha=<base64 SHA-1>`.
+const sha1Digest = (data: Buffer): string =>
+  `sha=${createHash("sha1").update(data).digest("base64")}`;
+
+// Chunked re-upload of an EXISTING file as a new version. The SDK's
+// `uploadBigFile` helper always opens a new-file session, so re-uploading a
+// key that already exists 409s with `item_name_in_use` instead of versioning
+// it. Mirror the helper's loop over an existing-file session instead: open the
+// session, upload each `partSize` slice with its digest + content range, then
+// commit with the whole-file digest.
+const uploadBigFileVersion = async (
+  client: BoxClient,
+  fileId: string,
+  leaf: string,
+  data: Buffer
+): Promise<BoxFileLike> => {
+  const session =
+    await client.chunkedUploads.createFileUploadSessionForExistingFile(fileId, {
+      fileName: leaf,
+      fileSize: data.byteLength,
+    });
+  const { id: sessionId, partSize } = session;
+  if (!(sessionId && partSize)) {
+    throw new FilesError(
+      "Provider",
+      "box: upload session for existing file returned no id/partSize"
+    );
+  }
+  const parts: BoxUploadPart[] = [];
+  for (let offset = 0; offset < data.byteLength; offset += partSize) {
+    const chunk = data.subarray(
+      offset,
+      Math.min(offset + partSize, data.byteLength)
+    );
+    // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- Box parts are uploaded in order; each slice is a bounded sequential request like the SDK's own reducer
+    const uploaded = await client.chunkedUploads.uploadFilePart(
+      sessionId,
+      bufferToReadable(chunk),
+      {
+        contentRange: `bytes ${offset}-${offset + chunk.byteLength - 1}/${data.byteLength}`,
+        digest: sha1Digest(chunk),
+      }
+    );
+    if (!uploaded.part) {
+      throw new FilesError("Provider", "box: uploadFilePart returned no part");
+    }
+    parts.push(uploaded.part);
+  }
+  const committed = await client.chunkedUploads.createFileUploadSessionCommit(
+    sessionId,
+    { parts },
+    { digest: sha1Digest(data) }
+  );
+  const entry = committed?.entries?.[0] as BoxFileLike | undefined;
+  if (!entry) {
+    throw new FilesError(
+      "Provider",
+      "box: upload session commit returned no file"
+    );
+  }
+  return entry;
+};
+
 const folderCacheKey = (parents: readonly string[]): string =>
   parents.join("/");
 
@@ -696,6 +764,9 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     data: Buffer
   ): Promise<BoxFileLike> => {
     if (data.byteLength > SIMPLE_UPLOAD_LIMIT_BYTES) {
+      if (fileId) {
+        return await uploadBigFileVersion(client, fileId, leaf, data);
+      }
       return (await client.chunkedUploads.uploadBigFile(
         bufferToReadable(data),
         leaf,

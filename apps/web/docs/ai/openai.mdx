@@ -84,6 +84,8 @@ Errors thrown from `execute()` are wrapped by the Agents SDK's default `errorFun
 
 Both factories accept the same options shape as the Vercel `createFileTools`: `requireApproval` (boolean or per-tool record), `readOnly` (strips writes entirely), and `overrides` (description, plus `strict` for Responses or `needsApproval` for Agents).
 
+Setting `strict: true` on a Responses tool reshapes its `parameters` to what OpenAI strict mode accepts: every property is listed in `required`, optional ones become nullable (`execute` treats `null` as "absent"), and free-form maps are dropped, so `uploadFile` has no `metadata` field under strict mode.
+
 ```ts lineNumbers
 // Same shape across both factories.
 

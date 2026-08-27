@@ -692,6 +692,36 @@ describe("supabase adapter", () => {
       expect(v2Call[0]).toEqual({ cursor: "tok-2", limit: 50 });
     });
 
+    test("items do not surface Supabase's system metadata block as user metadata", async () => {
+      // The listing row's `metadata` is eTag/size/mimetype/cacheControl/…
+      // — system fields head()/download() never report as `metadata`.
+      const out = await makeAdapter().list();
+      expect(out.items.length).toBeGreaterThan(0);
+      for (const item of out.items) {
+        expect(item.metadata).toBeUndefined();
+      }
+      const [first] = out.items;
+      expect(first?.etag).toBe("etag-a");
+      expect(first?.size).toBe(5);
+      expect(first?.type).toBe("text/plain");
+      expect(first?.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
+    });
+
+    test("items surface user_metadata when the listing carries it", async () => {
+      const objects = [
+        {
+          metadata: baseListItem("a/1.txt").metadata,
+          name: "a/1.txt",
+          user_metadata: { author: "me", count: 2, missing: null },
+        },
+      ];
+      listV2Mock.mockImplementationOnce(() =>
+        Promise.resolve(ok({ folders: [], hasNext: false, objects }))
+      );
+      const out = await makeAdapter().list();
+      expect(out.items[0]?.metadata).toEqual({ author: "me", count: "2" });
+    });
+
     test("items expose lazy bodies that fetch via download()", async () => {
       const out = await makeAdapter().list();
       const [item] = out.items;

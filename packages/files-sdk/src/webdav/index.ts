@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import { AuthType, createClient } from "webdav";
 import type { FileStat, OAuthToken, WebDAVClient } from "webdav";
 
@@ -83,6 +85,17 @@ export interface WebdavAdapterOptions {
 
 export type WebdavRaw = WebDAVClient;
 export type WebdavAdapter = Adapter<WebdavRaw> & { readonly root: string };
+
+// Under Node the `webdav` package routes requests through node-fetch, whose
+// Response body is a Node Readable rather than a web stream; Bun and the
+// browser hand back a web ReadableStream. Normalize so callers always get
+// `getReader()`.
+const toWebStream = (body: unknown): ReadableStream<Uint8Array> =>
+  typeof (body as { getReader?: unknown }).getReader === "function"
+    ? (body as ReadableStream<Uint8Array>)
+    : (Readable.toWeb(
+        body as Readable
+      ) as unknown as ReadableStream<Uint8Array>);
 
 // WebDAV errors from the `webdav` library carry the HTTP status on `.status`;
 // classify on the standard status buckets. Transport failures (fetch rejected:
@@ -288,8 +301,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
       if (downloadOpts?.as === "stream") {
         try {
           // customRequest returns the raw fetch Response with an unread body,
-          // so response.body streams straight through — no buffering, and
-          // isomorphic (Node undici + the browser both give a web stream).
+          // so response.body streams straight through without buffering.
           const res = await client.customRequest(remote, {
             method: "GET",
             ...(rangeHeaders && { headers: rangeHeaders }),
@@ -298,13 +310,14 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           if (range) {
             assertRangeHonored(res.status, "webdav");
           }
-          const stream = res.body;
-          if (!stream) {
+          const body = res.body as unknown;
+          if (!body) {
             throw new FilesError(
               "Provider",
               `webdav: GET ${key} returned no response body`
             );
           }
+          const stream = toWebStream(body);
           const contentLength = res.headers.get("content-length");
           return createStoredFile(
             {
@@ -319,7 +332,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
               type: res.headers.get("content-type") ?? inferTypeFromName(key),
             },
             {
-              factory: () => stream as unknown as ReadableStream<Uint8Array>,
+              factory: () => stream,
               kind: "stream",
             }
           );

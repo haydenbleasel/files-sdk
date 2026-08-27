@@ -20,6 +20,10 @@ interface Entry {
 let store: Map<string, Entry>;
 // Paths that should surface as symlinks ('l') in their parent's listing.
 let symlinks: Set<string>;
+// Directories created through `mkdir`, recorded AFTER ssh2-sftp-client's
+// `normalizeRemotePath` treatment (see `normalizeLikeSsh2`), so a `put` into
+// a directory the adapter only thinks it created fails like a real server.
+let dirs: Set<string>;
 
 const sftpError = (code: number, message: string): Error =>
   Object.assign(new Error(message), { code });
@@ -40,6 +44,22 @@ const normalizeDir = (dir: string): string => {
     d = d.slice(1);
   }
   return d.endsWith("/") ? d.slice(0, -1) : d;
+};
+
+// ssh2-sftp-client's `normalizeRemotePath` assumes any path starting with
+// ".." is "../" (slices 3 chars) and any other path starting with "." is
+// "./" (slices 2 chars), then prefixes the realpath of that anchor. The fake's
+// realpath of the login dir is "" (keys are stored relative to it), so a
+// dot-prefixed relative dir loses its first two characters exactly as it
+// would on a real server.
+const normalizeLikeSsh2 = (path: string): string => {
+  if (path.startsWith("..")) {
+    return path.slice(3);
+  }
+  if (path.startsWith(".")) {
+    return path.slice(2);
+  }
+  return path;
 };
 
 const collect = async (input: unknown): Promise<Buffer> => {
@@ -152,10 +172,24 @@ const makeFakeClient = () =>
       }
       return Promise.resolve(entries);
     },
-    mkdir(_dir: string, _recursive?: boolean) {
+    mkdir(dir: string, _recursive?: boolean) {
+      // Model the server-side resolution: the ssh2 slice first, then the
+      // "./" / "/" anchors collapse onto the login dir like the rest of the
+      // fake, so a correctly anchored "./x" and an absolute "/x" both land
+      // where a later put resolves them.
+      const target = normalizeDir(normalizeLikeSsh2(dir));
+      let acc = "";
+      for (const segment of target.split("/")) {
+        acc = acc ? `${acc}/${segment}` : segment;
+        dirs.add(acc);
+      }
       return Promise.resolve("ok");
     },
     async put(input: unknown, remote: string) {
+      const parent = normalizeDir(parentDir(remote));
+      if (parent && !dirs.has(parent)) {
+        throw sftpError(2, "No such file");
+      }
       store.set(remote, { bytes: await collect(input) });
       return "ok";
     },
@@ -214,6 +248,7 @@ const newFiles = (opts?: { publicBaseUrl?: string }) =>
 beforeEach(() => {
   store = new Map();
   symlinks = new Set();
+  dirs = new Set();
 });
 
 describe("sftp adapter", () => {
@@ -414,6 +449,55 @@ describe("sftp adapter", () => {
     const adapter = sftp({ client });
     expect(adapter.raw).toBe(client);
     expect(adapter.name).toBe("sftp");
+  });
+});
+
+// Record the exact paths the adapter hands to `mkdir` while keeping the
+// fake's directory bookkeeping in place.
+const spyMkdir = (client: SftpClient): string[] => {
+  const calls: string[] = [];
+  const real = client.mkdir.bind(client);
+  client.mkdir = ((dir: string, recursive?: boolean) => {
+    calls.push(dir);
+    return real(dir, recursive);
+  }) as SftpClient["mkdir"];
+  return calls;
+};
+
+describe("sftp parent-directory creation", () => {
+  test("anchors a dot-prefixed relative dir so ssh2-sftp-client doesn't strip it", async () => {
+    // ssh2-sftp-client's normalizeRemotePath slices two characters off any
+    // path starting with ".", so a bare ".well-known/acme-challenge" would be
+    // created as "ell-known/acme-challenge" and the following put would fail
+    // with a bogus NotFound.
+    const client = makeFakeClient();
+    const mkdirCalls = spyMkdir(client);
+    const files = new Files({ adapter: sftp({ client }) });
+    await files.upload(".well-known/acme-challenge/token", "ok");
+    expect(mkdirCalls).toEqual(["./.well-known/acme-challenge"]);
+    expect(dirs.has(".well-known/acme-challenge")).toBe(true);
+    const got = await files.download(".well-known/acme-challenge/token");
+    expect(await got.text()).toBe("ok");
+  });
+
+  test("anchors plain relative dirs with ./ and leaves absolute dirs alone", async () => {
+    const client = makeFakeClient();
+    const mkdirCalls = spyMkdir(client);
+    const relative = new Files({ adapter: sftp({ client }) });
+    await relative.upload("docs/a.txt", "a");
+    const absolute = new Files({ adapter: sftp({ client, root: "/srv" }) });
+    await absolute.upload("docs/b.txt", "b");
+    expect(mkdirCalls).toEqual(["./docs", "/srv/docs"]);
+  });
+
+  test("leaves an already ./-anchored root untouched", async () => {
+    const client = makeFakeClient();
+    const mkdirCalls = spyMkdir(client);
+    const files = new Files({ adapter: sftp({ client, root: "./sub" }) });
+    await files.upload("nested/c.txt", "c");
+    expect(mkdirCalls).toEqual(["./sub/nested"]);
+    const got = await files.download("nested/c.txt");
+    expect(await got.text()).toBe("c");
   });
 });
 

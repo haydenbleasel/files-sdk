@@ -140,9 +140,27 @@ const uploadInto = async (
     return;
   }
   const savedCwd = await client.pwd();
-  await client.ensureDir(dir);
+  // `ensureDir` walks the tree one `cd`/`mkdir` at a time, so a failure
+  // partway through leaves the cwd somewhere inside it — it has to sit inside
+  // the try so the restore still runs.
   try {
+    await client.ensureDir(dir);
     await client.uploadFrom(source, base);
+  } finally {
+    await client.cd(savedCwd);
+  }
+};
+
+// Create `dir` (and its ancestors) without leaving the working directory
+// changed — for the paths that don't upload into it afterwards (rename,
+// resumable APPE). See `uploadInto` for why the restore is in a `finally`.
+const ensureDirRestoringCwd = async (
+  client: Client,
+  dir: string
+): Promise<void> => {
+  const savedCwd = await client.pwd();
+  try {
+    await client.ensureDir(dir);
   } finally {
     await client.cd(savedCwd);
   }
@@ -550,9 +568,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         // other path here.
         const { dir } = splitRemote(toRemote);
         if (dir && dir !== "." && dir !== "/") {
-          const savedCwd = await client.pwd();
-          await client.ensureDir(dir);
-          await client.cd(savedCwd);
+          await ensureDirRestoringCwd(client, dir);
         }
         await client.rename(fromRemote, toRemote);
       });
@@ -585,8 +601,17 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         async begin(): Promise<ResumableUploadSession> {
           // `metadata` / `cacheControl` are rejected centrally by the Files
           // wrapper before a resumable upload ever reaches here.
-          // Clear any stale partial so appended chunks build a fresh file.
-          await run(undefined, (client) => client.remove(remote, true));
+          await run(undefined, async (client) => {
+            // APPE won't create the destination's parent (plain upload()
+            // gets it from ensureDir), so create it here or the first chunk
+            // fails with a 550 that surfaces as a bogus NotFound.
+            const { dir } = splitRemote(remote);
+            if (dir && dir !== "." && dir !== "/") {
+              await ensureDirRestoringCwd(client, dir);
+            }
+            // Clear any stale partial so appended chunks build a fresh file.
+            await client.remove(remote, true);
+          });
           return { key, provider: "ftp" };
         },
         complete(): Promise<UploadResult> {

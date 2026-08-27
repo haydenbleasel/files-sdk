@@ -297,6 +297,58 @@ describe("failover — timeouts vs caller aborts", () => {
     expect(body).toBe("from-replica");
   });
 
+  test("the instance timeout governs the secondaries too", async () => {
+    const events: FailoverEvent[] = [];
+    const files = new Files({
+      adapter: hangingAdapter(),
+      plugins: [
+        failover({
+          onFailover: (e) => events.push(e),
+          secondaries: hangingAdapter(),
+        }),
+      ],
+      timeout: 20,
+    });
+    // The constructor timeout cuts the primary off and the chain fails over —
+    // then the secondary's internal Files must inherit that same timeout, or a
+    // hung replica stalls the operation forever after the failover.
+    const err = await files.download("a.txt").catch((error: unknown) => error);
+    expect(events).toHaveLength(1);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).timedOut).toBe(true);
+  });
+
+  test("a per-call timeout still forwards to the secondaries", async () => {
+    const files = new Files({
+      adapter: hangingAdapter(),
+      plugins: [failover({ secondaries: hangingAdapter() })],
+    });
+    const err = await files
+      .download("a.txt", { timeout: 20 })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).timedOut).toBe(true);
+  });
+
+  test("the instance retries default applies to the secondaries", async () => {
+    let attempts = 0;
+    const flakySecondary: Adapter = {
+      ...fakeAdapter(),
+      download: () => {
+        attempts += 1;
+        return Promise.reject(new FilesError("Provider", "flaky"));
+      },
+    };
+    const files = new Files({
+      adapter: downAdapter(),
+      plugins: [failover({ secondaries: flakySecondary })],
+      retries: { backoff: () => 0, max: 2 },
+    });
+    await expect(files.download("a.txt")).rejects.toThrow(/flaky/u);
+    // One initial attempt plus the two retries the instance default asks for.
+    expect(attempts).toBe(3);
+  });
+
   test("a caller abort is surfaced, not failed over", async () => {
     const secondary = await seeded({ "a.txt": "from-replica" });
     const files = new Files({

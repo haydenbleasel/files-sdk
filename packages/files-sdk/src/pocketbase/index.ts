@@ -18,6 +18,7 @@ import {
   assertRangeHonored,
   collectStream,
   existsByProbe,
+  joinPublicUrl,
   makeErrorMapper,
   normalizeBody as coreNormalizeBody,
   rangeRequestHeaders,
@@ -547,10 +548,7 @@ export const pocketbase = (
         );
       }
       if (publicBaseUrl) {
-        const trimmed = publicBaseUrl.endsWith("/")
-          ? publicBaseUrl.slice(0, -1)
-          : publicBaseUrl;
-        return `${trimmed}/${encodeURIComponent(key)}`;
+        return joinPublicUrl(publicBaseUrl, key);
       }
       try {
         const record = await findRecord(key, urlOpts?.signal);

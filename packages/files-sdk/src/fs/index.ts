@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import type { Dirent } from "node:fs";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- namespace import of node:fs/promises; many members (readdir/stat/rename/mkdir/...) are used.
@@ -59,6 +59,11 @@ const SIDECAR_SUFFIX = ".meta.json";
 // `walk()` skips it so a paused upload's partial never surfaces in `list()`,
 // and `resolveKeyPath` rejects keys that would land on one.
 const RESUMABLE_SUFFIX = ".fls-part";
+// Staging file for an in-flight `upload()` (body and sidecar are both written
+// here first, then renamed into place). Reserved like the other two so a
+// crash between write and rename — or a `list()` racing an upload — never
+// surfaces a half-written body as an object.
+const TEMP_SUFFIX = ".fls-tmp";
 const ETAG_HEX_LEN = 16;
 
 interface Sidecar {
@@ -113,8 +118,8 @@ export const mapFsError = (err: unknown): FilesError => {
 
 const stringBodyEncoder = new TextEncoder();
 
-// Stream bodies are handled separately by `writeStreamToTempThenRename`, so
-// this helper only sees the bytes-shaped variants.
+// Stream bodies are drained with `collectStream` in `upload()`, so this
+// helper only sees the bytes-shaped variants.
 type NonStreamBody = Exclude<Body, ReadableStream<Uint8Array>>;
 
 const bodyToBytes = async (body: NonStreamBody): Promise<Uint8Array> => {
@@ -173,7 +178,11 @@ const aliasesSidecarPath = (resolved: string): boolean => {
     .basename(resolved)
     .replace(FS_TRAILING_NOISE, "")
     .toLowerCase();
-  return name.endsWith(SIDECAR_SUFFIX) || name.endsWith(RESUMABLE_SUFFIX);
+  return (
+    name.endsWith(SIDECAR_SUFFIX) ||
+    name.endsWith(RESUMABLE_SUFFIX) ||
+    name.endsWith(TEMP_SUFFIX)
+  );
 };
 
 // `path.resolve` collapses `..` segments, so a key like
@@ -207,7 +216,7 @@ const resolveKeyPath = (root: string, key: string): string => {
   if (aliasesSidecarPath(resolved)) {
     throw new FilesError(
       "Provider",
-      `fs: keys ending in ${SIDECAR_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
+      `fs: keys ending in ${SIDECAR_SUFFIX}, ${RESUMABLE_SUFFIX}, or ${TEMP_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
     );
   }
   return resolved;
@@ -232,6 +241,38 @@ const realpathUnderRoot = async (
     );
   }
   return realTarget;
+};
+
+// The write-side counterpart of `realpathUnderRoot`, for a path that may not
+// exist yet. `realpath` needs an existing target, so walk up to the nearest
+// existing ancestor, resolve that through any symlinks, require it to be
+// under `root`, and re-join the not-yet-created tail. Without this,
+// `root/link -> /outside` lets `upload("link/x")` write — and `delete("link/x")`
+// unlink — outside the root, which the read paths already reject. Runs before
+// any `mkdir`, so the escape is caught before even a directory is created.
+const writePathUnderRoot = async (
+  root: string,
+  target: string,
+  key: string
+): Promise<string> => {
+  const tail: string[] = [path.basename(target)];
+  let dir = path.dirname(target);
+  // `resolveKeyPath` guarantees `root` is a strict ancestor, so the loop
+  // terminates there; a missing root itself is created by `ensureDirFor`.
+  while (dir !== root) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- walks up one ancestor per iteration until one exists.
+      const realDir = await realpathUnderRoot(root, dir, key);
+      return path.join(realDir, ...tail);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+        throw error;
+      }
+    }
+    tail.unshift(path.basename(dir));
+    dir = path.dirname(dir);
+  }
+  return target;
 };
 
 const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
@@ -280,6 +321,90 @@ const bestEffortRm = async (target: string): Promise<void> => {
   }
 };
 
+// Per-call staging path next to the final one. `randomUUID` (not
+// `pid + Date.now()`) so two concurrent uploads to the same key can't share a
+// staging file — with a shared name one call's rename ENOENTs and the survivor
+// ends up with the other call's bytes.
+const tempPathFor = (finalPath: string): string =>
+  `${finalPath}.${randomUUID()}${TEMP_SUFFIX}`;
+
+// Serializes the commit step (body rename, then sidecar rename) per body path
+// so two same-key uploads in one process can't interleave their renames and
+// leave one call's body beside the other's sidecar/etag. Only the renames are
+// held — the (slow) staging writes still run concurrently. Cross-process
+// writers are covered by the per-call staging names; there the last rename
+// wins per file, the same last-writer-wins a cloud backend gives.
+const commitLocks = new Map<string, Promise<unknown>>();
+
+const withCommitLock = async <T>(
+  bodyPath: string,
+  fn: () => Promise<T>
+): Promise<T> => {
+  const previous = commitLocks.get(bodyPath);
+  const run = async (): Promise<T> => {
+    try {
+      await previous;
+    } catch {
+      // The previous holder's failure is its own to report — we only wait
+      // for it to finish before taking our turn.
+    }
+    return await fn();
+  };
+  const current = run();
+  commitLocks.set(bodyPath, current);
+  try {
+    return await current;
+  } finally {
+    if (commitLocks.get(bodyPath) === current) {
+      commitLocks.delete(bodyPath);
+    }
+  }
+};
+
+// Publish a fully-staged body at `bodyPath` together with its sidecar: the
+// sidecar is staged too, then both are renamed into place under the commit
+// lock. `stagedBodyPath` is the caller's already-written staging file (an
+// `upload()` temp or a completed resumable partial). On failure only the
+// sidecar staging file is cleaned up here — the caller owns its body staging.
+const commitStaged = async (
+  bodyPath: string,
+  stagedBodyPath: string,
+  sidecar: Sidecar
+): Promise<void> => {
+  const sidecarPath = sidecarPathOf(bodyPath);
+  const stagedSidecarPath = tempPathFor(sidecarPath);
+  try {
+    await fsp.writeFile(stagedSidecarPath, JSON.stringify(sidecar));
+    await withCommitLock(bodyPath, async () => {
+      await fsp.rename(stagedBodyPath, bodyPath);
+      await fsp.rename(stagedSidecarPath, sidecarPath);
+    });
+  } catch (error) {
+    await bestEffortRm(stagedSidecarPath);
+    throw error;
+  }
+};
+
+// Write `bytes` to a per-call staging file then commit it (with its sidecar)
+// atomically, so a crash mid-write never leaves a half-written body that
+// subsequent reads would see.
+const writeStagedThenCommit = async (
+  bodyPath: string,
+  bytes: Uint8Array,
+  sidecar: Sidecar
+): Promise<void> => {
+  const stagedBodyPath = tempPathFor(bodyPath);
+  try {
+    await fsp.writeFile(stagedBodyPath, bytes);
+    await commitStaged(bodyPath, stagedBodyPath, sidecar);
+  } catch (error) {
+    // Best-effort cleanup of the staging file on failure. `rm` with `force`
+    // swallows ENOENT if rename already moved it.
+    await bestEffortRm(stagedBodyPath);
+    throw error;
+  }
+};
+
 // Walk the tree under `root`, yielding posix-style relative keys for every
 // non-sidecar regular file. We use `withFileTypes` to avoid an extra `stat`
 // per entry, and skip sidecars at the leaf so they never surface as
@@ -313,7 +438,8 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
       }
       if (
         entry.name.endsWith(SIDECAR_SUFFIX) ||
-        entry.name.endsWith(RESUMABLE_SUFFIX)
+        entry.name.endsWith(RESUMABLE_SUFFIX) ||
+        entry.name.endsWith(TEMP_SUFFIX)
       ) {
         continue;
       }
@@ -334,48 +460,6 @@ const compareKeys = (a: string, b: string): number => {
     return 1;
   }
   return 0;
-};
-
-const writeStreamToTempThenRename = async (
-  bodyPath: string,
-  stream: ReadableStream<Uint8Array>
-): Promise<{ bytes: Uint8Array; size: number }> => {
-  const tempPath = `${bodyPath}.${process.pid}.${Date.now()}.tmp`;
-  // We need both the bytes (for hashing + size) and a written file. Drain
-  // into a Uint8Array first, then write atomically via temp-file + rename.
-  // The sole alternative — pipe to disk while hashing in parallel — needs
-  // a tee, which doubles memory anyway for any source that isn't
-  // back-pressured (and the typical caller passes a small dev body).
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (value) {
-      chunks.push(value);
-      total += value.byteLength;
-    }
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    await fsp.writeFile(tempPath, bytes);
-    await fsp.rename(tempPath, bodyPath);
-  } catch (error) {
-    // Best-effort cleanup of the temp file on failure. `rm` with `force`
-    // swallows ENOENT if rename already moved it.
-    await bestEffortRm(tempPath);
-    throw error;
-  }
-  return { bytes, size: total };
 };
 
 export const fs = (opts: FsAdapterOptions): FsAdapter => {
@@ -416,9 +500,10 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
   return {
     async copy(from, to) {
       const fromPath = resolveKeyPath(root, from);
-      const toPath = resolveKeyPath(root, to);
+      const toKeyPath = resolveKeyPath(root, to);
       try {
         const realFromPath = await realpathUnderRoot(root, fromPath, from);
+        const toPath = await writePathUnderRoot(root, toKeyPath, to);
         await ensureDirFor(toPath);
         await fsp.copyFile(realFromPath, toPath);
         // If the source had a sidecar, copy it (refreshing
@@ -434,8 +519,12 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       }
     },
     async delete(key) {
-      const bodyPath = resolveKeyPath(root, key);
       try {
+        const bodyPath = await writePathUnderRoot(
+          root,
+          resolveKeyPath(root, key),
+          key
+        );
         // `force: true` makes both unlinks idempotent — matches the
         // silent-on-missing behavior of S3/Azure.
         await fsp.rm(bodyPath, { force: true });
@@ -588,9 +677,11 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       };
     },
     async move(from, to) {
-      const fromPath = resolveKeyPath(root, from);
-      const toPath = resolveKeyPath(root, to);
       try {
+        const [fromPath, toPath] = await Promise.all([
+          writePathUnderRoot(root, resolveKeyPath(root, from), from),
+          writePathUnderRoot(root, resolveKeyPath(root, to), to),
+        ]);
         await ensureDirFor(toPath);
         // Atomic per-file rename — no byte round-trip, unlike copy()+delete().
         await fsp.rename(fromPath, toPath);
@@ -647,6 +738,10 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         async begin(meta): Promise<ResumableUploadSession> {
           ({ contentType } = meta);
           try {
+            // Guard only — the partial keeps its key-derived path (it's what
+            // `adopt` checks the token against); a symlinked ancestor that
+            // escapes the root is rejected here before anything is created.
+            await writePathUnderRoot(root, tempPath, key);
             await ensureDirFor(tempPath);
             // Start (or truncate) the partial file so positional writes have a
             // target. A leftover partial from a prior, abandoned attempt is
@@ -677,8 +772,14 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
                 metadata: resumableOpts.metadata,
               }),
             };
-            await writeSidecar(bodyPath, sidecar);
-            await fsp.rename(tempPath, bodyPath);
+            // The partial is already staged next to the body, so commit it
+            // like an `upload()` temp: sidecar staged, both renamed under the
+            // commit lock. Same symlink guard as `begin` on the final path.
+            await commitStaged(
+              await writePathUnderRoot(root, bodyPath, key),
+              tempPath,
+              sidecar
+            );
             return {
               contentType,
               etag: sidecar.etag,
@@ -711,6 +812,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           }
         },
         async uploadAt({ offset, data }): Promise<{ nextOffset: number }> {
+          // Re-check on every chunk: an adopted session skips `begin`, so this
+          // is the first write-side guard a resumed upload hits.
+          await writePathUnderRoot(root, tempPath, key);
           // O_RDWR | O_CREAT: positional write, creating the partial if it's
           // missing (e.g. resuming after it was cleaned up) without truncating
           // an existing one.
@@ -752,28 +856,23 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     // `copy()` is a local `fs.copyFile` — no body round-trip.
     supportsServerSideCopy: true,
     async upload(key, body, options) {
-      const bodyPath = resolveKeyPath(root, key);
       const contentType = defaultContentType(body, options?.contentType);
       try {
+        const bodyPath = await writePathUnderRoot(
+          root,
+          resolveKeyPath(root, key),
+          key
+        );
         await ensureDirFor(bodyPath);
-        let bytes: Uint8Array;
-        let size: number;
-        if (body instanceof ReadableStream) {
-          ({ bytes, size } = await writeStreamToTempThenRename(bodyPath, body));
-        } else {
-          bytes = await bodyToBytes(body);
-          size = bytes.byteLength;
-          // Write to a temp path then rename so a crash mid-write doesn't
-          // leave a half-written body that subsequent reads would see.
-          const tempPath = `${bodyPath}.${process.pid}.${Date.now()}.tmp`;
-          try {
-            await fsp.writeFile(tempPath, bytes);
-            await fsp.rename(tempPath, bodyPath);
-          } catch (error) {
-            await bestEffortRm(tempPath);
-            throw error;
-          }
-        }
+        // We need both the bytes (for hashing + size) and a written file, so
+        // a stream is drained into a Uint8Array first. The sole alternative —
+        // pipe to disk while hashing in parallel — needs a tee, which doubles
+        // memory anyway for any source that isn't back-pressured (and the
+        // typical caller passes a small dev body).
+        const bytes =
+          body instanceof ReadableStream
+            ? await collectStream(body)
+            : await bodyToBytes(body);
         const lastModified = Date.now();
         const sidecar: Sidecar = {
           contentType,
@@ -782,13 +881,13 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           ...(options?.cacheControl && { cacheControl: options.cacheControl }),
           ...(options?.metadata && { metadata: options.metadata }),
         };
-        await writeSidecar(bodyPath, sidecar);
+        await writeStagedThenCommit(bodyPath, bytes, sidecar);
         return {
           contentType,
           etag: sidecar.etag,
           key,
           lastModified,
-          size,
+          size: bytes.byteLength,
         } satisfies UploadResult;
       } catch (error) {
         throw mapFsError(error);

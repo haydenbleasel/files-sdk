@@ -542,6 +542,50 @@ describe("tiering — tier() / tierOf()", () => {
   });
 });
 
+/** A cold adapter whose download hangs until the signal aborts. */
+const hangingCold = (): Adapter => ({
+  ...fakeAdapter(),
+  download: (_key, opts) =>
+    // oxlint-disable-next-line promise/avoid-new -- hang-until-abort needs callback interop.
+    new Promise((_resolve, reject) => {
+      opts?.signal?.addEventListener("abort", () =>
+        reject(opts.signal?.reason)
+      );
+    }),
+});
+
+describe("tiering — instance defaults reach the cold tier", () => {
+  test("the instance timeout cuts off a hung cold read", async () => {
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [tiering({ cold: hangingCold(), route: () => "cold" })],
+      timeout: 20,
+    });
+    // The cold tier's internal Files must inherit the constructor timeout, or
+    // a hung cold backend stalls the operation forever.
+    const err = await files.download("a.txt").catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).timedOut).toBe(true);
+  });
+
+  test("the instance timeout reaches tier() streaming from the cold tier", async () => {
+    const cold = hangingCold();
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [tiering({ cold, route: () => "cold" })],
+      timeout: 20,
+    }) as Harness["files"];
+    await cold.upload("a.txt", "x");
+    // tier() reads through the extend-built runners, which must carry the
+    // defaults just like the wrap path does.
+    const err = await files
+      .tier("a.txt", "hot")
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).timedOut).toBe(true);
+  });
+});
+
 describe("tiering — copy with a missing source under fallback", () => {
   test("surfaces the provider NotFound", async () => {
     const { files } = harness(sizeRoute, { fallback: true });

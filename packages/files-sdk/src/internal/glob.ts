@@ -28,8 +28,12 @@ export const globMatcher = (
  * - `invoices/**` → `invoices`
  * - `*.pdf`, `!keep.txt` → `""`
  * - `a/b/c` → `a/b/c` (no wildcard: the whole key is literal)
+ * - `a\*b/x` → `a*b/x` (an escape stands for the literal it guards)
  */
 export const globPrefix = (glob: string): string => {
   const { base, negated } = picomatch.scan(glob);
-  return negated ? "" : base;
+  // The scanned base keeps the pattern's backslash escapes (`a\*b` for a
+  // literal `a*b`); the keys it's matched against don't, so unescape before
+  // handing it to the provider as a literal prefix.
+  return negated ? "" : base.replaceAll(/\\(?<literal>.)/gu, "$<literal>");
 };

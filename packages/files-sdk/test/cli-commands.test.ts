@@ -407,6 +407,18 @@ describe("cli/commands real (fs adapter)", () => {
     expect(cap.exits).toEqual([]);
   });
 
+  test("exists (many) lets a hard error's exit code win over a missing key", async () => {
+    // "../escape" is rejected by the fs adapter (Provider → exit 2); that
+    // must not be downgraded to exit 1 just because another key is absent.
+    await runExists({ ...baseOpts(), keys: ["missing.txt", "../escape"] });
+    const out = lastJson(cap.stdout);
+    expect(out.missing).toEqual(["missing.txt"]);
+    expect((out.errors as { key: string }[]).map((e) => e.key)).toEqual([
+      "../escape",
+    ]);
+    expect(takeExitCode()).toBe(2);
+  });
+
   test("delete removes the underlying file", async () => {
     const local = path.join(root, "in.txt");
     await uploadFile("gone.txt", "x", local);

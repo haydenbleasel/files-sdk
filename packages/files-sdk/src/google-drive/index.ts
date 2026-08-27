@@ -324,6 +324,26 @@ const toUint8 = (data: unknown): Uint8Array => {
   );
 };
 
+// Drive MERGES appProperties on update — a key is only removed by sending it
+// as `null` — so an overwrite that sets fewer metadata keys than the previous
+// version would otherwise keep the stale ones. Every other adapter replaces
+// metadata wholesale on overwrite; match that by nulling out the existing
+// keys the new upload doesn't set.
+const overwriteProps = (
+  next: Record<string, string>,
+  existing: Record<string, string>
+): Record<string, string> => {
+  const cleared: Record<string, string | null> = {};
+  for (const k of Object.keys(existing)) {
+    if (!(k in next)) {
+      cleared[k] = null;
+    }
+  }
+  // The generated Drive types declare appProperties values as `string`, but
+  // the API documents `null` as the clear-on-update sentinel.
+  return { ...cleared, ...next } as Record<string, string>;
+};
+
 const fileToStoredMeta = (
   file: drive_v3.Schema$File
 ): {
@@ -472,17 +492,21 @@ export const googleDrive = (
    * entry would mask an external delete or rewrite) but populates it on a
    * hit.
    */
-  const lookupFileId = async (
+  // Find the Drive file carrying `key`, with its current appProperties so an
+  // overwrite can clear the ones it no longer sets (see `overwriteProps`).
+  const lookupFile = async (
     key: string,
     signal?: AbortSignal
-  ): Promise<string | undefined> => {
+  ): Promise<
+    { id: string; appProperties: Record<string, string> } | undefined
+  > => {
     const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and '${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
     let res: { data: drive_v3.Schema$FileList };
     try {
       res = (await driveClient.files.list(
         {
           ...sharedDriveParams,
-          fields: "files(id)",
+          fields: "files(id, appProperties)",
           pageSize: 2,
           q,
         },
@@ -509,7 +533,18 @@ export const googleDrive = (
       );
     }
     fileIdCache.set(key, id);
-    return id;
+    return {
+      appProperties: (files[0]?.appProperties ?? {}) as Record<string, string>,
+      id,
+    };
+  };
+
+  const lookupFileId = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<string | undefined> => {
+    const found = await lookupFile(key, signal);
+    return found?.id;
   };
 
   const resolveFileId = async (
@@ -827,19 +862,23 @@ export const googleDrive = (
               "google-drive: failed to mint access token for resumable upload session"
             );
           }
-          const existingId = await lookupFileId(key);
+          const existing = await lookupFile(key);
+          const existingId = existing?.id;
           const fields = `&fields=${encodeURIComponent(
             "id,size,md5Checksum,mimeType,modifiedTime"
           )}`;
+          const nextProps: Record<string, string> = {
+            [KEY_PROP]: key,
+            [CONTENT_TYPE_PROP]: meta.contentType,
+            ...(resumableOpts.cacheControl && {
+              [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
+            }),
+            ...resumableOpts.metadata,
+          };
           const initBody = {
-            appProperties: {
-              [KEY_PROP]: key,
-              [CONTENT_TYPE_PROP]: meta.contentType,
-              ...(resumableOpts.cacheControl && {
-                [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
-              }),
-              ...resumableOpts.metadata,
-            },
+            appProperties: existing
+              ? overwriteProps(nextProps, existing.appProperties)
+              : nextProps,
             mimeType: meta.contentType,
             name: basename(key),
           };
@@ -1035,13 +1074,13 @@ export const googleDrive = (
         // would strand a duplicate per overwrite and wedge every later read
         // on that key with a Conflict. Look the key up fresh and update the
         // existing file in place (`parents` is create-only).
-        const existingId = await lookupFileId(key, options?.signal);
+        const existing = await lookupFile(key, options?.signal);
         const media = {
           body: normalized.stream,
           mimeType: normalized.contentType,
         };
         const res =
-          existingId === undefined
+          existing === undefined
             ? await driveClient.files.create(
                 {
                   ...sharedDriveParams,
@@ -1060,10 +1099,13 @@ export const googleDrive = (
                 {
                   ...sharedDriveParams,
                   fields: "id, size, mimeType, md5Checksum, modifiedTime",
-                  fileId: existingId,
+                  fileId: existing.id,
                   media,
                   requestBody: {
-                    appProperties,
+                    appProperties: overwriteProps(
+                      appProperties,
+                      existing.appProperties
+                    ),
                     mimeType: normalized.contentType,
                     name: basename(key),
                   },

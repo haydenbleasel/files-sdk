@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -287,6 +288,11 @@ const uploadBigFileMock = mock(
     if (!parent || parent.type !== "folder") {
       throw apiError(404, "not_found");
     }
+    // The SDK helper always opens a NEW-file session, which Box refuses when
+    // the name is already taken in that folder.
+    if (findChild(parentFolderId, fileName)) {
+      throw apiError(409, "item_name_in_use");
+    }
     const bytes = await readReadable(file);
     const id = newId();
     const fakeFile: FakeFile = {
@@ -308,6 +314,118 @@ const uploadBigFileMock = mock(
       size: fakeFile.size,
       type: "file",
     };
+  }
+);
+
+// Existing-file chunked upload sessions. Models Box's server-side checks:
+// per-part SHA-1 digests and content ranges must match the bytes, and the
+// commit digest must match the whole file.
+interface FakeSession {
+  fileId: string;
+  fileName?: string;
+  fileSize: number;
+  received: Buffer[];
+}
+const FAKE_PART_SIZE = 20 * 1024 * 1024;
+let sessions: Map<string, FakeSession>;
+const sha1Base64 = (data: Buffer): string =>
+  createHash("sha1").update(data).digest("base64");
+
+const createFileUploadSessionForExistingFileMock = mock(
+  (fileId: string, body: { fileSize: number; fileName?: string }) => {
+    const file = store.get(fileId);
+    if (!file || file.type !== "file") {
+      return Promise.reject(apiError(404, "not_found"));
+    }
+    const id = `sess_${newId()}`;
+    sessions.set(id, {
+      fileId,
+      fileName: body.fileName,
+      fileSize: body.fileSize,
+      received: [],
+    });
+    return Promise.resolve({
+      id,
+      numPartsProcessed: 0,
+      partSize: FAKE_PART_SIZE,
+      totalParts: Math.ceil(body.fileSize / FAKE_PART_SIZE),
+    });
+  }
+);
+
+const uploadFilePartMock = mock(
+  async (
+    sessionId: string,
+    stream: unknown,
+    headers: { digest: string; contentRange: string }
+  ) => {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      throw apiError(404, "not_found");
+    }
+    const chunk = await readReadable(stream);
+    const range = /^bytes (?<start>\d+)-(?<end>\d+)\/(?<total>\d+)$/u.exec(
+      headers.contentRange
+    );
+    const start = Number(range?.groups?.start);
+    const end = Number(range?.groups?.end);
+    if (
+      !range ||
+      Number(range.groups?.total) !== session.fileSize ||
+      end - start + 1 !== chunk.byteLength ||
+      headers.digest !== `sha=${sha1Base64(chunk)}`
+    ) {
+      throw apiError(400, "bad_digest");
+    }
+    session.received.push(chunk);
+    return {
+      part: {
+        offset: start,
+        partId: `part_${session.received.length}`,
+        sha1: createHash("sha1").update(chunk).digest("hex"),
+        size: chunk.byteLength,
+      },
+    };
+  }
+);
+
+const createFileUploadSessionCommitMock = mock(
+  (
+    sessionId: string,
+    body: { parts: { partId?: string }[] },
+    headers: { digest: string }
+  ) => {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return Promise.reject(apiError(404, "not_found"));
+    }
+    const bytes = Buffer.concat(session.received);
+    if (
+      body.parts.length !== session.received.length ||
+      bytes.byteLength !== session.fileSize ||
+      headers.digest !== `sha=${sha1Base64(bytes)}`
+    ) {
+      return Promise.reject(apiError(400, "bad_digest"));
+    }
+    const file = store.get(session.fileId) as FakeFile;
+    file.bytes = bytes;
+    file.size = bytes.byteLength;
+    file.etag = `etag_${file.id}_v2`;
+    file.modifiedAt = STABLE_MODIFIED;
+    file.name = session.fileName ?? file.name;
+    sessions.delete(sessionId);
+    return Promise.resolve({
+      entries: [
+        {
+          etag: file.etag,
+          id: file.id,
+          modifiedAt: file.modifiedAt,
+          name: file.name,
+          size: file.size,
+          type: "file",
+        },
+      ],
+    });
   }
 );
 
@@ -353,7 +471,13 @@ const getSharedLinkForFileMock = mock((fileId: string, _query: unknown) => {
 });
 
 const fakeClient = {
-  chunkedUploads: { uploadBigFile: uploadBigFileMock },
+  chunkedUploads: {
+    createFileUploadSessionCommit: createFileUploadSessionCommitMock,
+    createFileUploadSessionForExistingFile:
+      createFileUploadSessionForExistingFileMock,
+    uploadBigFile: uploadBigFileMock,
+    uploadFilePart: uploadFilePartMock,
+  },
   downloads: {
     downloadFile: downloadFileMock,
     getDownloadFileUrl: getDownloadFileUrlMock,
@@ -388,6 +512,9 @@ const allMocks = [
   uploadFileMock,
   uploadFileVersionMock,
   uploadBigFileMock,
+  createFileUploadSessionForExistingFileMock,
+  uploadFilePartMock,
+  createFileUploadSessionCommitMock,
   getDownloadFileUrlMock,
   downloadFileMock,
   addShareLinkToFileMock,
@@ -396,6 +523,7 @@ const allMocks = [
 
 beforeEach(() => {
   store = new Map();
+  sessions = new Map();
   nextId = 0;
   seedRoot();
   for (const m of allMocks) {
@@ -906,7 +1034,68 @@ describe("box adapter", () => {
     const r = await files.upload("big.bin", big);
     expect(uploadFileMock).not.toHaveBeenCalled();
     expect(uploadBigFileMock).toHaveBeenCalledTimes(1);
+    expect(createFileUploadSessionForExistingFileMock).not.toHaveBeenCalled();
     expect(r.size).toBe(big.byteLength);
+  });
+
+  test("re-uploading an existing key above 50 MB versions it through an existing-file session", async () => {
+    // `uploadBigFile` always opens a NEW-file session, which Box 409s
+    // (item_name_in_use) when the name is taken. The adapter must open an
+    // existing-file session instead and drive the part/commit loop itself.
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("big.bin", "small first version");
+    const firstId = [...store.values()].find(
+      (it) => it.type === "file" && it.name === "big.bin"
+    )?.id;
+    const big = Buffer.alloc(51 * 1024 * 1024, "y");
+    const r = await files.upload("big.bin", big);
+    expect(r.size).toBe(big.byteLength);
+    expect(uploadBigFileMock).not.toHaveBeenCalled();
+    expect(createFileUploadSessionForExistingFileMock).toHaveBeenCalledTimes(1);
+    expect(createFileUploadSessionForExistingFileMock.mock.calls[0]?.[0]).toBe(
+      firstId
+    );
+    // 51 MiB at the fake's 20 MiB part size → 3 sequential parts.
+    expect(uploadFilePartMock).toHaveBeenCalledTimes(3);
+    expect(createFileUploadSessionCommitMock).toHaveBeenCalledTimes(1);
+    // Still one file, now carrying the new bytes.
+    const carriers = [...store.values()].filter(
+      (it) => it.type === "file" && it.name === "big.bin"
+    );
+    expect(carriers).toHaveLength(1);
+    expect(carriers[0]?.id).toBe(firstId);
+    expect((carriers[0] as FakeFile).bytes.equals(big)).toBe(true);
+  });
+
+  test("existing-file chunked upload throws Provider when the session lacks an id/partSize", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("big.bin", "v1");
+    createFileUploadSessionForExistingFileMock.mockImplementationOnce((() =>
+      Promise.resolve({ numPartsProcessed: 0 })) as never);
+    await expect(
+      files.upload("big.bin", Buffer.alloc(51 * 1024 * 1024))
+    ).rejects.toThrow(/id\/partSize/u);
+  });
+
+  test("existing-file chunked upload throws Provider when a part comes back empty", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("big.bin", "v1");
+    uploadFilePartMock.mockImplementationOnce((() =>
+      Promise.resolve({})) as never);
+    await expect(
+      files.upload("big.bin", Buffer.alloc(51 * 1024 * 1024))
+    ).rejects.toThrow(/no part/u);
+  });
+
+  test("existing-file chunked upload throws Provider when the commit returns no file", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("big.bin", "v1");
+    // A 202 (still processing) deserializes to `undefined` in the SDK.
+    createFileUploadSessionCommitMock.mockImplementationOnce((() =>
+      Promise.resolve()) as never);
+    await expect(
+      files.upload("big.bin", Buffer.alloc(51 * 1024 * 1024))
+    ).rejects.toThrow(/commit returned/u);
   });
 
   test("upload accepts an empty metadata object (no rejection)", async () => {

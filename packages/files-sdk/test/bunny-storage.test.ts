@@ -27,10 +27,46 @@ const nextChecksum = () => {
 
 const MOCK_ZONE = "uploads";
 
+const DIRECTORY_LISTING_MARKER = "<directory listing>";
+
+const downloadResult = (bytes: Uint8Array) => ({
+  length: bytes.byteLength,
+  response: new Response(bytes as BodyInit),
+  stream: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  }),
+});
+
+// Mirrors `file.download` in the real SDK: a plain GET on the path. A
+// directory path (trailing slash) yields the JSON directory listing rather
+// than a file body — exactly what `entry.data()` on a *listing* entry does,
+// because the SDK builds it from `Path`, the containing directory.
+const downloadMock = mock((_storageZone: unknown, path: string) => {
+  if (path.endsWith("/")) {
+    return Promise.resolve(
+      downloadResult(
+        new TextEncoder().encode(
+          JSON.stringify([{ ObjectName: DIRECTORY_LISTING_MARKER }])
+        )
+      )
+    );
+  }
+  const key = stripPath(path);
+  const entry = backing.get(key);
+  if (!entry) {
+    return Promise.reject(new Error(`File not found: ${path}`));
+  }
+  return Promise.resolve(downloadResult(entry.bytes));
+});
+
 const makeStorageFile = (
   key: string,
   entry: StoredEntry,
-  isDirectory = false
+  isDirectory = false,
+  fromListing = false
 ) => {
   // Mirror real Bunny semantics:
   //   Path        = "/<StorageZoneName>/<parent-dir>/"   (always trailing /)
@@ -44,17 +80,9 @@ const makeStorageFile = (
     _tag: "StorageFile" as const,
     checksum: entry.checksum,
     contentType: entry.contentType,
-    data: () =>
-      Promise.resolve({
-        length: entry.bytes.byteLength,
-        response: new Response(entry.bytes as BodyInit),
-        stream: new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(entry.bytes);
-            controller.close();
-          },
-        }),
-      }),
+    // `file.get` builds `data` from the requested path; `file.list` builds
+    // it from the entry's `Path` (its directory) — see the SDK source.
+    data: () => downloadMock(undefined, fromListing ? path : `/${key}`),
     dateCreated: entry.lastChanged,
     guid: `guid-${key}`,
     isDirectory,
@@ -100,7 +128,7 @@ const listMock = mock((_storageZone: unknown, path: string) => {
     const childPath = key.slice(prefix.length);
     const childDirectoryIndex = childPath.indexOf("/");
     if (childDirectoryIndex === -1) {
-      entries.push(makeStorageFile(key, entry));
+      entries.push(makeStorageFile(key, entry, false, true));
       continue;
     }
     const directoryKey = `${prefix}${childPath.slice(0, childDirectoryIndex)}/`;
@@ -115,6 +143,7 @@ const listMock = mock((_storageZone: unknown, path: string) => {
             contentType: "",
             lastChanged: new Date("2024-01-01T00:00:00.000Z"),
           },
+          true,
           true
         )
       );
@@ -147,6 +176,7 @@ const uploadMock = mock(
 
 mock.module("@bunny.net/storage-sdk", () => ({
   file: {
+    download: downloadMock,
     get: getMock,
     list: listMock,
     remove: removeMock,
@@ -178,6 +208,7 @@ beforeEach(() => {
   backing.clear();
   checksumCounter = 0;
   connectWithAccessKeyMock.mockClear();
+  downloadMock.mockClear();
   getMock.mockClear();
   listMock.mockClear();
   removeMock.mockClear();
@@ -357,6 +388,61 @@ describe("bunnyStorage adapter", () => {
     });
     expect(second.items.map((item) => item.key)).toEqual(["docs/b.txt"]);
     expect(second.cursor).toBeUndefined();
+  });
+
+  test("list-item lazy bodies download the file itself, not its directory listing", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("docs/a.txt", "alpha");
+    await files.upload("docs/b.txt", "bravo");
+    downloadMock.mockClear();
+
+    const { items } = await files.list({ prefix: "docs/" });
+    expect(downloadMock).not.toHaveBeenCalled();
+
+    // The trap the adapter must avoid: the SDK's own `entry.data()` on a
+    // listing entry fetches `Path` (the directory), i.e. the JSON listing.
+    const entries = (await listMock.mock.results[0]?.value) as {
+      data: () => Promise<{ stream: ReadableStream<Uint8Array> }>;
+    }[];
+    const [firstEntry] = entries;
+    if (!firstEntry) {
+      throw new Error("expected a listing entry");
+    }
+    const viaData = await firstEntry.data();
+    expect(
+      new TextDecoder().decode(await bytesFromStream(viaData.stream))
+    ).toContain(DIRECTORY_LISTING_MARKER);
+    downloadMock.mockClear();
+
+    expect(await items[0]?.text()).toBe("alpha");
+    expect(await items[1]?.text()).toBe("bravo");
+    expect(downloadMock.mock.calls.map((c) => c[1])).toEqual([
+      "/docs/a.txt",
+      "/docs/b.txt",
+    ]);
+  });
+
+  test("head's lazy body downloads by the entry's full key", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("docs/a.txt", "alpha");
+    downloadMock.mockClear();
+
+    const info = await files.head("docs/a.txt");
+    expect(downloadMock).not.toHaveBeenCalled();
+    expect(await info.text()).toBe("alpha");
+    expect(downloadMock.mock.calls.at(-1)?.[1]).toBe("/docs/a.txt");
   });
 
   test("list only returns immediate files from Bunny directory listings", async () => {

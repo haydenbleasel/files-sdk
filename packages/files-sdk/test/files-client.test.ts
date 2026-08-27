@@ -218,6 +218,8 @@ describe("transport seam", () => {
     type Listener = (event: ProgressEvent) => void;
     class FakeXHR {
       static instances: FakeXHR[] = [];
+      /** Hold requests open (never dispatch load) so a signal can abort them. */
+      static holdOpen = false;
       private readonly listeners: Record<string, Listener[]> = {};
       private readonly uploadListeners: Record<string, Listener[]> = {};
       upload = {
@@ -231,6 +233,7 @@ describe("transport seam", () => {
       url = "";
       headers: Record<string, string> = {};
       body: unknown;
+      sent = false;
       constructor() {
         FakeXHR.instances.push(this);
       }
@@ -245,7 +248,11 @@ describe("transport seam", () => {
         this.headers[k] = v;
       }
       send(body: unknown) {
+        this.sent = true;
         this.body = body;
+        if (FakeXHR.holdOpen) {
+          return;
+        }
         for (const handler of this.uploadListeners.progress ?? []) {
           handler({
             lengthComputable: true,
@@ -258,6 +265,10 @@ describe("transport seam", () => {
         }
       }
       abort() {
+        // Per spec, `abort()` before `send()` (OPENED state) fires no event.
+        if (!this.sent) {
+          return;
+        }
         for (const handler of this.listeners.abort ?? []) {
           handler({} as ProgressEvent);
         }
@@ -302,18 +313,36 @@ describe("transport seam", () => {
     expect(form.get("file")).toBeInstanceOf(Blob);
   });
 
-  test("xhrTransport rejects on an already-aborted signal", () => {
+  test("xhrTransport rejects on an already-aborted signal", async () => {
     const Fake = okXhr();
     (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = Fake;
     const controller = new AbortController();
     controller.abort();
+    await expect(
+      xhrTransport({
+        body: new Blob(["x"]),
+        method: "PUT",
+        signal: controller.signal,
+        url: "https://x.test/put",
+      })
+    ).rejects.toMatchObject({ aborted: true });
+    // settled before any request was opened
+    expect(Fake.instances).toHaveLength(0);
+  });
+
+  test("xhrTransport aborts an in-flight request when the signal fires", async () => {
+    const Fake = okXhr();
+    Fake.holdOpen = true;
+    (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = Fake;
+    const controller = new AbortController();
     const promise = xhrTransport({
       body: new Blob(["x"]),
       method: "PUT",
       signal: controller.signal,
       url: "https://x.test/put",
     });
-    expect(promise).rejects.toMatchObject({ aborted: true });
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ aborted: true });
   });
 
   test("fetchTransport falls back without progress (PUT + POST)", async () => {

@@ -17,6 +17,21 @@ const STABLE_MTIME = new Date("2024-01-02T03:04:05Z");
 // cwd at the login dir ("") except briefly during an upload.
 let store: Map<string, Buffer>;
 let symlinks: Set<string>;
+// Directories created via ensureDir. A directory also exists implicitly when
+// a stored key lives under it (uploadFrom's own ensureDir put it there).
+let dirs: Set<string>;
+
+const dirExists = (dir: string): boolean => {
+  if (!dir || dirs.has(dir)) {
+    return true;
+  }
+  for (const key of store.keys()) {
+    if (key.startsWith(`${dir}/`)) {
+      return true;
+    }
+  }
+  return false;
+};
 
 const ftpError = (code: number, message: string): Error =>
   Object.assign(new Error(message), { code });
@@ -43,6 +58,10 @@ const makeFakeClient = () => {
   const resolve = (path: string): string => (cwd ? `${cwd}/${path}` : path);
   return {
     async appendFrom(source: Readable, path: string) {
+      // APPE never creates the parent directory: a real server answers 550.
+      if (!dirExists(parentDir(resolve(path)))) {
+        throw ftpError(550, "550 Failed to open file.");
+      }
       const chunks: Buffer[] = [];
       for await (const chunk of source) {
         chunks.push(Buffer.from(chunk as Buffer));
@@ -69,7 +88,19 @@ const makeFakeClient = () => {
       return { code: 226 };
     },
     ensureDir(dir: string) {
-      cwd = normalizeDir(dir);
+      // basic-ftp walks the tree one segment at a time (cd, else mkdir+cd),
+      // so a failure partway through leaves the cwd inside the tree. A
+      // "denied" segment models a server refusing that mkdir.
+      let acc = "";
+      for (const segment of normalizeDir(dir).split("/")) {
+        if (segment === "denied") {
+          cwd = acc;
+          return Promise.reject(ftpError(550, "550 Permission denied"));
+        }
+        acc = acc ? `${acc}/${segment}` : segment;
+        dirs.add(acc);
+      }
+      cwd = acc;
       return Promise.resolve();
     },
     lastMod(path: string) {
@@ -202,6 +233,7 @@ const newFiles = (opts?: { publicBaseUrl?: string }) =>
 beforeEach(() => {
   store = new Map();
   symlinks = new Set();
+  dirs = new Set();
 });
 
 describe("ftp adapter", () => {
@@ -235,6 +267,32 @@ describe("ftp adapter", () => {
     expect(await rootFile.text()).toBe("root");
     const nestedFile = await reused.download("nested/deep/a.txt");
     expect(await nestedFile.text()).toBe("deep");
+  });
+
+  test("a failed ensureDir mid-tree still restores the cwd (upload)", async () => {
+    // basic-ftp's ensureDir cd's segment by segment, so a refused mkdir
+    // leaves the connection parked inside the tree. The restore must run
+    // from a finally or every later relative path on a reused connection
+    // resolves against the wrong directory.
+    const client = makeFakeClient();
+    const files = new Files({ adapter: ftp({ client }) });
+    await expect(
+      files.upload("ok/denied/deep/a.txt", "x")
+    ).rejects.toBeInstanceOf(FilesError);
+    expect(await client.pwd()).toBe("");
+    await files.upload("root.txt", "root");
+    expect(store.has("root.txt")).toBe(true);
+  });
+
+  test("a failed ensureDir mid-tree still restores the cwd (move)", async () => {
+    const client = makeFakeClient();
+    const files = new Files({ adapter: ftp({ client }) });
+    await files.upload("src.txt", "s");
+    await expect(
+      files.move("src.txt", "ok/denied/dst.txt")
+    ).rejects.toBeInstanceOf(FilesError);
+    expect(await client.pwd()).toBe("");
+    expect(store.has("src.txt")).toBe(true);
   });
 
   test("download infers content type from the key extension", async () => {
@@ -701,6 +759,22 @@ describe("ftp resumable uploads", () => {
     const got = await files.download("big.bin");
     expect(await got.text()).toBe("abcdefghijkl");
     expect(control.session?.provider).toBe("ftp");
+  });
+
+  test("fresh upload into a missing nested directory creates the parent first", async () => {
+    // APPE 550s when the destination directory doesn't exist. begin() has to
+    // create it (restoring the cwd) the same way plain upload() and move() do.
+    const client = makeFakeClient();
+    const files = new Files({ adapter: ftp({ client }) });
+    const result = await files.upload("videos/clips/clip.bin", "abcdefghijkl", {
+      control: new UploadControl(),
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(dirs.has("videos/clips")).toBe(true);
+    expect(await client.pwd()).toBe("");
+    const got = await files.download("videos/clips/clip.bin");
+    expect(await got.text()).toBe("abcdefghijkl");
   });
 
   test("resumes from the remote size in a new connection", async () => {

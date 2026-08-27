@@ -270,6 +270,38 @@ describe("versioning plugin — limit", () => {
     expect(await files.versions("k")).toHaveLength(1);
   });
 
+  test("restore works with limit: 1 and keeps the pre-restore bytes", async () => {
+    const files = withVersioning({ limit: 1 });
+    await files.upload("k", "v1");
+    await files.upload("k", "v2");
+    // The restore's own snapshot (of "v2") pushes the sole kept version past
+    // the limit; pruning it before the copy would fail the restore and destroy
+    // the version. The restore must land first, then the limit applies.
+    await files.restore("k");
+    expect(await bodyOf(files, "k")).toBe("v1");
+    const versions = await files.versions("k");
+    expect(versions).toHaveLength(1);
+    expect(await bodyOf(files, versions[0]?.key ?? "")).toBe("v2");
+  });
+
+  test("restoring the oldest kept version under a limit works", async () => {
+    const files = withVersioning({ limit: 2 });
+    for (const value of ["v1", "v2", "v3"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential overwrites build ordered version history
+      await files.upload("k", value);
+    }
+    const before = await files.versions("k");
+    expect(before).toHaveLength(2);
+    const oldest = before.at(-1);
+    await files.restore("k", oldest?.versionId);
+    expect(await bodyOf(files, "k")).toBe("v1");
+    // The oldest version was consumed by the prune only after it was copied
+    // back; the two newest snapshots ("v2" and the pre-restore "v3") remain.
+    const after = await files.versions("k");
+    const bodies = await Promise.all(after.map((v) => bodyOf(files, v.key)));
+    expect(bodies).toEqual(["v3", "v2"]);
+  });
+
   test("rejects a non-positive limit", () => {
     expect(() => versioning({ limit: 0 })).toThrow(/positive integer/u);
     expect(() => versioning({ limit: 1.5 })).toThrow(/positive integer/u);

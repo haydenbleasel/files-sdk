@@ -9,6 +9,13 @@ export interface TokenPayload {
   contentType?: string;
   maxSize?: number;
   minSize?: number;
+  /**
+   * The canonical non-routing query of the request that minted the token
+   * (everything but `op`/`key`/`token`, sorted). A per-request `files`
+   * factory picks the instance from that query, so the token is only honored
+   * by the same instance it was minted for. Absent when the query was empty.
+   */
+  query?: string;
   /** Expiry, epoch milliseconds. */
   exp: number;
 }

@@ -6,7 +6,7 @@ import {
   mapMany,
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
-import { globMatcher, globPrefix } from "./internal/glob.js";
+import { globPrefix } from "./internal/glob.js";
 import {
   buildReceipt,
   bufferedBodyBytes,
@@ -34,7 +34,7 @@ import {
   runWithSignal,
   sleep,
 } from "./internal/retry.js";
-import { isSafeSearchRegex } from "./internal/search-regex.js";
+import { buildSearchMatcher } from "./internal/search-matcher.js";
 
 export { rejectConditional } from "./internal/conditional.js";
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
@@ -1604,57 +1604,6 @@ const conditionalOperationFingerprint = (
   }
 };
 
-// Compile a search pattern into a key predicate once, up front, so the per-key
-// cost during the walk is a single test/compare and an invalid regex throws
-// before any provider call.
-const buildSearchMatcher = (
-  pattern: string | RegExp,
-  match: SearchMatch,
-  caseInsensitive: boolean
-): ((key: string) => boolean) => {
-  if (
-    typeof pattern === "string" &&
-    (match === "substring" || match === "exact")
-  ) {
-    const needle = caseInsensitive ? pattern.toLowerCase() : pattern;
-    const contains = match === "substring";
-    return (key) => {
-      const hay = caseInsensitive ? key.toLowerCase() : key;
-      return contains ? hay.includes(needle) : hay === needle;
-    };
-  }
-  if (typeof pattern === "string" && match === "glob") {
-    return globMatcher(pattern, caseInsensitive);
-  }
-  // A RegExp instance, or a string compiled as a regex.
-  let regexp: RegExp;
-  if (pattern instanceof RegExp) {
-    regexp = new RegExp(
-      pattern.source,
-      caseInsensitive && !pattern.flags.includes("i")
-        ? `${pattern.flags}i`
-        : pattern.flags
-    );
-  } else {
-    try {
-      regexp = new RegExp(pattern, caseInsensitive ? "iu" : "u");
-    } catch (error) {
-      throw new FilesError(
-        "Provider",
-        `search pattern is not a valid regular expression: ${pattern}`,
-        error
-      );
-    }
-  }
-  if (!isSafeSearchRegex(regexp)) {
-    throw new FilesError("Provider", "search pattern is too complex");
-  }
-  return (key) => {
-    regexp.lastIndex = 0;
-    return regexp.test(key);
-  };
-};
-
 const assertNoRelativeSegments = (key: string, label = "key"): void => {
   if (key.split("/").some((segment) => segment === "." || segment === "..")) {
     throw new FilesError(
@@ -2068,6 +2017,7 @@ export class Files<A extends Adapter = Adapter> {
           op.key,
           op.body,
           op.options,
+          true,
           {
             ...(op.mode === "create" && { condition: "create" as const }),
             ...(op.mode === "replace" && { condition: "replace" as const }),
@@ -2289,7 +2239,13 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<T> {
     const hooks = this.#hooks;
     if (!(hooks?.onAction || hooks?.onError)) {
-      return fn();
+      // Still normalize a plugin's bare throw: callers always get a FilesError,
+      // hooks or no hooks.
+      try {
+        return await fn();
+      } catch (error) {
+        throw FilesError.wrap(error);
+      }
     }
     const startedAt = Date.now();
     try {
@@ -2396,6 +2352,17 @@ export class Files<A extends Adapter = Adapter> {
    */
   get prefix(): string {
     return this.#prefix;
+  }
+
+  /**
+   * The constructor-level `timeout` / `retries` / `signal` defaults, as a
+   * fresh copy. Plugins that drive a second adapter through an internal
+   * {@link Files} (`failover()` secondaries, the `tiering()` cold tier) spread
+   * these into it, so the instance's defaults govern every backend rather
+   * than only the primary.
+   */
+  get defaults(): OperationOptions {
+    return { ...this.#defaults };
   }
 
   /**
@@ -2615,11 +2582,17 @@ export class Files<A extends Adapter = Adapter> {
    * it. Otherwise the wrapper reports generically: a `ReadableStream` body is
    * wrapped so bytes are counted as the adapter drains it; a buffered body
    * brackets the call with a `0` and a final event.
+   *
+   * `retryable` is the caller's retry budget: single-key uploads retry a
+   * buffered body per the client's `retries`; the bulk path passes `false` so
+   * `upload([...])` is retry-free like every other bulk verb. A stream body
+   * never retries regardless — it can't be re-read.
    */
   #runUpload(
     key: string,
     body: Body,
-    opts?: UploadOptions,
+    opts: UploadOptions | undefined,
+    retryable: boolean,
     ctx?: ActionContext,
     conditional?: Extract<ConditionalFilesOperation, { kind: "upload" }>
   ): Promise<UploadResult> {
@@ -2665,6 +2638,7 @@ export class Files<A extends Adapter = Adapter> {
       return this.#runResumable(path, body, opts, opts.control);
     }
     const isStream = body instanceof ReadableStream;
+    const canRetryBody = retryable && !isStream;
     const onProgress = opts?.onProgress;
 
     const upload = async (
@@ -2691,7 +2665,7 @@ export class Files<A extends Adapter = Adapter> {
       return this.#run(
         opts,
         (attemptOpts) => upload(body, attemptOpts),
-        !isStream,
+        canRetryBody,
         ctx
       );
     }
@@ -2714,7 +2688,23 @@ export class Files<A extends Adapter = Adapter> {
       );
       return this.#run(
         rest,
-        (attemptOpts) => upload(tracked, attemptOpts),
+        async (attemptOpts) => {
+          try {
+            return await upload(tracked, attemptOpts);
+          } catch (error) {
+            // Release the caller's source: an adapter that failed before (or
+            // without) draining the wrapper would otherwise leave `body`
+            // locked, so the caller could never cancel it. Best-effort — the
+            // adapter may still hold the wrapper's reader, and the upload
+            // error is the one that matters.
+            try {
+              await tracked.cancel(error);
+            } catch {
+              // Locked by the adapter, or already errored: nothing to release.
+            }
+            throw error;
+          }
+        },
         false,
         ctx
       );
@@ -2736,7 +2726,7 @@ export class Files<A extends Adapter = Adapter> {
         emitHook(onProgress, { loaded: done, total: done });
         return result;
       },
-      true,
+      retryable,
       ctx
     );
   }
@@ -2822,7 +2812,7 @@ export class Files<A extends Adapter = Adapter> {
             if (op.kind !== "upload") {
               return this.#perform(op);
             }
-            return this.#runUpload(op.key, op.body, op.options);
+            return this.#runUpload(op.key, op.body, op.options, false);
           }
         );
       },

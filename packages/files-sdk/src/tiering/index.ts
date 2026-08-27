@@ -487,7 +487,14 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   }
   const { route } = options;
   const fallback = options.fallback ?? false;
-  const cold = runnerFor(new Files({ adapter: options.cold }));
+  const coldFor = (defaults: OperationOptions): TierRunner =>
+    runnerFor(new Files({ adapter: options.cold, ...defaults }));
+  // Rebuilt in `extend` (the only hook that sees the outer instance) so the
+  // cold tier's internal Files inherits its `timeout` / `retries` / `signal`
+  // defaults — a hung cold backend is then cut off the same way the hot tier
+  // is instead of stalling the operation forever. The default-less runner only
+  // stands in until `extend` runs at construction.
+  let cold = coldFor({});
 
   const pick = (hot: TierRunner, tier: Tier): TierRunner =>
     tier === "hot" ? hot : cold;
@@ -690,15 +697,19 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
 
   return {
     extend: (files) => {
+      const { defaults } = files;
+      cold = coldFor(defaults);
       // The hot tier, addressed directly for the extend methods (which have no
       // `next`). Built over the instance's own adapter so it never re-enters the
       // tiering wrap — `files.tierOf(...)` would otherwise recurse. The instance
-      // `prefix` must be re-applied here: the wrap path's hot runner goes
-      // through `next` (which prefixes), so without it tierOf()/tier() would
-      // address different hot-tier keys than every other operation.
+      // `prefix` (and its defaults) must be re-applied here: the wrap path's
+      // hot runner goes through `next` (which prefixes), so without it
+      // tierOf()/tier() would address different hot-tier keys than every other
+      // operation.
       const hot = runnerFor(
         new Files({
           adapter: files.adapter,
+          ...defaults,
           ...(files.prefix && { prefix: files.prefix }),
         })
       );

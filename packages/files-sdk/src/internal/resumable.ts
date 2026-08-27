@@ -467,6 +467,17 @@ const pauseGate = async (
   state.status = "uploading";
 };
 
+/**
+ * Throw the control's aborted error if `control.abort()` has landed. Checked at
+ * the points where the runners are about to finalize — an abort that arrives
+ * once every chunk is up must still win over `complete()`.
+ */
+const assertNotAborted = (state: ControlInternals): void => {
+  if (state.abortController.signal.aborted) {
+    throw abortError(state.abortController.signal.reason);
+  }
+};
+
 /** Run a single chunk's provider call with per-attempt timeout + retry. */
 const attempt = async <T>(
   fn: (signal: AbortSignal | undefined) => Promise<T>,
@@ -588,6 +599,7 @@ const runParts = async (
     throw failure;
   }
   results.sort((a, b) => a.partNumber - b.partNumber);
+  assertNotAborted(state);
   return driver.complete(results);
 };
 
@@ -650,6 +662,7 @@ const runOffset = async (
     state.loaded = offset;
     reportProgress(opts.onProgress, { loaded: offset, total });
   }
+  assertNotAborted(state);
   return driver.complete([]);
 };
 
@@ -729,18 +742,24 @@ export const runResumableUpload = async (
         ? await runParts(driver, source, state, committedParts, opts, signals)
         : await runOffset(driver, source, state, nextOffset, opts, signals);
 
+    // `abort()` may have landed while `complete()` was in flight: it already
+    // marked the control aborted and discarded the session, so the finalized
+    // upload must not be reported as a success.
+    assertNotAborted(state);
     state.status = "completed";
     state.loaded = total;
     reportProgress(opts.onProgress, { loaded: total, total });
     return result;
   } catch (error) {
-    const wrapped = FilesError.wrap(error);
     // `control.abort()` aborts this controller and already set status to
-    // "aborted"; any other failure (a provider error, or an external
-    // `signal` abort that preserves the session for resume) is an error.
-    if (!state.abortController.signal.aborted) {
-      state.status = "error";
+    // "aborted": whatever failed underneath it (the abort itself, or a
+    // provider call tripping over the discarded session) surfaces as the
+    // abort. Any other failure (a provider error, or an external `signal`
+    // abort that preserves the session for resume) is an error.
+    if (state.abortController.signal.aborted) {
+      throw abortError(state.abortController.signal.reason);
     }
-    throw wrapped;
+    state.status = "error";
+    throw FilesError.wrap(error);
   }
 };

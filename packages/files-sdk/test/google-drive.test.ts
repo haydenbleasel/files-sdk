@@ -91,9 +91,21 @@ const filesUpdateMock = mock(async (params: unknown) => {
       size += (chunk as Buffer).byteLength ?? 0;
     }
   }
+  // Drive MERGES appProperties on update: existing keys survive unless the
+  // request sends them as `null`, which clears them.
+  const mergedProps: Record<string, string> = { ...existing.appProperties };
+  for (const [k, v] of Object.entries(
+    (p.requestBody.appProperties ?? {}) as Record<string, string | null>
+  )) {
+    if (v === null) {
+      Reflect.deleteProperty(mergedProps, k);
+    } else {
+      mergedProps[k] = v;
+    }
+  }
   const file: FakeFile = {
     ...existing,
-    appProperties: p.requestBody.appProperties ?? existing.appProperties,
+    appProperties: mergedProps,
     md5Checksum: `etag-${existing.id}-${size}`,
     mimeType: p.requestBody.mimeType ?? existing.mimeType,
     modifiedTime: STABLE_MODIFIED,
@@ -373,6 +385,28 @@ describe("google-drive adapter", () => {
     const before = filesListMock.mock.calls.length;
     await files.head("docs/a.txt");
     expect(filesListMock.mock.calls.length).toBe(before);
+  });
+
+  test("overwriting a key replaces its metadata instead of merging (stale keys nulled)", async () => {
+    // Drive merges appProperties on update, so the adapter must send `null`
+    // for every previous key the new upload doesn't set — otherwise
+    // `{ a: "1" }` then `{ b: "2" }` reads back as `{ a: "1", b: "2" }`
+    // while every other adapter yields `{ b: "2" }`.
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "v1", {
+      cacheControl: "max-age=60",
+      metadata: { a: "1" },
+    });
+    await files.upload("a.txt", "v2", { metadata: { b: "2" } });
+    const args = filesUpdateMock.mock.calls.at(-1)?.[0] as {
+      requestBody: { appProperties: Record<string, string | null> };
+    };
+    expect(args.requestBody.appProperties.a).toBeNull();
+    expect(args.requestBody.appProperties.fsdkCacheControl).toBeNull();
+    expect(args.requestBody.appProperties.b).toBe("2");
+    expect(args.requestBody.appProperties.fsdkKey).toBe("a.txt");
+    const meta = await files.head("a.txt");
+    expect(meta.metadata).toEqual({ b: "2" });
   });
 
   test("upload rejects reserved fsdk* metadata keys", async () => {
@@ -1047,17 +1081,26 @@ describe("google-drive resumable uploads", () => {
     }) as typeof fetch;
 
     const files = new Files({ adapter: googleDrive(baseOpts) });
-    await files.upload("big.bin", "old-small");
+    await files.upload("big.bin", "old-small", { metadata: { stale: "x" } });
     const result = await files.upload("big.bin", new Uint8Array(CHUNK + 10), {
       control: new UploadControl(),
+      metadata: { fresh: "y" },
       multipart: { partSize: CHUNK },
     });
     expect(result.size).toBe(CHUNK + 10);
     expect(inits).toHaveLength(1);
     expect(inits[0]?.method).toBe("PATCH");
     expect(inits[0]?.url).toContain("/files/id-1?uploadType=resumable");
+    const initBody = JSON.parse(inits[0]?.body ?? "{}") as {
+      parents?: string[];
+      appProperties: Record<string, string | null>;
+    };
     // `parents` is create-only and must be absent on an update session.
-    expect(JSON.parse(inits[0]?.body ?? "{}").parents).toBeUndefined();
+    expect(initBody.parents).toBeUndefined();
+    // Drive merges appProperties on update, so the previous version's keys
+    // the new upload doesn't set must be cleared explicitly.
+    expect(initBody.appProperties.stale).toBeNull();
+    expect(initBody.appProperties.fresh).toBe("y");
     // Still exactly one Drive file carries the key.
     const carriers = [...store.values()].filter(
       (f) => f.appProperties?.fsdkKey === "big.bin"

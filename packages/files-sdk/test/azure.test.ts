@@ -86,13 +86,19 @@ const downloadMock = mock(
 );
 const downloadToBufferMock = mock(() => Promise.resolve(Buffer.from("hello")));
 const existsMock = mock(() => Promise.resolve(true));
-const getPropertiesMock = mock(() => Promise.resolve(baseProps()));
+const getPropertiesMock = mock(
+  (): Promise<DownloadResult> => Promise.resolve(baseProps())
+);
 const deleteIfExistsMock = mock(() => Promise.resolve({ succeeded: true }));
 const syncCopyFromURLMock = mock((_source: string) =>
   Promise.resolve({ copyStatus: "success" })
 );
 
-const blobUrlOf = (key: string): string => `${BLOB_BASE}/${key}`;
+// The real SDK builds blob URLs by appending to the service URL's path, so a
+// SAS query given to the BlobServiceClient constructor is carried through to
+// every `getBlobClient(key).url`. Mirror that here.
+let serviceQuery = "";
+const blobUrlOf = (key: string): string => `${BLOB_BASE}/${key}${serviceQuery}`;
 
 const generateUserDelegationSasUrlMock = mock(
   (
@@ -158,32 +164,46 @@ const makeListPage = (
   segment: { blobItems },
 });
 
-const defaultListPage = () =>
+interface ListOptsFixture {
+  includeMetadata?: boolean;
+  prefix?: string;
+}
+
+// The service only returns blob metadata when the listing asks for
+// `include=metadata`, which the SDK sends for `includeMetadata: true`.
+const withMetadata = (
+  opts: ListOptsFixture | undefined,
+  item: BlobItemFixture
+): BlobItemFixture =>
+  opts?.includeMetadata ? { ...item, metadata: { foo: "bar" } } : item;
+
+const defaultListPage = (opts?: ListOptsFixture) =>
   makeListPage(
     [
-      { metadata: { foo: "bar" }, name: "a/1.txt", properties: baseProps() },
-      { metadata: { foo: "bar" }, name: "a/2.txt", properties: baseProps() },
+      withMetadata(opts, { name: "a/1.txt", properties: baseProps() }),
+      withMetadata(opts, { name: "a/2.txt", properties: baseProps() }),
     ],
     ""
   );
 
-const listBlobsFlatMock = mock((opts?: { prefix?: string }) => {
+const listBlobsFlatMock = mock((opts?: ListOptsFixture) => {
   listBlobsFlatMock.lastOpts = opts;
   return {
     byPage(byPageOpts?: { continuationToken?: string; maxPageSize?: number }) {
       listBlobsFlatMock.lastByPageOpts = byPageOpts;
       return {
-        next: () => Promise.resolve({ done: false, value: defaultListPage() }),
+        next: () =>
+          Promise.resolve({ done: false, value: defaultListPage(opts) }),
       };
     },
   };
 }) as ReturnType<typeof mock> & {
-  lastOpts?: { prefix?: string };
+  lastOpts?: ListOptsFixture;
   lastByPageOpts?: { continuationToken?: string; maxPageSize?: number };
 };
 
 const listBlobsByHierarchyMock = mock(
-  (delimiter: string, opts?: { prefix?: string }) => {
+  (delimiter: string, opts?: ListOptsFixture) => {
     listBlobsByHierarchyMock.lastDelimiter = delimiter;
     listBlobsByHierarchyMock.lastOpts = opts;
     return {
@@ -195,7 +215,12 @@ const listBlobsByHierarchyMock = mock(
               value: {
                 continuationToken: "",
                 segment: {
-                  blobItems: [{ name: "a/1.txt", properties: baseProps() }],
+                  blobItems: [
+                    withMetadata(opts, {
+                      name: "a/1.txt",
+                      properties: baseProps(),
+                    }),
+                  ],
                   blobPrefixes: [{ name: "a/b/" }, { name: "a/c/" }],
                 },
               },
@@ -206,7 +231,7 @@ const listBlobsByHierarchyMock = mock(
   }
 ) as ReturnType<typeof mock> & {
   lastDelimiter?: string;
-  lastOpts?: { prefix?: string };
+  lastOpts?: ListOptsFixture;
 };
 
 const getContainerClientMock = mock((_name: string) => ({
@@ -272,6 +297,7 @@ class BlobServiceClientStub {
       kind: "ctor",
     };
     this.url = url;
+    serviceQuery = new URL(url).search;
   }
 
   // oxlint-disable-next-line class-methods-use-this
@@ -408,6 +434,7 @@ beforeEach(() => {
   );
 
   sharedKeyInstances.length = 0;
+  serviceQuery = "";
   BlobServiceClientStub.lastInit = undefined;
   listBlobsFlatMock.lastOpts = undefined;
   listBlobsFlatMock.lastByPageOpts = undefined;
@@ -716,6 +743,10 @@ describe("azure adapter", () => {
       expect(got.type).toBe("text/plain");
       expect(got.etag).toBe("etag-a");
       expect(got.metadata).toEqual({ foo: "bar" });
+      // Metadata comes from a HEAD, not a GET whose body is never drained.
+      expect(getPropertiesMock).toHaveBeenCalledTimes(1);
+      expect(downloadMock).not.toHaveBeenCalled();
+      expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
     });
 
     test("as: 'stream' returns a lazy stream — no fetch until .stream() called", async () => {
@@ -816,12 +847,11 @@ describe("azure adapter", () => {
     test("buffered: download tolerates a response missing etag and metadata", async () => {
       // stripEtag's `if (!etag) return undefined` branch runs when the SDK
       // doesn't echo an ETag back (e.g. anonymous-read responses).
-      downloadMock.mockImplementationOnce(() =>
+      getPropertiesMock.mockImplementationOnce(() =>
         Promise.resolve({
           contentLength: 5,
           contentType: "text/plain",
           lastModified: new Date(STABLE_LAST_MODIFIED),
-          readableStreamBody: Readable.from([Buffer.from("hello")]),
         })
       );
       const got = await azure({
@@ -1068,7 +1098,7 @@ describe("azure adapter", () => {
       expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
     });
 
-    test("sas-only mode appends the existing SAS to the source URL", async () => {
+    test("sas-only mode uses the SAS the service client already carries on the blob URL", async () => {
       const adapter = azure({
         accountName: ACCOUNT,
         container: CONTAINER,
@@ -1080,8 +1110,33 @@ describe("azure adapter", () => {
         throw new Error("expected syncCopyFromURL to have been called");
       }
       const [source] = copyCall;
+      // Exactly one query string — the SDK already appended the SAS from the
+      // service URL, so appending it again would yield `?sig=…?sig=…`.
       expect(source).toBe(`${BLOB_BASE}/a.txt?sig=existing-sas`);
+      expect(source.split("?")).toHaveLength(2);
+      expect(new URL(source).searchParams.getAll("sig")).toEqual([
+        "existing-sas",
+      ]);
       expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+    });
+
+    test("sas-only mode appends the SAS when the blob URL has no query", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        sasToken: "?sig=existing-sas",
+      });
+      getBlobClientMock.mockImplementationOnce((key: string) => ({
+        ...makeBlobClient(key),
+        url: `${BLOB_BASE}/${key}`,
+      }));
+      await adapter.copy("a.txt", "b.txt");
+      const [copyCall] = syncCopyFromURLMock.mock.calls;
+      if (!copyCall) {
+        throw new Error("expected syncCopyFromURL to have been called");
+      }
+      const [source] = copyCall;
+      expect(source).toBe(`${BLOB_BASE}/a.txt?sig=existing-sas`);
     });
   });
 
@@ -1103,6 +1158,12 @@ describe("azure adapter", () => {
       expect(listBlobsFlatMock.lastOpts?.prefix).toBe("a/");
       expect(listBlobsFlatMock.lastByPageOpts?.continuationToken).toBe("tok-1");
       expect(listBlobsFlatMock.lastByPageOpts?.maxPageSize).toBe(10);
+      // Metadata is only returned when the listing asks for it.
+      expect(listBlobsFlatMock.lastOpts?.includeMetadata).toBe(true);
+      expect(out.items.map((i) => i.metadata)).toEqual([
+        { foo: "bar" },
+        { foo: "bar" },
+      ]);
     });
 
     test("a delimiter lists via hierarchy and maps blobPrefixes", async () => {
@@ -1118,6 +1179,8 @@ describe("azure adapter", () => {
       expect(out.prefixes).toEqual(["a/b/", "a/c/"]);
       expect(listBlobsByHierarchyMock.lastDelimiter).toBe("/");
       expect(listBlobsByHierarchyMock.lastOpts?.prefix).toBe("a/");
+      expect(listBlobsByHierarchyMock.lastOpts?.includeMetadata).toBe(true);
+      expect(out.items[0]?.metadata).toEqual({ foo: "bar" });
     });
 
     test("returns continuationToken as cursor when more pages exist", async () => {
@@ -1567,7 +1630,7 @@ describe("azure adapter", () => {
     });
 
     test("download error is wrapped as FilesError", async () => {
-      downloadMock.mockImplementationOnce(() =>
+      downloadToBufferMock.mockImplementationOnce(() =>
         Promise.reject(
           Object.assign(new Error("not here"), {
             details: { errorCode: "BlobNotFound" },
@@ -1701,11 +1764,17 @@ describe("azure adapter", () => {
       expect(lastOptsOf(uploadDataMock)?.abortSignal).toBe(signal);
     });
 
-    test("download forwards the signal to download/downloadToBuffer", async () => {
+    test("download forwards the signal to getProperties/downloadToBuffer", async () => {
       const { signal } = new AbortController();
       await makeFiles().download("a.txt", { signal });
-      expect(lastOptsOf(downloadMock)?.abortSignal).toBe(signal);
+      expect(lastOptsOf(getPropertiesMock)?.abortSignal).toBe(signal);
       expect(lastOptsOf(downloadToBufferMock)?.abortSignal).toBe(signal);
+    });
+
+    test("streaming download forwards the signal to download", async () => {
+      const { signal } = new AbortController();
+      await makeFiles().download("a.txt", { as: "stream", signal });
+      expect(lastOptsOf(downloadMock)?.abortSignal).toBe(signal);
     });
 
     test("head forwards the signal to getProperties", async () => {
@@ -1791,6 +1860,34 @@ describe("azure resumable uploads", () => {
     expect(result.size).toBe(12);
     // Block 1 already staged → only blocks 2 and 3 staged on resume.
     expect(stageBlockMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("resume before any block landed treats GetBlockList 404 as an empty session", async () => {
+    // No committed or uncommitted blocks yet → Azure has no blob to list and
+    // answers 404 BlobNotFound. A pause/persist before the first chunk must
+    // still resume cleanly.
+    getBlockListMock.mockImplementation(() =>
+      Promise.reject(
+        Object.assign(new Error("The specified blob does not exist."), {
+          details: { errorCode: "BlobNotFound" },
+          statusCode: 404,
+        })
+      )
+    );
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "big.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(12), {
+      control: UploadControl.from(token),
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(stageBlockMock).toHaveBeenCalledTimes(3);
   });
 
   test("a stageBlock failure rejects the upload", async () => {

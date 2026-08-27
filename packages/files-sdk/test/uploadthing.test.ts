@@ -874,6 +874,37 @@ describe("uploadthing adapter", () => {
     expect(fetched[0]).toBe("https://myapp.ufs.sh/f/a%2F1.txt");
   });
 
+  test("list items' lazy bodies throw NotFound when the fetch 404s", async () => {
+    // A file deleted between the listing and the body read must not
+    // resolve with the CDN's error page as its contents.
+    const files = new Files({ adapter: uploadthing() });
+    const out = await files.list();
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("<html>gone</html>", {
+          status: 404,
+          statusText: "Not Found",
+        })
+      )) as unknown as typeof fetch;
+    const thrown = await out.items[0]?.text().catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(FilesError);
+    expect((thrown as FilesError).code).toBe("NotFound");
+    expect((thrown as FilesError).message).toMatch(/404/u);
+  });
+
+  test("list items' lazy bodies throw Provider on a non-404 failure", async () => {
+    const files = new Files({ adapter: uploadthing() });
+    const out = await files.list();
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("denied", { status: 403, statusText: "Forbidden" })
+      )) as unknown as typeof fetch;
+    const thrown = await out.items[0]?.text().catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(FilesError);
+    expect((thrown as FilesError).code).toBe("Provider");
+    expect((thrown as FilesError).message).toMatch(/403/u);
+  });
+
   test("downloadTimeoutMs: 0 disables AbortSignal.timeout on fetches", async () => {
     let observedSignal: AbortSignal | null | undefined;
     globalThis.fetch = ((_url: unknown, init?: RequestInit) => {

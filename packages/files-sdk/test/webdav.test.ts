@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
+import { Readable } from "node:stream";
 
 import type { FileStat, WebDAVClient } from "webdav";
 
@@ -581,6 +582,29 @@ describe("webdav edge cases (injected client)", () => {
     } as unknown as WebDAVClient;
     const files = new Files({ adapter: webdav({ client }) });
     await expect(files.list()).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
+  test("download (stream) wraps a Node Readable body from node-fetch", async () => {
+    // Under Node the `webdav` package uses node-fetch, whose Response body is
+    // a Node Readable (no `getReader`) rather than a web stream.
+    const client = {
+      customRequest() {
+        return Promise.resolve({
+          body: Readable.from([Buffer.from("node body")]),
+          headers: new Headers({
+            "content-length": "9",
+            "content-type": "text/plain",
+          }),
+          status: 200,
+        });
+      },
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    const got = await files.download("n.txt", { as: "stream" });
+    expect(got.size).toBe(9);
+    const stream = got.stream();
+    expect(stream).toBeInstanceOf(ReadableStream);
+    expect(await new Response(stream).text()).toBe("node body");
   });
 
   test("move maps a provider error", async () => {

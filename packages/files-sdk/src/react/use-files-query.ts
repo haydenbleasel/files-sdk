@@ -31,27 +31,34 @@ export interface QueryResult<T> {
 const useClient = (config?: QueryConfig): FilesClient => {
   const ref = useRef(config);
   ref.current = config;
+  const endpoint = config?.endpoint;
+  // Only the endpoint rebinds the client — the query effect keys on the client
+  // so an endpoint switch (`?bucket=`) refetches. `fetchImpl` is read live
+  // through the ref like `headers`: an inline function would otherwise rebuild
+  // the client every render and refetch forever; a swap applies to the next
+  // request. `transport` only serves uploads, which these read hooks never do.
   return useMemo(
     () =>
       createFilesClient({
-        endpoint: config?.endpoint,
-        fetchImpl: config?.fetchImpl,
+        endpoint,
+        fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) =>
+          (ref.current?.fetchImpl ?? fetch)(input, init)) as typeof fetch,
         headers: async () => {
           const headers = ref.current?.headers;
           return typeof headers === "function"
             ? await headers()
             : (headers ?? {});
         },
-        transport: config?.transport,
       }),
-    [config?.endpoint, config?.fetchImpl, config?.transport]
+    [endpoint]
   );
 };
 
 const useQuery = <T>(
   key: string,
   run: (signal: AbortSignal) => Promise<T>,
-  enabled: boolean
+  enabled: boolean,
+  client: FilesClient
 ): QueryResult<T> => {
   const [state, setState] = useState<{
     data?: T;
@@ -90,7 +97,9 @@ const useQuery = <T>(
     return () => {
       controller.abort();
     };
-  }, [key, tick, enabled]);
+    // `client` is rebuilt when the endpoint changes (a `?bucket=` switch,
+    // say), and that must refetch even though `key` is unchanged.
+  }, [key, tick, enabled, client]);
 
   return {
     data: state.data,
@@ -110,7 +119,12 @@ export const useList = (
   const enabled = config?.enabled ?? true;
   // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips the non-serializable signal from the cache key
   const key = JSON.stringify({ kind: "list", ...opts, signal: undefined });
-  return useQuery(key, (signal) => client.list({ ...opts, signal }), enabled);
+  return useQuery(
+    key,
+    (signal) => client.list({ ...opts, signal }),
+    enabled,
+    client
+  );
 };
 
 export const useFile = (
@@ -122,7 +136,8 @@ export const useFile = (
   return useQuery(
     JSON.stringify({ key, kind: "file" }),
     (signal) => client.head(key as string, { signal }),
-    enabled
+    enabled,
+    client
   );
 };
 
@@ -155,6 +170,7 @@ export const useSearch = (
       }
       return out;
     },
-    enabled
+    enabled,
+    client
   );
 };

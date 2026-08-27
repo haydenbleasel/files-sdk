@@ -463,14 +463,16 @@ export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
   // scaling the single-key `test -e` convention to "all keys must exist".
   const result = await files.exists(opts.keys, buildBulkOptions(opts));
   emit(result, opts);
-  if (result.errors?.length) {
-    // Set the exit code rather than exiting: process.exit() right after a
-    // large emit() can truncate piped stdout mid-payload (POSIX pipe writes
-    // are asynchronous). The process ends once stdout drains.
-    process.exitCode = exitCode(result.errors[0]?.error.code ?? "Provider");
-  }
+  // Set the exit code rather than exiting: process.exit() right after a
+  // large emit() can truncate piped stdout mid-payload (POSIX pipe writes
+  // are asynchronous). The process ends once stdout drains.
   if (result.missing.length) {
     process.exitCode = 1;
+  }
+  // A hard error outranks "missing": an auth or transport failure must not
+  // be reported as exit 1 just because another key happened to be absent.
+  if (result.errors?.length) {
+    process.exitCode = exitCode(result.errors[0]?.error.code ?? "Provider");
   }
 };
 

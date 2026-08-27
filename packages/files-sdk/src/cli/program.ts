@@ -604,9 +604,11 @@ export const buildProgram = (
     .description(
       "find objects whose key matches a glob (default), regex, substring, or exact pattern; walks every page"
     )
-    .option(
-      "--match <mode>",
-      "how to interpret <pattern>: glob (default), regex, substring, or exact"
+    .addOption(
+      new Option(
+        "--match <mode>",
+        "how to interpret <pattern>: glob (default), regex, substring, or exact"
+      ).choices(["glob", "regex", "substring", "exact"])
     )
     .option("--regex", "shorthand for --match regex")
     .option(

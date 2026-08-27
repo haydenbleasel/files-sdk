@@ -258,6 +258,27 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     });
   });
 
+  test("search --match rejects modes outside glob/regex/substring/exact", async () => {
+    // Previously an unknown mode fell through to the regex branch, so a typo
+    // like `--match global` surfaced as a confusing regex error.
+    await expect(
+      run(
+        "--provider",
+        "fs",
+        "--root",
+        root,
+        "--dry-run",
+        "search",
+        "report",
+        "--match",
+        "global"
+      )
+    ).rejects.toThrow("__exit:1");
+    expect(cap.stderr.join("")).toContain(
+      "Allowed choices are glob, regex, substring, exact"
+    );
+  });
+
   test("head/exists/delete/copy/url dry-run go through their action builders", async () => {
     for (const argv of [
       ["head", "k"],

@@ -14,6 +14,23 @@ const DEFAULT_RETRY_BACKOFF_MS = 100;
 // Only applies to the default curve — a caller-supplied `backoff` is theirs.
 const MAX_DEFAULT_RETRY_BACKOFF_MS = 30_000;
 
+// `setTimeout` takes a signed 32-bit delay; anything larger (or `Infinity`)
+// is silently clamped to 1ms by Node/Bun, which would time every op out
+// immediately. Values past this cap are clamped; non-finite ones mean "never".
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Normalize a caller-supplied per-attempt timeout into a usable delay: `undefined`
+ * for unset, non-positive, or non-finite values (`Infinity` / `NaN` read as
+ * "no timeout"), otherwise the value clamped to the 32-bit `setTimeout` max.
+ */
+export const timeoutMs = (timeout?: number): number | undefined => {
+  if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0) {
+    return;
+  }
+  return Math.min(timeout, MAX_TIMEOUT_MS);
+};
+
 const timeoutError = (timeout: number): FilesError =>
   new FilesError(
     "Provider",
@@ -26,58 +43,83 @@ const timeoutError = (timeout: number): FilesError =>
   );
 
 /**
- * Combine zero or more abort signals with an optional per-attempt timeout into
- * a single signal. Returns the original signal untouched when there's exactly
- * one and no timeout; otherwise mints a controller that aborts when any input
- * aborts or the timer fires, plus a `cleanup` to detach listeners and clear the
- * timer. Callers must invoke `cleanup` in a `finally`.
+ * `AbortSignal.any` for runtimes without it (Node < 20): a controller that
+ * follows the first of `signals` to abort. Listeners are detached once it
+ * aborts; until then they stay attached, since the result must keep tracking
+ * its sources for as long as it lives.
  */
-export const mergeSignals = (
-  signals: AbortSignal[],
-  timeout?: number
-): { signal?: AbortSignal; cleanup?: () => void } => {
-  if (signals.length === 0 && (timeout ?? 0) <= 0) {
-    return {};
-  }
-  if (signals.length === 1 && (timeout ?? 0) <= 0) {
-    return { signal: signals[0] };
-  }
-
+export const manualAnySignal = (signals: AbortSignal[]): AbortSignal => {
   const controller = new AbortController();
   const listeners: (() => void)[] = [];
   const abort = (reason: unknown) => {
     if (!controller.signal.aborted) {
       controller.abort(reason);
+      for (const detach of listeners) {
+        detach();
+      }
     }
   };
-
   for (const signal of signals) {
     if (signal.aborted) {
       abort(signal.reason);
-    } else {
-      const onAbort = () => abort(signal.reason);
-      signal.addEventListener("abort", onAbort, { once: true });
-      listeners.push(() => signal.removeEventListener("abort", onAbort));
+      break;
     }
+    const onAbort = () => abort(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    listeners.push(() => signal.removeEventListener("abort", onAbort));
+  }
+  return controller.signal;
+};
+
+const anySignal: (signals: AbortSignal[]) => AbortSignal =
+  typeof AbortSignal.any === "function"
+    ? (signals) => AbortSignal.any(signals)
+    : manualAnySignal;
+
+/**
+ * Fold zero or more signals into one that aborts when any of them does, with
+ * **no** teardown: the result stays wired to its sources for as long as it
+ * lives, so a caller's `signal` keeps reaching a lazily-consumed body after
+ * the operation call itself has resolved. Uses `AbortSignal.any` where the
+ * runtime has it (the platform manages listener lifetimes), else
+ * {@link manualAnySignal}.
+ */
+export const combineSignals = (
+  signals: AbortSignal[]
+): AbortSignal | undefined => {
+  if (signals.length === 0) {
+    return;
+  }
+  if (signals.length === 1) {
+    return signals[0];
+  }
+  return anySignal(signals);
+};
+
+/**
+ * Combine zero or more abort signals with an optional per-attempt timeout into
+ * a single signal. The caller signals are folded with {@link combineSignals}
+ * and stay attached for the life of the result; only the timeout is disposable
+ * — `cleanup` clears its timer so a per-attempt timeout can't fire into a
+ * body that's still streaming after the call resolved. Callers must invoke
+ * `cleanup` in a `finally`.
+ */
+export const mergeSignals = (
+  signals: AbortSignal[],
+  timeout?: number
+): { signal?: AbortSignal; cleanup?: () => void } => {
+  const delay = timeoutMs(timeout);
+  if (delay === undefined) {
+    return { signal: combineSignals(signals) };
   }
 
-  const timer =
-    timeout !== undefined && timeout > 0
-      ? setTimeout(() => {
-          abort(timeoutError(timeout));
-        }, timeout)
-      : undefined;
-
+  const timer = new AbortController();
+  const handle = setTimeout(() => {
+    timer.abort(timeoutError(delay));
+  }, delay);
   return {
-    cleanup: () => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      for (const cleanup of listeners) {
-        cleanup();
-      }
-    },
-    signal: controller.signal,
+    cleanup: () => clearTimeout(handle),
+    signal: combineSignals([...signals, timer.signal]),
   };
 };
 

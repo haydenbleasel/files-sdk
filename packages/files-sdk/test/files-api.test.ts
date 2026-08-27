@@ -265,6 +265,74 @@ describe("createFilesRouter — read verbs", () => {
     ).toContain("too complex");
   });
 
+  test("search under a keyPrefix scope matches the unscoped key", async () => {
+    const scoped = memory();
+    await seed(scoped, "users/1/a.png", "x");
+    await seed(scoped, "users/1/docs/b.png", "x");
+    await seed(scoped, "users/1/docs/c.txt", "x");
+    await seed(scoped, "users/2/a.png", "x");
+    const r = router({
+      adapter: scoped,
+      authorize: () => ({ keyPrefix: "users/1/" }),
+    });
+    const keys = async (body: Record<string, unknown>) => {
+      const res = await r.handle(post({ op: "search", ...body }));
+      expect(res.status).toBe(200);
+      return (await readJson<{ matches: { key: string }[] }>(res)).matches
+        .map((m) => m.key)
+        .toSorted();
+    };
+    // the same shapes `list` answers with, so a client never sees the prefix
+    expect(await keys({ pattern: "*.png" })).toEqual(["a.png"]);
+    expect(await keys({ pattern: "**/*.png" })).toEqual([
+      "a.png",
+      "docs/b.png",
+    ]);
+    expect(await keys({ match: "exact", pattern: "a.png" })).toEqual(["a.png"]);
+    expect(await keys({ isRegex: true, pattern: "^a" })).toEqual(["a.png"]);
+    expect(await keys({ match: "substring", pattern: "b.p" })).toEqual([
+      "docs/b.png",
+    ]);
+    // a glob's literal head is pushed down as the walk prefix under the scope
+    expect(await keys({ limit: 1, pattern: "docs/*.png" })).toEqual([
+      "docs/b.png",
+    ]);
+    // a client prefix bounds the walk (the pattern still matches the whole
+    // unscoped key); case-insensitive globs skip the push-down
+    expect(await keys({ pattern: "docs/*.PNG", prefix: "docs/" })).toEqual([]);
+    expect(
+      await keys({
+        caseInsensitive: true,
+        pattern: "docs/*.PNG",
+        prefix: "docs/",
+      })
+    ).toEqual(["docs/b.png"]);
+    expect(
+      await keys({ caseInsensitive: true, pattern: "DOCS/*.png" })
+    ).toEqual(["docs/b.png"]);
+    // the storage prefix is not addressable from the client side
+    expect(await keys({ pattern: "users/1/*.png" })).toEqual([]);
+  });
+
+  test("search validates match", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    const ok = await r.handle(
+      post({ match: "exact", op: "search", pattern: "docs/a.txt" })
+    );
+    expect(
+      (await readJson<{ matches: { key: string }[] }>(ok)).matches.map(
+        (m) => m.key
+      )
+    ).toEqual(["docs/a.txt"]);
+    const bad = await r.handle(
+      post({ match: "fuzzy", op: "search", pattern: "docs/a.txt" })
+    );
+    expect(bad.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(bad)).error.message
+    ).toContain("match");
+  });
+
   test("list limit is clamped", async () => {
     const r = router({ adapter, maxListLimit: 1, operations: ["list"] });
     const res = await r.handle(post({ limit: 999, op: "list" }));
@@ -590,6 +658,95 @@ describe("createFilesRouter — upload", () => {
     // bytes landed in the images bucket only
     expect(await imagesInstance.exists(first(uploads).key)).toBe(true);
     expect(await filesInstance.exists(first(uploads).key)).toBe(false);
+  });
+
+  test("proxy upload token is bound to the query it was minted under", async () => {
+    const privateInstance = createFiles({ adapter: memory() });
+    const imagesInstance = createFiles({ adapter: memory() });
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      // uploads are allowed into images only — never into the private bucket
+      authorize: ({ req, operation }) => {
+        if (
+          operation === "upload" &&
+          new URL(req.url).searchParams.get("bucket") !== "images"
+        ) {
+          throw new FilesError("Unauthorized", "no uploads here");
+        }
+      },
+      files: (req) =>
+        new URL(req.url).searchParams.get("bucket") === "images"
+          ? imagesInstance
+          : privateInstance,
+      now: () => NOW,
+      secret: SECRET,
+    });
+    const presignAt = async (query: string) => {
+      const presign = await r.handle(
+        new Request(`${ENDPOINT}?${query}`, {
+          body: JSON.stringify({
+            files: [{ name: "a.png", size: 5, type: "image/png" }],
+            op: "presign",
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        })
+      );
+      expect(presign.status).toBe(200);
+      const { uploads } = (await presign.json()) as {
+        uploads: { id: string; key: string; target: { url: string } }[];
+      };
+      return first(uploads);
+    };
+
+    // replaying the token with the bucket switched is refused, and nothing lands
+    const minted = await presignAt("bucket=images");
+    const target = new URL(minted.target.url);
+    target.searchParams.set("bucket", "private");
+    const swapped = await r.handle(
+      new Request(target, { body: "hello", method: "PUT" })
+    );
+    expect(swapped.status).toBe(401);
+    expect(
+      (await readJson<{ error: { message: string } }>(swapped)).error.message
+    ).toContain("different endpoint query");
+    expect(await privateInstance.exists(minted.key)).toBe(false);
+    expect(await imagesInstance.exists(minted.key)).toBe(false);
+
+    // `complete` refuses the same swap per completion
+    const complete = await r.handle(
+      new Request(`${ENDPOINT}?bucket=images&tenant=other`, {
+        body: JSON.stringify({
+          completions: [{ id: minted.id, key: minted.key }],
+          op: "complete",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    expect(complete.status).toBe(200);
+    const completeBody = (await complete.json()) as {
+      files: unknown[];
+      errors?: { key: string; error: { code: string; message: string } }[];
+    };
+    expect(completeBody.files).toEqual([]);
+    expect(first(completeBody.errors ?? []).error.code).toBe("Unauthorized");
+    expect(first(completeBody.errors ?? []).error.message).toContain(
+      "different endpoint query"
+    );
+
+    // the binding is canonical: pair order and the routing params don't matter
+    const reordered = await presignAt("tenant=t1&bucket=images");
+    const up = await r.handle(
+      new Request(
+        `${ENDPOINT}?bucket=images&tenant=t1&op=proxy&token=${encodeURIComponent(
+          new URL(reordered.target.url).searchParams.get("token") as string
+        )}`,
+        { body: "hello", method: "PUT" }
+      )
+    );
+    expect(up.status).toBe(200);
+    expect(await imagesInstance.exists(reordered.key)).toBe(true);
   });
 
   test("proxy upload with a tampered token → 401", async () => {

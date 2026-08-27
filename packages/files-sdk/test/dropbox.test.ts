@@ -1081,23 +1081,79 @@ describe("dropbox adapter", () => {
       adapter: dropbox({ ...baseOpts, publicByDefault: true }),
     });
     await files.upload("a.txt", "hi");
-    // The Dropbox SDK exposes the failed-variant body directly at
-    // err.error (no outer { error, error_summary } wrap), so the recovery
-    // branch can read shared_link_already_exists.metadata.url off it.
+    // The Dropbox SDK's `throwAsError` stores the ENTIRE parsed body at
+    // err.error, so the failed variant sits under a second `error` envelope
+    // (`err.error.error.shared_link_already_exists.metadata.url`) — the same
+    // { error, error_summary } shape every other mock in this file uses.
+    sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          error: {
+            ".tag": "shared_link_already_exists",
+            shared_link_already_exists: {
+              metadata: {
+                url: "https://www.dropbox.com/scl/fi/existing?rlkey=k&dl=0",
+              },
+            },
+          },
+          error_summary: "shared_link_already_exists/...",
+        })
+      )
+    );
+    const url = await files.url("a.txt");
+    expect(url).toBe("https://www.dropbox.com/scl/fi/existing?rlkey=k&dl=1");
+  });
+
+  test("publicByDefault also tolerates an envelope-less shared_link_already_exists body", async () => {
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
     sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce(() =>
       Promise.reject(
         responseError(409, {
           ".tag": "shared_link_already_exists",
           shared_link_already_exists: {
-            metadata: {
-              url: "https://www.dropbox.com/scl/fi/existing?dl=0",
-            },
+            metadata: { url: "https://www.dropbox.com/scl/fi/bare?dl=0" },
           },
         })
       )
     );
     const url = await files.url("a.txt");
-    expect(url).toBe("https://www.dropbox.com/scl/fi/existing?dl=1");
+    expect(url).toBe("https://www.dropbox.com/scl/fi/bare?dl=1");
+  });
+
+  test("publicByDefault rewrites dl=0 to dl=1 when rlkey precedes it on /scl/fi/ links", async () => {
+    // Current shared links look like `/scl/fi/<id>/<name>?rlkey=K&dl=0`; the
+    // old `?dl=0` textual rewrite missed that and produced `…&dl=0&dl=1`.
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("report.pdf", "hi");
+    sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({
+          ".tag": "file",
+          url: "https://www.dropbox.com/scl/fi/abc123/report.pdf?rlkey=k9x&dl=0",
+        })
+      )) as never);
+    const url = await files.url("report.pdf");
+    expect(url).toBe(
+      "https://www.dropbox.com/scl/fi/abc123/report.pdf?rlkey=k9x&dl=1"
+    );
+    expect(url).not.toContain("dl=0");
+  });
+
+  test("publicByDefault hands back an unparseable shared-link URL untouched", async () => {
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("weird.txt", "hi");
+    sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({ ".tag": "file", url: "not a url" })
+      )) as never);
+    expect(await files.url("weird.txt")).toBe("not a url");
   });
 
   test("publicByDefault rethrows shared_link errors that don't carry an existing URL", async () => {
@@ -1287,6 +1343,27 @@ describe("dropbox adapter", () => {
     const finishArg = filesUploadSessionFinishMock.mock.calls[0]?.[0];
     expect(finishArg?.cursor.offset).toBe(8 * MB);
     expect(finishArg?.contents.byteLength).toBe(2 * MB);
+  });
+
+  test("caps an oversized partSize at Dropbox's per-request limit", async () => {
+    // Dropbox rejects any upload_session request over 150 MB, and non-final
+    // chunks must be 4 MiB multiples, so partSize is clamped to 148 MiB. A
+    // 160 MiB body with a 1 GiB partSize must therefore go start(0-148) →
+    // finish(148-160) rather than one 160 MiB append.
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    const MB = 1024 * 1024;
+    const big = Buffer.allocUnsafe(160 * MB);
+    const r = await files.upload("capped.bin", big, {
+      multipart: { partSize: 1024 * MB },
+    });
+    expect(r.size).toBe(160 * MB);
+    expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
+    const startArg = filesUploadSessionStartMock.mock.calls[0]?.[0];
+    expect(startArg?.contents.byteLength).toBe(148 * MB);
+    expect(filesUploadSessionAppendV2Mock).not.toHaveBeenCalled();
+    const finishArg = filesUploadSessionFinishMock.mock.calls[0]?.[0];
+    expect(finishArg?.cursor.offset).toBe(148 * MB);
+    expect(finishArg?.contents.byteLength).toBe(12 * MB);
   });
 
   test("a small stream uses a single simple upload, not a session", async () => {

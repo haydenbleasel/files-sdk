@@ -57,7 +57,9 @@ export type SoftDeleteApi = {
   /**
    * Permanently delete a trashed object — the one for `key`, or the **entire**
    * trash when `key` is omitted. Idempotent: purging a key with nothing trashed
-   * is a no-op. This is the only way the data actually leaves storage.
+   * is a no-op. This is the only way the data actually leaves storage. A
+   * whole-trash purge removes everything it can and then throws (carrying the
+   * first failure as `cause`) when any trashed object couldn't be deleted.
    */
   purge: (key?: string) => Promise<void>;
 };
@@ -224,8 +226,20 @@ export const softDelete = (
     for await (const item of files.listAll({ prefix: `${trashDir}/` })) {
       keys.push(item.key);
     }
-    if (keys.length > 0) {
-      await files.delete(keys);
+    if (keys.length === 0) {
+      return;
+    }
+    // The bulk delete never throws — it collects per-key failures — so surface
+    // them here, or a purge would resolve while trashed() still lists the key.
+    // Every deletable key is still removed first (no `stopOnError`).
+    const { errors } = await files.delete(keys);
+    const [first] = errors ?? [];
+    if (first) {
+      throw new FilesError(
+        first.error.code,
+        `softDelete: purge failed for ${String(errors?.length)} of ${String(keys.length)} trashed object(s); first failure at "${first.key}": ${first.error.message}`,
+        first.error
+      );
     }
   };
 

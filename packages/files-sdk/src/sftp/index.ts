@@ -259,8 +259,14 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
   ): Promise<void> => {
     const dir = remoteDirname(remote);
     if (dir && dir !== "/") {
-      // recursive mkdir is idempotent in ssh2-sftp-client.
-      await client.mkdir(dir, true);
+      // recursive mkdir is idempotent in ssh2-sftp-client. Its path
+      // normalizer treats ANY leading "." as a "./" prefix and slices two
+      // characters off, so a relative dir like ".well-known/acme" would be
+      // created as "ell-known/acme". Anchor relative dirs with an explicit
+      // "./" (absolute and already-anchored "./" / "../" paths are left
+      // alone) so dot-prefixed directories survive the round trip.
+      const anchored = dir.startsWith("/") || /^\.\.?(?:\/|$)/u.test(dir);
+      await client.mkdir(anchored ? dir : `./${dir}`, true);
     }
   };
 

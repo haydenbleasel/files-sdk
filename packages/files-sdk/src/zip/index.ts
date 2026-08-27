@@ -287,7 +287,7 @@ const zipChunks = async function* zipChunks(
   // oxlint-disable-next-line eslint/no-unreachable-loop -- streams every entry in turn; the generator body's inner loop confuses the rule's CFG
   for (const entry of entries) {
     // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- archive is streamed record by record, one entry in flight at a time.
-    const file = await files.download(entry.key);
+    const file = await files.download(entry.key, { as: "stream" });
     // Fail before streaming gigabytes that can't be represented anyway.
     assertFits(file.size, `entry "${entry.key}"`);
     const writer = deflate

@@ -705,6 +705,41 @@ describe("vercel-blob adapter", () => {
     expect(await item.text()).toBe("hello");
   });
 
+  test("head's lazy body throws NotFound when the blob URL 404s", async () => {
+    // A blob deleted between head() and the body read must not resolve
+    // with the CDN's error page as its contents.
+    const files = new Files({ adapter: vercelBlob() });
+    const info = await files.head("a.txt");
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("<html>gone</html>", {
+          status: 404,
+          statusText: "Not Found",
+        })
+      )) as unknown as typeof fetch;
+    const thrown = await info.text().catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(FilesError);
+    expect((thrown as FilesError).code).toBe("NotFound");
+    expect((thrown as FilesError).message).toMatch(/404/u);
+  });
+
+  test("list items' lazy bodies throw Provider on a non-404 failure", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    const out = await files.list();
+    const [item] = out.items;
+    if (!item) {
+      throw new Error("expected at least one item");
+    }
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("denied", { status: 403, statusText: "Forbidden" })
+      )) as unknown as typeof fetch;
+    const thrown = await item.text().catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(FilesError);
+    expect((thrown as FilesError).code).toBe("Provider");
+    expect((thrown as FilesError).message).toMatch(/403/u);
+  });
+
   test("url throws Provider when the head response has no public URL", async () => {
     headMock.mockImplementationOnce((pathname: string) =>
       Promise.resolve({

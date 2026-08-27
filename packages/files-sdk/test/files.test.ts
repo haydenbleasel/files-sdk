@@ -1,10 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 
-import { Files, FilesError } from "../src/index.js";
+import { createStoredFile, Files, FilesError } from "../src/index.js";
 import type {
   Adapter,
+  Body,
+  DownloadOptions,
   ListOptions,
   OperationOptions,
+  UploadOptions,
   UploadProgress,
 } from "../src/index.js";
 import { countingStream } from "../src/internal/core.js";
@@ -1964,5 +1967,197 @@ describe("Files.search", () => {
 
     const keys = await searchCollect(files.search("avatars/*.png"));
     expect(keys.toSorted()).toEqual(["avatars/1.png", "avatars/2.png"]);
+  });
+
+  test("an escaped glob pushes down the unescaped literal prefix", async () => {
+    const { adapter, prefixes } = listSpy();
+    const files = new Files({ adapter });
+    await searchSeed(files, ["a*b/x", "a*b/y", "axb/x"]);
+
+    // `\*` is a literal star: the matcher already treated it that way, but
+    // the pushed-down prefix used to keep the backslash and list nothing.
+    expect(await searchCollect(files.search("a\\*b/x"))).toEqual(["a*b/x"]);
+    expect(prefixes).toEqual(["a*b/x"]);
+  });
+});
+
+// A download whose stream body honors the adapter-facing `opts.signal`: each
+// pull waits `chunkDelay` ms, and rejects as soon as the signal aborts.
+const signalAwareAdapter = (chunkDelay: number): Adapter => {
+  const base = fakeAdapter();
+  return {
+    ...base,
+    download(key: string, opts?: DownloadOptions) {
+      const signal = opts?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          // oxlint-disable-next-line promise/avoid-new -- AbortSignal + timer need callback interop.
+          return new Promise<void>((resolve, reject) => {
+            if (signal?.aborted) {
+              reject(signal.reason);
+              return;
+            }
+            const timer = setTimeout(() => {
+              controller.enqueue(new Uint8Array([1]));
+              resolve();
+            }, chunkDelay);
+            signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(signal.reason);
+              },
+              { once: true }
+            );
+          });
+        },
+      });
+      return Promise.resolve(
+        createStoredFile(
+          { key, size: 1, type: "application/octet-stream" },
+          { factory: () => body, kind: "stream" }
+        )
+      );
+    },
+  };
+};
+
+describe("signals and timeouts around streamed bodies", () => {
+  test("a caller signal still reaches a streamed body after download() resolves under a client timeout", async () => {
+    const files = new Files({
+      adapter: signalAwareAdapter(30),
+      timeout: 10_000,
+    });
+    const controller = new AbortController();
+    const file = await files.download("k", { signal: controller.signal });
+    const reader = file.stream().getReader();
+    const pending = reader.read();
+    controller.abort("stop");
+    await expect(pending).rejects.toBe("stop");
+  });
+
+  test("the per-attempt timeout does not cut off a body still streaming after the call resolved", async () => {
+    const files = new Files({ adapter: signalAwareAdapter(30), timeout: 10 });
+    const file = await files.download("k");
+    const reader = file.stream().getReader();
+    // The read outlives the timeout window; the timer was disarmed on resolve.
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+  });
+
+  test("timeout: Infinity means no timeout, not an instant one", async () => {
+    const files = new Files({
+      adapter: fakeAdapter(),
+      timeout: Number.POSITIVE_INFINITY,
+    });
+    await files.upload("a.txt", "hello");
+    // A clamped-to-1ms timer would abort this before the adapter answers.
+    await expect(
+      files.head("a.txt", { timeout: 2 ** 40 })
+    ).resolves.toMatchObject({ size: 5 });
+  });
+});
+
+describe("bulk upload retry policy", () => {
+  test("bulk upload does not retry a buffered body and never emits onRetry", async () => {
+    let attempts = 0;
+    let retryEvents = 0;
+    const base = fakeAdapter();
+    const files = new Files({
+      adapter: {
+        ...base,
+        upload(key: string, body: Body, opts?: UploadOptions) {
+          attempts += 1;
+          if (attempts === 1) {
+            return Promise.reject(new Error("transient"));
+          }
+          return base.upload(key, body, opts);
+        },
+      },
+      hooks: {
+        onRetry() {
+          retryEvents += 1;
+        },
+      },
+      retries: 2,
+    });
+
+    const result = await files.upload([{ body: "aa", key: "a.txt" }]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["a.txt"]);
+    expect(attempts).toBe(1);
+    expect(retryEvents).toBe(0);
+
+    // The single-key form keeps its retry budget.
+    await expect(files.upload("b.txt", "bb")).resolves.toMatchObject({
+      key: "b.txt",
+    });
+  });
+});
+
+describe("failed stream uploads release the caller's body", () => {
+  test("a stream body is left unlocked and its source cancelled when the adapter fails before reading", async () => {
+    let cancelledWith: unknown;
+    const body = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+      pull(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+    });
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        upload: () => Promise.reject(new Error("connect refused")),
+      },
+    });
+
+    await expect(
+      files.upload("s.bin", body, {
+        onProgress: () => {
+          // no-op
+        },
+      })
+    ).rejects.toMatchObject({ message: "connect refused" });
+    expect(body.locked).toBe(false);
+    expect((cancelledWith as Error).message).toBe("connect refused");
+  });
+
+  test("an adapter that fails while still holding the wrapper's reader does not mask the upload error", async () => {
+    const body = streamOf([new Uint8Array([1, 2]), new Uint8Array([3])]);
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        async upload(_key: string, stream: Body) {
+          // Read one chunk, then bail without releasing the lock — the SDK's
+          // best-effort cancel of the wrapper is refused (locked) and swallowed.
+          const reader = (stream as ReadableStream<Uint8Array>).getReader();
+          await reader.read();
+          throw new Error("mid-stream failure");
+        },
+      },
+    });
+
+    await expect(
+      files.upload("s.bin", body, {
+        onProgress: () => {
+          // no-op
+        },
+      })
+    ).rejects.toMatchObject({ message: "mid-stream failure" });
+  });
+
+  test("countingStream cancelled before any pull cancels the source directly", async () => {
+    let cancelledWith: unknown;
+    const source = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelledWith = reason;
+      },
+    });
+    const counted = countingStream(source, () => {
+      // ignore progress
+    });
+    expect(source.locked).toBe(false);
+    await counted.cancel("early");
+    expect(cancelledWith).toBe("early");
   });
 });

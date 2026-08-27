@@ -13,7 +13,8 @@ import { ClientSecretCredential } from "@azure/identity";
 import type { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import { Client, GraphError } from "@microsoft/microsoft-graph-client";
 
-import { Files, FilesError } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
+import type { ResumableUploadSession } from "../src/index.js";
 import { sharepoint } from "../src/sharepoint/index.js";
 
 // SharePoint resolution traffic — these are the Graph endpoints the adapter
@@ -793,6 +794,162 @@ describe("sharepoint adapter", () => {
       }),
     });
     await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("upload > resumable uploads delegate to the inner Graph upload session", async () => {
+    const CHUNK = 320 * 1024;
+    postHandler = (path) => {
+      if (path === "/drives/d/root:/big.bin:/createUploadSession") {
+        return { uploadUrl: "https://contoso.sharepoint.com/up/session/1" };
+      }
+      return {};
+    };
+    const ranges: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mock((_url: string, init: RequestInit = {}) => {
+      const range =
+        (init.headers as Record<string, string>)["Content-Range"] ?? "";
+      ranges.push(range);
+      return Promise.resolve(
+        range.startsWith(`bytes 0-${CHUNK - 1}`)
+          ? new Response(null, { status: 202 })
+          : Response.json(
+              {
+                eTag: '"sp-etag"',
+                file: { mimeType: "application/octet-stream" },
+                name: "big.bin",
+                size: CHUNK + 5,
+              },
+              { status: 201 }
+            )
+      );
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const adapter = sharepoint({ clientCredentials: CREDS, driveId: "d" });
+      const files = new Files({ adapter });
+      expect(files.capabilities.multipart).toBe(true);
+      const control = new UploadControl();
+      const result = await files.upload("big.bin", new Uint8Array(CHUNK + 5), {
+        control,
+        multipart: { partSize: CHUNK },
+      });
+      expect(result.etag).toBe("sp-etag");
+      expect(control.status).toBe("completed");
+      expect(control.session?.provider).toBe("onedrive");
+      expect(ranges).toEqual([
+        `bytes 0-${CHUNK - 1}/${CHUNK + 5}`,
+        `bytes ${CHUNK}-${CHUNK + 4}/${CHUNK + 5}`,
+      ]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("upload > resuming replays adopt() onto the lazily created driver", async () => {
+    const CHUNK = 320 * 1024;
+    const methods: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mock((_url: string, init: RequestInit = {}) => {
+      methods.push(init.method ?? "GET");
+      if (init.method === "GET") {
+        return Promise.resolve(
+          Response.json({ nextExpectedRanges: [`${CHUNK}-`] })
+        );
+      }
+      return Promise.resolve(
+        Response.json(
+          {
+            eTag: '"sp-etag"',
+            file: { mimeType: "application/octet-stream" },
+            name: "big.bin",
+            size: CHUNK + 5,
+          },
+          { status: 201 }
+        )
+      );
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const files = new Files({
+        adapter: sharepoint({ clientCredentials: CREDS, driveId: "d" }),
+      });
+      const token: ResumableUploadSession = {
+        itemPath: "big.bin",
+        provider: "onedrive",
+        uploadUrl: "https://contoso.sharepoint.com/up/session/1",
+      };
+      const result = await files.upload("big.bin", new Uint8Array(CHUNK + 5), {
+        control: UploadControl.from(token),
+        multipart: { partSize: CHUNK },
+      });
+      expect(result.size).toBe(CHUNK + 5);
+      // Probe (GET) then a single PUT for the remaining tail — no new session.
+      expect(methods).toEqual(["GET", "PUT"]);
+      expect(
+        lastCalls.some((c) => c.path.endsWith("/createUploadSession"))
+      ).toBe(false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("upload > a mismatched resume token is rejected by the inner driver", async () => {
+    const files = new Files({
+      adapter: sharepoint({ clientCredentials: CREDS, driveId: "d" }),
+    });
+    const token = {
+      bucket: "b",
+      key: "big.bin",
+      provider: "gcs",
+      uri: "u",
+    } as ResumableUploadSession;
+    await expect(
+      files.upload("big.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+
+  test("upload > abort discards the session through the lazy driver", async () => {
+    const CHUNK = 320 * 1024;
+    postHandler = (path) => {
+      if (path === "/drives/d/root:/ab.bin:/createUploadSession") {
+        return { uploadUrl: "https://contoso.sharepoint.com/up/session/2" };
+      }
+      return {};
+    };
+    const methods: string[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mock((_url: string, init: RequestInit = {}) => {
+      methods.push(init.method ?? "GET");
+      return Promise.resolve(new Response(null, { status: 202 }));
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const files = new Files({
+        adapter: sharepoint({ clientCredentials: CREDS, driveId: "d" }),
+      });
+      const control = new UploadControl();
+      let aborting: Promise<void> | undefined;
+      const promise = files.upload("ab.bin", new Uint8Array(CHUNK * 3), {
+        control,
+        multipart: { partSize: CHUNK },
+        onProgress: ({ loaded }) => {
+          if (loaded >= CHUNK && !aborting) {
+            aborting = control.abort();
+          }
+        },
+      });
+      await expect(promise).rejects.toMatchObject({ aborted: true });
+      await aborting;
+      expect(control.status).toBe("aborted");
+      expect(methods).toContain("DELETE");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("upload > partSize is unavailable before the driver resolves", () => {
+    const adapter = sharepoint({ clientCredentials: CREDS, driveId: "d" });
+    const driver = adapter.resumableUpload?.("big.bin", {});
+    expect(driver?.mode).toBe("offset");
+    expect(() => driver?.partSize).toThrow(/upload session not started/u);
   });
 
   test("copy > delegates to onedrive (POST /copy + monitor)", async () => {

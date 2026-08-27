@@ -6,13 +6,19 @@
 // type it touches is `Request` — forwarded opaquely to `authorize` — so the
 // dispatch itself stays framework-free and is driven by constructing requests.
 
-import type { Files, StoredFile } from "../../index.js";
+import type { Files, SearchMatch, StoredFile } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
 import type { FilesError } from "../errors.js";
+import { globPrefix } from "../glob.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
 import type { ParsedRequest, ResultModel } from "../router-core/web.js";
+import {
+  SEARCH_MATCHES,
+  buildSearchMatcher,
+  isSearchMatch,
+} from "../search-matcher.js";
 import { isSafeSearchRegex } from "../search-regex.js";
 import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
 import { runAuthorize } from "./authorize.js";
@@ -30,6 +36,7 @@ import type {
 import { bulkErrorToWire, storedFileToWire } from "./serialize.js";
 import type { UploadConfig } from "./upload.js";
 import {
+  boundQuery,
   handleComplete,
   handleExplicitUpload,
   handlePresign,
@@ -148,7 +155,11 @@ const bulkErrors = (
     ? errors.map((e) => bulkErrorToWire(e.error, e.key, unscope))
     : undefined;
 
-const uploadCfg = (ctx: HandlerContext): UploadConfig => ({
+const uploadCfg = (
+  ctx: HandlerContext,
+  parsed: ParsedRequest
+): UploadConfig => ({
+  boundQuery: boundQuery(parsed.query),
   defaultExpiresIn: ctx.defaultExpiresIn,
   files: ctx.files,
   maxUploadSize: ctx.maxUploadSize,
@@ -164,6 +175,59 @@ const downloadCfg = (ctx: HandlerContext): DownloadConfig => ({
   forceDisposition: ctx.forceDisposition,
   onUnsupportedRange: ctx.onUnsupportedRange,
 });
+
+// Under an authorize `keyPrefix` scope the pattern is matched against the
+// caller-facing key (the prefix stripped), so `*.png` / `^a` / exact `a.png`
+// find `users/1/a.png` for a client scoped to `users/1/` — mirroring how `list`
+// returns unscoped keys. Without a scope prefix `files.search()` already
+// matches the caller-facing key, so it is used as-is (keeping its glob-head
+// prefix push-down).
+const searchScoped = (
+  ctx: HandlerContext,
+  scope: Scope,
+  q: {
+    pattern: string | RegExp;
+    match: SearchMatch;
+    caseInsensitive: boolean;
+    clientPrefix: string;
+    searchPrefix: string;
+    limit: number | undefined;
+    signal: AbortSignal | undefined;
+    unscope: (key: string) => string;
+  }
+): AsyncIterable<StoredFile> => {
+  const paging = {
+    ...(q.limit ? { limit: q.limit } : {}),
+    signal: q.signal,
+  };
+  if (!scope.prefix) {
+    return ctx.files.search(q.pattern, {
+      ...paging,
+      caseInsensitive: q.caseInsensitive,
+      match: q.match,
+      ...(q.searchPrefix ? { prefix: q.searchPrefix } : {}),
+    });
+  }
+  const matches = buildSearchMatcher(q.pattern, q.match, q.caseInsensitive);
+  // Same push-down as `files.search()`: a case-sensitive glob's literal head
+  // bounds the walk when the client didn't pass its own prefix.
+  const isCaseSensitiveGlob =
+    typeof q.pattern === "string" && q.match === "glob" && !q.caseInsensitive;
+  const walkPrefix =
+    q.clientPrefix || !isCaseSensitiveGlob
+      ? q.searchPrefix
+      : scope.prefix + globPrefix(q.pattern as string);
+  const walk = ctx.files.listAll({ ...paging, prefix: walkPrefix });
+  return {
+    async *[Symbol.asyncIterator]() {
+      for await (const file of walk) {
+        if (matches(q.unscope(file.key))) {
+          yield file;
+        }
+      }
+    },
+  };
+};
 
 const requireOrigin = (ctx: HandlerContext, parsed: ParsedRequest): void => {
   if (
@@ -456,6 +520,15 @@ const dispatchJson = async (
       const clientPrefix = optStr(body.prefix, "prefix") ?? "";
       assertSafePrefix(clientPrefix);
       const searchPrefix = scope.prefix + clientPrefix;
+      const match = optStr(body.match, "match") ?? "glob";
+      if (!isSearchMatch(match)) {
+        return fail(
+          `expected one of ${SEARCH_MATCHES.map((m) => `"${m}"`).join(" | ")}: match`
+        );
+      }
+      const caseInsensitive =
+        optBool(body.caseInsensitive, "caseInsensitive") ?? false;
+      const pageLimit = optNum(body.limit, "limit");
       let pattern: string | RegExp;
       if (optBool(body.isRegex, "isRegex")) {
         try {
@@ -480,14 +553,15 @@ const dispatchJson = async (
       const unscope = unscoper(scope);
       const matches: WireStoredFile[] = [];
       let truncated = false;
-      for await (const file of ctx.files.search(pattern, {
+      for await (const file of searchScoped(ctx, scope, {
+        caseInsensitive,
+        clientPrefix,
+        limit: pageLimit,
+        match,
+        pattern,
+        searchPrefix,
         signal,
-        ...(optStr(body.match, "match") ? { match: body.match as never } : {}),
-        ...(optBool(body.caseInsensitive, "caseInsensitive") === undefined
-          ? {}
-          : { caseInsensitive: body.caseInsensitive as boolean }),
-        ...(optNum(body.limit, "limit") ? { limit: body.limit as number } : {}),
-        ...(searchPrefix ? { prefix: searchPrefix } : {}),
+        unscope,
       })) {
         if (matches.length >= cap) {
           truncated = true;
@@ -537,7 +611,7 @@ const dispatchJson = async (
       const files = fileInfos(body.files);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handlePresign(
-        uploadCfg(ctx),
+        uploadCfg(ctx, parsed),
         files,
         optNum(body.expiresIn, "expiresIn"),
         scope,
@@ -548,7 +622,7 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const items = completions(body.completions);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
-      return handleComplete(uploadCfg(ctx), items, unscoper(scope));
+      return handleComplete(uploadCfg(ctx, parsed), items, unscoper(scope));
     }
     case "versions": {
       const key = str(body.key, "key");
@@ -712,7 +786,7 @@ export const dispatch = async (
       params: {},
     });
     return handleExplicitUpload(
-      uploadCfg(ctx),
+      uploadCfg(ctx, parsed),
       scopeKey(scope.prefix, key),
       key,
       parsed.bodyStream,
@@ -724,7 +798,7 @@ export const dispatch = async (
   if (parsed.method === "PUT" && parsed.action === "proxy") {
     requireOrigin(ctx, parsed);
     return handleProxyUpload(
-      uploadCfg(ctx),
+      uploadCfg(ctx, parsed),
       parsed.query.get("token"),
       parsed.bodyStream,
       parsed.contentLength

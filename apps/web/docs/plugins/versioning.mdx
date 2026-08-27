@@ -80,6 +80,8 @@ By default history grows unbounded. Set `limit` to keep only the newest N versio
 versioning({ limit: 20 });
 ```
 
+A `restore()` under a `limit` prunes only **after** the restored bytes have landed, so restoring the oldest kept version (or the only one, with `limit: 1`) always works - the restore's own snapshot of the current bytes is what takes the freed slot.
+
 ## Choosing the prefix
 
 Snapshots live under `.versions` by default. Override it with `prefix`, and keep your own data out of it:

@@ -361,7 +361,14 @@ const createAzureResumableDriver = (
         }
         return { committedParts };
       } catch (error) {
-        throw wrapErr(error);
+        const mapped = wrapErr(error);
+        // Before the first block lands there is no blob at all (committed or
+        // uncommitted), and Azure answers GetBlockList with 404 — that's an
+        // empty session, not a missing upload.
+        if (mapped.code === "NotFound") {
+          return { committedParts: [] };
+        }
+        throw mapped;
       }
     },
     async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
@@ -638,7 +645,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       });
     }
     if (sasToken) {
-      return Promise.resolve(`${baseUrl}?${sasToken}`);
+      // The service client was built with the SAS in its URL, and the SDK
+      // carries that query through to every blob URL — appending it again
+      // would produce `?sv=…?sv=…` and a CannotVerifyCopySource rejection.
+      return Promise.resolve(
+        baseUrl.includes("?") ? baseUrl : `${baseUrl}?${sasToken}`
+      );
     }
     // Anonymous mode — only succeeds against public containers. Let Azure
     // return the natural error if it doesn't.
@@ -746,25 +758,31 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         const offset = range?.start ?? 0;
         const count =
           range?.end === undefined ? undefined : range.end - range.start + 1;
-        const result = await blobClient.download(
-          offset,
-          count,
-          abortOpts(downloadOpts?.signal)
-        );
-        const etag = stripEtag(result.etag);
-        const baseMeta = {
-          ...(etag && { etag }),
-          key,
-          ...(result.lastModified && {
-            lastModified: result.lastModified.getTime(),
-          }),
-          ...(result.metadata && {
-            metadata: result.metadata as Record<string, string>,
-          }),
-          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
+        const toMeta = (props: {
+          contentType?: string;
+          etag?: string;
+          lastModified?: Date;
+          metadata?: Record<string, string>;
+        }) => {
+          const etag = stripEtag(props.etag);
+          return {
+            ...(etag && { etag }),
+            key,
+            ...(props.lastModified && {
+              lastModified: props.lastModified.getTime(),
+            }),
+            ...(props.metadata && { metadata: props.metadata }),
+            type: props.contentType ?? DEFAULT_CONTENT_TYPE,
+          };
         };
-        const size = Number(result.contentLength ?? 0);
         if (downloadOpts?.as === "stream") {
+          const result = await blobClient.download(
+            offset,
+            count,
+            abortOpts(downloadOpts.signal)
+          );
+          const baseMeta = toMeta(result);
+          const size = Number(result.contentLength ?? 0);
           const node = result.readableStreamBody;
           return createStoredFile(
             { ...baseMeta, size },
@@ -785,18 +803,21 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
             }
           );
         }
-        // Buffer path: re-issue via downloadToBuffer rather than draining the
-        // stream we already opened — `download()` returned a stream we'd have
-        // to manually pipe + buffer, and the SDK's helper does it more
-        // efficiently with parallel range requests for large blobs.
-        const buf = await blobClient.downloadToBuffer(
-          offset,
-          count,
-          abortOpts(downloadOpts?.signal)
-        );
+        // Buffer path: fetch the metadata with a HEAD and the bytes via
+        // downloadToBuffer (parallel range requests for large blobs). Opening
+        // `download()` just for the headers would leave an unread GET body
+        // holding its socket until GC.
+        const [props, buf] = await Promise.all([
+          blobClient.getProperties(abortOpts(downloadOpts?.signal)),
+          blobClient.downloadToBuffer(
+            offset,
+            count,
+            abortOpts(downloadOpts?.signal)
+          ),
+        ]);
         const bytes = bufferToUint8(buf);
         return createStoredFile(
-          { ...baseMeta, size: bytes.byteLength },
+          { ...toMeta(props), size: bytes.byteLength },
           { data: bytes, kind: "buffer" }
         );
       } catch (error) {
@@ -885,6 +906,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         ): Promise<ListResult> => {
           const iterator = containerClient
             .listBlobsByHierarchy(delimiter, {
+              includeMetadata: true,
               ...(options?.prefix && { prefix: options.prefix }),
               ...(options?.signal && { abortSignal: options.signal }),
             })
@@ -914,6 +936,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         }
         const iterator = containerClient
           .listBlobsFlat({
+            includeMetadata: true,
             ...(options?.prefix && { prefix: options.prefix }),
             ...(options?.signal && { abortSignal: options.signal }),
           })

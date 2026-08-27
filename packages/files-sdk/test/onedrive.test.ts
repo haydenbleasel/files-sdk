@@ -129,7 +129,11 @@ const defaultGet = (
       return Promise.reject(new GraphError(404, "Not found"));
     }
     if (responseType === "stream") {
-      return Promise.resolve(Readable.from(it.bytes ?? Buffer.alloc(0)));
+      // The real client resolves `ResponseType.STREAM` with the fetch
+      // Response body — a web ReadableStream, never a Node Readable.
+      return Promise.resolve(
+        new Blob([new Uint8Array(it.bytes ?? Buffer.alloc(0))]).stream()
+      );
     }
     const buf = it.bytes ?? Buffer.alloc(0);
     return Promise.resolve(
@@ -564,6 +568,19 @@ describe("onedrive adapter", () => {
     expect(total).toBe("stream-me".length);
   });
 
+  test("download (stream) converts a Node Readable from a custom client", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "node-me");
+    dispatchGet.mockImplementationOnce((path, responseType) =>
+      defaultGet(path, responseType)
+    );
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.resolve(Readable.from([Buffer.from("node-me")]))
+    );
+    const f = await files.download("a.txt", { as: "stream" });
+    expect(await f.text()).toBe("node-me");
+  });
+
   test("download (stream) with a range reports the slice length", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "0123456789");
@@ -712,6 +729,34 @@ describe("onedrive adapter", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("copy maps a raw 404 response to NotFound", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    dispatchPost.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json(
+          { error: { code: "itemNotFound", message: "The item is gone" } },
+          { status: 404 }
+        )
+      )
+    );
+    await expect(files.copy("missing.txt", "to.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: "The item is gone",
+    });
+  });
+
+  test("copy maps a raw 409 response with a non-JSON body to Conflict", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("from.txt", "hi");
+    dispatchPost.mockImplementationOnce(() =>
+      Promise.resolve(new Response("<html>conflict</html>", { status: 409 }))
+    );
+    await expect(files.copy("from.txt", "to.txt")).rejects.toMatchObject({
+      code: "Conflict",
+      message: "onedrive: copy returned 409",
+    });
   });
 
   test("copy times out when monitor never reports completed", async () => {
@@ -1060,6 +1105,14 @@ describe("onedrive resumable uploads", () => {
       },
       { status: 201 }
     );
+
+  test("partSize is capped at Graph's 60 MiB fragment maximum", () => {
+    const driver = onedrive(baseOpts).resumableUpload("doc.bin", {
+      multipart: { partSize: 100 * 1024 * 1024 },
+    });
+    expect(driver.partSize).toBe(60 * 1024 * 1024);
+    expect(driver.partSize % CHUNK).toBe(0);
+  });
 
   test("fresh upload creates a session and PUTs chunks", async () => {
     const ranges: string[] = [];

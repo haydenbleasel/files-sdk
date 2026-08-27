@@ -309,6 +309,20 @@ export const vercelBlob = (
   // through `blob.get(...)` instead, which uses whichever credentials the
   // adapter resolved. Returns a stream and a content type; callers can buffer
   // or pipe it.
+  // Lazy bodies from head()/list() on public blobs. Mirrors download()'s
+  // status check so a blob deleted between the listing and the read throws
+  // NotFound instead of resolving with the CDN's error page as its bytes.
+  const fetchPublicBody = async (url: string): Promise<Uint8Array> => {
+    const res = await fetchWithTimeout(url, downloadTimeoutMs);
+    if (!res.ok) {
+      throw new FilesError(
+        res.status === 404 ? "NotFound" : "Provider",
+        `vercel-blob download failed: ${res.status} ${res.statusText}`
+      );
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  };
+
   const getPrivateBody = async (
     key: string,
     signal?: AbortSignal
@@ -483,8 +497,7 @@ export const vercelBlob = (
                 await new Response(got.stream).arrayBuffer()
               );
             }
-            const res = await fetchWithTimeout(result.url, downloadTimeoutMs);
-            return new Uint8Array(await res.arrayBuffer());
+            return fetchPublicBody(result.url);
           },
           kind: "lazy",
         }
@@ -520,8 +533,7 @@ export const vercelBlob = (
                     await new Response(got.stream).arrayBuffer()
                   );
                 }
-                const res = await fetchWithTimeout(b.url, downloadTimeoutMs);
-                return new Uint8Array(await res.arrayBuffer());
+                return fetchPublicBody(b.url);
               },
               kind: "lazy",
             }

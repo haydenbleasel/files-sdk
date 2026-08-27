@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -315,6 +315,42 @@ describe("fs adapter", () => {
         code: "NotFound",
       });
     });
+    test("concurrent same-key uploads all succeed and leave a consistent body + etag", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      // Same-ms uploads used to share a `${pid}.${Date.now()}.tmp` staging
+      // file: one rename ENOENTed (surfacing as a bogus NotFound) and the
+      // survivor's sidecar etag came from the other call.
+      const bodies = ["aaaa", "bbbb", "cccc"];
+      for (let round = 0; round < 5; round += 1) {
+        // eslint-disable-next-line no-await-in-loop -- rounds are sequential on purpose; each one races its own uploads.
+        const results = await Promise.all(
+          bodies.map((body) => files.upload("race.txt", body))
+        );
+        expect(results).toHaveLength(bodies.length);
+        // eslint-disable-next-line no-await-in-loop -- see above
+        const got = await files.download("race.txt");
+        // eslint-disable-next-line no-await-in-loop -- see above
+        const body = await got.text();
+        expect(bodies).toContain(body);
+        // eslint-disable-next-line no-await-in-loop -- see above
+        const info = await files.head("race.txt");
+        const hex = createHash("sha1").update(body).digest("hex").slice(0, 16);
+        expect(info.etag).toBe(`"${hex}"`);
+      }
+      // No staging files left behind.
+      const remaining = await fsp.readdir(root);
+      expect(remaining.toSorted()).toEqual(["race.txt", "race.txt.meta.json"]);
+    });
+
+    test("a key whose ancestor is an existing file is rejected", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("file.txt", "x");
+      await expect(
+        files.upload("file.txt/child.txt", "y")
+      ).rejects.toBeInstanceOf(FilesError);
+    });
   });
 
   describe("head", () => {
@@ -598,6 +634,30 @@ describe("fs adapter", () => {
     });
   });
 
+  describe("staging files", () => {
+    test("in-flight staging files never surface as objects", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("k.txt", "x");
+      // What a crash between write and rename (or a list() racing an upload)
+      // leaves behind: a body staging file and a sidecar staging file.
+      await fsp.writeFile(path.join(root, "k.txt.0000.fls-tmp"), "half");
+      await fsp.writeFile(
+        path.join(root, "k.txt.meta.json.0000.fls-tmp"),
+        "{}"
+      );
+      const { items } = await files.list();
+      expect(items.map((item) => item.key)).toEqual(["k.txt"]);
+      // And the suffix is reserved, so nothing can address them as a key.
+      await expect(files.download("k.txt.0000.fls-tmp")).rejects.toThrow(
+        /reserved/u
+      );
+      await expect(files.upload("x.fls-tmp", "data")).rejects.toThrow(
+        /reserved/u
+      );
+    });
+  });
+
   describe("path safety", () => {
     test("rejects keys that escape root via ..", async () => {
       const root = await makeRoot();
@@ -636,6 +696,58 @@ describe("fs adapter", () => {
       await expect(files.exists("link.txt")).rejects.toMatchObject({
         code: "Provider",
       });
+    });
+
+    test("rejects writes through a symlinked directory that resolves outside root", async () => {
+      const root = await makeRoot();
+      const outside = await makeRoot();
+      try {
+        await fsp.symlink(outside, path.join(root, "link"));
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "EPERM" || error.code === "EACCES")
+        ) {
+          return;
+        }
+        throw error;
+      }
+      await fsp.writeFile(path.join(outside, "victim.txt"), "v");
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("safe.txt", "ok");
+      const escapes = /resolves outside adapter root/u;
+
+      await expect(files.upload("link/escaped.txt", "pwned")).rejects.toThrow(
+        escapes
+      );
+      // A not-yet-existing tail under the symlink is caught before mkdir.
+      await expect(
+        files.upload("link/deep/er/escaped.txt", "pwned")
+      ).rejects.toThrow(escapes);
+      await expect(files.delete("link/victim.txt")).rejects.toThrow(escapes);
+      await expect(files.move("safe.txt", "link/moved.txt")).rejects.toThrow(
+        escapes
+      );
+      await expect(files.move("link/victim.txt", "stolen.txt")).rejects.toThrow(
+        escapes
+      );
+      await expect(files.copy("safe.txt", "link/copied.txt")).rejects.toThrow(
+        escapes
+      );
+      await expect(
+        files.upload("link/resumed.bin", "abcdefgh", {
+          control: new UploadControl(),
+          multipart: { partSize: 4 },
+        })
+      ).rejects.toThrow(escapes);
+
+      // Nothing outside the root was touched, and the in-root file is intact.
+      const outsideEntries = await fsp.readdir(outside);
+      expect(outsideEntries.toSorted()).toEqual(["victim.txt"]);
+      const safe = await files.download("safe.txt");
+      expect(await safe.text()).toBe("ok");
     });
 
     test("constructor prefix rejects dot segments before fs path resolution", async () => {
@@ -958,8 +1070,10 @@ describe("fs adapter", () => {
         FilesError
       );
       const remaining = await fsp.readdir(root);
-      // No `.tmp` leftovers — bestEffortRm should have removed them.
-      expect(remaining.some((n) => n.includes(".tmp"))).toBe(false);
+      // No staging leftovers — bestEffortRm should have removed both the
+      // body and the sidecar staging files.
+      expect(remaining.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
+      expect(remaining.some((n) => n.endsWith(".meta.json"))).toBe(false);
     });
 
     test("stream upload surfaces and cleans up when rename fails", async () => {
@@ -976,7 +1090,8 @@ describe("fs adapter", () => {
         FilesError
       );
       const remaining = await fsp.readdir(root);
-      expect(remaining.some((n) => n.includes(".tmp"))).toBe(false);
+      expect(remaining.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
+      expect(remaining.some((n) => n.endsWith(".meta.json"))).toBe(false);
     });
   });
 });

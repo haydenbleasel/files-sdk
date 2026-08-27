@@ -125,6 +125,7 @@ Failover buys **availability**, not consistency. An object written to a secondar
   ```
 
 - **Address objects by caller-facing keys.** Each secondary does **not** receive the instance `prefix`, so give it its own bucket / container and avoid a client `prefix` on a failover instance.
+- **Instance defaults apply to every backend.** The `timeout`, `retries`, and `signal` you pass to the constructor govern the secondaries as well as the primary (per-call options forward too), so a hung replica is cut off the same way a hung primary is rather than stalling the chain after a failover.
 
 ## Things to keep in mind
 

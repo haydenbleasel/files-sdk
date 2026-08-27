@@ -83,4 +83,12 @@ describe("globPrefix", () => {
   test("is empty for a negated pattern (matches by exclusion)", () => {
     expect(globPrefix("!keep.txt")).toBe("");
   });
+
+  test("unescapes backslash escapes so the prefix matches real keys", () => {
+    expect(globPrefix("a\\*b/x")).toBe("a*b/x");
+    expect(globPrefix("a\\*b/*.txt")).toBe("a*b");
+    // An escaped backslash stands for one literal backslash.
+    expect(globPrefix("a\\\\b/x")).toBe("a\\b/x");
+    expect(globMatcher("a\\*b/x", false)("a*b/x")).toBe(true);
+  });
 });

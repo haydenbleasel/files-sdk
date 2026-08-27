@@ -667,13 +667,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
   };
 
   return {
-    async copy(from, to) {
+    async copy(from, to, operationOpts) {
       const adapter = await ensure();
-      return adapter.copy(from, to);
+      return adapter.copy(from, to, operationOpts);
     },
-    async delete(key) {
+    async delete(key, operationOpts) {
       const adapter = await ensure();
-      return adapter.delete(key);
+      return adapter.delete(key, operationOpts);
     },
     async deleteMany(keys, deleteOpts) {
       const adapter = await ensure();
@@ -686,13 +686,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       const adapter = await ensure();
       return adapter.download(key, downloadOpts);
     },
-    async exists(key) {
+    async exists(key, operationOpts) {
       const adapter = await ensure();
-      return adapter.exists(key);
+      return adapter.exists(key, operationOpts);
     },
-    async head(key) {
+    async head(key, operationOpts) {
       const adapter = await ensure();
-      return adapter.head(key);
+      return adapter.head(key, operationOpts);
     },
     async list(listOpts) {
       const adapter = await ensure();

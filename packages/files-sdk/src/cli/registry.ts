@@ -191,9 +191,27 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "backblaze-b2": {
     load: async (opts) => {
       const { backblazeB2 } = await import("../backblaze-b2/index.js");
-      return cast(backblazeB2, merge(s3LikeOpts(opts), opts.extra));
+      // The adapter reads flat accessKeyId/secretAccessKey; the CLI's native
+      // --application-key-id/--application-key flags are the same values
+      // under B2's names, so thread them through as a fallback.
+      return cast(
+        backblazeB2,
+        merge(
+          stripUndefined({
+            accessKeyId: opts.accessKeyId ?? opts.applicationKeyId,
+            bucket: opts.bucket,
+            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+            endpoint: opts.endpoint,
+            forcePathStyle: opts.forcePathStyle,
+            publicBaseUrl: opts.publicBaseUrl,
+            region: opts.region,
+            secretAccessKey: opts.secretAccessKey ?? opts.applicationKey,
+          }),
+          opts.extra
+        )
+      );
     },
-    required: ["--bucket"],
+    required: ["--bucket", "--region"],
   },
   box: {
     load: async (opts) => {
@@ -440,6 +458,9 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
             accountId: opts.accountId,
             bucket: opts.bucket as string,
             defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+            // An explicit endpoint stands in for accountId (jurisdiction
+            // buckets, MinIO/LocalStack stand-ins).
+            endpoint: opts.endpoint,
             publicBaseUrl: opts.publicBaseUrl,
             secretAccessKey: opts.secretAccessKey,
           }),

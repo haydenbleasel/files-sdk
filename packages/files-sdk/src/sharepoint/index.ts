@@ -6,6 +6,9 @@ import type {
   DownloadOptions,
   ListOptions,
   ListResult,
+  OffsetResumableDriver,
+  ResumableDriverOptions,
+  ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
   UploadOptions,
@@ -332,6 +335,61 @@ export const sharepoint = (
     }
   };
 
+  // Resumable uploads go through the inner adapter's Graph upload-session
+  // driver. The driver contract is synchronous to construct (and `adopt()` is
+  // sync), but the inner adapter only exists after site/drive resolution — so
+  // build the real driver lazily on the first async call and replay a pending
+  // `adopt()` onto it. `partSize` is only read by the orchestrator after
+  // `begin()`/`probe()` settle, by which point the driver is resolved.
+  const resumableUpload = (
+    key: string,
+    driverOpts: ResumableDriverOptions
+  ): OffsetResumableDriver => {
+    let adopted: ResumableUploadSession | undefined;
+    let resolvedDriver: OffsetResumableDriver | undefined;
+    let pending: Promise<OffsetResumableDriver> | undefined;
+    const create = async (): Promise<OffsetResumableDriver> => {
+      const inner = await resolve();
+      const created = inner.resumableUpload(key, driverOpts);
+      if (adopted) {
+        created.adopt(adopted);
+      }
+      resolvedDriver = created;
+      return created;
+    };
+    const driver = (): Promise<OffsetResumableDriver> => {
+      pending ??= create();
+      return pending;
+    };
+    const withDriver = <T>(
+      fn: (inner: OffsetResumableDriver) => Promise<T>
+    ): Promise<T> =>
+      call(async () => {
+        const inner = await driver();
+        return await fn(inner);
+      });
+    return {
+      adopt(session) {
+        adopted = session;
+      },
+      begin: (meta) => withDriver((inner) => inner.begin(meta)),
+      complete: (parts) => withDriver((inner) => inner.complete(parts)),
+      discard: () => withDriver((inner) => inner.discard()),
+      mode: "offset",
+      get partSize(): number {
+        if (!resolvedDriver) {
+          throw new FilesError(
+            "Provider",
+            "sharepoint: upload session not started."
+          );
+        }
+        return resolvedDriver.partSize;
+      },
+      probe: () => withDriver((inner) => inner.probe()),
+      uploadAt: (chunk) => withDriver((inner) => inner.uploadAt(chunk)),
+    };
+  };
+
   return {
     copy: (from: string, to: string) => call((inner) => inner.copy(from, to)),
     delete: (key: string) => call((inner) => inner.delete(key)),
@@ -343,6 +401,7 @@ export const sharepoint = (
       call((inner) => inner.list(listOpts)),
     name: "sharepoint",
     raw: resolverClient,
+    resumableUpload,
     get rootFolderPath(): string {
       // The inner adapter normalizes the path; surface it once resolution
       // has happened. Before resolution, fall back to the raw input.

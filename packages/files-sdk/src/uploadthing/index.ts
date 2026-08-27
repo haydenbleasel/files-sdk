@@ -555,6 +555,12 @@ export const uploadthing = (
                 undefined,
                 downloadTimeoutMs
               );
+              if (!res.ok) {
+                throw new FilesError(
+                  res.status === 404 ? "NotFound" : "Provider",
+                  `uploadthing fetch failed: ${res.status} ${res.statusText} for ${itemKey}`
+                );
+              }
               return new Uint8Array(await res.arrayBuffer());
             },
             kind: "lazy",

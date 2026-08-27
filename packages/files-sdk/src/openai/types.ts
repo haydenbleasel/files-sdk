@@ -5,6 +5,13 @@
  */
 export interface ResponsesToolOverrides {
   description?: string;
+  /**
+   * Emit the tool with OpenAI strict mode enabled. The `parameters` schema
+   * is reshaped to what strict mode accepts: every property is listed in
+   * `required` (optional ones become nullable, and `execute` treats `null`
+   * as "absent"), and free-form maps are dropped — so `uploadFile` loses its
+   * `metadata` field under strict mode.
+   */
   strict?: boolean;
 }
 

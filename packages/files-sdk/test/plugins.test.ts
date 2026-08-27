@@ -429,4 +429,20 @@ describe("metadata-injecting plugins", () => {
       /`metadata` is not supported/u
     );
   });
+
+  test("a wrap throwing a plain Error surfaces as a FilesError even without hooks", async () => {
+    const thrower: FilesPlugin = {
+      name: "thrower",
+      wrap: () => Promise.reject(new Error("plain boom")),
+    };
+    const files = new Files({ adapter: fakeAdapter(), plugins: [thrower] });
+    let caught: unknown;
+    try {
+      await files.head("k.txt");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FilesError);
+    expect((caught as FilesError).message).toContain("plain boom");
+  });
 });

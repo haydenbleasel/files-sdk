@@ -182,6 +182,35 @@ const craftZip = (
 const TEXT = new TextEncoder();
 
 describe("zip plugin — writing archives", () => {
+  test("requests each entry as a stream so bodies are never buffered whole", async () => {
+    const inner = fakeAdapter();
+    const seen: { key: string; as: DownloadOptions["as"] }[] = [];
+    const spy: Adapter = {
+      ...inner,
+      download(key: string, opts?: DownloadOptions): Promise<StoredFile> {
+        seen.push({ as: opts?.as, key });
+        return inner.download(key, opts);
+      },
+    };
+    const files = withZip(spy);
+    await files.upload("a.txt", "alpha");
+    await files.upload("docs/b.txt", "bravo");
+
+    await files.zipTo("out.zip", ["a.txt", "docs/b.txt"]);
+    expect(
+      seen.filter((call) => call.key === "a.txt" || call.key === "docs/b.txt")
+    ).toEqual([
+      { as: "stream", key: "a.txt" },
+      { as: "stream", key: "docs/b.txt" },
+    ]);
+
+    await files.unzip("out.zip", { into: "r/" });
+    const a = await files.download("r/a.txt");
+    expect(await a.text()).toBe("alpha");
+    const b = await files.download("r/docs/b.txt");
+    expect(await b.text()).toBe("bravo");
+  });
+
   test("zipTo + unzip round-trips multiple files (deflate)", async () => {
     const files = withZip();
     await files.upload("a.txt", "alpha ".repeat(500));

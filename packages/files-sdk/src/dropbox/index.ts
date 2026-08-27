@@ -107,7 +107,9 @@ const UPLOAD_SESSION_CHUNK_MULTIPLE = 4 * 1024 * 1024;
 /**
  * Resolve the session chunk size from `multipart.partSize`, rounded down to a
  * 4 MiB multiple (Dropbox's requirement) and never below one unit. Defaults to
- * 8 MiB when no `partSize` is given.
+ * 8 MiB when no `partSize` is given. Capped at Dropbox's per-request limit
+ * (150 MB, itself rounded down to a 4 MiB multiple) so an oversized
+ * `partSize` can't produce a session append the API rejects.
  */
 const resolveChunkBytes = (
   multipart: boolean | MultipartOptions | undefined
@@ -117,8 +119,9 @@ const resolveChunkBytes = (
   if (partSize === undefined) {
     return UPLOAD_SESSION_CHUNK_BYTES;
   }
+  const capped = Math.min(partSize, SIMPLE_UPLOAD_LIMIT_BYTES);
   const rounded =
-    Math.floor(partSize / UPLOAD_SESSION_CHUNK_MULTIPLE) *
+    Math.floor(capped / UPLOAD_SESSION_CHUNK_MULTIPLE) *
     UPLOAD_SESSION_CHUNK_MULTIPLE;
   return Math.max(rounded, UPLOAD_SESSION_CHUNK_MULTIPLE);
 };
@@ -653,16 +656,39 @@ const resolveAuth = (opts: DropboxAdapterOptions): ResolvedAuth => {
 };
 
 const rewriteSharedLinkForDirectDownload = (url: string): string => {
-  // Dropbox shared-link URLs end in `?dl=0` (preview) by default. Rewriting
-  // to `?dl=1` makes the same URL serve the raw bytes instead of the
-  // Dropbox preview page — what `url()` callers usually want.
-  if (url.includes("?dl=0")) {
-    return url.replace("?dl=0", "?dl=1");
-  }
-  if (url.includes("?dl=")) {
+  // Dropbox shared-link URLs carry `dl=0` (preview) by default. Setting
+  // `dl=1` makes the same URL serve the raw bytes instead of the Dropbox
+  // preview page — what `url()` callers usually want. Current `/scl/fi/`
+  // links put `rlkey` before `dl`, so this goes through the URL parser
+  // rather than matching `?dl=` textually.
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("dl", "1");
+    return parsed.toString();
+  } catch {
+    // Not a parseable absolute URL — hand it back untouched.
     return url;
   }
-  return url + (url.includes("?") ? "&dl=1" : "?dl=1");
+};
+
+// The Dropbox SDK stores the whole parsed error body at `err.error`, so a
+// failed `create_shared_link_with_settings` variant lives under a second
+// `error` envelope: `err.error.error.shared_link_already_exists.metadata.url`.
+// Tolerate the bare (envelope-less) variant as well.
+const existingSharedLinkUrl = (body: unknown): string | undefined => {
+  if (body === null || typeof body !== "object") {
+    return;
+  }
+  const outer = body as Record<string, unknown>;
+  const variant = (
+    outer.error !== null && typeof outer.error === "object"
+      ? outer.error
+      : outer
+  ) as {
+    shared_link_already_exists?: { metadata?: { url?: unknown } };
+  };
+  const url = variant.shared_link_already_exists?.metadata?.url;
+  return typeof url === "string" && url.length > 0 ? url : undefined;
 };
 
 export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
@@ -731,13 +757,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       if (error instanceof DropboxResponseError) {
         const tags = collectErrorTags(error.error);
         if (tags.includes("shared_link_already_exists")) {
-          const meta = (
-            error.error as sharing.CreateSharedLinkWithSettingsErrorSharedLinkAlreadyExists
-          ).shared_link_already_exists as
-            | { metadata?: { url?: string } }
-            | undefined;
-          const url = meta?.metadata?.url;
-          if (typeof url === "string" && url.length > 0) {
+          const url = existingSharedLinkUrl(error.error);
+          if (url !== undefined) {
             return rewriteSharedLinkForDirectDownload(url);
           }
         }

@@ -5,11 +5,14 @@ import { FilesError } from "../src/internal/errors.js";
 import {
   abortError,
   canRetry,
+  combineSignals,
+  manualAnySignal,
   maxRetries,
   mergeSignals,
   retryBackoff,
   runWithSignal,
   sleep,
+  timeoutMs,
 } from "../src/internal/retry.js";
 
 describe("mergeSignals", () => {
@@ -49,6 +52,94 @@ describe("mergeSignals", () => {
     await delay(15);
     expect(merged.signal?.aborted).toBe(true);
     merged.cleanup?.();
+  });
+
+  test("a non-finite timeout means no timeout, not an instant one", async () => {
+    // Node/Bun clamp a delay > 2^31-1 (or Infinity) to 1ms, which would
+    // time every op out immediately.
+    const none = mergeSignals([], Number.POSITIVE_INFINITY);
+    expect(none.signal).toBeUndefined();
+    expect(none.cleanup).toBeUndefined();
+
+    const controller = new AbortController();
+    const single = mergeSignals([controller.signal], Number.POSITIVE_INFINITY);
+    expect(single.signal).toBe(controller.signal);
+    expect(single.cleanup).toBeUndefined();
+
+    const huge = mergeSignals([], Number.MAX_SAFE_INTEGER);
+    await delay(15);
+    expect(huge.signal?.aborted).toBe(false);
+    huge.cleanup?.();
+  });
+
+  test("cleanup disarms the timeout but keeps caller signals wired", async () => {
+    const a = new AbortController();
+    const b = new AbortController();
+    const merged = mergeSignals([a.signal, b.signal], 5);
+    merged.cleanup?.();
+    await delay(15);
+    // The per-attempt timer is gone once the attempt settles...
+    expect(merged.signal?.aborted).toBe(false);
+    // ...but a caller abort still reaches whatever holds the merged signal
+    // (a lazily-consumed download body, for instance).
+    b.abort("late");
+    expect(merged.signal?.aborted).toBe(true);
+    expect(merged.signal?.reason).toBe("late");
+  });
+});
+
+describe("timeoutMs", () => {
+  test("drops unset, non-positive, and non-finite timeouts", () => {
+    expect(timeoutMs()).toBeUndefined();
+    expect(timeoutMs(0)).toBeUndefined();
+    expect(timeoutMs(-1)).toBeUndefined();
+    expect(timeoutMs(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(timeoutMs(Number.NaN)).toBeUndefined();
+  });
+
+  test("passes a sane timeout through and clamps an oversized one", () => {
+    expect(timeoutMs(250)).toBe(250);
+    expect(timeoutMs(2 ** 40)).toBe(2_147_483_647);
+  });
+});
+
+describe("combineSignals", () => {
+  test("nothing in, nothing out; one in, the same one out", () => {
+    expect(combineSignals([])).toBeUndefined();
+    const controller = new AbortController();
+    expect(combineSignals([controller.signal])).toBe(controller.signal);
+  });
+
+  test("two inputs fold into a fresh signal that follows either", () => {
+    const a = new AbortController();
+    const b = new AbortController();
+    const merged = combineSignals([a.signal, b.signal]);
+    expect(merged).not.toBe(a.signal);
+    expect(merged?.aborted).toBe(false);
+    b.abort("b");
+    expect(merged?.reason).toBe("b");
+  });
+
+  test("the manual fallback follows the first input to abort", () => {
+    const a = new AbortController();
+    const b = new AbortController();
+    const merged = manualAnySignal([a.signal, b.signal]);
+    expect(merged.aborted).toBe(false);
+    b.abort("first");
+    a.abort("second");
+    expect(merged.aborted).toBe(true);
+    expect(merged.reason).toBe("first");
+  });
+
+  test("the manual fallback reflects an already-aborted input", () => {
+    const aborted = new AbortController();
+    aborted.abort("early");
+    const merged = manualAnySignal([
+      aborted.signal,
+      new AbortController().signal,
+    ]);
+    expect(merged.aborted).toBe(true);
+    expect(merged.reason).toBe("early");
   });
 });
 

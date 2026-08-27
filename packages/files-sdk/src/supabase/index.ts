@@ -600,10 +600,23 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // zero-byte "files" for the folders. listV2 without a delimiter is a
       // plain string-prefix scan over full keys, with a real cursor.
       const v2Item = (
-        obj: { metadata?: unknown; key?: string; name: string },
+        obj: {
+          metadata?: unknown;
+          user_metadata?: unknown;
+          key?: string;
+          name: string;
+        },
         fullKey: string
       ): StoredFile => {
         const meta = (obj.metadata ?? {}) as SupabaseListItemMetadata;
+        // `metadata` on a listing row is Supabase's *system* block (eTag,
+        // size, mimetype, cacheControl, ...) — never user metadata. Surfacing
+        // it as `metadata` would report phantom keys that head()/download()
+        // don't. User metadata, when the API returns it at all, lives under
+        // `user_metadata`.
+        const userMetadata = stringifyMetadata(
+          obj.user_metadata as Record<string, unknown> | null | undefined
+        );
         return createStoredFile(
           {
             ...(meta.eTag && { etag: stripEtag(meta.eTag) }),
@@ -611,9 +624,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             ...(meta.lastModified !== undefined && {
               lastModified: toMs(meta.lastModified),
             }),
-            ...(stringifyMetadata(meta as Record<string, unknown>) && {
-              metadata: stringifyMetadata(meta as Record<string, unknown>),
-            }),
+            ...(userMetadata && { metadata: userMetadata }),
             size: meta.size ?? meta.contentLength ?? 0,
             type: meta.mimetype ?? DEFAULT_CONTENT_TYPE,
           },

@@ -25,8 +25,36 @@ export interface UploadConfig {
   defaultExpiresIn: number;
   maxUploadSize?: number;
   proxyUrl: (token: string) => string;
+  /** The request's canonical non-routing query — see {@link boundQuery}. */
+  boundQuery: string;
   now: () => number;
 }
+
+const ROUTING_PARAMS = new Set(["op", "key", "token"]);
+
+/**
+ * The query an upload token is bound to: every pair except the gateway's own
+ * routing params, sorted into a canonical string. A per-request `files`
+ * factory resolves the instance from this query (`?bucket=`), so a token
+ * minted under one query must not be redeemable under another — otherwise a
+ * caller could presign where uploads are allowed and PUT the bytes into an
+ * instance where they are not. Empty for a bare endpoint.
+ */
+export const boundQuery = (query: URLSearchParams): string => {
+  const bound = new URLSearchParams();
+  for (const [name, value] of query) {
+    if (!ROUTING_PARAMS.has(name)) {
+      bound.append(name, value);
+    }
+  }
+  bound.sort();
+  return bound.toString();
+};
+
+const tokenQueryMatches = (
+  payload: { query?: string },
+  cfg: UploadConfig
+): boolean => (payload.query ?? "") === cfg.boundQuery;
 
 const extFromName = (name: string): string => {
   const dot = name.lastIndexOf(".");
@@ -94,6 +122,8 @@ const limitBody = (
   };
 };
 
+const QUERY_MISMATCH = "upload token was issued for a different endpoint query";
+
 export const handlePresign = async (
   cfg: UploadConfig,
   files: ClientFileInfo[],
@@ -117,6 +147,7 @@ export const handlePresign = async (
         key,
         maxSize: cfg.maxUploadSize,
         minSize: 0,
+        ...(cfg.boundQuery ? { query: cfg.boundQuery } : {}),
       },
       cfg.secret
     );
@@ -155,12 +186,14 @@ export const handleComplete = async (
   for (const completion of completions) {
     // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- completions verified sequentially; small N
     const verified = await verifyToken(completion.id, cfg.secret, cfg.now());
-    if (!verified.ok) {
+    if (!verified.ok || !tokenQueryMatches(verified.payload, cfg)) {
       errors.push({
         error: {
           aborted: false,
           code: "Unauthorized",
-          message: `upload token ${verified.failure}`,
+          message: verified.ok
+            ? QUERY_MISMATCH
+            : `upload token ${verified.failure}`,
           timedOut: false,
         },
         key: completion.key,
@@ -208,6 +241,9 @@ export const handleProxyUpload = async (
   const verified = await verifyToken(token, cfg.secret, cfg.now());
   if (!verified.ok) {
     throw new RouterError("Unauthorized", `upload token ${verified.failure}`);
+  }
+  if (!tokenQueryMatches(verified.payload, cfg)) {
+    throw new RouterError("Unauthorized", QUERY_MISMATCH);
   }
   if (!body) {
     throw new RouterError("Validation", "missing request body");

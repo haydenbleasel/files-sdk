@@ -74,6 +74,8 @@ await files.purge(); // the whole trash
 
 `purge()` is idempotent: purging a key with nothing trashed is a no-op. (Under the hood, a `delete` of a key inside the trash prefix is a **real** delete - that's how purging works, and how any manual trash cleanup behaves.)
 
+A whole-trash `purge()` removes everything it can and then **throws** if any trashed object couldn't be deleted - the error names how many failed and carries the first failure as its `cause` - so it never resolves while `trashed()` still lists a key.
+
 ## Choosing the prefix
 
 Trashed objects live under `.trash` by default. Override it with `prefix`, and keep your own data out of it:

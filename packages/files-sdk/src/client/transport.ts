@@ -86,6 +86,13 @@ const buildBody = (req: SendRequest): XMLHttpRequestBodyInit | null => {
 export const xhrTransport: Transport = (req) =>
   // oxlint-disable-next-line promise/avoid-new -- XHR is a callback API.
   new Promise<SendResult>((resolve, reject) => {
+    // `xhr.abort()` before `send()` fires no `abort` event (the request is
+    // still OPENED), so an already-aborted signal must settle here or the
+    // promise would hang forever.
+    if (req.signal?.aborted) {
+      reject(abortError(req.signal.reason));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open(req.method, req.url, true);
     // A presigned POST sets Content-Type via the multipart boundary; only set
@@ -110,13 +117,7 @@ export const xhrTransport: Transport = (req) =>
     );
     xhr.addEventListener("abort", () => reject(abortError(req.signal?.reason)));
 
-    if (req.signal) {
-      if (req.signal.aborted) {
-        xhr.abort();
-        return;
-      }
-      req.signal.addEventListener("abort", () => xhr.abort(), { once: true });
-    }
+    req.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
     xhr.send(buildBody(req));
   });
 

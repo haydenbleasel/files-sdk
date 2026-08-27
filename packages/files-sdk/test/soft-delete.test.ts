@@ -145,6 +145,36 @@ describe("soft-delete plugin — purge", () => {
     const files = withSoftDelete();
     await expect(files.purge()).resolves.toBeUndefined();
   });
+
+  test("a whole-trash purge surfaces a per-key delete failure", async () => {
+    const inner = fakeAdapter();
+    const flaky: Adapter = {
+      ...inner,
+      delete(key, opts) {
+        if (key === ".trash/b.txt") {
+          return Promise.reject(new Error("boom: provider down"));
+        }
+        return inner.delete(key, opts);
+      },
+    };
+    const files = createFiles({ adapter: flaky, plugins: [softDelete()] });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    await files.delete("a.txt");
+    await files.delete("b.txt");
+
+    // The bulk delete collects failures instead of throwing; purge() must not
+    // swallow them and resolve while the key is still in the trash.
+    const err = await files.purge().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).message).toMatch(
+      /purge failed for 1 of 2 .*"\.trash\/b\.txt": boom/u
+    );
+    expect((err as FilesError).cause).toBeInstanceOf(FilesError);
+    // Everything deletable was still removed; only the failed key remains.
+    const remaining = await files.trashed();
+    expect(remaining.map((t) => t.key)).toEqual(["b.txt"]);
+  });
 });
 
 describe("soft-delete plugin — trashed() metadata", () => {

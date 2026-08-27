@@ -241,9 +241,11 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
   }
   const shouldFailover = options.shouldFailover ?? defaultShouldFailover;
   const { onFailover } = options;
-  const secondaryRunners = secondaries.map((adapter) =>
-    runnerFor(new Files({ adapter }))
-  );
+  // Built in `extend`, which is the only hook that sees the outer instance:
+  // each secondary's internal Files inherits its `timeout` / `retries` /
+  // `signal` defaults, so a hung replica is cut off the same way a hung
+  // primary is instead of stalling the chain forever after a failover.
+  let secondaryRunners: readonly BackendRunner[] = [];
 
   const notify = (event: FailoverEvent): void => {
     if (!onFailover) {
@@ -349,5 +351,16 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
     return dispatch(op, [runnerViaNext(next), ...secondaryRunners]);
   }) as NonNullable<FilesPlugin["wrap"]>;
 
-  return { name: "failover", wrap };
+  return {
+    extend: (files) => {
+      const { defaults } = files;
+      secondaryRunners = secondaries.map((adapter) =>
+        runnerFor(new Files({ adapter, ...defaults }))
+      );
+      // No surface is added — `extend` is used only to reach the instance.
+      return {};
+    },
+    name: "failover",
+    wrap,
+  };
 };

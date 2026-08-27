@@ -45,9 +45,11 @@ export type VersioningApi = {
   /**
    * Roll `key` back to a prior version — the newest one when `versionId` is
    * omitted (an undo of the last change). The current bytes are snapshotted
-   * first, so a restore is itself reversible. Resolves to the restored
-   * {@link StoredFile} (via `head`). Throws when the key has no versions, or the
-   * given `versionId` doesn't exist.
+   * first, so a restore is itself reversible; with a `limit`, the oldest
+   * versions are pruned only after the restore lands, so restoring the oldest
+   * kept version always works. Resolves to the restored {@link StoredFile}
+   * (via `head`). Throws when the key has no versions, or the given
+   * `versionId` doesn't exist.
    */
   restore: (key: string, versionId?: string) => Promise<StoredFile>;
 };
@@ -234,11 +236,12 @@ export const versioning = (
   /**
    * Copy the current bytes of `key` (if any) to a fresh version key. Runs via
    * `next`, so the snapshot ops stay on the inner chain — they never re-enter
-   * this plugin, which is what keeps `restore`'s copy from recursing.
+   * this plugin, which is what keeps `restore`'s copy from recursing. Resolves
+   * to whether a snapshot was taken, so the caller knows to enforce `limit`.
    */
-  const snapshot = async (key: string, next: PluginNext): Promise<void> => {
+  const snapshot = async (key: string, next: PluginNext): Promise<boolean> => {
     if (isVersionKey(key)) {
-      return;
+      return false;
     }
     let current: StoredFile;
     try {
@@ -246,7 +249,7 @@ export const versioning = (
     } catch (error) {
       // Nothing there yet — a first write or a restore onto a deleted key.
       if (error instanceof FilesError && error.code === "NotFound") {
-        return;
+        return false;
       }
       throw error;
     }
@@ -255,7 +258,16 @@ export const versioning = (
       kind: "copy",
       to: `${versionsDirFor(key)}${versionId(current)}`,
     });
-    if (limit !== undefined) {
+    return true;
+  };
+
+  /** Enforce `limit` on `key`'s history once a fresh snapshot has been taken. */
+  const enforceLimit = async (
+    key: string,
+    next: PluginNext,
+    taken: boolean
+  ): Promise<void> => {
+    if (taken && limit !== undefined) {
       await prune(key, next, limit);
     }
   };
@@ -379,13 +391,19 @@ export const versioning = (
     switch (op.kind) {
       case "upload":
       case "delete": {
-        await snapshot(op.key, next);
+        await enforceLimit(op.key, next, await snapshot(op.key, next));
         return next(op);
       }
       case "copy":
       case "move": {
-        await snapshot(op.to, next);
-        return next(op);
+        const taken = await snapshot(op.to, next);
+        const result = await next(op);
+        // Prune only once the copy has landed. When the source is one of the
+        // destination's own versions (a `restore`), the fresh snapshot can push
+        // that very version past `limit` — pruning first would delete it before
+        // it's copied, failing the restore and losing the version for good.
+        await enforceLimit(op.to, next, taken);
+        return result;
       }
       case "list": {
         return hideVersions(await next(op), op.options);

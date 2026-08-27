@@ -94,7 +94,13 @@ describe("files-sdk/nitro", () => {
                 controller.enqueue(new Uint8Array([1]));
                 req.signal.addEventListener("abort", () => {
                   upstreamAborted.resolve(null);
-                  controller.close();
+                  // The binding may already have cancelled the stream when it
+                  // tore down the response (Bun does); closing again throws.
+                  try {
+                    controller.close();
+                  } catch {
+                    // already closed by the binding
+                  }
                 });
               },
             })

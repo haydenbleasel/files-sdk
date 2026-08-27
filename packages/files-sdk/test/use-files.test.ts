@@ -288,6 +288,37 @@ describe("reactive query hooks", () => {
     await waitFor(() => expect(result.current.data?.items).toHaveLength(2));
   });
 
+  test("useList refetches when the endpoint changes", async () => {
+    const docs = memory();
+    const images = memory();
+    const docsFiles = createFiles({ adapter: docs });
+    const imagesFiles = createFiles({ adapter: images });
+    await docsFiles.upload("d.txt", "1");
+    await imagesFiles.upload("i.png", "2");
+    const router = createFilesRouter({
+      files: (req) =>
+        new URL(req.url).searchParams.get("bucket") === "images"
+          ? imagesFiles
+          : docsFiles,
+      operations: ["list"],
+      secret: "s",
+    });
+    const fetchImpl = ((i: RequestInfo | URL, init?: RequestInit) =>
+      router.handle(new Request(i, init))) as typeof fetch;
+    const { rerender, result } = renderHook(
+      ({ endpoint }: { endpoint: string }) =>
+        useList({}, { endpoint, fetchImpl }),
+      { initialProps: { endpoint: "https://app.test/api/files" } }
+    );
+    await waitFor(() =>
+      expect(result.current.data?.items.map((f) => f.key)).toEqual(["d.txt"])
+    );
+    rerender({ endpoint: "https://app.test/api/files?bucket=images" });
+    await waitFor(() =>
+      expect(result.current.data?.items.map((f) => f.key)).toEqual(["i.png"])
+    );
+  });
+
   test("useFile is disabled without a key", () => {
     const { result } = renderHook(() => useFile(undefined, config(memory())));
     expect(result.current.isLoading).toBe(false);

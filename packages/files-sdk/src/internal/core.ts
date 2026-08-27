@@ -463,25 +463,39 @@ export const countingStream = (
   stream: ReadableStream<Uint8Array>,
   onChunk: (loaded: number) => void
 ): ReadableStream<Uint8Array> => {
-  const reader = stream.getReader();
+  // The source reader is acquired on first pull, not up front — and with a
+  // zero high-water mark the first pull waits for the adapter's first read
+  // rather than firing at construction. An upload that fails before the
+  // adapter reads a byte therefore leaves the caller's stream unlocked (and
+  // cancellable) rather than pinned by a wrapper nobody drains.
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let loaded = 0;
-  return new ReadableStream<Uint8Array>({
-    cancel(reason) {
-      return reader.cancel(reason);
+  return new ReadableStream<Uint8Array>(
+    {
+      async cancel(reason) {
+        if (!reader) {
+          await stream.cancel(reason);
+          return;
+        }
+        await reader.cancel(reason);
+        reader.releaseLock();
+      },
+      async pull(controller) {
+        reader ??= stream.getReader();
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        if (value) {
+          loaded += value.byteLength;
+          controller.enqueue(value);
+          onChunk(loaded);
+        }
+      },
     },
-    async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      if (value) {
-        loaded += value.byteLength;
-        controller.enqueue(value);
-        onChunk(loaded);
-      }
-    },
-  });
+    { highWaterMark: 0 }
+  );
 };
 
 /**

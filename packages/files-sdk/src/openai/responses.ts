@@ -2,7 +2,11 @@ import type { Files } from "../index.js";
 import { resolveApproval } from "../internal/ai-tools/approval.js";
 import type { ApprovalConfig } from "../internal/ai-tools/approval.js";
 import { executors } from "../internal/ai-tools/executors.js";
-import { toOpenAIJsonSchema } from "../internal/ai-tools/json-schema.js";
+import {
+  stripNullArgs,
+  toOpenAIJsonSchema,
+  toOpenAIStrictJsonSchema,
+} from "../internal/ai-tools/json-schema.js";
 import {
   TOOL_SCHEMAS,
   WRITE_TOOL_NAMES,
@@ -261,11 +265,16 @@ export const createResponsesFileTools = ({
   const definitions: ResponsesFunctionTool[] = includedNames.map((name) => {
     const schema = TOOL_SCHEMAS[name];
     const override = overrides?.[name];
+    const strict = override?.strict ?? false;
     return {
       description: override?.description ?? schema.description,
       name,
-      parameters: toOpenAIJsonSchema(schema.input),
-      strict: override?.strict ?? false,
+      // Strict mode rejects the plain schema (optional keys must still be
+      // listed in `required`), so emit the strict-valid shape when asked.
+      parameters: strict
+        ? toOpenAIStrictJsonSchema(schema.input)
+        : toOpenAIJsonSchema(schema.input),
+      strict,
       type: "function",
     };
   });
@@ -304,7 +313,9 @@ export const createResponsesFileTools = ({
       });
     }
 
-    const result = await dispatch(files, toolName, parsedArgs);
+    // Strict-mode schemas make optional fields nullable rather than
+    // omittable; a `null` means "absent" to the underlying Zod schema.
+    const result = await dispatch(files, toolName, stripNullArgs(parsedArgs));
     if (!result.ok) {
       return wrap({
         error: "Argument validation failed",

@@ -369,6 +369,41 @@ describe("resumable orchestrator (parts mode)", () => {
     expect(server.objects.has("a.bin")).toBe(false);
   });
 
+  test("abort() landing while complete() is in flight still aborts", async () => {
+    const server = newServer();
+    const base = makeFiles(server, "parts");
+    // Wrap the parts driver so `complete()` takes a while, and trigger
+    // `abort()` the moment it starts.
+    const control = new UploadControl();
+    let abortDone: Promise<void> | undefined;
+    const slowComplete: Adapter = {
+      ...(base.adapter as Adapter),
+      resumableUpload: (key, opts) => {
+        const driver = createPartsDriver(server, key, opts);
+        return {
+          ...driver,
+          // Succeeds regardless of the (by then discarded) session, like a
+          // provider whose finalize request was already on the wire.
+          async complete() {
+            abortDone = control.abort();
+            await delay(30);
+            return { contentType: "x", etag: "late", key, size: 8 };
+          },
+        };
+      },
+    };
+    const files = new Files({ adapter: slowComplete });
+
+    const promise = files.upload("late.bin", new Uint8Array(8).fill(1), {
+      control,
+      multipart: { partSize: 4 },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await abortDone;
+    expect(control.status).toBe("aborted");
+    expect(control.toJSON()).toBeUndefined();
+  });
+
   test("a transient part failure is retried", async () => {
     const server = newServer();
     // part 2 fails once
@@ -611,6 +646,36 @@ describe("resumable orchestrator (offset mode)", () => {
     });
     expect(uploaded.size).toBe(8);
     expect(Math.max(...loads)).toBe(8);
+  });
+
+  test("abort() landing while complete() is in flight still aborts (offset)", async () => {
+    const server = newServer();
+    const base = makeFiles(server, "offset");
+    const control = new UploadControl();
+    let abortDone: Promise<void> | undefined;
+    const slowComplete: Adapter = {
+      ...(base.adapter as Adapter),
+      resumableUpload: (key, opts) => {
+        const driver = createOffsetDriver(server, key, opts);
+        return {
+          ...driver,
+          async complete() {
+            abortDone = control.abort();
+            await delay(30);
+            return { contentType: "x", etag: "late", key, size: 8 };
+          },
+        };
+      },
+    };
+    const files = new Files({ adapter: slowComplete });
+
+    const promise = files.upload("late.bin", new Uint8Array(8).fill(1), {
+      control,
+      multipart: { partSize: 4 },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await abortDone;
+    expect(control.status).toBe("aborted");
   });
 
   test("fresh sequential upload completes", async () => {

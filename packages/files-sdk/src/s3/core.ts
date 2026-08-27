@@ -39,6 +39,7 @@ import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { reportProgress } from "../internal/resumable.js";
+import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 /**
@@ -394,7 +395,15 @@ const runLibStorageUpload = async (
     });
   }
   // The Upload runs its own requests, so wire the abort signal to its abort()
-  // rather than relying on a per-command abortSignal.
+  // rather than relying on a per-command abortSignal. The signal may already
+  // have flipped during the awaits that ran before this (body normalization,
+  // the lazy lib-storage import) — an "abort" listener never fires for that,
+  // so check up front or the object would land after the caller was told the
+  // upload failed.
+  if (signal?.aborted) {
+    await upload.abort();
+    throw abortError(signal.reason);
+  }
   signal?.addEventListener("abort", () => void upload.abort(), { once: true });
   const result = await upload.done();
   return stripEtag(result.ETag);

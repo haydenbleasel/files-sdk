@@ -652,6 +652,17 @@ describe("pocketbase adapter", () => {
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
+  test("url with publicBaseUrl encodes per segment so nested keys keep their slashes", async () => {
+    const adapter = pocketbase({
+      collection: "files",
+      publicBaseUrl: "https://cdn.example.com",
+      url: "http://pb.test",
+    });
+    expect(await adapter.url("docs/2024/a b.txt")).toBe(
+      "https://cdn.example.com/docs/2024/a%20b.txt"
+    );
+  });
+
   test("url throws when responseContentDisposition is requested", async () => {
     const adapter = pocketbase({
       collection: "files",

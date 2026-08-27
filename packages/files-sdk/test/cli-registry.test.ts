@@ -295,6 +295,54 @@ describe("cli/registry option merging", () => {
     }
   });
 
+  test("--application-key-id/--application-key reach backblaze-b2", async () => {
+    // Regression: the b2 loader went through s3LikeOpts, which only reads
+    // accessKeyId/secretAccessKey, so the documented native B2 flags were
+    // dead and the adapter fell through to "missing credentials".
+    const prevId = process.env.B2_APPLICATION_KEY_ID;
+    const prevKey = process.env.B2_APPLICATION_KEY;
+    delete process.env.B2_APPLICATION_KEY_ID;
+    delete process.env.B2_APPLICATION_KEY;
+    try {
+      const result = await loadFiles({
+        applicationKey: "secret",
+        applicationKeyId: "0001abc",
+        bucket: "b2-bucket",
+        provider: "backblaze-b2",
+        region: "us-west-002",
+      });
+      expect(result.files.adapter.name).toBe("backblaze-b2");
+    } finally {
+      if (prevId !== undefined) {
+        process.env.B2_APPLICATION_KEY_ID = prevId;
+      }
+      if (prevKey !== undefined) {
+        process.env.B2_APPLICATION_KEY = prevKey;
+      }
+    }
+  });
+
+  test("--endpoint stands in for --account-id on r2", async () => {
+    // Regression: the r2 loader dropped the global --endpoint flag, so
+    // jurisdiction buckets / MinIO stand-ins were unreachable from the CLI.
+    const prev = process.env.R2_ACCOUNT_ID;
+    delete process.env.R2_ACCOUNT_ID;
+    try {
+      const result = await loadFiles({
+        accessKeyId: "AKIATEST",
+        bucket: "test-bucket",
+        endpoint: "https://r2.example.test",
+        provider: "r2",
+        secretAccessKey: "secret",
+      });
+      expect(result.files.adapter.name).toBe("r2-http");
+    } finally {
+      if (prev !== undefined) {
+        process.env.R2_ACCOUNT_ID = prev;
+      }
+    }
+  });
+
   test("missing required field surfaces the adapter's own error", async () => {
     // `s3` requires a region. Without one (and no AWS_REGION env), the
     // adapter throws its own FilesError — registry should let it through
@@ -373,6 +421,11 @@ describe("cli/registry metadata", () => {
     expect(PROVIDERS.s3?.required).toContain("--bucket");
     expect(PROVIDERS.minio?.required).toContain("--endpoint");
     expect(PROVIDERS.scaleway?.required).toContain("--region");
+    // The b2 adapter has no env fallback for region, so it's required too.
+    expect(PROVIDERS["backblaze-b2"]?.required).toEqual([
+      "--bucket",
+      "--region",
+    ]);
     expect(PROVIDERS.fs?.required).toContain("--root");
     expect(PROVIDERS.azure?.required).toContain("--container");
     expect(PROVIDERS["netlify-blobs"]?.required).toContain("--store-name");

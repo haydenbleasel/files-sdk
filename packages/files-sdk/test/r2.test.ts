@@ -234,6 +234,33 @@ describe("r2 adapter — HTTP path", () => {
       expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
     });
 
+    test("operation signals reach the inner s3 client for copy/delete/exists/head", async () => {
+      const { signal } = new AbortController();
+      s3Mock.on(HeadObjectCommand).resolves({});
+      s3Mock.on(DeleteObjectCommand).resolves({});
+      s3Mock.on(CopyObjectCommand).resolves({});
+      const files = new Files({ adapter: makeAdapter() });
+
+      await files.head("a.txt", { signal });
+      await files.exists("a.txt", { signal });
+      await files.delete("a.txt", { signal });
+      await files.copy("a.txt", "b.txt", { signal });
+
+      const calls = [
+        ...s3Mock.commandCalls(HeadObjectCommand),
+        ...s3Mock.commandCalls(DeleteObjectCommand),
+        ...s3Mock.commandCalls(CopyObjectCommand),
+      ];
+      expect(calls).toHaveLength(4);
+      for (const call of calls) {
+        const [, options] = call.args as [
+          unknown,
+          { abortSignal?: AbortSignal }?,
+        ];
+        expect(options).toEqual({ abortSignal: signal });
+      }
+    });
+
     test("download issues a GetObjectCommand and returns a StoredFile", async () => {
       s3Mock.on(GetObjectCommand).resolves({
         Body: streamBody("hello"),
