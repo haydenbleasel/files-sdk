@@ -1,4 +1,4 @@
-import { isConditionalOperation } from "../index.js";
+import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   Files,
   FilesOperation,
@@ -370,11 +370,10 @@ export const versioning = (
     next: PluginNext
   ): Promise<unknown> => {
     if (isConditionalOperation(op) && op.kind !== "download") {
-      throw new FilesError(
-        "Provider",
-        `versioning: conditional ${op.kind} is unsupported because snapshot side effects cannot be coupled to the native compare-and-set`,
-        undefined,
-        { permanent: true }
+      rejectConditional(
+        op,
+        "versioning",
+        "snapshot side effects cannot be coupled to the native compare-and-set"
       );
     }
     switch (op.kind) {

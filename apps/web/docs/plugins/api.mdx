@@ -31,7 +31,37 @@ function handlers(map: PluginHandlers): FilesPlugin["wrap"];
 
 Builds a [`wrap`](/docs/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
 
-An `upload` handler therefore sees overwrite, conditional-create, and conditional-replace modes. Existing body-transforming handlers cover conditional writes automatically. The engine preserves a conditional root's family, mode, and predicate across every `next()` call and requires exactly one native operation before success.
+An `upload` handler therefore sees ordinary uploads (no `mode`) as well as conditional creates and replaces (`mode: "create" | "replace"`); the same holds for `download` (`"exact"`), `delete` (`"match"`), and `copy` (`"conditional"`). Ordinary operations carry no `mode` at all, so branch on `isConditionalOperation(op)` or on the conditional literals, never on an "overwrite" value. Existing body-transforming handlers cover conditional writes automatically. The engine preserves a conditional root's family, mode, and predicate across every `next()` call and requires exactly one native operation before success.
+
+## rejectConditional
+
+```ts
+function rejectConditional(
+  op: Pick<ConditionalFilesOperation, "kind">,
+  plugin: string,
+  reason: string
+): never;
+```
+
+Veto a [conditional operation](/docs/conditional-operations) from inside `wrap`, before any provider I/O, by throwing a permanent `Provider` `FilesError` worded `<plugin>: conditional <kind> is unsupported because <reason>`. Use it for the modes your plugin cannot make atomic because of a side effect of its own — a snapshot, a mirror write, a pointer rewrite — that would sit outside the native compare-and-set. Every bundled plugin that vetoes uses this shape.
+
+```ts lineNumbers
+import { isConditionalOperation, rejectConditional } from "files-sdk";
+
+const mirror: FilesPlugin = {
+  name: "mirror",
+  wrap: (op, next) => {
+    if (isConditionalOperation(op)) {
+      rejectConditional(
+        op,
+        "mirror",
+        "the mirror write cannot share one native compare-and-set"
+      );
+    }
+    return next(op);
+  },
+};
+```
 
 ## createFiles
 

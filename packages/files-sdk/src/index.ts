@@ -36,6 +36,7 @@ import {
 } from "./internal/retry.js";
 import { isSafeSearchRegex } from "./internal/search-regex.js";
 
+export { rejectConditional } from "./internal/conditional.js";
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
 export { UploadControl } from "./internal/resumable.js";
 export type {
@@ -1173,7 +1174,7 @@ export type FilesOperation =
   | ConditionalFilesOperation
   | {
       kind: "upload";
-      mode?: "overwrite";
+      mode?: undefined;
       key: string;
       body: Body;
       options?: Omit<UploadOptions, "condition">;
@@ -1181,7 +1182,7 @@ export type FilesOperation =
     }
   | {
       kind: "download";
-      mode?: "latest";
+      mode?: undefined;
       key: string;
       options?: AdapterDownloadOptions;
       bulk?: true;
@@ -1190,14 +1191,14 @@ export type FilesOperation =
   | { kind: "exists"; key: string; options?: OperationOptions; bulk?: true }
   | {
       kind: "delete";
-      mode?: "unconditional";
+      mode?: undefined;
       key: string;
       options?: OperationOptions;
       bulk?: true;
     }
   | {
       kind: "copy";
-      mode?: "unconditional";
+      mode?: undefined;
       from: string;
       to: string;
       options?: OperationOptions;
@@ -1564,38 +1565,38 @@ const unreachableOperation = (_op: never): never => {
   });
 };
 
+/**
+ * The identity of a conditional operation's predicate — family, mode, and
+ * every ETag — as one string, so a candidate a plugin hands to `next()` can
+ * be compared to the root in a single equality check. Plain serialization:
+ * the root's ETags were validated when they were snapshotted, and any change
+ * a plugin makes (including to an invalid value) shows up as a mismatch.
+ */
 const conditionalOperationFingerprint = (
   op: ConditionalFilesOperation
 ): string => {
   switch (op.kind) {
     case "upload": {
-      if (op.mode === "replace") {
-        assertCanonicalStrongEtag(op.etag);
-        return JSON.stringify(["upload", "replace", op.etag]);
-      }
-      return JSON.stringify(["upload", "create"]);
+      return op.mode === "replace"
+        ? JSON.stringify(["upload", "replace", op.etag])
+        : JSON.stringify(["upload", "create"]);
     }
     case "download": {
-      assertCanonicalStrongEtag(op.etag);
       return JSON.stringify(["download", "exact", op.etag]);
     }
     case "delete": {
-      assertCanonicalStrongEtag(op.etag);
       return JSON.stringify(["delete", "match", op.etag]);
     }
     case "copy": {
-      assertCanonicalStrongEtag(op.source.etag, "source etag");
-      if (op.destination.type === "replace") {
-        assertCanonicalStrongEtag(op.destination.etag, "destination etag");
-        return JSON.stringify([
-          "copy",
-          "conditional",
-          op.source.etag,
-          "replace",
-          op.destination.etag,
-        ]);
-      }
-      return JSON.stringify(["copy", "conditional", op.source.etag, "create"]);
+      return op.destination.type === "replace"
+        ? JSON.stringify([
+            "copy",
+            "conditional",
+            op.source.etag,
+            "replace",
+            op.destination.etag,
+          ])
+        : JSON.stringify(["copy", "conditional", op.source.etag, "create"]);
     }
     default: {
       return unreachableOperation(op);
@@ -1858,6 +1859,10 @@ export class Files<A extends Adapter = Adapter> {
       if (this.#wraps.length === 0) {
         return base(op) as Promise<OperationResult<O>>;
       }
+      // The one guard an ordinary root needs sits innermost: whatever a plugin
+      // hands to `next()` ends up here before it can reach the provider, so a
+      // predicate introduced anywhere in the onion is rejected exactly once
+      // without a per-hop check on the hottest path (every bulk item).
       const rejectIntroducedConditional: InternalNext = (nextOp) => {
         if (isConditionalOperation(nextOp)) {
           throw new FilesError(
@@ -1873,18 +1878,7 @@ export class Files<A extends Adapter = Adapter> {
       let chain: InternalNext = rejectIntroducedConditional;
       for (const wrap of this.#wraps.toReversed()) {
         const next = chain;
-        chain = (nextOp) =>
-          wrap(nextOp, (candidate) => {
-            if (isConditionalOperation(candidate)) {
-              throw new FilesError(
-                "Provider",
-                "a plugin cannot introduce a conditional predicate into an ordinary operation",
-                undefined,
-                { permanent: true }
-              );
-            }
-            return next(candidate);
-          });
+        chain = (nextOp) => wrap(nextOp, next);
       }
       return chain(op) as Promise<OperationResult<O>>;
     }
@@ -1903,10 +1897,15 @@ export class Files<A extends Adapter = Adapter> {
     base: InternalNext
   ): Promise<unknown> {
     const fingerprint = conditionalOperationFingerprint(op);
+    // Memoized by operation identity: a plugin that forwards the same object
+    // costs one string comparison, one that spreads a copy costs one
+    // serialization — either way, one check per `next()`.
+    const fingerprints = new WeakMap<object, string>([[op, fingerprint]]);
     const settlement = {
       state: "idle" as "idle" | "pending" | "success" | "error",
     };
     let violation: FilesError | undefined;
+    let baseFailure: unknown;
     let postNextFailure: unknown;
     let hasPostNextFailure = false;
     let nativeUploadEtag: string | undefined;
@@ -1918,22 +1917,25 @@ export class Files<A extends Adapter = Adapter> {
       violation ??= error;
       throw error;
     };
-    const assertSamePredicate = (nextOp: FilesOperation): void => {
-      if (!isConditionalOperation(nextOp)) {
+    const assertSamePredicate = (candidate: FilesOperation): void => {
+      if (!isConditionalOperation(candidate)) {
         return rejectViolation(
           "a plugin cannot remove or change a conditional operation predicate"
         );
       }
-      let nextFingerprint: string;
-      try {
-        nextFingerprint = conditionalOperationFingerprint(nextOp);
-      } catch (error) {
-        return rejectViolation(
-          "a plugin produced an invalid conditional operation predicate",
-          error
-        );
+      let candidateFingerprint = fingerprints.get(candidate);
+      if (candidateFingerprint === undefined) {
+        try {
+          candidateFingerprint = conditionalOperationFingerprint(candidate);
+        } catch (error) {
+          return rejectViolation(
+            "a plugin produced an invalid conditional operation predicate",
+            error
+          );
+        }
+        fingerprints.set(candidate, candidateFingerprint);
       }
-      if (nextFingerprint !== fingerprint) {
+      if (candidateFingerprint !== fingerprint) {
         rejectViolation(
           "a plugin cannot remove or change a conditional operation predicate"
         );
@@ -1941,10 +1943,15 @@ export class Files<A extends Adapter = Adapter> {
     };
 
     const guardedBase: InternalNext = async (nextOp) => {
-      assertSamePredicate(nextOp);
       if (settlement.state !== "idle") {
+        // The once-only rule is documented, but when the first call failed
+        // that failure is the interesting part — carry it as the cause so a
+        // retrying plugin's caller can still see why the provider said no.
         rejectViolation(
-          "a plugin cannot invoke a conditional provider operation more than once"
+          settlement.state === "error"
+            ? "a plugin cannot invoke a conditional provider operation more than once; the first invocation failed (see cause)"
+            : "a plugin cannot invoke a conditional provider operation more than once",
+          settlement.state === "error" ? baseFailure : undefined
         );
       }
       settlement.state = "pending";
@@ -1958,22 +1965,29 @@ export class Files<A extends Adapter = Adapter> {
         return result;
       } catch (error) {
         settlement.state = "error";
+        baseFailure = error;
         throw error;
       }
     };
 
+    // Every `next()` a plugin calls passes through exactly one predicate
+    // check, on the candidate it hands over; the root itself was validated
+    // when it was snapshotted, so the outermost call needs none.
     let chain: InternalNext = guardedBase;
     for (const wrap of this.#wraps.toReversed()) {
       const next = chain;
       // eslint-disable-next-line no-loop-func -- each iteration captures its own block-scoped wrap/next pair
       chain = async (nextOp) => {
-        assertSamePredicate(nextOp);
         try {
           return await wrap(nextOp, (candidate) => {
             assertSamePredicate(candidate);
             return next(candidate);
           });
         } catch (error) {
+          // An outer plugin may swallow an inner plugin's post-commit throw
+          // and hand back something else; remember the first such failure so
+          // the caller learns about the applied-but-unacknowledged outcome
+          // rather than a synthesized success.
           if (settlement.state === "success" && !hasPostNextFailure) {
             postNextFailure = error;
             hasPostNextFailure = true;
@@ -1983,7 +1997,20 @@ export class Files<A extends Adapter = Adapter> {
       };
     }
 
-    const result = await chain(op);
+    // Once the native call has committed, any rejection that follows — an
+    // awaited plugin throwing after `next()`, or a post-commit check failing
+    // below — describes an applied-but-unacknowledged mutation. Mark it so
+    // hooks, audit, and callers can tell it apart from a veto or a provider
+    // failure, and know to reconcile rather than retry the same predicate.
+    const applied = (error: unknown): FilesError =>
+      FilesError.applied(error, nativeUploadEtag);
+
+    let result: unknown;
+    try {
+      result = await chain(op);
+    } catch (error) {
+      throw settlement.state === "success" ? applied(error) : error;
+    }
     if (settlement.state !== "success") {
       // A latched violation is only decisive when nothing committed. Every
       // violation is rejected *before* the guarded base runs, so a plugin
@@ -2000,16 +2027,22 @@ export class Files<A extends Adapter = Adapter> {
       );
     }
     if (hasPostNextFailure) {
-      throw FilesError.wrap(postNextFailure);
+      throw applied(postNextFailure);
     }
     if (op.kind === "upload") {
-      assertConditionalUploadResult(result);
+      try {
+        assertConditionalUploadResult(result);
+      } catch (error) {
+        throw applied(error);
+      }
       if (result.etag !== nativeUploadEtag) {
-        throw new FilesError(
-          "Provider",
-          "a plugin cannot replace the ETag returned by a conditional upload",
-          undefined,
-          { permanent: true }
+        throw applied(
+          new FilesError(
+            "Provider",
+            "a plugin cannot replace the ETag returned by a conditional upload",
+            undefined,
+            { permanent: true }
+          )
         );
       }
     }

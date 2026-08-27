@@ -90,8 +90,12 @@ export interface AuditRecord {
   size?: number;
   /** Set when this record is one item of a bulk (`[...]`) call. */
   bulk?: true;
-  /** Failure detail, on `status: "error"`. */
-  error?: { code: FilesErrorCode; message: string };
+  /**
+   * Failure detail, on `status: "error"`. `applied: true` marks a conditional
+   * mutation that committed at the provider before an awaited plugin rejected
+   * the call — the object changed despite the error status.
+   */
+  error?: { code: FilesErrorCode; message: string; applied?: true };
 }
 
 export interface AuditOptions {
@@ -146,9 +150,13 @@ const auditedKinds = (events: AuditOptions["events"]): Set<FilesActionType> => {
 /** Normalize whatever was thrown to a stable `{ code, message }`. */
 const errorInfo = (
   failure: unknown
-): { code: FilesErrorCode; message: string } => {
+): { code: FilesErrorCode; message: string; applied?: true } => {
   const error = FilesError.wrap(failure);
-  return { code: error.code, message: error.message };
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.applied && { applied: true }),
+  };
 };
 
 interface RecordContext {

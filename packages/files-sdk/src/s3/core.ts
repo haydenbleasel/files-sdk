@@ -13,6 +13,7 @@ import type {
   DeleteManyOptions,
   DeleteManyResult,
   MultipartOptions,
+  OperationOptions,
   PartMeta,
   PartsResumableDriver,
   ResumableDriverOptions,
@@ -37,6 +38,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { reportProgress } from "../internal/resumable.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 /**
@@ -214,17 +216,8 @@ function normalizeConditionalResponseEtag(
   }
 }
 
-const reportConditionalProgress = (
-  listener: ((progress: UploadProgress) => void) | undefined,
-  progress: UploadProgress
-): void => {
-  try {
-    listener?.(progress);
-  } catch {
-    // Progress is observational. A callback failure after PutObject commits
-    // must never turn into a retry of the conditional mutation.
-  }
-};
+const abortOptions = (signal: AbortSignal | undefined) =>
+  signal ? { abortSignal: signal } : undefined;
 
 // Each conditional input field and the wire header it must serialize to. A
 // client whose model predates the field leaves the header out, so the guard
@@ -740,6 +733,111 @@ export const createS3Adapter = (
       { expiresIn }
     );
 
+  // One request builder per verb, shared by the ordinary method and its
+  // conditional twin so a predicate is the *only* thing that differs on the
+  // wire — a header added, a metadata encoding fixed, a Content-Length
+  // fallback changed on one path reaches the other automatically.
+  const putParams = (
+    key: string,
+    normalized: Awaited<ReturnType<typeof normalizeBody>>,
+    options: AdapterUploadOptions | undefined
+  ) => ({
+    Body: normalized.data,
+    Bucket: bucket,
+    ContentType: normalized.contentType,
+    Key: key,
+    ...(options?.cacheControl && { CacheControl: options.cacheControl }),
+    ...(options?.metadata && { Metadata: options.metadata }),
+    ...(normalized.contentLength !== undefined && {
+      ContentLength: normalized.contentLength,
+    }),
+  });
+
+  const getObject = (
+    key: string,
+    downloadOpts: AdapterDownloadOptions | undefined,
+    predicate?: { IfMatch: string }
+  ) =>
+    client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...predicate,
+        // S3 replies 206 with ContentLength set to the slice length and a
+        // ranged body, so the size/byte handling below needs no special
+        // casing — the range just rides along on the GET.
+        ...(downloadOpts?.range && {
+          Range: httpRangeHeader(downloadOpts.range),
+        }),
+      }),
+      abortOptions(downloadOpts?.signal)
+    );
+
+  // Turn a GetObject response into a StoredFile: a lazy stream that trusts
+  // S3's ContentLength (falling back to 0 only if the header is missing,
+  // which is rare in practice), or a buffer whose size is the real byte
+  // length so what we surface always matches what the caller can read.
+  const toStoredFile = async (
+    result: ClientS3.GetObjectCommandOutput,
+    meta: { etag: string | undefined; key: string },
+    downloadOpts: AdapterDownloadOptions | undefined
+  ): Promise<StoredFile> => {
+    const baseMeta = {
+      ...meta,
+      lastModified: result.LastModified?.getTime(),
+      metadata: result.Metadata,
+      type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+    };
+    if (downloadOpts?.as === "stream") {
+      const stream = result.Body?.transformToWebStream();
+      return createStoredFile(
+        { ...baseMeta, size: Number(result.ContentLength ?? 0) },
+        { factory: () => stream ?? emptyStream(), kind: "stream" }
+      );
+    }
+    const bytes =
+      (await result.Body?.transformToByteArray()) ?? new Uint8Array();
+    return createStoredFile(
+      { ...baseMeta, size: bytes.byteLength },
+      { data: bytes, kind: "buffer" }
+    );
+  };
+
+  const copyObject = (
+    from: string,
+    to: string,
+    operationOpts: OperationOptions | undefined,
+    predicate?: Pick<
+      ClientS3.CopyObjectCommandInput,
+      "CopySourceIfMatch" | "IfMatch" | "IfNoneMatch"
+    >
+  ) =>
+    client.send(
+      new CopyObjectCommand({
+        Bucket: bucket,
+        // CopySource must be URL-encoded per
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
+        // S3 bucket naming rules don't require encoding in practice, but we
+        // encode both halves defensively in case a custom endpoint (e.g.
+        // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
+        // signs and serializes it as part of the request, not as a URL value.
+        CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+        Key: to,
+        ...predicate,
+      }),
+      abortOptions(operationOpts?.signal)
+    );
+
+  const deleteObject = (
+    key: string,
+    operationOpts: OperationOptions | undefined,
+    predicate?: { IfMatch: string }
+  ) =>
+    client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: key, ...predicate }),
+      abortOptions(operationOpts?.signal)
+    );
+
   const conditionalUpload = async (
     key: string,
     body: Body,
@@ -751,14 +849,14 @@ export const createS3Adapter = (
       condition.type === "create"
         ? { IfNoneMatch: "*" }
         : { IfMatch: quoteCanonicalEtag(condition.etag) };
-    const { data, contentType, contentLength } = await normalizeBody(
-      body,
-      options?.contentType
-    );
+    const normalized = await normalizeBody(body, options?.contentType);
     // `normalizeBody` never sizes a stream, so this rejects every stream
     // body: PutObject with a predicate needs Content-Length up front, and
     // there is no multipart fallback for conditional writes.
-    if (data instanceof ReadableStream && contentLength === undefined) {
+    if (
+      normalized.data instanceof ReadableStream &&
+      normalized.contentLength === undefined
+    ) {
       throw new FilesError(
         "Provider",
         "s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first",
@@ -766,34 +864,23 @@ export const createS3Adapter = (
         { permanent: true }
       );
     }
-    const total = contentLength ?? 0;
-    reportConditionalProgress(options?.onProgress, { loaded: 0, total });
+    const total = normalized.contentLength ?? 0;
+    reportProgress(options?.onProgress, { loaded: 0, total });
     try {
       const result = await client.send(
         new PutObjectCommand({
-          Body: data,
-          Bucket: bucket,
-          ContentType: contentType,
-          Key: key,
+          ...putParams(key, { ...normalized, contentLength: total }, options),
           ...predicate,
-          ...(options?.cacheControl && {
-            CacheControl: options.cacheControl,
-          }),
-          ...(options?.metadata && { Metadata: options.metadata }),
-          ContentLength: total,
         }),
-        options?.signal ? { abortSignal: options.signal } : undefined
+        abortOptions(options?.signal)
       );
       const etag = normalizeConditionalResponseEtag(
         result.ETag,
         "a conditional upload",
         true
       );
-      reportConditionalProgress(options?.onProgress, {
-        loaded: total,
-        total,
-      });
-      return { contentType, etag, key, size: total };
+      reportProgress(options?.onProgress, { loaded: total, total });
+      return { contentType: normalized.contentType, etag, key, size: total };
     } catch (error) {
       throw wrapErr(error);
     }
@@ -806,17 +893,9 @@ export const createS3Adapter = (
   ): Promise<StoredFile> => {
     const canonicalEtag = assertCanonicalEtag(etag);
     try {
-      const result = await client.send(
-        new GetObjectCommand({
-          Bucket: bucket,
-          IfMatch: quoteCanonicalEtag(canonicalEtag),
-          Key: key,
-          ...(downloadOpts?.range && {
-            Range: httpRangeHeader(downloadOpts.range),
-          }),
-        }),
-        downloadOpts?.signal ? { abortSignal: downloadOpts.signal } : undefined
-      );
+      const result = await getObject(key, downloadOpts, {
+        IfMatch: quoteCanonicalEtag(canonicalEtag),
+      });
       const responseEtag = normalizeConditionalResponseEtag(
         result.ETag,
         "an exact read",
@@ -830,27 +909,12 @@ export const createS3Adapter = (
           { permanent: true }
         );
       }
-      const baseMeta = {
-        // S3 validated If-Match even when a test double/proxy omits ETag from
-        // the response, so retain the exact canonical predicate as provenance.
-        etag: responseEtag ?? canonicalEtag,
-        key,
-        lastModified: result.LastModified?.getTime(),
-        metadata: result.Metadata,
-        type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
-      };
-      if (downloadOpts?.as === "stream") {
-        const stream = result.Body?.transformToWebStream();
-        return createStoredFile(
-          { ...baseMeta, size: Number(result.ContentLength ?? 0) },
-          { factory: () => stream ?? emptyStream(), kind: "stream" }
-        );
-      }
-      const bytes =
-        (await result.Body?.transformToByteArray()) ?? new Uint8Array();
-      return createStoredFile(
-        { ...baseMeta, size: bytes.byteLength },
-        { data: bytes, kind: "buffer" }
+      // S3 validated If-Match even when a test double/proxy omits ETag from
+      // the response, so retain the exact canonical predicate as provenance.
+      return await toStoredFile(
+        result,
+        { etag: responseEtag ?? canonicalEtag, key },
+        downloadOpts
       );
     } catch (error) {
       throw wrapErr(error);
@@ -879,7 +943,6 @@ export const createS3Adapter = (
             condition: CopyCondition,
             operationOpts
           ): Promise<void> {
-            const sourceEtag = quoteCanonicalEtag(condition.source.etag);
             const destinationPredicate =
               condition.destination.type === "create"
                 ? { IfNoneMatch: "*" }
@@ -887,18 +950,10 @@ export const createS3Adapter = (
                     IfMatch: quoteCanonicalEtag(condition.destination.etag),
                   };
             try {
-              await client.send(
-                new CopyObjectCommand({
-                  Bucket: bucket,
-                  CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
-                  CopySourceIfMatch: sourceEtag,
-                  Key: to,
-                  ...destinationPredicate,
-                }),
-                operationOpts?.signal
-                  ? { abortSignal: operationOpts.signal }
-                  : undefined
-              );
+              await copyObject(from, to, operationOpts, {
+                CopySourceIfMatch: quoteCanonicalEtag(condition.source.etag),
+                ...destinationPredicate,
+              });
             } catch (error) {
               throw wrapErr(error);
             }
@@ -910,16 +965,9 @@ export const createS3Adapter = (
         },
         async delete(key, etag, operationOpts): Promise<void> {
           try {
-            await client.send(
-              new DeleteObjectCommand({
-                Bucket: bucket,
-                IfMatch: quoteCanonicalEtag(etag),
-                Key: key,
-              }),
-              operationOpts?.signal
-                ? { abortSignal: operationOpts.signal }
-                : undefined
-            );
+            await deleteObject(key, operationOpts, {
+              IfMatch: quoteCanonicalEtag(etag),
+            });
           } catch (error) {
             throw wrapErr(error);
           }
@@ -941,34 +989,14 @@ export const createS3Adapter = (
     ...(conditional && { conditional }),
     async copy(from, to, operationOpts) {
       try {
-        // CopySource must be URL-encoded per
-        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
-        // S3 bucket naming rules don't require encoding in practice, but we
-        // encode both halves defensively in case a custom endpoint (e.g.
-        // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
-        // signs and serializes it as part of the request, not as a URL value.
-        await client.send(
-          new CopyObjectCommand({
-            Bucket: bucket,
-            CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
-            Key: to,
-          }),
-          operationOpts?.signal
-            ? { abortSignal: operationOpts.signal }
-            : undefined
-        );
+        await copyObject(from, to, operationOpts);
       } catch (error) {
         throw wrapErr(error);
       }
     },
     async delete(key, operationOpts) {
       try {
-        await client.send(
-          new DeleteObjectCommand({ Bucket: bucket, Key: key }),
-          operationOpts?.signal
-            ? { abortSignal: operationOpts.signal }
-            : undefined
-        );
+        await deleteObject(key, operationOpts);
       } catch (error) {
         throw wrapErr(error);
       }
@@ -1044,47 +1072,11 @@ export const createS3Adapter = (
     },
     async download(key, downloadOpts) {
       try {
-        const result = await client.send(
-          new GetObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            // S3 replies 206 with ContentLength set to the slice length and a
-            // ranged body, so the size/byte handling below needs no special
-            // casing — the range just rides along on the GET.
-            ...(downloadOpts?.range && {
-              Range: httpRangeHeader(downloadOpts.range),
-            }),
-          }),
-          downloadOpts?.signal
-            ? { abortSignal: downloadOpts.signal }
-            : undefined
-        );
-        const baseMeta = {
-          etag: stripEtag(result.ETag),
-          key,
-          lastModified: result.LastModified?.getTime(),
-          metadata: result.Metadata,
-          type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
-        };
-        if (downloadOpts?.as === "stream") {
-          const stream = result.Body?.transformToWebStream();
-          // Stream path: we trust S3's ContentLength header. Falls back to 0
-          // only if the header is missing, which is rare in practice.
-          return createStoredFile(
-            { ...baseMeta, size: Number(result.ContentLength ?? 0) },
-            {
-              factory: () => stream ?? emptyStream(),
-              kind: "stream",
-            }
-          );
-        }
-        const bytes =
-          (await result.Body?.transformToByteArray()) ?? new Uint8Array();
-        // Buffer path: prefer the real byte length over ContentLength so the
-        // size we surface always matches the bytes the caller can actually read.
-        return createStoredFile(
-          { ...baseMeta, size: bytes.byteLength },
-          { data: bytes, kind: "buffer" }
+        const result = await getObject(key, downloadOpts);
+        return await toStoredFile(
+          result,
+          { etag: stripEtag(result.ETag), key },
+          downloadOpts
         );
       } catch (error) {
         throw wrapErr(error);
@@ -1255,21 +1247,10 @@ export const createS3Adapter = (
     // `copy()` issues a CopyObject — server-side, no body round-trip.
     supportsServerSideCopy: true,
     async upload(key, body, options) {
-      const { cacheControl, metadata, multipart, onProgress, signal } =
-        options ?? {};
-      const { data, contentType, contentLength } = await normalizeBody(
-        body,
-        options?.contentType
-      );
-      const params = {
-        Body: data,
-        Bucket: bucket,
-        ContentType: contentType,
-        Key: key,
-        ...(cacheControl && { CacheControl: cacheControl }),
-        ...(metadata && { Metadata: metadata }),
-        ...(contentLength !== undefined && { ContentLength: contentLength }),
-      };
+      const { multipart, onProgress, signal } = options ?? {};
+      const normalized = await normalizeBody(body, options?.contentType);
+      const { data, contentType, contentLength } = normalized;
+      const params = putParams(key, normalized, options);
       // lib-storage's Upload is the path for explicit multipart, for progress
       // reporting, and for unknown-length streams — a single PutObject can't
       // reliably send a stream without a Content-Length, so auto-engage there.

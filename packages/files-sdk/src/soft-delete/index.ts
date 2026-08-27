@@ -1,4 +1,4 @@
-import { isConditionalOperation } from "../index.js";
+import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   Files,
   FilesOperation,
@@ -246,11 +246,10 @@ export const softDelete = (
         // Outside the trash a delete becomes a move, and no single native
         // predicate spans that copy + delete, so the mode is vetoed.
         if (isConditionalOperation(op)) {
-          throw new FilesError(
-            "Provider",
-            "soft-delete: conditional delete is unsupported because trash routing cannot preserve the native compare-and-set",
-            undefined,
-            { permanent: true }
+          rejectConditional(
+            op,
+            "soft-delete",
+            "trash routing cannot preserve the native compare-and-set"
           );
         }
         try {

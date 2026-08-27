@@ -27,6 +27,18 @@ export class FilesError extends Error {
    */
   readonly permanent: boolean;
   /**
+   * `true` when a conditional mutation **did commit** at the provider before
+   * this error was raised — an awaited plugin threw after `next()` returned,
+   * or the committed result failed a post-commit check. The object changed
+   * (for an upload, to the generation in {@link appliedEtag}) even though the
+   * call rejected, so treat it as applied-but-unacknowledged: reconcile with
+   * an exact read rather than re-issuing the same predicate, which can only
+   * conflict now. Never set on a pre-commit veto or a provider failure.
+   */
+  readonly applied: boolean;
+  /** The committed generation's ETag when {@link applied} is set on an upload. */
+  readonly appliedEtag?: string;
+  /**
    * The original provider error, preserved for debugging.
    *
    * **Logging note:** provider errors (especially from `@aws-sdk`) can carry
@@ -41,7 +53,13 @@ export class FilesError extends Error {
     code: FilesErrorCode,
     message: string,
     cause?: unknown,
-    opts?: { aborted?: boolean; timedOut?: boolean; permanent?: boolean }
+    opts?: {
+      aborted?: boolean;
+      timedOut?: boolean;
+      permanent?: boolean;
+      applied?: boolean;
+      appliedEtag?: string;
+    }
   ) {
     super(message);
     this.name = "FilesError";
@@ -49,7 +67,28 @@ export class FilesError extends Error {
     this.aborted = opts?.aborted === true;
     this.timedOut = opts?.timedOut === true;
     this.permanent = opts?.permanent === true;
+    this.applied = opts?.applied === true;
+    if (opts?.appliedEtag !== undefined) {
+      this.appliedEtag = opts.appliedEtag;
+    }
     this.cause = cause;
+  }
+
+  /**
+   * Re-raise `err` as the outcome of a conditional mutation that already
+   * committed: same code, message, and flags, with {@link applied} set (and
+   * {@link appliedEtag} for uploads). The original error is kept as `cause`
+   * so nothing about the failure is lost.
+   */
+  static applied(err: unknown, appliedEtag?: string): FilesError {
+    const wrapped = FilesError.wrap(err);
+    return new FilesError(wrapped.code, wrapped.message, err, {
+      aborted: wrapped.aborted,
+      applied: true,
+      ...(appliedEtag !== undefined && { appliedEtag }),
+      permanent: wrapped.permanent,
+      timedOut: wrapped.timedOut,
+    });
   }
 
   static wrap(

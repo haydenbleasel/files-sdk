@@ -5,6 +5,7 @@ import {
   FilesError,
   handlers,
   isConditionalOperation,
+  rejectConditional,
 } from "../src/index.js";
 import type {
   Adapter,
@@ -585,6 +586,97 @@ describe("conditional option handling", () => {
 });
 
 describe("conditional plugin boundary", () => {
+  test("a veto or a provider failure is never reported as applied", async () => {
+    const vetoHarness = conditionalHarness();
+    const veto: FilesPlugin = {
+      name: "veto",
+      wrap: handlers({
+        upload: () => Promise.reject(new FilesError("Unauthorized", "blocked")),
+      }),
+    };
+    await expect(
+      new Files({ adapter: vetoHarness.adapter, plugins: [veto] }).upload(
+        "a",
+        "v",
+        { condition: { type: "create" } }
+      )
+    ).rejects.toMatchObject({ applied: false, code: "Unauthorized" });
+
+    const failingHarness = conditionalHarness({ createFailures: 1 });
+    await expect(
+      new Files({ adapter: failingHarness.adapter }).upload("a", "v", {
+        condition: { type: "create" },
+        retries: { max: 0 },
+      })
+    ).rejects.toMatchObject({ applied: false, code: "Provider" });
+    expect(failingHarness.base.has("a")).toBe(false);
+  });
+
+  test("retrying next() after the native call failed carries the first failure as cause", async () => {
+    const harness = conditionalHarness({ createFailures: 1 });
+    let seen: unknown;
+    const retry: FilesPlugin = {
+      name: "retry-after-failure",
+      wrap: handlers({
+        upload: async (op, next) => {
+          try {
+            return await next(op);
+          } catch (error) {
+            seen = error;
+            return await next(op);
+          }
+        },
+      }),
+    };
+    const failure = await new Files({
+      adapter: harness.adapter,
+      plugins: [retry],
+    })
+      .upload("a", "v", { condition: { type: "create" }, retries: { max: 0 } })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect((failure as FilesError).permanent).toBe(true);
+    expect((failure as Error).message).toMatch(
+      /more than once.*first invocation failed/u
+    );
+    expect((failure as FilesError).cause).toBe(seen);
+    expect((failure as FilesError).applied).toBe(false);
+    expect(harness.calls.create).toEqual(["a"]);
+  });
+
+  test("rejectConditional is the uniform plugin veto", async () => {
+    const harness = conditionalHarness();
+    const mirror: FilesPlugin = {
+      name: "mirror",
+      wrap: (op, next) => {
+        if (isConditionalOperation(op)) {
+          rejectConditional(
+            op,
+            "mirror",
+            "the mirror write cannot share one native compare-and-set"
+          );
+        }
+        return next(op);
+      },
+    };
+    const files = new Files({ adapter: harness.adapter, plugins: [mirror] });
+    const failure = await files
+      .delete("a", { condition: { etag: "abc" } })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect(failure).toMatchObject({
+      applied: false,
+      code: "Provider",
+      message:
+        "mirror: conditional delete is unsupported because the mirror write cannot share one native compare-and-set",
+      permanent: true,
+    });
+    expect(harness.calls.delete).toHaveLength(0);
+    // Ordinary operations are untouched.
+    await files.upload("b", "v");
+    expect(harness.base.has("b")).toBe(true);
+  });
+
   test("a plugin that catches a rejected predicate change and retries correctly gets the committed result", async () => {
     const harness = conditionalHarness();
     let rejected: unknown;
@@ -767,7 +859,12 @@ describe("conditional plugin boundary", () => {
     const files = new Files({ adapter: harness.adapter, plugins: [dropEtag] });
     await expect(
       files.upload("a", "v", { condition: { type: "create" } })
-    ).rejects.toThrow("must return its new canonical strong ETag");
+    ).rejects.toMatchObject({
+      applied: true,
+      message: expect.stringContaining(
+        "must return its new canonical strong ETag"
+      ),
+    });
     expect(harness.base.has("a")).toBe(true);
     expect(harness.calls.create).toHaveLength(1);
 
@@ -790,7 +887,10 @@ describe("conditional plugin boundary", () => {
     });
     await expect(
       changed.upload("a", "v", { condition: { type: "create" } })
-    ).rejects.toThrow("cannot replace the ETag");
+    ).rejects.toMatchObject({
+      applied: true,
+      message: expect.stringContaining("cannot replace the ETag"),
+    });
     expect(changedHarness.base.has("a")).toBe(true);
     expect(changedHarness.calls.create).toHaveLength(1);
   });
@@ -835,16 +935,23 @@ describe("conditional plugin boundary", () => {
       receipts: true,
     });
 
-    await expect(
-      files.upload("a", "v", {
+    const failure = await files
+      .upload("a", "v", {
         condition: { type: "create" },
         retries: 3,
       })
-    ).rejects.toThrow("observer failed");
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect((failure as Error).message).toBe("observer failed");
+    expect((failure as FilesError).applied).toBe(true);
+    expect((failure as FilesError).appliedEtag).toBeString();
     expect(harness.base.has("a")).toBe(true);
     expect(harness.calls.create).toHaveLength(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]?.condition).toBe("create");
+    // Hooks see the same applied-but-unacknowledged signal as the caller.
+    expect(errors[0]?.error.applied).toBe(true);
+    expect(errors[0]?.error.appliedEtag).toBeString();
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({
       condition: "create",

@@ -1,4 +1,4 @@
-import { isConditionalOperation } from "../index.js";
+import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   FilesOperation,
   FilesPlugin,
@@ -311,11 +311,10 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     // blob — a compare-and-set delete or copy against it would succeed even
     // though the key's content had moved on, which is worse than failing.
     if (isConditionalOperation(op)) {
-      throw new FilesError(
-        "Provider",
-        `dedup: conditional ${op.kind} is unsupported because a pointer's ETag never reflects its content, so no native compare-and-set can guard it`,
-        undefined,
-        { permanent: true }
+      rejectConditional(
+        op,
+        "dedup",
+        "a pointer's ETag never reflects its content, so no native compare-and-set can guard it"
       );
     }
     // Direct traffic to the blob store bypasses the plugin: blobs are stored

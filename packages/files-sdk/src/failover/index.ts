@@ -1,4 +1,4 @@
-import { Files, isConditionalOperation } from "../index.js";
+import { Files, isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   Adapter,
   Body,
@@ -340,11 +340,10 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
 
   const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> => {
     if (isConditionalOperation(op)) {
-      throw new FilesError(
-        "Provider",
-        `failover: conditional ${op.kind} operations are unsupported because retrying against another backend cannot preserve one native compare-and-set`,
-        undefined,
-        { permanent: true }
+      rejectConditional(
+        op,
+        "failover",
+        "retrying against another backend cannot preserve one native compare-and-set"
       );
     }
     return dispatch(op, [runnerViaNext(next), ...secondaryRunners]);
