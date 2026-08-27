@@ -244,17 +244,24 @@ const assertConditionalHeadersSerialized =
   ) =>
   (args: Args): Promise<Result> => {
     const input = args.input as Record<string, unknown>;
+    const expected = CONDITIONAL_HEADERS.filter(
+      ([field]) => input[field] !== undefined
+    );
+    // The common case: no predicate on this command, nothing to scan.
+    if (expected.length === 0) {
+      return next(args);
+    }
     const request = args.request as {
       headers?: Record<string, string | undefined>;
     };
     const sent = new Set(
       Object.keys(request.headers ?? {}).map((name) => name.toLowerCase())
     );
-    for (const [field, header] of CONDITIONAL_HEADERS) {
-      if (input[field] !== undefined && !sent.has(header)) {
+    for (const [, header] of expected) {
+      if (!sent.has(header)) {
         throw new FilesError(
           "Provider",
-          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; upgrade to a release that supports conditional requests (>= 3.980.0)`,
+          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; conditional requests need 3.919.0 or newer`,
           undefined,
           { permanent: true }
         );
@@ -702,7 +709,7 @@ export const createS3Adapter = (
   // conditional input. It exists for the SDK-version gap: the peer floor is
   // advisory (optional peer), and a `@aws-sdk/client-s3` that predates a
   // conditional input field (CopyObject `IfMatch` / `IfNoneMatch` arrived in
-  // 3.980.0) accepts the field and silently omits the header, turning a
+  // 3.919.0) accepts the field and silently omits the header, turning a
   // compare-and-set into an unconditional overwrite.
   client.middlewareStack.add(assertConditionalHeadersSerialized, {
     name: "filesSdkConditionalHeaderGuard",
@@ -748,10 +755,13 @@ export const createS3Adapter = (
       body,
       options?.contentType
     );
+    // `normalizeBody` never sizes a stream, so this rejects every stream
+    // body: PutObject with a predicate needs Content-Length up front, and
+    // there is no multipart fallback for conditional writes.
     if (data instanceof ReadableStream && contentLength === undefined) {
       throw new FilesError(
         "Provider",
-        "s3 adapter: conditional uploads require a body with a known length",
+        "s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first",
         undefined,
         { permanent: true }
       );

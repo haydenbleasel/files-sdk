@@ -321,27 +321,110 @@ describe("cache plugin — invalidation", () => {
     expect(refreshed.etag).not.toBe(first.etag);
   });
 
-  test("a failed ordinary delete and copy invalidate too", async () => {
+  test("a rejected exact read invalidates the cached record too", async () => {
+    const inner = fakeAdapter();
+    let generation = 0;
+    const conditional: Adapter = {
+      ...inner,
+      conditional: {
+        exactRead: () =>
+          Promise.reject(new FilesError("Conflict", "precondition failed")),
+      },
+      head: async (key, opts) => {
+        generation += 1;
+        const meta = await inner.head(key, opts);
+        return { ...meta, etag: `gen-${generation}` };
+      },
+    };
+    const files = createFiles({
+      adapter: conditional,
+      plugins: [cache({ ttl: 60_000 })],
+    });
+    await files.upload("doc.txt", "v1");
+    const first = await files.head("doc.txt");
+    await expect(
+      files.download("doc.txt", { condition: { etag: first.etag as string } })
+    ).rejects.toMatchObject({ code: "Conflict" });
+    const refreshed = await files.head("doc.txt");
+    expect(refreshed.etag).not.toBe(first.etag);
+  });
+
+  test("a store failure while invalidating after a conflict never masks the conflict", async () => {
+    const inner = fakeAdapter();
+    const conditional: Adapter = {
+      ...inner,
+      conditional: {
+        replace: () =>
+          Promise.reject(new FilesError("Conflict", "precondition failed")),
+      },
+    };
+    const deletes: string[] = [];
+    const memory = new Map<string, CacheRecord>();
+    const store: CacheStore = {
+      clear: () => memory.clear(),
+      delete: (key) => {
+        deletes.push(key);
+        return Promise.reject(new Error("redis: connection reset"));
+      },
+      get: (key) => Promise.resolve(memory.get(key)),
+      set: (key, entry) => {
+        memory.set(key, entry);
+        return Promise.resolve();
+      },
+    };
+    const files = createFiles({
+      adapter: conditional,
+      plugins: [cache({ store })],
+    });
+    await expect(files.upload("doc.txt", "v1")).rejects.toThrow(
+      /connection reset/u
+    );
+    const { etag } = await files.head("doc.txt");
+    await expect(
+      files.upload("doc.txt", "v2", {
+        condition: {
+          etag: (etag as string).replaceAll('"', ""),
+          type: "replace",
+        },
+      })
+    ).rejects.toMatchObject({ code: "Conflict" });
+    // The invalidation was attempted, but its failure stayed out of the way.
+    expect(deletes.filter((key) => key === "doc.txt").length).toBeGreaterThan(
+      1
+    );
+  });
+
+  test("a plain failed write leaves the cache alone and costs no store round-trip", async () => {
     const inner = fakeAdapter();
     const flaky: Adapter = {
       ...inner,
-      copy: () => Promise.reject(new Error("copy boom")),
       delete: () => Promise.reject(new Error("delete boom")),
     };
+    const deletes: string[] = [];
+    const memory = new Map<string, CacheRecord>();
+    const store: CacheStore = {
+      clear: () => memory.clear(),
+      delete: (key) => {
+        deletes.push(key);
+        memory.delete(key);
+        return Promise.resolve();
+      },
+      get: (key) => Promise.resolve(memory.get(key)),
+      set: (key, entry) => {
+        memory.set(key, entry);
+        return Promise.resolve();
+      },
+    };
     const { adapter, calls } = counting(flaky);
-    const files = withCache({}, adapter);
+    const files = createFiles({ adapter, plugins: [cache({ store })] });
     await files.upload("a.txt", "hello");
-    await files.upload("b.txt", "world");
     await files.head("a.txt");
-    await files.head("b.txt");
-    expect(calls.head).toEqual(["a.txt", "b.txt"]);
+    deletes.length = 0;
 
     await expect(files.delete("a.txt")).rejects.toThrow(/delete boom/u);
-    await expect(files.copy("a.txt", "b.txt")).rejects.toThrow(/copy boom/u);
-
+    expect(deletes).toEqual([]);
     await files.head("a.txt");
-    await files.head("b.txt");
-    expect(calls.head).toEqual(["a.txt", "b.txt", "a.txt", "b.txt"]);
+    expect(calls.head).toEqual(["a.txt"]);
   });
 
   test("upload invalidates the cached read", async () => {

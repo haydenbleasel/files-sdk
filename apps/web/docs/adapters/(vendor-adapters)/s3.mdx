@@ -33,7 +33,7 @@ Canonical AWS S3 buckets support provider-native [conditional create, replace, e
 
 The primitives are exposed only when the client will talk to canonical AWS: no `endpoint` option and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` redirect in the environment (the AWS SDK honors those on its own). S3-compatible services differ in conditional-header support, so behind either the adapter fails closed rather than risk an unconditional overwrite. Pass `conditional: true` to opt an explicit AWS-hosted endpoint (VPC, FIPS, GovCloud, or a shared-config `endpoint_url` you know is AWS) back in, or `conditional: false` to disable them on a canonical bucket.
 
-Conditional copy needs `@aws-sdk/client-s3` 3.980.0 or newer, where `CopyObject` gained `IfMatch` / `IfNoneMatch`. Because the peer range is advisory, the adapter also verifies at request time that every predicate it set was actually serialized as a header and rejects the call if the installed client dropped one.
+Conditional copy needs `@aws-sdk/client-s3` 3.919.0 or newer, where `CopyObject` gained `IfMatch` / `IfNoneMatch` (the peer range now starts at 3.1079.0). Because an optional peer range is advisory, the adapter also verifies at request time that every predicate it set was actually serialized as a header and rejects the call if the installed client dropped one. Conditional uploads take a buffered body (`Blob`, `Uint8Array`, `ArrayBuffer`, or string) — a stream is rejected before I/O.
 
 ## Options
 

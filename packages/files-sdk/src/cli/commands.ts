@@ -246,7 +246,22 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
     );
   }
   const { files } = await loadFiles(opts.global);
-  const { body } = await readBody({ file: opts.file, stdin: opts.stdin });
+  const { body: streamed } = await readBody({
+    file: opts.file,
+    stdin: opts.stdin,
+  });
+  // A conditional PutObject needs its Content-Length up front and has no
+  // multipart fallback, so the adapters reject stream bodies; the CLI always
+  // reads a stream, so buffer it when a predicate is set. Unconditional
+  // uploads keep streaming.
+  const body =
+    condition === undefined
+      ? streamed
+      : new Uint8Array(
+          await new Response(
+            streamed as ReadableStream<Uint8Array>
+          ).arrayBuffer()
+        );
   const result = await files.upload(key, body, {
     cacheControl: opts.cacheControl,
     contentType: opts.contentType,
