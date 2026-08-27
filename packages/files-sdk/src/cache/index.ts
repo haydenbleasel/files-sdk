@@ -458,9 +458,11 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         return result;
       }
       case "copy": {
-        const result = await invalidateOnStaleFailure(op, [op.to], () =>
-          next(op)
-        );
+        // A conditional copy can fail on its *source* predicate too, so a
+        // stale cached source ETag would replay the same conflict; drop both
+        // ends on a stale failure. The success path touches only `op.to`.
+        const keys = isConditionalOperation(op) ? [op.from, op.to] : [op.to];
+        const result = await invalidateOnStaleFailure(op, keys, () => next(op));
         await store.delete(op.to);
         return result;
       }

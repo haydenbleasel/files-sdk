@@ -28,7 +28,7 @@ const files = new Files({
 - **Single-key calls** (`upload(key, …)`, `download(key)`, `delete(key)`, …) set `key`.
 - **Array calls** (`upload([…])`, `delete([…])`, …) set `keys` and fire one event for the whole batch - the per-item failures live in `result.errors`, not here.
 - **`copy`** and **`move`** set `from` / `to` instead of `key`.
-- **Conditional calls** keep the ordinary method `type` and add `condition` (`"create"`, `"replace"`, `"exact-read"`, `"match-delete"`, or `"conditional-copy"`). The ETag itself is not included.
+- **Conditional calls** keep the ordinary method `type` and add `condition` (`"create"`, `"replace"`, `"exact-read"`, `"match-delete"`, or `"conditional-copy"`). The ETag _predicate_ is not copied into that metadata — but a successful conditional upload or exact read still exposes the committed ETag through `event.result`, and an enabled [receipt](/docs/receipts) carries one too, so treat the event as a whole as ETag-bearing when redacting logs.
 
 On success, `result` is the call's resolved value (an `UploadResult`, a `StoredFile`, a `ListResult`, …); on failure, `error` is the same [`FilesError`](/docs/api/errors) delivered to [`onError`](/docs/api/onerror) and then thrown. Keys are always the ones you passed - the client [`prefix`](/docs/prefixes) is never leaked.
 

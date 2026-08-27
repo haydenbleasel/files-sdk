@@ -32,6 +32,8 @@ A failed predicate rejects with [`FilesError`](/docs/api/errors) rather than wea
 A conditional copy checks the source generation and the destination predicate in one native provider request. Both predicates are required: the source must still have its supplied ETag, and the destination must either be absent or match its own supplied ETag.
 
 ```ts lineNumbers
+// Publish the staged generation, but only if nothing is published yet.
+const staging = await files.head("staging/report.json");
 await files.copy("staging/report.json", "published/report.json", {
   condition: {
     source: { etag: staging.etag! },
@@ -39,6 +41,9 @@ await files.copy("staging/report.json", "published/report.json", {
   },
 });
 
+// Later: replace exactly the published generation with exactly the staged one.
+const nextStaging = await files.head("staging/report.json");
+const published = await files.head("published/report.json");
 await files.copy("staging/report.json", "published/report.json", {
   condition: {
     source: { etag: nextStaging.etag! },
@@ -75,7 +80,7 @@ if (
 }
 ```
 
-The initial implementation supports canonical AWS S3 buckets through the AWS SDK adapter. A custom S3 `endpoint`, or an `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` redirect in the environment, does not inherit the claim, because S3-compatible services differ in which conditional headers they honor; the [`s3()` adapter's `conditional` option](/docs/adapters/s3) overrides that detection in either direction. The adapter also checks, per request, that every predicate it set was serialized by the installed `@aws-sdk/client-s3` and rejects the call otherwise. Cloudflare R2 is not supported.
+The initial implementation supports canonical AWS S3 buckets through the AWS SDK adapter. A custom S3 `endpoint`, an `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` redirect in the environment, or a shared-config `endpoint_url` does not inherit the claim, because S3-compatible services differ in which conditional headers they honor; the [`s3()` adapter's `conditional` option](/docs/adapters/s3) overrides that detection in either direction. The adapter also checks, per request, that the resolved hostname is AWS and that every predicate it set was serialized by the installed `@aws-sdk/client-s3`, and rejects the call otherwise. Cloudflare R2 is not supported.
 
 The local filesystem adapter also reports every conditional capability as `false`. Its body and metadata sidecar are separate files, and a process-local lock plus a read-before-rename would not be compare-and-set against writers in another process. It fails closed until the storage layout can provide one native atomic commit boundary.
 
@@ -97,7 +102,7 @@ The [CLI](/docs/cli/commands#conditional-predicates) exposes the same predicates
 
 ## Hooks, receipts, and terminal outcomes
 
-`onAction`, `onError`, and `onRetry` keep their existing once-per-call semantics and include a redacted `condition` label; ETag values are never copied into hook metadata. A successful conditional mutation receives the ordinary upload, delete, or copy receipt with the same condition label. Reads and failed calls have no receipt.
+`onAction` and `onError` keep their once-per-call semantics and `onRetry` its once-per-scheduled-retry cadence; all three include a redacted `condition` label, and no ETag predicate is copied into hook metadata (a successful conditional upload or exact read still exposes the committed ETag through `event.result`, as does an enabled receipt). A successful conditional mutation receives the ordinary upload, delete, or copy receipt with the same condition label. Reads and failed calls have no receipt.
 
 Hooks and receipt delivery are fire-and-forget: a hook that throws cannot change the result after the provider commits. An awaited plugin is different. If it calls `next()`, observes the committed result, and then throws, the public call rejects, `onError` and an error `onAction` fire, and no success receipt is emitted. The provider mutation cannot be rolled back, so that outcome is applied-but-unacknowledged: the rejected [`FilesError`](/docs/api/errors) carries `applied: true` (and `appliedEtag` for uploads), the same flag reaches `onError` / `onAction` and the [`audit()`](/docs/plugins/audit) record, and the right recovery is an exact read rather than a retry of the same predicate — which can now only conflict.
 

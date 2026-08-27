@@ -101,9 +101,16 @@ export interface S3AdapterOptions {
    * conditional headers they honor, so the adapter fails closed for them
    * rather than risk an unconditional overwrite.
    *
-   * Set `true` to opt an explicit AWS-hosted endpoint (VPC, FIPS, GovCloud, a
-   * shared-config `endpoint_url` you know is AWS) back in, or `false` to
-   * disable the primitives on a canonical bucket.
+   * A shared-config `endpoint_url` (profile- or service-level) is invisible
+   * at construction, so it is caught at request time instead: a conditional
+   * request whose resolved hostname is not `amazonaws.com` fails closed
+   * before it is sent. AWS-hosted endpoints (VPC, FIPS, dual-stack, GovCloud)
+   * all resolve under that suffix and need no override.
+   *
+   * Set `true` to opt an S3-compatible endpoint that you have verified
+   * honors `If-Match` / `If-None-Match` in — this skips both the constructor
+   * check and the request-time hostname check — or `false` to disable the
+   * primitives on a canonical bucket.
    */
   conditional?: boolean;
   /**
@@ -229,9 +236,30 @@ const CONDITIONAL_HEADERS: readonly (readonly [string, string])[] = [
   ["CopySourceIfMatch", "x-amz-copy-source-if-match"],
 ];
 
-// Generic over the handler shapes so it slots into `middlewareStack.add` as a
-// build-step middleware without pulling `@smithy/types` in as a dependency.
-const assertConditionalHeadersSerialized =
+// Canonical AWS S3 hostnames: the only backends known to honor every
+// conditional header. VPC / FIPS / dual-stack / GovCloud endpoints all live
+// under these suffixes; S3-compatible services never do.
+const AWS_HOST_SUFFIXES = ["amazonaws.com", "amazonaws.com.cn"];
+const isAwsHost = (hostname: string): boolean => {
+  const host = hostname.toLowerCase();
+  return AWS_HOST_SUFFIXES.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+  );
+};
+
+/**
+ * Build-step middleware that keeps a conditional request from ever going out
+ * without its predicate on the wire, and — unless the caller opted in with
+ * `conditional: true` — from going anywhere other than AWS. It runs after
+ * serialization and endpoint resolution, so `args.request` is exactly what
+ * would be sent: the resolved hostname covers an `endpoint` option, an
+ * `AWS_ENDPOINT_URL*` variable, and a shared-config `endpoint_url` alike,
+ * none of which the synchronous constructor can see. Generic over the
+ * handler shapes so it slots into `middlewareStack.add` without pulling
+ * `@smithy/types` in as a dependency.
+ */
+const conditionalRequestGuard =
+  (allowAnyHost: boolean) =>
   <Args extends { input: unknown; request: unknown }, Result>(
     next: (args: Args) => Promise<Result>
   ) =>
@@ -246,7 +274,16 @@ const assertConditionalHeadersSerialized =
     }
     const request = args.request as {
       headers?: Record<string, string | undefined>;
+      hostname?: string;
     };
+    if (!(allowAnyHost || isAwsHost(request.hostname ?? ""))) {
+      throw new FilesError(
+        "Provider",
+        `s3 adapter: conditional requests are only sent to AWS S3, but this client resolves to ${request.hostname ?? "an unknown host"}; pass \`conditional: true\` to opt an S3-compatible endpoint in`,
+        undefined,
+        { permanent: true }
+      );
+    }
     const sent = new Set(
       Object.keys(request.headers ?? {}).map((name) => name.toLowerCase())
     );
@@ -698,16 +735,20 @@ export const createS3Adapter = (
   };
 
   const client = new S3Client(config);
-  // One header scan per request, and a no-op unless the command carried a
-  // conditional input. It exists for the SDK-version gap: the peer floor is
-  // advisory (optional peer), and a `@aws-sdk/client-s3` that predates a
-  // conditional input field (CopyObject `IfMatch` / `IfNoneMatch` arrived in
-  // 3.919.0) accepts the field and silently omits the header, turning a
-  // compare-and-set into an unconditional overwrite.
-  client.middlewareStack.add(assertConditionalHeadersSerialized, {
-    name: "filesSdkConditionalHeaderGuard",
-    step: "build",
-  });
+  // A no-op unless the command carries a conditional input. Two gaps it
+  // closes at the last moment before the wire: the SDK-version gap (the peer
+  // floor is advisory, and a `@aws-sdk/client-s3` predating a conditional
+  // input field — CopyObject `IfMatch` / `IfNoneMatch` arrived in 3.919.0 —
+  // accepts the field and silently omits the header), and the endpoint gap
+  // (a shared-config `endpoint_url` redirects the client to a service whose
+  // conditional support is unknown, and only the resolved request shows it).
+  client.middlewareStack.add(
+    conditionalRequestGuard(opts.conditional === true),
+    {
+      name: "filesSdkConditionalRequestGuard",
+      step: "build",
+    }
+  );
   const { bucket } = opts;
   const { publicBaseUrl } = opts;
   const defaultUrlExpiresIn =

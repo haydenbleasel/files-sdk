@@ -349,6 +349,46 @@ describe("cache plugin — invalidation", () => {
     expect(refreshed.etag).not.toBe(first.etag);
   });
 
+  test("a conditional copy that conflicts on its source invalidates the cached source", async () => {
+    const inner = fakeAdapter();
+    let generation = 0;
+    const conditional: Adapter = {
+      ...inner,
+      conditional: {
+        copy: {
+          atomicSourceDestination: true,
+          destinationCreate: true,
+          destinationReplace: true,
+          run: () =>
+            Promise.reject(new FilesError("Conflict", "source ETag mismatch")),
+          sourceEtag: true,
+        },
+      },
+      head: async (key, opts) => {
+        generation += 1;
+        const meta = await inner.head(key, opts);
+        return { ...meta, etag: `gen-${generation}` };
+      },
+    };
+    const files = createFiles({
+      adapter: conditional,
+      plugins: [cache({ ttl: 60_000 })],
+    });
+    await files.upload("src.txt", "v1");
+    const source = await files.head("src.txt");
+    await expect(
+      files.copy("src.txt", "dst.txt", {
+        condition: {
+          destination: { type: "create" },
+          source: { etag: source.etag as string },
+        },
+      })
+    ).rejects.toMatchObject({ code: "Conflict" });
+    // The source's cached ETag is what just conflicted; it must not replay.
+    const refreshed = await files.head("src.txt");
+    expect(refreshed.etag).not.toBe(source.etag);
+  });
+
   test("a store failure while invalidating after a conflict never masks the conflict", async () => {
     const inner = fakeAdapter();
     const conditional: Adapter = {

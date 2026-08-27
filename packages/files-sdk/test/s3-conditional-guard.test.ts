@@ -60,7 +60,11 @@ const fakeHandler = (sent: SentRequest[]) => ({
  * `@aws-sdk/client-s3` whose CopyObject model predates `IfMatch` /
  * `IfNoneMatch`: the input field is accepted but never serialized.
  */
-const adapterOver = (sent: SentRequest[], strip?: string): S3Adapter => {
+const adapterOver = (
+  sent: SentRequest[],
+  strip?: string,
+  simulate?: { endpoint?: string; conditional?: boolean }
+): S3Adapter => {
   class TestClient extends S3Client {
     // aws-sdk-client-mock (used by s3.test.ts) stubs `S3Client.prototype.send`
     // for the whole process and never restores it, so reach past that own
@@ -74,6 +78,9 @@ const adapterOver = (sent: SentRequest[], strip?: string): S3Adapter => {
       super({
         ...config,
         credentials: { accessKeyId: "AKIA", secretAccessKey: "secret" },
+        // Stands in for a shared-config `endpoint_url`: the adapter never
+        // saw an `endpoint` option, but the client resolves elsewhere.
+        ...(simulate?.endpoint && { endpoint: simulate.endpoint }),
         requestHandler: fakeHandler(sent),
       });
       if (strip) {
@@ -107,7 +114,13 @@ const adapterOver = (sent: SentRequest[], strip?: string): S3Adapter => {
     presignedPost: { createPresignedPost },
     requestPresigner: { getSignedUrl },
   };
-  return createS3Adapter(sdk, { bucket: "b", region: "us-east-1" });
+  return createS3Adapter(sdk, {
+    bucket: "b",
+    region: "us-east-1",
+    ...(simulate?.conditional !== undefined && {
+      conditional: simulate.conditional,
+    }),
+  });
 };
 
 const native = (
@@ -194,5 +207,59 @@ describe("s3 adapter — conditional header guard", () => {
     await adapter.copy("from.txt", "to.txt");
     expect(sent).toHaveLength(1);
     expect(sent[0]?.headers["if-match"]).toBeUndefined();
+  });
+
+  test("a shared-config endpoint_url that resolves off AWS fails closed at request time", async () => {
+    const sent: SentRequest[] = [];
+    // The constructor gate still exposes the primitives (no `endpoint`, no
+    // env redirect), so this is exactly the gap a profile `endpoint_url`
+    // opens — closed by the resolved hostname on the built request.
+    const adapter = adapterOver(sent, undefined, {
+      endpoint: "http://localhost:9000",
+    });
+    const conditional = native(adapter);
+    const failure = await conditional
+      .create("k", "body")
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect((failure as FilesError).permanent).toBe(true);
+    expect((failure as Error).message).toMatch(
+      /only sent to AWS S3.*localhost.*conditional: true/u
+    );
+    expect(sent).toHaveLength(0);
+    // Ordinary traffic to that endpoint is unaffected.
+    await adapter.copy("from.txt", "to.txt");
+    expect(sent).toHaveLength(1);
+  });
+
+  test("conditional: true opts a verified S3-compatible endpoint in", async () => {
+    const sent: SentRequest[] = [];
+    const conditional = native(
+      adapterOver(sent, undefined, {
+        conditional: true,
+        endpoint: "http://localhost:9000",
+      })
+    );
+    await conditional.create("k", "body");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.headers["if-none-match"]).toBe("*");
+  });
+
+  test("AWS-hosted endpoints — VPC, FIPS, dual-stack, GovCloud — pass the hostname check", async () => {
+    const hosts = [
+      "https://bucket.vpce-0a1b2c.s3.us-east-1.vpce.amazonaws.com",
+      "https://s3-fips.us-gov-west-1.amazonaws.com",
+      "https://s3.dualstack.us-east-1.amazonaws.com",
+      "https://s3.cn-north-1.amazonaws.com.cn",
+    ];
+    for (const endpoint of hosts) {
+      const sent: SentRequest[] = [];
+      // eslint-disable-next-line no-await-in-loop -- each host is an independent case
+      await native(adapterOver(sent, undefined, { endpoint })).delete(
+        "k",
+        "etag"
+      );
+      expect(sent).toHaveLength(1);
+    }
   });
 });
