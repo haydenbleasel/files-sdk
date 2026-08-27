@@ -2,8 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
-import { createFiles } from "../src/index.js";
-import type { Adapter, Files } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  Files,
+  PluginNext,
+} from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
@@ -314,5 +319,66 @@ describe("dedup plugin — options", () => {
 
   test("rejects an empty prefix", () => {
     expect(() => dedup({ prefix: "///" })).toThrow(/must not be empty/u);
+  });
+});
+
+describe("dedup plugin — conditional policy", () => {
+  test("rejects every conditional mode before pointer or blob I/O", async () => {
+    const plugin = dedup();
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("dedup wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    // Uploads and exact reads span pointer + blob; delete and copy touch only
+    // the pointer, but a pointer's ETag is the hash of an always-empty body —
+    // identical for every key and unchanged when the pointer is rewritten to
+    // a new blob — so a compare-and-set against it could never fail and would
+    // silently drop or duplicate content that had moved on.
+    const operations: ConditionalFilesOperation[] = [
+      { body: "content", key: "a.txt", kind: "upload", mode: "create" },
+      {
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "download",
+        mode: "exact",
+      },
+      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "a.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "b.txt",
+      },
+    ];
+
+    for (const operation of operations) {
+      // eslint-disable-next-line no-await-in-loop -- each rejected operation must be inspected independently
+      const failure = await wrap(operation, next).catch(
+        (error: unknown) => error
+      );
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    }
+    expect(nextCalls).toBe(0);
+  });
+
+  test("a CAS delete through the Files instance is refused and the content survives", async () => {
+    const files = createFiles({ adapter: fakeAdapter(), plugins: [dedup()] });
+    await files.upload("k.txt", "first");
+    const { etag } = await files.head("k.txt");
+    await files.upload("k.txt", "second");
+    await expect(
+      files.delete("k.txt", { condition: { etag: etag as string } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    const survived = await files.download("k.txt");
+    expect(await survived.text()).toBe("second");
   });
 });

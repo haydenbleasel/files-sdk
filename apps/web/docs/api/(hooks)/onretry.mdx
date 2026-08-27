@@ -25,6 +25,8 @@ const files = new Files({
 
 It fires _before_ the wait, so `delayMs` is the [backoff](/docs/retries#backoff) the SDK is about to sleep, not one already spent. `error` is the [`FilesError`](/docs/api/errors) from the attempt that just failed - always a retryable `Provider` failure, since the deterministic codes are never retried.
 
+For a [conditional call](/docs/conditional-operations), the event also carries its redacted `condition` label. Every attempt retains the same native predicate. A lost success response can still make the retry observe a stale predicate, so a terminal error after a retry is an ambiguous outcome that callers should reconcile.
+
 ## Watching for exhaustion
 
 `attempt` counts up from `1`, and `maxRetries` is the ceiling for this call - so `attempt === maxRetries` is the last retry the SDK will schedule. If that one also fails, no further `onRetry` fires and the call settles through [`onError`](/docs/api/onerror) and [`onAction`](/docs/api/onaction). Use the comparison to count calls that burn through their whole retry budget.

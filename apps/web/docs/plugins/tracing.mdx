@@ -80,5 +80,6 @@ Placed **last** (innermost) it instead times only the provider call, with the pl
 
 - **The default tracer is a no-op until you register an SDK.** With no OpenTelemetry SDK set up, `trace.getTracer()` returns a no-op tracer, so the plugin is a cheap pass-through until you wire up an exporter.
 - **One span per logical operation.** Plugins run [outside retries](/docs/retries), so a call that retries three times is still **one** span, not three — the span covers the whole logical call.
+- **Conditional calls keep the same span names.** They add a low-cardinality `files.condition` attribute (`create`, `replace`, `exact-read`, `match-delete`, or `conditional-copy`) and never attach predicate ETags.
 - **Body-transparent, works on any adapter.** It never buffers, transforms, or reads the body (`files.size` comes from declared metadata, not bytes), so streaming, range downloads, `url()`, and `signedUploadUrl()` all keep working.
 - **`wrap`-only.** It adds no methods, so plain `new Files({ plugins })` works — though `createFiles` is fine too and keeps you consistent with the [extend](/docs/plugins/api#createfiles)-based plugins.

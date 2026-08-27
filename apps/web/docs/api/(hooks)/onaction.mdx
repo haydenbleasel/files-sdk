@@ -28,6 +28,7 @@ const files = new Files({
 - **Single-key calls** (`upload(key, …)`, `download(key)`, `delete(key)`, …) set `key`.
 - **Array calls** (`upload([…])`, `delete([…])`, …) set `keys` and fire one event for the whole batch - the per-item failures live in `result.errors`, not here.
 - **`copy`** and **`move`** set `from` / `to` instead of `key`.
+- **Conditional calls** keep the ordinary method `type` and add `condition` (`"create"`, `"replace"`, `"exact-read"`, `"match-delete"`, or `"conditional-copy"`). The ETag _predicate_ is not copied into that metadata — but a successful conditional upload or exact read still exposes the committed ETag through `event.result`, and an enabled [receipt](/docs/receipts) carries one too, so treat the event as a whole as ETag-bearing when redacting logs.
 
 On success, `result` is the call's resolved value (an `UploadResult`, a `StoredFile`, a `ListResult`, …); on failure, `error` is the same [`FilesError`](/docs/api/errors) delivered to [`onError`](/docs/api/onerror) and then thrown. Keys are always the ones you passed - the client [`prefix`](/docs/prefixes) is never leaked.
 
@@ -71,7 +72,7 @@ hooks: {
 },
 ```
 
-Like every hook, `onAction` is **fire-and-forget**: the SDK calls it but never awaits it, and a hook that throws can't fail the operation it observes.
+Like every hook, `onAction` is **fire-and-forget**: the SDK calls it but never awaits it, and a synchronous throw or rejected async hook can't fail the operation it observes. This remains true after a conditional provider mutation commits. An awaited plugin that throws after `next()` is different: the public call rejects as applied-but-unacknowledged and emits an error action with no receipt. See [Conditional operations](/docs/conditional-operations#hooks-receipts-and-terminal-outcomes).
 
 <AutoTypeTable
   path="../../packages/files-sdk/src/index.ts"

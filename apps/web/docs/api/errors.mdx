@@ -25,6 +25,7 @@ try {
 - **`message`** — a human-readable summary, taken from the provider error where one is available.
 - **`cause`** — the original provider error, untouched. Reach into it for provider-specific detail: `@aws-sdk` errors, for instance, carry a request ID and HTTP status on `$metadata` and a typed `name` like `NoSuchKey`.
 - **`aborted`** — `true` when the failure came from a [cancellation](/docs/cancellations) or a [timeout](/docs/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
+- **`applied`** — `true` when a [conditional](/docs/conditional-operations) mutation committed at the provider before the call rejected (an awaited plugin threw after `next()`, or a post-commit check failed). The object changed even though you got an error; `appliedEtag` carries the committed generation for uploads. Reconcile with an exact read instead of retrying the same predicate. Never set on a veto or a provider failure.
 
 ## Codes
 

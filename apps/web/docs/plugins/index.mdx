@@ -85,6 +85,7 @@ Plugins run **inside** the [`onAction`](/docs/api/onaction) / [`onError`](/docs/
 - A `wrap` runs **once per logical operation**, not once per retry attempt. Encryption seals the body once; a retry resends the bytes the plugin already produced.
 - Plugins see **caller-facing keys** - never the internal [prefixed](/docs/prefixes) path. A key-rewriting plugin rewrites before prefixing.
 - The hooks still fire around the whole thing, so `onAction` reports the final, plugin-produced result.
+- [Conditional operations](/docs/conditional-operations) use these same verb families. Their mode and ETag predicates are immutable across `next()`, while body, metadata, and results remain transformable.
 
 ### Bulk operations too
 
@@ -167,3 +168,5 @@ The built-in [`versioning()`](/docs/plugins/versioning) plugin is a real example
 - **Buffering transforms break streaming.** Encrypt / compress / scan need the whole body in memory, which is incompatible with unknown-length streams and [resumable uploads](/docs/resumable) (which re-read the original body). Gate those plugins the way the core already gates streams.
 - **Metadata-stashing needs adapter support.** A plugin that round-trips state through `options.metadata` (an encryption IV, say) only works on adapters that [support metadata](/docs/api/upload) - the same gate a direct `metadata` upload hits.
 - **`wrap` runs outside the timeout.** Per-attempt [timeouts](/docs/timeouts) bound the adapter call, not a slow plugin. The caller's `options` (including `signal`) ride on the operation, so a plugin can opt into cancellation itself.
+- **Conditional roots must reach one native call.** A plugin may veto before `next()`, but it cannot downgrade or change the predicate, reroute the operation, invoke the provider twice, or synthesize success. If an awaited observer throws after `next()` committed, the caller receives an applied-but-unacknowledged error (`error.applied === true`); use a fire-and-forget hook when observation must not affect success.
+- **Veto the conditional modes you cannot make atomic.** The engine catches everything that crosses `next()`, but not a side effect your plugin performs on its own — a snapshot copy, a mirror write, a pointer rewrite — which a compare-and-set cannot cover. Call [`rejectConditional(op, "my-plugin", reason)`](/docs/plugins/api#rejectconditional) for those modes before any I/O, as every bundled plugin does. Plugins that only transform the body, metadata, or result need no veto.

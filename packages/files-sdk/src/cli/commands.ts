@@ -1,7 +1,9 @@
 import type {
   BulkOptions,
+  CopyCondition,
   MultipartOptions,
   SearchMatch,
+  UploadCondition,
   UploadManyItem,
 } from "../index.js";
 import { sync, transfer } from "../index.js";
@@ -93,12 +95,82 @@ export interface UploadCmdOpts extends CommonRunOpts {
   multipartConcurrency?: number;
   concurrency?: number;
   stopOnError?: boolean;
+  ifMatch?: string;
+  ifNoneMatch?: boolean;
 }
+
+/**
+ * `--if-none-match` (create only) / `--if-match <etag>` (replace exactly that
+ * generation) as the SDK's upload `condition`. Mutually exclusive.
+ */
+const buildUploadCondition = (opts: {
+  ifMatch?: string;
+  ifNoneMatch?: boolean;
+}): UploadCondition | undefined => {
+  if (opts.ifNoneMatch && opts.ifMatch !== undefined) {
+    throw new FilesError(
+      "Provider",
+      "--if-match and --if-none-match are mutually exclusive"
+    );
+  }
+  if (opts.ifNoneMatch) {
+    return { type: "create" };
+  }
+  return opts.ifMatch === undefined
+    ? undefined
+    : { etag: opts.ifMatch, type: "replace" };
+};
+
+/**
+ * `--if-match <etag>` (source) plus exactly one of `--if-none-match` (create
+ * the destination) / `--dest-if-match <etag>` (replace that destination
+ * generation) as the SDK's copy `condition`. A conditional copy needs both
+ * halves, so a partial set of flags is an error rather than a weaker request.
+ */
+const buildCopyCondition = (opts: {
+  destIfMatch?: string;
+  ifMatch?: string;
+  ifNoneMatch?: boolean;
+}): CopyCondition | undefined => {
+  const hasSource = opts.ifMatch !== undefined;
+  const hasCreate = opts.ifNoneMatch === true;
+  const hasReplace = opts.destIfMatch !== undefined;
+  if (!(hasSource || hasCreate || hasReplace)) {
+    return;
+  }
+  if (hasCreate && hasReplace) {
+    throw new FilesError(
+      "Provider",
+      "--if-none-match and --dest-if-match are mutually exclusive"
+    );
+  }
+  if (!(hasSource && (hasCreate || hasReplace))) {
+    throw new FilesError(
+      "Provider",
+      "a conditional copy needs --if-match <source etag> and either --if-none-match or --dest-if-match <etag>"
+    );
+  }
+  return {
+    destination: hasCreate
+      ? { type: "create" }
+      : { etag: opts.destIfMatch as string, type: "replace" },
+    source: { etag: opts.ifMatch as string },
+  };
+};
+
+const SINGLE_KEY_CONDITION = (flag: string, verb: string): FilesError =>
+  new FilesError(
+    "Provider",
+    `${flag} applies to a single key; conditional ${verb} has no bulk form`
+  );
 
 const runUploadDir = async (
   opts: UploadCmdOpts,
   multipart: boolean | MultipartOptions | undefined
 ): Promise<void> => {
+  if (opts.ifMatch !== undefined || opts.ifNoneMatch) {
+    throw SINGLE_KEY_CONDITION("--if-match / --if-none-match", "upload");
+  }
   if (opts.dryRun) {
     // Local-only preview — don't walk the tree, matching the single-upload
     // dry-run which doesn't stat its --file either.
@@ -136,6 +208,7 @@ const runUploadDir = async (
 
 export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
   const multipart = buildMultipart(opts);
+  const condition = buildUploadCondition(opts);
 
   // --dir uploads a whole local tree via the SDK's bulk array form. It's
   // mutually exclusive with the single-object inputs (a key, --file, --stdin).
@@ -162,6 +235,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
       "upload",
       {
         cacheControl: opts.cacheControl,
+        condition,
         contentType: opts.contentType,
         key,
         metadata: parseKeyValuePairs(opts.metadata),
@@ -172,12 +246,28 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
     );
   }
   const { files } = await loadFiles(opts.global);
-  const { body } = await readBody({ file: opts.file, stdin: opts.stdin });
+  const { body: streamed } = await readBody({
+    file: opts.file,
+    stdin: opts.stdin,
+  });
+  // A conditional PutObject needs its Content-Length up front and has no
+  // multipart fallback, so the adapters reject stream bodies; the CLI always
+  // reads a stream, so buffer it when a predicate is set. Unconditional
+  // uploads keep streaming.
+  const body =
+    condition === undefined
+      ? streamed
+      : new Uint8Array(
+          await new Response(
+            streamed as ReadableStream<Uint8Array>
+          ).arrayBuffer()
+        );
   const result = await files.upload(key, body, {
     cacheControl: opts.cacheControl,
     contentType: opts.contentType,
     metadata: parseKeyValuePairs(opts.metadata),
     ...(multipart !== undefined && { multipart }),
+    ...(condition !== undefined && { condition }),
   });
   emit(result, opts);
 };
@@ -190,6 +280,7 @@ export interface DownloadCmdOpts extends CommonRunOpts {
   range?: string;
   concurrency?: number;
   stopOnError?: boolean;
+  ifMatch?: string;
 }
 
 const runDownloadMany = async (
@@ -244,9 +335,14 @@ const runDownloadMany = async (
 
 export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
   const range = parseRange(opts.range);
+  const condition =
+    opts.ifMatch === undefined ? undefined : { etag: opts.ifMatch };
   // Many keys (or an explicit --out-dir) take the bulk path: each body is
   // written under the directory at the path its key implies.
   const many = opts.keys.length > 1 || opts.outDir !== undefined;
+  if (many && condition !== undefined) {
+    throw SINGLE_KEY_CONDITION("--if-match", "download");
+  }
 
   if (opts.dryRun) {
     if (many) {
@@ -258,7 +354,12 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
     }
     return dryRun(
       "download",
-      { dest: opts.stdout ? "<stdout>" : opts.out, key: opts.keys[0], range },
+      {
+        condition,
+        dest: opts.stdout ? "<stdout>" : opts.out,
+        key: opts.keys[0],
+        range,
+      },
       opts
     );
   }
@@ -269,7 +370,11 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
 
   const key = opts.keys[0] as string;
   const { files } = await loadFiles(opts.global);
-  const file = await files.download(key, { as: "stream", range });
+  const file = await files.download(key, {
+    as: "stream",
+    range,
+    ...(condition !== undefined && { condition }),
+  });
   await writeBody(file, { out: opts.out, stdout: opts.stdout });
   if (!opts.stdout) {
     // body went to a file; emit status to stdout in the user's chosen format
@@ -373,18 +478,24 @@ export interface DeleteCmdOpts extends CommonRunOpts {
   keys: string[];
   concurrency?: number;
   stopOnError?: boolean;
+  ifMatch?: string;
 }
 
 export const runDelete = async (opts: DeleteCmdOpts): Promise<void> => {
+  const condition =
+    opts.ifMatch === undefined ? undefined : { etag: opts.ifMatch };
+  if (condition !== undefined && opts.keys.length !== 1) {
+    throw SINGLE_KEY_CONDITION("--if-match", "delete");
+  }
   if (opts.dryRun) {
-    return dryRun("delete", { keys: opts.keys }, opts);
+    return dryRun("delete", { condition, keys: opts.keys }, opts);
   }
   const { files } = await loadFiles(opts.global);
 
   // One key keeps the original throw-on-failure contract and output shape.
   if (opts.keys.length === 1) {
     const key = opts.keys[0] as string;
-    await files.delete(key);
+    await files.delete(key, condition ? { condition } : undefined);
     emit({ deleted: true, key }, opts);
     return;
   }
@@ -405,14 +516,18 @@ export const runDelete = async (opts: DeleteCmdOpts): Promise<void> => {
 export interface CopyCmdOpts extends CommonRunOpts {
   from: string;
   to: string;
+  ifMatch?: string;
+  ifNoneMatch?: boolean;
+  destIfMatch?: string;
 }
 
 export const runCopy = async (opts: CopyCmdOpts): Promise<void> => {
+  const condition = buildCopyCondition(opts);
   if (opts.dryRun) {
-    return dryRun("copy", { from: opts.from, to: opts.to }, opts);
+    return dryRun("copy", { condition, from: opts.from, to: opts.to }, opts);
   }
   const { files } = await loadFiles(opts.global);
-  await files.copy(opts.from, opts.to);
+  await files.copy(opts.from, opts.to, condition ? { condition } : undefined);
   emit({ copied: true, from: opts.from, to: opts.to }, opts);
 };
 

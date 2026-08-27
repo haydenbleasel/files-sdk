@@ -1,3 +1,4 @@
+import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   FilesOperation,
   FilesPlugin,
@@ -304,6 +305,18 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     op: FilesOperation,
     next: PluginNext
   ): Promise<unknown> => {
+    // Every conditional mode is vetoed, not just the ones that touch the
+    // blob. A pointer's body is always empty, so its ETag is the same for
+    // every key and never changes when the pointer is rewritten to a new
+    // blob — a compare-and-set delete or copy against it would succeed even
+    // though the key's content had moved on, which is worse than failing.
+    if (isConditionalOperation(op)) {
+      rejectConditional(
+        op,
+        "dedup",
+        "a pointer's ETag never reflects its content, so no native compare-and-set can guard it"
+      );
+    }
     // Direct traffic to the blob store bypasses the plugin: blobs are stored
     // and read verbatim, never treated as pointers or re-de-duplicated.
     if ("key" in op && isStoreKey(op.key)) {

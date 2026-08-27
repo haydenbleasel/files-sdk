@@ -1,7 +1,10 @@
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { Attributes, Span, Tracer } from "@opentelemetry/api";
 
+import { isConditionalOperation } from "../index.js";
 import type {
+  ConditionalActionType,
+  ConditionalFilesOperation,
   FilesOperation,
   FilesPlugin,
   ListResult,
@@ -15,6 +18,21 @@ const DEFAULT_SPAN_PREFIX = "files.";
 
 /** Instrumentation name used for the default tracer. */
 const INSTRUMENTATION_NAME = "files-sdk";
+
+const conditionalAction = (
+  op: ConditionalFilesOperation
+): ConditionalActionType => {
+  if (op.kind === "upload") {
+    return op.mode;
+  }
+  if (op.kind === "download") {
+    return "exact-read";
+  }
+  if (op.kind === "delete") {
+    return "match-delete";
+  }
+  return "conditional-copy";
+};
 
 export interface TracingOptions {
   /**
@@ -44,6 +62,9 @@ export interface TracingOptions {
 /** Caller-facing attributes known before the operation runs. */
 const baseAttributes = (op: FilesOperation): Attributes => {
   const attributes: Attributes = { "files.operation": op.kind };
+  if (isConditionalOperation(op)) {
+    attributes["files.condition"] = conditionalAction(op);
+  }
   if (op.kind === "copy" || op.kind === "move") {
     attributes["files.from"] = op.from;
     attributes["files.to"] = op.to;

@@ -1,3 +1,4 @@
+import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   Files,
   FilesOperation,
@@ -368,6 +369,13 @@ export const versioning = (
     op: FilesOperation,
     next: PluginNext
   ): Promise<unknown> => {
+    if (isConditionalOperation(op) && op.kind !== "download") {
+      rejectConditional(
+        op,
+        "versioning",
+        "snapshot side effects cannot be coupled to the native compare-and-set"
+      );
+    }
     switch (op.kind) {
       case "upload":
       case "delete": {

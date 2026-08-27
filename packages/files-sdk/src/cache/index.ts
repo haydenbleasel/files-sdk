@@ -1,4 +1,4 @@
-import { createStoredFile } from "../index.js";
+import { createStoredFile, isConditionalOperation } from "../index.js";
 import type {
   Files,
   FilesOperation,
@@ -8,6 +8,7 @@ import type {
   StoredFileMeta,
 } from "../index.js";
 import { DEFAULT_URL_EXPIRES_IN } from "../internal/core.js";
+import { FilesError } from "../internal/errors.js";
 
 /** The read verbs {@link cache} can serve from its store. */
 export type CacheableOperation = "head" | "url" | "download";
@@ -386,6 +387,41 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     return createStoredFile(meta, { data: bytes, kind: "buffer" });
   };
 
+  /**
+   * Run a mutation (or exact read) and, when it fails in a way that proves the
+   * cached record stale, drop the affected keys before rethrowing. Only a
+   * conditional operation or a `Conflict` qualifies: a plain failed write is
+   * no evidence either way, and invalidating on every failure would charge a
+   * remote-store round-trip to each NotFound in a bulk delete. The store's own
+   * failure on this path is swallowed — the caller must see the original
+   * error (a `Conflict` is what drives a head() → retry loop), never a store
+   * hiccup dressed up as the outcome of the mutation.
+   */
+  const invalidateOnStaleFailure = async <T>(
+    op: FilesOperation,
+    keys: readonly string[],
+    run: () => Promise<T>
+  ): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      const conflict = error instanceof FilesError && error.code === "Conflict";
+      if (conflict || isConditionalOperation(op)) {
+        await Promise.all(
+          keys.map(async (key) => {
+            try {
+              await store.delete(key);
+            } catch {
+              // The original error is the outcome; a store hiccup here must
+              // not replace it.
+            }
+          })
+        );
+      }
+      throw error;
+    }
+  };
+
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
@@ -398,24 +434,42 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         return enabled.has("url") ? cachedUrl(op, next) : next(op);
       }
       case "download": {
+        // An exact read is a provider precondition, not a cache validator. A
+        // cached body may predate the supplied ETag (or have no trustworthy
+        // relationship to it), so always drive the native conditional read
+        // and never populate the ordinary download cache from its result. A
+        // rejected predicate does prove the cached record stale, though, so
+        // it invalidates like a failed conditional write would.
+        if (isConditionalOperation(op)) {
+          return invalidateOnStaleFailure(op, [op.key], () => next(op));
+        }
         return enabled.has("download") ? cachedDownload(op, next) : next(op);
       }
       // Writes always invalidate, regardless of which reads are cached — drop
-      // the affected key(s) only after the mutation actually lands.
+      // the affected key(s) after the mutation lands. A failed write leaves
+      // the record alone unless the failure itself proved it stale (see
+      // `invalidateOnStaleFailure`).
       case "upload":
       case "delete": {
-        const result = await next(op);
+        const result = await invalidateOnStaleFailure(op, [op.key], () =>
+          next(op)
+        );
         await store.delete(op.key);
         return result;
       }
       case "copy": {
-        const result = await next(op);
+        // A conditional copy can fail on its *source* predicate too, so a
+        // stale cached source ETag would replay the same conflict; drop both
+        // ends on a stale failure. The success path touches only `op.to`.
+        const keys = isConditionalOperation(op) ? [op.from, op.to] : [op.to];
+        const result = await invalidateOnStaleFailure(op, keys, () => next(op));
         await store.delete(op.to);
         return result;
       }
       case "move": {
-        // oxlint-disable-next-line react-doctor/async-parallel -- next() must settle before invalidating; the two deletes are ordered after the write, not independent.
-        const result = await next(op);
+        const keys = [op.from, op.to];
+        const result = await invalidateOnStaleFailure(op, keys, () => next(op));
+        // oxlint-disable-next-line react-doctor/async-parallel -- ordered after the write settles, not independent work.
         await store.delete(op.from);
         await store.delete(op.to);
         return result;

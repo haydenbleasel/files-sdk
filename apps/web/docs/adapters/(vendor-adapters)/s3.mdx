@@ -29,6 +29,12 @@ const files = new Files({
 });
 ```
 
+Canonical AWS S3 buckets support provider-native [conditional create, replace, exact read, delete, and copy](/docs/conditional-operations). Conditional copy sends its source ETag and destination create/replace predicate in one `CopyObject` request.
+
+The primitives are exposed only when the client will talk to canonical AWS: no `endpoint` option and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` redirect in the environment (the AWS SDK honors those on its own). A shared-config `endpoint_url` — profile-level or under a `services` section — is invisible at construction, so it is caught at request time instead: a conditional request whose resolved hostname is not `amazonaws.com` fails closed before it is sent. S3-compatible services differ in conditional-header support, so in every one of those cases the adapter refuses rather than risk an unconditional overwrite. AWS-hosted endpoints (VPC, FIPS, dual-stack, GovCloud) resolve under `amazonaws.com` and need no override. Pass `conditional: true` to opt an S3-compatible endpoint you have verified back in (it skips both checks), or `conditional: false` to disable the primitives on a canonical bucket.
+
+Conditional copy needs `@aws-sdk/client-s3` 3.919.0 or newer, where `CopyObject` gained `IfMatch` / `IfNoneMatch` (the peer range now starts at 3.1079.0). Because an optional peer range is advisory, the adapter also verifies at request time that every predicate it set was actually serialized as a header and rejects the call if the installed client dropped one. Conditional uploads take a buffered body (`Blob`, `Uint8Array`, `ArrayBuffer`, or string) — a stream is rejected before I/O.
+
 ## Options
 
 <AutoTypeTable
@@ -50,3 +56,4 @@ const files = new Files({
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
 | `signedUploadUrl` | ✅ |  |
+| conditional operations | ✅ | Single-object native requests. Bulk, multipart, resumable, and custom-endpoint conditionals are unsupported. |

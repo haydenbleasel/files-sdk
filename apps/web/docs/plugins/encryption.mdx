@@ -23,6 +23,8 @@ await files.upload("secret.txt", "hello"); // stored encrypted
 await (await files.download("secret.txt")).text(); // "hello"
 ```
 
+The same transforms cover native [conditional operations](/docs/conditional-operations): create and replace store ciphertext, and an exact read decrypts only after the provider accepts its ETag. Conditional range reads are still refused for the same AES-GCM reason as ordinary ranges.
+
 ## How it works
 
 The plugin uses **envelope encryption**, the same pattern cloud KMS services use:

@@ -15,6 +15,19 @@ const stream = await files.download("avatars/abc.png", { as: "stream" });
 // → ReadableStream
 ```
 
+## Exact reads
+
+Pass a canonical bare strong ETag to read only that object generation. The predicate is sent in the provider's native read request; there is no preceding `head()` and no fallback on adapters without the primitive.
+
+```ts lineNumbers
+const exact = await files.download("avatars/abc.png", {
+  condition: { etag: current.etag! },
+  as: "stream",
+});
+```
+
+Exact reads can compose with `range` when the adapter supports both primitives. See [Conditional operations](/docs/conditional-operations).
+
 ## Byte ranges
 
 Pass `range` to download only a contiguous slice of the object — the primitive behind video seeking and resumable downloads. Both bounds are **0-based**, and `end` is **inclusive**, matching the HTTP `Range` header (`bytes=start-end`) this maps to. The returned `StoredFile` carries just the requested bytes, and its `size` is the range length, not the full object.

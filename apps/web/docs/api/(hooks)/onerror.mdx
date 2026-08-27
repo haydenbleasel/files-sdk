@@ -19,7 +19,7 @@ const files = new Files({
 });
 ```
 
-The payload mirrors [`onAction`](/docs/api/onaction) - `type`, the caller-facing `key` / `keys` (or `from` / `to` for `copy` and `move`), and `durationMs` - but `error` is always present and typed as a [`FilesError`](/docs/api/errors), not optional.
+The payload mirrors [`onAction`](/docs/api/onaction) - `type`, the caller-facing `key` / `keys` (or `from` / `to` for `copy` and `move`), the redacted `condition` label for a [conditional call](/docs/conditional-operations), and `durationMs` - but `error` is always present and typed as a [`FilesError`](/docs/api/errors), not optional.
 
 ## Filtering out aborts
 

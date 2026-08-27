@@ -3,7 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { failover } from "../src/failover/index.js";
 import type { FailoverEvent, FailoverOptions } from "../src/failover/index.js";
 import { Files } from "../src/index.js";
-import type { Adapter } from "../src/index.js";
+import type {
+  Adapter,
+  ConditionalFilesOperation,
+  PluginNext,
+} from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 import { fakeAdapter } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
@@ -343,5 +347,56 @@ describe("failover — a single secondary passed directly", () => {
       plugins: [failover({ secondaries: secondary })],
     });
     expect(await files.download("a.txt").then((f) => f.text())).toBe("solo");
+  });
+});
+
+describe("failover — conditional policy", () => {
+  test("rejects every conditional primitive before touching any backend", async () => {
+    const plugin = failover({ secondaries: fakeAdapter() });
+    const { wrap } = plugin;
+    if (!wrap) {
+      throw new Error("failover wrap missing");
+    }
+    let nextCalls = 0;
+    const next = (() => {
+      nextCalls += 1;
+      return Promise.resolve();
+    }) as PluginNext;
+    const operations: ConditionalFilesOperation[] = [
+      { body: "x", key: "a.txt", kind: "upload", mode: "create" },
+      {
+        body: "x",
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "upload",
+        mode: "replace",
+      },
+      {
+        etag: "etag-1",
+        key: "a.txt",
+        kind: "download",
+        mode: "exact",
+      },
+      { etag: "etag-1", key: "a.txt", kind: "delete", mode: "match" },
+      {
+        destination: { type: "create" },
+        from: "a.txt",
+        kind: "copy",
+        mode: "conditional",
+        source: { etag: "etag-1" },
+        to: "b.txt",
+      },
+    ];
+
+    for (const operation of operations) {
+      // eslint-disable-next-line no-await-in-loop -- each rejected operation must be inspected independently
+      const failure = await Promise.resolve()
+        .then(() => wrap(operation, next))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as Error).message).toMatch(/native compare-and-set/u);
+    }
+    expect(nextCalls).toBe(0);
   });
 });

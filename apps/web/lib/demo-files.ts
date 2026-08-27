@@ -15,6 +15,19 @@ const log = (op: string, ...args: unknown[]): void => {
 
 const CAPABILITIES: AdapterCapabilities = {
   cacheControl: true,
+  conditional: {
+    copy: {
+      atomicSourceDestination: false,
+      destinationCreate: false,
+      destinationReplace: false,
+      sourceEtag: false,
+    },
+    create: false,
+    delete: false,
+    exactRead: false,
+    multipart: { create: false, replace: false },
+    replace: false,
+  },
   delimiter: true,
   metadata: true,
   multipart: true,

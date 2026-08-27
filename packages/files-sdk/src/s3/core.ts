@@ -5,9 +5,15 @@ import type * as RequestPresigner from "@aws-sdk/s3-request-presigner";
 
 import type {
   Adapter,
+  AdapterDownloadOptions,
+  AdapterUploadOptions,
+  Body,
+  ConditionalUploadResult,
+  CopyCondition,
   DeleteManyOptions,
   DeleteManyResult,
   MultipartOptions,
+  OperationOptions,
   PartMeta,
   PartsResumableDriver,
   ResumableDriverOptions,
@@ -15,6 +21,7 @@ import type {
   SignedUpload,
   StoredFile,
   UploadProgress,
+  UploadOptions,
   UploadResult,
 } from "../index.js";
 import {
@@ -31,6 +38,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { reportProgress } from "../internal/resumable.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 /**
@@ -84,6 +92,28 @@ export interface S3AdapterOptions {
    */
   forcePathStyle?: boolean;
   /**
+   * Whether to expose the native conditional primitives (`If-Match` /
+   * `If-None-Match` create, replace, exact read, delete, and copy).
+   *
+   * Defaults to `true` only when the client will talk to canonical AWS S3:
+   * no `endpoint` here and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`
+   * redirect in the environment. S3-compatible services differ in which
+   * conditional headers they honor, so the adapter fails closed for them
+   * rather than risk an unconditional overwrite.
+   *
+   * A shared-config `endpoint_url` (profile- or service-level) is invisible
+   * at construction, so it is caught at request time instead: a conditional
+   * request whose resolved hostname is not `amazonaws.com` fails closed
+   * before it is sent. AWS-hosted endpoints (VPC, FIPS, dual-stack, GovCloud)
+   * all resolve under that suffix and need no override.
+   *
+   * Set `true` to opt an S3-compatible endpoint that you have verified
+   * honors `If-Match` / `If-None-Match` in — this skips both the constructor
+   * check and the request-time hostname check — or `false` to disable the
+   * primitives on a canonical bucket.
+   */
+  conditional?: boolean;
+  /**
    * Static credentials. Skip to use the AWS credential chain (env vars,
    * IAM role, shared profile, EC2/ECS/EKS instance metadata).
    */
@@ -128,6 +158,172 @@ const stripEtag = (etag: string | undefined): string | undefined => {
     return;
   }
   return etag.replaceAll(/^"+|"+$/gu, "");
+};
+
+// Conditional requests accept one strong entity tag, not an HTTP list or
+// wildcard. Keep the adapter boundary strict even when callers invoke the
+// optional primitive directly instead of going through `Files` validation.
+const CANONICAL_ETAG = /^(?!\*$)(?!W\/)[\u0021\u0023-\u002B\u002D-\u007E]+$/u;
+const MAX_ETAG_LENGTH = 1024;
+
+const assertCanonicalEtag = (etag: string): string => {
+  if (etag.length > MAX_ETAG_LENGTH || !CANONICAL_ETAG.test(etag)) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: conditional ETags must be canonical bare strong values",
+      undefined,
+      { permanent: true }
+    );
+  }
+  return etag;
+};
+
+const quoteCanonicalEtag = (etag: string): string =>
+  `"${assertCanonicalEtag(etag)}"`;
+
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: true
+): string;
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: false
+): string | undefined;
+function normalizeConditionalResponseEtag(
+  etag: string | undefined,
+  operation: string,
+  required: boolean
+): string | undefined {
+  if (etag === undefined) {
+    if (required) {
+      throw new FilesError(
+        "Provider",
+        `S3 returned no ETag after ${operation}; the object may already have been committed`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    return;
+  }
+  const bare =
+    etag.length >= 2 && etag.startsWith('"') && etag.endsWith('"')
+      ? etag.slice(1, -1)
+      : etag;
+  try {
+    return assertCanonicalEtag(bare);
+  } catch (error) {
+    throw new FilesError(
+      "Provider",
+      `S3 returned an invalid ETag after ${operation}`,
+      error,
+      { permanent: true }
+    );
+  }
+}
+
+const abortOptions = (signal: AbortSignal | undefined) =>
+  signal ? { abortSignal: signal } : undefined;
+
+// Each conditional input field and the wire header it must serialize to. A
+// client whose model predates the field leaves the header out, so the guard
+// compares the built request against the input rather than trusting the
+// peer range.
+const CONDITIONAL_HEADERS: readonly (readonly [string, string])[] = [
+  ["IfMatch", "if-match"],
+  ["IfNoneMatch", "if-none-match"],
+  ["CopySourceIfMatch", "x-amz-copy-source-if-match"],
+];
+
+// Canonical AWS S3 hostnames: the only backends known to honor every
+// conditional header. VPC / FIPS / dual-stack / GovCloud endpoints all live
+// under these suffixes; S3-compatible services never do.
+const AWS_HOST_SUFFIXES = ["amazonaws.com", "amazonaws.com.cn"];
+const isAwsHost = (hostname: string): boolean => {
+  const host = hostname.toLowerCase();
+  return AWS_HOST_SUFFIXES.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+  );
+};
+
+/**
+ * Build-step middleware that keeps a conditional request from ever going out
+ * without its predicate on the wire, and — unless the caller opted in with
+ * `conditional: true` — from going anywhere other than AWS. It runs after
+ * serialization and endpoint resolution, so `args.request` is exactly what
+ * would be sent: the resolved hostname covers an `endpoint` option, an
+ * `AWS_ENDPOINT_URL*` variable, and a shared-config `endpoint_url` alike,
+ * none of which the synchronous constructor can see. Generic over the
+ * handler shapes so it slots into `middlewareStack.add` without pulling
+ * `@smithy/types` in as a dependency.
+ */
+const conditionalRequestGuard =
+  (allowAnyHost: boolean) =>
+  <Args extends { input: unknown; request: unknown }, Result>(
+    next: (args: Args) => Promise<Result>
+  ) =>
+  (args: Args): Promise<Result> => {
+    const input = args.input as Record<string, unknown>;
+    const expected = CONDITIONAL_HEADERS.filter(
+      ([field]) => input[field] !== undefined
+    );
+    // The common case: no predicate on this command, nothing to scan.
+    if (expected.length === 0) {
+      return next(args);
+    }
+    const request = args.request as {
+      headers?: Record<string, string | undefined>;
+      hostname?: string;
+    };
+    if (!(allowAnyHost || isAwsHost(request.hostname ?? ""))) {
+      throw new FilesError(
+        "Provider",
+        `s3 adapter: conditional requests are only sent to AWS S3, but this client resolves to ${request.hostname ?? "an unknown host"}; pass \`conditional: true\` to opt an S3-compatible endpoint in`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    const sent = new Set(
+      Object.keys(request.headers ?? {}).map((name) => name.toLowerCase())
+    );
+    for (const [, header] of expected) {
+      if (!sent.has(header)) {
+        throw new FilesError(
+          "Provider",
+          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; conditional requests need 3.919.0 or newer`,
+          undefined,
+          { permanent: true }
+        );
+      }
+    }
+    return next(args);
+  };
+
+const assertConditionalUploadOptions = (
+  options: AdapterUploadOptions | undefined
+): void => {
+  // AdapterUploadOptions excludes both fields statically; retain a runtime
+  // fail-closed guard for direct JavaScript/structural calls.
+  const untrusted = options as
+    | (AdapterUploadOptions & Pick<UploadOptions, "control" | "multipart">)
+    | undefined;
+  if (isMultipartRequested(untrusted?.multipart)) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: conditional multipart uploads are not supported",
+      undefined,
+      { permanent: true }
+    );
+  }
+  if (untrusted?.control !== undefined) {
+    throw new FilesError(
+      "Provider",
+      "s3 adapter: resumable upload control is not supported for conditional uploads",
+      undefined,
+      { permanent: true }
+    );
+  }
 };
 
 // `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
@@ -409,6 +605,9 @@ const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
 ]);
 const S3_UNAUTH_CODES: ReadonlySet<string> = new Set(["AccessDenied"]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
+const S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES: ReadonlySet<string> = new Set([
+  "ConditionalRequestConflict",
+]);
 // `DeleteObjects` rejects requests with more than 1000 keys, so the bulk path
 // has to chunk longer key lists into separate requests.
 const S3_DELETE_BATCH_LIMIT = 1000;
@@ -431,8 +630,8 @@ const extractS3Error = (
   };
 };
 
-const buildMapS3Error = (providerLabel = "S3 error") =>
-  makeErrorMapper({
+const buildMapS3Error = (providerLabel = "S3 error") => {
+  const mapDefault = makeErrorMapper({
     codes: {
       conflict: S3_CONFLICT_CODES,
       notFound: S3_NOT_FOUND_CODES,
@@ -441,6 +640,27 @@ const buildMapS3Error = (providerLabel = "S3 error") =>
     extract: extractS3Error,
     providerLabel,
   });
+  return (err: unknown): FilesError => {
+    if (err instanceof FilesError) {
+      return err;
+    }
+    const extracted = extractS3Error(err);
+    // Unlike PreconditionFailed (412), AWS documents this 409 as a transient
+    // race that clients should retry. Keep it Provider-coded so Files' retry
+    // policy can safely reissue the same native conditional request.
+    if (
+      extracted.code &&
+      S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES.has(extracted.code)
+    ) {
+      return new FilesError(
+        "Provider",
+        extracted.message ?? providerLabel,
+        err
+      );
+    }
+    return mapDefault(err);
+  };
+};
 
 const _defaultMapS3Error = buildMapS3Error();
 
@@ -515,6 +735,20 @@ export const createS3Adapter = (
   };
 
   const client = new S3Client(config);
+  // A no-op unless the command carries a conditional input. Two gaps it
+  // closes at the last moment before the wire: the SDK-version gap (the peer
+  // floor is advisory, and a `@aws-sdk/client-s3` predating a conditional
+  // input field — CopyObject `IfMatch` / `IfNoneMatch` arrived in 3.919.0 —
+  // accepts the field and silently omits the header), and the endpoint gap
+  // (a shared-config `endpoint_url` redirects the client to a service whose
+  // conditional support is unknown, and only the resolved request shows it).
+  client.middlewareStack.add(
+    conditionalRequestGuard(opts.conditional === true),
+    {
+      name: "filesSdkConditionalRequestGuard",
+      step: "build",
+    }
+  );
   const { bucket } = opts;
   const { publicBaseUrl } = opts;
   const defaultUrlExpiresIn =
@@ -540,38 +774,270 @@ export const createS3Adapter = (
       { expiresIn }
     );
 
-  return {
-    bucket,
-    async copy(from, to, operationOpts) {
-      try {
+  // One request builder per verb, shared by the ordinary method and its
+  // conditional twin so a predicate is the *only* thing that differs on the
+  // wire — a header added, a metadata encoding fixed, a Content-Length
+  // fallback changed on one path reaches the other automatically.
+  const putParams = (
+    key: string,
+    normalized: Awaited<ReturnType<typeof normalizeBody>>,
+    options: AdapterUploadOptions | undefined
+  ) => ({
+    Body: normalized.data,
+    Bucket: bucket,
+    ContentType: normalized.contentType,
+    Key: key,
+    ...(options?.cacheControl && { CacheControl: options.cacheControl }),
+    ...(options?.metadata && { Metadata: options.metadata }),
+    ...(normalized.contentLength !== undefined && {
+      ContentLength: normalized.contentLength,
+    }),
+  });
+
+  const getObject = (
+    key: string,
+    downloadOpts: AdapterDownloadOptions | undefined,
+    predicate?: { IfMatch: string }
+  ) =>
+    client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...predicate,
+        // S3 replies 206 with ContentLength set to the slice length and a
+        // ranged body, so the size/byte handling below needs no special
+        // casing — the range just rides along on the GET.
+        ...(downloadOpts?.range && {
+          Range: httpRangeHeader(downloadOpts.range),
+        }),
+      }),
+      abortOptions(downloadOpts?.signal)
+    );
+
+  // Turn a GetObject response into a StoredFile: a lazy stream that trusts
+  // S3's ContentLength (falling back to 0 only if the header is missing,
+  // which is rare in practice), or a buffer whose size is the real byte
+  // length so what we surface always matches what the caller can read.
+  const toStoredFile = async (
+    result: ClientS3.GetObjectCommandOutput,
+    meta: { etag: string | undefined; key: string },
+    downloadOpts: AdapterDownloadOptions | undefined
+  ): Promise<StoredFile> => {
+    const baseMeta = {
+      ...meta,
+      lastModified: result.LastModified?.getTime(),
+      metadata: result.Metadata,
+      type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+    };
+    if (downloadOpts?.as === "stream") {
+      const stream = result.Body?.transformToWebStream();
+      return createStoredFile(
+        { ...baseMeta, size: Number(result.ContentLength ?? 0) },
+        { factory: () => stream ?? emptyStream(), kind: "stream" }
+      );
+    }
+    const bytes =
+      (await result.Body?.transformToByteArray()) ?? new Uint8Array();
+    return createStoredFile(
+      { ...baseMeta, size: bytes.byteLength },
+      { data: bytes, kind: "buffer" }
+    );
+  };
+
+  const copyObject = (
+    from: string,
+    to: string,
+    operationOpts: OperationOptions | undefined,
+    predicate?: Pick<
+      ClientS3.CopyObjectCommandInput,
+      "CopySourceIfMatch" | "IfMatch" | "IfNoneMatch"
+    >
+  ) =>
+    client.send(
+      new CopyObjectCommand({
+        Bucket: bucket,
         // CopySource must be URL-encoded per
         // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
         // S3 bucket naming rules don't require encoding in practice, but we
         // encode both halves defensively in case a custom endpoint (e.g.
         // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
         // signs and serializes it as part of the request, not as a URL value.
-        await client.send(
-          new CopyObjectCommand({
-            Bucket: bucket,
-            CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
-            Key: to,
-          }),
-          operationOpts?.signal
-            ? { abortSignal: operationOpts.signal }
-            : undefined
+        CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+        Key: to,
+        ...predicate,
+      }),
+      abortOptions(operationOpts?.signal)
+    );
+
+  const deleteObject = (
+    key: string,
+    operationOpts: OperationOptions | undefined,
+    predicate?: { IfMatch: string }
+  ) =>
+    client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: key, ...predicate }),
+      abortOptions(operationOpts?.signal)
+    );
+
+  const conditionalUpload = async (
+    key: string,
+    body: Body,
+    condition: { type: "create" } | { type: "replace"; etag: string },
+    options?: AdapterUploadOptions
+  ): Promise<ConditionalUploadResult> => {
+    assertConditionalUploadOptions(options);
+    const predicate =
+      condition.type === "create"
+        ? { IfNoneMatch: "*" }
+        : { IfMatch: quoteCanonicalEtag(condition.etag) };
+    const normalized = await normalizeBody(body, options?.contentType);
+    // `normalizeBody` never sizes a stream, so this rejects every stream
+    // body: PutObject with a predicate needs Content-Length up front, and
+    // there is no multipart fallback for conditional writes.
+    if (
+      normalized.data instanceof ReadableStream &&
+      normalized.contentLength === undefined
+    ) {
+      throw new FilesError(
+        "Provider",
+        "s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first",
+        undefined,
+        { permanent: true }
+      );
+    }
+    const total = normalized.contentLength ?? 0;
+    reportProgress(options?.onProgress, { loaded: 0, total });
+    try {
+      const result = await client.send(
+        new PutObjectCommand({
+          ...putParams(key, { ...normalized, contentLength: total }, options),
+          ...predicate,
+        }),
+        abortOptions(options?.signal)
+      );
+      const etag = normalizeConditionalResponseEtag(
+        result.ETag,
+        "a conditional upload",
+        true
+      );
+      reportProgress(options?.onProgress, { loaded: total, total });
+      return { contentType: normalized.contentType, etag, key, size: total };
+    } catch (error) {
+      throw wrapErr(error);
+    }
+  };
+
+  const conditionalDownload = async (
+    key: string,
+    etag: string,
+    downloadOpts?: AdapterDownloadOptions
+  ): Promise<StoredFile> => {
+    const canonicalEtag = assertCanonicalEtag(etag);
+    try {
+      const result = await getObject(key, downloadOpts, {
+        IfMatch: quoteCanonicalEtag(canonicalEtag),
+      });
+      const responseEtag = normalizeConditionalResponseEtag(
+        result.ETag,
+        "an exact read",
+        false
+      );
+      if (responseEtag !== undefined && responseEtag !== canonicalEtag) {
+        throw new FilesError(
+          "Provider",
+          "S3 returned an ETag that did not match the exact-read predicate",
+          undefined,
+          { permanent: true }
         );
+      }
+      // S3 validated If-Match even when a test double/proxy omits ETag from
+      // the response, so retain the exact canonical predicate as provenance.
+      return await toStoredFile(
+        result,
+        { etag: responseEtag ?? canonicalEtag, key },
+        downloadOpts
+      );
+    } catch (error) {
+      throw wrapErr(error);
+    }
+  };
+
+  // Canonical AWS only, unless the caller says otherwise: an explicit
+  // `endpoint` or an `AWS_ENDPOINT_URL*` redirect (which `S3Client` honors
+  // on its own) both point at a service whose conditional-header support is
+  // unknown, so the primitives stay off and every conditional call fails
+  // closed before provider I/O.
+  const nativeConditional =
+    opts.conditional ??
+    (opts.endpoint === undefined &&
+      readEnv("AWS_ENDPOINT_URL_S3") === undefined &&
+      readEnv("AWS_ENDPOINT_URL") === undefined);
+  const conditional: S3Adapter["conditional"] = nativeConditional
+    ? {
+        copy: {
+          atomicSourceDestination: true,
+          destinationCreate: true,
+          destinationReplace: true,
+          async run(
+            from: string,
+            to: string,
+            condition: CopyCondition,
+            operationOpts
+          ): Promise<void> {
+            const destinationPredicate =
+              condition.destination.type === "create"
+                ? { IfNoneMatch: "*" }
+                : {
+                    IfMatch: quoteCanonicalEtag(condition.destination.etag),
+                  };
+            try {
+              await copyObject(from, to, operationOpts, {
+                CopySourceIfMatch: quoteCanonicalEtag(condition.source.etag),
+                ...destinationPredicate,
+              });
+            } catch (error) {
+              throw wrapErr(error);
+            }
+          },
+          sourceEtag: true,
+        },
+        create(key, body, options) {
+          return conditionalUpload(key, body, { type: "create" }, options);
+        },
+        async delete(key, etag, operationOpts): Promise<void> {
+          try {
+            await deleteObject(key, operationOpts, {
+              IfMatch: quoteCanonicalEtag(etag),
+            });
+          } catch (error) {
+            throw wrapErr(error);
+          }
+        },
+        exactRead: conditionalDownload,
+        replace(key, body, etag, options) {
+          return conditionalUpload(
+            key,
+            body,
+            { etag, type: "replace" },
+            options
+          );
+        },
+      }
+    : undefined;
+
+  return {
+    bucket,
+    ...(conditional && { conditional }),
+    async copy(from, to, operationOpts) {
+      try {
+        await copyObject(from, to, operationOpts);
       } catch (error) {
         throw wrapErr(error);
       }
     },
     async delete(key, operationOpts) {
       try {
-        await client.send(
-          new DeleteObjectCommand({ Bucket: bucket, Key: key }),
-          operationOpts?.signal
-            ? { abortSignal: operationOpts.signal }
-            : undefined
-        );
+        await deleteObject(key, operationOpts);
       } catch (error) {
         throw wrapErr(error);
       }
@@ -647,47 +1113,11 @@ export const createS3Adapter = (
     },
     async download(key, downloadOpts) {
       try {
-        const result = await client.send(
-          new GetObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            // S3 replies 206 with ContentLength set to the slice length and a
-            // ranged body, so the size/byte handling below needs no special
-            // casing — the range just rides along on the GET.
-            ...(downloadOpts?.range && {
-              Range: httpRangeHeader(downloadOpts.range),
-            }),
-          }),
-          downloadOpts?.signal
-            ? { abortSignal: downloadOpts.signal }
-            : undefined
-        );
-        const baseMeta = {
-          etag: stripEtag(result.ETag),
-          key,
-          lastModified: result.LastModified?.getTime(),
-          metadata: result.Metadata,
-          type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
-        };
-        if (downloadOpts?.as === "stream") {
-          const stream = result.Body?.transformToWebStream();
-          // Stream path: we trust S3's ContentLength header. Falls back to 0
-          // only if the header is missing, which is rare in practice.
-          return createStoredFile(
-            { ...baseMeta, size: Number(result.ContentLength ?? 0) },
-            {
-              factory: () => stream ?? emptyStream(),
-              kind: "stream",
-            }
-          );
-        }
-        const bytes =
-          (await result.Body?.transformToByteArray()) ?? new Uint8Array();
-        // Buffer path: prefer the real byte length over ContentLength so the
-        // size we surface always matches the bytes the caller can actually read.
-        return createStoredFile(
-          { ...baseMeta, size: bytes.byteLength },
-          { data: bytes, kind: "buffer" }
+        const result = await getObject(key, downloadOpts);
+        return await toStoredFile(
+          result,
+          { etag: stripEtag(result.ETag), key },
+          downloadOpts
         );
       } catch (error) {
         throw wrapErr(error);
@@ -858,21 +1288,10 @@ export const createS3Adapter = (
     // `copy()` issues a CopyObject — server-side, no body round-trip.
     supportsServerSideCopy: true,
     async upload(key, body, options) {
-      const { cacheControl, metadata, multipart, onProgress, signal } =
-        options ?? {};
-      const { data, contentType, contentLength } = await normalizeBody(
-        body,
-        options?.contentType
-      );
-      const params = {
-        Body: data,
-        Bucket: bucket,
-        ContentType: contentType,
-        Key: key,
-        ...(cacheControl && { CacheControl: cacheControl }),
-        ...(metadata && { Metadata: metadata }),
-        ...(contentLength !== undefined && { ContentLength: contentLength }),
-      };
+      const { multipart, onProgress, signal } = options ?? {};
+      const normalized = await normalizeBody(body, options?.contentType);
+      const { data, contentType, contentLength } = normalized;
+      const params = putParams(key, normalized, options);
       // lib-storage's Upload is the path for explicit multipart, for progress
       // reporting, and for unknown-length streams — a single PutObject can't
       // reliably send a stream without a Content-Length, so auto-engage there.

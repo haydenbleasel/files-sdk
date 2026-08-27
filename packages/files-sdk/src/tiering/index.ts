@@ -1,4 +1,4 @@
-import { Files } from "../index.js";
+import { Files, isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   Adapter,
   Body,
@@ -677,8 +677,16 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     }
   };
 
-  const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> =>
-    dispatch(runnerViaNext(next), op)) as NonNullable<FilesPlugin["wrap"]>;
+  const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> => {
+    if (isConditionalOperation(op)) {
+      rejectConditional(
+        op,
+        "tiering",
+        "cross-tier routing cannot preserve one native compare-and-set"
+      );
+    }
+    return dispatch(runnerViaNext(next), op);
+  }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
     extend: (files) => {

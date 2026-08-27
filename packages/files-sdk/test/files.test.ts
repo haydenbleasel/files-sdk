@@ -1377,6 +1377,19 @@ describe("Files class", () => {
     const files = new Files({ adapter: fakeAdapter() });
     expect(files.capabilities).toEqual({
       cacheControl: true,
+      conditional: {
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        exactRead: false,
+        multipart: { create: false, replace: false },
+        replace: false,
+      },
       delimiter: false,
       metadata: true,
       multipart: false,
@@ -1409,6 +1422,19 @@ describe("Files class", () => {
     const files = new Files({ adapter });
     expect(files.capabilities).toEqual({
       cacheControl: true,
+      conditional: {
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        exactRead: false,
+        multipart: { create: false, replace: false },
+        replace: false,
+      },
       delimiter: false,
       metadata: true,
       multipart: true,

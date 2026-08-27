@@ -601,6 +601,163 @@ describe("cli/commands real (fs adapter)", () => {
   });
 });
 
+describe("cli/commands conditional flags", () => {
+  test("upload / download / delete / copy dry-runs echo the resolved condition", async () => {
+    await runUpload({
+      ...baseOpts({ dryRun: true }),
+      file: "./local.txt",
+      ifNoneMatch: true,
+      key: "k",
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({ type: "create" });
+    cap.stdout.length = 0;
+
+    await runUpload({
+      ...baseOpts({ dryRun: true }),
+      file: "./local.txt",
+      ifMatch: "abc",
+      key: "k",
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({
+      etag: "abc",
+      type: "replace",
+    });
+    cap.stdout.length = 0;
+
+    await runDownload({
+      ...baseOpts({ dryRun: true }),
+      ifMatch: "abc",
+      keys: ["k"],
+      out: "./k",
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({ etag: "abc" });
+    cap.stdout.length = 0;
+
+    await runDelete({
+      ...baseOpts({ dryRun: true }),
+      ifMatch: "abc",
+      keys: ["k"],
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({ etag: "abc" });
+    cap.stdout.length = 0;
+
+    await runCopy({
+      ...baseOpts({ dryRun: true }),
+      from: "a",
+      ifMatch: "src",
+      ifNoneMatch: true,
+      to: "b",
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({
+      destination: { type: "create" },
+      source: { etag: "src" },
+    });
+    cap.stdout.length = 0;
+
+    await runCopy({
+      ...baseOpts({ dryRun: true }),
+      destIfMatch: "dst",
+      from: "a",
+      ifMatch: "src",
+      to: "b",
+    });
+    expect(lastJson(cap.stdout).condition).toEqual({
+      destination: { etag: "dst", type: "replace" },
+      source: { etag: "src" },
+    });
+  });
+
+  test("contradictory, partial, and bulk conditional flags are rejected before any I/O", async () => {
+    await expect(
+      runUpload({
+        ...baseOpts({ dryRun: true }),
+        file: "./x",
+        ifMatch: "abc",
+        ifNoneMatch: true,
+        key: "k",
+      })
+    ).rejects.toThrow(/mutually exclusive/u);
+    await expect(
+      runUpload({ ...baseOpts({ dryRun: true }), dir: root, ifNoneMatch: true })
+    ).rejects.toThrow(/single key/u);
+    await expect(
+      runDownload({
+        ...baseOpts({ dryRun: true }),
+        ifMatch: "abc",
+        keys: ["a", "b"],
+        outDir: root,
+      })
+    ).rejects.toThrow(/single key/u);
+    await expect(
+      runDelete({
+        ...baseOpts({ dryRun: true }),
+        ifMatch: "abc",
+        keys: ["a", "b"],
+      })
+    ).rejects.toThrow(/single key/u);
+    // A conditional copy needs both halves.
+    await expect(
+      runCopy({
+        ...baseOpts({ dryRun: true }),
+        from: "a",
+        ifMatch: "src",
+        to: "b",
+      })
+    ).rejects.toThrow(/--if-none-match or --dest-if-match/u);
+    await expect(
+      runCopy({
+        ...baseOpts({ dryRun: true }),
+        from: "a",
+        ifNoneMatch: true,
+        to: "b",
+      })
+    ).rejects.toThrow(/--if-match/u);
+    await expect(
+      runCopy({
+        ...baseOpts({ dryRun: true }),
+        destIfMatch: "dst",
+        from: "a",
+        ifMatch: "src",
+        ifNoneMatch: true,
+        to: "b",
+      })
+    ).rejects.toThrow(/mutually exclusive/u);
+    expect(cap.stdout).toHaveLength(0);
+  });
+
+  test("a condition reaches the SDK and fails closed on an adapter without native support", async () => {
+    // The fs adapter has no conditional primitives, so every predicate must
+    // surface as the SDK's fail-closed error — proof the flag was forwarded
+    // rather than dropped into an unconditional call.
+    const local = path.join(root, "in.txt");
+    await fsp.writeFile(local, "payload");
+    await expect(
+      runUpload({ ...baseOpts(), file: local, ifNoneMatch: true, key: "k" })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(fsp.stat(path.join(root, "k"))).rejects.toThrow();
+
+    await runUpload({ ...baseOpts(), file: local, key: "k" });
+    await expect(
+      runDownload({ ...baseOpts(), ifMatch: "abc", keys: ["k"], stdout: true })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      runDelete({ ...baseOpts(), ifMatch: "abc", keys: ["k"] })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      runCopy({
+        ...baseOpts(),
+        from: "k",
+        ifMatch: "abc",
+        ifNoneMatch: true,
+        to: "k2",
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    // The unconditional object is untouched and no copy was made.
+    expect(await fsp.readFile(path.join(root, "k"), "utf-8")).toBe("payload");
+    await expect(fsp.stat(path.join(root, "k2"))).rejects.toThrow();
+  });
+});
+
 describe("cli/commands new surface", () => {
   // Write the upload source OUTSIDE the fs root — a file under the root would
   // itself show up as a stray object key in list/transfer results.

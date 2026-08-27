@@ -20,8 +20,12 @@ import { sdkStreamMixin } from "@smithy/util-stream";
 import { mockClient } from "aws-sdk-client-mock";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { ResumableUploadSession } from "../src/index.js";
+import type {
+  AdapterUploadOptions,
+  ResumableUploadSession,
+} from "../src/index.js";
 import { mapS3Error, s3 } from "../src/s3/index.js";
+import type { S3Adapter } from "../src/s3/index.js";
 
 const s3Mock = mockClient(S3Client);
 
@@ -92,6 +96,29 @@ const firstCall = <T extends { args: unknown[] }>(calls: T[]): T => {
     throw new Error("expected at least one call");
   }
   return first;
+};
+
+const requireNativeConditional = (
+  adapter: S3Adapter
+): Required<NonNullable<S3Adapter["conditional"]>> => {
+  const { conditional } = adapter;
+  const {
+    copy,
+    create,
+    delete: remove,
+    exactRead,
+    replace,
+  } = conditional ?? {};
+  if (!copy || !create || !remove || !exactRead || !replace) {
+    throw new Error("expected the native AWS S3 conditional primitives");
+  }
+  return {
+    copy,
+    create,
+    delete: remove,
+    exactRead,
+    replace,
+  };
 };
 
 describe("s3 adapter", () => {
@@ -382,6 +409,514 @@ describe("s3 adapter", () => {
     expect(calls).toHaveLength(1);
     const [{ input }] = firstCall(calls).args;
     expect(input.CopySource).toBe("test-bucket/foo%20bar.txt");
+  });
+
+  test("native conditional primitives are exposed only for AWS S3 endpoints", () => {
+    const native = s3({ bucket: "b", region: "us-east-1" });
+    const conditional = requireNativeConditional(native);
+    expect(conditional.copy).toMatchObject({
+      atomicSourceDestination: true,
+      destinationCreate: true,
+      destinationReplace: true,
+      sourceEtag: true,
+    });
+
+    const compatible = s3({
+      bucket: "b",
+      endpoint: "https://storage.example.test",
+      region: "us-east-1",
+    });
+    expect(compatible.conditional).toBeUndefined();
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("an AWS_ENDPOINT_URL* redirect hides the primitives; `conditional` overrides either way", () => {
+    const saved = {
+      base: process.env.AWS_ENDPOINT_URL,
+      s3: process.env.AWS_ENDPOINT_URL_S3,
+    };
+    delete process.env.AWS_ENDPOINT_URL;
+    delete process.env.AWS_ENDPOINT_URL_S3;
+    try {
+      // S3Client honors these on its own, so an env-redirected client is an
+      // S3-compatible service as far as conditional-header support goes.
+      process.env.AWS_ENDPOINT_URL_S3 = "http://localhost:9000";
+      expect(
+        s3({ bucket: "b", region: "us-east-1" }).conditional
+      ).toBeUndefined();
+      delete process.env.AWS_ENDPOINT_URL_S3;
+      process.env.AWS_ENDPOINT_URL = "http://localhost:4566";
+      expect(
+        s3({ bucket: "b", region: "us-east-1" }).conditional
+      ).toBeUndefined();
+      // An explicit opt-in wins over both the env redirect and a custom
+      // endpoint (VPC / FIPS / GovCloud hostnames are still AWS).
+      expect(
+        s3({ bucket: "b", conditional: true, region: "us-east-1" }).conditional
+      ).toBeDefined();
+      delete process.env.AWS_ENDPOINT_URL;
+      expect(
+        s3({
+          bucket: "b",
+          conditional: true,
+          endpoint: "https://bucket.vpce-abc.s3.us-east-1.vpce.amazonaws.com",
+          region: "us-east-1",
+        }).conditional
+      ).toBeDefined();
+      // And an explicit opt-out disables them on a canonical bucket.
+      const optedOut = new Files({
+        adapter: s3({ bucket: "b", conditional: false, region: "us-east-1" }),
+      });
+      expect(optedOut.capabilities.conditional.create).toBe(false);
+    } finally {
+      if (saved.base === undefined) {
+        delete process.env.AWS_ENDPOINT_URL;
+      } else {
+        process.env.AWS_ENDPOINT_URL = saved.base;
+      }
+      if (saved.s3 === undefined) {
+        delete process.env.AWS_ENDPOINT_URL_S3;
+      } else {
+        process.env.AWS_ENDPOINT_URL_S3 = saved.s3;
+      }
+    }
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("custom endpoints fail every Files conditional operation before provider I/O", async () => {
+    const files = new Files({
+      adapter: s3({
+        bucket: "b",
+        endpoint: "https://storage.example.test",
+        region: "us-east-1",
+      }),
+    });
+
+    expect(files.capabilities.conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      exactRead: false,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
+    await expect(
+      files.upload("created.txt", "body", {
+        condition: { type: "create" },
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      files.upload("replaced.txt", "body", {
+        condition: { etag: "old-etag", type: "replace" },
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      files.download("record.txt", { condition: { etag: "exact-etag" } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      files.delete("record.txt", { condition: { etag: "delete-etag" } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      files.copy("from.txt", "to.txt", {
+        condition: {
+          destination: { type: "create" },
+          source: { etag: "source-etag" },
+        },
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("Files preserves prefixes and retries AWS conditional request conflicts natively", async () => {
+    s3Mock
+      .on(PutObjectCommand)
+      .rejectsOnce(
+        Object.assign(new Error("retry the request"), {
+          $metadata: { httpStatusCode: 409 },
+          name: "ConditionalRequestConflict",
+        })
+      )
+      .resolvesOnce({ ETag: '"created-etag"' });
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+      prefix: "tenant/workspace",
+    });
+
+    expect(files.capabilities.conditional).toMatchObject({
+      copy: {
+        atomicSourceDestination: true,
+        destinationCreate: true,
+        destinationReplace: true,
+        sourceEtag: true,
+      },
+      create: true,
+      delete: true,
+      exactRead: true,
+      replace: true,
+    });
+    const result = await files.upload("record.txt", "body", {
+      condition: { type: "create" },
+      retries: { backoff: () => 0, max: 1 },
+    });
+
+    expect(result.etag).toBe("created-etag");
+    const calls = s3Mock.commandCalls(PutObjectCommand);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const [{ input }] = call.args;
+      expect(input.Key).toBe("tenant/workspace/record.txt");
+      expect(input.IfNoneMatch).toBe("*");
+    }
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional create uses one PutObject with If-None-Match and preserves upload options", async () => {
+    s3Mock.on(PutObjectCommand).resolves({ ETag: '"created-etag"' });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "test-bucket", region: "us-east-1" })
+    );
+    const { signal } = new AbortController();
+    const progress: { loaded: number; total?: number }[] = [];
+
+    const result = await conditional.create("created.txt", "hello", {
+      cacheControl: "private, max-age=60",
+      contentType: "text/plain",
+      metadata: { owner: "alice" },
+      onProgress: (event) => progress.push(event),
+      signal,
+    });
+
+    expect(result).toEqual({
+      contentType: "text/plain",
+      etag: "created-etag",
+      key: "created.txt",
+      size: 5,
+    });
+    expect(progress).toEqual([
+      { loaded: 0, total: 5 },
+      { loaded: 5, total: 5 },
+    ]);
+    const calls = s3Mock.commandCalls(PutObjectCommand);
+    expect(calls).toHaveLength(1);
+    const [{ input }, sendOptions] = firstCall(calls).args as [
+      PutObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    expect(input).toMatchObject({
+      Bucket: "test-bucket",
+      CacheControl: "private, max-age=60",
+      ContentLength: 5,
+      ContentType: "text/plain",
+      IfNoneMatch: "*",
+      Key: "created.txt",
+      Metadata: { owner: "alice" },
+    });
+    expect(input.IfMatch).toBeUndefined();
+    expect(sendOptions).toEqual({ abortSignal: signal });
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional replace quotes one canonical ETag and returns the new bare ETag", async () => {
+    s3Mock.on(PutObjectCommand).resolves({ ETag: '"new-etag"' });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    const result = await conditional.replace(
+      "record.bin",
+      new Uint8Array([1, 2, 3]),
+      "old\\etag"
+    );
+
+    expect(result.etag).toBe("new-etag");
+    const calls = s3Mock.commandCalls(PutObjectCommand);
+    expect(calls).toHaveLength(1);
+    const [{ input }] = firstCall(calls).args;
+    expect(input.IfMatch).toBe('"old\\etag"');
+    expect(input.IfNoneMatch).toBeUndefined();
+    expect(input.ContentLength).toBe(3);
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("exact read combines If-Match, range, signal, and normalized response metadata", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: streamBody("234") as unknown as undefined,
+      ContentLength: 3,
+      ContentType: "text/plain",
+      ETag: '"exact-etag"',
+      Metadata: { protected: "true" },
+    });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+    const { signal } = new AbortController();
+
+    const got = await conditional.exactRead("record.txt", "exact-etag", {
+      range: { end: 4, start: 2 },
+      signal,
+    });
+
+    expect(await got.text()).toBe("234");
+    expect(got.etag).toBe("exact-etag");
+    expect(got.metadata).toEqual({ protected: "true" });
+    const calls = s3Mock.commandCalls(GetObjectCommand);
+    expect(calls).toHaveLength(1);
+    const [{ input }, sendOptions] = firstCall(calls).args as [
+      GetObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    expect(input).toMatchObject({
+      Bucket: "b",
+      IfMatch: '"exact-etag"',
+      Key: "record.txt",
+      Range: "bytes=2-4",
+    });
+    expect(sendOptions).toEqual({ abortSignal: signal });
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("exact read surfaces its validated predicate when S3 omits the response ETag", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: streamBody("body") as unknown as undefined,
+      ContentLength: 4,
+    });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    const got = await conditional.exactRead("record.txt", "known-etag");
+
+    expect(got.etag).toBe("known-etag");
+  });
+
+  test("exact read preserves stream mode when S3 returns an empty body", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      ContentLength: 0,
+      ETag: '"exact-etag"',
+    });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    const got = await conditional.exactRead("record.txt", "exact-etag", {
+      as: "stream",
+    });
+
+    expect(await got.text()).toBe("");
+    expect(got.size).toBe(0);
+    expect(got.etag).toBe("exact-etag");
+  });
+
+  test("exact read fails closed when the response ETag disagrees with its predicate", async () => {
+    s3Mock.on(GetObjectCommand).resolves({
+      Body: streamBody("body") as unknown as undefined,
+      ContentLength: 4,
+      ETag: '"different-etag"',
+    });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    await expect(
+      conditional.exactRead("record.txt", "expected-etag")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional delete uses one DeleteObject with If-Match and signal", async () => {
+    s3Mock.on(DeleteObjectCommand).resolves({});
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+    const { signal } = new AbortController();
+
+    await conditional.delete("record.txt", "delete-etag", { signal });
+
+    const calls = s3Mock.commandCalls(DeleteObjectCommand);
+    expect(calls).toHaveLength(1);
+    const [{ input }, sendOptions] = firstCall(calls).args as [
+      DeleteObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    expect(input).toMatchObject({
+      Bucket: "b",
+      IfMatch: '"delete-etag"',
+      Key: "record.txt",
+    });
+    expect(sendOptions).toEqual({ abortSignal: signal });
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional copy enforces source and destination predicates in the same command", async () => {
+    s3Mock.on(CopyObjectCommand).resolves({});
+    const conditional = requireNativeConditional(
+      s3({ bucket: "test-bucket", region: "us-east-1" })
+    );
+    const { signal } = new AbortController();
+
+    await conditional.copy.run(
+      "source folder/a.txt",
+      "created.txt",
+      {
+        destination: { type: "create" },
+        source: { etag: "source-etag" },
+      },
+      { signal }
+    );
+    await conditional.copy.run("source.txt", "replaced.txt", {
+      destination: { etag: "destination-etag", type: "replace" },
+      source: { etag: "source-etag-2" },
+    });
+
+    const calls = s3Mock.commandCalls(CopyObjectCommand);
+    expect(calls).toHaveLength(2);
+    const [createCommand, createSendOptions] = firstCall(calls).args as [
+      CopyObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    const { input: createInput } = createCommand;
+    expect(createInput).toMatchObject({
+      Bucket: "test-bucket",
+      CopySource: "test-bucket/source%20folder%2Fa.txt",
+      CopySourceIfMatch: '"source-etag"',
+      IfNoneMatch: "*",
+      Key: "created.txt",
+    });
+    expect(createInput?.IfMatch).toBeUndefined();
+    expect(createSendOptions).toEqual({ abortSignal: signal });
+
+    const [replaceCommand] = firstCall(calls.slice(1)).args as [
+      CopyObjectCommand,
+      { abortSignal?: AbortSignal }?,
+    ];
+    const { input: replaceInput } = replaceCommand;
+    expect(replaceInput).toMatchObject({
+      CopySourceIfMatch: '"source-etag-2"',
+      IfMatch: '"destination-etag"',
+      Key: "replaced.txt",
+    });
+    expect(replaceInput?.IfNoneMatch).toBeUndefined();
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional copy maps a provider failure without issuing fallback I/O", async () => {
+    s3Mock
+      .on(CopyObjectCommand)
+      .rejects(Object.assign(new Error("denied"), { name: "AccessDenied" }));
+    const conditional = requireNativeConditional(
+      s3({ bucket: "test-bucket", region: "us-east-1" })
+    );
+
+    await expect(
+      conditional.copy.run("source.txt", "destination.txt", {
+        destination: { type: "create" },
+        source: { etag: "source-etag" },
+      })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+
+    expect(s3Mock.commandCalls(CopyObjectCommand)).toHaveLength(1);
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional uploads reject multipart, resumable control, and unsized streams before provider I/O", async () => {
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+    const multipart = {
+      multipart: true,
+    } as unknown as AdapterUploadOptions;
+    const controlled = {
+      control: new UploadControl(),
+    } as unknown as AdapterUploadOptions;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+        controller.close();
+      },
+    });
+
+    await expect(
+      conditional.create("multipart.bin", "body", multipart)
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.create("controlled.bin", "body", controlled)
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.create("stream.bin", stream)
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(s3Mock.calls()).toHaveLength(0);
+    expect(FakeUpload.instances).toBe(0);
+  });
+
+  test("conditional operations reject non-canonical ETags before provider I/O", async () => {
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    await expect(
+      conditional.replace("record.txt", "body", '"already-quoted"')
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.exactRead("record.txt", "W/weak-etag")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.delete("record.txt", "first,second")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.copy.run("from", "to", {
+        destination: { type: "create" },
+        source: { etag: "*" },
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("conditional create and replace fail permanently when S3 omits the committed ETag", async () => {
+    s3Mock.on(PutObjectCommand).resolves({});
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    await expect(
+      conditional.create("created.txt", "body")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.replace("replaced.txt", "body", "old-etag")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(2);
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("conditional output ETags are validated and progress observers cannot retry a committed write", async () => {
+    s3Mock
+      .on(PutObjectCommand)
+      .resolvesOnce({ ETag: '"bad,etag"' })
+      .resolvesOnce({ ETag: '"good-etag"' });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    await expect(
+      conditional.create("invalid.txt", "body")
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    await expect(
+      conditional.create("observed.txt", "body", {
+        onProgress() {
+          throw new Error("observer failed");
+        },
+      })
+    ).resolves.toMatchObject({ etag: "good-etag" });
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(2);
   });
 
   test("operation signals are forwarded to the AWS client", async () => {
@@ -834,6 +1369,19 @@ describe("s3 adapter", () => {
     } catch (error) {
       expect((error as FilesError).code).toBe("Conflict");
     }
+  });
+
+  test("ConditionalRequestConflict maps to a retryable Provider error", () => {
+    const providerError = Object.assign(new Error("retry the request"), {
+      $metadata: { httpStatusCode: 409 },
+      name: "ConditionalRequestConflict",
+    });
+
+    const error = mapS3Error(providerError);
+
+    expect(error.code).toBe("Provider");
+    expect(error.permanent).toBe(false);
+    expect(error.cause).toBe(providerError);
   });
 
   test("upload error is mapped to Provider for unknown S3 errors", async () => {

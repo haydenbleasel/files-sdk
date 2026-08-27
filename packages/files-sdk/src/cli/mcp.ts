@@ -88,6 +88,41 @@ const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
   throw new FilesError("Provider", "expected either `text` or `base64` body");
 };
 
+// Conditional predicates, mirroring the SDK's `condition` option shapes. The
+// `capabilities` tool advertises `conditional.*`, so every tool that can
+// carry a predicate must accept one — a zod object strips unknown keys, and a
+// silently-dropped predicate would turn a compare-and-set into an overwrite.
+const etagArg = z
+  .string()
+  .describe("Canonical bare strong ETag (no quotes, no W/ prefix)");
+const uploadConditionArg = z
+  .union([
+    z.object({ type: z.literal("create") }),
+    z.object({ etag: etagArg, type: z.literal("replace") }),
+  ])
+  .optional()
+  .describe(
+    "Create only when the key is absent ({ type: 'create' }) or replace only the generation with this ETag ({ type: 'replace', etag }). Fails closed on adapters without native support; see `capabilities.conditional`."
+  );
+const etagConditionArg = z
+  .object({ etag: etagArg })
+  .optional()
+  .describe(
+    "Only proceed when the object still has this ETag. Fails closed on adapters without native support; see `capabilities.conditional`."
+  );
+const copyConditionArg = z
+  .object({
+    destination: z.union([
+      z.object({ type: z.literal("create") }),
+      z.object({ etag: etagArg, type: z.literal("replace") }),
+    ]),
+    source: z.object({ etag: etagArg }),
+  })
+  .optional()
+  .describe(
+    "Copy only when the source still has `source.etag` and the destination is absent ({ type: 'create' }) or has `destination.etag` ({ type: 'replace' }). Both predicates are required; see `capabilities.conditional.copy`."
+  );
+
 export interface McpServerOpts {
   allowWrites?: boolean;
   destination?: GlobalCliOptions;
@@ -161,6 +196,7 @@ export const buildMcpServer = async (
             .optional()
             .describe("Base64-encoded body (mutually exclusive with text)"),
           cacheControl: z.string().optional(),
+          condition: uploadConditionArg,
           contentType: z.string().optional(),
           key: z.string().describe("Object key (path) within the bucket/store"),
           metadata: z
@@ -194,6 +230,7 @@ export const buildMcpServer = async (
         cacheControl,
         metadata,
         multipart,
+        condition,
       }) => {
         try {
           if (text !== undefined && base64 !== undefined) {
@@ -208,6 +245,7 @@ export const buildMcpServer = async (
             contentType,
             metadata,
             ...(multipart !== undefined && { multipart }),
+            ...(condition !== undefined && { condition }),
           });
           return ok(result);
         } catch (error) {
@@ -223,6 +261,7 @@ export const buildMcpServer = async (
       description:
         "Download bytes for the given key. Returns metadata + base64 body so binary roundtrips safely through MCP. Bodies larger than `maxBytes` (default 10 MiB) are refused — use the CLI for larger files.",
       inputSchema: {
+        condition: etagConditionArg,
         key: z.string(),
         maxBytes: z
           .number()
@@ -245,12 +284,15 @@ export const buildMcpServer = async (
       },
       title: "Download a file",
     },
-    async ({ key, maxBytes, range }) => {
+    async ({ key, maxBytes, range, condition }) => {
       try {
         const cap = resolveMcpDownloadCap(maxBytes);
         const meta = await files.head(key);
         assertMcpDownloadFitsCap(key, mcpDownloadSize(meta.size, range), cap);
-        const file = await files.download(key, range ? { range } : undefined);
+        const file = await files.download(key, {
+          ...(range && { range }),
+          ...(condition && { condition }),
+        });
         const buf = Buffer.from(await file.arrayBuffer());
         assertMcpDownloadFitsCap(key, buf.byteLength, cap);
         return ok({
@@ -327,22 +369,31 @@ export const buildMcpServer = async (
       "delete",
       {
         description:
-          "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure.",
+          "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure. A `condition` (single key only) deletes only the generation with that ETag.",
         inputSchema: {
           concurrency: concurrencyArg,
+          condition: etagConditionArg,
           key: z.union([z.string(), z.array(z.string())]),
           stopOnError: stopOnErrorArg,
         },
         title: "Delete one or many keys",
       },
-      async ({ key, concurrency, stopOnError }) => {
+      async ({ key, concurrency, stopOnError, condition }) => {
         try {
           if (Array.isArray(key)) {
+            if (condition !== undefined) {
+              throw new FilesError(
+                "Provider",
+                "`condition` applies to a single key — bulk delete does not support conditional predicates",
+                undefined,
+                { permanent: true }
+              );
+            }
             return ok(
               await files.delete(key, bulkOpts(concurrency, stopOnError))
             );
           }
-          await files.delete(key);
+          await files.delete(key, condition ? { condition } : undefined);
           return ok({ deleted: true, key });
         } catch (error) {
           return errorPayload(error);
@@ -353,13 +404,18 @@ export const buildMcpServer = async (
     server.registerTool(
       "copy",
       {
-        description: "Copy `from` to `to` within the same store.",
-        inputSchema: { from: z.string(), to: z.string() },
+        description:
+          "Copy `from` to `to` within the same store. A `condition` makes it a native compare-and-set on both the source ETag and the destination state.",
+        inputSchema: {
+          condition: copyConditionArg,
+          from: z.string(),
+          to: z.string(),
+        },
         title: "Server-side copy",
       },
-      async ({ from, to }) => {
+      async ({ from, to, condition }) => {
         try {
-          await files.copy(from, to);
+          await files.copy(from, to, condition ? { condition } : undefined);
           return ok({ copied: true, from, to });
         } catch (error) {
           return errorPayload(error);
@@ -390,7 +446,7 @@ export const buildMcpServer = async (
     "capabilities",
     {
       description:
-        "Report what the configured adapter can do — range reads, native upload progress, list delimiters, user metadata, cache-control, multipart/resumable uploads, server-side copy, and signed URLs (`supported` plus any `maxExpiresIn` cap). Pure introspection; makes no provider call. Branch on this instead of catching an unsupported-operation error.",
+        "Report what the configured adapter can do — range reads, native upload progress, list delimiters, user metadata, cache-control, multipart/resumable uploads, server-side copy, signed URLs (`supported` plus any `maxExpiresIn` cap), and native conditional predicates (`conditional.create` / `replace` / `exactRead` / `delete` / `copy.*`, honored by the `condition` input on upload, download, delete, and copy). Pure introspection; makes no provider call. Branch on this instead of catching an unsupported-operation error.",
       inputSchema: {},
       title: "Adapter capabilities",
     },

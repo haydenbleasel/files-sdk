@@ -419,7 +419,12 @@ const resolveConcurrency = (
   return concurrency && concurrency > 0 ? concurrency : DEFAULT_CONCURRENCY;
 };
 
-const reportProgress = (
+/**
+ * Deliver an upload progress event to an optional listener. Fire-and-forget:
+ * a throwing reporter can never fail (or, after a commit, retry) the upload
+ * it observes. Shared by the resumable driver and the S3 conditional path.
+ */
+export const reportProgress = (
   onProgress: ((progress: UploadProgress) => void) | undefined,
   progress: UploadProgress
 ): void => {

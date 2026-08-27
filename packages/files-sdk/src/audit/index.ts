@@ -1,4 +1,7 @@
+import { isConditionalOperation } from "../index.js";
 import type {
+  ConditionalActionType,
+  ConditionalFilesOperation,
   FilesActionType,
   FilesOperation,
   FilesPlugin,
@@ -7,6 +10,21 @@ import type {
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+
+const conditionalAction = (
+  op: ConditionalFilesOperation
+): ConditionalActionType => {
+  if (op.kind === "upload") {
+    return op.mode;
+  }
+  if (op.kind === "download") {
+    return "exact-read";
+  }
+  if (op.kind === "delete") {
+    return "match-delete";
+  }
+  return "conditional-copy";
+};
 
 /**
  * The mutating verbs, audited by default — the same set the SDK treats as
@@ -45,6 +63,8 @@ const ALL_ACTIONS: readonly FilesActionType[] = [
 export interface AuditRecord {
   /** The verb that ran (mirrors {@link FilesActionType}). */
   action: FilesActionType;
+  /** Native conditional primitive, without its ETag predicate. */
+  condition?: ConditionalActionType;
   /** Caller-facing key — present for every verb except `copy` / `move` / `list`. */
   key?: string;
   /** `copy` / `move` source. */
@@ -70,8 +90,12 @@ export interface AuditRecord {
   size?: number;
   /** Set when this record is one item of a bulk (`[...]`) call. */
   bulk?: true;
-  /** Failure detail, on `status: "error"`. */
-  error?: { code: FilesErrorCode; message: string };
+  /**
+   * Failure detail, on `status: "error"`. `applied: true` marks a conditional
+   * mutation that committed at the provider before an awaited plugin rejected
+   * the call — the object changed despite the error status.
+   */
+  error?: { code: FilesErrorCode; message: string; applied?: true };
 }
 
 export interface AuditOptions {
@@ -126,9 +150,13 @@ const auditedKinds = (events: AuditOptions["events"]): Set<FilesActionType> => {
 /** Normalize whatever was thrown to a stable `{ code, message }`. */
 const errorInfo = (
   failure: unknown
-): { code: FilesErrorCode; message: string } => {
+): { code: FilesErrorCode; message: string; applied?: true } => {
   const error = FilesError.wrap(failure);
-  return { code: error.code, message: error.message };
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.applied && { applied: true }),
+  };
 };
 
 interface RecordContext {
@@ -154,12 +182,18 @@ const buildRecord = (op: FilesOperation, ctx: RecordContext): AuditRecord => {
     status === "success" &&
     op.kind === "upload" &&
     typeof (result as UploadResult).size === "number";
+  const condition: ConditionalActionType | undefined = isConditionalOperation(
+    op
+  )
+    ? conditionalAction(op)
+    : undefined;
   return {
     action: op.kind,
     at,
     durationMs,
     status,
     ...locus,
+    ...(condition !== undefined && { condition }),
     ...(actor !== undefined && { actor }),
     ...("bulk" in op && op.bulk ? { bulk: true } : {}),
     ...(hasSize && { size: (result as UploadResult).size }),

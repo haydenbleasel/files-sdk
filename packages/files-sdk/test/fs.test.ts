@@ -73,6 +73,61 @@ describe("fs adapter", () => {
       const adapter = fsAdapter({ root: "./.tmp-relative-root" });
       expect(path.isAbsolute(adapter.root)).toBe(true);
     });
+
+    test("fails every conditional primitive before filesystem adapter I/O", async () => {
+      const root = await makeRoot();
+      const adapter = fsAdapter({ root });
+      const upload = spyOn(adapter, "upload");
+      const download = spyOn(adapter, "download");
+      const remove = spyOn(adapter, "delete");
+      const copy = spyOn(adapter, "copy");
+      const files = new Files({ adapter });
+
+      expect(files.capabilities.conditional).toEqual({
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        exactRead: false,
+        multipart: { create: false, replace: false },
+        replace: false,
+      });
+
+      await expect(
+        files.upload("created.txt", "body", {
+          condition: { type: "create" },
+        })
+      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      await expect(
+        files.upload("replaced.txt", "body", {
+          condition: { etag: "old-etag", type: "replace" },
+        })
+      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      await expect(
+        files.download("record.txt", { condition: { etag: "read-etag" } })
+      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      await expect(
+        files.delete("record.txt", { condition: { etag: "delete-etag" } })
+      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      await expect(
+        files.copy("from.txt", "to.txt", {
+          condition: {
+            destination: { type: "create" },
+            source: { etag: "source-etag" },
+          },
+        })
+      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+
+      expect(upload).toHaveBeenCalledTimes(0);
+      expect(download).toHaveBeenCalledTimes(0);
+      expect(remove).toHaveBeenCalledTimes(0);
+      expect(copy).toHaveBeenCalledTimes(0);
+      expect(await fsp.readdir(root)).toEqual([]);
+    });
   });
 
   describe("upload + download", () => {

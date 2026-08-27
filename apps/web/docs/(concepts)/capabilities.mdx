@@ -1,6 +1,6 @@
 ---
 title: Capabilities
-description: Query what an adapter can do up front with files.capabilities - branch on range reads, signed URLs, and server-side copy instead of catching a throw.
+description: Query what an adapter can do up front with files.capabilities - including range reads, signed URLs, server-side copy, and native conditional operations.
 ---
 
 The unified surface is the common subset every adapter implements, but adapters differ at the edges: some honor byte-range reads, some can mint a signed URL, some copy server-side. The wrapper already gates on these per-adapter — pass a `range` to an adapter that has no range primitive and it throws _before_ any provider call. `files.capabilities` turns that implicit knowledge into a queryable surface, so you can branch up front instead of discovering a limit by catching an error.
@@ -32,6 +32,19 @@ interface AdapterCapabilities {
   multipart: boolean;
   serverSideCopy: boolean;
   signedUrl: { supported: boolean; maxExpiresIn?: number };
+  conditional: {
+    create: boolean;
+    replace: boolean;
+    exactRead: boolean;
+    delete: boolean;
+    copy: {
+      sourceEtag: boolean;
+      destinationCreate: boolean;
+      destinationReplace: boolean;
+      atomicSourceDestination: boolean;
+    };
+    multipart: { create: false; replace: false };
+  };
 }
 ```
 
@@ -45,8 +58,15 @@ interface AdapterCapabilities {
 | `multipart` | the adapter exposes a resumable / multipart upload primitive | `upload({ control })` |
 | `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy` |
 | `signedUrl` | `url()` can mint a signed or tokenized URL — see below | `url` |
+| `conditional` | the requested create, replace, exact-read, delete, or copy predicate has a provider-native primitive | `upload`, `download`, `delete`, `copy` |
 
-Every field mirrors an operation the unified API actually has. There are deliberately no flags for `raw`-only territory (object versioning, checksums, conditional writes, POST policies) — advertising a flag for a non-operation would turn the matrix into a back-door spec, where a wrong flag is worse than no flag.
+Every field mirrors an operation the unified API actually has. There are deliberately no flags for `raw`-only territory such as object versioning, checksums, or POST policies — advertising a flag for a non-operation would turn the matrix into a back-door spec, where a wrong flag is worse than no flag.
+
+### `conditional`
+
+Conditional capabilities are granular because providers often support only part of the surface. `create`, `replace`, `exactRead`, and `delete` map to their native single-object primitives. Conditional copy separately declares source ETag checks, destination create/replace checks, and whether the selected source plus destination predicates are evaluated atomically in one request. Invocation rechecks the declaration and fails before provider I/O when any required part is absent. These flags describe native adapter support; a composed plugin can still veto a conditional mode when its own policy cannot preserve that atomic boundary.
+
+There is no probe-then-mutate fallback. See [Conditional operations](/docs/conditional-operations) for the API, ETag rules, provider matrix, and retry/observer semantics.
 
 ### `signedUrl`
 
@@ -60,6 +80,6 @@ signedUrl: { supported: boolean; maxExpiresIn?: number }
 
 ## How it's derived
 
-`capabilities` is computed live from the adapter on every read, so a plugin that swaps behavior is always reflected. The first six fields read the exact per-adapter flags and optional methods the wrapper already gates on (`supportsRange`, `reportsUploadProgress`, `supportsDelimiter`, `supportsMetadata`, `supportsCacheControl`, and the presence of `resumableUpload`), so they can never drift from runtime behavior. `serverSideCopy` and `signedUrl` are declared by each adapter and default to the conservative value (`false`) when an adapter declares nothing — a caller that doesn't advertise reads as "no", never a wrong "yes".
+`capabilities` is computed live from the adapter on every read, so a plugin that swaps behavior is always reflected. The first six fields read the exact per-adapter flags and optional methods the wrapper already gates on (`supportsRange`, `reportsUploadProgress`, `supportsDelimiter`, `supportsMetadata`, `supportsCacheControl`, and the presence of `resumableUpload`), so they can never drift from runtime behavior. Conditional support is derived from the adapter's optional native operation group and its explicit copy guarantees. `serverSideCopy`, `signedUrl`, and every absent conditional primitive default to the conservative value (`false`) — a caller that doesn't advertise reads as "no", never a wrong "yes".
 
 If you're writing a custom adapter, set `supportsServerSideCopy` and `signedUrl` alongside the existing `supports*` flags to make your adapter introspectable; both are optional and advisory (they don't gate any operation).
