@@ -60,7 +60,7 @@ The fetch client covers `upload`, `download` (including [ranges](/docs/api/downl
 - Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests.
 - Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
 
-Inside Cloudflare Workers (detected via `navigator.userAgent === "Cloudflare-Workers"`), the fetch client is the default: the `"aws-sdk"` client's XML parsing needs `DOMParser`, which workerd doesn't provide, so it fails at runtime on the first list or error-body parse. Pass `client: "aws-sdk"` explicitly to override.
+Inside Cloudflare Workers (detected via `navigator.userAgent === "Cloudflare-Workers"`, falling back to the workerd-only `WebSocketPair` global when `navigator` is disabled), the fetch client is the default: the `"aws-sdk"` client's XML parsing needs `DOMParser`, which workerd doesn't provide, so it fails at runtime on the first list or error-body parse. Pass `client: "aws-sdk"` explicitly to override.
 
 ### Generic S3-compatible endpoints
 

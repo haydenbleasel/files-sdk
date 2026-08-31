@@ -81,9 +81,10 @@ export interface R2HttpOptions {
    * Which HTTP engine backs the adapter.
    *
    * Defaults to `"aws-sdk"`, except on Cloudflare Workers (detected via
-   * `navigator.userAgent === "Cloudflare-Workers"`), where it defaults to
-   * `"fetch"` — the aws-sdk engine's XML parsing needs `DOMParser`, which
-   * workerd doesn't provide.
+   * `navigator.userAgent === "Cloudflare-Workers"`, falling back to the
+   * workerd-only `WebSocketPair` global when `navigator` is disabled), where
+   * it defaults to `"fetch"` — the aws-sdk engine's XML parsing needs
+   * `DOMParser`, which workerd doesn't provide.
    *
    * - `"aws-sdk"`: `@aws-sdk/client-s3` — the full surface,
    *   including multipart/resumable uploads, byte-level upload progress, and
@@ -622,11 +623,15 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
   // parse (list, error bodies) then throws `DOMParser is not defined` at
   // runtime, long after adapter construction. When the caller didn't pick a
   // client, default to the fetch engine on workerd instead of failing there.
-  const client =
-    opts.client ??
-    (globalThis.navigator?.userAgent === "Cloudflare-Workers"
-      ? "fetch"
-      : "aws-sdk");
+  // `navigator.userAgent === "Cloudflare-Workers"` is the documented workerd
+  // check, but `navigator` is absent on compatibility dates before
+  // 2022-03-21 or under the `no_global_navigator` flag — `WebSocketPair` is
+  // a workerd-only global that exists regardless, so it covers those.
+  const onWorkerd =
+    globalThis.navigator?.userAgent === "Cloudflare-Workers" ||
+    typeof (globalThis as { WebSocketPair?: unknown }).WebSocketPair ===
+      "function";
+  const client = opts.client ?? (onWorkerd ? "fetch" : "aws-sdk");
 
   // The lightweight engine: aws4fetch-signed fetch, no @aws-sdk/* anywhere.
   // The only R2-specific bit layered on top is the friendlier `maxSize`

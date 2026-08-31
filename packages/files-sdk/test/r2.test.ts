@@ -1465,6 +1465,26 @@ describe("r2 adapter — HTTP client default on Cloudflare Workers", () => {
     }
   });
 
+  test("defaults to fetch when only WebSocketPair marks workerd (no_global_navigator / pre-2022-03-21 compat)", () => {
+    const g = globalThis as { WebSocketPair?: unknown };
+    const hadPair = Object.hasOwn(g, "WebSocketPair");
+    const previousPair = g.WebSocketPair;
+    // workerd-only global; the detection only checks typeof === "function".
+    // oxlint-disable-next-line react/function-component-definition -- not a React component; the rule misreads this stub as one.
+    g.WebSocketPair = () => null;
+    try {
+      const adapter = makeAdapter();
+      expect(adapter.name).toBe("r2-http-fetch");
+    } finally {
+      if (hadPair) {
+        g.WebSocketPair = previousPair;
+      } else {
+        // oxlint-disable-next-line no-dynamic-delete
+        delete g.WebSocketPair;
+      }
+    }
+  });
+
   test('an explicit client: "aws-sdk" still wins on workerd', () => {
     const restore = stubNavigator("Cloudflare-Workers");
     try {
