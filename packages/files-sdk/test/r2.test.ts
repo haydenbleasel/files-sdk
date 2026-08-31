@@ -1437,3 +1437,69 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     }
   });
 });
+
+const stubNavigator = (userAgent: string) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { userAgent },
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(globalThis, "navigator", original);
+    } else {
+      // oxlint-disable-next-line no-dynamic-delete
+      delete (globalThis as { navigator?: unknown }).navigator;
+    }
+  };
+};
+
+describe("r2 adapter — HTTP client default on Cloudflare Workers", () => {
+  test("defaults to the fetch engine on workerd (aws-sdk needs DOMParser)", () => {
+    const restore = stubNavigator("Cloudflare-Workers");
+    try {
+      const adapter = makeAdapter();
+      expect(adapter.name).toBe("r2-http-fetch");
+    } finally {
+      restore();
+    }
+  });
+
+  test('an explicit client: "aws-sdk" still wins on workerd', () => {
+    const restore = stubNavigator("Cloudflare-Workers");
+    try {
+      const adapter = r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        bucket: "uploads",
+        client: "aws-sdk",
+        secretAccessKey: "S",
+      });
+      expect(adapter.name).toBe("r2-http");
+    } finally {
+      restore();
+    }
+  });
+
+  test("defaults to the aws-sdk engine everywhere else", () => {
+    const adapter = makeAdapter();
+    expect(adapter.name).toBe("r2-http");
+  });
+});
+
+describe("s3FetchAdapter export", () => {
+  test("files-sdk/r2 exposes the Workers-safe SigV4 engine directly", async () => {
+    const { s3FetchAdapter } = await import("../src/r2/index.js");
+    const adapter = s3FetchAdapter({
+      accessKeyId: "K",
+      bucket: "uploads",
+      endpoint: "https://s3.us-east-1.amazonaws.com",
+      region: "us-east-1",
+      secretAccessKey: "S",
+    });
+    expect(adapter.name).toBe("s3-fetch");
+    expect(adapter.bucket).toBe("uploads");
+    const url = await adapter.url("a.txt");
+    expect(url).toContain("X-Amz-Credential=K");
+  });
+});

@@ -80,7 +80,12 @@ export interface R2HttpOptions {
   /**
    * Which HTTP engine backs the adapter.
    *
-   * - `"aws-sdk"` (default): `@aws-sdk/client-s3` — the full surface,
+   * Defaults to `"aws-sdk"`, except on Cloudflare Workers (detected via
+   * `navigator.userAgent === "Cloudflare-Workers"`), where it defaults to
+   * `"fetch"` — the aws-sdk engine's XML parsing needs `DOMParser`, which
+   * workerd doesn't provide.
+   *
+   * - `"aws-sdk"`: `@aws-sdk/client-s3` — the full surface,
    *   including multipart/resumable uploads, byte-level upload progress, and
    *   batched `deleteMany`. Requires the `@aws-sdk/*` optional peer
    *   dependencies. Loaded lazily on first use.
@@ -611,10 +616,22 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     );
   }
 
+  // The aws-sdk engine is not workerd-compatible: @aws-sdk/client-s3's
+  // Workers-style bundle resolves @aws-sdk/xml-builder's *browser* XML
+  // parser, which needs `DOMParser` — undefined in workerd. Every S3 XML
+  // parse (list, error bodies) then throws `DOMParser is not defined` at
+  // runtime, long after adapter construction. When the caller didn't pick a
+  // client, default to the fetch engine on workerd instead of failing there.
+  const client =
+    opts.client ??
+    (globalThis.navigator?.userAgent === "Cloudflare-Workers"
+      ? "fetch"
+      : "aws-sdk");
+
   // The lightweight engine: aws4fetch-signed fetch, no @aws-sdk/* anywhere.
   // The only R2-specific bit layered on top is the friendlier `maxSize`
   // rejection (the shared core fails closed too, but without the R2 context).
-  if (opts.client === "fetch") {
+  if (client === "fetch") {
     const inner = s3FetchAdapter({
       accessKeyId,
       bucket: opts.bucket,
@@ -807,3 +824,14 @@ export const r2 = (opts: R2AdapterOptions): R2Adapter => {
 
 // Re-export R2 type so consumers don't need to import workers-types directly.
 export type { R2Bucket } from "@cloudflare/workers-types";
+
+// The Workers-safe SigV4 engine, exported for generic S3-compatible
+// endpoints (AWS S3, MinIO, Tigris, …) on runtimes where `files-sdk/s3`
+// can't run: that entry statically imports `@aws-sdk/client-s3`, whose XML
+// parsing requires `DOMParser` and so fails on workerd. This is the same
+// engine `client: "fetch"` uses, minus the R2-specific wrapping.
+export { s3FetchAdapter } from "../internal/s3-fetch.js";
+export type {
+  S3FetchAdapter,
+  S3FetchAdapterOptions,
+} from "../internal/s3-fetch.js";

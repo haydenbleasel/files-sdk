@@ -60,6 +60,24 @@ The fetch client covers `upload`, `download` (including [ranges](/docs/api/downl
 - Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests.
 - Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
 
+Inside Cloudflare Workers (detected via `navigator.userAgent === "Cloudflare-Workers"`), the fetch client is the default: the `"aws-sdk"` client's XML parsing needs `DOMParser`, which workerd doesn't provide, so it fails at runtime on the first list or error-body parse. Pass `client: "aws-sdk"` explicitly to override.
+
+### Generic S3-compatible endpoints
+
+The engine behind `client: "fetch"` is exported as `s3FetchAdapter` from `files-sdk/r2` for talking to any S3-compatible endpoint (AWS S3, MinIO, Tigris, ...) on runtimes where `files-sdk/s3` can't run — that entry statically imports `@aws-sdk/client-s3`, which has the same `DOMParser` problem on workerd. It takes an explicit `endpoint`, `region`, `bucket`, credentials, and an optional `forcePathStyle`, with the same coverage and trade-offs as the fetch client above.
+
+```ts lineNumbers
+import { s3FetchAdapter } from "files-sdk/r2";
+
+const adapter = s3FetchAdapter({
+  bucket: "uploads",
+  endpoint: "https://s3.us-east-1.amazonaws.com",
+  region: "us-east-1",
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+});
+```
+
 ## Options
 
 `R2AdapterOptions` is a union of two shapes depending on whether you have a Workers `R2Bucket` binding available.
