@@ -14,7 +14,7 @@
     "types": "tsc"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.501",
+    "@remotion/cli": "4.0.518",
     "@remotion/google-fonts": "4.0.501",
     "@remotion/sfx": "4.0.484",
     "@remotion/tailwind-v4": "4.0.501",
