@@ -1,5 +1,18 @@
 # files-sdk
 
+## 2.3.1
+
+### Patch Changes
+
+- 048612d: Fix the `files-sdk/api` proxy download returning a 500 for a suffix `Range` request (`bytes=-N`) against an empty object. The header resolved to an inverted byte range that the SDK rejected as invalid; the gateway now answers `416 Range Not Satisfiable` with `Content-Range: bytes */0`, as it already did for other unsatisfiable ranges.
+- 048612d: Fix `tiering()` buffering the whole object on a cross-tier `copy` / `move` and on `tier()`. The transfer read the source with a plain `download()`, which buffers the body on most adapters, so a large object was materialized in memory before being re-uploaded — contradicting the plugin's streaming contract. The source is now read with `as: "stream"`, so cross-tier transfers stream end to end.
+- c67d482: Widen optional peer dependency ranges: `@nestjs/common` now accepts v12, `node-appwrite` accepts v27 and v28, and `pocketbase` accepts v0.27 and v0.28.
+- eaf2df1: r2: default to the `"fetch"` client inside Cloudflare Workers. The `"aws-sdk"` client's XML parsing needs a `DOMParser`, which workerd doesn't provide, so it failed at runtime on the first list or error-body parse. Detection is `navigator.userAgent === "Cloudflare-Workers"` (or the workerd-only `WebSocketPair` global when `navigator` is disabled); an explicit `client: "aws-sdk"` or a `DOMParser` polyfill on the global keeps the aws-sdk engine.
+  
+  A Worker that had the aws-sdk client working now gets the fetch engine's narrower surface unless it opts back in: `multipart` and resumable `control` uploads throw, `ReadableStream` bodies are buffered before a single PUT, bulk deletes fan out per key instead of one `DeleteObjects`, keys with `.`/`..` segments are rejected, `signedUploadUrl({ maxSize })` throws, and `files.raw` is an aws4fetch `AwsClient` rather than an `S3Client`.
+  
+  New `files-sdk/s3-fetch` subpath: `s3Fetch()` exposes the same SigV4 fetch engine for any S3-compatible endpoint (AWS S3, MinIO, Tigris, ...) on runtimes where `files-sdk/s3` can't run. Static credentials with `AWS_*` env fallbacks, `forcePathStyle` for services without per-bucket DNS, no `@aws-sdk/*` peers.
+
 ## 2.3.0
 
 ### Minor Changes
