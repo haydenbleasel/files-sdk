@@ -7,7 +7,7 @@ The unified surface is deliberately small — the methods every adapter can impl
 
 ## `files.raw`
 
-`raw` is the underlying provider client, typed per adapter — `S3Client` for `s3()`, `VercelBlobClient` for `vercelBlob()`, an `R2Bucket` (or `S3Client` in HTTP mode) for `r2()`, and so on. The type flows through from the adapter, so you keep full autocomplete on it.
+`raw` is the underlying provider client, typed per adapter — `S3Client` for `s3()`, `VercelBlobClient` for `vercelBlob()`, an `R2Bucket`, `S3Client`, or aws4fetch `AwsClient` for `r2()` depending on its mode (binding, `"aws-sdk"` HTTP client, or `"fetch"` HTTP client - the default inside Cloudflare Workers), and so on. The type flows through from the adapter, so you keep full autocomplete on it.
 
 ```ts lineNumbers
 const files = new Files({ adapter: s3({ bucket: "uploads" }) });

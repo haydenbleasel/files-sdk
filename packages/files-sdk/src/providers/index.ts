@@ -1219,6 +1219,52 @@ export const PROVIDERS = {
     peerDeps: AWS_S3_PEERS,
     slug: "s3",
   },
+  "s3-fetch": {
+    description:
+      "AWS S3 (and any S3-compatible bucket) over a SigV4-signed fetch engine (aws4fetch) instead of @aws-sdk/client-s3. No @aws-sdk/* peers, no credential chain — built for Cloudflare Workers and other edge runtimes where the AWS SDK's XML parser can't run.",
+    env: {
+      config: ["bucket", "endpoint"],
+      credentialModes: [
+        {
+          label: "Static credentials",
+          vars: [
+            {
+              description: "Access key ID",
+              key: "AWS_ACCESS_KEY_ID",
+              readBy: "files-sdk",
+              secret: true,
+            },
+            {
+              description: "Secret access key",
+              key: "AWS_SECRET_ACCESS_KEY",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "Static credentials only — there is no AWS credential chain (IAM role, shared profile, SSO) on this engine. Pass `forcePathStyle: true` for MinIO and other services without per-bucket DNS.",
+      optional: [
+        {
+          description: "Session token for temporary credentials",
+          key: "AWS_SESSION_TOKEN",
+          readBy: "files-sdk",
+          secret: true,
+        },
+        {
+          aliases: ["AWS_DEFAULT_REGION"],
+          description: "SigV4 signing region (defaults to us-east-1)",
+          key: "AWS_REGION",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "S3 (fetch)",
+    peerDeps: [],
+    slug: "s3-fetch",
+  },
   scaleway: {
     description:
       "Scaleway Object Storage via the S3-compatible API. Endpoint derived from the region code (fr-par, nl-ams, pl-waw).",

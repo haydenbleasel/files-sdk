@@ -46,7 +46,8 @@ export interface S3FetchAdapterOptions {
   bucket: string;
   /**
    * Service endpoint origin, e.g. `https://ACCOUNT.r2.cloudflarestorage.com`
-   * or `https://s3.us-east-1.amazonaws.com`.
+   * or `https://s3.us-east-1.amazonaws.com`. Only the origin is used — any
+   * path component is dropped.
    */
   endpoint: string;
   /** SigV4 signing region. Defaults to `us-east-1`; R2 uses `auto`. */
@@ -55,8 +56,8 @@ export interface S3FetchAdapterOptions {
   secretAccessKey: string;
   sessionToken?: string;
   /**
-   * Use path-style addressing (`https://endpoint/bucket/key`) instead of
-   * virtual-hosted style (`https://bucket.endpoint/key`).
+   * Use path-style addressing (`https://endpoint/bucket/key`) instead of the
+   * default virtual-hosted style (`https://bucket.endpoint/key`).
    */
   forcePathStyle?: boolean;
   /** See {@link import("../s3/index.js").S3AdapterOptions.publicBaseUrl}. */
@@ -169,7 +170,7 @@ const encodeKey = (key: string): string =>
         // encoding survives normalization; fail closed instead.
         throw new FilesError(
           "Provider",
-          `key contains a "${segment}" path segment, which the fetch client cannot address — URL normalization would silently target a different key. Use the aws-sdk client for dot-segment keys.`,
+          `key contains a "${segment}" path segment, which the fetch client cannot address — URL normalization would silently target a different key. Rename the key, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`,
           undefined,
           { permanent: true }
         );
@@ -500,7 +501,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         // this client deliberately doesn't implement — retrying can't help.
         throw new FilesError(
           "Provider",
-          `${providerLabel}: \`maxSize\` requires a presigned POST policy, which the fetch client does not implement. Use the aws-sdk client, or enforce the limit at your application gateway before issuing the URL.`,
+          `${providerLabel}: \`maxSize\` requires a presigned POST policy, which the fetch client does not implement. Enforce the limit at your application gateway before issuing the URL, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`,
           undefined,
           { permanent: true }
         );
@@ -532,7 +533,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         // body that size is exactly what multipart exists to avoid.
         throw new FilesError(
           "Provider",
-          `${providerLabel}: multipart uploads are not supported by the fetch client. Use the aws-sdk client for multipart and resumable uploads.`,
+          `${providerLabel}: multipart uploads are not supported by the fetch client (bodies go up as a single PUT). Use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack), or upload in a single request under the 5 GB PUT cap.`,
           undefined,
           { permanent: true }
         );

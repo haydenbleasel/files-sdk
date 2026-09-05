@@ -172,6 +172,10 @@ const cases: Record<string, Case> = {
     },
   },
   s3: { expectedName: "s3", opts: baseS3 },
+  "s3-fetch": {
+    expectedName: "s3-fetch",
+    opts: { ...baseS3, endpoint: "https://s3.test" },
+  },
   scaleway: { expectedName: "scaleway", opts: baseS3 },
   sftp: {
     expectedName: "sftp",

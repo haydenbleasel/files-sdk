@@ -1438,25 +1438,36 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
   });
 });
 
-const stubNavigator = (userAgent: string) => {
-  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  Object.defineProperty(globalThis, "navigator", {
-    configurable: true,
-    value: { userAgent },
-  });
+// Swap a global for the duration of a test. Omit `value` to remove it, so
+// tests can simulate a runtime without `navigator` at all.
+const stubGlobal = (name: string, value?: unknown) => {
+  const target = globalThis as Record<string, unknown>;
+  const original = Object.getOwnPropertyDescriptor(globalThis, name);
+  if (value === undefined) {
+    // oxlint-disable-next-line no-dynamic-delete
+    delete target[name];
+  } else {
+    Object.defineProperty(globalThis, name, { configurable: true, value });
+  }
   return () => {
     if (original) {
-      Object.defineProperty(globalThis, "navigator", original);
+      Object.defineProperty(globalThis, name, original);
     } else {
       // oxlint-disable-next-line no-dynamic-delete
-      delete (globalThis as { navigator?: unknown }).navigator;
+      delete target[name];
     }
   };
 };
 
+// Stands in for a constructor-shaped global (`WebSocketPair`, `DOMParser`);
+// the detection only checks `typeof === "function"`.
+const fakeGlobalFn = () => null;
+
 describe("r2 adapter — HTTP client default on Cloudflare Workers", () => {
   test("defaults to the fetch engine on workerd (aws-sdk needs DOMParser)", () => {
-    const restore = stubNavigator("Cloudflare-Workers");
+    const restore = stubGlobal("navigator", {
+      userAgent: "Cloudflare-Workers",
+    });
     try {
       const adapter = makeAdapter();
       expect(adapter.name).toBe("r2-http-fetch");
@@ -1465,28 +1476,50 @@ describe("r2 adapter — HTTP client default on Cloudflare Workers", () => {
     }
   });
 
-  test("defaults to fetch when only WebSocketPair marks workerd (no_global_navigator / pre-2022-03-21 compat)", () => {
-    const g = globalThis as { WebSocketPair?: unknown };
-    const hadPair = Object.hasOwn(g, "WebSocketPair");
-    const previousPair = g.WebSocketPair;
-    // workerd-only global; the detection only checks typeof === "function".
-    // oxlint-disable-next-line react/function-component-definition -- not a React component; the rule misreads this stub as one.
-    g.WebSocketPair = () => null;
+  test("falls back to WebSocketPair only when navigator is absent (no_global_navigator / pre-2022-03-21 compat)", () => {
+    const restoreNavigator = stubGlobal("navigator");
+    const restorePair = stubGlobal("WebSocketPair", fakeGlobalFn);
     try {
       const adapter = makeAdapter();
       expect(adapter.name).toBe("r2-http-fetch");
     } finally {
-      if (hadPair) {
-        g.WebSocketPair = previousPair;
-      } else {
-        // oxlint-disable-next-line no-dynamic-delete
-        delete g.WebSocketPair;
-      }
+      restorePair();
+      restoreNavigator();
+    }
+  });
+
+  test("ignores a WebSocketPair shim when navigator says this is not workerd (Miniflare v2 on Node)", () => {
+    const restoreNavigator = stubGlobal("navigator", {
+      userAgent: "Node.js/22",
+    });
+    const restorePair = stubGlobal("WebSocketPair", fakeGlobalFn);
+    try {
+      const adapter = makeAdapter();
+      expect(adapter.name).toBe("r2-http");
+    } finally {
+      restorePair();
+      restoreNavigator();
+    }
+  });
+
+  test("keeps the aws-sdk default on workerd when DOMParser is polyfilled", () => {
+    const restoreNavigator = stubGlobal("navigator", {
+      userAgent: "Cloudflare-Workers",
+    });
+    const restoreParser = stubGlobal("DOMParser", fakeGlobalFn);
+    try {
+      const adapter = makeAdapter();
+      expect(adapter.name).toBe("r2-http");
+    } finally {
+      restoreParser();
+      restoreNavigator();
     }
   });
 
   test('an explicit client: "aws-sdk" still wins on workerd', () => {
-    const restore = stubNavigator("Cloudflare-Workers");
+    const restore = stubGlobal("navigator", {
+      userAgent: "Cloudflare-Workers",
+    });
     try {
       const adapter = r2({
         accessKeyId: "K",
@@ -1504,22 +1537,5 @@ describe("r2 adapter — HTTP client default on Cloudflare Workers", () => {
   test("defaults to the aws-sdk engine everywhere else", () => {
     const adapter = makeAdapter();
     expect(adapter.name).toBe("r2-http");
-  });
-});
-
-describe("s3FetchAdapter export", () => {
-  test("files-sdk/r2 exposes the Workers-safe SigV4 engine directly", async () => {
-    const { s3FetchAdapter } = await import("../src/r2/index.js");
-    const adapter = s3FetchAdapter({
-      accessKeyId: "K",
-      bucket: "uploads",
-      endpoint: "https://s3.us-east-1.amazonaws.com",
-      region: "us-east-1",
-      secretAccessKey: "S",
-    });
-    expect(adapter.name).toBe("s3-fetch");
-    expect(adapter.bucket).toBe("uploads");
-    const url = await adapter.url("a.txt");
-    expect(url).toContain("X-Amz-Credential=K");
   });
 });
