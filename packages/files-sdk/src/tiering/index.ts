@@ -205,7 +205,11 @@ const transferAcross = async (
   to: string,
   opts?: OperationOptions
 ): Promise<void> => {
-  const file = await src.download(from, opts);
+  // `as: "stream"` is what keeps this a stream: a default download buffers
+  // the whole body on most adapters (S3 reads it into memory, fs `readFile`s
+  // it), and `file.stream()` would then merely replay that buffer — a
+  // multi-GB cross-tier copy would materialize the object in memory.
+  const file = await src.download(from, { ...opts, as: "stream" });
   const uploadOpts: UploadOptions = {
     contentType: file.type,
     ...(file.metadata &&

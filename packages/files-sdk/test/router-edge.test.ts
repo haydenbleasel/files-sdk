@@ -408,6 +408,25 @@ describe("download range parsing", () => {
     expect((await ranged("bytes=-0")).status).toBe(416);
     expect((await ranged("bytes=5-3")).status).toBe(416);
   });
+
+  test("any range on an empty object is unsatisfiable, not a 500", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("empty.txt", "");
+    const router = mk({ adapter, operations: ["download"] });
+    const get = (range: string) =>
+      router.handle(
+        new Request(`${ENDPOINT}?op=download&key=empty.txt`, {
+          headers: { range },
+          method: "GET",
+        })
+      );
+    // A suffix range used to resolve to `end = -1`, which the SDK rejected as
+    // an inverted range — surfacing as a 500 instead of a 416.
+    const suffix = await get("bytes=-5");
+    expect(suffix.status).toBe(416);
+    expect(suffix.headers.get("content-range")).toBe("bytes */0");
+    expect((await get("bytes=0-")).status).toBe(416);
+  });
 });
 
 describe("metadata round-trips on the wire", () => {

@@ -4,6 +4,7 @@ import { createFiles, FilesError } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
+  DownloadOptions,
   ListOptions,
   ListResult,
   PluginNext,
@@ -164,6 +165,26 @@ describe("tiering — copy / move", () => {
     // Source untouched.
     expect(hot.has("a.txt")).toBe(true);
     expect(cold.has("cold/a.txt")).toBe(true);
+    expect(await files.download("cold/a.txt").then((f) => f.text())).toBe(
+      "payload"
+    );
+  });
+
+  test("cross-tier copy streams the source instead of buffering it", async () => {
+    const { files, hot } = harness(prefixRoute);
+    await files.upload("a.txt", "payload");
+    // Record what the hot adapter is asked for: a default download buffers
+    // the whole body on real adapters, so the cross-tier read must ask for a
+    // stream — otherwise a multi-GB copy materializes the object in memory.
+    const seen: (DownloadOptions | undefined)[] = [];
+    const original = hot.download.bind(hot);
+    hot.download = (key, opts) => {
+      seen.push(opts);
+      return original(key, opts);
+    };
+    await files.copy("a.txt", "cold/a.txt");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.as).toBe("stream");
     expect(await files.download("cold/a.txt").then((f) => f.text())).toBe(
       "payload"
     );
@@ -504,6 +525,21 @@ describe("tiering — tier() / tierOf()", () => {
     expect(cold.has("k")).toBe(true);
     // Still found via the fallback read.
     expect(await files.download("k").then((f) => f.text())).toBe("tiny");
+  });
+
+  test("tier() streams the source across tiers", async () => {
+    const { files, hot } = harness(prefixRoute, { fallback: true });
+    await files.upload("k", "payload");
+    const seen: (DownloadOptions | undefined)[] = [];
+    const original = hot.download.bind(hot);
+    hot.download = (key, opts) => {
+      seen.push(opts);
+      return original(key, opts);
+    };
+    await files.tier("k", "cold");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.as).toBe("stream");
+    expect(await files.download("k").then((f) => f.text())).toBe("payload");
   });
 
   test("tier() to the current tier is a no-op", async () => {

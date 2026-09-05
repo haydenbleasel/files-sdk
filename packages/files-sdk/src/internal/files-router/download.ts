@@ -30,6 +30,13 @@ const parseRangeHeader = (header: string, size: number): RangeParse => {
   if (rawStart === "" && rawEnd === "") {
     return { kind: "full" };
   }
+  if (size === 0) {
+    // No byte of an empty object is addressable. `bytes=0-` already fails
+    // the `start < size` check below, but a suffix (`bytes=-N`) would resolve
+    // to `end = -1` — an inverted range the SDK rejects with a 500 rather
+    // than the 416 (`Content-Range: bytes */0`) the client can act on.
+    return { kind: "unsatisfiable" };
+  }
 
   let start: number;
   let end: number;
