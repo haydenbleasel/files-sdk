@@ -477,6 +477,13 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     },
     required: ["--bucket"],
   },
+  "s3-fetch": {
+    load: async (opts) => {
+      const { s3Fetch } = await import("../s3-fetch/index.js");
+      return cast(s3Fetch, merge(s3LikeOpts(opts), opts.extra));
+    },
+    required: ["--bucket", ENDPOINT_FLAG],
+  },
   scaleway: {
     load: async (opts) => {
       const { scaleway } = await import("../scaleway/index.js");

@@ -28,7 +28,7 @@ In the [array form](/docs/bulk), `multipart` is a per-item option — set it on 
 
 The flag maps onto whatever chunking primitive the provider exposes, so the mechanics differ but the contract — a large body uploaded reliably — does not:
 
-- **S3 and the S3-compatible adapters** (incl. R2 over HTTP) run multipart through the optional [`@aws-sdk/lib-storage`](https://www.npmjs.com/package/@aws-sdk/lib-storage) package, falling back to a single `PutObject` when the body fits in one part. Unknown-length streams use multipart **automatically**, even without the flag.
+- **S3 and the S3-compatible adapters** (incl. R2 over HTTP with the `"aws-sdk"` client) run multipart through the optional [`@aws-sdk/lib-storage`](https://www.npmjs.com/package/@aws-sdk/lib-storage) package, falling back to a single `PutObject` when the body fits in one part. Unknown-length streams use multipart **automatically**, even without the flag.
 - **OneDrive** uploads above 250 MB (and any `multipart` request) go through a chunked upload session — large files that previously failed now just work.
 - **GCS** and **Firebase Storage** switch to a resumable upload; `partSize` maps to the chunk size.
 - **Azure Blob** already splits large bodies into parallel blocks; `multipart` only tunes the block size and concurrency.

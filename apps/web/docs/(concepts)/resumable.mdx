@@ -55,7 +55,7 @@ Aborting via the [`signal`](/docs/cancellations) option instead cancels the call
 
 The token maps onto whatever resumable primitive the provider exposes. Most adapters resume **across processes** — persist the token, resume after a crash:
 
-- **S3 and the S3-compatible adapters** (incl. R2 over HTTP) drive S3's native multipart API directly — the token carries the `UploadId`, resume lists already-uploaded parts with `ListParts`, and `abort()` issues `AbortMultipartUpload`. (This is a separate path from the [`multipart`](/docs/multipart) flag's `@aws-sdk/lib-storage` upload, which doesn't expose the upload id.)
+- **S3 and the S3-compatible adapters** (incl. R2 over HTTP with the `"aws-sdk"` client) drive S3's native multipart API directly — the token carries the `UploadId`, resume lists already-uploaded parts with `ListParts`, and `abort()` issues `AbortMultipartUpload`. (This is a separate path from the [`multipart`](/docs/multipart) flag's `@aws-sdk/lib-storage` upload, which doesn't expose the upload id.)
 - **GCS**, **Firebase Storage**, and **Google Drive** resume against a stored resumable-session URI.
 - **Azure Blob** stages blocks and commits them, skipping blocks already staged on resume.
 - **OneDrive** drives a Graph upload session and reads `nextExpectedRanges` to resume.

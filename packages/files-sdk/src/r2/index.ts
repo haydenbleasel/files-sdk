@@ -80,7 +80,15 @@ export interface R2HttpOptions {
   /**
    * Which HTTP engine backs the adapter.
    *
-   * - `"aws-sdk"` (default): `@aws-sdk/client-s3` — the full surface,
+   * Defaults to `"aws-sdk"`, except on Cloudflare Workers (detected via
+   * `navigator.userAgent === "Cloudflare-Workers"`, or the workerd-only
+   * `WebSocketPair` global when `navigator` is disabled), where it defaults
+   * to `"fetch"` — the aws-sdk engine's XML parsing needs `DOMParser`, which
+   * workerd doesn't provide. A Worker that polyfills `DOMParser` keeps the
+   * `"aws-sdk"` default. Note the `"fetch"` engine's narrower surface below
+   * before relying on the default in a Worker.
+   *
+   * - `"aws-sdk"`: `@aws-sdk/client-s3` — the full surface,
    *   including multipart/resumable uploads, byte-level upload progress, and
    *   batched `deleteMany`. Requires the `@aws-sdk/*` optional peer
    *   dependencies. Loaded lazily on first use.
@@ -89,8 +97,12 @@ export interface R2HttpOptions {
    *   runtimes. Covers upload, download (+ ranges), head, exists, delete,
    *   list (+ delimiter), server-side copy, presigned `url()`, and
    *   `signedUploadUrl()`. Trade-offs: `ReadableStream` bodies are buffered
-   *   before the single PUT, `multipart`/`control` uploads throw, and bulk
-   *   deletes fan out per-key instead of batching.
+   *   before the single PUT, `multipart`/`control` uploads throw, bulk
+   *   deletes fan out per-key instead of batching, keys with `.`/`..`
+   *   segments are rejected, and `raw` is an aws4fetch `AwsClient`.
+   *
+   * For a generic S3-compatible endpoint on the same engine, see
+   * `s3Fetch()` from `files-sdk/s3-fetch`.
    */
   client?: "aws-sdk" | "fetch";
   /**
@@ -611,10 +623,41 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     );
   }
 
+  // The aws-sdk engine is not workerd-compatible out of the box:
+  // @aws-sdk/client-s3's browser-targeted bundle resolves @aws-sdk/xml-builder's
+  // *browser* XML parser, which needs `DOMParser` — undefined in workerd. Every
+  // S3 XML parse (list, error bodies) then throws `DOMParser is not defined`
+  // at runtime, long after adapter construction. When the caller didn't pick
+  // a client, default to the fetch engine on workerd instead of failing there.
+  //
+  // `navigator.userAgent === "Cloudflare-Workers"` is the documented workerd
+  // check. `navigator` is absent on compatibility dates before 2022-03-21 or
+  // under the `no_global_navigator` flag; only *then* fall back to the
+  // workerd-only `WebSocketPair` global — Node-hosted Workers shims (Miniflare
+  // v2, jest-environment-miniflare) also define it, and `navigator` is the
+  // signal that tells them apart from the real thing.
+  //
+  // A `DOMParser` on the global is the one precondition the aws-sdk engine
+  // needs, and the standard workaround for this bug is to polyfill exactly
+  // that (linkedom, @xmldom/xmldom). Keep those deployments on the full
+  // engine — swapping them to fetch would silently drop multipart/resumable
+  // uploads, batched deletes, and `raw` as an `S3Client`.
+  const g = globalThis as {
+    DOMParser?: unknown;
+    WebSocketPair?: unknown;
+    navigator?: { userAgent?: string };
+  };
+  const onWorkerd = g.navigator
+    ? g.navigator.userAgent === "Cloudflare-Workers"
+    : typeof g.WebSocketPair === "function";
+  const awsSdkCanParseXml = typeof g.DOMParser === "function";
+  const client =
+    opts.client ?? (onWorkerd && !awsSdkCanParseXml ? "fetch" : "aws-sdk");
+
   // The lightweight engine: aws4fetch-signed fetch, no @aws-sdk/* anywhere.
   // The only R2-specific bit layered on top is the friendlier `maxSize`
   // rejection (the shared core fails closed too, but without the R2 context).
-  if (opts.client === "fetch") {
+  if (client === "fetch") {
     const inner = s3FetchAdapter({
       accessKeyId,
       bucket: opts.bucket,

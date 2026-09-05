@@ -158,6 +158,10 @@
       "types": "./dist/bun-s3/index.d.ts",
       "import": "./dist/bun-s3/index.js"
     },
+    "./s3-fetch": {
+      "types": "./dist/s3-fetch/index.d.ts",
+      "import": "./dist/s3-fetch/index.js"
+    },
     "./r2": {
       "types": "./dist/r2/index.d.ts",
       "import": "./dist/r2/index.js"

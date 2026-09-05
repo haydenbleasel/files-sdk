@@ -151,6 +151,21 @@ test(
   COLD_BUILD_TIMEOUT_MS
 );
 
+// The s3-fetch entry is the public home of the aws4fetch engine and must stay
+// installable without any `@aws-sdk/*` peer — that is its whole reason to
+// exist. Guard the graph the same way as r2.
+test(
+  "s3-fetch bundle never imports an optional peer, even across dynamic chunks",
+  () => {
+    ensureBuilt();
+    const s3FetchBundle = path.resolve(distDir, "s3-fetch/index.js");
+    expect(
+      offendingOptionalPeers(s3FetchBundle, { followDynamic: true })
+    ).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
 // The firebase-storage entry reaches `firebase-admin` only through the
 // `createRequire` loader — invisible to bundlers — so an injected `Bucket`
 // works without the peer being resolvable. Guard against a top-level

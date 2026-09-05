@@ -13,6 +13,8 @@ files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-pres
 
 To report true byte-level [upload progress](/docs/api/upload#progress-tracking) via `upload`'s `onProgress` option, also install `@aws-sdk/lib-storage` — it's optional and only loaded when `onProgress` is used.
 
+On Cloudflare Workers and other edge runtimes without a `DOMParser`, `@aws-sdk/client-s3`'s XML parsing fails at runtime. Use [`s3Fetch()` from `files-sdk/s3-fetch`](/docs/adapters/s3-fetch) there instead — the same S3 protocol over a SigV4-signed `fetch`, with no `@aws-sdk/*` packages.
+
 ## Usage
 
 ```ts lineNumbers
