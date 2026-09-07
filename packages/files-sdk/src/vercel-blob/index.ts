@@ -23,6 +23,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
@@ -146,7 +147,7 @@ export type VercelBlobClient = typeof blob;
 export type VercelBlobAdapter = Adapter<VercelBlobClient>;
 
 const sizeOf = (body: Body): number | undefined => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body).byteLength;
   }
   if (body instanceof Uint8Array) {
@@ -201,13 +202,26 @@ const DEFAULT_BLOB_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
-const mapBlobError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+const mapBlobError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const e = err as { name?: string; message?: string; status?: number };
-  const code = classifyBlobError(e?.status, e?.name ?? "");
-  return new FilesError(code, e?.message ?? DEFAULT_BLOB_MESSAGES[code], err);
+  // `BlobError` subclasses carry `status`; transport errors may carry only a
+  // name/message. Read each field only once its type is established.
+  const status =
+    isObject(cause) && "status" in cause && isNumber(cause.status)
+      ? cause.status
+      : undefined;
+  const name =
+    isObject(cause) && "name" in cause && isString(cause.name)
+      ? cause.name
+      : "";
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
+  const code = classifyBlobError(status, name);
+  return new FilesError(code, message ?? DEFAULT_BLOB_MESSAGES[code], cause);
 };
 
 // `BLOB_READ_WRITE_TOKEN` format is `vercel_blob_rw_<storeId>_<random>`.
@@ -539,7 +553,10 @@ export const vercelBlob = (
             }
           )
         );
-        const prefixes = (result as { folders?: string[] }).folders;
+        // `mode: "folded"` is only sent alongside a delimiter; an expanded
+        // listing carries no `folders`, so read it as optional despite the
+        // folded result type the conditional spread selects.
+        const prefixes: string[] | undefined = result.folders;
         return {
           cursor: result.hasMore ? result.cursor : undefined,
           items,
@@ -569,10 +586,9 @@ export const vercelBlob = (
         return session;
       };
       const minPart = 5 * 1024 * 1024;
-      const requestedPart =
-        typeof resumableOpts.multipart === "object"
-          ? resumableOpts.multipart.partSize
-          : undefined;
+      const requestedPart = isObject(resumableOpts.multipart)
+        ? resumableOpts.multipart.partSize
+        : undefined;
       const partSize =
         requestedPart && requestedPart > minPart ? requestedPart : minPart;
       return {
@@ -656,18 +672,18 @@ export const vercelBlob = (
         async uploadPart({ partNumber, data, signal }): Promise<PartMeta> {
           const active = requireSession();
           try {
-            const part = await blob.uploadPart(
-              key,
-              data as unknown as Parameters<typeof blob.uploadPart>[1],
-              {
-                access,
-                key: active.storageKey,
-                partNumber,
-                uploadId: active.uploadId,
-                ...resolveAuth(),
-                ...(signal && { abortSignal: signal }),
-              }
-            );
+            // SAFETY: the SDK hands a non-stream body to `fetch` untouched
+            // (sizing it via `byteLength`), so a typed array is a valid body
+            // at runtime; its `PutBody` type just omits plain views. `Buffer`
+            // is the declared member a `Uint8Array` is comparable to.
+            const part = await blob.uploadPart(key, data as Buffer, {
+              access,
+              key: active.storageKey,
+              partNumber,
+              uploadId: active.uploadId,
+              ...resolveAuth(),
+              ...(signal && { abortSignal: signal }),
+            });
             const meta: PartMeta = {
               etag: part.etag,
               partNumber,
@@ -703,6 +719,10 @@ export const vercelBlob = (
     supportsServerSideCopy: true,
     async upload(key, body, options) {
       try {
+        // SAFETY: `Body`'s typed-array members are missing from the SDK's
+        // `PutBody`, but the SDK forwards any non-stream body to `fetch`
+        // untouched (sizing it via `byteLength`), so every `Body` shape is a
+        // valid body at runtime. The cast only bridges the declared unions.
         const result = await blob.put(key, body as Blob | string, {
           access,
           addRandomSuffix,

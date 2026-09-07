@@ -28,7 +28,7 @@ export const createOffsetHttpDriver = (params: {
   resume: (session: ResumableUploadSession) => string;
   /** Parse a `200`/`201` completion response into an {@link UploadResult}. */
   parseResult: (res: Response) => Promise<UploadResult>;
-  wrapErr: (err: unknown) => FilesError;
+  wrapErr: (cause: unknown) => FilesError;
 }): OffsetResumableDriver => {
   const { partSize, open, resume, parseResult, wrapErr } = params;
   let uri: string | undefined;
@@ -101,10 +101,11 @@ export const createOffsetHttpDriver = (params: {
           data.byteLength === 0
             ? `bytes */${total}`
             : `bytes ${offset}-${offset + data.byteLength - 1}/${rangeTotal}`;
+        // SAFETY: `data` is a chunk sliced by `toByteSource`, always backed by
+        // a plain `ArrayBuffer` (never shared memory); DOM's `BodyInit` only
+        // pins the backing type, and `fetch` accepts the view at runtime.
         const res = await fetch(requireUri(), {
-          // A typed array's generic ArrayBufferLike backing doesn't satisfy the
-          // DOM BodyInit type, though `fetch` accepts it at runtime.
-          body: data as unknown as BodyInit,
+          body: data as BodyInit,
           headers: { "Content-Range": contentRange },
           method: "PUT",
           ...(signal && { signal }),

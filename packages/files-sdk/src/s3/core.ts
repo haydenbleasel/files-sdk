@@ -34,9 +34,11 @@ import {
   normalizeBody,
   resolveUrlStrategy,
 } from "../internal/core.js";
+import type { ErrorExtract } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isObject } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { reportProgress } from "../internal/resumable.js";
 import { abortError } from "../internal/retry.js";
@@ -231,7 +233,21 @@ const abortOptions = (signal: AbortSignal | undefined) =>
 // client whose model predates the field leaves the header out, so the guard
 // compares the built request against the input rather than trusting the
 // peer range.
-const CONDITIONAL_HEADERS: readonly (readonly [string, string])[] = [
+type ConditionalInputField = "CopySourceIfMatch" | "IfMatch" | "IfNoneMatch";
+
+/** The conditional predicate fields a command input may carry. */
+type ConditionalInput = Partial<Record<ConditionalInputField, string>>;
+
+/** The HTTP request as seen at the middleware `build` step. */
+interface BuiltRequest {
+  headers?: Record<string, string | undefined>;
+  hostname?: string;
+}
+
+const CONDITIONAL_HEADERS: readonly (readonly [
+  ConditionalInputField,
+  string,
+])[] = [
   ["IfMatch", "if-match"],
   ["IfNoneMatch", "if-none-match"],
   ["CopySourceIfMatch", "x-amz-copy-source-if-match"],
@@ -265,7 +281,9 @@ const conditionalRequestGuard =
     next: (args: Args) => Promise<Result>
   ) =>
   (args: Args): Promise<Result> => {
-    const input = args.input as Record<string, unknown>;
+    // SAFETY: `input` is the command's typed input object; the SDK declares
+    // every conditional field it may carry as an optional string.
+    const input = args.input as ConditionalInput;
     const expected = CONDITIONAL_HEADERS.filter(
       ([field]) => input[field] !== undefined
     );
@@ -273,10 +291,10 @@ const conditionalRequestGuard =
     if (expected.length === 0) {
       return next(args);
     }
-    const request = args.request as {
-      headers?: Record<string, string | undefined>;
-      hostname?: string;
-    };
+    // SAFETY: this guard is registered at the `build` step, where the SDK
+    // has already serialized `args.request` into its HttpRequest (headers +
+    // resolved hostname).
+    const request = args.request as BuiltRequest;
     if (!(allowAnyHost || isAwsHost(request.hostname ?? ""))) {
       throw new FilesError(
         "Provider",
@@ -306,6 +324,9 @@ const assertConditionalUploadOptions = (
 ): void => {
   // AdapterUploadOptions excludes both fields statically; retain a runtime
   // fail-closed guard for direct JavaScript/structural calls.
+  // SAFETY: deliberately re-widens to the caller-facing UploadOptions fields
+  // so an untyped caller's `control` / `multipart` are seen and rejected;
+  // both reads below tolerate the fields being absent.
   const untrusted = options as
     | (AdapterUploadOptions & Pick<UploadOptions, "control" | "multipart">)
     | undefined;
@@ -353,10 +374,13 @@ type MultipartInput = boolean | MultipartOptions | undefined;
  * Translate our {@link MultipartOptions} into the lib-storage `Upload` knobs.
  * `partSize` is omitted when unset so lib-storage's 5 MiB default applies.
  */
-const resolveMultipart = (
-  multipart: MultipartInput
-): { partSize?: number; queueSize: number } => {
-  const opts = typeof multipart === "object" ? multipart : {};
+interface LibStorageUploadKnobs {
+  partSize?: number;
+  queueSize: number;
+}
+
+const resolveMultipart = (multipart: MultipartInput): LibStorageUploadKnobs => {
+  const opts = isObject(multipart) ? multipart : {};
   return {
     ...(opts.partSize !== undefined && { partSize: opts.partSize }),
     queueSize: opts.concurrency ?? MULTIPART_DEFAULT_CONCURRENCY,
@@ -420,8 +444,7 @@ const runLibStorageUpload = async (
 const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
 
 const resolveResumablePartSize = (multipart: MultipartInput): number => {
-  const partSize =
-    typeof multipart === "object" ? multipart.partSize : undefined;
+  const partSize = isObject(multipart) ? multipart.partSize : undefined;
   return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
 };
 
@@ -438,7 +461,7 @@ const createS3ResumableDriver = (
   bucket: string,
   key: string,
   driverOpts: ResumableDriverOptions,
-  wrapErr: (err: unknown) => FilesError
+  wrapErr: (cause: unknown) => FilesError
 ): PartsResumableDriver => {
   const {
     AbortMultipartUploadCommand,
@@ -627,17 +650,21 @@ const S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES: ReadonlySet<string> = new Set([
 // has to chunk longer key lists into separate requests.
 const S3_DELETE_BATCH_LIMIT = 1000;
 
-const extractS3Error = (
-  err: unknown
-): { code?: string; status?: number; message?: string } => {
-  const e = err as {
-    name?: string;
-    Code?: string;
-    $metadata?: { httpStatusCode?: number };
-    message?: string;
-  };
+/** The fields of an `@aws-sdk/client-s3` `S3ServiceException` we classify on. */
+interface S3ServiceExceptionFields {
+  $metadata?: { httpStatusCode?: number };
+  Code?: string;
+  message?: string;
+  name?: string;
+}
+
+const extractS3Error = (cause: unknown): ErrorExtract => {
+  // SAFETY: every field is read optionally; a thrown value that is not an
+  // SDK exception (or not even an object) just yields no code/status/message.
+  const e = cause as S3ServiceExceptionFields | null | undefined;
+  const code = e?.name ?? e?.Code;
   return {
-    ...((e?.name ?? e?.Code) ? { code: e?.name ?? e?.Code } : {}),
+    ...(code && { code }),
     ...(e?.message && { message: e.message }),
     ...(e?.$metadata?.httpStatusCode !== undefined && {
       status: e.$metadata.httpStatusCode,
@@ -655,11 +682,11 @@ const buildMapS3Error = (providerLabel = "S3 error") => {
     extract: extractS3Error,
     providerLabel,
   });
-  return (err: unknown): FilesError => {
-    if (err instanceof FilesError) {
-      return err;
+  return (cause: unknown): FilesError => {
+    if (cause instanceof FilesError) {
+      return cause;
     }
-    const extracted = extractS3Error(err);
+    const extracted = extractS3Error(cause);
     // Unlike PreconditionFailed (412), AWS documents this 409 as a transient
     // race that clients should retry. Keep it Provider-coded so Files' retry
     // policy can safely reissue the same native conditional request.
@@ -670,10 +697,10 @@ const buildMapS3Error = (providerLabel = "S3 error") => {
       return new FilesError(
         "Provider",
         extracted.message ?? providerLabel,
-        err
+        cause
       );
     }
-    return mapDefault(err);
+    return mapDefault(cause);
   };
 };
 
@@ -687,29 +714,34 @@ const _defaultMapS3Error = buildMapS3Error();
  * so their unknown-error messages read with the right provider name.
  */
 export const mapS3Error = (
-  err: unknown,
+  cause: unknown,
   messages?: Partial<Record<ProviderFilesErrorCode, string>>
 ): FilesError => {
   if (!messages) {
-    return _defaultMapS3Error(err);
+    return _defaultMapS3Error(cause);
   }
-  if (err instanceof FilesError) {
-    return err;
+  if (cause instanceof FilesError) {
+    return cause;
   }
   // 2-arg form: the caller has provided per-code fallback strings.
   // Re-derive code/status, then prefer the original error's own message
   // (so server-side reasons surface) and fall back to the caller's table.
-  const e = err as { name?: string; Code?: string; message?: string };
+  // SAFETY: `message` is read optionally; a non-SDK (or non-object) thrown
+  // value simply contributes no message of its own.
+  const e = cause as S3ServiceExceptionFields | null | undefined;
   const wrapped = _defaultMapS3Error({
-    ...(typeof err === "object" && err ? err : {}),
+    ...(isObject(cause) && cause),
     // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips any spread-in message so mapping is by code only; null would be a real message value
     message: undefined,
   });
+  // SAFETY: `wrapped` was built by `makeErrorMapper` from a plain object (never
+  // a pass-through FilesError), and that mapper only ever assigns the four
+  // provider-family codes.
   const code = wrapped.code as ProviderFilesErrorCode;
   return new FilesError(
     code,
     e?.message ?? messages[code] ?? wrapped.message,
-    err
+    cause
   );
 };
 
@@ -1251,18 +1283,15 @@ export const createS3Adapter = (
       try {
         if (signOpts.maxSize !== undefined) {
           const minSize = signOpts.minSize ?? 1;
-          const conditions: (
-            | [string, ...unknown[]]
-            | Record<string, string>
-          )[] = [["content-length-range", minSize, signOpts.maxSize]];
+          const conditions: NonNullable<
+            PresignedPost.PresignedPostOptions["Conditions"]
+          > = [["content-length-range", minSize, signOpts.maxSize]];
           if (signOpts.contentType) {
             conditions.push(["eq", "$Content-Type", signOpts.contentType]);
           }
           const post = await createPresignedPost(client, {
             Bucket: bucket,
-            Conditions: conditions as Parameters<
-              typeof createPresignedPost
-            >[1]["Conditions"],
+            Conditions: conditions,
             Expires: signOpts.expiresIn,
             Key: key,
             ...(signOpts.contentType && {

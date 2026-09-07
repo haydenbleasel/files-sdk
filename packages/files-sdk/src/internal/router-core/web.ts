@@ -4,6 +4,7 @@
 // driven and asserted as plain data, and lets the streaming-download branch be
 // modeled without constructing a real `Response`.
 
+import type { JsonValue } from "../json.js";
 import { RouterError } from "./envelope.js";
 
 export interface ParsedRequest {
@@ -16,7 +17,7 @@ export interface ParsedRequest {
   origin: string | null;
   rangeHeader: string | null;
   /** Parsed JSON body for a POST action; `undefined` otherwise. */
-  json: unknown;
+  json: JsonValue | undefined;
   /** Raw body stream for a byte-path PUT; `null` otherwise. */
   bodyStream: ReadableStream<Uint8Array> | null;
   contentType: string | null;
@@ -41,7 +42,7 @@ export const parseRequest = async (req: Request): Promise<ParsedRequest> => {
   const action = url.searchParams.get("op");
   const contentType = req.headers.get("content-type");
 
-  let json: unknown;
+  let json: JsonValue | undefined;
   let bodyStream: ReadableStream<Uint8Array> | null = null;
   if (method === "POST") {
     try {
@@ -50,7 +51,7 @@ export const parseRequest = async (req: Request): Promise<ParsedRequest> => {
       throw new RouterError("Validation", "invalid JSON request body");
     }
   } else if (method === "PUT") {
-    bodyStream = req.body as ReadableStream<Uint8Array> | null;
+    bodyStream = req.body;
   }
 
   const lengthHeader = req.headers.get("content-length");

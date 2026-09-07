@@ -21,8 +21,12 @@ interface FirebaseAdminStorageModule {
   getStorage: typeof getStorage;
 }
 
+// SAFETY: `createRequire`'s `require` is untyped; the interface mirrors the
+// named exports of the `firebase-admin/app` subpath (typed above via
+// `typeof` imports of that very module).
 export const loadFirebaseAdminApp = (): FirebaseAdminAppModule =>
   require("firebase-admin/app") as FirebaseAdminAppModule;
 
+// SAFETY: as above, for the `firebase-admin/storage` subpath's `getStorage`.
 export const loadFirebaseAdminStorage = (): FirebaseAdminStorageModule =>
   require("firebase-admin/storage") as FirebaseAdminStorageModule;

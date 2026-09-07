@@ -1,4 +1,5 @@
 import type { Body } from "../index.js";
+import { isString } from "./is.js";
 
 /**
  * The mutating verbs a {@link Receipt} is emitted for — the same write set the
@@ -130,11 +131,16 @@ export const buildReceipt = (input: ReceiptInput): Receipt => ({
  * The mutating action types that map onto a {@link ReceiptOp}. `signedUploadUrl`
  * is intentionally excluded — see {@link ReceiptOp}.
  */
-const RECEIPT_OPS = new Set<string>(["upload", "delete", "copy", "move"]);
+const RECEIPT_OPS = new Map<string, ReceiptOp>([
+  ["upload", "upload"],
+  ["delete", "delete"],
+  ["copy", "copy"],
+  ["move", "move"],
+]);
 
 /** Narrow a {@link FilesActionType} to a {@link ReceiptOp}, or `undefined`. */
 export const receiptOpFor = (type: string): ReceiptOp | undefined =>
-  RECEIPT_OPS.has(type) ? (type as ReceiptOp) : undefined;
+  RECEIPT_OPS.get(type);
 
 /**
  * Lowercase-hex SHA-256 of `bytes`, via Web Crypto (the same `crypto.subtle`
@@ -143,9 +149,10 @@ export const receiptOpFor = (type: string): ReceiptOp | undefined =>
  * when `receipts: { sha256: true }` is set on a buffered upload.
  */
 export const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
-  // Web Crypto's BufferSource is pinned to ArrayBuffer backing (not
-  // SharedArrayBuffer); our upload bytes never share, so assert it here — the
-  // same pattern the encryption adapter uses.
+  // SAFETY: Web Crypto's BufferSource is pinned to ArrayBuffer backing (not
+  // SharedArrayBuffer); upload bytes come from `bufferedBodyBytes` below —
+  // encoded strings, caller views, or `Blob#arrayBuffer` — none of which
+  // share memory. Same pattern the encryption plugin uses.
   const digest = await crypto.subtle.digest(
     "SHA-256",
     bytes as Uint8Array<ArrayBuffer>
@@ -169,7 +176,7 @@ export const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
 export const bufferedBodyBytes = async (
   body: Body
 ): Promise<Uint8Array | undefined> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body);
   }
   if (body instanceof Uint8Array) {
@@ -179,8 +186,7 @@ export const bufferedBodyBytes = async (
     return new Uint8Array(body);
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
   }
   if (body instanceof Blob) {
     return new Uint8Array(await body.arrayBuffer());

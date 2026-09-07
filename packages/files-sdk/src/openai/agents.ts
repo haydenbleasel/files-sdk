@@ -193,6 +193,8 @@ export function createAgentsFileTools({
   if (overrides) {
     for (const [name, toolOverrides] of Object.entries(overrides)) {
       if (name in allTools && toolOverrides) {
+        // SAFETY: `allTools` is a closed record keyed by exactly the
+        // FileToolName union, so the `in` check above proves membership.
         const key = name as keyof AgentsFileTools;
         Object.assign(allTools, {
           [key]: { ...allTools[key], ...toolOverrides },
@@ -205,6 +207,10 @@ export function createAgentsFileTools({
     return allTools;
   }
 
+  // SAFETY: `allTools` holds exactly the FileToolName keys; dropping the
+  // FileWriteToolName ones leaves exactly the FileReadToolName entries the
+  // read-only shape declares. `Set#has` is a pure membership test, so widening
+  // its probe to the key type can't yield a false positive.
   return Object.fromEntries(
     Object.entries(allTools).filter(
       ([name]) => !WRITE_TOOL_NAMES.has(name as FileWriteToolName)

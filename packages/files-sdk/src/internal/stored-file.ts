@@ -1,6 +1,7 @@
 import type { StoredFile } from "../index.js";
 import { collectStream } from "./core.js";
 import { FilesError } from "./errors.js";
+import { isFunction } from "./is.js";
 
 export interface StoredFileMeta {
   key: string;
@@ -44,7 +45,7 @@ const consumedError = (): FilesError =>
 /** Whether this runtime's `Blob` accepts byte parts (React Native's does not). */
 const supportsByteBlobs = (): boolean => {
   try {
-    return new Blob([new Uint8Array(0) as BlobPart]).size === 0;
+    return new Blob([new Uint8Array(0)]).size === 0;
   } catch {
     return false;
   }
@@ -52,12 +53,15 @@ const supportsByteBlobs = (): boolean => {
 
 /** Read a Blob's bytes — via `arrayBuffer()`, or `FileReader` where it's absent (React Native). */
 const blobBytes = async (blob: Blob): Promise<Uint8Array> => {
-  if (typeof blob.arrayBuffer === "function") {
+  if (isFunction(blob.arrayBuffer)) {
     return new Uint8Array(await blob.arrayBuffer());
   }
   // oxlint-disable-next-line promise/avoid-new -- FileReader is callback-only; there is no promise API to return
   return await new Promise<Uint8Array>((resolve, reject) => {
     const reader = new FileReader();
+    // SAFETY: `readAsArrayBuffer` populates `result` with an `ArrayBuffer`
+    // by the time `load` fires; the `string | null` arms belong to the other
+    // read modes and the not-yet-loaded state.
     // oxlint-disable-next-line unicorn/prefer-add-event-listener -- single handler on a throwaway reader; RN's FileReader guarantees the on* properties
     reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
     // oxlint-disable-next-line unicorn/prefer-add-event-listener -- see above
@@ -131,6 +135,9 @@ export const createStoredFile = (
   return {
     async arrayBuffer() {
       const bytes = await toBytes();
+      // SAFETY: download bytes come from `collectStream`, `Response#arrayBuffer`
+      // or an adapter SDK buffer — never a `SharedArrayBuffer` — and `slice`
+      // preserves the backing kind, so the copy is a plain `ArrayBuffer`.
       return bytes.buffer.slice(
         bytes.byteOffset,
         bytes.byteOffset + bytes.byteLength
@@ -153,6 +160,8 @@ export const createStoredFile = (
       }
       const bytes = await toBytes();
       try {
+        // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing; see
+        // `arrayBuffer()` above — download bytes never share memory.
         return new Blob([bytes as BlobPart], { type: meta.type });
       } catch (error) {
         // React Native, after the bytes were already materialized (a byte

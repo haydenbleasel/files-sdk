@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
 
 import { AuthType, createClient } from "webdav";
 import type { FileStat, OAuthToken, WebDAVClient } from "webdav";
@@ -25,7 +25,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { toWebStream as nodeToWebStream } from "../internal/node-stream";
 import { joinRemotePath, trimSlashes } from "../internal/remote-path.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
@@ -90,12 +92,23 @@ export type WebdavAdapter = Adapter<WebdavRaw> & { readonly root: string };
 // Response body is a Node Readable rather than a web stream; Bun and the
 // browser hand back a web ReadableStream. Normalize so callers always get
 // `getReader()`.
-const toWebStream = (body: unknown): ReadableStream<Uint8Array> =>
-  typeof (body as { getReader?: unknown }).getReader === "function"
-    ? (body as ReadableStream<Uint8Array>)
-    : (Readable.toWeb(
-        body as Readable
-      ) as unknown as ReadableStream<Uint8Array>);
+// What node-fetch declares its body as, plus the web stream Bun / browsers
+// actually hand back.
+type ResponseBody = NodeJS.ReadableStream | ReadableStream<Uint8Array>;
+
+const isWebStream = (body: ResponseBody): body is ReadableStream<Uint8Array> =>
+  isObject(body) && "getReader" in body && isFunction(body.getReader);
+
+const toWebStream = (body: ResponseBody): ReadableStream<Uint8Array> => {
+  if (isWebStream(body)) {
+    return body;
+  }
+  // SAFETY: node-fetch's Response body is a `stream.Readable` (a PassThrough);
+  // its types only describe it through the legacy `NodeJS.ReadableStream`
+  // interface, which `Readable.toWeb` does not accept.
+  const nodeReadable = body as Readable;
+  return nodeToWebStream(nodeReadable);
+};
 
 // WebDAV errors from the `webdav` library carry the HTTP status on `.status`;
 // classify on the standard status buckets. Transport failures (fetch rejected:
@@ -107,11 +120,11 @@ export const mapWebdavError = makeErrorMapper({
     notFound: new Set<string>(),
     unauthorized: new Set<string>(),
   },
-  extract: (err) => {
-    const e = err as { status?: number; message?: string };
+  extract: (cause) => {
+    const e = isObject(cause) ? cause : undefined;
     return {
-      ...(typeof e?.status === "number" && { status: e.status }),
-      ...(typeof e?.message === "string" && { message: e.message }),
+      ...(e && "message" in e && isString(e.message) && { message: e.message }),
+      ...(e && "status" in e && isNumber(e.status) && { status: e.status }),
     };
   },
   providerLabel: "WebDAV error",
@@ -132,6 +145,8 @@ const resolveAuthType = (value: string | undefined): AuthType | undefined => {
   if (!value) {
     return;
   }
+  // SAFETY: the lookup tolerates an arbitrary string — an unknown mode reads
+  // as `undefined`, which the guard below turns into a FilesError.
   const mapped = AUTH_TYPES[value as WebdavAuthType];
   if (!mapped) {
     throw new FilesError(
@@ -167,6 +182,13 @@ const parseLastMod = (value: string | undefined | null): number | undefined => {
 // getFileContents (binary) returns a Node Buffer, ArrayBuffer, or a typed-array
 // view depending on the runtime — normalize every shape to a Uint8Array without
 // copying.
+/** `getFileContents({ details: true, format: "binary" })` as the library returns it. */
+interface DetailedBinaryResponse {
+  data: ArrayBuffer | ArrayBufferView;
+  headers: Record<string, string>;
+  status: number;
+}
+
 const toUint8 = (data: ArrayBuffer | ArrayBufferView): Uint8Array => {
   if (data instanceof ArrayBuffer) {
     return new Uint8Array(data);
@@ -177,8 +199,12 @@ const toUint8 = (data: ArrayBuffer | ArrayBufferView): Uint8Array => {
 // A tight ArrayBuffer over the bytes — putFileContents takes ArrayBuffer/Buffer,
 // not an arbitrary Uint8Array view, so hand it a buffer with no slack.
 const toArrayBuffer = (u8: Uint8Array): ArrayBuffer => {
-  if (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) {
-    return u8.buffer as ArrayBuffer;
+  if (
+    u8.byteOffset === 0 &&
+    u8.byteLength === u8.buffer.byteLength &&
+    u8.buffer instanceof ArrayBuffer
+  ) {
+    return u8.buffer;
   }
   return new Uint8Array(u8).buffer;
 };
@@ -254,6 +280,9 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
 
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
     try {
+      // SAFETY: without `details`, `getFileContents` resolves to the bare
+      // payload, and `format: "binary"` makes that payload bytes (Buffer or
+      // ArrayBuffer) rather than a string.
       const data = (await client.getFileContents(keyToRemote(key), {
         format: "binary",
       })) as ArrayBuffer | ArrayBufferView;
@@ -310,7 +339,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           if (range) {
             assertRangeHonored(res.status, "webdav");
           }
-          const body = res.body as unknown;
+          const { body } = res;
           if (!body) {
             throw new FilesError(
               "Provider",
@@ -341,16 +370,17 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         }
       }
       try {
+        // SAFETY: `details: true` resolves the detailed envelope and
+        // `format: "binary"` makes its `data` bytes. The envelope declares
+        // `headers: Headers`, but the library's `processResponsePayload`
+        // hands back a plain header record — which is what `headerValue`
+        // iterates.
         const result = (await client.getFileContents(remote, {
           details: true,
           format: "binary",
           ...(rangeHeaders && { headers: rangeHeaders }),
           ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
-        })) as {
-          data: ArrayBuffer | ArrayBufferView;
-          headers: Record<string, string>;
-          status: number;
-        };
+        })) as DetailedBinaryResponse;
         if (range) {
           assertRangeHonored(result.status, "webdav");
         }
@@ -376,6 +406,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     exists(key, opts2?: OperationOptions) {
       const remote = keyToRemote(key);
       return existsByProbe(async () => {
+        // SAFETY: without `details: true`, `stat` resolves to the bare FileStat.
         const stat = (await client.stat(remote, {
           ...(opts2?.signal && { signal: opts2.signal }),
         })) as FileStat;
@@ -387,6 +418,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     async head(key, opts2?: OperationOptions): Promise<StoredFile> {
       const remote = keyToRemote(key);
       try {
+        // SAFETY: without `details: true`, `stat` resolves to the bare FileStat.
         const stat = (await client.stat(remote, {
           ...(opts2?.signal && { signal: opts2.signal }),
         })) as FileStat;
@@ -415,10 +447,10 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         { size: number; lastModified?: number; type?: string }
       >();
       const walk = async (dir: string, prefix: string): Promise<void> => {
-        const entries = (await client.getDirectoryContents(dir, {
+        const entries = await client.getDirectoryContents(dir, {
           details: false,
           ...(signal && { signal }),
-        })) as FileStat[];
+        });
         for (const entry of entries) {
           const childKey = prefix
             ? `${prefix}/${entry.basename}`

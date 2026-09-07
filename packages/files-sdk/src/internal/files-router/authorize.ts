@@ -19,6 +19,7 @@ export interface AuthorizeContext {
   from?: string;
   to?: string;
   /** Parsed, validated op params (read-only). */
+  // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- public `authorize` callback contract (documented as `Readonly<Record<string, unknown>>`); the per-op key set varies, so a fixed interface would change the exported type's meaning
   params: Readonly<Record<string, unknown>>;
 }
 

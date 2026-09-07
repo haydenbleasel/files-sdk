@@ -8,6 +8,7 @@ import type {
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 // Convex assigns the storage id (`Id<"_storage">`, an opaque string); the
@@ -118,15 +119,15 @@ const OCTET_STREAM = "application/octet-stream";
 // Convex surfaces "missing" mostly as `null` returns (handled inline), so the
 // mapper just classifies thrown errors: not-found phrasing → NotFound, every
 // other failure → Provider with the original preserved as `cause`.
-const mapConvexError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+const mapConvexError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const message = err instanceof Error ? err.message : String(err);
+  const message = cause instanceof Error ? cause.message : String(cause);
   if (/not found|could not find|does not exist|nonexistent/iu.test(message)) {
-    return new FilesError("NotFound", message, err);
+    return new FilesError("NotFound", message, cause);
   }
-  return new FilesError("Provider", message, err);
+  return new FilesError("Provider", message, cause);
 };
 
 const REQUIRES_ACTION =
@@ -134,11 +135,9 @@ const REQUIRES_ACTION =
 
 export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
   const ctx = opts?.ctx;
-  if (
-    !ctx ||
-    typeof ctx !== "object" ||
-    typeof (ctx as ConvexCtx).storage?.getUrl !== "function"
-  ) {
+  // `ctx` is typed, but the adapter is built from a caller-supplied Convex
+  // context, so feature-detect the one member every context must carry.
+  if (!ctx || !isFunction(ctx.storage?.getUrl)) {
     throw new FilesError(
       "Provider",
       "convex adapter: `ctx` is required. Pass the Convex function context — `convex({ ctx })` — from inside an action, mutation, or query."
@@ -173,7 +172,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
           }
         : undefined;
     }
-    if (typeof storage.getMetadata === "function") {
+    if (isFunction(storage.getMetadata)) {
       const meta = await storage.getMetadata(key);
       return meta
         ? {
@@ -188,7 +187,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
 
   // Read a file body into bytes. Requires an action context.
   const loadBytes = async (key: ConvexStorageId): Promise<Uint8Array> => {
-    if (typeof storage.get !== "function") {
+    if (!isFunction(storage.get)) {
       throw new FilesError(
         "Provider",
         `convex: reading a file body ${REQUIRES_ACTION}`
@@ -217,7 +216,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     },
 
     async delete(key) {
-      if (typeof storage.delete !== "function") {
+      if (!isFunction(storage.delete)) {
         throw new FilesError(
           "Provider",
           "convex: delete() requires a mutation or action context (ctx.storage.delete); it is unavailable in queries."
@@ -236,7 +235,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     },
 
     async download(key): Promise<StoredFile> {
-      if (typeof storage.get !== "function") {
+      if (!isFunction(storage.get)) {
         throw new FilesError(
           "Provider",
           `convex: download() ${REQUIRES_ACTION}`
@@ -352,7 +351,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       );
       return {
         items,
-        ...(result.isDone ? {} : { cursor: result.continueCursor }),
+        ...(!result.isDone && { cursor: result.continueCursor }),
       };
     },
 
@@ -360,7 +359,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     raw: ctx,
 
     signedUploadUrl(_key): Promise<SignedUpload> {
-      if (typeof storage.generateUploadUrl !== "function") {
+      if (!isFunction(storage.generateUploadUrl)) {
         return Promise.reject(
           new FilesError(
             "Provider",
@@ -384,7 +383,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter sets neither `supportsMetadata` nor `supportsCacheControl`)
       // — Convex's _storage table is fixed to contentType/sha256/size.
-      if (typeof storage.store !== "function") {
+      if (!isFunction(storage.store)) {
         throw new FilesError("Provider", `convex: upload() ${REQUIRES_ACTION}`);
       }
       // The caller-supplied `key` is ignored: Convex assigns the id. It is
@@ -394,6 +393,10 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
         normalized.data instanceof ReadableStream
           ? await collectStream(normalized.data)
           : normalized.data;
+      // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+      // widened typed arrays to `ArrayBufferLike`). `bytes` is freshly
+      // allocated by `normalizeBody`/`collectStream` or is the caller's own
+      // `Body` view, which the SDK documents as plain upload bytes.
       const blob = new Blob([bytes as BlobPart], {
         type: normalized.contentType,
       });

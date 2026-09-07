@@ -4,8 +4,10 @@ import type {
   FilesPlugin,
   ListOptions,
   ListResult,
+  OperationResult,
   PluginNext,
   StoredFile,
+  UploadResult,
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
@@ -54,9 +56,9 @@ const normalizeDir = (prefix: string): string => {
 
 /** Lowercase-hex SHA-256 of `bytes` — the content address. */
 const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
-  // The digest input is a BufferSource that excludes SharedArrayBuffer-backed
-  // views; our bodies never share, so assert the ArrayBuffer backing (as the
-  // encryption plugin does).
+  // SAFETY: the digest input is a BufferSource that excludes
+  // SharedArrayBuffer-backed views; our bodies never share, so the ArrayBuffer
+  // backing holds (as in the encryption plugin).
   const digest = await crypto.subtle.digest(
     "SHA-256",
     bytes as Uint8Array<ArrayBuffer>
@@ -213,7 +215,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   const upload = async (
     op: Extract<FilesOperation, { kind: "upload" }>,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<UploadResult> => {
     const normalized = await normalizeBody(op.body, op.options?.contentType);
     const bytes =
       normalized.data instanceof Uint8Array
@@ -301,10 +303,14 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     return rewrap(op.key, pointer, blob);
   };
 
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; every branch below resolves with the value
+  // the matching verb's `next` produces (or a same-typed rewrite of it), so
+  // the non-generic function satisfies the generic `wrap` at each verb.
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     // Every conditional mode is vetoed, not just the ones that touch the
     // blob. A pointer's body is always empty, so its ETag is the same for
     // every key and never changes when the pointer is rewritten to a new

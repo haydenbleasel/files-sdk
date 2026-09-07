@@ -9,6 +9,7 @@ import type {
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
+  SignUploadOptions,
   StoredFile,
   UploadOptions,
   UploadResult,
@@ -22,6 +23,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonValue } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface AppwriteAdapterOptions {
@@ -79,7 +83,7 @@ export const mapAppwriteError = makeErrorMapper({
     if (err instanceof AppwriteException) {
       return {
         ...(err.message && { message: err.message }),
-        ...(typeof err.code === "number" && { status: err.code }),
+        ...(isNumber(err.code) && { status: err.code }),
       };
     }
     return {};
@@ -101,9 +105,10 @@ const assertAppwriteKey = (key: string, label = "key"): void => {
   }
 };
 
-const isSupportedBody = (body: unknown): body is Body =>
+// Runtime guard for untyped (JS) callers: `Body` is already the static type.
+const isSupportedBody = (body: Body): boolean =>
   // oxlint-disable-next-line sonarjs/expression-complexity -- a flat body-type guard; each instanceof check is a distinct supported Body shape, splitting would just scatter the union
-  typeof body === "string" ||
+  isString(body) ||
   body instanceof Uint8Array ||
   body instanceof ArrayBuffer ||
   ArrayBuffer.isView(body) ||
@@ -113,7 +118,10 @@ const isSupportedBody = (body: unknown): body is Body =>
 // `InputFile.fromBuffer` has no streaming form, so streamed bodies must be
 // drained up-front. Other Body shapes already arrive as `Uint8Array` from
 // the shared helper.
-const toInputFile = async (body: Body, filename: string): Promise<unknown> => {
+const toInputFile = async (
+  body: Body,
+  filename: string
+): Promise<InputFile> => {
   if (!isSupportedBody(body)) {
     throw new FilesError(
       "Provider",
@@ -127,10 +135,9 @@ const toInputFile = async (body: Body, filename: string): Promise<unknown> => {
 };
 
 const isStorageInstance = (candidate: unknown): candidate is Storage =>
-  typeof candidate === "object" &&
-  candidate !== null &&
+  isObject(candidate) &&
   "createFile" in candidate &&
-  typeof (candidate as { createFile?: unknown }).createFile === "function";
+  isFunction(candidate.createFile);
 
 export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   let storage: Storage;
@@ -208,7 +215,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         const inputFile = InputFile.fromBuffer(Buffer.from(buffer), to);
         await storage.createFile({
           bucketId: opts.bucket,
-          file: inputFile as unknown as File,
+          file: inputFile,
           fileId: to,
         });
       } catch (error) {
@@ -420,7 +427,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           const current = requireSession();
           const form = new FormData();
           form.append("fileId", current.fileId);
-          form.append("file", new Blob([data as unknown as BlobPart]), key);
+          // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+          // widened typed arrays to `ArrayBufferLike`); the orchestrator
+          // slices each chunk from the upload body into a fresh view, never
+          // shared memory.
+          form.append("file", new Blob([data as BlobPart]), key);
           const res = await fetch(
             `${cfg.endpoint}/storage/buckets/${opts.bucket}/files`,
             {
@@ -442,14 +453,25 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
               `appwrite: chunk upload failed (HTTP ${res.status}): ${text}`.trim()
             );
           }
-          finalFile = (await res.json()) as typeof finalFile;
+          // Appwrite answers every chunk with the `File` model; keep only the
+          // fields `complete()` reads, each checked as it is read.
+          const json: JsonValue = await res.json();
+          if (isJsonObject(json)) {
+            finalFile = {
+              $id: isString(json.$id) ? json.$id : current.fileId,
+              ...(isString(json.mimeType) && { mimeType: json.mimeType }),
+              ...(isNumber(json.sizeOriginal) && {
+                sizeOriginal: json.sizeOriginal,
+              }),
+            };
+          }
           const nextOffset = offset + data.byteLength;
           current.offset = nextOffset;
           return { nextOffset };
         },
       };
     },
-    signedUploadUrl: (_key: string, _opts: unknown) =>
+    signedUploadUrl: (_key: string, _opts: SignUploadOptions) =>
       Promise.reject(
         new FilesError(
           "Provider",
@@ -468,12 +490,9 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       // arbitrary-metadata or cache-header field.
       try {
         const inputFile = await toInputFile(body, key);
-
-        // Cast: the SDK types `file` as the DOM `File`, but at runtime
-        // accepts the Node `InputFile` returned by `InputFile.fromBuffer`.
         const response = await storage.createFile({
           bucketId: opts.bucket,
-          file: inputFile as unknown as File,
+          file: inputFile,
           fileId: key,
         });
 

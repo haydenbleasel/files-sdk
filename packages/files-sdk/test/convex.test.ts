@@ -72,7 +72,7 @@ const makeBackend = () => {
       _id: id,
       sha256: e.sha256,
       size: e.bytes.byteLength,
-      ...(e.contentType ? { contentType: e.contentType } : {}),
+      ...(e.contentType !== undefined && { contentType: e.contentType }),
     };
   };
 

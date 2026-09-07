@@ -1,18 +1,28 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import type { Writable } from "node:stream";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 
-import type { Body, ByteRange, StoredFile } from "../index.js";
+import type { ByteRange, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonObject, JsonValue } from "../internal/json.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
+import type { GlobalCliOptions } from "./loader.js";
 
 export interface OutputOpts {
   json: boolean;
   pretty: boolean;
   verbose: boolean;
+}
+
+/** The JSON shape a {@link FilesError} serializes to on the CLI/MCP boundary. */
+export interface FilesErrorJson {
+  aborted: boolean;
+  code: FilesError["code"];
+  message: string;
+  timedOut: boolean;
 }
 
 /**
@@ -22,9 +32,13 @@ export interface OutputOpts {
  * which can carry request ids and headers the docs on {@link FilesError}
  * explicitly warn against shipping across a trust boundary. Bulk partial
  * failures embed live `FilesError`s in their `errors` arrays, so every
- * outward serialization goes through this.
+ * outward serialization goes through this. Every other value passes through
+ * untouched, whatever its type.
  */
-export const filesErrorReplacer = (_key: string, value: unknown): unknown =>
+export const filesErrorReplacer = <T>(
+  _key: string,
+  value: T
+): T | FilesErrorJson =>
   value instanceof FilesError
     ? {
         aborted: value.aborted,
@@ -35,13 +49,13 @@ export const filesErrorReplacer = (_key: string, value: unknown): unknown =>
     : value;
 
 /** Stringify for output, with {@link filesErrorReplacer} applied. */
-export const toJson = (data: unknown, pretty: boolean): string =>
+export const toJson = <T>(data: T, pretty: boolean): string =>
   pretty
     ? JSON.stringify(data, filesErrorReplacer, 2)
     : JSON.stringify(data, filesErrorReplacer);
 
-const humanize = (data: unknown): string => {
-  if (typeof data === "string") {
+const humanize = <T>(data: T): string => {
+  if (isString(data)) {
     return data;
   }
   return toJson(data, true);
@@ -64,7 +78,8 @@ export const exitCode = (code: string): number => {
   }
 };
 
-export const emit = (data: unknown, out: OutputOpts): void => {
+/** Print a command result to stdout in the user's chosen format. */
+export const emit = <T>(data: T, out: OutputOpts): void => {
   if (out.json) {
     process.stdout.write(`${toJson(data, out.pretty)}\n`);
     return;
@@ -72,50 +87,71 @@ export const emit = (data: unknown, out: OutputOpts): void => {
   process.stdout.write(`${humanize(data)}\n`);
 };
 
-export const fail = (err: unknown, out: OutputOpts): never => {
-  const code = err instanceof FilesError ? err.code : "Provider";
-  const message = err instanceof Error ? err.message : String(err);
-  const payload: Record<string, unknown> = {
-    error: { code, message },
-  };
-  if (out.verbose && err instanceof Error && err.stack) {
-    (payload.error as Record<string, unknown>).stack = err.stack;
+/** The `error` envelope written to stderr in JSON mode. */
+interface ErrorEnvelope {
+  code: string;
+  message: string;
+  stack?: string;
+}
+
+interface ErrorPayload {
+  error: ErrorEnvelope;
+}
+
+export const fail = (cause: unknown, out: OutputOpts): never => {
+  const code = cause instanceof FilesError ? cause.code : "Provider";
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const error: ErrorEnvelope = { code, message };
+  if (out.verbose && cause instanceof Error && cause.stack) {
+    error.stack = cause.stack;
   }
+  const payload: ErrorPayload = { error };
   if (out.json) {
     process.stderr.write(`${JSON.stringify(payload)}\n`);
   } else {
     process.stderr.write(`error (${code}): ${message}\n`);
-    if (out.verbose && err instanceof Error && err.stack) {
-      process.stderr.write(`${err.stack}\n`);
+    if (out.verbose && cause instanceof Error && cause.stack) {
+      process.stderr.write(`${cause.stack}\n`);
     }
   }
   process.exit(exitCode(code));
 };
+
+export interface BodySource {
+  file?: string;
+  stdin?: boolean;
+}
+
+export interface ResolvedBody {
+  body: ReadableStream<Uint8Array>;
+  /** Where the bytes came from, for messages: the file path or `<stdin>`. */
+  hint: string;
+  /** Byte length when known (a file); `-1` for stdin. */
+  size: number;
+}
 
 /**
  * Resolve a body source from CLI flags as a web ReadableStream — the adapter
  * decides whether to buffer or stream. Both stdin and file paths are
  * streamed; size is unknown for stdin and reported as `-1`.
  */
-export const readBody = async (source: {
-  file?: string;
-  stdin?: boolean;
-}): Promise<{ body: Body; size: number; hint: string }> => {
+export const readBody = async (source: BodySource): Promise<ResolvedBody> => {
   if (source.stdin) {
-    const webStream = Readable.toWeb(
-      process.stdin
-    ) as unknown as ReadableStream<Uint8Array>;
-    return { body: webStream, hint: "<stdin>", size: -1 };
+    return {
+      body: toWebStream(process.stdin),
+      hint: "<stdin>",
+      size: -1,
+    };
   }
   if (!source.file) {
     throw new FilesError("Provider", "expected --file <path> or --stdin");
   }
   const stats = await stat(source.file);
-  const readable = createReadStream(source.file);
-  const webStream = Readable.toWeb(
-    readable
-  ) as unknown as ReadableStream<Uint8Array>;
-  return { body: webStream, hint: source.file, size: stats.size };
+  return {
+    body: toWebStream(createReadStream(source.file)),
+    hint: source.file,
+    size: stats.size,
+  };
 };
 
 /**
@@ -128,21 +164,13 @@ export const writeBody = async (
   dest: { out?: string; stdout?: boolean }
 ): Promise<void> => {
   if (dest.stdout) {
-    const webStream = file.stream();
-    const nodeStream = Readable.fromWeb(
-      webStream as unknown as NodeReadableStream<Uint8Array>
-    );
-    await pipeline(nodeStream, process.stdout as unknown as Writable);
+    await pipeline(toNodeReadable(file.stream()), process.stdout);
     return;
   }
   if (!dest.out) {
     throw new FilesError("Provider", "expected --out <path> or --stdout");
   }
-  const webStream = file.stream();
-  const nodeStream = Readable.fromWeb(
-    webStream as unknown as NodeReadableStream<Uint8Array>
-  );
-  await pipeline(nodeStream, createWriteStream(dest.out));
+  await pipeline(toNodeReadable(file.stream()), createWriteStream(dest.out));
 };
 
 /**
@@ -163,11 +191,7 @@ export const fileBodyStream = (absPath: string): ReadableStream<Uint8Array> => {
       },
       async pull(controller) {
         if (!reader) {
-          reader = (
-            Readable.toWeb(
-              createReadStream(absPath)
-            ) as unknown as ReadableStream<Uint8Array>
-          ).getReader();
+          reader = toWebStream(createReadStream(absPath)).getReader();
         }
         const { done, value } = await reader.read();
         if (done) {
@@ -232,10 +256,7 @@ export const writeBodyToDir = async (
     );
   }
   await mkdir(path.dirname(dest), { recursive: true });
-  const nodeStream = Readable.fromWeb(
-    file.stream() as unknown as NodeReadableStream<Uint8Array>
-  );
-  await pipeline(nodeStream, createWriteStream(dest));
+  await pipeline(toNodeReadable(file.stream()), createWriteStream(dest));
   return dest;
 };
 
@@ -286,27 +307,80 @@ export const parseRange = (raw?: string): ByteRange | undefined => {
   return end === undefined ? { start } : { end, start };
 };
 
-export const parseJson = <T = unknown>(
+/**
+ * Decode a JSON-valued flag. Returns the raw decoded value — callers narrow it
+ * (`isJsonObject`) to the shape their flag expects — or `undefined` when the
+ * flag was not passed.
+ */
+export const parseJson = (
   raw?: string,
   flag = "--config-json"
-): T | undefined => {
+): JsonValue | undefined => {
   if (!raw) {
     return undefined;
   }
   try {
-    return JSON.parse(raw) as T;
+    const decoded: JsonValue = JSON.parse(raw);
+    return decoded;
   } catch (error) {
     // Name the flag the user actually passed — this also parses transfer/
     // sync `--to`, and blaming --config-json there sends them debugging the
     // wrong flag.
-    throw new FilesError(
-      "Provider",
-      `invalid JSON in ${flag}: ${(error as Error).message}`
-    );
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new FilesError("Provider", `invalid JSON in ${flag}: ${detail}`);
   }
 };
 
-export const storedFileToJson = (f: StoredFile): Record<string, unknown> => ({
+/**
+ * Decode a flag that must carry a JSON *object* (`--config-json`, `--to`).
+ * `undefined` when the flag was not passed; a `FilesError` naming the flag
+ * for malformed JSON or a non-object value.
+ */
+export const parseJsonObject = (
+  raw: string | undefined,
+  flag: string
+): JsonObject | undefined => {
+  const decoded = parseJson(raw, flag);
+  if (decoded === undefined) {
+    return undefined;
+  }
+  if (!isJsonObject(decoded)) {
+    throw new FilesError("Provider", `${flag} must be a JSON object`);
+  }
+  return decoded;
+};
+
+/**
+ * Decode a flag carrying a whole provider configuration as JSON (`--to` on
+ * transfer/sync/mcp) — the same flat shape as the global flags.
+ */
+export const parseProviderOptions = (
+  raw: string,
+  flag: string
+): GlobalCliOptions => {
+  const decoded = parseJsonObject(raw, flag);
+  if (decoded === undefined) {
+    throw new FilesError("Provider", `${flag} must be a JSON object`);
+  }
+  // SAFETY: the operator's JSON is trusted to mirror the global flags — the
+  // same trust the flags themselves get. `loadFiles` rejects an unknown
+  // `provider` and each adapter validates its own options at construction, so
+  // a mis-shaped field surfaces as a FilesError rather than passing silently.
+  return decoded as GlobalCliOptions;
+};
+
+/** The metadata-only projection of a {@link StoredFile} (no body accessors). */
+export interface StoredFileJson {
+  etag?: string;
+  key: string;
+  lastModified?: number;
+  metadata?: Record<string, string>;
+  name: string;
+  size: number;
+  type: string;
+}
+
+export const storedFileToJson = (f: StoredFile): StoredFileJson => ({
   etag: f.etag,
   key: f.key,
   lastModified: f.lastModified,

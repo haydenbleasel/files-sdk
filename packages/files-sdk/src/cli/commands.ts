@@ -13,8 +13,8 @@ import {
   emit,
   exitCode,
   fileBodyStream,
-  parseJson,
   parseKeyValuePairs,
+  parseProviderOptions,
   parseRange,
   readBody,
   storedFileToJson,
@@ -70,13 +70,24 @@ export interface CommonRunOpts extends OutputOpts {
   global: GlobalCliOptions;
 }
 
-const dryRun = (action: string, detail: unknown, opts: CommonRunOpts): void => {
+/**
+ * The keys of a `<keys...>` positional: commander rejects the invocation
+ * before the action runs unless at least one was given.
+ */
+export type KeyList = [string, ...string[]];
+
+/** Echo what a command *would* do, merging its `detail` fields into the envelope. */
+const dryRun = <Detail extends object>(
+  action: string,
+  detail: Detail,
+  opts: CommonRunOpts
+): void => {
   emit(
     {
       action,
       dryRun: true,
       provider: describeProvider(opts.global),
-      ...(detail as Record<string, unknown>),
+      ...detail,
     },
     opts
   );
@@ -132,10 +143,10 @@ const buildCopyCondition = (opts: {
   ifMatch?: string;
   ifNoneMatch?: boolean;
 }): CopyCondition | undefined => {
-  const hasSource = opts.ifMatch !== undefined;
+  const { destIfMatch, ifMatch } = opts;
   const hasCreate = opts.ifNoneMatch === true;
-  const hasReplace = opts.destIfMatch !== undefined;
-  if (!(hasSource || hasCreate || hasReplace)) {
+  const hasReplace = destIfMatch !== undefined;
+  if (!(ifMatch !== undefined || hasCreate || hasReplace)) {
     return;
   }
   if (hasCreate && hasReplace) {
@@ -144,17 +155,20 @@ const buildCopyCondition = (opts: {
       "--if-none-match and --dest-if-match are mutually exclusive"
     );
   }
-  if (!(hasSource && (hasCreate || hasReplace))) {
+  if (ifMatch === undefined || !(hasCreate || hasReplace)) {
     throw new FilesError(
       "Provider",
       "a conditional copy needs --if-match <source etag> and either --if-none-match or --dest-if-match <etag>"
     );
   }
+  // Past the two guards exactly one of create/replace is set, so an absent
+  // --dest-if-match means --if-none-match (create).
   return {
-    destination: hasCreate
-      ? { type: "create" }
-      : { etag: opts.destIfMatch as string, type: "replace" },
-    source: { etag: opts.ifMatch as string },
+    destination:
+      destIfMatch === undefined
+        ? { type: "create" }
+        : { etag: destIfMatch, type: "replace" },
+    source: { etag: ifMatch },
   };
 };
 
@@ -166,6 +180,7 @@ const SINGLE_KEY_CONDITION = (flag: string, verb: string): FilesError =>
 
 const runUploadDir = async (
   opts: UploadCmdOpts,
+  dir: string,
   multipart: boolean | MultipartOptions | undefined
 ): Promise<void> => {
   if (opts.ifMatch !== undefined || opts.ifNoneMatch) {
@@ -174,11 +189,11 @@ const runUploadDir = async (
   if (opts.dryRun) {
     // Local-only preview — don't walk the tree, matching the single-upload
     // dry-run which doesn't stat its --file either.
-    return dryRun("upload", { dir: opts.dir, multipart }, opts);
+    return dryRun("upload", { dir, multipart }, opts);
   }
   const metadata = parseKeyValuePairs(opts.metadata);
   const { files } = await loadFiles(opts.global);
-  const walked = await walkDir(opts.dir as string);
+  const walked = await walkDir(dir);
   // Content type is inferred per-file from the key's extension unless the
   // caller pins one for the whole batch. The body is a lazily-opened stream
   // so the open-fd count stays bounded by upload concurrency, not file count.
@@ -219,7 +234,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
         "--dir cannot be combined with a <key>, --file, or --stdin"
       );
     }
-    return runUploadDir(opts, multipart);
+    return runUploadDir(opts, opts.dir, multipart);
   }
 
   if (opts.key === undefined) {
@@ -257,11 +272,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
   const body =
     condition === undefined
       ? streamed
-      : new Uint8Array(
-          await new Response(
-            streamed as ReadableStream<Uint8Array>
-          ).arrayBuffer()
-        );
+      : new Uint8Array(await new Response(streamed).arrayBuffer());
   const result = await files.upload(key, body, {
     cacheControl: opts.cacheControl,
     contentType: opts.contentType,
@@ -273,7 +284,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
 };
 
 export interface DownloadCmdOpts extends CommonRunOpts {
-  keys: string[];
+  keys: KeyList;
   out?: string;
   stdout?: boolean;
   outDir?: string;
@@ -368,7 +379,7 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
     return runDownloadMany(opts, range);
   }
 
-  const key = opts.keys[0] as string;
+  const [key] = opts.keys;
   const { files } = await loadFiles(opts.global);
   const file = await files.download(key, {
     as: "stream",
@@ -396,7 +407,7 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
 };
 
 export interface HeadCmdOpts extends CommonRunOpts {
-  keys: string[];
+  keys: KeyList;
   concurrency?: number;
   stopOnError?: boolean;
 }
@@ -409,7 +420,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
 
   // One key keeps the original throw-on-failure contract and output shape.
   if (opts.keys.length === 1) {
-    const file = await files.head(opts.keys[0] as string);
+    const file = await files.head(opts.keys[0]);
     emit(storedFileToJson(file), opts);
     return;
   }
@@ -434,7 +445,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
 };
 
 export interface ExistsCmdOpts extends CommonRunOpts {
-  keys: string[];
+  keys: KeyList;
   concurrency?: number;
   stopOnError?: boolean;
 }
@@ -447,7 +458,7 @@ export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
 
   // One key keeps the original { exists, key } shape and `test -e` exit code.
   if (opts.keys.length === 1) {
-    const key = opts.keys[0] as string;
+    const [key] = opts.keys;
     const exists = await files.exists(key);
     emit({ exists, key }, opts);
     if (!exists) {
@@ -477,7 +488,7 @@ export const runExists = async (opts: ExistsCmdOpts): Promise<void> => {
 };
 
 export interface DeleteCmdOpts extends CommonRunOpts {
-  keys: string[];
+  keys: KeyList;
   concurrency?: number;
   stopOnError?: boolean;
   ifMatch?: string;
@@ -496,7 +507,7 @@ export const runDelete = async (opts: DeleteCmdOpts): Promise<void> => {
 
   // One key keeps the original throw-on-failure contract and output shape.
   if (opts.keys.length === 1) {
-    const key = opts.keys[0] as string;
+    const [key] = opts.keys;
     await files.delete(key, condition ? { condition } : undefined);
     emit({ deleted: true, key }, opts);
     return;
@@ -751,13 +762,7 @@ export const runTransfer = async (opts: TransferCmdOpts): Promise<void> => {
   // The source comes from the standard global flags (so the global
   // --key-prefix scopes it); the destination is a separate provider, supplied
   // as a JSON blob of the same option shape.
-  const destConfig = parseJson<GlobalCliOptions>(opts.to, "--to");
-  if (!destConfig || typeof destConfig !== "object") {
-    throw new FilesError(
-      "Provider",
-      "--to must be a JSON object of destination provider options"
-    );
-  }
+  const destConfig = parseProviderOptions(opts.to, "--to");
 
   if (opts.dryRun) {
     return dryRun(
@@ -818,13 +823,7 @@ export interface SyncCmdOpts extends CommonRunOpts {
 export const runSync = async (opts: SyncCmdOpts): Promise<void> => {
   // Same shape as `transfer`: the source comes from the global flags, the
   // destination is a separate provider supplied as a JSON blob.
-  const destConfig = parseJson<GlobalCliOptions>(opts.to, "--to");
-  if (!destConfig || typeof destConfig !== "object") {
-    throw new FilesError(
-      "Provider",
-      "--to must be a JSON object of destination provider options"
-    );
-  }
+  const destConfig = parseProviderOptions(opts.to, "--to");
 
   // Unlike `transfer`, `--dry-run` here is *not* a no-network echo: a mirror
   // dry run lists both sides and returns the real reconciliation plan (what

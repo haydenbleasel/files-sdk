@@ -7,6 +7,7 @@ import {
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
 import { globPrefix } from "./internal/glob.js";
+import { isFunction, isNumber, isObject, isString } from "./internal/is.js";
 import {
   buildReceipt,
   bufferedBodyBytes,
@@ -1300,12 +1301,15 @@ export type PluginHandlers = {
 // Internal, non-generic working types for folding the onion. The public
 // `wrap` / `PluginNext` are generic for authoring ergonomics, but a generic
 // function can't be stored in an array or folded without per-call type
-// parameters, so we erase to these inside the engine and cast at the boundary.
-type InternalNext = (op: FilesOperation) => Promise<unknown>;
+// parameters, so we erase to these inside the engine — the op stays the full
+// `FilesOperation` union and the result the union of every verb's result —
+// and restore the per-verb pairing at the boundary.
+type AnyOperationResult = OperationResult<FilesOperation>;
+type InternalNext = (op: FilesOperation) => Promise<AnyOperationResult>;
 type InternalWrap = (
   op: FilesOperation,
   next: InternalNext
-) => Promise<unknown>;
+) => Promise<AnyOperationResult>;
 
 /** Distribute a union into the intersection of its members. */
 type UnionToIntersection<U> = (
@@ -1335,7 +1339,7 @@ export type ExtensionsOf<P extends readonly FilesPlugin[]> =
 // — those rules differ across S3/R2/Vercel and we'd rather surface real
 // provider errors than enforce the strictest superset.
 const assertValidKey = (key: string, label = "key"): void => {
-  if (typeof key !== "string" || key.length === 0) {
+  if (!isString(key) || key.length === 0) {
     throw new FilesError("Provider", `${label} must be a non-empty string`);
   }
   if (key.includes("\0")) {
@@ -1347,7 +1351,7 @@ const assertCanonicalStrongEtag: (
   etag: unknown,
   label?: string
 ) => asserts etag is string = (etag, label = "etag") => {
-  if (typeof etag !== "string") {
+  if (!isString(etag)) {
     throw new FilesError(
       "Provider",
       `${label} must be a canonical bare strong ETag`,
@@ -1381,7 +1385,7 @@ const assertCanonicalStrongEtag: (
 const assertConditionalUploadResult: (
   result: unknown
 ) => asserts result is ConditionalUploadResult = (result) => {
-  if (result === null || typeof result !== "object" || !("etag" in result)) {
+  if (!(isObject(result) && "etag" in result)) {
     throw new FilesError(
       "Provider",
       "a conditional upload must return its new canonical strong ETag",
@@ -1452,18 +1456,17 @@ const invalidCondition = (operation: string): never => {
   );
 };
 
-const isConditionRecord = (
-  value: unknown
-): value is Record<PropertyKey, unknown> =>
-  value !== null && typeof value === "object";
-
+// The snapshots take the option's declared type but still validate the value
+// at runtime: they sit on the SDK boundary, where an untyped (JS) caller can
+// hand over anything, and a malformed predicate must fail closed rather than
+// reach a provider as an unconditional write.
 const snapshotUploadCondition = (
-  condition: unknown
+  condition: UploadOptions["condition"]
 ): UploadCondition | undefined => {
   if (condition === undefined) {
     return;
   }
-  if (!isConditionRecord(condition)) {
+  if (!isObject(condition)) {
     return invalidCondition("upload");
   }
   if (condition.type === "create") {
@@ -1477,13 +1480,13 @@ const snapshotUploadCondition = (
 };
 
 const snapshotEtagCondition = (
-  condition: unknown,
+  condition: DownloadOptions["condition"] | DeleteOptions["condition"],
   operation: "delete" | "download"
 ): { etag: string } | undefined => {
   if (condition === undefined) {
     return;
   }
-  if (!isConditionRecord(condition)) {
+  if (!isObject(condition)) {
     return invalidCondition(operation);
   }
   assertCanonicalStrongEtag(condition.etag);
@@ -1491,16 +1494,16 @@ const snapshotEtagCondition = (
 };
 
 const snapshotCopyCondition = (
-  condition: unknown
+  condition: CopyOptions["condition"]
 ): CopyCondition | undefined => {
   if (condition === undefined) {
     return;
   }
-  if (!isConditionRecord(condition)) {
+  if (!isObject(condition)) {
     return invalidCondition("copy");
   }
   const { destination, source } = condition;
-  if (!(isConditionRecord(destination) && isConditionRecord(source))) {
+  if (!(isObject(destination) && isObject(source))) {
     return invalidCondition("copy");
   }
   assertCanonicalStrongEtag(source.etag, "source etag");
@@ -1528,9 +1531,7 @@ const assertNoBulkCondition = (
   // — treat it the same way the single-key snapshots do, not as a predicate.
   const hasCondition = values.some(
     (value) =>
-      value !== null &&
-      typeof value === "object" &&
-      (value as { condition?: unknown }).condition !== undefined
+      isObject(value) && "condition" in value && value.condition !== undefined
   );
   if (!hasCondition) {
     return;
@@ -1622,7 +1623,7 @@ const normalizePrefix = (prefix: string | undefined): string => {
   if (prefix === undefined) {
     return "";
   }
-  if (typeof prefix !== "string") {
+  if (!isString(prefix)) {
     throw new FilesError("Provider", "prefix must be a string");
   }
   // The `(?<!\/)` before the trailing-slash run anchors each match to the
@@ -1650,14 +1651,31 @@ interface ActionContext {
 }
 
 /**
+ * Resolve to `undefined` once a value-less provider call settles. The adapter
+ * contract types `delete` / `copy` / `move` as `Promise<void>`; the operation
+ * result map spells that `undefined`, and this is the seam that says so.
+ */
+const settled = async (run: Promise<void>): Promise<undefined> => {
+  await run;
+};
+
+/**
+ * Where a conditional operation's single native call stands while its onion
+ * runs — see {@link Files.#dispatchConditional}.
+ */
+interface ConditionalSettlement {
+  state: "idle" | "pending" | "success" | "error";
+}
+
+/**
  * Invoke a hook without letting it affect the operation it observes: a thrown
  * error is swallowed, and the return value is ignored — hooks are
  * fire-and-forget, like {@link UploadOptions.onProgress}.
  */
 const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
-  value !== null &&
-  (typeof value === "object" || typeof value === "function") &&
-  typeof (value as { then?: unknown }).then === "function";
+  (isObject(value) || isFunction(value)) &&
+  "then" in value &&
+  isFunction(value.then);
 
 const consumeHookOutcome = async (
   outcome: PromiseLike<unknown>
@@ -1677,7 +1695,8 @@ const emitHook = <E>(
     return;
   }
   try {
-    const outcome = hook(event) as unknown;
+    // Hooks are typed `void`, but an async observer returns a promise.
+    const outcome: unknown = hook(event);
     if (isPromiseLike(outcome)) {
       // Hooks are deliberately not awaited, but an async observer still needs
       // a rejection handler so it cannot escape after the provider settles.
@@ -1742,11 +1761,12 @@ export class Files<A extends Adapter = Adapter> {
     this.#plugins = plugins;
     // A generic `wrap` can't be folded without per-call type parameters, so
     // erase to the internal signature here; the typed boundary is restored in
-    // `#dispatch`. The double cast is required — `unknown`'s return type isn't
-    // assignable to the generic `OperationResult<O>` the contravariant `next`
-    // demands. Plugin authors never see this; their `(op, next)` stays typed.
+    // `#dispatch`. Plugin authors never see this; their `(op, next)` stays typed.
+    // SAFETY: `InternalWrap` is the plugin's `wrap` with `O` instantiated to
+    // the whole `FilesOperation` union and `next` erased the same way; the
+    // union result it then returns is exactly what `#dispatch` narrows back.
     this.#wraps = (plugins ?? []).flatMap((plugin) =>
-      plugin.wrap ? [plugin.wrap as unknown as InternalWrap] : []
+      plugin.wrap ? [plugin.wrap as InternalWrap] : []
     );
     // `extend` runs against the fully-wrapped instance (fields + `#wraps` are
     // already set), so an extension method that calls back into `this.upload()`
@@ -1770,6 +1790,9 @@ export class Files<A extends Adapter = Adapter> {
       if (!plugin.extend) {
         continue;
       }
+      // SAFETY: `Files<A>` differs from `Files` only in the adapter type
+      // parameter, which narrows `raw`; `extend` is written against the base
+      // `Files` surface, which every instance satisfies.
       const surface = plugin.extend(this as Files);
       for (const key of Object.keys(surface)) {
         // A new own property would shadow a real method or getter (every one
@@ -1804,8 +1827,14 @@ export class Files<A extends Adapter = Adapter> {
     op: O,
     base: InternalNext
   ): Promise<OperationResult<O>> {
+    // SAFETY (all three restores below): the onion is erased to the union of
+    // every verb's result so wraps can be folded; the op handed in is `O`, and
+    // each layer must resolve to the result of the op it received (a plugin
+    // returning another verb's result is a type error in its own `wrap`), so
+    // the erased result is this op's `OperationResult<O>`.
     if (!isConditionalOperation(op)) {
       if (this.#wraps.length === 0) {
+        // SAFETY: see above.
         return base(op) as Promise<OperationResult<O>>;
       }
       // The one guard an ordinary root needs sits innermost: whatever a plugin
@@ -1829,9 +1858,11 @@ export class Files<A extends Adapter = Adapter> {
         const next = chain;
         chain = (nextOp) => wrap(nextOp, next);
       }
+      // SAFETY: see above.
       return chain(op) as Promise<OperationResult<O>>;
     }
 
+    // SAFETY: see above.
     return this.#dispatchConditional(op, base) as Promise<OperationResult<O>>;
   }
 
@@ -1844,15 +1875,13 @@ export class Files<A extends Adapter = Adapter> {
   async #dispatchConditional(
     op: ConditionalFilesOperation,
     base: InternalNext
-  ): Promise<unknown> {
+  ): Promise<AnyOperationResult> {
     const fingerprint = conditionalOperationFingerprint(op);
     // Memoized by operation identity: a plugin that forwards the same object
     // costs one string comparison, one that spreads a copy costs one
     // serialization — either way, one check per `next()`.
     const fingerprints = new WeakMap<object, string>([[op, fingerprint]]);
-    const settlement = {
-      state: "idle" as "idle" | "pending" | "success" | "error",
-    };
+    const settlement: ConditionalSettlement = { state: "idle" };
     let violation: FilesError | undefined;
     let baseFailure: unknown;
     let postNextFailure: unknown;
@@ -1951,10 +1980,10 @@ export class Files<A extends Adapter = Adapter> {
     // below — describes an applied-but-unacknowledged mutation. Mark it so
     // hooks, audit, and callers can tell it apart from a veto or a provider
     // failure, and know to reconcile rather than retry the same predicate.
-    const applied = (error: unknown): FilesError =>
-      FilesError.applied(error, nativeUploadEtag);
+    const applied = (cause: unknown): FilesError =>
+      FilesError.applied(cause, nativeUploadEtag);
 
-    let result: unknown;
+    let result: AnyOperationResult;
     try {
       result = await chain(op);
     } catch (error) {
@@ -2010,7 +2039,7 @@ export class Files<A extends Adapter = Adapter> {
    * call as in a single one.
    */
   // eslint-disable-next-line complexity -- exhaustive provider dispatch keeps every primitive in one auditable boundary
-  #perform(op: FilesOperation): Promise<unknown> {
+  #perform(op: FilesOperation): Promise<AnyOperationResult> {
     switch (op.kind) {
       case "upload": {
         return this.#runUpload(
@@ -2091,18 +2120,22 @@ export class Files<A extends Adapter = Adapter> {
           if (!conditionalDelete) {
             return this.#unsupportedConditional("conditional deletes");
           }
-          return this.#run(
-            op.options,
-            (attemptOpts) => conditionalDelete(path, op.etag, attemptOpts),
-            true,
-            ctx
+          return settled(
+            this.#run(
+              op.options,
+              (attemptOpts) => conditionalDelete(path, op.etag, attemptOpts),
+              true,
+              ctx
+            )
           );
         }
-        return this.#run(
-          op.options,
-          (attemptOpts) => this.#adapter.delete(path, attemptOpts),
-          true,
-          ctx
+        return settled(
+          this.#run(
+            op.options,
+            (attemptOpts) => this.#adapter.delete(path, attemptOpts),
+            true,
+            ctx
+          )
         );
       }
       case "copy": {
@@ -2123,42 +2156,48 @@ export class Files<A extends Adapter = Adapter> {
               ? conditionalCopy?.destinationCreate === true
               : conditionalCopy?.destinationReplace === true;
           if (
-            typeof conditionalCopy?.run !== "function" ||
+            !isFunction(conditionalCopy?.run) ||
             conditionalCopy.sourceEtag !== true ||
             conditionalCopy.atomicSourceDestination !== true ||
             !supportsDestination
           ) {
             return this.#unsupportedConditional("conditional copies");
           }
-          return this.#run(
-            op.options,
-            (attemptOpts) =>
-              conditionalCopy.run(
-                fromPath,
-                toPath,
-                { destination: op.destination, source: op.source },
-                attemptOpts
-              ),
-            true,
-            ctx
+          return settled(
+            this.#run(
+              op.options,
+              (attemptOpts) =>
+                conditionalCopy.run(
+                  fromPath,
+                  toPath,
+                  { destination: op.destination, source: op.source },
+                  attemptOpts
+                ),
+              true,
+              ctx
+            )
           );
         }
-        return this.#run(
-          op.options,
-          (attemptOpts) => this.#adapter.copy(fromPath, toPath, attemptOpts),
-          true,
-          ctx
+        return settled(
+          this.#run(
+            op.options,
+            (attemptOpts) => this.#adapter.copy(fromPath, toPath, attemptOpts),
+            true,
+            ctx
+          )
         );
       }
       case "move": {
         const ctx: ActionContext = { from: op.from, to: op.to, type: "move" };
         const fromPath = this.#path(op.from, "move source");
         const toPath = this.#path(op.to, "move destination");
-        return this.#run(
-          op.options,
-          (attemptOpts) => this.#move(fromPath, toPath, attemptOpts),
-          true,
-          ctx
+        return settled(
+          this.#run(
+            op.options,
+            (attemptOpts) => this.#move(fromPath, toPath, attemptOpts),
+            true,
+            ctx
+          )
         );
       }
       case "list": {
@@ -2177,6 +2216,10 @@ export class Files<A extends Adapter = Adapter> {
       case "signedUploadUrl": {
         const ctx: ActionContext = { key: op.key, type: "signedUploadUrl" };
         const path = this.#path(op.key);
+        // SAFETY: the public `signedUploadUrl(key, opts)` always supplies
+        // options and `#run` hands that same object back (minus
+        // `retries`/`timeout`); `op.options` is optional only because every
+        // operation's options are, for plugins that construct ops by hand.
         return this.#run(
           op.options,
           (attemptOpts) =>
@@ -2299,9 +2342,9 @@ export class Files<A extends Adapter = Adapter> {
    * `bytes` / `etag` read off a single-`upload` {@link UploadResult}. `sha256`
    * is the only value passed in pre-computed, and only by the upload path.
    */
-  #makeReceipt(
+  #makeReceipt<T>(
     ctx: ActionContext,
-    result: unknown,
+    result: T,
     durationMs: number,
     ts: number,
     sha256?: string
@@ -2318,10 +2361,9 @@ export class Files<A extends Adapter = Adapter> {
     if (op === undefined || key === undefined) {
       return;
     }
-    const upload =
-      op === "upload" && result !== null && typeof result === "object"
-        ? (result as Partial<UploadResult>)
-        : undefined;
+    // A single upload resolves to an `UploadResult`; read `size` / `etag` off
+    // it as checked fields, since a plugin may hand back a reshaped result.
+    const upload = op === "upload" && isObject(result) ? result : undefined;
     return buildReceipt({
       durationMs,
       key,
@@ -2329,8 +2371,12 @@ export class Files<A extends Adapter = Adapter> {
       provider: this.#adapter.name,
       ts,
       ...(ctx.condition !== undefined && { condition: ctx.condition }),
-      ...(typeof upload?.size === "number" && { bytes: upload.size }),
-      ...(typeof upload?.etag === "string" && { etag: upload.etag }),
+      ...(upload &&
+        "size" in upload &&
+        isNumber(upload.size) && { bytes: upload.size }),
+      ...(upload &&
+        "etag" in upload &&
+        isString(upload.etag) && { etag: upload.etag }),
       ...(sha256 !== undefined && { sha256 }),
     });
   }
@@ -2383,7 +2429,7 @@ export class Files<A extends Adapter = Adapter> {
     const a = this.#adapter;
     const conditionalCopy = a.conditional?.copy;
     const nativeConditionalCopy =
-      typeof conditionalCopy?.run === "function" &&
+      isFunction(conditionalCopy?.run) &&
       conditionalCopy.sourceEtag === true &&
       conditionalCopy.atomicSourceDestination === true;
     return {
@@ -2398,15 +2444,15 @@ export class Files<A extends Adapter = Adapter> {
             conditionalCopy.destinationReplace === true,
           sourceEtag: nativeConditionalCopy,
         },
-        create: typeof a.conditional?.create === "function",
-        delete: typeof a.conditional?.delete === "function",
-        exactRead: typeof a.conditional?.exactRead === "function",
+        create: isFunction(a.conditional?.create),
+        delete: isFunction(a.conditional?.delete),
+        exactRead: isFunction(a.conditional?.exactRead),
         multipart: { create: false, replace: false },
-        replace: typeof a.conditional?.replace === "function",
+        replace: isFunction(a.conditional?.replace),
       },
       delimiter: a.supportsDelimiter === true,
       metadata: a.supportsMetadata === true,
-      multipart: typeof a.resumableUpload === "function",
+      multipart: isFunction(a.resumableUpload),
       rangeRead: a.supportsRange === true,
       serverSideCopy: a.supportsServerSideCopy === true,
       signedUrl: a.signedUrl ?? { supported: false },
@@ -2517,6 +2563,9 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<UploadResult | UploadManyResult> {
     if (Array.isArray(keyOrItems)) {
       const items = keyOrItems;
+      // SAFETY: the overloads pair an item array with `UploadManyOptions`;
+      // the implementation signature's union is TS overload erasure, not a
+      // runtime possibility.
       const bulkOpts = bodyOrOpts as UploadManyOptions | undefined;
       return this.#writeAction(
         { keys: items.map((item) => item.key), type: "upload" },
@@ -2526,6 +2575,7 @@ export class Files<A extends Adapter = Adapter> {
         }
       );
     }
+    // SAFETY: the overloads pair a single key with a `Body` (see above).
     const body = bodyOrOpts as Body;
     const ctx: ActionContext & { type: "upload" } = {
       key: keyOrItems,
@@ -2849,12 +2899,15 @@ export class Files<A extends Adapter = Adapter> {
       const keys = keyOrKeys;
       return this.#action({ keys, type: "download" }, () => {
         assertNoBulkCondition("bulk download", [opts]);
+        // SAFETY: the overloads pair a key array with `DownloadManyOptions`;
+        // the implementation signature's union is TS overload erasure.
         return this.#downloadMany(
           keys,
           opts as DownloadManyOptions | undefined
         );
       });
     }
+    // SAFETY: the overloads pair a single key with `DownloadOptions` (see above).
     const downloadOptions = opts as DownloadOptions | undefined;
     const ctx: ActionContext = {
       key: keyOrKeys,
@@ -3007,19 +3060,19 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<StoredFile | HeadManyResult> {
     if (Array.isArray(keyOrKeys)) {
       const keys = keyOrKeys;
+      // SAFETY: the overloads pair a key array with `BulkOptions`; the
+      // implementation signature's union is TS overload erasure.
+      const bulkOpts = opts as BulkOptions | undefined;
       return this.#action({ keys, type: "head" }, () =>
-        this.#headMany(keys, opts as BulkOptions | undefined)
+        this.#headMany(keys, bulkOpts)
       );
     }
     const ctx: ActionContext = { key: keyOrKeys, type: "head" };
+    // SAFETY: the overloads pair a single key with `OperationOptions` (see above).
+    const options = opts as OperationOptions | undefined;
     return this.#action(ctx, () =>
-      this.#dispatch(
-        {
-          key: keyOrKeys,
-          kind: "head",
-          options: opts as OperationOptions | undefined,
-        },
-        (op) => this.#perform(op)
+      this.#dispatch({ key: keyOrKeys, kind: "head", options }, (op) =>
+        this.#perform(op)
       )
     );
   }
@@ -3076,19 +3129,19 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<boolean | ExistsManyResult> {
     if (Array.isArray(keyOrKeys)) {
       const keys = keyOrKeys;
+      // SAFETY: the overloads pair a key array with `BulkOptions`; the
+      // implementation signature's union is TS overload erasure.
+      const bulkOpts = opts as BulkOptions | undefined;
       return this.#action({ keys, type: "exists" }, () =>
-        this.#existsMany(keys, opts as BulkOptions | undefined)
+        this.#existsMany(keys, bulkOpts)
       );
     }
     const ctx: ActionContext = { key: keyOrKeys, type: "exists" };
+    // SAFETY: the overloads pair a single key with `OperationOptions` (see above).
+    const options = opts as OperationOptions | undefined;
     return this.#action(ctx, () =>
-      this.#dispatch(
-        {
-          key: keyOrKeys,
-          kind: "exists",
-          options: opts as OperationOptions | undefined,
-        },
-        (op) => this.#perform(op)
+      this.#dispatch({ key: keyOrKeys, kind: "exists", options }, (op) =>
+        this.#perform(op)
       )
     );
   }
@@ -3161,9 +3214,12 @@ export class Files<A extends Adapter = Adapter> {
       const keys = key;
       return this.#writeAction({ keys, type: "delete" }, () => {
         assertNoBulkCondition("bulk delete", [opts]);
+        // SAFETY: the overloads pair a key array with `DeleteManyOptions`;
+        // the implementation signature's union is TS overload erasure.
         return this.#deleteMany(keys, opts as DeleteManyOptions | undefined);
       });
     }
+    // SAFETY: the overloads pair a single key with `DeleteOptions` (see above).
     const deleteOptions = opts as DeleteOptions | undefined;
     const ctx: ActionContext & { type: "delete" } = {
       key,
@@ -3222,10 +3278,12 @@ export class Files<A extends Adapter = Adapter> {
               if (op.kind !== "delete") {
                 return this.#perform(op);
               }
-              return this.#run(
-                op.options,
-                (o) => this.#adapter.delete(this.#path(op.key), o),
-                false
+              return settled(
+                this.#run(
+                  op.options,
+                  (o) => this.#adapter.delete(this.#path(op.key), o),
+                  false
+                )
               );
             }
           ),
@@ -3470,7 +3528,7 @@ export class Files<A extends Adapter = Adapter> {
     // Only a glob carries an inferable literal prefix, and only when matching
     // case-sensitively (a provider prefix filter can't be case-folded).
     const isCaseSensitiveGlob =
-      typeof pattern === "string" && match === "glob" && !caseInsensitive;
+      isString(pattern) && match === "glob" && !caseInsensitive;
     const walkPrefix =
       prefix ?? (isCaseSensitiveGlob ? globPrefix(pattern) : "");
     const listOpts: ListOptions = { ...rest };
@@ -3538,6 +3596,10 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<T> {
     // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit strips retries/timeout from the options the adapter sees
     const { retries: _retries, timeout: _timeout, ...adapterOpts } = opts ?? {};
+    // SAFETY: `adapterOpts` is `opts` minus `retries` / `timeout` — two
+    // `OperationOptions` fields every `O` inherits and no adapter reads — so
+    // it is still an `O` for the adapter call; TS types a rest object as
+    // `Omit`, which loses that.
     const baseOpts = opts ? (adapterOpts as O) : undefined;
     const retryOptions = opts?.retries ?? this.#defaults.retries;
     const maxAttempts = maxRetries(retryOptions, retryable);
@@ -3551,6 +3613,9 @@ export class Files<A extends Adapter = Adapter> {
         signals,
         opts?.timeout ?? this.#defaults.timeout
       );
+      // SAFETY: `signal` is itself an `OperationOptions` field on every `O`;
+      // spreading `baseOpts` and overriding it yields an `O` (TS types the
+      // spread as an anonymous object).
       const attemptOpts = runtime.signal
         ? ({ ...baseOpts, signal: runtime.signal } as O)
         : baseOpts;
@@ -3684,11 +3749,21 @@ export class Files<A extends Adapter = Adapter> {
 export const handlers = (
   map: PluginHandlers
 ): NonNullable<FilesPlugin["wrap"]> => {
-  const wrap = (op: FilesOperation, next: InternalNext): Promise<unknown> => {
+  const wrap = (
+    op: FilesOperation,
+    next: InternalNext
+  ): Promise<AnyOperationResult> => {
+    // SAFETY: `map[op.kind]` is the handler registered for exactly this
+    // `op.kind`, so the `op` (and `next`) it receives here satisfy its
+    // narrower per-verb parameter types; the erased signature only forgets
+    // that pairing.
     const handler = map[op.kind] as InternalWrap | undefined;
     return handler ? handler(op, next) : next(op);
   };
-  return wrap as unknown as NonNullable<FilesPlugin["wrap"]>;
+  // SAFETY: the public `wrap` is the same function with its `O` left generic;
+  // instantiating `O` to the whole `FilesOperation` union yields exactly
+  // `wrap`'s erased signature.
+  return wrap as NonNullable<FilesPlugin["wrap"]>;
 };
 
 /**
@@ -3714,4 +3789,8 @@ export const createFiles = <
   const P extends readonly FilesPlugin[],
 >(
   opts: FilesOptions<A> & { plugins?: P }
-): Files<A> & ExtensionsOf<P> => new Files(opts) as Files<A> & ExtensionsOf<P>;
+): Files<A> & ExtensionsOf<P> =>
+  // SAFETY: `Files.#applyExtensions` grafts each plugin's `extend` surface
+  // onto the instance at construction (failing closed on collisions), so the
+  // runtime object carries exactly the members `ExtensionsOf<P>` describes.
+  new Files(opts) as Files<A> & ExtensionsOf<P>;

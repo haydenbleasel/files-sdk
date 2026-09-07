@@ -6,6 +6,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 
 import { sync, transfer } from "../index.js";
+import type { BulkOptions } from "../index.js";
 import { rangedSize } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { filesErrorReplacer, storedFileToJson } from "./io.js";
@@ -27,8 +28,8 @@ const stopOnErrorArg = z
 const bulkOpts = (
   concurrency?: number,
   stopOnError = false
-): { concurrency?: number; stopOnError?: boolean } | undefined => {
-  const opts: { concurrency?: number; stopOnError?: boolean } = {};
+): BulkOptions | undefined => {
+  const opts: BulkOptions = {};
   if (concurrency !== undefined) {
     opts.concurrency = concurrency;
   }
@@ -38,9 +39,15 @@ const bulkOpts = (
   return Object.keys(opts).length > 0 ? opts : undefined;
 };
 
-const pkg = createRequire(import.meta.url)("../../package.json") as {
+interface PackageManifest {
   version: string;
-};
+}
+
+// `require` returns the manifest untyped; this is the package's own
+// package.json, whose `version` npm requires to be a semver string.
+const pkg: PackageManifest = createRequire(import.meta.url)(
+  "../../package.json"
+);
 
 // Default cap for MCP `download` — base64-encoded bodies must fit in a
 // single tool response, so refuse anything that would obviously OOM the
@@ -129,7 +136,7 @@ export interface McpServerOpts {
   global: GlobalCliOptions;
 }
 
-const ok = (data: unknown) => ({
+const ok = <T>(data: T) => ({
   // filesErrorReplacer keeps bulk partial-failure errors useful (message is
   // non-enumerable) and strips the provider `cause` from the MCP boundary.
   content: [
@@ -140,9 +147,9 @@ const ok = (data: unknown) => ({
   ],
 });
 
-const errorPayload = (err: unknown) => {
-  const code = err instanceof FilesError ? err.code : "Provider";
-  const message = err instanceof Error ? err.message : String(err);
+const errorPayload = (cause: unknown) => {
+  const code = cause instanceof FilesError ? cause.code : "Provider";
+  const message = cause instanceof Error ? cause.message : String(cause);
   return {
     content: [
       {

@@ -11,9 +11,9 @@ import { s3 } from "../s3/index.js";
  * regions normally need no entry here — add one only when a region lives
  * somewhere other than the default cell.
  */
-const ENDPOINT_OVERRIDES: Record<string, string> = {
-  "gcp-us-central1": "https://s3.blue.us-central1.gcp.prod.archil.com",
-};
+const ENDPOINT_OVERRIDES = new Map<string, string>([
+  ["gcp-us-central1", "https://s3.blue.us-central1.gcp.prod.archil.com"],
+]);
 
 /**
  * Resolve an Archil region (`<cloud>-<geo>`, e.g. `aws-us-east-1`) to its
@@ -23,8 +23,9 @@ const ENDPOINT_OVERRIDES: Record<string, string> = {
  * `<cloud>-<geo>`.
  */
 const endpointForRegion = (region: string): string | undefined => {
-  if (ENDPOINT_OVERRIDES[region]) {
-    return ENDPOINT_OVERRIDES[region];
+  const override = ENDPOINT_OVERRIDES.get(region);
+  if (override) {
+    return override;
   }
   const dash = region.indexOf("-");
   const cloud = dash > 0 ? region.slice(0, dash) : "";

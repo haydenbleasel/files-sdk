@@ -68,7 +68,12 @@ export const fileName = (file: UploadStateBody): string => {
   return isNativeFileRef(file) ? refName(file) : "blob";
 };
 
-const sizeAndType = (file: UploadStateBody): { size: number; type: string } => {
+interface SizeAndType {
+  size: number;
+  type: string;
+}
+
+const sizeAndType = (file: UploadStateBody): SizeAndType => {
   if (file instanceof Blob) {
     return { size: file.size, type: file.type };
   }

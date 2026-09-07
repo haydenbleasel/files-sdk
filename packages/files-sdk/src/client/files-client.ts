@@ -22,6 +22,8 @@ import type {
   WireFilesError,
   WireStoredFile,
 } from "../internal/files-router/protocol.js";
+import { isFunction, isString } from "../internal/is.js";
+import type { JsonObject, JsonValue } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { decodeDownload } from "./download-decode.js";
 import type { FileUploadState } from "./progress.js";
@@ -87,6 +89,11 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
   return revived ? { ...base, errors: revived } : base;
 };
 
+/** The gateway's failure envelope (see `toErrorResult`). */
+interface ErrorEnvelope {
+  error?: WireFilesError;
+}
+
 interface NormalizedBody {
   body: Blob | Uint8Array<ArrayBuffer>;
   size: number;
@@ -99,6 +106,10 @@ const fromBlob = (blob: Blob): NormalizedBody => ({
   type: blob.type,
 });
 
+// SAFETY: Blob parts and request bodies (BufferSource) reject
+// SharedArrayBuffer-backed views, so an upload body's `.buffer` is a plain
+// ArrayBuffer; `ArrayBufferLike` only widens for the shared-memory case the
+// platform refuses at the send site anyway.
 const asBytes = (
   body: ArrayBuffer | ArrayBufferView
 ): Uint8Array<ArrayBuffer> =>
@@ -123,7 +134,7 @@ const toBody = (
         : body
     );
   }
-  if (typeof body === "string") {
+  if (isString(body)) {
     return fromBlob(
       new Blob([body], contentType ? { type: contentType } : undefined)
     );
@@ -131,10 +142,7 @@ const toBody = (
   const bytes = asBytes(body);
   try {
     return fromBlob(
-      new Blob(
-        [bytes as BlobPart],
-        contentType ? { type: contentType } : undefined
-      )
+      new Blob([bytes], contentType ? { type: contentType } : undefined)
     );
   } catch {
     // React Native's Blob cannot be constructed from ArrayBuffer parts; the
@@ -167,16 +175,18 @@ export const createFilesClient = (
   };
 
   const resolveHeaders = async (): Promise<Record<string, string>> => {
-    const raw =
-      typeof config.headers === "function"
-        ? await config.headers()
-        : config.headers;
+    const raw = isFunction(config.headers)
+      ? await config.headers()
+      : config.headers;
     return raw ? Object.fromEntries(new Headers(raw).entries()) : {};
   };
 
   const wireError = async (res: Response): Promise<FilesError> => {
     try {
-      const body = (await res.json()) as { error?: WireFilesError };
+      // SAFETY: a non-OK gateway response carries the `{ error: WireFilesError }`
+      // envelope `toErrorResult` serializes; `error?.code` guards the read, and
+      // any other body (a proxy error page) falls through to the generic error.
+      const body = (await res.json()) as ErrorEnvelope;
       if (body.error?.code) {
         return reviveError(body.error);
       }
@@ -186,7 +196,10 @@ export const createFilesClient = (
     return new FilesError("Provider", `gateway responded ${res.status}`);
   };
 
-  const post = async <T>(payload: object, signal?: AbortSignal): Promise<T> => {
+  const post = async <T>(
+    payload: JsonObject,
+    signal?: AbortSignal
+  ): Promise<T> => {
     const res = await fetchImpl(endpoint, {
       body: JSON.stringify(payload),
       headers: {
@@ -199,6 +212,9 @@ export const createFilesClient = (
     if (!res.ok) {
       throw await wireError(res);
     }
+    // SAFETY: a 2xx gateway response is the success envelope of the JSON op
+    // named in `payload.op` — the wire shape `T` each caller pins from
+    // `protocol.ts`; failures were already raised as `FilesError` above.
     return (await res.json()) as T;
   };
 
@@ -241,8 +257,11 @@ export const createFilesClient = (
 
   // --- upload paths ---
 
-  const handleEndpointResult = (status: number, text: string): unknown => {
-    let body: unknown;
+  // The through-endpoint upload answers with the op's JSON body on 2xx and the
+  // `{ error: WireFilesError }` envelope otherwise; `undefined` = no parseable
+  // body (a proxy error page), which is reported generically.
+  const handleEndpointResult = <T>(status: number, text: string): T => {
+    let body: JsonValue | undefined;
     try {
       body = JSON.parse(text);
     } catch {
@@ -250,12 +269,16 @@ export const createFilesClient = (
       body = undefined;
     }
     if (status < 200 || status >= 300) {
-      const error = (body as { error?: WireFilesError } | undefined)?.error;
+      // SAFETY: a non-2xx gateway body is the `{ error }` envelope from
+      // `toErrorResult`; a missing `error` (foreign body) takes the generic path.
+      const error = (body as ErrorEnvelope | undefined)?.error;
       throw error
         ? reviveError(error)
         : new FilesError("Provider", `upload failed (${status})`);
     }
-    return body;
+    // SAFETY: a 2xx body is the success envelope of the upload op — the wire
+    // shape `T` the caller pins from `protocol.ts`.
+    return body as T;
   };
 
   const sendToTarget = async (
@@ -292,7 +315,7 @@ export const createFilesClient = (
       {
         files: [info],
         op: "presign",
-        ...(opts?.expiresIn ? { expiresIn: opts.expiresIn } : {}),
+        ...(opts?.expiresIn && { expiresIn: opts.expiresIn }),
       },
       opts?.signal
     );
@@ -373,9 +396,10 @@ export const createFilesClient = (
       signal: opts?.signal,
       url: `${endpoint}${sep}op=upload&key=${encodeURIComponent(key)}`,
     });
-    const parsed = handleEndpointResult(result.status, result.text) as {
-      file: UploadOutcome;
-    };
+    const parsed = handleEndpointResult<{ file: UploadOutcome }>(
+      result.status,
+      result.text
+    );
     return parsed.file;
   };
 
@@ -461,6 +485,13 @@ export const createFilesClient = (
 
   // --- assembled client ---
 
+  // SAFETY: `delete`/`download`/`exists`/`head`/`upload` are overloaded on the
+  // `FilesClient` type (single key vs. bulk array, file vs. key+body vs. items).
+  // Each implementation below branches on the same discriminant the overloads
+  // do (`Array.isArray` / `isString`) and returns that arm's result, but a
+  // single arrow function cannot be checked against an overload set, so each is
+  // asserted to its declared member type; the `b as …` casts inside `upload`
+  // pick the second parameter's type for the arm the first parameter selected.
   const client: FilesClient = {
     capabilities: async (opts) => {
       const res = await post<{ capabilities: AdapterCapabilities }>(
@@ -557,19 +588,17 @@ export const createFilesClient = (
       }>(
         {
           op: "list",
-          ...(opts?.prefix === undefined ? {} : { prefix: opts.prefix }),
-          ...(opts?.cursor === undefined ? {} : { cursor: opts.cursor }),
-          ...(opts?.limit === undefined ? {} : { limit: opts.limit }),
-          ...(opts?.delimiter === undefined
-            ? {}
-            : { delimiter: opts.delimiter }),
+          ...(opts?.prefix !== undefined && { prefix: opts.prefix }),
+          ...(opts?.cursor !== undefined && { cursor: opts.cursor }),
+          ...(opts?.limit !== undefined && { limit: opts.limit }),
+          ...(opts?.delimiter !== undefined && { delimiter: opts.delimiter }),
         },
         opts?.signal
       );
       return {
         items: res.items.map(toStoredFile),
-        ...(res.prefixes ? { prefixes: res.prefixes } : {}),
-        ...(res.cursor ? { cursor: res.cursor } : {}),
+        ...(res.prefixes && { prefixes: res.prefixes }),
+        ...(res.cursor && { cursor: res.cursor }),
       };
     },
 
@@ -591,7 +620,7 @@ export const createFilesClient = (
 
     purge: async (key, opts) => {
       await post(
-        { op: "purge", ...(key === undefined ? {} : { key }) },
+        { op: "purge", ...(key !== undefined && { key }) },
         opts?.signal
       );
     },
@@ -609,7 +638,7 @@ export const createFilesClient = (
         {
           key,
           op: "restore-version",
-          ...(versionId === undefined ? {} : { versionId }),
+          ...(versionId !== undefined && { versionId }),
         },
         opts?.signal
       );
@@ -625,15 +654,15 @@ export const createFilesClient = (
         {
           op: "search",
           ...base,
-          ...(opts?.match ? { match: opts.match } : {}),
-          ...(opts?.prefix === undefined ? {} : { prefix: opts.prefix }),
-          ...(opts?.limit === undefined ? {} : { limit: opts.limit }),
-          ...(opts?.maxResults === undefined
-            ? {}
-            : { maxResults: opts.maxResults }),
-          ...(opts?.caseInsensitive === undefined
-            ? {}
-            : { caseInsensitive: opts.caseInsensitive }),
+          ...(opts?.match && { match: opts.match }),
+          ...(opts?.prefix !== undefined && { prefix: opts.prefix }),
+          ...(opts?.limit !== undefined && { limit: opts.limit }),
+          ...(opts?.maxResults !== undefined && {
+            maxResults: opts.maxResults,
+          }),
+          ...(opts?.caseInsensitive !== undefined && {
+            caseInsensitive: opts.caseInsensitive,
+          }),
         },
         opts?.signal
       );
@@ -648,9 +677,9 @@ export const createFilesClient = (
           expiresIn: opts.expiresIn,
           key,
           op: "signed-upload-url",
-          ...(opts.contentType ? { contentType: opts.contentType } : {}),
-          ...(opts.maxSize === undefined ? {} : { maxSize: opts.maxSize }),
-          ...(opts.minSize === undefined ? {} : { minSize: opts.minSize }),
+          ...(opts.contentType && { contentType: opts.contentType }),
+          ...(opts.maxSize !== undefined && { maxSize: opts.maxSize }),
+          ...(opts.minSize !== undefined && { minSize: opts.minSize }),
         },
         opts.signal
       );
@@ -671,11 +700,14 @@ export const createFilesClient = (
       c?: UploadCallOptions
     ) => {
       if (Array.isArray(a)) {
+        // SAFETY: the `items[]` overload pairs an array with `BulkCallOptions`.
         return uploadMany(a, b as BulkCallOptions | undefined);
       }
-      if (typeof a === "string") {
+      if (isString(a)) {
+        // SAFETY: the `(key, body, opts?)` overload pairs a string key with a body.
         return uploadExplicit(a, b as UploadBody, c);
       }
+      // SAFETY: the keyless `(file, opts?)` overload pairs a Blob/ref with options.
       return uploadKeyless(a, b as UploadCallOptions | undefined);
     }) as FilesClient["upload"],
 
@@ -684,14 +716,10 @@ export const createFilesClient = (
         {
           key,
           op: "url",
-          ...(opts?.expiresIn === undefined
-            ? {}
-            : { expiresIn: opts.expiresIn }),
-          ...(opts?.responseContentDisposition === undefined
-            ? {}
-            : {
-                responseContentDisposition: opts.responseContentDisposition,
-              }),
+          ...(opts?.expiresIn !== undefined && { expiresIn: opts.expiresIn }),
+          ...(opts?.responseContentDisposition !== undefined && {
+            responseContentDisposition: opts.responseContentDisposition,
+          }),
         },
         opts?.signal
       );

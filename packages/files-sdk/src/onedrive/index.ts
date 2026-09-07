@@ -40,6 +40,10 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonValue } from "../internal/json.js";
+import { toWebStream } from "../internal/node-stream";
 import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -156,8 +160,7 @@ const DEFAULT_UPLOAD_SESSION_RANGE_BYTES = 10 * 1024 * 1024;
 const resolveRangeSize = (
   multipart: boolean | MultipartOptions | undefined
 ): number => {
-  const requested =
-    typeof multipart === "object" ? multipart.partSize : undefined;
+  const requested = isObject(multipart) ? multipart.partSize : undefined;
   if (requested === undefined) {
     return DEFAULT_UPLOAD_SESSION_RANGE_BYTES;
   }
@@ -200,41 +203,51 @@ const classifyGraphError = (
   return "Provider";
 };
 
-export const mapGraphError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+// Graph error bodies nest the human message under `error`; some proxies flatten
+// it to the top level. `GraphError#body` is the parsed (untyped) JSON body.
+const graphBodyMessage = (body: JsonValue | undefined): string | undefined => {
+  if (!isJsonObject(body)) {
+    return undefined;
   }
-  if (err instanceof GraphError) {
-    const code = classifyGraphError(err.statusCode, err.code);
-    const innerMessage =
-      // oxlint-disable-next-line sonarjs/expression-complexity -- narrowing Graph's untyped error body to pull a nested message; splitting would obscure the fallback chain
-      (err.body && typeof err.body === "object"
-        ? ((err.body as { error?: { message?: string } }).error?.message ??
-          (err.body as { message?: string }).message)
-        : undefined) ?? err.message;
-    return new FilesError(code, innerMessage || DEFAULT_MESSAGES[code], err);
+  const nested = isJsonObject(body.error) ? body.error.message : undefined;
+  const message = nested ?? body.message;
+  return isString(message) ? message : undefined;
+};
+
+export const mapGraphError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const e = err as {
-    statusCode?: number;
-    status?: number;
-    code?: string | number;
-    message?: string;
-  };
+  if (cause instanceof GraphError) {
+    const code = classifyGraphError(cause.statusCode, cause.code);
+    const innerMessage = graphBodyMessage(cause.body) ?? cause.message;
+    return new FilesError(code, innerMessage || DEFAULT_MESSAGES[code], cause);
+  }
   const status = ((): number | undefined => {
-    if (typeof e?.statusCode === "number") {
-      return e.statusCode;
+    if (!isObject(cause)) {
+      return undefined;
     }
-    if (typeof e?.status === "number") {
-      return e.status;
+    if ("statusCode" in cause && isNumber(cause.statusCode)) {
+      return cause.statusCode;
+    }
+    if ("status" in cause && isNumber(cause.status)) {
+      return cause.status;
     }
     return undefined;
   })();
-  const codeStr = typeof e?.code === "string" ? e.code : undefined;
+  const codeStr =
+    isObject(cause) && "code" in cause && isString(cause.code)
+      ? cause.code
+      : undefined;
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
   const errorCode = classifyGraphError(status, codeStr);
   return new FilesError(
     errorCode,
-    e?.message ?? DEFAULT_MESSAGES[errorCode],
-    err
+    message ?? DEFAULT_MESSAGES[errorCode],
+    cause
   );
 };
 
@@ -248,6 +261,9 @@ const readGraphErrorBody = async (
   res: Response
 ): Promise<GraphErrorBody | null> => {
   try {
+    // SAFETY: `Response#json()` is untyped; a Graph error response carries
+    // the documented `{ error: { code, message } }` envelope, and every field
+    // is read optional-guarded so a non-Graph JSON body degrades to no message.
     return (await res.json()) as GraphErrorBody;
   } catch {
     return null;
@@ -376,7 +392,7 @@ const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
 ): Promise<NormalizedBody> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return {
       contentType: contentTypeHint ?? "text/plain; charset=utf-8",
       data: Buffer.from(body, "utf-8"),
@@ -395,10 +411,9 @@ const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
     return {
       contentType: contentTypeHint ?? OCTET_STREAM,
-      data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
+      data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof Blob) {
@@ -413,7 +428,13 @@ const normalizeBody = async (
   };
 };
 
-const toUint8 = (data: unknown): Uint8Array => {
+// What `ResponseType.ARRAYBUFFER` hands back across runtimes: an ArrayBuffer
+// in browsers/Workers, a Buffer (or other view) under Node, or — from a custom
+// client — text. `toUint8` is the runtime check that the payload is one of
+// these; anything else is a provider error.
+type GraphContentPayload = ArrayBuffer | ArrayBufferView | string;
+
+const toUint8 = (data: GraphContentPayload): Uint8Array => {
   if (data instanceof Uint8Array) {
     return data;
   }
@@ -424,10 +445,9 @@ const toUint8 = (data: unknown): Uint8Array => {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   if (ArrayBuffer.isView(data)) {
-    const v = data as ArrayBufferView;
-    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
-  if (typeof data === "string") {
+  if (isString(data)) {
     return new TextEncoder().encode(data);
   }
   throw new FilesError(
@@ -449,14 +469,44 @@ interface DriveItem {
   ["@microsoft.graph.downloadUrl"]?: string;
 }
 
-const itemToStoredMeta = (
-  item: DriveItem
-): {
+interface StoredMeta {
   size: number;
   type: string;
   etag?: string;
   lastModified?: number;
-} => ({
+}
+
+// Graph collection / action response envelopes the adapter reads. Every field
+// is optional because the adapter validates presence itself.
+interface DriveItemCollection {
+  value?: DriveItem[];
+  ["@odata.nextLink"]?: string;
+}
+
+interface UploadSessionResponse {
+  uploadUrl?: string;
+}
+
+interface UploadSessionStatus {
+  nextExpectedRanges?: string[];
+}
+
+interface CreateLinkResponse {
+  link?: { webUrl?: string };
+}
+
+interface CopyMonitorStatus {
+  status?: string;
+  percentageComplete?: number;
+  error?: { message?: string };
+}
+
+interface OAuthTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+}
+
+const itemToStoredMeta = (item: DriveItem): StoredMeta => ({
   ...(item.eTag && { etag: item.eTag.replaceAll('"', "") }),
   ...(item.lastModifiedDateTime && {
     lastModified: new Date(item.lastModifiedDateTime).getTime(),
@@ -524,10 +574,10 @@ class RefreshTokenCredential implements TokenCredential {
         `onedrive: refresh-token exchange failed (${res.status}): ${text || res.statusText}`
       );
     }
-    const json = (await res.json()) as {
-      access_token?: string;
-      expires_in?: number;
-    };
+    // SAFETY: `Response#json()` is untyped; a 2xx from the v2.0 token
+    // endpoint is an OAuth 2.0 token response (`access_token`, `expires_in`),
+    // and `access_token` is checked below before use.
+    const json = (await res.json()) as OAuthTokenResponse;
     if (!json.access_token) {
       throw new FilesError(
         "Unauthorized",
@@ -544,7 +594,7 @@ const createStaticAccessTokenAuthProvider = (
   source: string | (() => string | Promise<string>)
 ): AuthenticationProvider => ({
   async getAccessToken(): Promise<string> {
-    if (typeof source === "string") {
+    if (isString(source)) {
       return source;
     }
     return await source();
@@ -665,19 +715,19 @@ const resolveBasePath = (opts: OneDriveAdapterOptions): string => {
 export const onedrive = (
   opts: OneDriveAdapterOptions = {}
 ): OneDriveAdapter => {
-  const explicitAuthShapes = [
+  const explicitAuthOptions = [
     opts.clientCredentials,
     opts.oauth,
     opts.accessToken,
     opts.client,
   ].filter((v) => v !== undefined && v !== null);
-  if (explicitAuthShapes.length === 0 && !hasEnvAuth()) {
+  if (explicitAuthOptions.length === 0 && !hasEnvAuth()) {
     throw new FilesError(
       "Provider",
       "onedrive adapter: missing auth. Pass `clientCredentials`, `oauth`, `accessToken`, or `client`. Env fallbacks: ONEDRIVE_ACCESS_TOKEN, or ONEDRIVE_TENANT_ID + ONEDRIVE_CLIENT_ID + ONEDRIVE_CLIENT_SECRET."
     );
   }
-  if (explicitAuthShapes.length > 1) {
+  if (explicitAuthOptions.length > 1) {
     throw new FilesError(
       "Provider",
       "onedrive adapter: pass exactly one of `clientCredentials`, `oauth`, `accessToken`, or `client`."
@@ -720,10 +770,12 @@ export const onedrive = (
   };
 
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    const data = (await client
+    // The Graph client types every response as `any`; `toUint8` checks the
+    // payload shape at runtime before trusting it.
+    const data: GraphContentPayload = await client
       .api(`${itemApiPath(key)}/content`)
       .responseType(ResponseType.ARRAYBUFFER)
-      .get()) as unknown;
+      .get();
     return toUint8(data);
   };
 
@@ -740,12 +792,11 @@ export const onedrive = (
           `onedrive: copy monitor failed (${res.status}): ${text || res.statusText}`
         );
       }
+      // SAFETY: `Response#json()` is untyped; the copy monitor URL returns a
+      // Graph `asyncJobStatus` resource (`status`, `percentageComplete`,
+      // `error`), and the `{}` parse fallback fits the same all-optional shape.
       // oxlint-disable-next-line eslint/no-await-in-loop, github/no-then -- parsing the current poll response body; catch yields {} so the parse error is intentionally swallowed
-      const json = (await res.json().catch(() => ({}))) as {
-        status?: string;
-        percentageComplete?: number;
-        error?: { message?: string };
-      };
+      const json = (await res.json().catch(() => ({}))) as CopyMonitorStatus;
       if (json.status === "completed") {
         return;
       }
@@ -776,6 +827,9 @@ export const onedrive = (
     rangeSize: number,
     signal?: AbortSignal
   ): Promise<DriveItem> => {
+    // SAFETY: the Graph client types every parsed response as `any`;
+    // `createUploadSession` returns an `uploadSession` resource whose
+    // `uploadUrl` is checked below before use.
     const session = (await client
       .api(`${itemApiPath(key)}/createUploadSession`)
       .post({
@@ -783,7 +837,7 @@ export const onedrive = (
           "@microsoft.graph.conflictBehavior": "replace",
           name: basename(key),
         },
-      })) as { uploadUrl?: string };
+      })) as UploadSessionResponse;
     const { uploadUrl } = session;
     if (!uploadUrl) {
       throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
@@ -794,11 +848,12 @@ export const onedrive = (
     while (offset < total) {
       const end = Math.min(offset + rangeSize, total);
       const chunk = data.subarray(offset, end);
+      // SAFETY: a Node Buffer is a valid fetch body at runtime (undici); only
+      // its generic `ArrayBufferLike` backing keeps it out of the DOM
+      // `BodyInit` union.
       // eslint-disable-next-line no-await-in-loop -- chunked upload session: each Content-Range PUT depends on the prior chunk's offset
       const res = await fetch(uploadUrl, {
-        // A Node Buffer is a valid fetch body at runtime (undici), but its
-        // generic ArrayBufferLike backing doesn't satisfy the DOM BodyInit type.
-        body: chunk as unknown as BodyInit,
+        body: chunk as BodyInit,
         headers: { "Content-Range": `bytes ${offset}-${end - 1}/${total}` },
         method: "PUT",
         ...(signal && { signal }),
@@ -814,6 +869,8 @@ export const onedrive = (
       // 202 = accepted, more chunks expected; 200/201 = final chunk, body is
       // the DriveItem. Read it on completion and ignore the interim ranges.
       if (res.status === 200 || res.status === 201) {
+        // SAFETY: `Response#json()` is untyped; Graph documents the final
+        // fragment's 200/201 body as the created `driveItem`.
         // eslint-disable-next-line no-await-in-loop -- reading the DriveItem from the final chunk's response
         item = (await res.json()) as DriveItem;
       }
@@ -881,6 +938,9 @@ export const onedrive = (
         // `metadata` / `cacheControl` are rejected centrally by the Files
         // wrapper before a resumable upload ever reaches here.
         try {
+          // SAFETY: the Graph client types every parsed response as `any`;
+          // `createUploadSession` returns an `uploadSession` resource whose
+          // `uploadUrl` is checked below before use.
           const { uploadUrl: created } = (await client
             .api(`${itemApiPath(key)}/createUploadSession`)
             .post({
@@ -888,7 +948,7 @@ export const onedrive = (
                 "@microsoft.graph.conflictBehavior": "replace",
                 name: basename(key),
               },
-            })) as { uploadUrl?: string };
+            })) as UploadSessionResponse;
           if (!created) {
             throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
           }
@@ -932,7 +992,10 @@ export const onedrive = (
               `onedrive: resume status check failed (${res.status})`
             );
           }
-          const body = (await res.json()) as { nextExpectedRanges?: string[] };
+          // SAFETY: `Response#json()` is untyped; a GET on the upload session
+          // URL returns an `uploadSession` resource whose `nextExpectedRanges`
+          // is a list of "start-end" strings (read optional-guarded).
+          const body = (await res.json()) as UploadSessionStatus;
           const first = body.nextExpectedRanges?.[0];
           return { nextOffset: first ? Number(first.split("-")[0]) : 0 };
         } catch (error) {
@@ -944,8 +1007,11 @@ export const onedrive = (
       }> {
         try {
           const end = offset + data.byteLength;
+          // SAFETY: a `Uint8Array` is a valid fetch body at runtime; only its
+          // generic `ArrayBufferLike` backing keeps it out of the DOM `BodyInit`
+          // union.
           const res = await fetch(requireUrl(), {
-            body: data as unknown as BodyInit,
+            body: data as BodyInit,
             headers: { "Content-Range": `bytes ${offset}-${end - 1}/${total}` },
             method: "PUT",
             ...(signal && { signal }),
@@ -959,6 +1025,8 @@ export const onedrive = (
             );
           }
           if (res.status === 200 || res.status === 201) {
+            // SAFETY: `Response#json()` is untyped; Graph documents the final
+            // fragment's 200/201 body as the created `driveItem`.
             finalItem = (await res.json()) as DriveItem;
           }
           return { nextOffset: end };
@@ -970,11 +1038,12 @@ export const onedrive = (
   };
 
   const createAnonymousLink = async (key: string): Promise<string> => {
+    // SAFETY: the Graph client types every parsed response as `any`;
+    // `createLink` returns a `permission` resource whose `link.webUrl` is
+    // checked below before use.
     const res = (await client
       .api(`${itemApiPath(key)}/createLink`)
-      .post({ scope: "anonymous", type: "view" })) as {
-      link?: { webUrl?: string };
-    };
+      .post({ scope: "anonymous", type: "view" })) as CreateLinkResponse;
     const url = res.link?.webUrl;
     if (!url) {
       throw new FilesError(
@@ -1008,6 +1077,8 @@ export const onedrive = (
         const parentRef = fullDestDir
           ? { path: `/drive/root:/${encodePathSegments(fullDestDir)}` }
           : { path: "/drive/root:" };
+        // SAFETY: with `ResponseType.RAW` the Graph client resolves with the
+        // underlying fetch `Response` itself instead of a parsed body.
         const res = (await client
           .api(`${itemApiPath(from)}/copy`)
           .responseType(ResponseType.RAW)
@@ -1061,6 +1132,10 @@ export const onedrive = (
           return range ? req.header("Range", httpRangeHeader(range)) : req;
         };
         if (downloadOpts?.as === "stream") {
+          // SAFETY: the Graph client types every response as `any`. A GET on
+          // the item path returns a `driveItem`; `ResponseType.STREAM` yields
+          // the fetch Response body — a web ReadableStream in every runtime the
+          // Graph client runs on — or a Node Readable from a custom client.
           const [meta, stream] = await Promise.all([
             client.api(itemApiPath(key)).get() as Promise<DriveItem>,
             contentReq().responseType(ResponseType.STREAM).get() as Promise<
@@ -1071,23 +1146,26 @@ export const onedrive = (
           return createStoredFile(
             { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
-              // `ResponseType.STREAM` yields the fetch Response body — already
-              // a web ReadableStream in every runtime the Graph client runs
-              // on. Only a custom client that hands back a Node Readable needs
+              // Only a custom client that hands back a Node Readable needs
               // converting; `Readable.toWeb` throws on a web stream.
-              factory: () =>
-                (stream instanceof Readable
-                  ? Readable.toWeb(stream)
-                  : stream) as unknown as ReadableStream<Uint8Array>,
+              factory: () => {
+                if (stream instanceof Readable) {
+                  return toWebStream(stream);
+                }
+                return stream;
+              },
               kind: "stream",
             }
           );
         }
+        // SAFETY: the Graph client types every response as `any`. A GET on the
+        // item path returns a `driveItem`; `ResponseType.ARRAYBUFFER` yields a
+        // binary payload that `toUint8` checks at runtime.
         const [meta, bytes] = await Promise.all([
           client.api(itemApiPath(key)).get() as Promise<DriveItem>,
           contentReq()
             .responseType(ResponseType.ARRAYBUFFER)
-            .get() as Promise<unknown>,
+            .get() as Promise<GraphContentPayload>,
         ]);
         const m = itemToStoredMeta(meta);
         const u8 = toUint8(bytes);
@@ -1107,6 +1185,8 @@ export const onedrive = (
     },
     async head(key) {
       try {
+        // SAFETY: the Graph client types every parsed response as `any`; a
+        // GET on the item path returns a `driveItem`.
         const meta = (await client.api(itemApiPath(key)).get()) as DriveItem;
         const m = itemToStoredMeta(meta);
         return createStoredFile(
@@ -1131,10 +1211,10 @@ export const onedrive = (
         if (!options?.cursor && options?.limit !== undefined) {
           req = req.top(options.limit);
         }
-        const res = (await req.get()) as {
-          value?: DriveItem[];
-          ["@odata.nextLink"]?: string;
-        };
+        // SAFETY: the Graph client types every parsed response as `any`;
+        // `/children` (and its `@odata.nextLink` continuation) returns a
+        // `driveItem` collection page.
+        const res = (await req.get()) as DriveItemCollection;
         const items: StoredFile[] = [];
         const prefixes: string[] = [];
         // Classify one child into items (files) or prefixes (folders, folded
@@ -1182,6 +1262,9 @@ export const onedrive = (
         );
       }
       try {
+        // SAFETY: the Graph client types every parsed response as `any`;
+        // `createUploadSession` returns an `uploadSession` resource whose
+        // `uploadUrl` is checked below before use.
         const res = (await client
           .api(`${itemApiPath(key)}/createUploadSession`)
           .post({
@@ -1189,7 +1272,7 @@ export const onedrive = (
               "@microsoft.graph.conflictBehavior": "replace",
               name: basename(key),
             },
-          })) as { uploadUrl?: string };
+          })) as UploadSessionResponse;
         const { uploadUrl } = res;
         if (!uploadUrl) {
           throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
@@ -1226,6 +1309,8 @@ export const onedrive = (
         // body always takes the simple PUT (sessions need at least one chunk).
         const useSession =
           total > SIMPLE_UPLOAD_LIMIT_BYTES || (wantsMultipart && total > 0);
+        // SAFETY: the Graph client types every parsed response as `any`; a
+        // PUT to `/content` returns the created or updated `driveItem`.
         const item: DriveItem = useSession
           ? await uploadViaSession(
               key,

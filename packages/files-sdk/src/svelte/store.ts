@@ -15,6 +15,9 @@ export interface WritableStore<T> extends ReadableStore<T> {
 }
 
 export const writable = <T>(initial?: T): WritableStore<T> => {
+  // SAFETY: a store created without an initial value is instantiated with a
+  // `T` that admits `undefined` (`writable<X | undefined>()`), so the omitted
+  // initial is itself a valid `T`.
   let value = initial as T;
   const subscribers = new Set<(value: T) => void>();
   return {

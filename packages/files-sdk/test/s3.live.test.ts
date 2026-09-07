@@ -46,7 +46,7 @@ const makeFiles = (): Files => {
       credentials: {
         accessKeyId: requireEnv("AWS_ACCESS_KEY_ID"),
         secretAccessKey: requireEnv("AWS_SECRET_ACCESS_KEY"),
-        ...(sessionToken ? { sessionToken } : {}),
+        ...(sessionToken !== undefined && { sessionToken }),
       },
       region: requireEnv("AWS_REGION"),
     }),

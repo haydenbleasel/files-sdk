@@ -119,8 +119,9 @@ const scanRaw = (line: string): Raw[] => {
   SCAN.lastIndex = 0;
   let m: RegExpExecArray | null = SCAN.exec(line);
   while (m !== null) {
-    // `.groups` needs the es2018 lib type; the package targets es2015, so read
-    // it through a cast (named capture groups work fine at runtime).
+    // SAFETY: `SCAN` is built from named capture groups, so every match carries
+    // the ES2018 `RegExpExecArray#groups` map at runtime; the package's es2015
+    // lib just doesn't declare it.
     const g = (m as { groups?: Record<string, string | undefined> }).groups;
     for (const { name, kind } of SCAN_GROUPS) {
       const text = g?.[name];

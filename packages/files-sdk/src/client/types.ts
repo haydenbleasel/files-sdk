@@ -16,6 +16,7 @@ import type {
   StoredFile,
   UploadManyResult,
 } from "../index.js";
+import { isObject, isString } from "../internal/is.js";
 import type { AggregateProgress, FileUploadState } from "./progress.js";
 import type { Transport } from "./transport.js";
 
@@ -108,10 +109,10 @@ export interface NativeFileRef {
 }
 
 export const isNativeFileRef = (body: unknown): body is NativeFileRef =>
-  typeof body === "object" &&
-  body !== null &&
+  isObject(body) &&
   !(body instanceof Blob) &&
-  typeof (body as NativeFileRef).uri === "string";
+  "uri" in body &&
+  isString(body.uri);
 
 export type UploadBody =
   | Blob

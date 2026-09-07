@@ -12,9 +12,7 @@ interface Row {
 
 const peerExternals = Object.keys(pkg.peerDependencies ?? {});
 
-const entries = Object.entries(
-  pkg.exports as Record<string, { import: string }>
-).map(([subpath, value]) => {
+const entries = Object.entries(pkg.exports).map(([subpath, value]) => {
   const src = value.import
     .replace(/^\.\/dist\//u, "src/")
     .replace(/\.js$/u, ".ts");

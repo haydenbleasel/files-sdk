@@ -2,6 +2,7 @@ import { handlers } from "../index.js";
 import type { Body, FilesPlugin } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
 /**
@@ -165,8 +166,7 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
     if (keyRule === undefined) {
       return;
     }
-    const ok =
-      typeof keyRule === "function" ? keyRule(value) : keyRule.test(value);
+    const ok = isFunction(keyRule) ? keyRule(value) : keyRule.test(value);
     if (!ok) {
       throw new ValidationError(
         "key",

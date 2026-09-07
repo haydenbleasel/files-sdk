@@ -7,6 +7,7 @@
 
 import type { RetryOptions } from "../index.js";
 import { FilesError } from "./errors.js";
+import { isFunction, isNumber, isObject } from "./is.js";
 
 const DEFAULT_RETRY_BACKOFF_MS = 100;
 // Cap the built-in exponential backoff so a large `retries` count can't
@@ -51,9 +52,9 @@ const timeoutError = (timeout: number): FilesError =>
 export const manualAnySignal = (signals: AbortSignal[]): AbortSignal => {
   const controller = new AbortController();
   const listeners: (() => void)[] = [];
-  const abort = (reason: unknown) => {
+  const abort = (source: AbortSignal) => {
     if (!controller.signal.aborted) {
-      controller.abort(reason);
+      controller.abort(source.reason);
       for (const detach of listeners) {
         detach();
       }
@@ -61,20 +62,21 @@ export const manualAnySignal = (signals: AbortSignal[]): AbortSignal => {
   };
   for (const signal of signals) {
     if (signal.aborted) {
-      abort(signal.reason);
+      abort(signal);
       break;
     }
-    const onAbort = () => abort(signal.reason);
+    const onAbort = () => abort(signal);
     signal.addEventListener("abort", onAbort, { once: true });
     listeners.push(() => signal.removeEventListener("abort", onAbort));
   }
   return controller.signal;
 };
 
-const anySignal: (signals: AbortSignal[]) => AbortSignal =
-  typeof AbortSignal.any === "function"
-    ? (signals) => AbortSignal.any(signals)
-    : manualAnySignal;
+const anySignal: (signals: AbortSignal[]) => AbortSignal = isFunction(
+  AbortSignal.any
+)
+  ? (signals) => AbortSignal.any(signals)
+  : manualAnySignal;
 
 /**
  * Fold zero or more signals into one that aborts when any of them does, with
@@ -96,6 +98,12 @@ export const combineSignals = (
   return anySignal(signals);
 };
 
+export interface MergedSignals {
+  signal?: AbortSignal;
+  /** Clears the per-attempt timeout timer; absent when no timeout was set. */
+  cleanup?: () => void;
+}
+
 /**
  * Combine zero or more abort signals with an optional per-attempt timeout into
  * a single signal. The caller signals are folded with {@link combineSignals}
@@ -107,7 +115,7 @@ export const combineSignals = (
 export const mergeSignals = (
   signals: AbortSignal[],
   timeout?: number
-): { signal?: AbortSignal; cleanup?: () => void } => {
+): MergedSignals => {
   const delay = timeoutMs(timeout);
   if (delay === undefined) {
     return { signal: combineSignals(signals) };
@@ -124,28 +132,29 @@ export const mergeSignals = (
 };
 
 /**
- * Normalize an abort `reason` into a {@link FilesError} flagged `aborted`. A
- * reason that's already a `FilesError` (e.g. a timeout) passes through; an
- * `Error` is wrapped with its message; anything else is stringified.
+ * Normalize an abort reason into a {@link FilesError} flagged `aborted`, with
+ * the reason kept as the error's `cause`. A reason that's already a
+ * `FilesError` (e.g. a timeout) passes through; an `Error` is wrapped with its
+ * message; anything else is stringified.
  */
-export const abortError = (reason?: unknown): FilesError => {
-  if (reason instanceof FilesError) {
-    return reason;
+export const abortError = (cause?: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  if (reason instanceof Error) {
+  if (cause instanceof Error) {
     return new FilesError(
       "Provider",
-      `Operation aborted: ${reason.message}`,
-      reason,
+      `Operation aborted: ${cause.message}`,
+      cause,
       { aborted: true }
     );
   }
   return new FilesError(
     "Provider",
-    reason === undefined
+    cause === undefined
       ? "Operation aborted"
-      : `Operation aborted: ${String(reason)}`,
-    reason,
+      : `Operation aborted: ${String(cause)}`,
+    cause,
     { aborted: true }
   );
 };
@@ -230,7 +239,7 @@ export const maxRetries = (
   if (!retryable) {
     return 0;
   }
-  const max = typeof retries === "number" ? retries : retries?.max;
+  const max = isNumber(retries) ? retries : retries?.max;
   return Math.max(0, Math.floor(max ?? 0));
 };
 
@@ -244,7 +253,7 @@ export const retryBackoff = (
   attempt: number,
   error: FilesError
 ): number => {
-  if (typeof retries === "object" && retries.backoff) {
+  if (isObject(retries) && retries.backoff) {
     return Math.max(0, retries.backoff({ attempt, error }));
   }
   const backoff = DEFAULT_RETRY_BACKOFF_MS * 2 ** (attempt - 1);

@@ -12,6 +12,10 @@ import { inferTypeFromName } from "../internal/mime.js";
  */
 export type ZipSelection = readonly string[] | { prefix?: string };
 
+// `Array.isArray` alone does not narrow a `readonly string[]` union member.
+const isKeyList = (selection: ZipSelection): selection is readonly string[] =>
+  Array.isArray(selection);
+
 /**
  * How entry bodies are stored in the archive. `"deflate"` (the default)
  * compresses each entry; `"store"` writes the bytes verbatim — the right
@@ -152,6 +156,7 @@ const CRC_TABLE = ((): Uint32Array => {
 const crc32 = (bytes: Uint8Array): number => {
   let crc = MAX_UINT32;
   for (const byte of bytes) {
+    // SAFETY: the index is masked to 0..255 and the table has 256 entries.
     crc = (CRC_TABLE[(crc ^ byte) & 0xff] as number) ^ (crc >>> 8);
   }
   // oxlint-disable-next-line unicorn/prefer-math-trunc -- `>>> 0` reinterprets the signed 32-bit CRC as the unsigned value ZIP stores; Math.trunc would keep it negative.
@@ -214,12 +219,10 @@ const resolveEntries = async (
   nameOf: (key: string) => string
 ): Promise<ResolvedEntry[]> => {
   const keys: string[] = [];
-  if (Array.isArray(selection)) {
-    keys.push(...(selection as readonly string[]));
+  if (isKeyList(selection)) {
+    keys.push(...selection);
   } else {
-    for await (const file of files.listAll({
-      prefix: (selection as { prefix?: string }).prefix,
-    })) {
+    for await (const file of files.listAll({ prefix: selection.prefix })) {
       keys.push(file.key);
     }
   }
@@ -281,6 +284,7 @@ const zipChunks = async function* zipChunks(
   });
   const drain = function* drain(): Generator<Uint8Array, void> {
     while (queue.length > 0) {
+      // SAFETY: the loop guard just checked the queue is non-empty.
       yield queue.shift() as Uint8Array;
     }
   };
@@ -485,7 +489,7 @@ const collectLimited = async (
 
 /** Inflate a raw-deflate buffer via the platform {@link DecompressionStream}. */
 const inflate = async (
-  data: Uint8Array,
+  data: Uint8Array<ArrayBuffer>,
   maxBytes: number,
   key: string,
   name: string
@@ -497,7 +501,7 @@ const inflate = async (
   // join via Promise.all so a corrupt-input failure on either side never
   // becomes an unhandled rejection.
   const pump = (async () => {
-    await writer.write(data as Uint8Array<ArrayBuffer>);
+    await writer.write(data);
     await writer.close();
   })();
   const [result] = await Promise.all([collected, pump]);
@@ -506,7 +510,7 @@ const inflate = async (
 
 /** Locate and decode one entry's bytes, then verify them against the index. */
 const extractEntry = async (
-  bytes: Uint8Array,
+  bytes: Uint8Array<ArrayBuffer>,
   entry: ParsedEntry,
   key: string,
   maxEntrySize: number

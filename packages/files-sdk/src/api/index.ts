@@ -12,6 +12,7 @@ import type { Authorize } from "../internal/files-router/authorize.js";
 import type { HandlerContext } from "../internal/files-router/handler.js";
 import { dispatch } from "../internal/files-router/handler.js";
 import type { FilesOperation } from "../internal/files-router/protocol.js";
+import { isFunction } from "../internal/is.js";
 import { toErrorResult } from "../internal/router-core/envelope.js";
 import type { AllowedOrigins } from "../internal/router-core/origin.js";
 import { buildResponse, parseRequest } from "../internal/router-core/web.js";
@@ -103,8 +104,7 @@ export const createFilesRouter = (opts: CreateFilesRouterOptions): FilesApi => {
   const handle = async (req: Request): Promise<Response> => {
     try {
       const parsed = await parseRequest(req);
-      const files =
-        typeof opts.files === "function" ? await opts.files(req) : opts.files;
+      const files = isFunction(opts.files) ? await opts.files(req) : opts.files;
       const proxyUrl = (token: string): string => {
         const url = new URL(req.url);
         // Keep the caller's own query (e.g. a `?bucket=` hint consumed by a

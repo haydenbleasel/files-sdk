@@ -18,6 +18,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export type BunnyStorageRegion = `${BunnyStorageSDK.regions.StorageRegion}`;
@@ -77,26 +78,38 @@ const toBunnyPath = (key: string): string => {
 
 const fromBunnyPath = (path: string): string => path.replace(/^\/+/u, "");
 
+// The Bunny SDK declares its streams against `node:stream/web`. At runtime
+// that module re-exports the global `ReadableStream` class, so the two
+// declarations describe the same object; the casts below only bridge the
+// twin type definitions.
 const streamFromBytes = (
   bytes: Uint8Array | ReadableStream<Uint8Array>
 ): BunnyUploadStream => {
-  if (bytes instanceof ReadableStream) {
-    return bytes as unknown as BunnyUploadStream;
-  }
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  }) as unknown as BunnyUploadStream;
+  const stream =
+    bytes instanceof ReadableStream
+      ? bytes
+      : new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        });
+  // TS won't relate the twin declarations directly, so go through the
+  // async-iterable contract both declare.
+  const iterable: AsyncIterable<Uint8Array> = stream;
+  // SAFETY: the global `ReadableStream` is the same runtime class as
+  // `node:stream/web`'s; only the declarations differ (see above).
+  return iterable as BunnyUploadStream;
 };
 
 const bytesFromStream = async (
   stream: ReadableStream<Uint8Array> | BunnyDownloadStream
-): Promise<Uint8Array> =>
-  new Uint8Array(
-    await new Response(stream as ReadableStream<Uint8Array>).arrayBuffer()
-  );
+): Promise<Uint8Array> => {
+  // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class as
+  // the global one `Response` consumes; only the declarations differ.
+  const body = stream as ReadableStream<Uint8Array>;
+  return new Uint8Array(await new Response(body).arrayBuffer());
+};
 
 const keyFromStorageFile = (
   entry: BunnyStorageSDK.file.StorageFile
@@ -167,8 +180,11 @@ const toStoredFile = (
     );
   }
   if (body?.kind === "stream") {
+    // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class
+    // as the global one; only the declarations differ (see `streamFromBytes`).
+    const stream = body.stream as ReadableStream<Uint8Array>;
     return createStoredFile(meta, {
-      factory: () => body.stream as unknown as ReadableStream<Uint8Array>,
+      factory: () => stream,
       kind: "stream",
     });
   }
@@ -205,14 +221,12 @@ const _mapBunnyStorageError = makeErrorMapper({
     unauthorized: BUNNY_UNAUTH_CODES,
   },
   extract: (err) => {
-    const e = err as {
-      code?: string;
-      message?: string;
-      status?: number;
-      statusCode?: number;
-    };
-    const message = e?.message ?? (err instanceof Error ? err.message : "");
-    let code = e?.code;
+    if (!isObject(err)) {
+      return {};
+    }
+    const message =
+      "message" in err && isString(err.message) ? err.message : "";
+    let code = "code" in err && isString(err.code) ? err.code : undefined;
     if (!code && /not found/iu.test(message)) {
       code = "NotFound";
     } else if (!code && /unauthor|access key|forbidden/iu.test(message)) {
@@ -220,18 +234,24 @@ const _mapBunnyStorageError = makeErrorMapper({
     } else if (!code && /conflict|precondition/iu.test(message)) {
       code = "Conflict";
     }
+    const status =
+      "status" in err && isNumber(err.status) ? err.status : undefined;
+    const statusCode =
+      "statusCode" in err && isNumber(err.statusCode)
+        ? err.statusCode
+        : undefined;
     return {
       ...(code && { code }),
       ...(message && { message }),
-      ...(e?.status !== undefined && { status: e.status }),
-      ...(e?.statusCode !== undefined && { status: e.statusCode }),
+      ...(status !== undefined && { status }),
+      ...(statusCode !== undefined && { status: statusCode }),
     };
   },
   providerLabel: "Bunny Storage error",
 });
 
-export const mapBunnyStorageError = (err: unknown): FilesError =>
-  _mapBunnyStorageError(err);
+export const mapBunnyStorageError = (cause: unknown): FilesError =>
+  _mapBunnyStorageError(cause);
 
 const parseRegion = (
   region: string | undefined
@@ -245,6 +265,8 @@ const parseRegion = (
       `bunnyStorage adapter: unsupported region "${region}". Pass one of ${[...VALID_REGIONS].join(", ")}.`
     );
   }
+  // SAFETY: `VALID_REGIONS` is built from the `StorageRegion` enum's values,
+  // so membership (checked above) proves `region` is one of its literals.
   return region as BunnyStorageRegion;
 };
 
@@ -267,6 +289,9 @@ const buildClient = (opts: BunnyStorageAdapterOptions): BunnyStorageClient => {
       "bunnyStorage adapter: missing credentials. Pass `zone` + `accessKey` + `region`, or set BUNNY_STORAGE_ZONE / BUNNY_STORAGE_ACCESS_KEY / BUNNY_STORAGE_REGION (also accepted: STORAGE_ZONE / STORAGE_ACCESS_KEY / STORAGE_REGION, the names used in the Bunny SDK's README example)."
     );
   }
+  // SAFETY: `BunnyStorageRegion` is the template-literal image of the
+  // `StorageRegion` string enum, so every value is one of the enum's members;
+  // TS just doesn't let a string literal stand in for a string enum.
   return BunnyStorageSDK.zone.connect_with_accesskey(
     region as BunnyStorageSDK.regions.StorageRegion,
     zone,

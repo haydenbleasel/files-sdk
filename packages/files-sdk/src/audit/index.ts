@@ -5,11 +5,12 @@ import type {
   FilesActionType,
   FilesOperation,
   FilesPlugin,
+  OperationResult,
   PluginNext,
-  UploadResult,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject } from "../internal/is.js";
 
 const conditionalAction = (
   op: ConditionalFilesOperation
@@ -54,6 +55,18 @@ const ALL_ACTIONS: readonly FilesActionType[] = [
 ];
 
 /**
+ * Failure detail on an {@link AuditRecord} whose `status` is `"error"`.
+ * `applied: true` marks a conditional mutation that committed at the provider
+ * before an awaited plugin rejected the call — the object changed despite the
+ * error status.
+ */
+export interface AuditErrorInfo {
+  code: FilesErrorCode;
+  message: string;
+  applied?: true;
+}
+
+/**
  * One structured who/what/when entry handed to {@link AuditOptions.sink} after
  * an operation settles — richer than a {@link FilesActionEvent} and written
  * through an **awaited** sink, so it can be durably persisted before the call
@@ -90,12 +103,8 @@ export interface AuditRecord {
   size?: number;
   /** Set when this record is one item of a bulk (`[...]`) call. */
   bulk?: true;
-  /**
-   * Failure detail, on `status: "error"`. `applied: true` marks a conditional
-   * mutation that committed at the provider before an awaited plugin rejected
-   * the call — the object changed despite the error status.
-   */
-  error?: { code: FilesErrorCode; message: string; applied?: true };
+  /** Failure detail, on `status: "error"`. See {@link AuditErrorInfo}. */
+  error?: AuditErrorInfo;
 }
 
 export interface AuditOptions {
@@ -148,10 +157,8 @@ const auditedKinds = (events: AuditOptions["events"]): Set<FilesActionType> => {
 };
 
 /** Normalize whatever was thrown to a stable `{ code, message }`. */
-const errorInfo = (
-  failure: unknown
-): { code: FilesErrorCode; message: string; applied?: true } => {
-  const error = FilesError.wrap(failure);
+const errorInfo = (cause: unknown): AuditErrorInfo => {
+  const error = FilesError.wrap(cause);
   return {
     code: error.code,
     message: error.message,
@@ -164,7 +171,7 @@ interface RecordContext {
   at: number;
   durationMs: number;
   status: "success" | "error";
-  result?: unknown;
+  result?: OperationResult<FilesOperation>;
   failure?: unknown;
 }
 
@@ -178,10 +185,15 @@ const buildRecord = (op: FilesOperation, ctx: RecordContext): AuditRecord => {
   } else if (op.kind !== "list") {
     locus = { key: op.key };
   }
-  const hasSize =
+  // Only a successful upload reports a stored size (its `UploadResult`).
+  const size =
     status === "success" &&
     op.kind === "upload" &&
-    typeof (result as UploadResult).size === "number";
+    isObject(result) &&
+    "size" in result &&
+    isNumber(result.size)
+      ? result.size
+      : undefined;
   const condition: ConditionalActionType | undefined = isConditionalOperation(
     op
   )
@@ -195,8 +207,8 @@ const buildRecord = (op: FilesOperation, ctx: RecordContext): AuditRecord => {
     ...locus,
     ...(condition !== undefined && { condition }),
     ...(actor !== undefined && { actor }),
-    ...("bulk" in op && op.bulk ? { bulk: true } : {}),
-    ...(hasSize && { size: (result as UploadResult).size }),
+    ...("bulk" in op && op.bulk && { bulk: true }),
+    ...(size !== undefined && { size }),
     ...(status === "error" && { error: errorInfo(failure) }),
   };
 };
@@ -263,16 +275,20 @@ export const audit = (options: AuditOptions): FilesPlugin => {
   const audited = auditedKinds(options.events);
   const clock = options.clock ?? Date.now;
 
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; this wrap only observes, resolving with
+  // exactly what the verb's `next` produced, so the non-generic function
+  // satisfies the generic `wrap` at each verb.
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     if (!audited.has(op.kind)) {
       return next(op);
     }
     const at = clock();
     const who = actor?.(op);
-    let result: unknown;
+    let result: OperationResult<FilesOperation>;
     try {
       result = await next(op);
     } catch (error) {

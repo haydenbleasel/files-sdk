@@ -7,6 +7,7 @@ import type {
 } from "../index.js";
 import type { S3Adapter, S3AdapterOptions } from "../s3/core.js";
 import { deleteManyWithFallback } from "./core.js";
+import { isFunction } from "./is.js";
 
 // Shared plumbing for the S3-compatible adapters that offer both HTTP engines
 // (`r2()`, `minio()`): which engine to pick when the caller didn't, and a
@@ -41,6 +42,10 @@ export const resolveS3Engine = (explicit?: S3Engine): S3Engine => {
   if (explicit) {
     return explicit;
   }
+  // SAFETY: the host global's members depend on the runtime, which the
+  // static `typeof globalThis` cannot know; this view declares the three
+  // probed globals as optional so each read below is a checked existence
+  // probe, never an assumption that they are present.
   const g = globalThis as {
     DOMParser?: unknown;
     WebSocketPair?: unknown;
@@ -48,8 +53,8 @@ export const resolveS3Engine = (explicit?: S3Engine): S3Engine => {
   };
   const onWorkerd = g.navigator
     ? g.navigator.userAgent === "Cloudflare-Workers"
-    : typeof g.WebSocketPair === "function";
-  const awsSdkCanParseXml = typeof g.DOMParser === "function";
+    : isFunction(g.WebSocketPair);
+  const awsSdkCanParseXml = isFunction(g.DOMParser);
   return onWorkerd && !awsSdkCanParseXml ? "fetch" : "aws-sdk";
 };
 
@@ -146,6 +151,10 @@ export const lazyS3Adapter = (
     // run — call any method first (the import is memoized, so it's a
     // one-time cost).
     get raw(): S3Client {
+      // SAFETY: `Adapter<S3Client>` declares `raw` non-optional; the
+      // pre-load `undefined` is the documented exception above, not a
+      // second value type — once any method has run, `ensure` has cached
+      // the inner adapter's `S3Client` here.
       return cachedRaw as S3Client;
     },
     // `upload` delegates to the underlying S3 adapter, which reports
@@ -162,7 +171,10 @@ export const lazyS3Adapter = (
       const build = async (): Promise<PartsResumableDriver> => {
         if (!inner) {
           const adapter = await ensure();
-          // The inner S3 adapter always defines `resumableUpload`.
+          // SAFETY: `createS3Adapter` always defines `resumableUpload` and
+          // always returns a `"parts"`-mode driver (S3 multipart); the
+          // `Adapter` type leaves the method optional and the driver mode
+          // open only for the adapters that lack it.
           inner = (
             adapter.resumableUpload as NonNullable<
               typeof adapter.resumableUpload

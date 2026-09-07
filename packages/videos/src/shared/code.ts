@@ -78,10 +78,13 @@ export interface RenderedLine {
   empty: boolean;
 }
 
-export const renderLines = (
-  lines: Line[],
-  budget: number
-): { rendered: RenderedLine[]; activeLine: number } => {
+export interface RenderedCode {
+  rendered: RenderedLine[];
+  /** Index of the line the caret currently sits on; -1 before typing starts. */
+  activeLine: number;
+}
+
+export const renderLines = (lines: Line[], budget: number): RenderedCode => {
   const out: RenderedLine[] = [];
   let consumed = 0;
   let active = -1;

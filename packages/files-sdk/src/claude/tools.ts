@@ -1,9 +1,18 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
+import type { SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Files } from "../index.js";
 import { executors } from "../internal/ai-tools/executors.js";
 import { TOOL_SCHEMAS } from "../internal/ai-tools/schemas.js";
+import { isString } from "../internal/is.js";
 import type { ToolAnnotations } from "./types.js";
+
+/**
+ * The MCP `CallToolResult` a handler resolves with. Derived from the SDK's
+ * handler signature rather than imported from `@modelcontextprotocol/sdk` so
+ * this subpath doesn't take on a second peer dependency.
+ */
+type CallToolResult = Awaited<ReturnType<SdkMcpToolDefinition["handler"]>>;
 
 const READ_ANNOTATIONS: ToolAnnotations = { readOnlyHint: true };
 const WRITE_ANNOTATIONS: ToolAnnotations = {
@@ -16,28 +25,21 @@ const IDEMPOTENT_WRITE_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: false,
 };
 
-const okResult = (
-  output: unknown
-): {
-  content: [{ type: "text"; text: string }];
-} => ({
+// Executor outputs are JSON-shaped records; a string output (already text)
+// is passed through as-is so it isn't double-encoded.
+const okResult = <Output>(output: Output): CallToolResult => ({
   content: [
     {
-      text: typeof output === "string" ? output : JSON.stringify(output),
+      text: isString(output) ? output : JSON.stringify(output),
       type: "text",
     },
   ],
 });
 
-const errorResult = (
-  error: unknown
-): {
-  content: [{ type: "text"; text: string }];
-  isError: true;
-} => ({
+const errorResult = (cause: unknown): CallToolResult => ({
   content: [
     {
-      text: error instanceof Error ? error.message : String(error),
+      text: cause instanceof Error ? cause.message : String(cause),
       type: "text",
     },
   ],
@@ -45,8 +47,8 @@ const errorResult = (
 });
 
 const wrap =
-  <T>(run: (input: T) => Promise<unknown>) =>
-  async (input: T) => {
+  <Input, Output>(run: (input: Input) => Promise<Output>) =>
+  async (input: Input) => {
     try {
       return okResult(await run(input));
     } catch (error) {

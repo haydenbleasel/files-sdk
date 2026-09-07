@@ -77,7 +77,7 @@ describe("cli/io", () => {
   });
 
   test("parseJson round-trips valid JSON", () => {
-    expect(parseJson<{ region: string }>('{"region":"us-east-1"}')).toEqual({
+    expect(parseJson('{"region":"us-east-1"}')).toEqual({
       region: "us-east-1",
     });
   });

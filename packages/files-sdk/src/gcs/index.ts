@@ -30,6 +30,9 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { createGcsResumableDriver } from "../internal/gcs-resumable.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonArray, isJsonObject } from "../internal/json.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface GCSAdapterOptions {
@@ -85,24 +88,22 @@ export const mapGCSError = makeErrorMapper({
     notFound: new Set(),
     unauthorized: new Set(),
   },
-  extract: (err) => {
-    const e = err as {
-      code?: number | string;
-      message?: string;
-      status?: number;
-    };
+  extract: (cause) => {
+    const e = isObject(cause) ? cause : undefined;
     // GCS ApiError carries the HTTP status on `code` (number). Some auth
     // errors and lower-level wrappers use `status` instead. String `code`
     // values (e.g. "ENOTFOUND") fall through to Provider — we don't try to
     // classify network errors as anything more specific.
     let status: number | undefined;
-    if (typeof e?.code === "number") {
+    if (e && "code" in e && isNumber(e.code)) {
       status = e.code;
-    } else if (typeof e?.status === "number") {
+    } else if (e && "status" in e && isNumber(e.status)) {
       ({ status } = e);
     }
+    const message =
+      e && "message" in e && isString(e.message) ? e.message : undefined;
     return {
-      ...(e?.message && { message: e.message }),
+      ...(message && { message }),
       ...(status !== undefined && { status }),
     };
   },
@@ -119,7 +120,7 @@ const pipeWebToNode = async (
   web: ReadableStream<Uint8Array>,
   node: NodeJS.WritableStream
 ): Promise<void> => {
-  await pipeline(Readable.fromWeb(web as never), node);
+  await pipeline(toNodeReadable(web), node);
 };
 
 /**
@@ -149,17 +150,21 @@ const writeViaResumableStream = async (
     : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
 };
 
-const metaToStored = (
-  meta: FileMetadata | undefined
-): {
-  size: number;
-  type: string;
+interface StoredObjectMeta {
   etag?: string;
   lastModified?: number;
   metadata?: Record<string, string>;
-} => {
+  size: number;
+  type: string;
+}
+
+const metaToStored = (meta: FileMetadata | undefined): StoredObjectMeta => {
+  // SAFETY: GCS stores custom metadata as strings on the wire; the SDK's
+  // `metadata` type admits numbers, booleans and `null` only on the write
+  // side (they are stringified, `null` deletes), so a read-back value is
+  // always a string record.
   const userMeta = meta?.metadata as Record<string, string> | undefined;
-  const updated = meta?.updated as string | undefined;
+  const updated = meta?.updated;
   return {
     ...(meta?.etag && { etag: meta.etag }),
     ...(updated && { lastModified: new Date(updated).getTime() }),
@@ -228,10 +233,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
           return createStoredFile(
             { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
-              factory: () =>
-                Readable.toWeb(
-                  file.createReadStream(rangeOpts)
-                ) as unknown as ReadableStream<Uint8Array>,
+              factory: () => toWebStream(file.createReadStream(rangeOpts)),
               kind: "stream",
             }
           );
@@ -309,10 +311,13 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
             }
           );
         });
-        const cursor = (nextQuery as { pageToken?: string } | null | undefined)
-          ?.pageToken;
-        const prefixes = (apiResponse as { prefixes?: string[] } | undefined)
-          ?.prefixes;
+        const cursor = nextQuery?.pageToken;
+        // The raw API response is untyped; `prefixes` is the JSON string list
+        // of common prefixes for a delimiter listing.
+        const prefixes =
+          isJsonObject(apiResponse) && isJsonArray(apiResponse.prefixes)
+            ? apiResponse.prefixes.filter(isString)
+            : undefined;
         return {
           items,
           ...(cursor && { cursor }),
@@ -423,7 +428,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         // simpler than relying on `file.metadata` side effects, which the
         // SDK populates on a best-effort basis.
         const [meta] = await file.getMetadata();
-        const updated = meta?.updated as string | undefined;
+        const updated = meta?.updated;
         return {
           contentType,
           ...(meta?.etag && { etag: meta.etag }),

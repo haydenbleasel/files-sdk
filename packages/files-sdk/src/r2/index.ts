@@ -23,6 +23,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isString } from "../internal/is.js";
 import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
 import { s3FetchAdapter } from "../internal/s3-fetch.js";
@@ -159,6 +160,13 @@ export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
 
 export type R2Adapter = Adapter<S3Client | R2Bucket | AwsClient>;
 
+// Copy exactly the viewed bytes into a fresh, tight ArrayBuffer.
+const copyToArrayBuffer = (view: ArrayBufferView): ArrayBuffer => {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return copy.buffer;
+};
+
 const normalizeForR2 = async (
   body: Body,
   contentTypeHint?: string
@@ -167,22 +175,11 @@ const normalizeForR2 = async (
   contentType: string;
   contentLength?: number;
 }> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return {
       contentLength: new TextEncoder().encode(body).byteLength,
       contentType: contentTypeHint ?? "text/plain; charset=utf-8",
       data: body,
-    };
-  }
-  if (body instanceof Uint8Array) {
-    const buf = body.buffer.slice(
-      body.byteOffset,
-      body.byteOffset + body.byteLength
-    ) as ArrayBuffer;
-    return {
-      contentLength: buf.byteLength,
-      contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
-      data: buf,
     };
   }
   if (body instanceof ArrayBuffer) {
@@ -193,11 +190,7 @@ const normalizeForR2 = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    const buf = view.buffer.slice(
-      view.byteOffset,
-      view.byteOffset + view.byteLength
-    ) as ArrayBuffer;
+    const buf = copyToArrayBuffer(body);
     return {
       contentLength: buf.byteLength,
       contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
@@ -236,7 +229,13 @@ const r2ObjectToStoredFile = (
   };
   if ("body" in obj && obj.body) {
     if (downloadOpts?.as === "stream") {
-      const stream = obj.body as unknown as ReadableStream<Uint8Array>;
+      // workers-types declares the body as its own `ReadableStream`, which TS
+      // considers unrelated to the platform one the SDK speaks; both agree on
+      // the async-iterable surface.
+      const body: AsyncIterable<Uint8Array> = obj.body;
+      // SAFETY: the same platform class (see above); only its declared type
+      // differs.
+      const stream = body as ReadableStream<Uint8Array>;
       return createStoredFile(meta, { factory: () => stream, kind: "stream" });
     }
     return createStoredFile(meta, {
@@ -254,21 +253,31 @@ const r2ObjectToStoredFile = (
 // See https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
 // for the published code list. We classify the common ones; unknowns fall
 // through to "Provider" so callers can still distinguish failures from success.
-const mapR2Error = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+/** The fields an R2 binding error carries (see the published code list). */
+interface R2BindingErrorFields {
+  code?: number;
+  message?: string;
+  name?: string;
+}
+
+const mapR2Error = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const e = err as { name?: string; code?: number; message?: string };
+  // SAFETY: every field is read optionally; a thrown value that is not a
+  // binding error (or not even an object) yields no name/code and falls back
+  // to its own Error message.
+  const e = cause as R2BindingErrorFields | null | undefined;
   const name = e?.name ?? "";
   const code = e?.code;
   const message =
-    e?.message ?? (err instanceof Error ? err.message : String(err));
+    e?.message ?? (cause instanceof Error ? cause.message : String(cause));
 
   if (name.includes("NotFound") || name.includes("NoSuch") || code === 10_002) {
-    return new FilesError("NotFound", message, err);
+    return new FilesError("NotFound", message, cause);
   }
   if (name.includes("Precondition") || code === 10_007) {
-    return new FilesError("Conflict", message, err);
+    return new FilesError("Conflict", message, cause);
   }
   if (
     name.includes("Forbidden") ||
@@ -276,9 +285,9 @@ const mapR2Error = (err: unknown): FilesError => {
     code === 10_004 ||
     code === 10_006
   ) {
-    return new FilesError("Unauthorized", message, err);
+    return new FilesError("Unauthorized", message, cause);
   }
-  return new FilesError("Provider", message, err);
+  return new FilesError("Provider", message, cause);
 };
 
 // R2 does not implement the S3 `POST Object` API, so it has no
@@ -307,7 +316,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   // aws4fetch-backed signer handles the URL surface. Reads and writes still
   // go through the binding — only signing delegates. Pure Web Crypto, so a
   // hybrid Worker needs no `@aws-sdk/*` packages at all.
-  const httpBucket = (opts as Partial<R2HttpOptions>).bucket;
+  const httpBucket = opts.bucket;
   // An explicit `endpoint` stands in for `accountId`, which only ever feeds
   // the default signing hostname.
   const signerEndpoint =
@@ -505,6 +514,9 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         options?.contentType
       );
       try {
+        // SAFETY: `data` is a string, an ArrayBuffer, or the platform
+        // `ReadableStream` — all accepted by `put`; only the stream's declared
+        // type (DOM vs workers-types) differs.
         const value = data as Parameters<typeof bucket.put>[1];
         const result = await bucket.put(key, value, {
           httpMetadata: {
@@ -659,6 +671,9 @@ export const r2 = (opts: R2AdapterOptions): R2Adapter => {
   if ("binding" in opts && opts.binding) {
     return r2FromBinding(opts);
   }
+  // SAFETY: the union is discriminated by `binding`; an options object that
+  // carries no usable binding is the HTTP form, which validates its own
+  // `bucket` / credentials.
   return r2FromHttp(opts as R2HttpOptions);
 };
 

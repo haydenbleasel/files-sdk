@@ -1,7 +1,18 @@
 import { toJSONSchema } from "zod";
 import type { ZodType } from "zod";
 
-type JsonSchema = Record<string, unknown>;
+import { isString } from "../is.js";
+import { isJsonArray, isJsonObject } from "../json.js";
+import type { JsonObject, JsonValue } from "../json.js";
+
+/** A JSON Schema document — plain JSON, read one checked field at a time. */
+type JsonSchema = JsonObject;
+
+/** An object schema with a `properties` map (`z.object(...)` output). */
+interface ObjectSchema extends JsonSchema {
+  type: "object";
+  properties: JsonSchema;
+}
 
 /**
  * Convert a Zod schema to a JSON Schema object suitable for OpenAI's
@@ -12,16 +23,17 @@ type JsonSchema = Record<string, unknown>;
  * subpath inherits this requirement.
  */
 export const toOpenAIJsonSchema = (schema: ZodType): JsonSchema => {
+  // SAFETY: Zod's `toJSONSchema` emits a plain JSON-serialisable document (it
+  // is what `JSON.stringify` ships to the API); its declared type only carries
+  // an `unknown` index signature plus the non-enumerable `~standard` brand.
   const json = toJSONSchema(schema) as JsonSchema;
   // oxlint-disable-next-line sonarjs/no-unused-vars -- destructure-omit strips $schema from the JSON Schema before returning
   const { $schema: _ignored, ...rest } = json;
   return rest;
 };
 
-const isObjectSchema = (node: JsonSchema): boolean =>
-  node.type === "object" &&
-  typeof node.properties === "object" &&
-  node.properties !== null;
+const isObjectSchema = (node: JsonSchema): node is ObjectSchema =>
+  node.type === "object" && isJsonObject(node.properties);
 
 // A free-form map (`z.record(...)`): an object with no fixed `properties`
 // whose `additionalProperties` is itself a schema. Strict mode requires
@@ -29,8 +41,7 @@ const isObjectSchema = (node: JsonSchema): boolean =>
 const isOpenRecord = (node: JsonSchema): boolean =>
   node.type === "object" &&
   node.properties === undefined &&
-  typeof node.additionalProperties === "object" &&
-  node.additionalProperties !== null;
+  isJsonObject(node.additionalProperties);
 
 // Strict mode has no notion of an optional property: every key must be
 // listed in `required`, and "absent" is modelled as an explicit `null`.
@@ -47,13 +58,13 @@ const strictify = (node: JsonSchema): JsonSchema => {
     return node;
   }
   const required = new Set(
-    Array.isArray(node.required) ? (node.required as string[]) : []
+    isJsonArray(node.required) ? node.required.filter(isString) : []
   );
-  const properties: Record<string, JsonSchema> = {};
-  for (const [name, raw] of Object.entries(
-    node.properties as Record<string, JsonSchema>
-  )) {
-    if (isOpenRecord(raw)) {
+  const properties: JsonSchema = {};
+  for (const [name, raw] of Object.entries(node.properties)) {
+    // Zod only ever emits object schemas for properties; anything else (like
+    // an open record) has no strict-mode shape and is dropped.
+    if (!isJsonObject(raw) || isOpenRecord(raw)) {
       continue;
     }
     const inner = strictify(raw);
@@ -92,11 +103,11 @@ export const toOpenAIStrictJsonSchema = (schema: ZodType): JsonSchema =>
  * under a strict schema (where optional fields are nullable, never omitted)
  * validate against the underlying Zod schema's `.optional()` fields.
  */
-export const stripNullArgs = (args: unknown): unknown => {
-  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+export const stripNullArgs = (args: JsonValue): JsonValue => {
+  if (!isJsonObject(args)) {
     return args;
   }
-  const out: Record<string, unknown> = {};
+  const out: JsonObject = {};
   for (const [key, value] of Object.entries(args)) {
     if (value !== null) {
       out[key] = value;

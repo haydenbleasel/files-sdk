@@ -97,10 +97,12 @@ export const FileBrowser = ({
     async (next?: string) => {
       setIsLoading(true);
       try {
+        // The client drops `undefined` options from the request, so an absent
+        // cursor and an explicit `undefined` are the same first-page call.
         const result = await filesRef.current.list({
+          cursor: next || undefined,
           delimiter,
           prefix: prefix || undefined,
-          ...(next ? { cursor: next } : {}),
         });
         setFolders((prev) =>
           next

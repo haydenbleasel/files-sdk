@@ -8,10 +8,12 @@ import type {
   FilesOperation,
   FilesPlugin,
   ListResult,
+  OperationResult,
   PluginNext,
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { isNumber } from "../internal/is.js";
 
 /** Span name prefix when {@link TracingOptions.spanPrefix} is omitted. */
 const DEFAULT_SPAN_PREFIX = "files.";
@@ -84,20 +86,28 @@ const baseAttributes = (op: FilesOperation): Attributes => {
  */
 const resultAttributes = (
   op: FilesOperation,
-  result: unknown
+  result: OperationResult<FilesOperation>
 ): Attributes | undefined => {
+  // The engine pairs each op with its own verb's result, which is what the
+  // per-verb narrowing below relies on.
   if (op.kind === "upload") {
-    return { "files.size": (result as UploadResult).size };
+    // SAFETY: an upload's `next` resolves to its `UploadResult`.
+    const { size } = result as UploadResult;
+    return { "files.size": size };
   }
   if (op.kind === "download" || op.kind === "head") {
+    // SAFETY: a download / head's `next` resolves to its `StoredFile`.
     const { size } = result as StoredFile;
-    return typeof size === "number" ? { "files.size": size } : undefined;
+    return isNumber(size) ? { "files.size": size } : undefined;
   }
   if (op.kind === "exists") {
+    // SAFETY: an exists' `next` resolves to its boolean verdict.
     return { "files.exists": result as boolean };
   }
   if (op.kind === "list") {
-    return { "files.count": (result as ListResult).items.length };
+    // SAFETY: a list's `next` resolves to its `ListResult`.
+    const { items } = result as ListResult;
+    return { "files.count": items.length };
   }
   return undefined;
 };
@@ -150,7 +160,14 @@ export const tracing = (options: TracingOptions = {}): FilesPlugin => {
   const tracer = options.tracer ?? trace.getTracer(INSTRUMENTATION_NAME);
   const spanPrefix = options.spanPrefix ?? DEFAULT_SPAN_PREFIX;
 
-  const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> =>
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; this wrap only observes, resolving with
+  // exactly what the verb's `next` produced, so the non-generic function
+  // satisfies the generic `wrap` at each verb.
+  const wrap = ((
+    op: FilesOperation,
+    next: PluginNext
+  ): Promise<OperationResult<FilesOperation>> =>
     tracer.startActiveSpan(
       `${spanPrefix}${op.kind}`,
       { attributes: { ...baseAttributes(op), ...customAttributes?.(op) } },
@@ -163,6 +180,10 @@ export const tracing = (options: TracingOptions = {}): FilesPlugin => {
           }
           return result;
         } catch (error) {
+          // SAFETY: `next` runs the engine, which normalizes every failure to a
+          // `FilesError` (an `Error`); should an inner plugin throw a foreign
+          // value, `recordException` reads `name` / `message` / `stack`
+          // defensively and records an empty exception rather than throwing.
           span.recordException(error as Error);
           span.setStatus({
             code: SpanStatusCode.ERROR,

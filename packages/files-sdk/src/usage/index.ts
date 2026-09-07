@@ -1,6 +1,7 @@
 import type {
   FilesOperation,
   FilesPlugin,
+  OperationResult,
   PluginNext,
   StoredFile,
   UploadResult,
@@ -68,6 +69,8 @@ export type UsageApi = {
 };
 
 const emptyByKind = (): Record<(typeof KINDS)[number], number> => {
+  // SAFETY: every member of `KINDS` is assigned in the loop below before the
+  // record escapes, so the empty literal ends up fully populated.
   const out = {} as Record<(typeof KINDS)[number], number>;
   for (const kind of KINDS) {
     out[kind] = 0;
@@ -226,10 +229,14 @@ export const usage = (options: UsageOptions = {}): FilesPlugin<UsageApi> => {
     return stats;
   };
 
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; every path below resolves with the value
+  // the verb's `next` produced (a metered `StoredFile` is still a `StoredFile`),
+  // so the non-generic function satisfies the generic `wrap` at each verb.
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     // Resolve the group before the call (the op may be transformed inward) but
     // count only on success — a thrown/vetoed op moved nothing.
     const key = groupOf(op);
@@ -238,13 +245,18 @@ export const usage = (options: UsageOptions = {}): FilesPlugin<UsageApi> => {
     stats.operations += 1;
     stats.operationsByKind[op.kind] += 1;
     if (op.kind === "upload") {
-      stats.bytesUp += (result as UploadResult).size ?? 0;
+      // SAFETY: the engine pairs each op with its own verb's result — an
+      // upload's `next` resolves to its `UploadResult`.
+      const uploaded = result as UploadResult;
+      stats.bytesUp += uploaded.size ?? 0;
       return result;
     }
     if (op.kind === "download" || op.kind === "head") {
+      // SAFETY: a download / head's `next` resolves to its `StoredFile`.
+      const file = result as StoredFile;
       // Re-resolve the bucket at flow time so bytes land in the current window
       // even if `resetUsage()` ran between dispatch and the body being read.
-      return meterRead(result as StoredFile, (bytes) => {
+      return meterRead(file, (bytes) => {
         bucketFor(key).bytesDown += bytes;
       });
     }

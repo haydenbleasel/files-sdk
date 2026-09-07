@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { Readable } from "node:stream";
 
 import SftpClient from "ssh2-sftp-client";
 
@@ -29,7 +28,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { joinRemotePath, trimSlashes } from "../internal/remote-path.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
@@ -87,11 +88,11 @@ const DEFAULT_PORT = 22;
 
 // ssh2 surfaces SFTP protocol failures as small integer status codes; map the
 // ones we classify to the errno-style strings the error mapper keys on.
-const SFTP_STATUS_CODE: Readonly<Record<number, string>> = {
-  2: "ENOENT",
-  3: "EACCES",
-  4: "FAILURE",
-};
+const SFTP_STATUS_CODE: ReadonlyMap<number, string> = new Map([
+  [2, "ENOENT"],
+  [3, "EACCES"],
+  [4, "FAILURE"],
+]);
 
 export const mapSftpError = makeErrorMapper({
   codes: {
@@ -103,15 +104,19 @@ export const mapSftpError = makeErrorMapper({
   // with a message sniff for the auth/transport cases ssh2 reports as plain
   // Error without a useful `.code`. Leave `status` unset so the HTTP buckets
   // never fire.
-  extract: (err) => {
-    const e = err as { code?: number | string; message?: string };
+  extract: (cause) => {
     let code: string | undefined;
-    if (typeof e?.code === "number") {
-      code = SFTP_STATUS_CODE[e.code];
-    } else if (typeof e?.code === "string") {
-      ({ code } = e);
+    let message: string | undefined;
+    if (isObject(cause)) {
+      if ("code" in cause && isNumber(cause.code)) {
+        code = SFTP_STATUS_CODE.get(cause.code);
+      } else if ("code" in cause && isString(cause.code)) {
+        ({ code } = cause);
+      }
+      if ("message" in cause && isString(cause.message)) {
+        ({ message } = cause);
+      }
     }
-    const message = typeof e?.message === "string" ? e.message : undefined;
     if (!code && message) {
       if (/no such file|not found/iu.test(message)) {
         code = "ENOENT";
@@ -272,6 +277,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
 
   const lazyDownload = (key: string) => (): Promise<Uint8Array> =>
     run(undefined, async (client) => {
+      // SAFETY: `get()` without a destination resolves to a Buffer; the
+      // string / WritableStream members of its return type only apply when a
+      // `dst` path or stream is passed.
       const buf = (await client.get(keyToRemote(key))) as Buffer;
       return bufferToUint8(buf);
     });
@@ -284,6 +292,8 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       // the client over a single connection. Buffers the whole object — see
       // the adapter docs for the large-file caveat.
       await run(opts2?.signal, async (client) => {
+        // SAFETY: `get()` without a destination resolves to a Buffer (see
+        // `lazyDownload`).
         const buf = (await client.get(fromRemote)) as Buffer;
         await ensureParentDir(client, toRemote);
         await client.put(buf, toRemote);
@@ -370,10 +380,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
               type: inferTypeFromName(key),
             },
             {
-              factory: () =>
-                Readable.toWeb(
-                  nodeStream as unknown as Readable
-                ) as unknown as ReadableStream<Uint8Array>,
+              factory: () => toWebStream(nodeStream),
               kind: "stream",
             }
           );
@@ -390,12 +397,10 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           // offsets (the `get()` options type doesn't surface them). Drain it
           // into a buffer for the non-stream response.
           const nodeStream = client.createReadStream(remote, readStreamOptions);
-          bytes = await collectStream(
-            Readable.toWeb(
-              nodeStream as unknown as Readable
-            ) as unknown as ReadableStream<Uint8Array>
-          );
+          bytes = await collectStream(toWebStream(nodeStream));
         } else {
+          // SAFETY: `get()` without a destination resolves to a Buffer (see
+          // `lazyDownload`).
           const buf = (await client.get(remote)) as Buffer;
           bytes = bufferToUint8(buf);
         }
@@ -576,8 +581,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 8 * 1024 * 1024,
         probe(): Promise<{ nextOffset: number }> {
@@ -657,7 +661,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         // and overwrite is the expected upload semantics everywhere else.
         const input =
           data instanceof ReadableStream
-            ? Readable.fromWeb(data as never)
+            ? toNodeReadable(data)
             : uint8ToBuffer(data);
         await client.put(input, remote);
         let size = contentLength;

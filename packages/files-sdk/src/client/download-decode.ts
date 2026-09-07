@@ -23,6 +23,9 @@ const decodeMeta = (header: string | null): MetaHeader => {
   }
   try {
     const bytes = Uint8Array.from(atob(header), (c) => c.codePointAt(0) ?? 0);
+    // SAFETY: `X-Files-Meta` is minted by the gateway's download handler
+    // (`encodeMeta`) as the base64 JSON of exactly these optional fields; a
+    // garbled or foreign header fails to decode and falls to the catch below.
     return JSON.parse(new TextDecoder().decode(bytes)) as MetaHeader;
   } catch {
     return {};

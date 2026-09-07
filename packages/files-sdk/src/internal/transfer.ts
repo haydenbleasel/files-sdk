@@ -154,7 +154,7 @@ export const transfer = async (
       try {
         await dest.upload(destKey, body, {
           contentType: file.type,
-          ...(file.metadata ? { metadata: file.metadata } : {}),
+          ...(file.metadata && { metadata: file.metadata }),
           ...signalOpt,
         });
       } catch (error) {

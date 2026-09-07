@@ -145,7 +145,12 @@ const PlayGlyph: React.FC<{ color: string }> = ({ color }) => (
   />
 );
 
-const pillColorsAt = (phase: Phase): { color: string; bg: string } => {
+interface PillColors {
+  bg: string;
+  color: string;
+}
+
+const pillColorsAt = (phase: Phase): PillColors => {
   if (phase === "done") {
     return { bg: "rgba(5,150,105,0.12)", color: "#059669" };
   }

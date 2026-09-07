@@ -50,9 +50,12 @@ const bodySize = (body: SendBody): number => {
 // throws, accurately.
 const asFilePart = (body: SendBody): Blob => {
   if (body instanceof Blob || isNativeFileRef(body)) {
+    // SAFETY: a NativeFileRef only reaches this branch in React Native, whose
+    // FormData accepts the `{ uri, name, type }` descriptor where the web
+    // typings demand a Blob; on the web `body` is a real Blob here.
     return body as Blob;
   }
-  return new Blob([body as BlobPart]);
+  return new Blob([body]);
 };
 
 // A raw (non-multipart) request body. A NativeFileRef here is a client bug —

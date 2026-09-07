@@ -29,7 +29,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { joinRemotePath, trimSlashes } from "../internal/remote-path.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
@@ -89,11 +91,11 @@ export const mapFtpError = makeErrorMapper({
   // basic-ftp's FTPError carries the numeric reply code on `.code`. Classify on
   // the stringified code; transport errors (ECONNREFUSED, timeouts) arrive as
   // plain Errors with a string code and fall through to Provider (retryable).
-  extract: (err) => {
-    const e = err as { code?: number | string; message?: string };
+  extract: (cause) => {
+    const e = isObject(cause) ? cause : undefined;
     return {
-      ...(typeof e?.code === "number" && { code: String(e.code) }),
-      ...(typeof e?.message === "string" && { message: e.message }),
+      ...(e && "code" in e && isNumber(e.code) && { code: String(e.code) }),
+      ...(e && "message" in e && isString(e.message) && { message: e.message }),
     };
   },
   providerLabel: "FTP error",
@@ -104,7 +106,12 @@ const uint8ToBuffer = (u8: Uint8Array): Buffer =>
 
 // Split a remote path into its directory and basename. dir is "" for a bare
 // filename, "/" for a root-level file; base is the trailing segment.
-const splitRemote = (remote: string): { dir: string; base: string } => {
+interface RemotePathParts {
+  base: string;
+  dir: string;
+}
+
+const splitRemote = (remote: string): RemotePathParts => {
   const idx = remote.lastIndexOf("/");
   if (idx === -1) {
     return { base: remote, dir: "" };
@@ -425,10 +432,11 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
             );
           }
           // Kick off the transfer without awaiting; basic-ftp pipes the data
-          // socket into `pass` and resolves when it completes.
+          // socket into `pass` and resolves when it completes. It rejects with
+          // `FTPError` or a Node system error, both `Error` instances.
           // oxlint-disable-next-line promise/prefer-await-to-then, promise/prefer-await-to-callbacks, github/no-then -- fire-and-forget: errors surface on the returned stream.
-          client.downloadTo(pass, remote).catch((error: unknown) => {
-            pass.destroy(error as Error);
+          client.downloadTo(pass, remote).catch((error: Error) => {
+            pass.destroy(error);
           });
           return createStoredFile(
             {
@@ -438,8 +446,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
               type: inferTypeFromName(key),
             },
             {
-              factory: () =>
-                Readable.toWeb(pass) as unknown as ReadableStream<Uint8Array>,
+              factory: () => toWebStream(pass),
               kind: "stream",
             }
           );
@@ -632,8 +639,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 8 * 1024 * 1024,
         probe(): Promise<{ nextOffset: number }> {
@@ -700,7 +706,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         );
         const source =
           data instanceof ReadableStream
-            ? Readable.fromWeb(data as never)
+            ? toNodeReadable(data)
             : Readable.from(uint8ToBuffer(data));
         const report = options?.onProgress;
         if (report) {

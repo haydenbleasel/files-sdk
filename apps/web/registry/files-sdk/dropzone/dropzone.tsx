@@ -92,19 +92,25 @@ const entryFile = (entry: FileSystemFileEntry): Promise<File> =>
     entry.file(resolve, reject);
   });
 
+// `isFile` / `isDirectory` discriminate the entry subtype at runtime; lib.dom
+// only types them as plain booleans, so name the narrowing here.
+const isFileEntry = (entry: FileSystemEntry): entry is FileSystemFileEntry =>
+  entry.isFile;
+const isDirectoryEntry = (
+  entry: FileSystemEntry
+): entry is FileSystemDirectoryEntry => entry.isDirectory;
+
 const traverseEntry = async (
   entry: FileSystemEntry
 ): Promise<PendingFile[]> => {
-  if (entry.isFile) {
-    const file = await entryFile(entry as FileSystemFileEntry);
+  if (isFileEntry(entry)) {
+    const file = await entryFile(entry);
     // fullPath is absolute (`/folder/sub/file.txt`) — strip the leading slash so
     // keys mirror webkitRelativePath and include the dropped folder's name.
     return [{ file, path: entry.fullPath.slice(1) }];
   }
-  if (entry.isDirectory) {
-    const children = await readAllEntries(
-      (entry as FileSystemDirectoryEntry).createReader()
-    );
+  if (isDirectoryEntry(entry)) {
+    const children = await readAllEntries(entry.createReader());
     const nested = await Promise.all(children.map(traverseEntry));
     return nested.flat();
   }

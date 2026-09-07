@@ -93,6 +93,8 @@ export const useFile = (
   config?: QueryConfig
 ): QueryReturn<StoredFile> => {
   const client = makeClient(config);
+  // SAFETY: `enabled` is false whenever `key` is undefined, and `useQuery`
+  // never invokes `run` while disabled.
   return useQuery((config?.enabled ?? true) && key !== undefined, (signal) =>
     client.head(key as string, { signal })
   );
@@ -104,6 +106,8 @@ export const useSearch = (
   config?: QueryConfig
 ): QueryReturn<StoredFile[]> => {
   const client = makeClient(config);
+  // SAFETY: `enabled` is false whenever `pattern` is undefined, and `useQuery`
+  // never invokes `run` while disabled.
   return useQuery(
     (config?.enabled ?? true) && pattern !== undefined,
     async (signal) => {

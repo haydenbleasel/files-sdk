@@ -13,6 +13,7 @@ import {
   resolveUrlStrategy,
 } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -169,6 +170,16 @@ export type BunS3Adapter = Adapter<BunS3ClientLike> & {
   readonly bucket?: string;
 };
 
+/** The fields of a Bun `S3Error` (or an S3-shaped rejection) we classify on. */
+interface BunS3ErrorFields {
+  $metadata?: { httpStatusCode?: number };
+  Code?: string;
+  code?: string;
+  message?: string;
+  status?: number;
+  statusCode?: number;
+}
+
 export const mapBunS3Error = makeErrorMapper({
   codes: {
     conflict: new Set(["PreconditionFailed"]),
@@ -180,15 +191,10 @@ export const mapBunS3Error = makeErrorMapper({
       "ERR_S3_MISSING_CREDENTIALS",
     ]),
   },
-  extract: (err) => {
-    const e = err as {
-      code?: string;
-      Code?: string;
-      status?: number;
-      statusCode?: number;
-      $metadata?: { httpStatusCode?: number };
-      message?: string;
-    };
+  extract: (cause) => {
+    // SAFETY: every field is read optionally; a thrown value that is not a
+    // Bun S3 error (or not even an object) just yields no code/status/message.
+    const e = cause as BunS3ErrorFields | null | undefined;
     const code = e?.code ?? e?.Code;
     const status = e?.status ?? e?.statusCode ?? e?.$metadata?.httpStatusCode;
     return {
@@ -254,8 +260,10 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
   const client =
     opts.client ??
     (() => {
+      // SAFETY: the `Bun` global exists only under the Bun runtime; reading it
+      // as optional is what makes its absence checkable below.
       const bun = (
-        globalThis as unknown as {
+        globalThis as {
           Bun?: {
             S3Client?: new (options?: BunS3OperationOptions) => BunS3ClientLike;
           };
@@ -467,6 +475,8 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           try {
             await client.write(key, bytes, { type: contentType });
             const stat = await client.stat(key);
+            // SAFETY: `requirePending()` above throws unless a session was
+            // begun or adopted, which is what sets `uploadId`.
             pending.delete(uploadId as string);
             return {
               contentType: stat.type || contentType,
@@ -487,8 +497,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 8 * 1024 * 1024,
         probe(): Promise<{ nextOffset: number }> {
@@ -540,10 +549,9 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
 
       let contentType = options?.contentType;
       if (!contentType) {
-        contentType =
-          typeof body === "string"
-            ? "text/plain; charset=utf-8"
-            : DEFAULT_CONTENT_TYPE;
+        contentType = isString(body)
+          ? "text/plain; charset=utf-8"
+          : DEFAULT_CONTENT_TYPE;
         if (body instanceof Blob && body.type) {
           contentType = body.type;
         }
@@ -552,9 +560,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       try {
         const size = await client.write(
           key,
-          body instanceof ReadableStream
-            ? new Response(body)
-            : (body as BunS3WritableBody),
+          body instanceof ReadableStream ? new Response(body) : body,
           { type: contentType }
         );
         try {

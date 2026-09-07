@@ -60,7 +60,15 @@ const parseRangeHeader = (header: string, size: number): RangeParse => {
   return { kind: "range", length: end - start + 1, range: { end, start } };
 };
 
-const encodeMeta = (meta: unknown): string => {
+/** The `X-Files-Meta` payload — metadata with no HTTP-header home. */
+interface DownloadMeta {
+  etag: string | undefined;
+  key: string;
+  lastModified: number | undefined;
+  metadata: Record<string, string> | undefined;
+}
+
+const encodeMeta = (meta: DownloadMeta): string => {
   const bytes = new TextEncoder().encode(JSON.stringify(meta));
   let binary = "";
   for (const byte of bytes) {
@@ -102,7 +110,7 @@ export const handleDownload = async (
     }
     const url = await cfg.files.url(storageKey, {
       expiresIn,
-      ...(disposition ? { responseContentDisposition: disposition } : {}),
+      ...(disposition && { responseContentDisposition: disposition }),
     });
     return { kind: "redirect", location: url, status: 302 };
   }
@@ -132,10 +140,10 @@ export const handleDownload = async (
   const file = await cfg.files.download(storageKey, {
     as: "stream",
     signal,
-    ...(range ? { range } : {}),
+    ...(range && { range }),
   });
 
-  const headers: Record<string, string> = {
+  const headers = {
     "accept-ranges": "bytes",
     "content-length": String(length),
     "content-type": file.type || "application/octet-stream",
@@ -145,16 +153,12 @@ export const handleDownload = async (
       lastModified: meta.lastModified,
       metadata: meta.metadata,
     }),
+    ...(meta.etag && { etag: meta.etag }),
+    ...(disposition && { "content-disposition": disposition }),
+    ...(range && {
+      "content-range": `bytes ${range.start}-${range.end}/${size}`,
+    }),
   };
-  if (meta.etag) {
-    headers.etag = meta.etag;
-  }
-  if (disposition) {
-    headers["content-disposition"] = disposition;
-  }
-  if (range) {
-    headers["content-range"] = `bytes ${range.start}-${range.end}/${size}`;
-  }
 
   return { headers, kind: "stream", status, stream: file.stream() };
 };

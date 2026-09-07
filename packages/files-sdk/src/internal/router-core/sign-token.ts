@@ -4,6 +4,8 @@
 // client cannot forge a key or relax a constraint. Uses Web Crypto
 // (`crypto.subtle`), so it runs on Node, edge runtimes, Bun, and Deno alike.
 
+import { isNumber } from "../is.js";
+
 export interface TokenPayload {
   key: string;
   contentType?: string;
@@ -50,6 +52,9 @@ const fromBase64Url = (value: string): Uint8Array => {
 
 // Web Crypto's BufferSource excludes SharedArrayBuffer-backed views; our bytes
 // never share, so assert the ArrayBuffer backing (matches the encryption plugin).
+// SAFETY: every caller passes a view this module allocated itself
+// (`TextEncoder#encode` or `new Uint8Array(n)`), which is always backed by a
+// plain ArrayBuffer, never a SharedArrayBuffer.
 const bytes = (value: Uint8Array): Uint8Array<ArrayBuffer> =>
   value as Uint8Array<ArrayBuffer>;
 
@@ -106,11 +111,14 @@ export const verifyToken = async (
 
   let payload: TokenPayload;
   try {
+    // SAFETY: the HMAC over `body` verified above, so the decoded JSON is the
+    // exact `TokenPayload` this module serialized in `signToken` under the same
+    // secret; a forged or tampered body never reaches this line.
     payload = JSON.parse(decoder.decode(fromBase64Url(body))) as TokenPayload;
   } catch {
     return { failure: "malformed", ok: false };
   }
-  if (typeof payload.exp !== "number" || payload.exp < now) {
+  if (!isNumber(payload.exp) || payload.exp < now) {
     return { failure: "expired", ok: false };
   }
   return { ok: true, payload };

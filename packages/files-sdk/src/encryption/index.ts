@@ -81,8 +81,8 @@ const importRawKey = (bytes: Uint8Array): Promise<CryptoKey> => {
   }
   return crypto.subtle.importKey(
     "raw",
-    // Web Crypto's BufferSource excludes SharedArrayBuffer-backed views; a key
-    // never shares, so assert the ArrayBuffer backing.
+    // SAFETY: Web Crypto's BufferSource excludes SharedArrayBuffer-backed
+    // views; a key never shares, so the ArrayBuffer backing holds.
     bytes as Uint8Array<ArrayBuffer>,
     { name: ALGORITHM },
     false,
@@ -119,8 +119,8 @@ const seal = async (
   const ciphertext = await crypto.subtle.encrypt(
     { iv: bodyIv, name: ALGORITHM },
     dek,
-    // Web Crypto's BufferSource is pinned to ArrayBuffer backing (not
-    // SharedArrayBuffer); our plaintext never shares, so assert it here.
+    // SAFETY: Web Crypto's BufferSource is pinned to ArrayBuffer backing (not
+    // SharedArrayBuffer); our plaintext never shares, so the backing holds.
     plaintext as Uint8Array<ArrayBuffer>
   );
   const dekIv = randomIv();

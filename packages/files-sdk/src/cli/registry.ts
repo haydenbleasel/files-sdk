@@ -76,39 +76,43 @@ export interface ProviderOpts {
   projectId?: string;
   keyFilename?: string;
 
-  // Catch-all for the long tail. Merged shallowly *under* the typed fields
-  // so the typed flags win — gives the user a way to pass any option the
-  // adapter accepts without us hand-coding a flag for it.
-  extra?: Record<string, unknown>;
+  // Catch-all for the long tail (`--config-json`). Merged shallowly *under*
+  // the typed fields so the typed flags win — gives the user a way to pass any
+  // option the adapter accepts without us hand-coding a flag for it. Its shape
+  // is only known to the adapter it is handed to.
+  extra?: object;
 }
 
-// The CLI resolves options at runtime from a flat blob (flags + env +
-// --config-json). Adapter factories have strict typed signatures (e.g. some
-// require a non-optional `region`), so we keep the merge result as
-// `Record<string, unknown>` and cast to the factory's parameter type at the
-// call site. Runtime validation in each adapter surfaces missing-required
-// fields loudly, which is the right place for that error.
-type AnyOpts = Record<string, unknown>;
+/** Drop the `undefined` entries so an unset flag never shadows an adapter default. */
+const stripUndefined = <T extends object>(o: T): Partial<T> =>
+  // SAFETY: filtering `Object.entries` only removes keys, so the rebuilt object
+  // holds a subset of `T`'s own properties with their original values.
+  Object.fromEntries(
+    Object.entries(o).filter(([, v]) => v !== undefined)
+  ) as Partial<T>;
 
-const merge = (typed: AnyOpts, extra: AnyOpts | undefined): AnyOpts => ({
-  ...extra,
-  ...typed,
-});
-
-const stripUndefined = (o: AnyOpts): AnyOpts => {
-  const out: AnyOpts = {};
-  for (const [k, v] of Object.entries(o)) {
-    if (v !== undefined) {
-      out[k] = v;
-    }
-  }
-  return out;
-};
-
-const cast = <F extends (opts: never) => unknown>(
+/**
+ * Hand runtime-assembled options to an adapter factory. The CLI resolves
+ * options from a flat blob (flags + env + --config-json), while adapter
+ * factories have strict typed signatures (e.g. some require a non-optional
+ * `region`), so the merged bag can't be proven to match statically. Each
+ * adapter validates its required fields at construction and throws a
+ * FilesError naming the missing option, which is the right place for that
+ * error.
+ */
+const construct = <
+  F extends (opts: never) => Adapter | Promise<Adapter>,
+  T extends object,
+>(
   factory: F,
-  opts: AnyOpts
-): ReturnType<F> => factory(opts as Parameters<F>[0]) as ReturnType<F>;
+  typed: T,
+  extra: ProviderOpts["extra"]
+): Adapter | Promise<Adapter> => {
+  const opts = { ...extra, ...stripUndefined(typed) };
+  // SAFETY: see above — the factory's option type is only checkable at
+  // runtime, and every factory does exactly that check itself.
+  return factory(opts as Parameters<F>[0]);
+};
 
 const s3Credentials = (opts: ProviderOpts) =>
   opts.accessKeyId && opts.secretAccessKey
@@ -119,43 +123,47 @@ const s3Credentials = (opts: ProviderOpts) =>
       }
     : undefined;
 
-const s3LikeOpts = (opts: ProviderOpts): AnyOpts =>
-  stripUndefined({
-    // The s3() adapter reads credentials as a nested object; every other
-    // S3-compatible wrapper (akamai, vultr, wasabi, …) reads flat
-    // accessKeyId/secretAccessKey and rewraps them internally. Thread both
-    // forms so the CLI's --access-key-id flag works against any wrapper.
-    accessKeyId: opts.accessKeyId,
-    bucket: opts.bucket,
-    credentials: s3Credentials(opts),
-    defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-    endpoint: opts.endpoint,
-    forcePathStyle: opts.forcePathStyle,
-    publicBaseUrl: opts.publicBaseUrl,
-    region: opts.region,
-    secretAccessKey: opts.secretAccessKey,
-    sessionToken: opts.sessionToken,
-  });
+const s3LikeOpts = (opts: ProviderOpts) => ({
+  // The s3() adapter reads credentials as a nested object; every other
+  // S3-compatible wrapper (akamai, vultr, wasabi, …) reads flat
+  // accessKeyId/secretAccessKey and rewraps them internally. Thread both
+  // forms so the CLI's --access-key-id flag works against any wrapper.
+  accessKeyId: opts.accessKeyId,
+  bucket: opts.bucket,
+  credentials: s3Credentials(opts),
+  defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+  endpoint: opts.endpoint,
+  forcePathStyle: opts.forcePathStyle,
+  publicBaseUrl: opts.publicBaseUrl,
+  region: opts.region,
+  secretAccessKey: opts.secretAccessKey,
+  sessionToken: opts.sessionToken,
+});
 
-export const PROVIDERS: Record<string, ProviderRegistration> = {
+/** Provider slug → registration. Looked up by the runtime `--provider` string. */
+export interface ProviderRegistry {
+  [name: string]: ProviderRegistration;
+}
+
+export const PROVIDERS: ProviderRegistry = {
   akamai: {
     load: async (opts) => {
       const { akamai } = await import("../akamai/index.js");
-      return cast(akamai, merge(s3LikeOpts(opts), opts.extra));
+      return construct(akamai, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", ENDPOINT_FLAG],
   },
   alibaba: {
     load: async (opts) => {
       const { alibaba } = await import("../alibaba/index.js");
-      return cast(alibaba, merge(s3LikeOpts(opts), opts.extra));
+      return construct(alibaba, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   appwrite: {
     load: async (opts) => {
       const { appwrite } = await import("../appwrite/index.js");
-      return cast(appwrite, merge({}, opts.extra));
+      return construct(appwrite, {}, opts.extra);
     },
     notes:
       "configure via --config-json (endpoint, projectId, apiKey, bucketId) or APPWRITE_* env vars",
@@ -164,26 +172,24 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   archil: {
     load: async (opts) => {
       const { archil } = await import("../archil/index.js");
-      return cast(archil, merge(s3LikeOpts(opts), opts.extra));
+      return construct(archil, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   azure: {
     load: async (opts) => {
       const { azure } = await import("../azure/index.js");
-      return cast(
+      return construct(
         azure,
-        merge(
-          stripUndefined({
-            accountKey: opts.accountKey,
-            accountName: opts.accountName,
-            connectionString: opts.connectionString,
-            container: opts.container as string,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            publicBaseUrl: opts.publicBaseUrl,
-          }),
-          opts.extra
-        )
+        {
+          accountKey: opts.accountKey,
+          accountName: opts.accountName,
+          connectionString: opts.connectionString,
+          container: opts.container,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          publicBaseUrl: opts.publicBaseUrl,
+        },
+        opts.extra
       );
     },
     required: ["--container"],
@@ -194,21 +200,19 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
       // The adapter reads flat accessKeyId/secretAccessKey; the CLI's native
       // --application-key-id/--application-key flags are the same values
       // under B2's names, so thread them through as a fallback.
-      return cast(
+      return construct(
         backblazeB2,
-        merge(
-          stripUndefined({
-            accessKeyId: opts.accessKeyId ?? opts.applicationKeyId,
-            bucket: opts.bucket,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            endpoint: opts.endpoint,
-            forcePathStyle: opts.forcePathStyle,
-            publicBaseUrl: opts.publicBaseUrl,
-            region: opts.region,
-            secretAccessKey: opts.secretAccessKey ?? opts.applicationKey,
-          }),
-          opts.extra
-        )
+        {
+          accessKeyId: opts.accessKeyId ?? opts.applicationKeyId,
+          bucket: opts.bucket,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          endpoint: opts.endpoint,
+          forcePathStyle: opts.forcePathStyle,
+          publicBaseUrl: opts.publicBaseUrl,
+          region: opts.region,
+          secretAccessKey: opts.secretAccessKey ?? opts.applicationKey,
+        },
+        opts.extra
       );
     },
     required: ["--bucket", "--region"],
@@ -216,7 +220,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   box: {
     load: async (opts) => {
       const { box } = await import("../box/index.js");
-      return cast(box, merge({}, opts.extra));
+      return construct(box, {}, opts.extra);
     },
     notes:
       "OAuth-based — configure via --config-json (clientId, clientSecret, refreshToken, etc.) or BOX_* env vars",
@@ -225,7 +229,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "bunny-storage": {
     load: async (opts) => {
       const { bunnyStorage } = await import("../bunny-storage/index.js");
-      return cast(bunnyStorage, merge({}, opts.extra));
+      return construct(bunnyStorage, {}, opts.extra);
     },
     notes:
       "configure via --config-json (zone, accessKey, region, publicBaseUrl) or BUNNY_STORAGE_* env vars (STORAGE_* as aliases)",
@@ -234,7 +238,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   cloudinary: {
     load: async (opts) => {
       const { cloudinaryAdapter } = await import("../cloudinary/index.js");
-      return cast(cloudinaryAdapter, merge({}, opts.extra));
+      return construct(cloudinaryAdapter, {}, opts.extra);
     },
     notes:
       "configure via --config-json (cloudName, apiKey, apiSecret) or CLOUDINARY_URL env var",
@@ -244,17 +248,14 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
     load: async (opts) => {
       const { digitaloceanSpaces } =
         await import("../digitalocean-spaces/index.js");
-      return cast(digitaloceanSpaces, merge(s3LikeOpts(opts), opts.extra));
+      return construct(digitaloceanSpaces, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   dropbox: {
     load: async (opts) => {
       const { dropbox } = await import("../dropbox/index.js");
-      return cast(
-        dropbox,
-        merge(stripUndefined({ accessToken: opts.token }), opts.extra)
-      );
+      return construct(dropbox, { accessToken: opts.token }, opts.extra);
     },
     notes:
       "OAuth-based — pass --token <accessToken>, or use --config-json for refresh-token flows / DROPBOX_ACCESS_TOKEN env var",
@@ -263,32 +264,30 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   exoscale: {
     load: async (opts) => {
       const { exoscale } = await import("../exoscale/index.js");
-      return cast(exoscale, merge(s3LikeOpts(opts), opts.extra));
+      return construct(exoscale, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   filebase: {
     load: async (opts) => {
       const { filebase } = await import("../filebase/index.js");
-      return cast(filebase, merge(s3LikeOpts(opts), opts.extra));
+      return construct(filebase, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket"],
   },
   "firebase-storage": {
     load: async (opts) => {
       const { firebaseStorage } = await import("../firebase-storage/index.js");
-      return cast(
+      return construct(
         firebaseStorage,
-        merge(
-          stripUndefined({
-            bucket: opts.bucket,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            projectId: opts.projectId,
-            publicBaseUrl: opts.publicBaseUrl,
-            serviceAccountPath: opts.keyFilename,
-          }),
-          opts.extra
-        )
+        {
+          bucket: opts.bucket,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          projectId: opts.projectId,
+          publicBaseUrl: opts.publicBaseUrl,
+          serviceAccountPath: opts.keyFilename,
+        },
+        opts.extra
       );
     },
     notes:
@@ -298,16 +297,14 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   fs: {
     load: async (opts) => {
       const { fs } = await import("../fs/index.js");
-      return cast(
+      return construct(
         fs,
-        merge(
-          stripUndefined({
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            root: opts.root as string,
-            urlBaseUrl: opts.urlBaseUrl,
-          }),
-          opts.extra
-        )
+        {
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          root: opts.root,
+          urlBaseUrl: opts.urlBaseUrl,
+        },
+        opts.extra
       );
     },
     required: ["--root"],
@@ -315,10 +312,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   ftp: {
     load: async (opts) => {
       const { ftp } = await import("../ftp/index.js");
-      return cast(
-        ftp,
-        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
-      );
+      return construct(ftp, { publicBaseUrl: opts.publicBaseUrl }, opts.extra);
     },
     notes:
       "connection via --config-json (host, port, user, password, secure, root) or FTP_* env vars",
@@ -327,18 +321,16 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   gcs: {
     load: async (opts) => {
       const { gcs } = await import("../gcs/index.js");
-      return cast(
+      return construct(
         gcs,
-        merge(
-          stripUndefined({
-            bucket: opts.bucket as string,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            keyFilename: opts.keyFilename,
-            projectId: opts.projectId,
-            publicBaseUrl: opts.publicBaseUrl,
-          }),
-          opts.extra
-        )
+        {
+          bucket: opts.bucket,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          keyFilename: opts.keyFilename,
+          projectId: opts.projectId,
+          publicBaseUrl: opts.publicBaseUrl,
+        },
+        opts.extra
       );
     },
     required: ["--bucket"],
@@ -346,7 +338,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "google-drive": {
     load: async (opts) => {
       const { googleDrive } = await import("../google-drive/index.js");
-      return cast(googleDrive, merge({}, opts.extra));
+      return construct(googleDrive, {}, opts.extra);
     },
     notes:
       "OAuth-based — configure via --config-json (clientId, clientSecret, refreshToken, folderId) or GOOGLE_* env vars",
@@ -355,35 +347,35 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   hetzner: {
     load: async (opts) => {
       const { hetzner } = await import("../hetzner/index.js");
-      return cast(hetzner, merge(s3LikeOpts(opts), opts.extra));
+      return construct(hetzner, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   "ibm-cos": {
     load: async (opts) => {
       const { ibmCos } = await import("../ibm-cos/index.js");
-      return cast(ibmCos, merge(s3LikeOpts(opts), opts.extra));
+      return construct(ibmCos, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", ENDPOINT_FLAG],
   },
   "idrive-e2": {
     load: async (opts) => {
       const { idriveE2 } = await import("../idrive-e2/index.js");
-      return cast(idriveE2, merge(s3LikeOpts(opts), opts.extra));
+      return construct(idriveE2, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", ENDPOINT_FLAG],
   },
   minio: {
     load: async (opts) => {
       const { minio } = await import("../minio/index.js");
-      return cast(minio, merge(s3LikeOpts(opts), opts.extra));
+      return construct(minio, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", ENDPOINT_FLAG],
   },
   neon: {
     load: async (opts) => {
       const { neon } = await import("../neon/index.js");
-      return cast(neon, merge(s3LikeOpts(opts), opts.extra));
+      return construct(neon, s3LikeOpts(opts), opts.extra);
     },
     notes:
       "endpoint comes from AWS_ENDPOINT_URL_S3 (injected by `neon dev` / `neon env pull`) or pass --endpoint; credentials resolve from the AWS_* env vars Neon injects",
@@ -392,16 +384,14 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "netlify-blobs": {
     load: async (opts) => {
       const { netlifyBlobs } = await import("../netlify-blobs/index.js");
-      return cast(
+      return construct(
         netlifyBlobs,
-        merge(
-          stripUndefined({
-            name: opts.storeName as string,
-            siteID: opts.siteId,
-            token: opts.token,
-          }),
-          opts.extra
-        )
+        {
+          name: opts.storeName,
+          siteID: opts.siteId,
+          token: opts.token,
+        },
+        opts.extra
       );
     },
     required: ["--store-name"],
@@ -409,7 +399,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   onedrive: {
     load: async (opts) => {
       const { onedrive } = await import("../onedrive/index.js");
-      return cast(onedrive, merge({}, opts.extra));
+      return construct(onedrive, {}, opts.extra);
     },
     notes:
       "OAuth-based — configure via --config-json (Microsoft Graph clientId, clientSecret, tenantId, etc.)",
@@ -418,29 +408,27 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "oracle-cloud": {
     load: async (opts) => {
       const { oracleCloud } = await import("../oracle-cloud/index.js");
-      return cast(oracleCloud, merge(s3LikeOpts(opts), opts.extra));
+      return construct(oracleCloud, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region", ENDPOINT_FLAG],
   },
   ovhcloud: {
     load: async (opts) => {
       const { ovhcloud } = await import("../ovhcloud/index.js");
-      return cast(ovhcloud, merge(s3LikeOpts(opts), opts.extra));
+      return construct(ovhcloud, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   pocketbase: {
     load: async (opts) => {
       const { pocketbase } = await import("../pocketbase/index.js");
-      return cast(
+      return construct(
         pocketbase,
-        merge(
-          stripUndefined({
-            publicBaseUrl: opts.publicBaseUrl,
-            url: opts.url,
-          }),
-          opts.extra
-        )
+        {
+          publicBaseUrl: opts.publicBaseUrl,
+          url: opts.url,
+        },
+        opts.extra
       );
     },
     notes:
@@ -450,22 +438,20 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   r2: {
     load: async (opts) => {
       const { r2 } = await import("../r2/index.js");
-      return cast(
+      return construct(
         r2,
-        merge(
-          stripUndefined({
-            accessKeyId: opts.accessKeyId,
-            accountId: opts.accountId,
-            bucket: opts.bucket as string,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            // An explicit endpoint stands in for accountId (jurisdiction
-            // buckets, MinIO/LocalStack stand-ins).
-            endpoint: opts.endpoint,
-            publicBaseUrl: opts.publicBaseUrl,
-            secretAccessKey: opts.secretAccessKey,
-          }),
-          opts.extra
-        )
+        {
+          accessKeyId: opts.accessKeyId,
+          accountId: opts.accountId,
+          bucket: opts.bucket,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          // An explicit endpoint stands in for accountId (jurisdiction
+          // buckets, MinIO/LocalStack stand-ins).
+          endpoint: opts.endpoint,
+          publicBaseUrl: opts.publicBaseUrl,
+          secretAccessKey: opts.secretAccessKey,
+        },
+        opts.extra
       );
     },
     required: ["--bucket"],
@@ -473,31 +459,28 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   s3: {
     load: async (opts) => {
       const { s3 } = await import("../s3/index.js");
-      return cast(s3, merge(s3LikeOpts(opts), opts.extra));
+      return construct(s3, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket"],
   },
   "s3-fetch": {
     load: async (opts) => {
       const { s3Fetch } = await import("../s3-fetch/index.js");
-      return cast(s3Fetch, merge(s3LikeOpts(opts), opts.extra));
+      return construct(s3Fetch, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", ENDPOINT_FLAG],
   },
   scaleway: {
     load: async (opts) => {
       const { scaleway } = await import("../scaleway/index.js");
-      return cast(scaleway, merge(s3LikeOpts(opts), opts.extra));
+      return construct(scaleway, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   sftp: {
     load: async (opts) => {
       const { sftp } = await import("../sftp/index.js");
-      return cast(
-        sftp,
-        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
-      );
+      return construct(sftp, { publicBaseUrl: opts.publicBaseUrl }, opts.extra);
     },
     notes:
       "connection via --config-json (host, port, username, password, privateKey, root) or SFTP_* env vars",
@@ -506,7 +489,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   sharepoint: {
     load: async (opts) => {
       const { sharepoint } = await import("../sharepoint/index.js");
-      return cast(sharepoint, merge({}, opts.extra));
+      return construct(sharepoint, {}, opts.extra);
     },
     notes:
       "OAuth-based — configure via --config-json (Microsoft Graph clientId, clientSecret, tenantId, siteId, driveId)",
@@ -515,24 +498,22 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   storj: {
     load: async (opts) => {
       const { storj } = await import("../storj/index.js");
-      return cast(storj, merge(s3LikeOpts(opts), opts.extra));
+      return construct(storj, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket"],
   },
   supabase: {
     load: async (opts) => {
       const { supabase } = await import("../supabase/index.js");
-      return cast(
+      return construct(
         supabase,
-        merge(
-          stripUndefined({
-            bucket: opts.bucket as string,
-            defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-            key: opts.serviceRoleKey,
-            url: opts.url,
-          }),
-          opts.extra
-        )
+        {
+          bucket: opts.bucket,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          key: opts.serviceRoleKey,
+          url: opts.url,
+        },
+        opts.extra
       );
     },
     required: ["--bucket"],
@@ -540,24 +521,21 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   tencent: {
     load: async (opts) => {
       const { tencent } = await import("../tencent/index.js");
-      return cast(tencent, merge(s3LikeOpts(opts), opts.extra));
+      return construct(tencent, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   tigris: {
     load: async (opts) => {
       const { tigris } = await import("../tigris/index.js");
-      return cast(tigris, merge(s3LikeOpts(opts), opts.extra));
+      return construct(tigris, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket"],
   },
   uploadthing: {
     load: async (opts) => {
       const { uploadthing } = await import("../uploadthing/index.js");
-      return cast(
-        uploadthing,
-        merge(stripUndefined({ token: opts.token }), opts.extra)
-      );
+      return construct(uploadthing, { token: opts.token }, opts.extra);
     },
     notes: "pass --token <uploadthingToken> or set UPLOADTHING_TOKEN",
     required: [],
@@ -565,15 +543,13 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   "vercel-blob": {
     load: async (opts) => {
       const { vercelBlob } = await import("../vercel-blob/index.js");
-      return cast(
+      return construct(
         vercelBlob,
-        merge(
-          stripUndefined({
-            access: opts.access,
-            token: opts.token,
-          }),
-          opts.extra
-        )
+        {
+          access: opts.access,
+          token: opts.token,
+        },
+        opts.extra
       );
     },
     required: [],
@@ -581,23 +557,24 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   vultr: {
     load: async (opts) => {
       const { vultr } = await import("../vultr/index.js");
-      return cast(vultr, merge(s3LikeOpts(opts), opts.extra));
+      return construct(vultr, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   wasabi: {
     load: async (opts) => {
       const { wasabi } = await import("../wasabi/index.js");
-      return cast(wasabi, merge(s3LikeOpts(opts), opts.extra));
+      return construct(wasabi, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket", "--region"],
   },
   webdav: {
     load: async (opts) => {
       const { webdav } = await import("../webdav/index.js");
-      return cast(
+      return construct(
         webdav,
-        merge(stripUndefined({ publicBaseUrl: opts.publicBaseUrl }), opts.extra)
+        { publicBaseUrl: opts.publicBaseUrl },
+        opts.extra
       );
     },
     notes:
@@ -607,7 +584,7 @@ export const PROVIDERS: Record<string, ProviderRegistration> = {
   yandex: {
     load: async (opts) => {
       const { yandex } = await import("../yandex/index.js");
-      return cast(yandex, merge(s3LikeOpts(opts), opts.extra));
+      return construct(yandex, s3LikeOpts(opts), opts.extra);
     },
     required: ["--bucket"],
   },

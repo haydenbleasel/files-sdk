@@ -1,3 +1,4 @@
+import { isBoolean } from "../is.js";
 import type { FileWriteToolName } from "./schemas.js";
 
 /**
@@ -15,7 +16,7 @@ export const resolveApproval = (
   toolName: FileWriteToolName,
   config: ApprovalConfig
 ): boolean => {
-  if (typeof config === "boolean") {
+  if (isBoolean(config)) {
     return config;
   }
   return config[toolName] ?? true;

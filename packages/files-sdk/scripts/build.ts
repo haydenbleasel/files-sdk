@@ -29,9 +29,7 @@ const entryFor = (importPath: string) =>
 // Every published subpath in "exports", plus the CLI bin (which lives in "bin",
 // not "exports"). `root: src` mirrors the source tree into dist/.
 const allEntrypoints = [
-  ...Object.values(pkg.exports as Record<string, { import: string }>).map(
-    ({ import: imp }) => entryFor(imp)
-  ),
+  ...Object.values(pkg.exports).map(({ import: imp }) => entryFor(imp)),
   path.resolve(srcDir, "cli/index.ts"),
 ];
 

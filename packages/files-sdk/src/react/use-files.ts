@@ -2,16 +2,22 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import type {
   AggregateProgress,
+  BulkCallOptions,
   FileUploadState,
   FilesClient,
   FilesClientConfig,
+  NativeFileRef,
   UploadBody,
   UploadCallOptions,
+  UploadManyClientItem,
+  UploadOutcome,
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
 import { defaultTransport } from "../client/transport.js";
+import type { UploadManyResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction, isString } from "../internal/is.js";
 import { mergeSignals } from "../internal/retry.js";
 import { createStore, INITIAL_STATE } from "./store.js";
 
@@ -31,8 +37,8 @@ export interface UseFilesResult extends FilesClient {
   error: FilesError | undefined;
   /** Clear the ambient error + upload state (and re-arm after an `abort`). */
   reset: () => void;
-  /** Abort every in-flight call this hook started. */
-  abort: (reason?: unknown) => void;
+  /** Abort every in-flight call this hook started; `cause` becomes the abort reason. */
+  abort: (cause?: unknown) => void;
 }
 
 /* oxlint-disable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo and the lazy ref-init pattern (`if (ref.current === null) ref.current = …`) are required correctness, not dead weight */
@@ -40,14 +46,18 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
-  const rootRef = useRef<AbortController>(null as unknown as AbortController);
-  if (rootRef.current === null) {
-    rootRef.current = new AbortController();
-  }
+  // The root controller is created on first use and re-armed (replaced) after
+  // an abort, so every closure reads it live through `root()` rather than
+  // capturing one instance.
+  const rootRef = useRef<AbortController | null>(null);
+  const root = (): AbortController => {
+    if (rootRef.current === null) {
+      rootRef.current = new AbortController();
+    }
+    return rootRef.current;
+  };
 
-  const storeRef = useRef<ReturnType<typeof createStore>>(
-    null as unknown as ReturnType<typeof createStore>
-  );
+  const storeRef = useRef<ReturnType<typeof createStore> | null>(null);
   if (storeRef.current === null) {
     storeRef.current = createStore();
   }
@@ -68,28 +78,32 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
   const client = useMemo<FilesClient>(() => {
     const baseFetch = baseFetchImpl ?? fetch;
     const mergedSignals = (extra?: AbortSignal): AbortSignal => {
-      const signals = [rootRef.current.signal];
+      const signals = [root().signal];
       if (optsRef.current.signal) {
         signals.push(optsRef.current.signal);
       }
       if (extra) {
         signals.push(extra);
       }
+      // SAFETY: `mergeSignals` omits `signal` only for an empty list, and
+      // `signals` always starts with the root controller's.
       return mergeSignals(signals).signal as AbortSignal;
     };
+    // SAFETY: the client only ever calls `fetchImpl(input, init)`; the runtime
+    // `typeof fetch` also declares static helpers (Bun's `preconnect`) that no
+    // client code path reads.
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      baseFetch(input, {
+        ...init,
+        signal: mergedSignals(init?.signal ?? undefined),
+      })) as typeof fetch;
     return createFilesClient({
       concurrency,
       endpoint,
-      fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) =>
-        baseFetch(input, {
-          ...init,
-          signal: mergedSignals(init?.signal ?? undefined),
-        })) as typeof fetch,
+      fetchImpl,
       headers: async () => {
         const { headers } = optsRef.current;
-        return typeof headers === "function"
-          ? await headers()
-          : (headers ?? {});
+        return isFunction(headers) ? await headers() : (headers ?? {});
       },
       transport: (req) => {
         const base = baseTransport ?? defaultTransport(baseFetch);
@@ -101,7 +115,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
 
   useEffect(
     () => () => {
-      rootRef.current.abort();
+      root().abort();
       // The ref survives a StrictMode (or any) remount, so leaving it aborted
       // here would make every call after the remount fail with "signal is
       // aborted without reason". Re-arm with a fresh controller — all cleanups
@@ -130,11 +144,13 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       },
     });
 
+    // Mirrors the client's three `upload` overloads, dispatching on the same
+    // argument shapes so progress tracking can be threaded into each.
     const upload = async (
-      a: Blob | string | unknown[],
-      b?: unknown,
-      c?: unknown
-    ): Promise<unknown> => {
+      a: Blob | NativeFileRef | string | UploadManyClientItem[],
+      b?: UploadBody | UploadCallOptions | BulkCallOptions,
+      c?: UploadCallOptions
+    ): Promise<UploadOutcome | UploadManyResult> => {
       store.patch({
         // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the store shape
         error: undefined,
@@ -142,18 +158,16 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       });
       try {
         if (Array.isArray(a)) {
-          return await (
-            client.upload as (...args: unknown[]) => Promise<unknown>
-          )(a, b);
+          // SAFETY: the bulk overload pairs an item array with `BulkCallOptions`.
+          return await client.upload(a, b as BulkCallOptions | undefined);
         }
-        if (typeof a === "string") {
-          return await client.upload(
-            a,
-            b as UploadBody,
-            trackProgress(c as UploadCallOptions)
-          );
+        if (isString(a)) {
+          // SAFETY: the keyed overload pairs a key with its `UploadBody`.
+          return await client.upload(a, b as UploadBody, trackProgress(c));
         }
-        return await client.upload(a, trackProgress(b as UploadCallOptions));
+        // SAFETY: the keyless overload pairs a file with `UploadCallOptions`.
+        const callOpts = b as UploadCallOptions | undefined;
+        return await client.upload(a, trackProgress(callOpts));
       } catch (error) {
         const wrapped = FilesError.wrap(error);
         store.patch({ error: wrapped });
@@ -163,10 +177,15 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       }
     };
 
+    // SAFETY: `delete` / `download` / `exists` / `head` are overloaded (single
+    // vs. bulk) and each shim forwards its arguments to the client's matching
+    // overload untouched; `upload` re-implements the client's overload set on
+    // the same argument shapes. The casts restore the overload signatures the
+    // client declares.
     return {
       ...client,
-      abort: (reason?: unknown) => {
-        rootRef.current.abort(reason);
+      abort: (cause?: unknown) => {
+        root().abort(cause);
       },
       capabilities: (o) => remember(() => client.capabilities(o)),
       copy: (from, to, o) => remember(() => client.copy(from, to, o)),
@@ -185,7 +204,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       progress: aggregate(state.uploads),
       purge: (k, o) => remember(() => client.purge(k, o)),
       reset: () => {
-        if (rootRef.current.signal.aborted) {
+        if (root().signal.aborted) {
           rootRef.current = new AbortController();
         }
         store.reset();

@@ -3,12 +3,14 @@ import type {
   Files,
   FilesOperation,
   FilesPlugin,
+  OperationResult,
   PluginNext,
   StoredFile,
   StoredFileMeta,
 } from "../index.js";
 import { DEFAULT_URL_EXPIRES_IN } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber } from "../internal/is.js";
 
 /** The read verbs {@link cache} can serve from its store. */
 export type CacheableOperation = "head" | "url" | "download";
@@ -173,8 +175,8 @@ const createMemoryStore = (max: number): CacheStore => {
       map.delete(key);
       map.set(key, record);
       while (map.size > max) {
-        // The loop only runs while the map is non-empty, so the oldest key
-        // (insertion-order first) is always present.
+        // SAFETY: the loop only runs while the map is non-empty, so the oldest
+        // key (insertion-order first) is always present.
         map.delete(map.keys().next().value as string);
       }
     },
@@ -280,8 +282,8 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   // `head` contract (body accessors download on call).
   let instance: Files | undefined;
   const downloadBytes = async (key: string): Promise<Uint8Array> => {
-    // `extend` runs at construction, before any operation, so `instance` is
-    // always set by the time a cached `head` body is read.
+    // SAFETY: `extend` runs at construction, before any operation, so
+    // `instance` is always set by the time a cached `head` body is read.
     const file = await (instance as Files).download(key);
     return new Uint8Array(await file.arrayBuffer());
   };
@@ -372,7 +374,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     const file = await next(op);
     // Buffering an unknown-length or large body would break streaming, so only
     // small, known-length responses are cached — the rest passes through as-is.
-    if (typeof file.size !== "number" || file.size > maxBytes) {
+    if (!isNumber(file.size) || file.size > maxBytes) {
       return file;
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -422,10 +424,14 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     }
   };
 
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; every branch below resolves with the value
+  // the matching verb's `next` produces (or a cached copy of the same type),
+  // so the non-generic function satisfies the generic `wrap` at each verb.
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     switch (op.kind) {
       case "head": {
         return enabled.has("head") ? cachedHead(op, next) : next(op);

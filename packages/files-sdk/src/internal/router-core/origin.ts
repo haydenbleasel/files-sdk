@@ -17,8 +17,8 @@ export const isOriginAllowed = (
   if (!allowed) {
     return origin === requestOrigin;
   }
-  if (typeof allowed === "function") {
-    return allowed(origin);
+  if (Array.isArray(allowed)) {
+    return allowed.includes(origin);
   }
-  return allowed.includes(origin);
+  return allowed(origin);
 };

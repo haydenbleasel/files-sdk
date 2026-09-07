@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 
 import { Command, Option } from "commander";
 
-import { FilesError } from "../internal/errors.js";
+import { isObject } from "../internal/is.js";
 import {
   runCapabilities,
   runCopy,
@@ -19,8 +19,23 @@ import {
   runUpload,
   runUrl,
 } from "./commands.js";
-import type { CommonRunOpts, SearchCmdOpts } from "./commands.js";
-import { fail, parseJson } from "./io.js";
+import type {
+  CommonRunOpts,
+  CopyCmdOpts,
+  DeleteCmdOpts,
+  DownloadCmdOpts,
+  HeadCmdOpts,
+  KeyList,
+  ListCmdOpts,
+  MoveCmdOpts,
+  SearchCmdOpts,
+  SignUploadCmdOpts,
+  SyncCmdOpts,
+  TransferCmdOpts,
+  UploadCmdOpts,
+  UrlCmdOpts,
+} from "./commands.js";
+import { fail, parseJsonObject, parseProviderOptions } from "./io.js";
 import type { OutputOpts } from "./io.js";
 import type { GlobalCliOptions } from "./loader.js";
 // Type-only — runtime load is the dynamic `import("./mcp.js")` below so the
@@ -29,9 +44,15 @@ import type { GlobalCliOptions } from "./loader.js";
 import type * as McpModule from "./mcp.js";
 import { PROVIDER_NAMES } from "./registry.js";
 
-const pkg = createRequire(import.meta.url)("../../package.json") as {
+interface PackageManifest {
   version: string;
-};
+}
+
+// `require` returns the manifest untyped; this is the package's own
+// package.json, whose `version` npm requires to be a semver string.
+const pkg: PackageManifest = createRequire(import.meta.url)(
+  "../../package.json"
+);
 const VERSION = pkg.version;
 
 // Flag/description literals reused across many commands, hoisted to keep the
@@ -61,36 +82,24 @@ const collect = (value: string, prev: string[] | undefined): string[] => {
   return arr;
 };
 
-const parseDestination = (raw?: string): GlobalCliOptions | undefined => {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const destination = parseJson<GlobalCliOptions>(raw, "--to");
-  if (
-    !destination ||
-    typeof destination !== "object" ||
-    Array.isArray(destination)
-  ) {
-    throw new FilesError(
-      "Provider",
-      "--to must be a JSON object of destination provider options"
-    );
-  }
-  return destination;
-};
+/** The optional `mcp --to` destination: absent flag → no destination. */
+const parseDestination = (raw?: string): GlobalCliOptions | undefined =>
+  raw === undefined ? undefined : parseProviderOptions(raw, "--to");
 
 // Pulled out so the missing-optional-dep branch is unit-testable without
 // having to make `await import("./mcp.js")` reject — Bun's `mock.module`
 // factory can't cleanly model a rejecting dynamic import across test files.
-export const rewrapMcpLoadError = (loadError: unknown): Error => {
-  const { code } = (loadError ?? {}) as NodeJS.ErrnoException;
+// Anything other than a module-not-found error passes through unchanged (the
+// caller rethrows it), hence the generic.
+export const rewrapMcpLoadError = <C>(cause: C): Error | C => {
+  const code = isObject(cause) && "code" in cause ? cause.code : undefined;
   if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
     return new Error(
       "the `mcp` subcommand requires `@modelcontextprotocol/sdk` — install it with `npm install @modelcontextprotocol/sdk`",
-      { cause: loadError }
+      { cause }
     );
   }
-  return loadError as Error;
+  return cause;
 };
 
 // commander has no first-class "groups" — labels are achieved by tagging each
@@ -241,9 +250,13 @@ interface RawGlobalFlags {
   dryRun?: boolean;
 }
 
-const resolveOpts = (
-  cmd: Command
-): { global: GlobalCliOptions; out: OutputOpts; dryRun: boolean } => {
+interface ResolvedOpts {
+  dryRun: boolean;
+  global: GlobalCliOptions;
+  out: OutputOpts;
+}
+
+const resolveOpts = (cmd: Command): ResolvedOpts => {
   // commander merges parent options when getOptionValue is called on the
   // child — use opts() which walks the chain
   const raw = cmd.optsWithGlobals<RawGlobalFlags>();
@@ -256,7 +269,7 @@ const resolveOpts = (
     applicationKey: raw.applicationKey,
     applicationKeyId: raw.applicationKeyId,
     bucket: raw.bucket,
-    configJson: parseJson<Record<string, unknown>>(raw.configJson),
+    configJson: parseJsonObject(raw.configJson, "--config-json"),
     connectionString: raw.connectionString,
     container: raw.container,
     defaultUrlExpiresIn: raw.defaultUrlExpiresIn,
@@ -288,36 +301,60 @@ const resolveOpts = (
   return { dryRun: raw.dryRun === true, global, out };
 };
 
+/**
+ * A command's own option bag as commander hands it to the action: the run
+ * options minus the common flags (resolved from the global chain) and minus
+ * the positionals (passed separately).
+ */
+type Flags<O extends CommonRunOpts, Positional extends keyof O = never> = Omit<
+  O,
+  keyof CommonRunOpts | Positional
+>;
+
+/**
+ * Adapt a `run*` command to a commander action. Commander calls an action with
+ * the positional arguments, then the command's option bag, then the owning
+ * `Command` — all untyped. Each `buildOpts` declares the positional and option
+ * types its command registered and assembles the run options from them; the
+ * common flags (output, --dry-run, provider config) are resolved here from the
+ * global option chain.
+ */
 const wrap =
-  (
-    fn: (opts: never) => Promise<void>,
-    buildOpts: (
-      args: unknown[],
-      common: CommonRunOpts,
-      cmd: Command
-    ) => CommonRunOpts
+  <A extends unknown[], O extends CommonRunOpts>(
+    fn: (opts: O) => Promise<void>,
+    buildOpts: (common: CommonRunOpts, ...args: A) => O
   ) =>
-  async (...args: unknown[]): Promise<void> => {
+  async (...args: [...A, Command]): Promise<void> => {
+    // SAFETY: commander always passes the owning Command as the final action
+    // argument, after the positionals and the option bag.
     const cmd = args.at(-1) as Command;
+    // SAFETY: everything before that trailing Command is the positional/option
+    // tuple the command registered, which `buildOpts` declares as `A`.
+    const commandArgs = args.slice(0, -1) as A;
     const { global, out, dryRun } = resolveOpts(cmd);
     const common: CommonRunOpts = { ...out, dryRun, global };
     try {
-      const merged = buildOpts(args, common, cmd);
-      await fn(merged as never);
+      await fn(buildOpts(common, ...commandArgs));
     } catch (error) {
       fail(error, out);
     }
   };
 
-const bulkBuilder = (args: unknown[], common: CommonRunOpts): CommonRunOpts => {
-  const [keys, opts] = args as [string[], Record<string, unknown>];
-  return {
-    ...common,
-    concurrency: opts.concurrency as number | undefined,
-    keys,
-    stopOnError: opts.stopOnError as boolean | undefined,
-  } as CommonRunOpts;
-};
+const bulkBuilder = (
+  common: CommonRunOpts,
+  keys: KeyList,
+  opts: Flags<HeadCmdOpts, "keys">
+): HeadCmdOpts => ({
+  ...common,
+  concurrency: opts.concurrency,
+  keys,
+  stopOnError: opts.stopOnError,
+});
+
+interface McpFlags {
+  allowWrites?: boolean;
+  to?: string;
+}
 
 /**
  * Build the CLI. `loadMcp` is injectable so tests can supply a stub MCP module
@@ -393,29 +430,30 @@ export const buildProgram = (
       ).conflicts(["ifNoneMatch", "dir"])
     )
     .action(
-      wrap(runUpload as (opts: never) => Promise<void>, (args, common) => {
-        const [key, opts] = args as [
-          string | undefined,
-          Record<string, unknown>,
-        ];
-        return {
+      wrap(
+        runUpload,
+        (
+          common,
+          key: string | undefined,
+          opts: Flags<UploadCmdOpts, "key">
+        ) => ({
           ...common,
-          cacheControl: opts.cacheControl as string | undefined,
-          concurrency: opts.concurrency as number | undefined,
-          contentType: opts.contentType as string | undefined,
-          dir: opts.dir as string | undefined,
-          file: opts.file as string | undefined,
-          ifMatch: opts.ifMatch as string | undefined,
-          ifNoneMatch: opts.ifNoneMatch as boolean | undefined,
+          cacheControl: opts.cacheControl,
+          concurrency: opts.concurrency,
+          contentType: opts.contentType,
+          dir: opts.dir,
+          file: opts.file,
+          ifMatch: opts.ifMatch,
+          ifNoneMatch: opts.ifNoneMatch,
           key,
-          metadata: opts.metadata as readonly string[] | undefined,
-          multipart: opts.multipart as boolean | undefined,
-          multipartConcurrency: opts.multipartConcurrency as number | undefined,
-          partSize: opts.partSize as number | undefined,
-          stdin: opts.stdin as boolean | undefined,
-          stopOnError: opts.stopOnError as boolean | undefined,
-        } as CommonRunOpts;
-      })
+          metadata: opts.metadata,
+          multipart: opts.multipart,
+          multipartConcurrency: opts.multipartConcurrency,
+          partSize: opts.partSize,
+          stdin: opts.stdin,
+          stopOnError: opts.stopOnError,
+        })
+      )
     );
 
   program
@@ -452,20 +490,20 @@ export const buildProgram = (
       "read only the generation with this ETag (single key)"
     )
     .action(
-      wrap(runDownload as (opts: never) => Promise<void>, (args, common) => {
-        const [keys, opts] = args as [string[], Record<string, unknown>];
-        return {
+      wrap(
+        runDownload,
+        (common, keys: KeyList, opts: Flags<DownloadCmdOpts, "keys">) => ({
           ...common,
-          concurrency: opts.concurrency as number | undefined,
-          ifMatch: opts.ifMatch as string | undefined,
+          concurrency: opts.concurrency,
+          ifMatch: opts.ifMatch,
           keys,
-          out: opts.out as string | undefined,
-          outDir: opts.outDir as string | undefined,
-          range: opts.range as string | undefined,
-          stdout: opts.stdout as boolean | undefined,
-          stopOnError: opts.stopOnError as boolean | undefined,
-        } as CommonRunOpts;
-      })
+          out: opts.out,
+          outDir: opts.outDir,
+          range: opts.range,
+          stdout: opts.stdout,
+          stopOnError: opts.stopOnError,
+        })
+      )
     );
 
   program
@@ -475,7 +513,7 @@ export const buildProgram = (
     )
     .option(CONCURRENCY_FLAG, "parallel lookups for many keys", intArg)
     .option(STOP_ON_ERROR_FLAG, STOP_FIRST_FAILURE_MANY_DESC)
-    .action(wrap(runHead as (opts: never) => Promise<void>, bulkBuilder));
+    .action(wrap(runHead, bulkBuilder));
 
   program
     .command("exists <keys...>")
@@ -484,7 +522,7 @@ export const buildProgram = (
     )
     .option(CONCURRENCY_FLAG, "parallel checks for many keys", intArg)
     .option(STOP_ON_ERROR_FLAG, "stop at the first hard error (many keys)")
-    .action(wrap(runExists as (opts: never) => Promise<void>, bulkBuilder));
+    .action(wrap(runExists, bulkBuilder));
 
   program
     .command("delete <keys...>")
@@ -498,13 +536,13 @@ export const buildProgram = (
       "delete only the generation with this ETag (single key)"
     )
     .action(
-      wrap(runDelete as (opts: never) => Promise<void>, (args, common) => {
-        const [, opts] = args as [string[], Record<string, unknown>];
-        return {
-          ...bulkBuilder(args, common),
-          ifMatch: opts.ifMatch as string | undefined,
-        } as CommonRunOpts;
-      })
+      wrap(
+        runDelete,
+        (common, keys: KeyList, opts: Flags<DeleteCmdOpts, "keys">) => ({
+          ...bulkBuilder(common, keys, opts),
+          ifMatch: opts.ifMatch,
+        })
+      )
     );
 
   program
@@ -526,21 +564,22 @@ export const buildProgram = (
       ).conflicts(["ifNoneMatch"])
     )
     .action(
-      wrap(runCopy as (opts: never) => Promise<void>, (args, common) => {
-        const [from, to, opts] = args as [
-          string,
-          string,
-          Record<string, unknown>,
-        ];
-        return {
+      wrap(
+        runCopy,
+        (
+          common,
+          from: string,
+          to: string,
+          opts: Flags<CopyCmdOpts, "from" | "to">
+        ) => ({
           ...common,
-          destIfMatch: opts.destIfMatch as string | undefined,
+          destIfMatch: opts.destIfMatch,
           from,
-          ifMatch: opts.ifMatch as string | undefined,
-          ifNoneMatch: opts.ifNoneMatch as boolean | undefined,
+          ifMatch: opts.ifMatch,
+          ifNoneMatch: opts.ifNoneMatch,
           to,
-        } as CommonRunOpts;
-      })
+        })
+      )
     );
 
   program
@@ -549,10 +588,15 @@ export const buildProgram = (
       "move (rename) a key — native rename where supported, else copy + delete"
     )
     .action(
-      wrap(runMove as (opts: never) => Promise<void>, (args, common) => {
-        const [from, to] = args as [string, string];
-        return { ...common, from, to } as CommonRunOpts;
-      })
+      wrap(
+        runMove,
+        (
+          common,
+          from: string,
+          to: string,
+          _opts: Flags<MoveCmdOpts, "from" | "to">
+        ) => ({ ...common, from, to })
+      )
     );
 
   program
@@ -561,10 +605,7 @@ export const buildProgram = (
       "print what the configured adapter can do (range reads, signed URLs, server-side copy, multipart, …) as JSON"
     )
     .action(
-      wrap(
-        runCapabilities as (opts: never) => Promise<void>,
-        (_args, common) => common
-      )
+      wrap(runCapabilities, (common, _opts: Flags<CommonRunOpts>) => common)
     );
 
   program
@@ -586,17 +627,14 @@ export const buildProgram = (
       "walk every page, following the cursor, and return all items"
     )
     .action(
-      wrap(runList as (opts: never) => Promise<void>, (args, common) => {
-        const [opts] = args as [Record<string, unknown>];
-        return {
-          ...common,
-          all: opts.all as boolean | undefined,
-          cursor: opts.cursor as string | undefined,
-          delimiter: opts.delimiter as string | undefined,
-          limit: opts.limit as number | undefined,
-          prefix: opts.prefix as string | undefined,
-        } as CommonRunOpts;
-      })
+      wrap(runList, (common, opts: Flags<ListCmdOpts>) => ({
+        ...common,
+        all: opts.all,
+        cursor: opts.cursor,
+        delimiter: opts.delimiter,
+        limit: opts.limit,
+        prefix: opts.prefix,
+      }))
     );
 
   program
@@ -623,19 +661,19 @@ export const buildProgram = (
     .option("--max-results <n>", "stop after this many matches", intArg)
     .option("--case-insensitive", "match case-insensitively")
     .action(
-      wrap(runSearch as (opts: never) => Promise<void>, (args, common) => {
-        const [pattern, opts] = args as [string, Record<string, unknown>];
-        return {
+      wrap(
+        runSearch,
+        (common, pattern: string, opts: Flags<SearchCmdOpts, "pattern">) => ({
           ...common,
-          caseInsensitive: opts.caseInsensitive as boolean | undefined,
-          limit: opts.limit as number | undefined,
-          match: opts.match as SearchCmdOpts["match"],
-          maxResults: opts.maxResults as number | undefined,
+          caseInsensitive: opts.caseInsensitive,
+          limit: opts.limit,
+          match: opts.match,
+          maxResults: opts.maxResults,
           pattern,
-          prefix: opts.prefix as string | undefined,
-          regex: opts.regex as boolean | undefined,
-        } as CommonRunOpts;
-      })
+          prefix: opts.prefix,
+          regex: opts.regex,
+        })
+      )
     );
 
   program
@@ -647,17 +685,12 @@ export const buildProgram = (
       "force Content-Disposition on the response (forces signing path)"
     )
     .action(
-      wrap(runUrl as (opts: never) => Promise<void>, (args, common) => {
-        const [key, opts] = args as [string, Record<string, unknown>];
-        return {
-          ...common,
-          expiresIn: opts.expiresIn as number | undefined,
-          key,
-          responseContentDisposition: opts.responseContentDisposition as
-            | string
-            | undefined,
-        } as CommonRunOpts;
-      })
+      wrap(runUrl, (common, key: string, opts: Flags<UrlCmdOpts, "key">) => ({
+        ...common,
+        expiresIn: opts.expiresIn,
+        key,
+        responseContentDisposition: opts.responseContentDisposition,
+      }))
     );
 
   program
@@ -676,17 +709,17 @@ export const buildProgram = (
       intArg
     )
     .action(
-      wrap(runSignUpload as (opts: never) => Promise<void>, (args, common) => {
-        const [key, opts] = args as [string, Record<string, unknown>];
-        return {
+      wrap(
+        runSignUpload,
+        (common, key: string, opts: Flags<SignUploadCmdOpts, "key">) => ({
           ...common,
-          contentType: opts.contentType as string | undefined,
-          expiresIn: opts.expiresIn as number,
+          contentType: opts.contentType,
+          expiresIn: opts.expiresIn,
           key,
-          maxSize: opts.maxSize as number | undefined,
-          minSize: opts.minSize as number | undefined,
-        } as CommonRunOpts;
-      })
+          maxSize: opts.maxSize,
+          minSize: opts.minSize,
+        })
+      )
     );
 
   program
@@ -704,18 +737,15 @@ export const buildProgram = (
     .option(CONCURRENCY_FLAG, "parallel transfers", intArg)
     .option(STOP_ON_ERROR_FLAG, "stop at the first failure")
     .action(
-      wrap(runTransfer as (opts: never) => Promise<void>, (args, common) => {
-        const [opts] = args as [Record<string, unknown>];
-        return {
-          ...common,
-          concurrency: opts.concurrency as number | undefined,
-          limit: opts.limit as number | undefined,
-          overwrite: opts.overwrite as boolean | undefined,
-          prefix: opts.prefix as string | undefined,
-          stopOnError: opts.stopOnError as boolean | undefined,
-          to: opts.to as string,
-        } as CommonRunOpts;
-      })
+      wrap(runTransfer, (common, opts: Flags<TransferCmdOpts>) => ({
+        ...common,
+        concurrency: opts.concurrency,
+        limit: opts.limit,
+        overwrite: opts.overwrite,
+        prefix: opts.prefix,
+        stopOnError: opts.stopOnError,
+        to: opts.to,
+      }))
     );
 
   program
@@ -750,20 +780,17 @@ export const buildProgram = (
     .option(CONCURRENCY_FLAG, "parallel uploads", intArg)
     .option(STOP_ON_ERROR_FLAG, "stop at the first failure")
     .action(
-      wrap(runSync as (opts: never) => Promise<void>, (args, common) => {
-        const [opts] = args as [Record<string, unknown>];
-        return {
-          ...common,
-          compare: opts.compare as "etag" | "size" | undefined,
-          concurrency: opts.concurrency as number | undefined,
-          destPrefix: opts.destPrefix as string | undefined,
-          limit: opts.limit as number | undefined,
-          prefix: opts.prefix as string | undefined,
-          prune: opts.prune as boolean | undefined,
-          stopOnError: opts.stopOnError as boolean | undefined,
-          to: opts.to as string,
-        } as CommonRunOpts;
-      })
+      wrap(runSync, (common, opts: Flags<SyncCmdOpts>) => ({
+        ...common,
+        compare: opts.compare,
+        concurrency: opts.concurrency,
+        destPrefix: opts.destPrefix,
+        limit: opts.limit,
+        prefix: opts.prefix,
+        prune: opts.prune,
+        stopOnError: opts.stopOnError,
+        to: opts.to,
+      }))
     );
 
   program
@@ -777,10 +804,10 @@ export const buildProgram = (
       TO_JSON_FLAG,
       "operator-trusted destination provider options for MCP transfer/sync"
     )
-    .action(async (opts, cmd) => {
-      const { global, out } = resolveOpts(cmd as Command);
+    .action(async (opts: McpFlags, cmd: Command) => {
+      const { global, out } = resolveOpts(cmd);
       try {
-        const destination = parseDestination(opts.to as string | undefined);
+        const destination = parseDestination(opts.to);
         // `@modelcontextprotocol/sdk` is an optional dependency — pulling
         // it in lazily means library-only consumers don't pay the install
         // cost. If it's missing, give a clearer hint than the raw

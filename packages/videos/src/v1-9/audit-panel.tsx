@@ -38,12 +38,12 @@ const LAST = (RECORDS.length - 1) * STEP;
 /** AuditRecords stream into the awaited sink one by one. */
 export const AUDIT_ACTION_FRAMES = LAST + 44;
 
-const VERB_COLOR: Record<string, string> = {
-  copy: "#7C3AED",
-  delete: "#B91C1C",
-  move: "#2563EB",
-  upload: "#047857",
-};
+const VERB_COLOR = new Map<string, string>([
+  ["copy", "#7C3AED"],
+  ["delete", "#B91C1C"],
+  ["move", "#2563EB"],
+  ["upload", "#047857"],
+]);
 
 const Row: React.FC<{ record: AuditRecord; frame: number; index: number }> = ({
   record,
@@ -56,7 +56,7 @@ const Row: React.FC<{ record: AuditRecord; frame: number; index: number }> = ({
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const accent = VERB_COLOR[record.verb] ?? "#6B7280";
+  const accent = VERB_COLOR.get(record.verb) ?? "#6B7280";
 
   return (
     <div

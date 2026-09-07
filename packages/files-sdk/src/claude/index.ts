@@ -2,7 +2,6 @@ import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
   McpSdkServerConfigWithInstance,
-  SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Files } from "../index.js";
@@ -26,17 +25,12 @@ import {
 import type { ClaudeToolOverrides } from "./types.js";
 
 // The per-tool factories each return SdkMcpToolDefinition with a different
-// concrete generic. Function arguments on the handler are contravariant on
-// the input shape, so they aren't mutually assignable through the SDK's
-// public generic. We type the internal homogeneous record loosely and cast
-// at the createSdkMcpServer call site, which is what the SDK does itself.
-interface AnyToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: unknown;
-  annotations?: NonNullable<SdkMcpToolDefinition["annotations"]>;
-  handler: (args: never, extra: unknown) => Promise<unknown>;
-}
+// concrete input shape. The SDK's own `tools` option is typed to accept any
+// of them, so the homogeneous record borrows that element type and the
+// definitions flow into `createSdkMcpServer` without a cast.
+type SdkToolDefinition = NonNullable<
+  Parameters<typeof createSdkMcpServer>[0]["tools"]
+>[number];
 
 export type { ApprovalConfig } from "../internal/ai-tools/approval.js";
 export type {
@@ -119,6 +113,9 @@ export interface ClaudeFileTools {
 const DEFAULT_SERVER_NAME = "files";
 const DEFAULT_SERVER_VERSION = "1.0.0";
 
+// SAFETY: `Set#has` is a pure membership test — widening the probe to the
+// set's key type can't yield a false positive, and a hit proves the name is a
+// write-tool name.
 const isWriteTool = (name: string): name is FileWriteToolName =>
   WRITE_TOOL_NAMES.has(name as FileWriteToolName);
 
@@ -179,7 +176,7 @@ export const createClaudeFileTools = ({
   serverName = DEFAULT_SERVER_NAME,
   serverVersion = DEFAULT_SERVER_VERSION,
 }: ClaudeFileToolsOptions): ClaudeFileTools => {
-  const allTools: Record<FileToolName, AnyToolDefinition> = {
+  const allTools: Record<FileToolName, SdkToolDefinition> = {
     copyFile: claudeCopyFile(files),
     deleteFile: claudeDeleteFile(files),
     downloadFile: claudeDownloadFile(files),
@@ -193,14 +190,18 @@ export const createClaudeFileTools = ({
   if (overrides) {
     for (const [name, toolOverrides] of Object.entries(overrides)) {
       if (name in allTools && toolOverrides) {
+        // SAFETY: `allTools` is a closed record keyed by exactly the
+        // FileToolName union, so the `in` check above proves membership.
         const key = name as FileToolName;
         allTools[key] = { ...allTools[key], ...toolOverrides };
       }
     }
   }
 
+  // SAFETY: `Object.entries` widens keys to `string`; `allTools` is a closed
+  // record whose only keys are the FileToolName union.
   const includedTools = (
-    Object.entries(allTools) as [FileToolName, AnyToolDefinition][]
+    Object.entries(allTools) as [FileToolName, SdkToolDefinition][]
   ).filter(([name]) => !(readOnly && isWriteTool(name)));
 
   const prefix = `mcp__${serverName}__`;
@@ -234,9 +235,7 @@ export const createClaudeFileTools = ({
 
   const server = createSdkMcpServer({
     name: serverName,
-    tools: includedTools.map(([, t]) => t) as unknown as Parameters<
-      typeof createSdkMcpServer
-    >[0]["tools"],
+    tools: includedTools.map(([, t]) => t),
     version: serverVersion,
   });
 

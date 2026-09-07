@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import { Dropbox, DropboxAuth, DropboxResponseError } from "dropbox";
-import type { files, sharing } from "dropbox";
+import type { DropboxFileBinary, DropboxFileBlob, files } from "dropbox";
 
 import type {
   Adapter,
@@ -27,6 +27,9 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonValue } from "../internal/json.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -114,8 +117,7 @@ const UPLOAD_SESSION_CHUNK_MULTIPLE = 4 * 1024 * 1024;
 const resolveChunkBytes = (
   multipart: boolean | MultipartOptions | undefined
 ): number => {
-  const partSize =
-    typeof multipart === "object" ? multipart.partSize : undefined;
+  const partSize = isObject(multipart) ? multipart.partSize : undefined;
   if (partSize === undefined) {
     return UPLOAD_SESSION_CHUNK_BYTES;
   }
@@ -164,6 +166,8 @@ const makeStreamChunker = (
     const out = Buffer.allocUnsafe(want);
     let filled = 0;
     while (filled < want) {
+      // SAFETY: `want <= pendingBytes`, the sum of the queued chunks' sizes, so
+      // while `filled < want` at least one chunk is still queued.
       const head = pending[0] as Uint8Array;
       const need = want - filled;
       if (head.byteLength <= need) {
@@ -216,22 +220,22 @@ const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
-// Dropbox errors arrive as a discriminated union of nested `.tag` objects.
-// Walk the tree and collect every tag string we encounter, plus the leaf
-// tag — that's enough to classify the major buckets without enumerating
-// every UploadError/DeleteError/RelocationError variant.
-const collectErrorTags = (err: unknown, depth = 0): string[] => {
-  if (depth > 6 || err === null || typeof err !== "object") {
+// Dropbox errors arrive as a discriminated union of nested `.tag` objects
+// (the SDK stores the parsed JSON error body at `err.error`). Walk the tree
+// and collect every tag string we encounter, plus the leaf tag — that's
+// enough to classify the major buckets without enumerating every
+// UploadError/DeleteError/RelocationError variant.
+const collectErrorTags = (body: JsonValue | undefined, depth = 0): string[] => {
+  if (depth > 6 || !isObject(body)) {
     return [];
   }
   const tags: string[] = [];
-  const obj = err as Record<string, unknown>;
-  const tag = obj[".tag"];
-  if (typeof tag === "string") {
+  const tag = isJsonObject(body) ? body[".tag"] : undefined;
+  if (isString(tag)) {
     tags.push(tag);
   }
-  for (const value of Object.values(obj)) {
-    if (value && typeof value === "object") {
+  for (const value of Object.values(body)) {
+    if (isObject(value)) {
       tags.push(...collectErrorTags(value, depth + 1));
     }
   }
@@ -272,32 +276,40 @@ const classifyByTags = (
   return "Provider";
 };
 
-const errorSummary = (err: unknown): string | undefined => {
-  if (err === null || typeof err !== "object") {
+// Human-readable text from a parsed Dropbox error body: the API's
+// `error_summary`, else a plain `message`.
+const errorSummary = (body: JsonValue | undefined): string | undefined => {
+  if (!isJsonObject(body)) {
     return;
   }
-  const summary = (err as { error_summary?: unknown }).error_summary;
-  if (typeof summary === "string" && summary.length > 0) {
+  const summary = body.error_summary;
+  if (isString(summary) && summary.length > 0) {
     return summary;
   }
-  const { message } = err as { message?: unknown };
-  return typeof message === "string" ? message : undefined;
+  const { message } = body;
+  return isString(message) ? message : undefined;
 };
 
-export const mapDropboxError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+export const mapDropboxError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  if (err instanceof DropboxResponseError) {
-    const tags = collectErrorTags(err.error);
-    const code = classifyByTags(tags, err.status);
-    const message = errorSummary(err.error) ?? DEFAULT_MESSAGES[code];
-    return new FilesError(code, message, err);
+  if (cause instanceof DropboxResponseError) {
+    const tags = collectErrorTags(cause.error);
+    const code = classifyByTags(tags, cause.status);
+    const message = errorSummary(cause.error) ?? DEFAULT_MESSAGES[code];
+    return new FilesError(code, message, cause);
   }
-  const e = err as { status?: number; message?: string } | null;
-  const status = typeof e?.status === "number" ? e.status : undefined;
+  const status =
+    isObject(cause) && "status" in cause && isNumber(cause.status)
+      ? cause.status
+      : undefined;
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
   const code = classifyByTags([], status);
-  return new FilesError(code, e?.message ?? DEFAULT_MESSAGES[code], err);
+  return new FilesError(code, message ?? DEFAULT_MESSAGES[code], cause);
 };
 
 // View a Uint8Array as a Node Buffer without copying — the Dropbox session
@@ -352,7 +364,7 @@ const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
 ): Promise<NormalizedBody> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return {
       contentType: contentTypeHint ?? "text/plain; charset=utf-8",
       data: Buffer.from(body, "utf-8"),
@@ -371,10 +383,9 @@ const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
     return {
       contentType: contentTypeHint ?? OCTET_STREAM,
-      data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
+      data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof Blob) {
@@ -413,9 +424,16 @@ const fileMetaFromDropbox = (item: files.FileMetadata): FileMeta => {
   };
 };
 
-const downloadResultToBytes = (
-  result: files.FileMetadata & { fileBinary?: unknown; fileBlob?: unknown }
-): Promise<Uint8Array> => {
+// The SDK's `filesDownload` result: the metadata plus the bytes, attached as
+// `fileBinary` (Node) or `fileBlob` (browsers/Workers). Beyond the declared
+// shapes the adapter also tolerates an `ArrayBuffer` binary (custom fetch
+// transports) and a real `Blob`.
+interface DownloadedFile extends files.FileMetadata {
+  fileBinary?: DropboxFileBinary | ArrayBuffer;
+  fileBlob?: DropboxFileBlob | Blob;
+}
+
+const downloadResultToBytes = (result: DownloadedFile): Promise<Uint8Array> => {
   // Node path: SDK attaches a Buffer as `fileBinary`.
   const binary = result.fileBinary;
   if (binary instanceof Uint8Array) {
@@ -447,9 +465,8 @@ interface AuthHandle {
   getAccessToken: () => Promise<string>;
 }
 
-// `Dropbox.auth` exists at runtime (constructor stores it as `this.auth`)
-// but the published .d.ts omits it. Cast through this shape rather than
-// `as any`.
+// `Dropbox.auth` exists at runtime (the constructor stores its `DropboxAuth`
+// as `this.auth`) but the published .d.ts omits it.
 type DropboxWithAuth = Dropbox & {
   auth: {
     setAccessToken: (token: string) => void;
@@ -458,11 +475,17 @@ type DropboxWithAuth = Dropbox & {
 };
 
 const setAccessToken = (client: Dropbox, token: string): void => {
+  // SAFETY: the Dropbox constructor assigns the `DropboxAuth` it was built
+  // with to `this.auth`; only the published types leave it out.
   (client as DropboxWithAuth).auth.setAccessToken(token);
 };
 
-const getAccessToken = (client: Dropbox): string =>
-  (client as DropboxWithAuth).auth.getAccessToken();
+const getAccessToken = (client: Dropbox): string => {
+  // SAFETY: the Dropbox constructor assigns the `DropboxAuth` it was built
+  // with to `this.auth`; only the published types leave it out.
+  const withAuth = client as DropboxWithAuth;
+  return withAuth.auth.getAccessToken();
+};
 
 const createCallableAccessTokenAuth = (
   client: Dropbox,
@@ -491,6 +514,11 @@ const createStaticAccessTokenAuth = (
     getAccessToken: () => Promise.resolve(token),
   };
 };
+
+interface OAuthTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+}
 
 interface RefreshTokenAuthOptions {
   refreshToken: string;
@@ -528,10 +556,10 @@ const createRefreshTokenAuth = (
         `dropbox: refresh-token exchange failed (${res.status}): ${text || res.statusText}`
       );
     }
-    const json = (await res.json()) as {
-      access_token?: string;
-      expires_in?: number;
-    };
+    // SAFETY: `Response#json()` is untyped; a 2xx from Dropbox's token
+    // endpoint is an OAuth 2.0 token response (`access_token`, `expires_in`),
+    // and `access_token` is checked below before use.
+    const json = (await res.json()) as OAuthTokenResponse;
     if (!json.access_token) {
       throw new FilesError(
         "Unauthorized",
@@ -590,14 +618,12 @@ const resolveAuth = (opts: DropboxAdapterOptions): ResolvedAuth => {
 
   if (explicitToken !== undefined) {
     const auth = new DropboxAuth({
-      accessToken:
-        typeof explicitToken === "string" ? explicitToken : undefined,
+      accessToken: isString(explicitToken) ? explicitToken : undefined,
     });
     const client = new Dropbox({ auth });
-    const handle =
-      typeof explicitToken === "function"
-        ? createCallableAccessTokenAuth(client, explicitToken)
-        : createStaticAccessTokenAuth(client, explicitToken);
+    const handle = isString(explicitToken)
+      ? createStaticAccessTokenAuth(client, explicitToken)
+      : createCallableAccessTokenAuth(client, explicitToken);
     return { authHandle: handle, client, ownsClient: true };
   }
 
@@ -675,20 +701,17 @@ const rewriteSharedLinkForDirectDownload = (url: string): string => {
 // failed `create_shared_link_with_settings` variant lives under a second
 // `error` envelope: `err.error.error.shared_link_already_exists.metadata.url`.
 // Tolerate the bare (envelope-less) variant as well.
-const existingSharedLinkUrl = (body: unknown): string | undefined => {
-  if (body === null || typeof body !== "object") {
+const existingSharedLinkUrl = (
+  body: JsonValue | undefined
+): string | undefined => {
+  if (!isJsonObject(body)) {
     return;
   }
-  const outer = body as Record<string, unknown>;
-  const variant = (
-    outer.error !== null && typeof outer.error === "object"
-      ? outer.error
-      : outer
-  ) as {
-    shared_link_already_exists?: { metadata?: { url?: unknown } };
-  };
-  const url = variant.shared_link_already_exists?.metadata?.url;
-  return typeof url === "string" && url.length > 0 ? url : undefined;
+  const variant = isJsonObject(body.error) ? body.error : body;
+  const existing = variant.shared_link_already_exists;
+  const metadata = isJsonObject(existing) ? existing.metadata : undefined;
+  const url = isJsonObject(metadata) ? metadata.url : undefined;
+  return isString(url) && url.length > 0 ? url : undefined;
 };
 
 export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
@@ -732,25 +755,16 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
     await authHandle.ensureAccessToken();
     const res = await client.filesDownload({ path: keyToPath(key) });
-    return downloadResultToBytes(
-      res.result as files.FileMetadata & {
-        fileBinary?: unknown;
-        fileBlob?: unknown;
-      }
-    );
+    return downloadResultToBytes(res.result);
   };
 
   const createPublicSharedLink = async (key: string): Promise<string> => {
     try {
       const res = await client.sharingCreateSharedLinkWithSettings({
         path: keyToPath(key),
-        settings: {
-          requested_visibility: { ".tag": "public" },
-        } as sharing.SharedLinkSettings,
+        settings: { requested_visibility: { ".tag": "public" } },
       });
-      return rewriteSharedLinkForDirectDownload(
-        (res.result as sharing.SharedLinkMetadata).url
-      );
+      return rewriteSharedLinkForDirectDownload(res.result.url);
     } catch (error) {
       // If a link already exists, the SDK throws with `shared_link_already_exists`
       // and embeds the existing metadata in the error body. Reuse it.
@@ -776,7 +790,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       mode: { ".tag": "overwrite" },
       mute: true,
       path,
-    } as files.UploadArg & { contents: Buffer });
+    });
     return res.result;
   };
 
@@ -784,8 +798,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     const start = await client.filesUploadSessionStart({
       close: false,
       contents,
-    } as { close: boolean; contents: Buffer });
-    return (start.result as { session_id: string }).session_id;
+    });
+    return start.result.session_id;
   };
 
   const sessionAppend = async (
@@ -797,10 +811,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       close: false,
       contents,
       cursor: { offset, session_id: sessionId },
-    } as {
-      close: boolean;
-      contents: Buffer;
-      cursor: { offset: number; session_id: string };
     });
   };
 
@@ -814,10 +824,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       commit: { mode: { ".tag": "overwrite" }, mute: true, path },
       contents,
       cursor: { offset, session_id: sessionId },
-    } as {
-      commit: files.CommitInfo;
-      contents: Buffer;
-      cursor: { offset: number; session_id: string };
     });
     return finish.result;
   };
@@ -1059,7 +1065,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
             assertRangeHonored(linkRes.status, "dropbox");
           }
           if (downloadOpts?.as === "stream") {
-            const stream = linkRes.body as ReadableStream<Uint8Array>;
+            const stream = linkRes.body;
             return createStoredFile(
               {
                 key,
@@ -1083,10 +1089,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           );
         }
         const res = await client.filesDownload({ path: keyToPath(key) });
-        const result = res.result as files.FileMetadata & {
-          fileBinary?: unknown;
-          fileBlob?: unknown;
-        };
+        const { result } = res;
         const meta = fileMetaFromDropbox(result);
         const bytes = await downloadResultToBytes(result);
         return createStoredFile(
@@ -1102,7 +1105,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         await authHandle.ensureAccessToken();
         const res = await client.filesGetMetadata({ path: keyToPath(key) });
         const item = res.result;
-        const tag = (item as { ".tag"?: string })[".tag"];
+        const tag = item[".tag"];
         if (tag === "folder" || tag === "deleted") {
           throw new FilesError(
             "NotFound",
@@ -1116,15 +1119,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         await authHandle.ensureAccessToken();
         const res = await client.filesGetMetadata({ path: keyToPath(key) });
         const item = res.result;
-        const tag = (item as { ".tag"?: string })[".tag"];
-        if (tag === "folder" || tag === "deleted") {
+        if (item[".tag"] === "folder" || item[".tag"] === "deleted") {
           throw new FilesError(
             "NotFound",
-            `dropbox: ${key} is not a file (tag=${tag})`
+            `dropbox: ${key} is not a file (tag=${item[".tag"]})`
           );
         }
-        const file = item as files.FileMetadata;
-        const meta = fileMetaFromDropbox(file);
+        const meta = fileMetaFromDropbox(item);
         return createStoredFile(
           { key, ...meta },
           { factory: lazyDownload(key), kind: "lazy" }
@@ -1150,28 +1151,25 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
               path: keyToPath(folded ? (options?.prefix ?? "") : ""),
               recursive: !folded,
             });
-        const result = res.result as files.ListFolderResult;
+        const { result } = res;
         const items: StoredFile[] = [];
         const prefixes: string[] = [];
         // Classify one entry into items (files) or prefixes (folders, folded
         // mode only); nested so the loop's branching stays out of `list`.
         const collect = (entry: files.ListFolderResult["entries"][number]) => {
-          const tag = (entry as { ".tag"?: string })[".tag"];
           const path =
-            (entry as files.FileMetadataReference).path_display ??
-            (entry as files.FileMetadataReference).path_lower ??
-            `/${entry.name ?? ""}`;
+            entry.path_display ?? entry.path_lower ?? `/${entry.name ?? ""}`;
           const key = pathToKey(path);
           if (!key) {
             return;
           }
-          if (tag === "folder") {
+          if (entry[".tag"] === "folder") {
             if (folded) {
               prefixes.push(`${key}/`);
             }
             return;
           }
-          if (tag !== "file") {
+          if (entry[".tag"] !== "file") {
             return;
           }
           if (options?.prefix && !key.startsWith(options.prefix)) {
@@ -1179,10 +1177,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           }
           items.push(
             createStoredFile(
-              {
-                key,
-                ...fileMetaFromDropbox(entry as files.FileMetadataReference),
-              },
+              { key, ...fileMetaFromDropbox(entry) },
               { factory: lazyDownload(key), kind: "lazy" }
             )
           );

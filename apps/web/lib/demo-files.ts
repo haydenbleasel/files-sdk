@@ -1,5 +1,23 @@
-import type { AdapterCapabilities, StoredFile } from "files-sdk";
-import type { FileVersion, TrashedFile, UseFilesResult } from "files-sdk/react";
+import type {
+  AdapterCapabilities,
+  DeleteManyResult,
+  DownloadManyResult,
+  ExistsManyResult,
+  HeadManyResult,
+  ListResult,
+  StoredFile,
+  UploadManyResult,
+} from "files-sdk";
+import type { NativeFileRef } from "files-sdk/client";
+import type {
+  FileVersion,
+  ListCallOptions,
+  TrashedFile,
+  UploadBody,
+  UploadManyClientItem,
+  UploadOutcome,
+  UseFilesResult,
+} from "files-sdk/react";
 
 /**
  * A no-op, `console.log`-ing stand-in for a `useFiles()` instance, so the docs
@@ -41,9 +59,17 @@ const DAY = 86_400_000;
 // A fixed "now" (mid-2026) keeps demo timestamps stable and current-looking.
 const NOW = 1_781_000_000_000;
 
+interface SampleObject {
+  key: string;
+  size: number;
+  type: string;
+  /** Days before `NOW` the object was last modified. */
+  age: number;
+}
+
 // Sample objects — non-image types so the previews render clean file-type
 // icons rather than broken thumbnails (image thumbnails need the gateway).
-const SAMPLE: { key: string; size: number; type: string; age: number }[] = [
+const SAMPLE: SampleObject[] = [
   {
     age: 6,
     key: "documents/meeting-notes.txt",
@@ -78,20 +104,19 @@ const storedFile = (
   size = 0,
   type = "application/octet-stream",
   lastModified = NOW
-): StoredFile =>
-  ({
-    arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-    blob: () => Promise.resolve(new Blob([])),
-    key,
-    lastModified,
-    name: key.split("/").at(-1) ?? key,
-    size,
-    stream: () => new ReadableStream(),
-    text: () => Promise.resolve(""),
-    type,
-  }) as unknown as StoredFile;
+): StoredFile => ({
+  arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
+  blob: () => Promise.resolve(new Blob([])),
+  key,
+  lastModified,
+  name: key.split("/").at(-1) ?? key,
+  size,
+  stream: () => new ReadableStream<Uint8Array>(),
+  text: () => Promise.resolve(""),
+  type,
+});
 
-const sampleToStored = (s: (typeof SAMPLE)[number]): StoredFile =>
+const sampleToStored = (s: SampleObject): StoredFile =>
   storedFile(s.key, s.size, s.type, NOW - s.age * DAY);
 
 // Guess a plausible StoredFile for an arbitrary key (head/download of anything).
@@ -102,15 +127,7 @@ const inferStored = (key: string): StoredFile => {
     : storedFile(key, 128_000, "application/octet-stream");
 };
 
-interface ListResult {
-  items: StoredFile[];
-  prefixes?: string[];
-}
-
-const list = (opts?: {
-  prefix?: string;
-  delimiter?: string;
-}): Promise<ListResult> => {
+const list = (opts?: ListCallOptions): Promise<ListResult> => {
   const prefix = opts?.prefix ?? "";
   const delimiter = opts?.delimiter;
   let under = SAMPLE.filter((s) => s.key.startsWith(prefix));
@@ -141,7 +158,7 @@ const VERSIONS: FileVersion[] = [
   { lastModified: NOW - 11 * DAY, size: 2110, versionId: "v1-initial" },
 ];
 
-const TRASHED = [
+const TRASHED: TrashedFile[] = [
   { key: "old/draft-v1.pdf", lastModified: NOW - 2 * DAY, size: 512_000 },
   { key: "tmp/scratch.txt", lastModified: NOW - 5 * DAY, size: 1230 },
   {
@@ -149,29 +166,87 @@ const TRASHED = [
     lastModified: NOW - 8 * DAY,
     size: 88_400,
   },
-] as unknown as TrashedFile[];
+];
 
-export const demoFiles = {
+// The single-key and bulk forms of each verb share one property on
+// `UseFilesResult`, so the demo implements both as function overloads — the
+// bulk form answers with the matching `*ManyResult` shape.
+
+function upload(file: Blob | NativeFileRef): Promise<UploadOutcome>;
+function upload(key: string, body: UploadBody): Promise<UploadOutcome>;
+function upload(items: UploadManyClientItem[]): Promise<UploadManyResult>;
+function upload(
+  target: Blob | NativeFileRef | string | UploadManyClientItem[],
+  ...args: unknown[]
+): Promise<UploadOutcome | UploadManyResult> {
+  log("upload", target, ...args);
+  if (Array.isArray(target)) {
+    return Promise.resolve({
+      uploaded: target.map(({ contentType, key }) => ({
+        contentType: contentType ?? "application/octet-stream",
+        key,
+        size: 0,
+      })),
+    });
+  }
+  return Promise.resolve(storedFile("demo/uploaded.txt", 2048, "text/plain"));
+}
+
+function download(key: string): Promise<StoredFile>;
+function download(keys: string[]): Promise<DownloadManyResult>;
+function download(
+  target: string | string[]
+): Promise<StoredFile | DownloadManyResult> {
+  log("download", target);
+  return Promise.resolve(
+    Array.isArray(target)
+      ? { downloaded: target.map(inferStored) }
+      : inferStored(target)
+  );
+}
+
+function head(key: string): Promise<StoredFile>;
+function head(keys: string[]): Promise<HeadManyResult>;
+function head(target: string | string[]): Promise<StoredFile | HeadManyResult> {
+  log("head", target);
+  return Promise.resolve(
+    Array.isArray(target)
+      ? { files: target.map(inferStored) }
+      : inferStored(target)
+  );
+}
+
+function exists(key: string): Promise<boolean>;
+function exists(keys: string[]): Promise<ExistsManyResult>;
+function exists(
+  target: string | string[]
+): Promise<boolean | ExistsManyResult> {
+  return Promise.resolve(
+    Array.isArray(target) ? { existing: target, missing: [] } : true
+  );
+}
+
+function remove(key: string): Promise<void>;
+function remove(keys: string[]): Promise<DeleteManyResult>;
+function remove(target: string | string[]): Promise<void | DeleteManyResult> {
+  log("delete", target);
+  return Promise.resolve(
+    Array.isArray(target) ? { deleted: target } : undefined
+  );
+}
+
+export const demoFiles: UseFilesResult = {
   abort: () => log("abort"),
   capabilities: () => Promise.resolve(CAPABILITIES),
   copy: (from: string, to: string) => {
     log("copy", from, to);
     return Promise.resolve();
   },
-  delete: (key: unknown) => {
-    log("delete", key);
-    return Promise.resolve();
-  },
-  download: (key: string) => {
-    log("download", key);
-    return Promise.resolve(inferStored(key));
-  },
+  delete: remove,
+  download,
   error: undefined,
-  exists: () => Promise.resolve(true),
-  head: (key: string) => {
-    log("head", key);
-    return Promise.resolve(inferStored(key));
-  },
+  exists,
+  head,
   isUploading: false,
   list,
   async *listAll() {
@@ -207,10 +282,7 @@ export const demoFiles = {
     return Promise.resolve({ fields: {}, method: "PUT", url: "" });
   },
   trashed: () => Promise.resolve(TRASHED),
-  upload: (...args: unknown[]) => {
-    log("upload", ...args);
-    return Promise.resolve(storedFile("demo/uploaded.txt", 2048, "text/plain"));
-  },
+  upload,
   uploads: [],
   url: (key: string) => {
     log("url", key);
@@ -219,4 +291,4 @@ export const demoFiles = {
     );
   },
   versions: () => Promise.resolve(VERSIONS),
-} as unknown as UseFilesResult;
+};

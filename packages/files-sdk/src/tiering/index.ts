@@ -8,6 +8,7 @@ import type {
   ListOptions,
   ListResult,
   OperationOptions,
+  OperationResult,
   PluginNext,
   SignedUpload,
   SignUploadOptions,
@@ -17,6 +18,8 @@ import type {
   UrlOptions,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction, isObject, isString } from "../internal/is.js";
+import type { JsonValue } from "../internal/json.js";
 
 /** Which of the two stores an object lives in (or should be written to). */
 export type Tier = "hot" | "cold";
@@ -135,7 +138,7 @@ interface TierRunner {
 /** Compose a {@link TierRunner} from a {@link Files} instance (the cold tier). */
 const runnerFor = (files: Files): TierRunner => ({
   copy: (from, to, opts) => files.copy(from, to, opts),
-  delete: (key, opts) => files.delete(key, opts) as Promise<void>,
+  delete: (key, opts) => files.delete(key, opts),
   download: (key, opts) => files.download(key, opts),
   exists: (key, opts) => files.exists(key, opts),
   head: (key, opts) => files.head(key, opts),
@@ -167,7 +170,7 @@ const runnerViaNext = (next: PluginNext): TierRunner => ({
 
 /** Byte length of a body when it's knowable without consuming a stream. */
 const declaredSize = (body: Body): number | undefined => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body).byteLength;
   }
   if (body instanceof Blob) {
@@ -183,8 +186,8 @@ const declaredSize = (body: Body): number | undefined => {
   return undefined;
 };
 
-const isNotFound = (error: unknown): boolean =>
-  error instanceof FilesError && error.code === "NotFound";
+const isNotFound = (cause: unknown): boolean =>
+  cause instanceof FilesError && cause.code === "NotFound";
 
 /** Stable key ordering for the merged listing, matching provider sort order. */
 const byKey = (a: StoredFile, b: StoredFile): number => {
@@ -238,10 +241,12 @@ interface ListCursor {
 
 const decodeCursor = (raw: string): ListCursor | undefined => {
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as ListCursor)
-      : undefined;
+    const parsed: JsonValue = JSON.parse(raw);
+    // SAFETY: a tiering cursor is the composite this plugin minted with
+    // `JSON.stringify(... satisfies ListCursor)`, so a decoded object carries
+    // its slots; every slot read is optional-chained, so a foreign object
+    // yields empty slots rather than a crash.
+    return isObject(parsed) ? (parsed as ListCursor) : undefined;
   } catch {
     return undefined;
   }
@@ -307,6 +312,16 @@ const pageMax = (page: TierPage): string | undefined => {
 };
 
 /**
+ * A merged-list round's emission decision: exactly one of `bound` (emit
+ * entries `<= bound`), `emitAll`, or `emitNone` is set.
+ */
+interface EmissionBound {
+  bound?: string;
+  emitAll?: boolean;
+  emitNone?: boolean;
+}
+
+/**
  * The merged page's emission bound: entries `<= bound` are emitted now,
  * entries above it are held back and re-fetched next round. Bounded by the
  * lowest page-max among tiers that still have more pages, so emission is
@@ -316,9 +331,7 @@ const pageMax = (page: TierPage): string | undefined => {
  * final page; `{ emitNone: true }` when a tier returned an empty page with a
  * continuation (its coverage is unknowable, so nothing can safely be emitted).
  */
-const emissionBound = (
-  pages: (TierPage | undefined)[]
-): { bound?: string; emitAll?: boolean; emitNone?: boolean } => {
+const emissionBound = (pages: (TierPage | undefined)[]): EmissionBound => {
   let bound: string | undefined;
   for (const page of pages) {
     if (page?.next === undefined) {
@@ -335,11 +348,14 @@ const emissionBound = (
   return bound === undefined ? { emitAll: true } : { bound };
 };
 
+/** A page split at the emission bound: what to emit, and whether any was held. */
+interface PageSplit {
+  emit: TierPage;
+  held: boolean;
+}
+
 /** Split a page's entries into the emitted slice and the held-back slice. */
-const splitAtBound = (
-  page: TierPage,
-  bound: { bound?: string; emitAll?: boolean; emitNone?: boolean }
-): { emit: TierPage; held: boolean } => {
+const splitAtBound = (page: TierPage, bound: EmissionBound): PageSplit => {
   if (bound.emitAll) {
     return { emit: page, held: false };
   }
@@ -352,6 +368,8 @@ const splitAtBound = (
       held: page.items.length > 0 || page.prefixes.length > 0,
     };
   }
+  // SAFETY: `emissionBound` sets exactly one of `emitAll`, `emitNone`, or
+  // `bound`; the two flags were ruled out above, so the key bound is present.
   const limit = bound.bound as string;
   const items = page.items.filter((f) => f.key <= limit);
   const prefixes = page.prefixes.filter((p) => p <= limit);
@@ -367,7 +385,7 @@ const splitAtBound = (
 const nextSlot = (
   page: TierPage | undefined,
   held: boolean,
-  bound: { bound?: string; emitNone?: boolean },
+  bound: EmissionBound,
   previousSkip: string | undefined
 ): TierCursor | undefined => {
   if (page === undefined) {
@@ -383,11 +401,16 @@ const nextSlot = (
 };
 
 /** One tier's emitted slice and continuation slot for a merged-list round. */
+interface TierOutcome {
+  emit?: TierPage;
+  slot?: TierCursor;
+}
+
 const tierOutcome = (
   page: TierPage | undefined,
-  bound: { bound?: string; emitAll?: boolean; emitNone?: boolean },
+  bound: EmissionBound,
   previousSkip: string | undefined
-): { emit?: TierPage; slot?: TierCursor } => {
+): TierOutcome => {
   if (page === undefined) {
     return {};
   }
@@ -486,7 +509,7 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   if (!options?.cold) {
     throw new FilesError("Provider", "tiering: a cold adapter is required");
   }
-  if (typeof options.route !== "function") {
+  if (!isFunction(options.route)) {
     throw new FilesError("Provider", "tiering: a route function is required");
   }
   const { route } = options;
@@ -649,7 +672,10 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     };
   };
 
-  const dispatch = (hot: TierRunner, op: FilesOperation): Promise<unknown> => {
+  const dispatch = async (
+    hot: TierRunner,
+    op: FilesOperation
+  ): Promise<OperationResult<FilesOperation>> => {
     switch (op.kind) {
       case "upload": {
         return uploadRouted(hot, op.key, op.body, op.options);
@@ -666,20 +692,28 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
       case "exists": {
         return existsAcross(hot, op.key, op.options);
       }
+      // delete / copy / move resolve to no value, like the verbs they run.
       case "delete": {
-        return deleteRouted(hot, op.key, op.options);
+        await deleteRouted(hot, op.key, op.options);
+        return;
       }
       case "copy": {
-        return copyOrMove(hot, op.from, op.to, false, op.options);
+        await copyOrMove(hot, op.from, op.to, false, op.options);
+        return;
       }
       case "move": {
-        return copyOrMove(hot, op.from, op.to, true, op.options);
+        await copyOrMove(hot, op.from, op.to, true, op.options);
+        return;
       }
       case "list": {
         return listMerged(hot, op.options);
       }
       default: {
         // signedUploadUrl: sign against the tier the key would upload to.
+        // SAFETY: `Files.signedUploadUrl` requires its options (`expiresIn` is
+        // mandatory), so the op always carries a `SignUploadOptions`; the
+        // operation type marks them optional only for uniformity with the
+        // other verbs.
         return pick(hot, route({ key: op.key })).signedUploadUrl(
           op.key,
           op.options as SignUploadOptions
@@ -688,7 +722,14 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     }
   };
 
-  const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> => {
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; `dispatch` runs each verb on a tier whose
+  // runner is typed to that verb's result, so the non-generic function
+  // satisfies the generic `wrap` at each verb.
+  const wrap = ((
+    op: FilesOperation,
+    next: PluginNext
+  ): Promise<OperationResult<FilesOperation>> => {
     if (isConditionalOperation(op)) {
       rejectConditional(
         op,

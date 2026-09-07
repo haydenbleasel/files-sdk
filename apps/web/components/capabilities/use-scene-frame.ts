@@ -31,7 +31,7 @@ export const interpolate = (
 ): number =>
   transform(frame, [input[0], input[1]], [output[0], output[1]], {
     clamp: true,
-    ...(ease ? { ease } : {}),
+    ...(ease && { ease }),
   });
 
 /**

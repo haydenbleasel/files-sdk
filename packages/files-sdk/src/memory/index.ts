@@ -10,6 +10,7 @@ import type {
 } from "../index.js";
 import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -104,7 +105,7 @@ const inferContentType = (body: Body, override?: string): string => {
   if (override) {
     return override;
   }
-  if (typeof body === "string") {
+  if (isString(body)) {
     return "text/plain; charset=utf-8";
   }
   if (body instanceof Blob && body.type) {
@@ -118,7 +119,7 @@ const seedBytes = (
   // oxlint-disable-next-line sonarjs/max-union-size -- a seed body may be any of the 4 byte-source shapes we accept.
   body: string | Uint8Array | ArrayBuffer | ArrayBufferView
 ): Uint8Array => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return textEncoder.encode(body);
   }
   if (body instanceof Uint8Array) {
@@ -131,7 +132,7 @@ const seedBytes = (
 };
 
 const bodyToBytes = async (body: Body): Promise<Uint8Array> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return textEncoder.encode(body);
   }
   if (body instanceof Uint8Array) {
@@ -413,6 +414,8 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
             cacheControl: resumableOpts.cacheControl,
             metadata: resumableOpts.metadata,
           });
+          // SAFETY: `requirePending()` above throws unless a session was
+          // begun or adopted, which is what sets `uploadId`.
           pending.delete(uploadId as string);
           return Promise.resolve({
             contentType,
@@ -430,8 +433,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : MEMORY_DEFAULT_CHUNK,
         probe(): Promise<{ nextOffset: number }> {

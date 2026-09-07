@@ -91,14 +91,17 @@ const proxyTarget = (
   url: cfg.proxyUrl(token),
 });
 
+interface LimitedBody {
+  body: ReadableStream<Uint8Array>;
+  /** The size-limit error once the stream has tripped it, else `undefined`. */
+  getError: () => RouterError | undefined;
+}
+
 const limitBody = (
   body: ReadableStream<Uint8Array>,
   maxSize: number | undefined,
   message: string
-): {
-  body: ReadableStream<Uint8Array>;
-  getError: () => RouterError | undefined;
-} => {
+): LimitedBody => {
   let limitError: RouterError | undefined;
   const getError = () => limitError;
   if (maxSize === undefined) {
@@ -148,7 +151,7 @@ export const handlePresign = async (
         key,
         maxSize: cfg.maxUploadSize,
         minSize: 0,
-        ...(cfg.boundQuery ? { query: cfg.boundQuery } : {}),
+        ...(cfg.boundQuery && { query: cfg.boundQuery }),
       },
       cfg.secret
     );
@@ -160,7 +163,7 @@ export const handlePresign = async (
           contentType: file.type || undefined,
           expiresIn: expires,
           minSize: 0,
-          ...(cfg.maxUploadSize ? { maxSize: cfg.maxUploadSize } : {}),
+          ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
         });
       } catch {
         target = proxyTarget(cfg, id, file.type);
@@ -224,7 +227,7 @@ export const handleComplete = async (
   }
 
   return {
-    body: { files: completed, ...(errors.length ? { errors } : {}) },
+    body: { files: completed, ...(errors.length > 0 && { errors }) },
     kind: "json",
     status: 200,
   };

@@ -7,6 +7,7 @@
 import type { SearchMatch } from "../index.js";
 import { FilesError } from "./errors.js";
 import { globMatcher } from "./glob.js";
+import { isString } from "./is.js";
 import { isSafeSearchRegex } from "./search-regex.js";
 
 export const SEARCH_MATCHES: readonly SearchMatch[] = [
@@ -17,17 +18,14 @@ export const SEARCH_MATCHES: readonly SearchMatch[] = [
 ];
 
 export const isSearchMatch = (value: string): value is SearchMatch =>
-  (SEARCH_MATCHES as readonly string[]).includes(value);
+  SEARCH_MATCHES.some((match) => match === value);
 
 export const buildSearchMatcher = (
   pattern: string | RegExp,
   match: SearchMatch,
   caseInsensitive: boolean
 ): ((key: string) => boolean) => {
-  if (
-    typeof pattern === "string" &&
-    (match === "substring" || match === "exact")
-  ) {
+  if (isString(pattern) && (match === "substring" || match === "exact")) {
     const needle = caseInsensitive ? pattern.toLowerCase() : pattern;
     const contains = match === "substring";
     return (key) => {
@@ -35,7 +33,7 @@ export const buildSearchMatcher = (
       return contains ? hay.includes(needle) : hay === needle;
     };
   }
-  if (typeof pattern === "string" && match === "glob") {
+  if (isString(pattern) && match === "glob") {
     return globMatcher(pattern, caseInsensitive);
   }
   // A RegExp instance, or a string compiled as a regex.

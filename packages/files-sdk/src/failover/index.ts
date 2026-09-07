@@ -8,6 +8,7 @@ import type {
   ListOptions,
   ListResult,
   OperationOptions,
+  OperationResult,
   PluginNext,
   SignedUpload,
   SignUploadOptions,
@@ -108,7 +109,7 @@ interface BackendRunner {
 /** Compose a {@link BackendRunner} from a {@link Files} instance (a secondary). */
 const runnerFor = (files: Files): BackendRunner => ({
   copy: (from, to, opts) => files.copy(from, to, opts),
-  delete: (key, opts) => files.delete(key, opts) as Promise<void>,
+  delete: (key, opts) => files.delete(key, opts),
   download: (key, opts) => files.download(key, opts),
   exists: (key, opts) => files.exists(key, opts),
   head: (key, opts) => files.head(key, opts),
@@ -270,6 +271,9 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
     index = 0
   ): Promise<T> => {
     try {
+      // SAFETY: `index` starts at 0 on a chain that always holds the primary
+      // and only advances while `index + 1 < runners.length`, so the slot is
+      // populated.
       return await run(runners[index] as BackendRunner);
     } catch (error) {
       const wrapped = FilesError.wrap(error);
@@ -296,13 +300,14 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
       );
     }
     // A stream is read-once: hand it to the primary alone and surface its error.
+    // SAFETY: the chain always starts with the primary runner (`runnerViaNext`).
     return (runners[0] as BackendRunner).upload(op.key, op.body, op.options);
   };
 
-  const dispatch = (
+  const dispatch = async (
     op: FilesOperation,
     runners: readonly BackendRunner[]
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     switch (op.kind) {
       case "upload": {
         return uploadFailover(op, runners);
@@ -319,20 +324,28 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
       case "url": {
         return runChain(op, runners, (r) => r.url(op.key, op.options));
       }
+      // delete / copy / move resolve to no value, like the verbs they run.
       case "delete": {
-        return runChain(op, runners, (r) => r.delete(op.key, op.options));
+        await runChain(op, runners, (r) => r.delete(op.key, op.options));
+        return;
       }
       case "copy": {
-        return runChain(op, runners, (r) => r.copy(op.from, op.to, op.options));
+        await runChain(op, runners, (r) => r.copy(op.from, op.to, op.options));
+        return;
       }
       case "move": {
-        return runChain(op, runners, (r) => r.move(op.from, op.to, op.options));
+        await runChain(op, runners, (r) => r.move(op.from, op.to, op.options));
+        return;
       }
       case "list": {
         return runChain(op, runners, (r) => r.list(op.options));
       }
       default: {
         // signedUploadUrl: sign against the first reachable backend.
+        // SAFETY: `Files.signedUploadUrl` requires its options (`expiresIn` is
+        // mandatory), so the op always carries a `SignUploadOptions`; the
+        // operation type marks them optional only for uniformity with the
+        // other verbs.
         return runChain(op, runners, (r) =>
           r.signedUploadUrl(op.key, op.options as SignUploadOptions)
         );
@@ -340,7 +353,14 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
     }
   };
 
-  const wrap = ((op: FilesOperation, next: PluginNext): Promise<unknown> => {
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; `dispatch` runs each verb on a backend
+  // whose runner is typed to that verb's result, so the non-generic function
+  // satisfies the generic `wrap` at each verb.
+  const wrap = ((
+    op: FilesOperation,
+    next: PluginNext
+  ): Promise<OperationResult<FilesOperation>> => {
     if (isConditionalOperation(op)) {
       rejectConditional(
         op,

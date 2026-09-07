@@ -8,12 +8,11 @@
 // drifting in per-framework copies.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { ReadableStream as NodeReadableStream } from "node:stream/web";
-import type { TLSSocket } from "node:tls";
 
 import type { FilesApi } from "../api/index.js";
+import { isObject } from "./is.js";
+import { toNodeReadable, toWebStream } from "./node-stream";
 
 /** A Node request, optionally carrying Express's `originalUrl` (the pre-mount path). */
 export type NodeLikeRequest = IncomingMessage & { originalUrl?: string };
@@ -27,7 +26,11 @@ const requestProtocol = (req: IncomingMessage): string => {
   if (forwarded) {
     return forwarded;
   }
-  return (req.socket as TLSSocket | undefined)?.encrypted ? "https" : "http";
+  // `TLSSocket` sets `encrypted: true`; a plain `Socket` has no such field.
+  const { socket } = req;
+  return isObject(socket) && "encrypted" in socket && socket.encrypted === true
+    ? "https"
+    : "http";
 };
 
 /** Marshal a Node request into the Web `Request` the gateway consumes. */
@@ -42,17 +45,18 @@ export const toWebRequest = (
   // duplicates without the string|string[] branching of `req.headers`.
   const headers = new Headers();
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
-    headers.append(
-      req.rawHeaders[i] as string,
-      req.rawHeaders[i + 1] as string
-    );
+    const name = req.rawHeaders[i];
+    const value = req.rawHeaders[i + 1];
+    if (name !== undefined && value !== undefined) {
+      headers.append(name, value);
+    }
   }
 
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
   const init: RequestInit & { duplex?: "half" } = { headers, method, signal };
   if (hasBody) {
-    init.body = Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
+    init.body = toWebStream(req);
     init.duplex = "half";
   }
   return new Request(url, init);
@@ -68,12 +72,7 @@ export const sendWebResponse = async (
     res.setHeader(key, value);
   }
   if (response.body) {
-    await pipeline(
-      Readable.fromWeb(
-        response.body as unknown as NodeReadableStream<Uint8Array>
-      ),
-      res
-    );
+    await pipeline(toNodeReadable(response.body), res);
   } else {
     res.end();
   }

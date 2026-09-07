@@ -13,22 +13,43 @@ import { enableTailwind } from "@remotion/tailwind-v4";
 // `tsconfigRaw` up front makes the loader skip `require("typescript")`.
 const TSCONFIG_RAW = { compilerOptions: { jsx: "react-jsx" } };
 
-const injectTsconfigRaw = (config: ReturnType<typeof enableTailwind>) => {
+// Walk the webpack rule types Remotion hands to the override callback, so the
+// narrowing below is stated against webpack's own contract.
+type WebpackConfig = Parameters<
+  Parameters<typeof Config.overrideWebpackConfig>[0]
+>[0];
+type Rule = NonNullable<NonNullable<WebpackConfig["module"]>["rules"]>[number];
+type RuleObject = Extract<Rule, { use?: unknown }>;
+type UseEntry = Extract<NonNullable<RuleObject["use"]>, unknown[]>[number];
+type LoaderEntry = Extract<UseEntry, { loader?: string }>;
+type LoaderOptions = Exclude<LoaderEntry["options"], string | undefined>;
+interface EsbuildLoaderEntry extends LoaderEntry {
+  loader: string;
+  options: LoaderOptions;
+}
+
+const isRuleObject = (rule: Rule): rule is RuleObject =>
+  typeof rule === "object" && rule !== null;
+
+const isLoaderEntry = (use: UseEntry): use is LoaderEntry =>
+  typeof use === "object" && use !== null;
+
+// An esbuild-loader entry that already carries an options object to patch.
+const isEsbuildLoader = (use: LoaderEntry): use is EsbuildLoaderEntry =>
+  typeof use.loader === "string" &&
+  use.loader.includes("esbuild-loader") &&
+  typeof use.options === "object" &&
+  use.options !== null;
+
+const injectTsconfigRaw = (config: WebpackConfig) => {
   for (const rule of config.module?.rules ?? []) {
-    if (!rule || typeof rule !== "object" || !("use" in rule)) {
+    if (!isRuleObject(rule) || !("use" in rule)) {
       continue;
     }
     const uses = Array.isArray(rule.use) ? rule.use : [rule.use];
     for (const use of uses) {
-      if (
-        use &&
-        typeof use === "object" &&
-        typeof use.loader === "string" &&
-        use.loader.includes("esbuild-loader") &&
-        use.options &&
-        typeof use.options === "object"
-      ) {
-        (use.options as Record<string, unknown>).tsconfigRaw = TSCONFIG_RAW;
+      if (isLoaderEntry(use) && isEsbuildLoader(use)) {
+        use.options.tsconfigRaw = TSCONFIG_RAW;
       }
     }
   }

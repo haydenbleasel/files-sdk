@@ -44,7 +44,7 @@ const makeClient = (config?: QueryConfig): FilesClient =>
   });
 
 const useQuery = <T>(
-  deps: () => unknown,
+  deps: () => string | undefined,
   enabled: () => boolean,
   run: (signal: AbortSignal) => Promise<T>
 ): QueryReturn<T> => {
@@ -117,6 +117,8 @@ export const useFile = (
   config?: QueryConfig
 ): QueryReturn<StoredFile> => {
   const client = makeClient(config);
+  // SAFETY: `enabled` is false whenever the key resolves to undefined, and
+  // `useQuery` never invokes `run` while disabled.
   return useQuery(
     () => toValue(key),
     () => (config?.enabled ?? true) && toValue(key) !== undefined,
@@ -130,6 +132,8 @@ export const useSearch = (
   config?: QueryConfig
 ): QueryReturn<StoredFile[]> => {
   const client = makeClient(config);
+  // SAFETY: `enabled` is false whenever the pattern resolves to undefined, and
+  // `useQuery` never invokes `run` while disabled.
   return useQuery(
     () => {
       const value = toValue(pattern);

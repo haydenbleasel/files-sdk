@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
 
 import type { TokenCredential } from "@azure/core-auth";
 import {
@@ -12,6 +12,8 @@ import {
 import type {
   BlockBlobClient,
   BlockBlobParallelUploadOptions,
+  ContainerListBlobFlatSegmentResponse,
+  ContainerListBlobHierarchySegmentResponse,
   UserDelegationKey,
 } from "@azure/storage-blob";
 
@@ -39,6 +41,8 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isObject, isString } from "../internal/is.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { createStoredFile } from "../internal/stored-file.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -152,26 +156,30 @@ const AZURE_CONFLICT_CODES: ReadonlySet<string> = new Set([
   "LeaseAlreadyPresent",
 ]);
 
+/** The fields of an `@azure/storage-blob` `RestError` we classify on. */
+interface RestErrorFields {
+  code?: string | number;
+  details?: { errorCode?: string };
+  message?: string;
+  statusCode?: number;
+}
+
 export const mapAzureError = makeErrorMapper({
   codes: {
     conflict: AZURE_CONFLICT_CODES,
     notFound: AZURE_NOT_FOUND_CODES,
     unauthorized: AZURE_UNAUTH_CODES,
   },
-  extract: (err) => {
-    const e = err as {
-      statusCode?: number;
-      code?: string | number;
-      details?: { errorCode?: string };
-      message?: string;
-    };
+  extract: (cause) => {
+    // SAFETY: every field is read optionally; a thrown value that is not an
+    // Azure RestError (or not even an object) just yields no code/status/message.
+    const e = cause as RestErrorFields | null | undefined;
     // Azure RestError carries the storage error code on `details.errorCode`
     // (the value from the response body) and the HTTP status on `statusCode`.
     // The top-level `code` is sometimes the same string and sometimes an SDK
     // class name, so prefer `details.errorCode` when present.
     const code =
-      e?.details?.errorCode ??
-      (typeof e?.code === "string" ? e.code : undefined);
+      e?.details?.errorCode ?? (isString(e?.code) ? e.code : undefined);
     return {
       ...(code && { code }),
       ...(e?.message && { message: e.message }),
@@ -218,7 +226,7 @@ const runAzureUpload = async (
   concurrency: number | undefined
 ): Promise<{ etag?: string; lastModified?: number }> => {
   if (data instanceof ReadableStream) {
-    const node = Readable.fromWeb(data as never);
+    const node = toNodeReadable(data);
     const streamed = await blockBlob.uploadStream(
       node,
       blockSize,
@@ -275,10 +283,10 @@ const createAzureResumableDriver = (
   container: string,
   key: string,
   opts: ResumableDriverOptions,
-  wrapErr: (err: unknown) => FilesError
+  wrapErr: (cause: unknown) => FilesError
 ): PartsResumableDriver => {
   let blockSize =
-    typeof opts.multipart === "object" && opts.multipart.partSize
+    isObject(opts.multipart) && opts.multipart.partSize
       ? opts.multipart.partSize
       : AZURE_DEFAULT_BLOCK_SIZE;
   let contentType = DEFAULT_CONTENT_TYPE;
@@ -795,9 +803,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
                     },
                   });
                 }
-                return Readable.toWeb(
-                  node as Readable
-                ) as unknown as ReadableStream<Uint8Array>;
+                // SAFETY: under Node the SDK's body is a `stream.Readable`
+                // (a RetriableReadableStream); its types only describe it
+                // through the legacy `NodeJS.ReadableStream` interface, which
+                // `Readable.toWeb` does not accept.
+                const nodeReadable = node as Readable;
+                return toWebStream(nodeReadable);
               },
               kind: "stream",
             }
@@ -851,9 +862,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
             ...(props.lastModified && {
               lastModified: props.lastModified.getTime(),
             }),
-            ...(props.metadata && {
-              metadata: props.metadata as Record<string, string>,
-            }),
+            ...(props.metadata && { metadata: props.metadata }),
             size: Number(props.contentLength ?? 0),
             type: props.contentType ?? DEFAULT_CONTENT_TYPE,
           },
@@ -916,13 +925,13 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
                 maxPageSize: options.limit,
               }),
             });
-          const { value: hierarchyPage } = await iterator.next();
-          const segment = hierarchyPage?.segment as
-            | {
-                blobItems?: BlobItemLike[];
-                blobPrefixes?: { name: string }[];
-              }
-            | undefined;
+          // `IteratorResult#value` is `any` on the done branch; the page is
+          // the typed response, or undefined once the iterator is exhausted.
+          const step = await iterator.next();
+          const hierarchyPage:
+            | ContainerListBlobHierarchySegmentResponse
+            | undefined = step.value;
+          const segment = hierarchyPage?.segment;
           const prefixes = (segment?.blobPrefixes ?? []).map((p) => p.name);
           const nextToken = hierarchyPage?.continuationToken;
           return {
@@ -946,10 +955,11 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
               maxPageSize: options.limit,
             }),
           });
-        const { value: page } = await iterator.next();
-        const segment = page?.segment as
-          | { blobItems?: BlobItemLike[] }
-          | undefined;
+        // See `listByHierarchy` — type the page rather than read it as `any`.
+        const step = await iterator.next();
+        const page: ContainerListBlobFlatSegmentResponse | undefined =
+          step.value;
+        const segment = page?.segment;
         const items = (segment?.blobItems ?? []).map(toItem);
         const nextToken = page?.continuationToken;
         return {
@@ -1028,7 +1038,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       const blockBlob = containerClient.getBlockBlobClient(key);
       // Azure already splits large bodies into parallel blocks; `multipart`
       // only tunes that — block size and how many blocks upload at once.
-      const mp = typeof multipart === "object" ? multipart : undefined;
+      const mp = isObject(multipart) ? multipart : undefined;
       const blockSize = mp?.partSize;
       const concurrency = mp?.concurrency;
       const writeOpts = {

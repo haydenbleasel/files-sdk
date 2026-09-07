@@ -1,5 +1,5 @@
 import { getDeployStore, getStore } from "@netlify/blobs";
-import type { Store } from "@netlify/blobs";
+import type { GetWithMetadataResult, Store } from "@netlify/blobs";
 
 import type {
   Adapter,
@@ -15,6 +15,8 @@ import { assertSlashDelimiter } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import type { JsonObject } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface NetlifyBlobsAdapterOptions {
@@ -68,17 +70,24 @@ const META_CACHE_CONTROL = "__cacheControl";
 const META_USER = "__user";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
-interface PackedMetadata {
-  [META_CONTENT_TYPE]?: string;
-  [META_SIZE]?: number;
-  [META_LAST_MODIFIED]?: number;
+// The metadata block this adapter writes. It is a JSON object (Netlify
+// serializes metadata as JSON) so it stays assignable to the SDK's
+// dictionary-typed `metadata` option.
+interface PackedMetadata extends JsonObject {
+  [META_CONTENT_TYPE]: string;
+  [META_SIZE]: number;
+  [META_LAST_MODIFIED]: number;
   [META_CACHE_CONTROL]?: string;
   [META_USER]?: Record<string, string>;
-  [key: string]: unknown;
 }
 
+// The metadata block Netlify hands back. The SDK types it as an open
+// dictionary — blobs written outside this adapter can carry anything — so
+// every field is checked as it is read.
+type NetlifyMetadata = GetWithMetadataResult["metadata"];
+
 const sizeOf = (body: Body): number | undefined => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body).byteLength;
   }
   if (body instanceof Uint8Array) {
@@ -96,6 +105,20 @@ const sizeOf = (body: Body): number | undefined => {
   return undefined;
 };
 
+interface StorableBody {
+  data: string | ArrayBuffer | Blob;
+  size: number;
+}
+
+// Copy a view's bytes into a fresh, exactly-sized `ArrayBuffer` so the SDK is
+// never handed a buffer that covers more than the user's bytes (a view's
+// `.buffer` can be larger than the view).
+const copyToArrayBuffer = (view: ArrayBufferView): ArrayBuffer => {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return copy.buffer;
+};
+
 // `Store.set()` accepts `string | ArrayBuffer | Blob`. Convert everything
 // else (Uint8Array, ArrayBufferView, ReadableStream) into one of those.
 // Streams are buffered up-front because Netlify's set() doesn't take a
@@ -103,8 +126,8 @@ const sizeOf = (body: Body): number | undefined => {
 const bodyToStorable = async (
   body: Body,
   contentType: string | undefined
-): Promise<{ data: string | ArrayBuffer | Blob; size: number }> => {
-  if (typeof body === "string") {
+): Promise<StorableBody> => {
+  if (isString(body)) {
     return {
       data: body,
       size: new TextEncoder().encode(body).byteLength,
@@ -118,32 +141,19 @@ const bodyToStorable = async (
     return { data, size: data.size };
   }
   if (body instanceof Uint8Array) {
-    // Slice into a fresh ArrayBuffer to avoid handing the SDK a view that
-    // covers more than the user's bytes (Uint8Array.buffer can be larger
-    // than the view).
-    const ab = body.buffer.slice(
-      body.byteOffset,
-      body.byteOffset + body.byteLength
-    ) as ArrayBuffer;
+    const ab = copyToArrayBuffer(body);
     return { data: ab, size: ab.byteLength };
   }
   if (body instanceof ArrayBuffer) {
     return { data: body, size: body.byteLength };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    const ab = view.buffer.slice(
-      view.byteOffset,
-      view.byteOffset + view.byteLength
-    ) as ArrayBuffer;
+    const ab = copyToArrayBuffer(body);
     return { data: ab, size: ab.byteLength };
   }
   // ReadableStream — buffer it. Netlify's set() has no streaming form.
-  const collected = new Uint8Array(await new Response(body).arrayBuffer());
-  const ab = collected.buffer.slice(
-    collected.byteOffset,
-    collected.byteOffset + collected.byteLength
-  ) as ArrayBuffer;
+  // `Response#arrayBuffer` already yields a fresh, exactly-sized buffer.
+  const ab = await new Response(body).arrayBuffer();
   return { data: ab, size: ab.byteLength };
 };
 
@@ -153,12 +163,21 @@ const bodyToStorable = async (
 // expose a structured status field.
 const STATUS_RE = /(?<status>\d{3}) status code/u;
 
-const classifyNetlifyError = (
-  err: unknown
-): { code: FilesErrorCode; message: string } => {
-  const e = err as { name?: string; message?: string };
-  const message = e?.message ?? "Netlify Blobs error";
-  if (e?.name === "MissingBlobsEnvironmentError") {
+interface NetlifyErrorClass {
+  code: FilesErrorCode;
+  message: string;
+}
+
+const classifyNetlifyError = (cause: unknown): NetlifyErrorClass => {
+  const name =
+    isObject(cause) && "name" in cause && isString(cause.name)
+      ? cause.name
+      : undefined;
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : "Netlify Blobs error";
+  if (name === "MissingBlobsEnvironmentError") {
     return { code: "Provider", message };
   }
   const match = STATUS_RE.exec(message);
@@ -181,69 +200,64 @@ const classifyNetlifyError = (
   return { code: "Provider", message };
 };
 
-const mapNetlifyError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+const mapNetlifyError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const { code, message } = classifyNetlifyError(err);
-  return new FilesError(code, message, err);
+  const { code, message } = classifyNetlifyError(cause);
+  return new FilesError(code, message, cause);
 };
 
 const unpackUserMetadata = (
-  meta: Record<string, unknown> | undefined
+  meta: NetlifyMetadata | undefined
 ): Record<string, string> | undefined => {
-  if (!meta) {
-    return;
-  }
-  const user = meta[META_USER];
-  if (!user || typeof user !== "object") {
+  const user = meta?.[META_USER];
+  if (!isObject(user)) {
     return;
   }
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(user)) {
-    if (typeof v === "string") {
+    if (isString(v)) {
       out[k] = v;
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
-const readPackedMetadata = (
-  meta: Record<string, unknown> | undefined
-): {
+interface UnpackedMetadata {
   contentType: string;
   size: number;
   lastModified: number | undefined;
   cacheControl: string | undefined;
   userMetadata: Record<string, string> | undefined;
-} => {
-  const m = (meta ?? {}) as PackedMetadata;
+}
+
+const readPackedMetadata = (
+  meta: NetlifyMetadata | undefined
+): UnpackedMetadata => {
+  const cacheControl = meta?.[META_CACHE_CONTROL];
+  const contentType = meta?.[META_CONTENT_TYPE];
+  const lastModified = meta?.[META_LAST_MODIFIED];
+  const size = meta?.[META_SIZE];
   return {
-    cacheControl:
-      typeof m[META_CACHE_CONTROL] === "string"
-        ? m[META_CACHE_CONTROL]
-        : undefined,
-    contentType:
-      typeof m[META_CONTENT_TYPE] === "string"
-        ? m[META_CONTENT_TYPE]
-        : DEFAULT_CONTENT_TYPE,
-    lastModified:
-      typeof m[META_LAST_MODIFIED] === "number"
-        ? m[META_LAST_MODIFIED]
-        : undefined,
-    size: typeof m[META_SIZE] === "number" ? m[META_SIZE] : 0,
+    cacheControl: isString(cacheControl) ? cacheControl : undefined,
+    contentType: isString(contentType) ? contentType : DEFAULT_CONTENT_TYPE,
+    lastModified: isNumber(lastModified) ? lastModified : undefined,
+    size: isNumber(size) ? size : 0,
     userMetadata: unpackUserMetadata(meta),
   };
 };
 
-const buildStoreOptions = (
-  opts: NetlifyBlobsAdapterOptions
-): {
+interface NetlifyStoreOptions {
   name: string;
   consistency?: "eventual" | "strong";
   siteID?: string;
   token?: string;
-} => {
+}
+
+const buildStoreOptions = (
+  opts: NetlifyBlobsAdapterOptions
+): NetlifyStoreOptions => {
   const siteID = opts.siteID ?? readEnv("NETLIFY_SITE_ID");
   const token =
     opts.token ??
@@ -262,7 +276,7 @@ const buildStoreOptions = (
 export const netlifyBlobs = (
   opts: NetlifyBlobsAdapterOptions
 ): NetlifyBlobsAdapter => {
-  if (!opts.name || typeof opts.name !== "string") {
+  if (!opts.name || !isString(opts.name)) {
     throw new FilesError(
       "Provider",
       "netlifyBlobs adapter: `name` is required."
@@ -314,11 +328,9 @@ export const netlifyBlobs = (
         if (!src) {
           throw new FilesError("NotFound", `netlify-blobs: not found: ${from}`);
         }
-        const meta: PackedMetadata = {
-          ...src.metadata,
-          [META_LAST_MODIFIED]: Date.now(),
-        };
-        await store.set(to, src.data, { metadata: meta });
+        await store.set(to, src.data, {
+          metadata: { ...src.metadata, [META_LAST_MODIFIED]: Date.now() },
+        });
       } catch (error) {
         throw mapNetlifyError(error);
       }
@@ -353,7 +365,7 @@ export const netlifyBlobs = (
               type: packed.contentType,
             },
             {
-              factory: () => result.data as ReadableStream<Uint8Array>,
+              factory: () => result.data,
               kind: "stream",
             }
           );
@@ -455,8 +467,8 @@ export const netlifyBlobs = (
           ...(options?.delimiter && { directories: true }),
         });
         for await (const page of iter) {
-          for (const d of (page as { directories?: string[] }).directories ??
-            []) {
+          // `directories` is only populated when requested via the option.
+          for (const d of page.directories ?? []) {
             directories.add(d);
           }
           for (const b of page.blobs) {
@@ -537,7 +549,7 @@ export const netlifyBlobs = (
           contentType,
           ...(result.etag && { etag: result.etag }),
           key,
-          lastModified: packed[META_LAST_MODIFIED] as number,
+          lastModified: packed[META_LAST_MODIFIED],
           size,
         };
       } catch (error) {

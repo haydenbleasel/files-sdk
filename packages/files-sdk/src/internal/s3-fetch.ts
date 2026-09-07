@@ -117,13 +117,13 @@ const XML_ERROR_RE = /<Error>/u;
 const XML_ENTITY_RE =
   /&(?:amp|lt|gt|quot|apos|#(?<decimal>\d+)|#x(?<hex>[\dA-Fa-f]+));/gu;
 
-const XML_NAMED_ENTITIES: Record<string, string> = {
-  "&amp;": "&",
-  "&apos;": "'",
-  "&gt;": ">",
-  "&lt;": "<",
-  "&quot;": '"',
-};
+const XML_NAMED_ENTITIES = new Map([
+  ["&amp;", "&"],
+  ["&apos;", "'"],
+  ["&gt;", ">"],
+  ["&lt;", "<"],
+  ["&quot;", '"'],
+]);
 
 /** Decode the XML character entities S3 escapes into list-response text. */
 const decodeXmlText = (text: string): string =>
@@ -134,7 +134,7 @@ const decodeXmlText = (text: string): string =>
     if (hex) {
       return String.fromCodePoint(Number.parseInt(hex, 16));
     }
-    return XML_NAMED_ENTITIES[entity] ?? entity;
+    return XML_NAMED_ENTITIES.get(entity) ?? entity;
   });
 
 const parseTimestamp = (value: string | null): number | undefined => {
@@ -261,8 +261,12 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       notFound: S3_NOT_FOUND_CODES,
       unauthorized: S3_UNAUTH_CODES,
     },
-    extract: (err) =>
-      err as { code?: string; status?: number; message?: string },
+    // SAFETY: `extract` only reads three optional fields off whatever was
+    // thrown — the `{ code, message, status }` triple `errorFromXml` builds,
+    // or a transport `Error` whose `message` is the one field present — so a
+    // value lacking them yields the empty extract rather than a wrong one.
+    extract: (cause) =>
+      cause as { code?: string; status?: number; message?: string },
     providerLabel,
   });
 
@@ -318,6 +322,9 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     } = {}
   ): Promise<Response> => {
     try {
+      // SAFETY: request bodies are `Uint8Array`s produced by `normalizeBody`
+      // (encoded strings, copied views, `Blob#arrayBuffer`) — always plain
+      // `ArrayBuffer`-backed, which is all DOM's `BodyInit` pins down.
       const request = await client.sign(url, {
         method,
         ...(init.body !== undefined && { body: init.body as BodyInit }),

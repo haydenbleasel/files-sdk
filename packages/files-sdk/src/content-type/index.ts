@@ -1,6 +1,7 @@
 import { handlers } from "../index.js";
 import type { Body, FilesOperation, FilesPlugin } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
 /** The single in-flight `upload` operation — the only verb this plugin touches. */
@@ -117,6 +118,7 @@ const asciiLower = (bytes: Uint8Array, start: number, len: number): string => {
   const end = Math.min(bytes.length, start + len);
   let out = "";
   for (let i = start; i < end; i += 1) {
+    // SAFETY: `i < end <= bytes.length`, so the index is in bounds.
     const code = bytes[i] as number;
     out += String.fromCodePoint(
       code >= 0x41 && code <= 0x5a ? code + 0x20 : code
@@ -162,6 +164,7 @@ const HTML_TAGS = [
  */
 const sniffText = (bytes: Uint8Array): string | undefined => {
   let i = matchesAt(bytes, 0, UTF8_BOM) ? UTF8_BOM.length : 0;
+  // SAFETY: the loop guard checks `i < bytes.length` before the index is read.
   while (i < bytes.length && WHITESPACE.has(bytes[i] as number)) {
     i += 1;
   }
@@ -234,7 +237,7 @@ const headBytes = async (
   body: Exclude<Body, ReadableStream<Uint8Array>>,
   n: number
 ): Promise<Uint8Array> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     const buf = new Uint8Array(n);
     const { written } = new TextEncoder().encodeInto(body, buf);
     return buf.subarray(0, written);

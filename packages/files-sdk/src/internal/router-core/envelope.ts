@@ -81,24 +81,30 @@ export const serializeFilesError = (error: FilesError): WireFilesError => ({
   timedOut: error.timedOut,
 });
 
+export interface ErrorResult {
+  status: number;
+  body: WireError;
+}
+
 /** Map any thrown value to a wire error envelope + HTTP status. */
-export const toErrorResult = (
-  err: unknown
-): { status: number; body: WireError } => {
-  if (err instanceof RouterError) {
-    const body: WireError["error"] = { code: err.code, message: err.message };
-    if (err.reason) {
-      body.reason = err.reason;
+export const toErrorResult = (cause: unknown): ErrorResult => {
+  if (cause instanceof RouterError) {
+    const body: WireError["error"] = {
+      code: cause.code,
+      message: cause.message,
+    };
+    if (cause.reason) {
+      body.reason = cause.reason;
     }
-    return { body: { error: body }, status: httpStatus(err.code) };
+    return { body: { error: body }, status: httpStatus(cause.code) };
   }
-  if (err instanceof FilesError) {
-    const code = wireCodeFromFilesError(err.code);
+  if (cause instanceof FilesError) {
+    const code = wireCodeFromFilesError(cause.code);
     return {
-      body: { error: { code, message: err.message } },
+      body: { error: { code, message: cause.message } },
       status: httpStatus(code),
     };
   }
-  const message = err instanceof Error ? err.message : String(err);
+  const message = cause instanceof Error ? cause.message : String(cause);
   return { body: { error: { code: "Provider", message } }, status: 500 };
 };

@@ -56,8 +56,9 @@ const through = async (
   const collected = collectStream(transform.readable);
   const writer = transform.writable.getWriter();
   const pump = (async () => {
-    // The writable's BufferSource excludes SharedArrayBuffer-backed views; our
-    // bodies never share, so assert the ArrayBuffer backing (as encryption does).
+    // SAFETY: the writable's BufferSource excludes SharedArrayBuffer-backed
+    // views; our bodies never share, so the ArrayBuffer backing holds (as in
+    // the encryption plugin).
     await writer.write(data as Uint8Array<ArrayBuffer>);
     await writer.close();
   })();
@@ -185,6 +186,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
         const compressed = new Uint8Array(await file.arrayBuffer());
         let original: Uint8Array;
         try {
+          // SAFETY: `FORMATS` holds exactly the `CompressionFormat` names this
+          // plugin writes, and the `has` check above rejected anything else.
           original = await decompress(compressed, alg as CompressionFormat);
         } catch (error) {
           throw new FilesError(

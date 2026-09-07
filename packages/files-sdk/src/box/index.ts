@@ -36,6 +36,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -164,13 +165,8 @@ interface BoxApiErrorLike {
   };
 }
 
-const isBoxApiErrorLike = (err: unknown): err is BoxApiErrorLike => {
-  if (err === null || typeof err !== "object") {
-    return false;
-  }
-  const info = (err as { responseInfo?: unknown }).responseInfo;
-  return typeof info === "object" && info !== null;
-};
+const isBoxApiErrorLike = (err: unknown): err is BoxApiErrorLike =>
+  isObject(err) && "responseInfo" in err && isObject(err.responseInfo);
 
 const classifyBox = (
   code: string | undefined,
@@ -197,27 +193,30 @@ const classifyBox = (
   return "Provider";
 };
 
-export const mapBoxError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+export const mapBoxError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  if (isBoxApiErrorLike(err)) {
-    const status = err.responseInfo?.statusCode;
-    const code = err.responseInfo?.code ?? err.responseInfo?.body?.code;
+  if (isBoxApiErrorLike(cause)) {
+    const status = cause.responseInfo?.statusCode;
+    const code = cause.responseInfo?.code ?? cause.responseInfo?.body?.code;
     const errorCode = classifyBox(code, status);
     // Use `||` (not `??`) so empty-string messages also fall back — an
     // empty message offers callers nothing useful.
     return new FilesError(
       errorCode,
-      err.message || DEFAULT_MESSAGES[errorCode],
-      err
+      cause.message || DEFAULT_MESSAGES[errorCode],
+      cause
     );
   }
-  const e = err as { message?: string } | null;
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
   return new FilesError(
     "Provider",
-    e?.message || DEFAULT_MESSAGES.Provider,
-    err
+    message || DEFAULT_MESSAGES.Provider,
+    cause
   );
 };
 
@@ -233,9 +232,12 @@ const trimSlashes = (s: string): string => {
   return start === 0 && end === s.length ? s : s.slice(start, end);
 };
 
-const splitKey = (
-  key: string
-): { parents: readonly string[]; leaf: string } => {
+interface SplitKey {
+  parents: readonly string[];
+  leaf: string;
+}
+
+const splitKey = (key: string): SplitKey => {
   const trimmed = trimSlashes(key);
   if (!trimmed) {
     throw new FilesError("Provider", "box: key must not be empty");
@@ -286,7 +288,7 @@ const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
 ): Promise<NormalizedBody> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return {
       contentType: contentTypeHint ?? "text/plain; charset=utf-8",
       data: Buffer.from(body, "utf-8"),
@@ -305,10 +307,9 @@ const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
     return {
       contentType: contentTypeHint ?? OCTET_STREAM,
-      data: Buffer.from(view.buffer, view.byteOffset, view.byteLength),
+      data: Buffer.from(body.buffer, body.byteOffset, body.byteLength),
     };
   }
   if (body instanceof Blob) {
@@ -323,14 +324,22 @@ const normalizeBody = async (
   };
 };
 
+// The SDK deserializes RFC 3339 timestamps into its `DateTime` wrapper
+// (`{ value: Date }`); hand-built items (and older SDKs) carry the string.
+interface BoxDateTime {
+  readonly value: Date;
+}
+
+// The subset of the SDK's `FileFull` (and, for folder listings, `FolderMini` /
+// `WebLink`) the adapter reads. Every SDK item type is assignable to it.
 interface BoxFileLike {
   id?: string;
   name?: string;
   size?: number;
   etag?: string | null;
-  modifiedAt?: string;
-  contentModifiedAt?: string | null;
-  sharedLink?: { url?: string; downloadUrl?: string | null } | undefined;
+  modifiedAt?: string | BoxDateTime | null;
+  contentModifiedAt?: string | BoxDateTime | null;
+  sharedLink?: { url?: string; downloadUrl?: string | null } | null;
 }
 
 interface FileMeta {
@@ -341,7 +350,8 @@ interface FileMeta {
 }
 
 const fileMetaFromBox = (item: BoxFileLike): FileMeta => {
-  const ts = item.modifiedAt ?? item.contentModifiedAt;
+  const raw = item.modifiedAt ?? item.contentModifiedAt;
+  const ts = isString(raw) ? raw : raw?.value;
   const ms = ts ? new Date(ts).getTime() : undefined;
   const meta: FileMeta = {
     size: item.size ?? 0,
@@ -517,7 +527,7 @@ const uploadBigFileVersion = async (
     { parts },
     { digest: sha1Digest(data) }
   );
-  const entry = committed?.entries?.[0] as BoxFileLike | undefined;
+  const entry = committed?.entries?.[0];
   if (!entry) {
     throw new FilesError(
       "Provider",
@@ -529,6 +539,12 @@ const uploadBigFileVersion = async (
 
 const folderCacheKey = (parents: readonly string[]): string =>
   parents.join("/");
+
+// A folder child located by name: the SDK's item `type` discriminant + id.
+interface ChildRef {
+  type: "file" | "folder" | "web_link";
+  id: string;
+}
 
 export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const rootFolderId = opts.rootFolderId ?? DEFAULT_ROOT_FOLDER_ID;
@@ -548,9 +564,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const findChildByName = async (
     folderId: string,
     name: string
-  ): Promise<
-    { type: "file" | "folder" | "web_link"; id: string } | undefined
-  > => {
+  ): Promise<ChildRef | undefined> => {
     let offset = 0;
     const limit = 1000;
     while (true) {
@@ -564,12 +578,8 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       });
       const entries = page.entries ?? [];
       for (const entry of entries) {
-        const e = entry as { id?: string; name?: string; type?: string };
-        if (e.name === name && e.id && e.type) {
-          return {
-            id: e.id,
-            type: e.type as "file" | "folder" | "web_link",
-          };
+        if (entry.name === name && entry.id && entry.type) {
+          return { id: entry.id, type: entry.type };
         }
       }
       if (entries.length < limit) {
@@ -695,7 +705,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     const file = await client.sharedLinksFiles.getSharedLinkForFile(fileId, {
       fields: "shared_link",
     });
-    const link = (file as BoxFileLike).sharedLink;
+    const link = file.sharedLink;
     const out = link?.downloadUrl ?? link?.url;
     if (!out) {
       throw new FilesError(
@@ -713,7 +723,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         { sharedLink: { access: "open" } },
         { fields: "shared_link" }
       );
-      const link = (file as BoxFileLike).sharedLink;
+      const link = file.sharedLink;
       const out = link?.downloadUrl ?? link?.url;
       if (!out) {
         // Box returned the file but no link payload — fall through to a
@@ -767,19 +777,19 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       if (fileId) {
         return await uploadBigFileVersion(client, fileId, leaf, data);
       }
-      return (await client.chunkedUploads.uploadBigFile(
+      return await client.chunkedUploads.uploadBigFile(
         bufferToReadable(data),
         leaf,
         data.byteLength,
         folderId
-      )) as BoxFileLike;
+      );
     }
     if (fileId) {
       const res = await client.uploads.uploadFileVersion(fileId, {
         attributes: { name: leaf },
         file: bufferToReadable(data),
       });
-      const entry = (res.entries ?? [])[0] as BoxFileLike | undefined;
+      const [entry] = res.entries ?? [];
       if (!entry) {
         throw new FilesError(
           "Provider",
@@ -792,7 +802,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       attributes: { name: leaf, parent: { id: folderId } },
       file: bufferToReadable(data),
     });
-    const entry = (res.entries ?? [])[0] as BoxFileLike | undefined;
+    const [entry] = res.entries ?? [];
     if (!entry) {
       throw new FilesError("Provider", "box: uploadFile returned no file");
     }
@@ -895,7 +905,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       try {
         await authHandle.ensureReady();
         const fileId = await resolveFileId(key);
-        const file = (await client.files.getFileById(fileId)) as BoxFileLike;
+        const file = await client.files.getFileById(fileId);
         const meta = fileMetaFromBox(file);
         const range = downloadOpts?.range;
 
@@ -924,7 +934,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
               `box: download fetch failed (${res.status})`
             );
           }
-          const stream = res.body as ReadableStream<Uint8Array>;
+          const stream = res.body;
           return createStoredFile(
             {
               key,
@@ -964,7 +974,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       try {
         await authHandle.ensureReady();
         const fileId = await resolveFileId(key);
-        const file = (await client.files.getFileById(fileId)) as BoxFileLike;
+        const file = await client.files.getFileById(fileId);
         const meta = fileMetaFromBox(file);
         return createStoredFile(
           { key, ...meta },
@@ -1012,22 +1022,25 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         // folded mode only); nested so the loop's branching stays out of
         // `list`.
         const collect = (entry: (typeof entries)[number]) => {
-          const e = entry as BoxFileLike & { type?: string };
-          if (options?.prefix && e.name && !e.name.startsWith(options.prefix)) {
+          if (
+            options?.prefix &&
+            entry.name &&
+            !entry.name.startsWith(options.prefix)
+          ) {
             return;
           }
-          if (folded && e.type === "folder" && e.name) {
-            prefixes.push(`${e.name}/`);
+          if (folded && entry.type === "folder" && entry.name) {
+            prefixes.push(`${entry.name}/`);
             return;
           }
-          if (e.type !== "file" || !e.id || !e.name) {
+          if (entry.type !== "file" || !entry.id || !entry.name) {
             return;
           }
-          fileIdCache.set(e.name, e.id);
+          fileIdCache.set(entry.name, entry.id);
           items.push(
             createStoredFile(
-              { key: e.name, ...fileMetaFromBox(e) },
-              { factory: lazyDownload(e.name), kind: "lazy" }
+              { key: entry.name, ...fileMetaFromBox(entry) },
+              { factory: lazyDownload(entry.name), kind: "lazy" }
             )
           );
         };
@@ -1104,6 +1117,8 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
             bytes.set(chunk, offset);
             offset += chunk.byteLength;
           }
+          // SAFETY: `requirePending()` above throws unless `uploadId` is set
+          // and names a live entry.
           pending.delete(uploadId as string);
           return runUpload(key, bytes, { contentType });
         },
@@ -1115,8 +1130,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 8 * 1024 * 1024,
         probe(): Promise<{ nextOffset: number }> {

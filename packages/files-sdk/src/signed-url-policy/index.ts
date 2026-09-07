@@ -118,6 +118,9 @@ export const signedUrlPolicy = (
     name: "signed-url-policy",
     wrap: handlers({
       signedUploadUrl: (op, next) => {
+        // SAFETY: `Files.signedUploadUrl` requires its options (`expiresIn` is
+        // mandatory), so the op always carries a `SignUploadOptions`; the spread
+        // copies it so the clamps below never mutate the caller's object.
         const opts = { ...op.options } as SignUploadOptions;
         if (maxExpiresIn !== undefined) {
           opts.expiresIn = clampToCap(opts.expiresIn, maxExpiresIn);

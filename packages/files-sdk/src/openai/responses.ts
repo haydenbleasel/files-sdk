@@ -1,3 +1,5 @@
+import type { ZodError } from "zod";
+
 import type { Files } from "../index.js";
 import { resolveApproval } from "../internal/ai-tools/approval.js";
 import type { ApprovalConfig } from "../internal/ai-tools/approval.js";
@@ -15,6 +17,8 @@ import type {
   FileToolName,
   FileWriteToolName,
 } from "../internal/ai-tools/schemas.js";
+import { isString } from "../internal/is.js";
+import type { JsonValue } from "../internal/json.js";
 import type { ResponsesToolOverrides } from "./types.js";
 
 /**
@@ -25,6 +29,7 @@ export interface ResponsesFunctionTool {
   type: "function";
   name: string;
   description: string;
+  // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- mirrors OpenAI's own `FunctionTool.parameters` type so definitions pass straight into `responses.create({ tools })`
   parameters: Record<string, unknown>;
   strict: boolean;
 }
@@ -128,17 +133,23 @@ const TOOL_NAMES: readonly FileToolName[] = [
   "signUploadUrl",
 ];
 
+// SAFETY: `Set#has` is a pure membership test — widening the probe to the
+// set's key type can't yield a false positive, and a hit proves the name is a
+// write-tool name.
 const isWriteTool = (name: string): name is FileWriteToolName =>
   WRITE_TOOL_NAMES.has(name as FileWriteToolName);
 
+/** What any one executor resolves with. */
+type ExecutorOutput = Awaited<ReturnType<(typeof executors)[FileToolName]>>;
+
 type DispatchResult =
-  | { ok: true; output: unknown }
-  | { ok: false; issues: unknown };
+  | { ok: true; output: ExecutorOutput }
+  | { ok: false; issues: ZodError["issues"] };
 
 const dispatch = async (
   files: Files,
   name: FileToolName,
-  args: unknown
+  args: JsonValue
 ): Promise<DispatchResult> => {
   switch (name) {
     case "copyFile": {
@@ -279,23 +290,27 @@ export const createResponsesFileTools = ({
     };
   });
 
-  const includedSet: ReadonlySet<FileToolName> = new Set(includedNames);
+  const includedSet: ReadonlySet<string> = new Set(includedNames);
+  const isIncluded = (name: string): name is FileToolName =>
+    includedSet.has(name);
 
   const execute = async (
     call: FunctionCallItem,
     options: ResponsesExecuteOptions = {}
   ): Promise<FunctionCallOutputItem> => {
-    const wrap = (output: unknown): FunctionCallOutputItem => ({
+    // Executor outputs are JSON-shaped records; a string output (already
+    // text) is passed through as-is so it isn't double-encoded.
+    const wrap = <Output>(output: Output): FunctionCallOutputItem => ({
       call_id: call.call_id,
-      output: typeof output === "string" ? output : JSON.stringify(output),
+      output: isString(output) ? output : JSON.stringify(output),
       type: "function_call_output",
     });
 
-    if (!includedSet.has(call.name as FileToolName)) {
+    if (!isIncluded(call.name)) {
       return wrap({ error: `Unknown tool: ${call.name}` });
     }
 
-    const toolName = call.name as FileToolName;
+    const toolName = call.name;
     if (approvalFor(toolName) && !options.approved) {
       return wrap({
         approvalRequired: true,
@@ -304,13 +319,13 @@ export const createResponsesFileTools = ({
       });
     }
 
-    let parsedArgs: unknown;
+    let parsedArgs: JsonValue;
     try {
       parsedArgs = JSON.parse(call.arguments);
     } catch (error) {
-      return wrap({
-        error: `Invalid JSON in arguments: ${(error as Error).message}`,
-      });
+      // `JSON.parse` only ever throws a SyntaxError.
+      const message = error instanceof Error ? error.message : String(error);
+      return wrap({ error: `Invalid JSON in arguments: ${message}` });
     }
 
     // Strict-mode schemas make optional fields nullable rather than

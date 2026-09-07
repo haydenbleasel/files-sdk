@@ -25,6 +25,8 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import type { JsonObject } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface PocketBaseAdapterOptions {
@@ -105,27 +107,36 @@ const _pocketBaseErrorMapper = makeErrorMapper({
     if (err instanceof ClientResponseError) {
       return {
         ...(err.message && { message: err.message }),
-        ...(typeof err.status === "number" && { status: err.status }),
+        ...(isNumber(err.status) && { status: err.status }),
       };
     }
-    const e = err as { message?: string; status?: number };
+    // Not the SDK's error class (a transport error, or a test double) — read
+    // the same two fields only once their types are established.
+    if (!isObject(err)) {
+      return {};
+    }
+    const message =
+      "message" in err && isString(err.message) ? err.message : undefined;
+    const status =
+      "status" in err && isNumber(err.status) ? err.status : undefined;
     return {
-      ...(e?.message && { message: e.message }),
-      ...(typeof e?.status === "number" && { status: e.status }),
+      ...(message && { message }),
+      ...(status !== undefined && { status }),
     };
   },
   providerLabel: "PocketBase error",
 });
 
-export const mapPocketBaseError = (err: unknown): FilesError =>
-  _pocketBaseErrorMapper(err);
+export const mapPocketBaseError = (cause: unknown): FilesError =>
+  _pocketBaseErrorMapper(cause);
 
-interface FileRecord {
+// A PocketBase record is decoded JSON: `id` plus `created`/`updated` ISO
+// strings, plus the collection-specific fields (the configured key + file
+// fields) whose names are only known at runtime — hence the JSON index
+// signature; reads of those go through `isString`.
+interface FileRecord extends JsonObject {
   id: string;
-  // PocketBase records carry `created`/`updated` ISO strings, plus
-  // collection-specific fields (the configured key + file fields). We don't
-  // know their names at compile time, so widen the rest of the shape.
-  [key: string]: unknown;
+  updated?: string;
 }
 
 const buildClient = (opts: PocketBaseAdapterOptions): PocketBaseClient => {
@@ -142,14 +153,21 @@ const buildClient = (opts: PocketBaseAdapterOptions): PocketBaseClient => {
   return new PocketBaseClient(url);
 };
 
-const isSupportedBody = (body: unknown): body is Body =>
+// Runtime guard for untyped (JS) callers: `Body` is already the static type.
+const isSupportedBody = (body: Body): boolean =>
   // oxlint-disable-next-line sonarjs/expression-complexity -- a flat body-type guard; each instanceof check is a distinct supported Body shape, splitting would just scatter the union
-  typeof body === "string" ||
+  isString(body) ||
   body instanceof Uint8Array ||
   body instanceof ArrayBuffer ||
   ArrayBuffer.isView(body) ||
   body instanceof Blob ||
   body instanceof ReadableStream;
+
+interface UploadBlob {
+  blob: Blob;
+  size: number;
+  contentType: string;
+}
 
 // PocketBase's `create()` accepts FormData with a Blob/File field. SDK-level
 // streaming is not supported, so streamed bodies must be drained up-front.
@@ -157,7 +175,7 @@ const isSupportedBody = (body: unknown): body is Body =>
 const toUploadBlob = async (
   body: Body,
   contentTypeHint?: string
-): Promise<{ blob: Blob; size: number; contentType: string }> => {
+): Promise<UploadBlob> => {
   if (!isSupportedBody(body)) {
     throw new FilesError(
       "Provider",
@@ -167,6 +185,10 @@ const toUploadBlob = async (
   const { data, contentType } = await coreNormalizeBody(body, contentTypeHint);
   const bytes =
     data instanceof ReadableStream ? await collectStream(data) : data;
+  // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7 widened
+  // typed arrays to `ArrayBufferLike`). `bytes` is freshly allocated by
+  // `normalizeBody`/`collectStream` or is the caller's own `Body` view, which
+  // the SDK documents as plain upload bytes.
   const blob = new Blob([bytes as BlobPart], { type: contentType });
   return { blob, contentType, size: bytes.byteLength };
 };
@@ -264,7 +286,7 @@ export const pocketbase = (
 
   const filenameOf = (record: FileRecord): string => {
     const raw = record[fileField];
-    if (typeof raw !== "string" || !raw) {
+    if (!isString(raw) || !raw) {
       throw new FilesError(
         "Provider",
         `pocketbase: record ${record.id} has no file in field "${fileField}".`
@@ -314,7 +336,7 @@ export const pocketbase = (
   const recordToStored = (record: FileRecord, key: string): StoredFile => {
     const filename = filenameOf(record);
     const lastModified = record.updated
-      ? new Date(record.updated as string).getTime()
+      ? new Date(record.updated).getTime()
       : undefined;
     return createStoredFile(
       {
@@ -344,13 +366,11 @@ export const pocketbase = (
         const filename = filenameOf(source);
         const formData = new FormData();
         formData.append(keyField, to);
-        formData.append(
-          fileField,
-          new Blob([bytes as BlobPart], {
-            type: OCTET_STREAM,
-          }),
-          filename
-        );
+        // SAFETY: `bytes` was just read from PocketBase into a fresh
+        // `Uint8Array` over its own `ArrayBuffer`, so the view satisfies
+        // `BlobPart`'s `ArrayBuffer`-backing requirement.
+        const copy = new Blob([bytes as BlobPart], { type: OCTET_STREAM });
+        formData.append(fileField, copy, filename);
         await ensureAuth();
         await records().create(formData, sendOpts(operationOpts?.signal));
       } catch (error) {
@@ -379,10 +399,9 @@ export const pocketbase = (
           downloadOpts?.signal,
           downloadOpts?.range
         );
-        const updated =
-          typeof record.updated === "string"
-            ? new Date(record.updated).getTime()
-            : undefined;
+        const updated = isString(record.updated)
+          ? new Date(record.updated).getTime()
+          : undefined;
         return createStoredFile(
           {
             key,
@@ -441,9 +460,13 @@ export const pocketbase = (
             ...(listOpts?.signal && { signal: listOpts.signal }),
           }
         );
-        const items = response.items.map((record) =>
-          recordToStored(record, (record[keyField] as string) ?? record.id)
-        );
+        const items = response.items.map((record) => {
+          const recordKey = record[keyField];
+          return recordToStored(
+            record,
+            isString(recordKey) ? recordKey : record.id
+          );
+        });
         const nextCursor =
           response.page < response.totalPages
             ? String(response.page + 1)
@@ -527,7 +550,7 @@ export const pocketbase = (
         }
 
         const lastModified = record.updated
-          ? new Date(record.updated as string).getTime()
+          ? new Date(record.updated).getTime()
           : undefined;
         return {
           contentType,

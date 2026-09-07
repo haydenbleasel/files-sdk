@@ -56,6 +56,11 @@ export interface GlobalCliOptions {
   applicationKey?: string;
   projectId?: string;
   keyFilename?: string;
+  /**
+   * Raw adapter options (`--config-json`), passed through to the adapter
+   * factory beneath the typed flags. Its shape is the adapter's to validate.
+   */
+  // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- public `files-sdk/loader` API: an open option bag by design, and consumers may pass non-JSON values (a custom fetch, nested credentials); narrowing it would break them
   configJson?: Record<string, unknown>;
 }
 

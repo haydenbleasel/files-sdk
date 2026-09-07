@@ -19,7 +19,10 @@ const NOW = 2_000_000_000;
 const signing = (maxExpiresIn?: number): Adapter =>
   ({
     ...fakeAdapter({ supportsRange: true }),
-    signedUrl: { supported: true, ...(maxExpiresIn ? { maxExpiresIn } : {}) },
+    signedUrl: {
+      supported: true,
+      ...(maxExpiresIn !== undefined && { maxExpiresIn }),
+    },
   }) as unknown as Adapter;
 
 const throwingSign = (): Adapter =>
@@ -56,7 +59,7 @@ const put = (
   headers: Record<string, string> = {}
 ) =>
   new Request(`${ENDPOINT}?${query}`, {
-    ...(body === null ? {} : { body }),
+    ...(body !== null && { body }),
     headers,
     method: "PUT",
   });

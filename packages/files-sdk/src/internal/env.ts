@@ -9,6 +9,9 @@ export const readEnv = (key: string): string | undefined => {
   }
   // `process` exists but `process.env` may still be missing (some sandboxes
   // synthesize a minimal `process` shim with no `env`).
+  // SAFETY: Node's types declare `env` as always present; this view only
+  // loosens it to optional so the shim case is a checked `?.` read rather
+  // than a crash — nothing is asserted that the runtime object lacks.
   const { env } = process as { env?: Record<string, string | undefined> };
   return env?.[key];
 };

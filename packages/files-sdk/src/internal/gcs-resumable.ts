@@ -29,6 +29,9 @@ const parseResult = async (
   res: Response,
   key: string
 ): Promise<UploadResult> => {
+  // SAFETY: a `200`/`201` from a GCS resumable session URL carries the
+  // finished object's JSON resource; every field read below is optional, so a
+  // sparse body still parses.
   const meta = (await res.json()) as GcsObjectMetadata;
   return {
     contentType: meta.contentType ?? "application/octet-stream",
@@ -44,7 +47,7 @@ export const createGcsResumableDriver = (params: {
   bucket: string;
   key: string;
   opts: ResumableDriverOptions;
-  wrapErr: (err: unknown) => FilesError;
+  wrapErr: (cause: unknown) => FilesError;
 }): OffsetResumableDriver => {
   const { file, bucket, key, opts, wrapErr } = params;
   return createOffsetHttpDriver({

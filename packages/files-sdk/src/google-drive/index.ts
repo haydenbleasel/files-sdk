@@ -25,6 +25,9 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { createOffsetHttpDriver } from "../internal/resumable-offset-http.js";
 import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -152,30 +155,39 @@ const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
-export const mapDriveError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+// googleapis surfaces failures as gaxios errors: `code`/`status` carry the
+// HTTP status and `response.data` is Drive's JSON error body
+// (`{ error: { message } }`). Anything else is read as a plain `message`.
+export const mapDriveError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const e = err as {
-    code?: number | string;
-    message?: string;
-    status?: number;
-    response?: { status?: number; data?: { error?: { message?: string } } };
-  };
+  const source = isObject(cause) ? cause : {};
+  const response =
+    "response" in source && isObject(source.response) ? source.response : {};
   let status: number | undefined;
-  if (typeof e?.code === "number") {
-    status = e.code;
-  } else if (typeof e?.status === "number") {
-    ({ status } = e);
-  } else if (typeof e?.response?.status === "number") {
-    ({ status } = e.response);
+  if ("code" in source && isNumber(source.code)) {
+    status = source.code;
+  } else if ("status" in source && isNumber(source.status)) {
+    ({ status } = source);
+  } else if ("status" in response && isNumber(response.status)) {
+    ({ status } = response);
   }
   const errorCode = classifyDriveError(status);
+  const data =
+    "data" in response && isJsonObject(response.data) ? response.data : {};
+  const nestedMessage = isJsonObject(data.error)
+    ? data.error.message
+    : undefined;
+  const ownMessage =
+    "message" in source && isString(source.message)
+      ? source.message
+      : undefined;
   const message =
-    e?.response?.data?.error?.message ??
-    e?.message ??
+    (isString(nestedMessage) ? nestedMessage : undefined) ??
+    ownMessage ??
     DEFAULT_MESSAGES[errorCode];
-  return new FilesError(errorCode, message, err);
+  return new FilesError(errorCode, message, cause);
 };
 
 // Drive's `q` syntax: backslash escapes single quote.
@@ -245,7 +257,7 @@ const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
 ): Promise<NormalizedBody> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     const buf = Buffer.from(body, "utf-8");
     return {
       contentLength: buf.byteLength,
@@ -270,8 +282,7 @@ const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    const buf = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+    const buf = Buffer.from(body.buffer, body.byteOffset, body.byteLength);
     return {
       contentLength: buf.byteLength,
       contentType: contentTypeHint ?? OCTET_STREAM,
@@ -288,7 +299,7 @@ const normalizeBody = async (
   }
   return {
     contentType: contentTypeHint ?? OCTET_STREAM,
-    stream: Readable.fromWeb(body as never),
+    stream: toNodeReadable(body),
   };
 };
 
@@ -301,7 +312,13 @@ const signalOpts = (
   signal: AbortSignal | undefined
 ): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
 
-const toUint8 = (data: unknown): Uint8Array => {
+// What `responseType: "arraybuffer"` hands back across runtimes: an
+// ArrayBuffer in browsers/Workers, a Buffer (or other view) under Node, or —
+// from a custom transport — text. `toUint8` is the runtime check that the
+// payload is one of these; anything else is a provider error.
+type DriveMediaPayload = ArrayBuffer | ArrayBufferView | string;
+
+const toUint8 = (data: DriveMediaPayload): Uint8Array => {
   if (data instanceof Uint8Array) {
     return data;
   }
@@ -312,10 +329,9 @@ const toUint8 = (data: unknown): Uint8Array => {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   if (ArrayBuffer.isView(data)) {
-    const v = data as ArrayBufferView;
-    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
-  if (typeof data === "string") {
+  if (isString(data)) {
     return new TextEncoder().encode(data);
   }
   throw new FilesError(
@@ -323,6 +339,9 @@ const toUint8 = (data: unknown): Uint8Array => {
     "google-drive: unexpected response payload shape"
   );
 };
+
+// The request-body shape the generated Drive types accept for appProperties.
+type AppProperties = NonNullable<drive_v3.Schema$File["appProperties"]>;
 
 // Drive MERGES appProperties on update — a key is only removed by sending it
 // as `null` — so an overwrite that sets fewer metadata keys than the previous
@@ -332,34 +351,46 @@ const toUint8 = (data: unknown): Uint8Array => {
 const overwriteProps = (
   next: Record<string, string>,
   existing: Record<string, string>
-): Record<string, string> => {
-  const cleared: Record<string, string | null> = {};
+) => {
+  const merged: Record<string, string | null> = {};
   for (const k of Object.keys(existing)) {
     if (!(k in next)) {
-      cleared[k] = null;
+      merged[k] = null;
     }
   }
-  // The generated Drive types declare appProperties values as `string`, but
-  // the API documents `null` as the clear-on-update sentinel.
-  return { ...cleared, ...next } as Record<string, string>;
+  Object.assign(merged, next);
+  // SAFETY: the generated Drive types declare appProperties values as
+  // `string`, but the API documents `null` as the clear-on-update sentinel,
+  // so the request body legitimately carries the nulls the type forbids.
+  return merged as AppProperties;
 };
 
-const fileToStoredMeta = (
-  file: drive_v3.Schema$File
-): {
+interface StoredMeta {
   size: number;
   type: string;
   etag?: string;
   lastModified?: number;
   metadata?: Record<string, string>;
-} => {
-  const props = (file.appProperties ?? {}) as Record<string, string>;
+}
+
+// The subset of a Drive `files` resource the resumable finalize response
+// carries (restricted to the `fields` requested at session initiation).
+interface ResumableUploadResult {
+  id?: string;
+  size?: string | number;
+  md5Checksum?: string;
+  mimeType?: string;
+  modifiedTime?: string;
+}
+
+const fileToStoredMeta = (file: drive_v3.Schema$File): StoredMeta => {
+  const props: Record<string, string> = file.appProperties ?? {};
   const userMeta: Record<string, string> = {};
   for (const [k, v] of Object.entries(props)) {
     if (k.startsWith(RESERVED_METADATA_PREFIX)) {
       continue;
     }
-    if (typeof v === "string") {
+    if (isString(v)) {
       userMeta[k] = v;
     }
   }
@@ -376,6 +407,14 @@ const fileToStoredMeta = (
 };
 
 type AuthHandle = JWT | GoogleAuth | OAuth2Client;
+
+// Query params every Drive call carries so Shared Drive items are visible.
+interface SharedDriveParams {
+  supportsAllDrives: true;
+  includeItemsFromAllDrives: true;
+  corpora?: string;
+  driveId?: string;
+}
 
 const hasEnvAuth = (): boolean => {
   const email = readEnv("GOOGLE_DRIVE_CLIENT_EMAIL");
@@ -460,6 +499,10 @@ export const googleDrive = (
       throw new FilesError("Provider", "google-drive: failed to build auth");
     }
     authForTokens = built;
+    // SAFETY: `@googleapis/drive` accepts a google-auth-library
+    // `JWT`/`GoogleAuth`/`OAuth2Client` as `auth`, but resolves its own nested
+    // copy of google-auth-library, so the identical classes are nominally
+    // distinct to TS (`#private` members) and no direct assertion is comparable.
     driveClient = drive({ auth: built as never, version: "v3" });
   }
 
@@ -474,12 +517,7 @@ export const googleDrive = (
     opts.fileIdCacheSize ?? DEFAULT_CACHE_SIZE
   );
 
-  const sharedDriveParams: {
-    supportsAllDrives: true;
-    includeItemsFromAllDrives: true;
-    corpora?: string;
-    driveId?: string;
-  } = {
+  const sharedDriveParams: SharedDriveParams = {
     includeItemsFromAllDrives: true,
     supportsAllDrives: true,
     ...(driveId && { corpora: "drive", driveId }),
@@ -503,7 +541,7 @@ export const googleDrive = (
     const q = `appProperties has { key='${KEY_PROP}' and value='${escapeQueryValue(key)}' } and '${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
     let res: { data: drive_v3.Schema$FileList };
     try {
-      res = (await driveClient.files.list(
+      res = await driveClient.files.list(
         {
           ...sharedDriveParams,
           fields: "files(id, appProperties)",
@@ -511,7 +549,7 @@ export const googleDrive = (
           q,
         },
         signalOpts(signal)
-      )) as { data: drive_v3.Schema$FileList };
+      );
     } catch (error) {
       throw mapDriveError(error);
     }
@@ -534,7 +572,7 @@ export const googleDrive = (
     }
     fileIdCache.set(key, id);
     return {
-      appProperties: (files[0]?.appProperties ?? {}) as Record<string, string>,
+      appProperties: files[0]?.appProperties ?? {},
       id,
     };
   };
@@ -567,7 +605,11 @@ export const googleDrive = (
       { ...sharedDriveParams, alt: "media", fileId },
       { responseType: "arraybuffer" }
     );
-    return toUint8(res.data as unknown);
+    // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
+    // resolves `data` with the file's bytes, not the `Schema$File` the
+    // generated types declare; `toUint8` checks the shape at runtime.
+    const payload = res.data as DriveMediaPayload;
+    return toUint8(payload);
   };
 
   return {
@@ -667,12 +709,14 @@ export const googleDrive = (
             assertRangeHonored(mediaRes.status, PROVIDER);
           }
           const m = fileToStoredMeta(metaRes.data);
-          const node = mediaRes.data as unknown as Readable;
+          // SAFETY: with `alt: "media"` + `responseType: "stream"` gaxios
+          // resolves `data` with a Node Readable of the file's bytes, not the
+          // `Schema$File` the generated types declare.
+          const node = mediaRes.data as Readable;
           return createStoredFile(
             { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
-              factory: () =>
-                Readable.toWeb(node) as unknown as ReadableStream<Uint8Array>,
+              factory: () => toWebStream(node),
               kind: "stream",
             }
           );
@@ -699,7 +743,11 @@ export const googleDrive = (
           assertRangeHonored(mediaRes.status, PROVIDER);
         }
         const m = fileToStoredMeta(metaRes.data);
-        const bytes = toUint8(mediaRes.data as unknown);
+        // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
+        // resolves `data` with the file's bytes, not the `Schema$File` the
+        // generated types declare; `toUint8` checks the shape at runtime.
+        const payload = mediaRes.data as DriveMediaPayload;
+        const bytes = toUint8(payload);
         return createStoredFile(
           { key, ...m, size: bytes.byteLength },
           { data: bytes, kind: "buffer" }
@@ -759,7 +807,7 @@ export const googleDrive = (
           );
         };
         const keyOf = (f: drive_v3.Schema$File): string | undefined =>
-          (f.appProperties as Record<string, string> | undefined)?.[KEY_PROP];
+          f.appProperties?.[KEY_PROP];
         // Drive stores every object flat under rootFolderId, keyed by the
         // fsdkKey appProperty (the Drive `name` is just the leaf). It can't
         // sort/group by appProperty, so gather all keys and synthesize the
@@ -770,7 +818,7 @@ export const googleDrive = (
           let pageToken: string | undefined;
           do {
             // eslint-disable-next-line no-await-in-loop -- pagination: each page uses the pageToken from the previous response
-            const res = (await driveClient.files.list(
+            const res = await driveClient.files.list(
               {
                 ...sharedDriveParams,
                 fields: `nextPageToken, files(${FILE_FIELDS})`,
@@ -778,7 +826,7 @@ export const googleDrive = (
                 q,
               },
               signalOpts(options?.signal)
-            )) as { data: drive_v3.Schema$FileList };
+            );
             for (const f of res.data.files ?? []) {
               const key = keyOf(f);
               if (key) {
@@ -794,6 +842,8 @@ export const googleDrive = (
             ...(options?.prefix !== undefined && { prefix: options.prefix }),
             ...(options?.cursor !== undefined && { cursor: options.cursor }),
           });
+          // SAFETY: `page.items` is a subset of `sortedKeys`, which are exactly
+          // `fileByKey`'s keys, so every lookup hits.
           return {
             items: page.items.map((key) =>
               toItem(fileByKey.get(key) as drive_v3.Schema$File, key)
@@ -805,7 +855,7 @@ export const googleDrive = (
         if (options?.delimiter) {
           return await listFolded(options.delimiter);
         }
-        const res = (await driveClient.files.list(
+        const res = await driveClient.files.list(
           {
             ...sharedDriveParams,
             fields: `nextPageToken, files(${FILE_FIELDS})`,
@@ -814,7 +864,7 @@ export const googleDrive = (
             q,
           },
           signalOpts(options?.signal)
-        )) as { data: drive_v3.Schema$FileList };
+        );
         const driveFiles = res.data.files ?? [];
         const items: StoredFile[] = [];
         for (const f of driveFiles) {
@@ -849,13 +899,8 @@ export const googleDrive = (
               "google-drive: resumable uploads require `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
             );
           }
-          const tokenResp = await (
-            authForTokens as {
-              getAccessToken: () => Promise<string | { token?: string | null }>;
-            }
-          ).getAccessToken();
-          const token =
-            typeof tokenResp === "string" ? tokenResp : tokenResp?.token;
+          const tokenResp = await authForTokens.getAccessToken();
+          const token = isString(tokenResp) ? tokenResp : tokenResp?.token;
           if (!token) {
             throw new FilesError(
               "Provider",
@@ -867,7 +912,7 @@ export const googleDrive = (
           const fields = `&fields=${encodeURIComponent(
             "id,size,md5Checksum,mimeType,modifiedTime"
           )}`;
-          const nextProps: Record<string, string> = {
+          const nextProps = {
             [KEY_PROP]: key,
             [CONTENT_TYPE_PROP]: meta.contentType,
             ...(resumableOpts.cacheControl && {
@@ -927,13 +972,10 @@ export const googleDrive = (
           };
         },
         async parseResult(res) {
-          const data = (await res.json()) as {
-            id?: string;
-            size?: string | number;
-            md5Checksum?: string;
-            mimeType?: string;
-            modifiedTime?: string;
-          };
+          // SAFETY: `Response#json()` is untyped; Drive's resumable finalize
+          // response is a `files` resource restricted to the `fields` requested
+          // at initiation, and every field is read optional-guarded.
+          const data = (await res.json()) as ResumableUploadResult;
           return {
             contentType: data.mimeType ?? contentType,
             ...(data.md5Checksum && { etag: data.md5Checksum }),
@@ -982,23 +1024,17 @@ export const googleDrive = (
           "google-drive: signedUploadUrl() requires `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
         );
       }
-      const tokenResp = await (
-        authForTokens as {
-          getAccessToken: () => Promise<string | { token?: string | null }>;
-        }
-      ).getAccessToken();
-      const token =
-        typeof tokenResp === "string" ? tokenResp : tokenResp?.token;
+      const tokenResp = await authForTokens.getAccessToken();
+      const token = isString(tokenResp) ? tokenResp : tokenResp?.token;
       if (!token) {
         throw new FilesError(
           "Provider",
           "google-drive: failed to mint access token for resumable upload session"
         );
       }
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=UTF-8",
-      };
+      const headers: Record<string, string> = {};
+      headers.Authorization = `Bearer ${token}`;
+      headers["Content-Type"] = "application/json; charset=UTF-8";
       if (signOpts.contentType) {
         headers["X-Upload-Content-Type"] = signOpts.contentType;
       }
@@ -1062,7 +1098,7 @@ export const googleDrive = (
       assertNoReservedMetadata(options?.metadata);
       try {
         const normalized = await normalizeBody(body, options?.contentType);
-        const appProperties: Record<string, string> = {
+        const appProperties = {
           [KEY_PROP]: key,
           [CONTENT_TYPE_PROP]: normalized.contentType,
           ...(options?.cacheControl && {

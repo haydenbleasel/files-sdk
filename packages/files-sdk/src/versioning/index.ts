@@ -5,6 +5,7 @@ import type {
   FilesPlugin,
   ListOptions,
   ListResult,
+  OperationResult,
   PluginNext,
   StoredFile,
 } from "../index.js";
@@ -377,10 +378,14 @@ export const versioning = (
     return files.head(key);
   };
 
+  // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
+  // re-narrows the result per call; every branch below resolves with the value
+  // the matching verb's `next` produces (or a same-typed filtered listing), so
+  // the non-generic function satisfies the generic `wrap` at each verb.
   const wrap = (async (
     op: FilesOperation,
     next: PluginNext
-  ): Promise<unknown> => {
+  ): Promise<OperationResult<FilesOperation>> => {
     if (isConditionalOperation(op) && op.kind !== "download") {
       rejectConditional(
         op,

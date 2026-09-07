@@ -75,14 +75,14 @@ export class FilesError extends Error {
   }
 
   /**
-   * Re-raise `err` as the outcome of a conditional mutation that already
+   * Re-raise `cause` as the outcome of a conditional mutation that already
    * committed: same code, message, and flags, with {@link applied} set (and
    * {@link appliedEtag} for uploads). The original error is kept as `cause`
    * so nothing about the failure is lost.
    */
-  static applied(err: unknown, appliedEtag?: string): FilesError {
-    const wrapped = FilesError.wrap(err);
-    return new FilesError(wrapped.code, wrapped.message, err, {
+  static applied(cause: unknown, appliedEtag?: string): FilesError {
+    const wrapped = FilesError.wrap(cause);
+    return new FilesError(wrapped.code, wrapped.message, cause, {
       aborted: wrapped.aborted,
       applied: true,
       ...(appliedEtag !== undefined && { appliedEtag }),
@@ -92,13 +92,13 @@ export class FilesError extends Error {
   }
 
   static wrap(
-    err: unknown,
+    cause: unknown,
     fallbackCode: FilesErrorCode = "Provider"
   ): FilesError {
-    if (err instanceof FilesError) {
-      return err;
+    if (cause instanceof FilesError) {
+      return cause;
     }
-    const message = err instanceof Error ? err.message : String(err);
-    return new FilesError(fallbackCode, message, err);
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return new FilesError(fallbackCode, message, cause);
   }
 }

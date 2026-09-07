@@ -18,6 +18,9 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonArray, isJsonObject } from "../internal/json.js";
+import type { JsonValue } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface UploadThingAdapterOptions {
@@ -108,12 +111,11 @@ interface DecodedToken {
 const decodeToken = (token: string): DecodedToken => {
   let json: string;
   try {
-    // Browser-safe base64 decode; works in Node 16+ and Workers.
-    json =
-      typeof atob === "function"
-        ? atob(token)
-        : // oxlint-disable-next-line @typescript-oxlint/no-explicit-any
-          (globalThis as any).Buffer.from(token, "base64").toString("utf-8");
+    // Browser-safe base64 decode; works in Node 16+ and Workers. Older Node
+    // has no `atob`, so fall back to its `Buffer` global there.
+    json = isFunction(globalThis.atob)
+      ? globalThis.atob(token)
+      : Buffer.from(token, "base64").toString("utf-8");
   } catch (error) {
     throw new FilesError(
       "Provider",
@@ -121,7 +123,7 @@ const decodeToken = (token: string): DecodedToken => {
       error
     );
   }
-  let parsed: unknown;
+  let parsed: JsonValue;
   try {
     parsed = JSON.parse(json);
   } catch (error) {
@@ -132,21 +134,26 @@ const decodeToken = (token: string): DecodedToken => {
     );
   }
   if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    typeof (parsed as DecodedToken).apiKey !== "string" ||
-    typeof (parsed as DecodedToken).appId !== "string"
+    !isJsonObject(parsed) ||
+    !isString(parsed.apiKey) ||
+    !isString(parsed.appId)
   ) {
     throw new FilesError(
       "Provider",
       "uploadthing: UPLOADTHING_TOKEN missing apiKey or appId"
     );
   }
-  return parsed as DecodedToken;
+  return {
+    apiKey: parsed.apiKey,
+    appId: parsed.appId,
+    ...(isJsonArray(parsed.regions) && {
+      regions: parsed.regions.filter(isString),
+    }),
+  };
 };
 
 const sizeOf = (body: Body): number | undefined => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body).byteLength;
   }
   if (body instanceof Uint8Array) {
@@ -174,10 +181,13 @@ const bodyToBlob = async (
       ? new Blob([body], { type })
       : body;
   }
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new Blob([body], { type });
   }
   if (body instanceof Uint8Array) {
+    // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+    // widened typed arrays to `ArrayBufferLike`); a `Body` view is the
+    // caller's plain upload bytes, which the SDK documents as never shared.
     return new Blob([body as BlobPart], { type });
   }
   if (body instanceof ArrayBuffer) {
@@ -186,15 +196,18 @@ const bodyToBlob = async (
   if (ArrayBuffer.isView(body)) {
     // Copy the view's bytes into a fresh Uint8Array so we don't accidentally
     // include unrelated bytes from the underlying ArrayBuffer.
-    const view = body as ArrayBufferView;
     const bytes = new Uint8Array(
-      view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+      body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
     );
+    // SAFETY: `slice` preserves the backing kind and a `Body` view is plain
+    // (never shared) memory, so the copy satisfies `BlobPart`.
     return new Blob([bytes as BlobPart], { type });
   }
   // ReadableStream — drain into a single buffer. UploadThing's uploadFiles
   // requires a Blob, so streaming uploads aren't possible without buffering.
   const collected = new Uint8Array(await new Response(body).arrayBuffer());
+  // SAFETY: `Response#arrayBuffer` always allocates a plain `ArrayBuffer`, so
+  // the view over it satisfies `BlobPart`.
   return new Blob([collected as BlobPart], { type });
 };
 
@@ -229,18 +242,26 @@ const classifyUploadThingError = (
   return "Provider";
 };
 
-const mapUploadThingError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+const mapUploadThingError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const e = err as {
-    name?: string;
-    message?: string;
-    status?: number;
-    code?: string;
-  };
-  const code = classifyUploadThingError(e?.status, e?.message ?? "", e?.code);
-  return new FilesError(code, e?.message ?? `uploadthing error (${code})`, err);
+  // `UploadThingError` carries `code` + optional HTTP `status`; transport
+  // errors may carry only a message. Read each field once its type is known.
+  const status =
+    isObject(cause) && "status" in cause && isNumber(cause.status)
+      ? cause.status
+      : undefined;
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
+  const utCode =
+    isObject(cause) && "code" in cause && isString(cause.code)
+      ? cause.code
+      : undefined;
+  const code = classifyUploadThingError(status, message ?? "", utCode);
+  return new FilesError(code, message ?? `uploadthing error (${code})`, cause);
 };
 
 const hex = (bytes: Uint8Array): string => {
@@ -530,10 +551,9 @@ export const uploadthing = (
       // for one — note that this filters within a page, not across the
       // whole bucket, so a too-narrow prefix on a non-prefix-clustered
       // store will under-return. Document this limitation in the README.
-      const filtered = options?.prefix
-        ? result.files.filter((f) =>
-            (f.customId ?? f.key).startsWith(options.prefix as string)
-          )
+      const prefix = options?.prefix;
+      const filtered = prefix
+        ? result.files.filter((f) => (f.customId ?? f.key).startsWith(prefix))
         : result.files;
       const items: StoredFile[] = filtered.map((f) => {
         // We always uploaded with customId = user key, so customId is the

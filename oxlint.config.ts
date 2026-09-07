@@ -1,4 +1,5 @@
 import { defineConfig } from "oxlint";
+import antiSlop from "ultracite/oxlint/anti-slop";
 import astro from "ultracite/oxlint/astro";
 import core from "ultracite/oxlint/core";
 import react from "ultracite/oxlint/react";
@@ -10,7 +11,7 @@ import react from "ultracite/oxlint/react";
 // presentational React trees (Remotion videos + the web app / shadcn registry),
 // which trip a batch of opinionated react rules by their nature.
 export default defineConfig({
-  extends: [core, react, astro],
+  extends: [core, react, astro, antiSlop],
   ignorePatterns: [
     "apps/web/components/ui",
     "apps/web/lib/utils.ts",
@@ -39,6 +40,22 @@ export default defineConfig({
       // Adapter tests stub an SDK's client + error classes side by side.
       files: ["packages/files-sdk/test/**"],
       rules: {
+        // anti-slop's type-evidence rules assume production data flow: parse
+        // at the boundary, keep the inferred type, justify every assertion.
+        // Test doubles are the opposite by design — a bare object cast to
+        // `Files`, a fake SDK client that only implements the two methods
+        // under test, an `unknown`-typed spy argument — so these rules would
+        // demand ~2000 `SAFETY:` comments on mocks. The behavioural rules
+        // (empty-object spreads, module mocking, Reflect access, `shape`
+        // names) stay on; `packages/files-sdk/src` is held to the full set.
+        "anti-slop/no-chained-type-assertions": "off",
+        "anti-slop/no-known-value-widening": "off",
+        "anti-slop/no-runtime-typeof": "off",
+        "anti-slop/no-unknown-parameters": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/no-unsafe-dictionary-type": "off",
+        "anti-slop/no-widen-then-assert": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off",
         "max-classes-per-file": "off",
       },
     },

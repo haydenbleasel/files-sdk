@@ -163,7 +163,7 @@ const s3Compatible = (
       ],
     },
   ],
-  ...(options.notes ? { notes: options.notes } : {}),
+  ...(options.notes && { notes: options.notes }),
 });
 
 /**
@@ -1643,14 +1643,18 @@ export const PROVIDERS = {
 /** Slug of any provider in the catalog. */
 export type ProviderSlug = keyof typeof PROVIDERS;
 
+/** Whether `slug` names a provider in the catalog (own keys only). */
+const isProviderSlug = (slug: string): slug is ProviderSlug =>
+  Object.hasOwn(PROVIDERS, slug);
+
 /** All provider slugs, sorted alphabetically. */
-export const PROVIDER_NAMES = Object.keys(
-  PROVIDERS
-).toSorted() as ProviderSlug[];
+export const PROVIDER_NAMES = Object.keys(PROVIDERS)
+  .filter(isProviderSlug)
+  .toSorted();
 
 /** Look up a provider by slug. Returns `undefined` for unknown slugs. */
 export const getProvider = (slug: string): Provider | undefined =>
-  (PROVIDERS as Record<string, Provider>)[slug];
+  isProviderSlug(slug) ? PROVIDERS[slug] : undefined;
 
 /**
  * Every env var a provider references, flattened across required, all

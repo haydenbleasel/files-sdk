@@ -20,6 +20,7 @@ import type {
   UploadResult,
 } from "../index.js";
 import { FilesError } from "./errors.js";
+import { isObject, isString } from "./is.js";
 import {
   abortError,
   canRetry,
@@ -135,8 +136,9 @@ interface ControlInternals {
 const internals = new WeakMap<UploadControl, ControlInternals>();
 
 const stateOf = (control: UploadControl): ControlInternals =>
-  // Only ever called with controls this module constructed, so the entry
-  // always exists.
+  // SAFETY: the `UploadControl` constructor registers every instance in
+  // `internals`, and this is only ever called with such an instance, so the
+  // entry always exists.
   internals.get(control) as ControlInternals;
 
 /**
@@ -239,7 +241,7 @@ export class UploadControl {
    * To cancel but *keep* the session for a later resume, abort via
    * {@link OperationOptions.signal} instead.
    */
-  async abort(reason?: unknown): Promise<void> {
+  async abort(cause?: unknown): Promise<void> {
     const state = stateOf(this);
     if (state.status === "completed" || state.status === "aborted") {
       return;
@@ -251,7 +253,7 @@ export class UploadControl {
     for (const wake of waiters) {
       wake();
     }
-    state.abortController.abort(abortError(reason));
+    state.abortController.abort(abortError(cause));
     if (state.discard) {
       try {
         await state.discard();
@@ -354,7 +356,7 @@ const bufferSource = (bytes: Uint8Array): ByteSource => ({
  * be re-read, which both pause/resume and cross-process resume require.
  */
 export const toByteSource = (body: Body): ByteSource => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return bufferSource(new TextEncoder().encode(body));
   }
   if (body instanceof Uint8Array) {
@@ -383,7 +385,7 @@ const inferContentType = (body: Body, hint?: string): string => {
   if (hint) {
     return hint;
   }
-  if (typeof body === "string") {
+  if (isString(body)) {
     return "text/plain; charset=utf-8";
   }
   if (body instanceof Blob && body.type) {
@@ -414,8 +416,7 @@ const DEFAULT_CONCURRENCY = 4;
 const resolveConcurrency = (
   multipart: boolean | MultipartOptions | undefined
 ): number => {
-  const concurrency =
-    typeof multipart === "object" ? multipart.concurrency : undefined;
+  const concurrency = isObject(multipart) ? multipart.concurrency : undefined;
   return concurrency && concurrency > 0 ? concurrency : DEFAULT_CONCURRENCY;
 };
 
@@ -552,12 +553,14 @@ const runParts = async (
       if (partNumber === undefined) {
         return;
       }
+      // A `const` copy so the narrowing survives into the `attempt` closure.
+      const part = partNumber;
       // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-defer-await -- pauseGate is a synchronization barrier that must block before the failure check; concurrency comes from multiple workers
       await pauseGate(state, runAbort.signal);
       if (failure !== undefined) {
         return;
       }
-      const start = (partNumber - 1) * partSize;
+      const start = (part - 1) * partSize;
       try {
         // eslint-disable-next-line no-await-in-loop -- slice each part before uploading it, within this worker's serial loop.
         const data = await source.slice(
@@ -569,7 +572,7 @@ const runParts = async (
           (signal) =>
             driver.uploadPart({
               data,
-              partNumber: partNumber as number,
+              partNumber: part,
               ...(signal && { signal }),
             }),
           opts,

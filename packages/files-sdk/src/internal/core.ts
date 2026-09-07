@@ -18,6 +18,7 @@ import type {
 } from "../index.js";
 import { FilesError } from "./errors.js";
 import type { ProviderFilesErrorCode } from "./errors.js";
+import { isObject, isString } from "./is.js";
 
 // =============================================================================
 // URL helpers
@@ -225,7 +226,7 @@ export const normalizeBody = async (
   body: Body,
   contentTypeHint?: string
 ): Promise<NormalizedBody> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     const data = new TextEncoder().encode(body);
     return {
       contentLength: data.byteLength,
@@ -249,8 +250,7 @@ export const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const data = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     return {
       contentLength: data.byteLength,
       contentType: contentTypeHint ?? DEFAULT_BINARY_CONTENT_TYPE,
@@ -309,7 +309,7 @@ export interface ErrorMapperConfig {
    * `$metadata.httpStatusCode`, Azure uses `details.errorCode`, Supabase
    * stringifies its code under `statusCode`) — encode that variance here.
    */
-  extract: (err: unknown) => ErrorExtract;
+  extract: (cause: unknown) => ErrorExtract;
 }
 
 const NOT_FOUND_STATUS = new Set([404]);
@@ -343,9 +343,9 @@ const classify = (
 };
 
 /**
- * Build a `(err) => FilesError` mapper from a per-provider config. The
+ * Build a `(cause) => FilesError` mapper from a per-provider config. The
  * returned function:
- * - returns `err` unchanged if it's already a {@link FilesError} (so
+ * - returns `cause` unchanged if it's already a {@link FilesError} (so
  *   adapters can re-throw their own programmatic errors without
  *   re-wrapping)
  * - extracts code/status/message via `config.extract`
@@ -355,20 +355,20 @@ const classify = (
  */
 export const makeErrorMapper = (
   config: ErrorMapperConfig
-): ((err: unknown) => FilesError) => {
+): ((cause: unknown) => FilesError) => {
   const fallback: Record<ProviderFilesErrorCode, string> = {
     Conflict: "Conflict",
     NotFound: "Not found",
     Provider: config.providerLabel,
     Unauthorized: "Unauthorized",
   };
-  return (err) => {
-    if (err instanceof FilesError) {
-      return err;
+  return (cause) => {
+    if (cause instanceof FilesError) {
+      return cause;
     }
-    const { code, status, message } = config.extract(err);
+    const { code, status, message } = config.extract(cause);
     const errorCode = classify(config, code, status);
-    return new FilesError(errorCode, message ?? fallback[errorCode], err);
+    return new FilesError(errorCode, message ?? fallback[errorCode], cause);
   };
 };
 
@@ -380,9 +380,9 @@ export const makeErrorMapper = (
  * present vs missing for the adapter. Successful probes return `true`;
  * mapped `NotFound` errors return `false`; every other failure is rethrown.
  */
-export const existsByProbe = async (
-  probe: () => Promise<unknown>,
-  mapError: (err: unknown) => FilesError
+export const existsByProbe = async <Probe>(
+  probe: () => Promise<Probe>,
+  mapError: (cause: unknown) => FilesError
 ): Promise<boolean> => {
   try {
     await probe();
@@ -435,7 +435,7 @@ export const collectStream = async (
  * consuming the body.
  */
 export const byteLengthOf = (body: Body): number | undefined => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return new TextEncoder().encode(body).byteLength;
   }
   if (body instanceof ArrayBuffer) {
@@ -517,8 +517,7 @@ const GCS_RESUMABLE_CHUNK_MULTIPLE = 256 * 1024;
 export const resumableChunkSize = (
   multipart: boolean | MultipartOptions | undefined
 ): number | undefined => {
-  const partSize =
-    typeof multipart === "object" ? multipart.partSize : undefined;
+  const partSize = isObject(multipart) ? multipart.partSize : undefined;
   if (partSize === undefined) {
     return;
   }
@@ -528,11 +527,20 @@ export const resumableChunkSize = (
   return Math.max(rounded, GCS_RESUMABLE_CHUNK_MULTIPLE);
 };
 
+/**
+ * Worker-pool width for a bulk operation: the caller's `concurrency` when it
+ * is a positive integer, else 8.
+ */
+const poolSize = (concurrency: number | undefined): number =>
+  concurrency !== undefined && Number.isInteger(concurrency) && concurrency > 0
+    ? concurrency
+    : 8;
+
 export const deleteManyWithFallback = async (
   keys: string[],
   remove: (key: string) => Promise<void>,
   opts?: DeleteManyOptions,
-  mapError: (error: unknown) => FilesError = FilesError.wrap
+  mapError: (cause: unknown) => FilesError = FilesError.wrap
 ): Promise<DeleteManyResult> => {
   const deleted: string[] = [];
   const errors: DeleteManyError[] = [];
@@ -555,10 +563,7 @@ export const deleteManyWithFallback = async (
     return { deleted };
   }
 
-  const concurrency =
-    Number.isInteger(opts?.concurrency) && (opts?.concurrency ?? 0) > 0
-      ? (opts?.concurrency as number)
-      : 8;
+  const concurrency = poolSize(opts?.concurrency);
   const success = Array.from<boolean>({ length: keys.length }).fill(false);
   const failed = Array.from<DeleteManyError | undefined>({
     length: keys.length,
@@ -623,7 +628,7 @@ export const mapMany = async <Item, Out>(
   keyOf: (item: Item) => string,
   run: (item: Item) => Promise<Out>,
   opts?: BulkOptions,
-  mapError: (error: unknown) => FilesError = FilesError.wrap
+  mapError: (cause: unknown) => FilesError = FilesError.wrap
 ): Promise<{ results: Out[]; errors: BulkError[] }> => {
   const results: Out[] = [];
   const errors: BulkError[] = [];
@@ -645,10 +650,7 @@ export const mapMany = async <Item, Out>(
     return { errors, results };
   }
 
-  const concurrency =
-    Number.isInteger(opts?.concurrency) && (opts?.concurrency ?? 0) > 0
-      ? (opts?.concurrency as number)
-      : 8;
+  const concurrency = poolSize(opts?.concurrency);
   const success = Array.from<boolean>({ length: items.length }).fill(false);
   const succeeded = Array.from<Out | undefined>({ length: items.length });
   const failed = Array.from<BulkError | undefined>({ length: items.length });
@@ -679,6 +681,9 @@ export const mapMany = async <Item, Out>(
 
   for (const [current] of items.entries()) {
     if (success[current]) {
+      // SAFETY: `success[current]` is set only in the branch that assigned
+      // `succeeded[current]` from `run`, so the slot holds an `Out` (which
+      // may itself be a falsy value — hence the separate flag).
       results.push(succeeded[current] as Out);
       continue;
     }

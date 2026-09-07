@@ -29,6 +29,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonValue } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -107,24 +110,38 @@ export const mapCloudinaryError = makeErrorMapper({
     unauthorized: EMPTY_CODES,
   },
   extract: (err) => {
-    const e = err as {
-      http_code?: number;
-      error?: { http_code?: number; message?: string };
-      message?: string;
-    };
-    const status = e?.error?.http_code ?? e?.http_code;
-    const message = e?.error?.message ?? e?.message;
+    if (!isObject(err)) {
+      return {};
+    }
+    // Admin-API errors nest the payload under `error`; upload errors carry
+    // `http_code`/`message` at the top level. Prefer the nested block and
+    // fall back to the top level field by field.
+    const inner = "error" in err && isObject(err.error) ? err.error : err;
+    const innerCode = "http_code" in inner ? inner.http_code : undefined;
+    const outerCode = "http_code" in err ? err.http_code : undefined;
+    const status = [innerCode, outerCode].find(isNumber);
+    const innerMessage = "message" in inner ? inner.message : undefined;
+    const outerMessage = "message" in err ? err.message : undefined;
+    const message = [innerMessage, outerMessage].find(isString);
     return {
-      ...(typeof status === "number" && { status }),
+      ...(status !== undefined && { status }),
       ...(message && { message }),
     };
   },
   providerLabel: "Cloudinary error",
 });
 
-const parseCloudinaryUrl = (
-  url: string
-): { cloudName?: string; apiKey?: string; apiSecret?: string } => {
+interface CloudinaryCredentials {
+  cloudName?: string;
+  apiKey?: string;
+  apiSecret?: string;
+}
+
+interface ResolvedCloudinaryConfig extends CloudinaryCredentials {
+  cloudName: string;
+}
+
+const parseCloudinaryUrl = (url: string): CloudinaryCredentials => {
   // Format: cloudinary://<api_key>:<api_secret>@<cloud_name>
   const match =
     /^cloudinary:\/\/(?<apiKey>[^:]+):(?<apiSecret>[^@]+)@(?<cloudName>.+)$/u.exec(
@@ -142,7 +159,7 @@ const parseCloudinaryUrl = (
 
 const resolveConfig = (
   opts: CloudinaryAdapterOptions
-): { cloudName: string; apiKey?: string; apiSecret?: string } => {
+): ResolvedCloudinaryConfig => {
   const envUrl = readEnv("CLOUDINARY_URL");
   const envParsed = envUrl ? parseCloudinaryUrl(envUrl) : {};
   const cloudName =
@@ -173,6 +190,9 @@ const toBuffer = async (body: Body): Promise<Buffer> => {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 };
 
+// The subset of a Cloudinary resource document the adapter reads. The admin
+// API (`api.resource` / `api.resources`) is untyped (`Promise<any>`), so
+// results are received into this shape rather than asserted.
 interface CloudinaryResource {
   public_id: string;
   bytes?: number;
@@ -180,6 +200,11 @@ interface CloudinaryResource {
   resource_type?: string;
   etag?: string;
   created_at?: string;
+}
+
+interface CloudinaryResourcesPage {
+  resources?: CloudinaryResource[];
+  next_cursor?: string;
 }
 
 const resolveContentType = (
@@ -328,17 +353,12 @@ export const cloudinaryAdapter = (
     async download(key, downloadOpts) {
       try {
         const range = downloadOpts?.range;
+        const resourcePromise: Promise<CloudinaryResource> = sdk.api.resource(
+          key,
+          { resource_type: resourceType, type }
+        );
         const [resource, bytes] = await Promise.all([
-          sdk.api.resource(key, {
-            resource_type: resourceType,
-            type,
-          }) as Promise<{
-            bytes?: number;
-            format?: string;
-            resource_type?: string;
-            etag?: string;
-            created_at?: string;
-          }>,
+          resourcePromise,
           lazyDownload(key, downloadOpts?.signal, range)(),
         ]);
         return createStoredFile(
@@ -373,16 +393,10 @@ export const cloudinaryAdapter = (
     },
     async head(key) {
       try {
-        const resource = (await sdk.api.resource(key, {
+        const resource: CloudinaryResource = await sdk.api.resource(key, {
           resource_type: resourceType,
           type,
-        })) as {
-          bytes?: number;
-          format?: string;
-          resource_type?: string;
-          etag?: string;
-          created_at?: string;
-        };
+        });
         return createStoredFile(
           {
             ...(resource.etag && { etag: resource.etag }),
@@ -422,22 +436,14 @@ export const cloudinaryAdapter = (
           const byKey = new Map<string, CloudinaryResource>();
           let next: string | undefined;
           do {
-            const apiOpts: Record<string, unknown> = {
+            // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- pagination: each page uses the next_cursor from the previous response
+            const resp: CloudinaryResourcesPage = await sdk.api.resources({
               max_results: MAX_LIST_LIMIT,
               resource_type: resourceType,
               type,
-            };
-            if (listOpts?.prefix) {
-              apiOpts.prefix = listOpts.prefix;
-            }
-            if (next) {
-              apiOpts.next_cursor = next;
-            }
-            // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- pagination: each page uses the next_cursor from the previous response
-            const resp = (await sdk.api.resources(apiOpts)) as {
-              resources?: CloudinaryResource[];
-              next_cursor?: string;
-            };
+              ...(listOpts?.prefix && { prefix: listOpts.prefix }),
+              ...(next && { next_cursor: next }),
+            });
             for (const r of resp.resources ?? []) {
               byKey.set(r.public_id, r);
             }
@@ -450,6 +456,9 @@ export const cloudinaryAdapter = (
             ...(listOpts?.prefix !== undefined && { prefix: listOpts.prefix }),
             ...(listOpts?.cursor !== undefined && { cursor: listOpts.cursor }),
           });
+          // SAFETY: `sortedKeys` is `byKey`'s own key set and
+          // `paginateHierarchy` only returns keys drawn from its input, so
+          // every lookup hits.
           return {
             items: page.items.map((key) =>
               toStored(byKey.get(key) as CloudinaryResource)
@@ -463,21 +472,13 @@ export const cloudinaryAdapter = (
         }
         const requested = listOpts?.limit ?? DEFAULT_LIST_LIMIT;
         const limit = Math.min(requested, MAX_LIST_LIMIT);
-        const apiOpts: Record<string, unknown> = {
+        const response: CloudinaryResourcesPage = await sdk.api.resources({
           max_results: limit,
           resource_type: resourceType,
           type,
-        };
-        if (listOpts?.prefix) {
-          apiOpts.prefix = listOpts.prefix;
-        }
-        if (listOpts?.cursor) {
-          apiOpts.next_cursor = listOpts.cursor;
-        }
-        const response = (await sdk.api.resources(apiOpts)) as {
-          resources?: CloudinaryResource[];
-          next_cursor?: string;
-        };
+          ...(listOpts?.prefix && { prefix: listOpts.prefix }),
+          ...(listOpts?.cursor && { next_cursor: listOpts.cursor }),
+        });
         const items: StoredFile[] = (response.resources ?? []).map(toStored);
         return {
           ...(response.next_cursor && { cursor: response.next_cursor }),
@@ -519,14 +520,7 @@ export const cloudinaryAdapter = (
       let session:
         | Extract<ResumableUploadSession, { provider: "cloudinary" }>
         | undefined;
-      let finalResponse:
-        | {
-            public_id: string;
-            bytes?: number;
-            etag?: string;
-            created_at?: string;
-          }
-        | undefined;
+      let finalResponse: CloudinaryResource | undefined;
       let contentType = "application/octet-stream";
       const requireSession = () => {
         if (!session) {
@@ -575,10 +569,7 @@ export const cloudinaryAdapter = (
             );
           }
           return Promise.resolve({
-            contentType: resolveContentType(
-              finalResponse as UploadApiResponse,
-              contentType
-            ),
+            contentType: resolveContentType(finalResponse, contentType),
             ...(finalResponse.etag && { etag: finalResponse.etag }),
             key: finalResponse.public_id,
             ...(finalResponse.created_at && {
@@ -594,8 +585,7 @@ export const cloudinaryAdapter = (
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 20 * 1024 * 1024,
         probe(): Promise<{ nextOffset: number }> {
@@ -611,7 +601,11 @@ export const cloudinaryAdapter = (
             signingSecret
           );
           const form = new FormData();
-          form.append("file", new Blob([data as unknown as BlobPart]), key);
+          // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+          // widened typed arrays to `ArrayBufferLike`); the orchestrator
+          // slices each chunk from the upload body into a fresh view, never
+          // shared memory.
+          form.append("file", new Blob([data as BlobPart]), key);
           form.append("api_key", signingKey);
           form.append("timestamp", String(timestamp));
           form.append("signature", signature);
@@ -635,12 +629,21 @@ export const cloudinaryAdapter = (
               `cloudinary: chunk upload failed (HTTP ${res.status}): ${text}`.trim()
             );
           }
-          const json = (await res.json()) as { public_id?: string } & Record<
-            string,
-            unknown
-          >;
-          if (json.public_id) {
-            finalResponse = json as typeof finalResponse;
+          // Cloudinary answers the final chunk with the full upload response
+          // (earlier chunks get a partial one without `public_id`). Keep the
+          // fields `complete()` reads, each checked as it is read.
+          const json: JsonValue = await res.json();
+          if (isJsonObject(json) && isString(json.public_id)) {
+            finalResponse = {
+              ...(isNumber(json.bytes) && { bytes: json.bytes }),
+              ...(isString(json.created_at) && { created_at: json.created_at }),
+              ...(isString(json.etag) && { etag: json.etag }),
+              ...(isString(json.format) && { format: json.format }),
+              public_id: json.public_id,
+              ...(isString(json.resource_type) && {
+                resource_type: json.resource_type,
+              }),
+            };
           }
           const nextOffset = offset + data.byteLength;
           current.offset = nextOffset;
@@ -668,22 +671,22 @@ export const cloudinaryAdapter = (
       // parameter set excluding `file`, `cloud_name`, `resource_type`, and
       // `api_key`. The SDK helper handles the sort+hash for us.
       const timestamp = Math.floor(Date.now() / 1000);
-      const paramsToSign: Record<string, string | number> = {
+      const paramsToSign = {
         public_id: key,
         timestamp,
         ...(signOpts.contentType && { content_type: signOpts.contentType }),
       };
       const signature = sdk.utils.api_sign_request(paramsToSign, apiSecret);
       const url = `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`;
-      const fields: Record<string, string> = {
+      const baseFields = {
         api_key: apiKey,
         public_id: key,
         signature,
         timestamp: String(timestamp),
       };
-      if (signOpts.contentType) {
-        fields.content_type = signOpts.contentType;
-      }
+      const fields = signOpts.contentType
+        ? { ...baseFields, content_type: signOpts.contentType }
+        : baseFields;
       return Promise.resolve({
         fields,
         method: "POST",
@@ -742,10 +745,10 @@ export const cloudinaryAdapter = (
         // private / authenticated — sign with expiry. private_download_url
         // needs the asset format, so do a HEAD to learn it.
         const expiresIn = urlOpts?.expiresIn ?? signedUrlExpiresIn;
-        const resource = (await sdk.api.resource(key, {
+        const resource: CloudinaryResource = await sdk.api.resource(key, {
           resource_type: resourceType,
           type,
-        })) as { format?: string };
+        });
         if (!resource.format) {
           throw new FilesError(
             "Provider",

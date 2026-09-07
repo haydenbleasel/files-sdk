@@ -10,6 +10,9 @@ import type { Files, SearchMatch, StoredFile } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
 import type { FilesError } from "../errors.js";
 import { globPrefix } from "../glob.js";
+import { isBoolean, isFunction, isNumber, isString } from "../is.js";
+import type { JsonObject, JsonValue } from "../json.js";
+import { isJsonArray, isJsonObject } from "../json.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
@@ -67,39 +70,42 @@ const fail = (message: string): never => {
   throw new RouterError("Validation", message);
 };
 
-const asRecord = (value: unknown): Record<string, unknown> => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return fail("expected a JSON object body");
-  }
-  return value as Record<string, unknown>;
+const asRecord = (value: JsonValue | undefined): JsonObject =>
+  isJsonObject(value) ? value : fail("expected a JSON object body");
+
+// Field readers: each takes the decoded object and a field name, so the
+// 422 message names the field and the read is checked in one place.
+
+const str = (record: JsonObject, field: string): string => {
+  const value = record[field];
+  return isString(value) ? value : fail(`expected string: ${field}`);
 };
 
-const str = (value: unknown, field: string): string =>
-  typeof value === "string" ? value : fail(`expected string: ${field}`);
+const num = (record: JsonObject, field: string): number => {
+  const value = record[field];
+  return isNumber(value) ? value : fail(`expected number: ${field}`);
+};
 
-const num = (value: unknown, field: string): number =>
-  typeof value === "number" ? value : fail(`expected number: ${field}`);
-
-const strArray = (value: unknown, field: string): string[] => {
-  if (!Array.isArray(value) || value.some((x) => typeof x !== "string")) {
+const strArray = (record: JsonObject, field: string): string[] => {
+  const value = record[field];
+  if (!isJsonArray(value) || !value.every(isString)) {
     return fail(`expected string[]: ${field}`);
   }
-  return value as string[];
+  return value;
 };
 
-const optStr = (value: unknown, field: string): string | undefined =>
-  value === undefined ? undefined : str(value, field);
+const optStr = (record: JsonObject, field: string): string | undefined =>
+  record[field] === undefined ? undefined : str(record, field);
 
-const optNum = (value: unknown, field: string): number | undefined =>
-  value === undefined ? undefined : num(value, field);
+const optNum = (record: JsonObject, field: string): number | undefined =>
+  record[field] === undefined ? undefined : num(record, field);
 
-const optBool = (value: unknown, field: string): boolean | undefined => {
+const optBool = (record: JsonObject, field: string): boolean | undefined => {
+  const value = record[field];
   if (value === undefined) {
     return undefined;
   }
-  return typeof value === "boolean"
-    ? value
-    : fail(`expected boolean: ${field}`);
+  return isBoolean(value) ? value : fail(`expected boolean: ${field}`);
 };
 
 const routerUrlDisposition = (
@@ -112,33 +118,35 @@ const routerUrlDisposition = (
   return isAttachmentDisposition(requested) ? requested : "attachment";
 };
 
-const fileInfos = (value: unknown): ClientFileInfo[] => {
-  if (!Array.isArray(value) || value.length === 0) {
+const fileInfos = (body: JsonObject): ClientFileInfo[] => {
+  const value = body.files;
+  if (!isJsonArray(value) || value.length === 0) {
     return fail("expected a non-empty files[]");
   }
   return value.map((item) => {
     const r = asRecord(item);
     return {
-      name: str(r.name, "name"),
-      size: num(r.size, "size"),
-      type: str(r.type, "type"),
+      name: str(r, "name"),
+      size: num(r, "size"),
+      type: str(r, "type"),
     };
   });
 };
 
-const completions = (value: unknown): { id: string; key: string }[] => {
-  if (!Array.isArray(value)) {
+const completions = (body: JsonObject): { id: string; key: string }[] => {
+  const value = body.completions;
+  if (!isJsonArray(value)) {
     return fail("expected completions[]");
   }
   return value.map((item) => {
     const r = asRecord(item);
-    return { id: str(r.id, "id"), key: str(r.key, "key") };
+    return { id: str(r, "id"), key: str(r, "key") };
   });
 };
 
 // --- shared helpers ---
 
-const json = (body: unknown): ResultModel => ({
+const json = <T extends object>(body: T): ResultModel => ({
   body,
   kind: "json",
   status: 200,
@@ -197,7 +205,7 @@ const searchScoped = (
   }
 ): AsyncIterable<StoredFile> => {
   const paging = {
-    ...(q.limit ? { limit: q.limit } : {}),
+    ...(q.limit && { limit: q.limit }),
     signal: q.signal,
   };
   if (!scope.prefix) {
@@ -205,18 +213,20 @@ const searchScoped = (
       ...paging,
       caseInsensitive: q.caseInsensitive,
       match: q.match,
-      ...(q.searchPrefix ? { prefix: q.searchPrefix } : {}),
+      ...(q.searchPrefix && { prefix: q.searchPrefix }),
     });
   }
   const matches = buildSearchMatcher(q.pattern, q.match, q.caseInsensitive);
   // Same push-down as `files.search()`: a case-sensitive glob's literal head
   // bounds the walk when the client didn't pass its own prefix.
-  const isCaseSensitiveGlob =
-    typeof q.pattern === "string" && q.match === "glob" && !q.caseInsensitive;
+  const globHead =
+    isString(q.pattern) && q.match === "glob" && !q.caseInsensitive
+      ? globPrefix(q.pattern)
+      : undefined;
   const walkPrefix =
-    q.clientPrefix || !isCaseSensitiveGlob
+    q.clientPrefix || globHead === undefined
       ? q.searchPrefix
-      : scope.prefix + globPrefix(q.pattern as string);
+      : scope.prefix + globHead;
   const walk = ctx.files.listAll({ ...paging, prefix: walkPrefix });
   return {
     async *[Symbol.asyncIterator]() {
@@ -300,8 +310,12 @@ interface PluginMethods {
   purge?: (key?: string) => Promise<void>;
 }
 
+// SAFETY: `versioning()` / `softDelete()` graft these methods onto the `Files`
+// instance at runtime (Tier C `extend`), so they may or may not be present;
+// every member is optional and each call site feature-detects it with
+// `isFunction` before invoking, so an absent method is handled, never assumed.
 const pluginMethods = (ctx: HandlerContext): PluginMethods =>
-  ctx.files as unknown as PluginMethods;
+  ctx.files as Files & PluginMethods;
 
 const notConfigured = (plugin: string): never => {
   throw new RouterError(
@@ -319,7 +333,7 @@ const toWireVersion = (v: {
   lastModified: v.lastModified,
   size: v.size,
   versionId: v.versionId,
-  ...(v.etag === undefined ? {} : { etag: v.etag }),
+  ...(v.etag !== undefined && { etag: v.etag }),
 });
 
 const toWireTrashed = (t: {
@@ -330,8 +344,8 @@ const toWireTrashed = (t: {
 }): WireTrashedFile => ({
   key: t.key,
   size: t.size,
-  ...(t.lastModified === undefined ? {} : { lastModified: t.lastModified }),
-  ...(t.etag === undefined ? {} : { etag: t.etag }),
+  ...(t.lastModified !== undefined && { lastModified: t.lastModified }),
+  ...(t.etag !== undefined && { etag: t.etag }),
 });
 
 // --- JSON op dispatch ---
@@ -343,12 +357,12 @@ const dispatchJson = async (
   // oxlint-disable-next-line sonarjs/cognitive-complexity -- a flat per-op dispatch table; each arm is a thin call
 ): Promise<ResultModel> => {
   const body = asRecord(parsed.json);
-  const op = str(body.op, "op");
+  const op = str(body, "op");
   const { signal } = parsed;
 
   switch (op) {
     case "head": {
-      const key = str(body.key, "key");
+      const key = str(body, "key");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "head",
@@ -361,7 +375,7 @@ const dispatchJson = async (
     }
     case "head-many": {
       requireOrigin(ctx, parsed);
-      const keys = strArray(body.keys, "keys");
+      const keys = strArray(body, "keys");
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "head",
@@ -371,19 +385,18 @@ const dispatchJson = async (
       const result = await ctx.files.head(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body.concurrency, "concurrency"),
-          stopOnError: optBool(body.stopOnError, "stopOnError"),
+          concurrency: optNum(body, "concurrency"),
+          stopOnError: optBool(body, "stopOnError"),
         }
       );
+      const errors = bulkErrors(result.errors, unscope);
       return json({
         files: result.files.map((f) => storedFileToWire(f, unscope)),
-        ...(bulkErrors(result.errors, unscope)
-          ? { errors: bulkErrors(result.errors, unscope) }
-          : {}),
+        ...(errors && { errors }),
       });
     }
     case "exists": {
-      const key = str(body.key, "key");
+      const key = str(body, "key");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "exists",
@@ -395,7 +408,7 @@ const dispatchJson = async (
       return json({ exists });
     }
     case "exists-many": {
-      const keys = strArray(body.keys, "keys");
+      const keys = strArray(body, "keys");
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "exists",
@@ -405,21 +418,20 @@ const dispatchJson = async (
       const result = await ctx.files.exists(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body.concurrency, "concurrency"),
-          stopOnError: optBool(body.stopOnError, "stopOnError"),
+          concurrency: optNum(body, "concurrency"),
+          stopOnError: optBool(body, "stopOnError"),
         }
       );
+      const errors = bulkErrors(result.errors, unscope);
       return json({
         existing: result.existing.map(unscope),
         missing: result.missing.map(unscope),
-        ...(bulkErrors(result.errors, unscope)
-          ? { errors: bulkErrors(result.errors, unscope) }
-          : {}),
+        ...(errors && { errors }),
       });
     }
     case "delete": {
       requireOrigin(ctx, parsed);
-      const key = str(body.key, "key");
+      const key = str(body, "key");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "delete",
@@ -430,7 +442,7 @@ const dispatchJson = async (
     }
     case "delete-many": {
       requireOrigin(ctx, parsed);
-      const keys = strArray(body.keys, "keys");
+      const keys = strArray(body, "keys");
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "delete",
@@ -440,22 +452,21 @@ const dispatchJson = async (
       const result = await ctx.files.delete(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body.concurrency, "concurrency"),
-          stopOnError: optBool(body.stopOnError, "stopOnError"),
+          concurrency: optNum(body, "concurrency"),
+          stopOnError: optBool(body, "stopOnError"),
         }
       );
+      const errors = bulkErrors(result.errors, unscope);
       return json({
         deleted: result.deleted.map(unscope),
-        ...(bulkErrors(result.errors, unscope)
-          ? { errors: bulkErrors(result.errors, unscope) }
-          : {}),
+        ...(errors && { errors }),
       });
     }
     case "copy":
     case "move": {
       requireOrigin(ctx, parsed);
-      const from = str(body.from, "from");
-      const to = str(body.to, "to");
+      const from = str(body, "from");
+      const to = str(body, "to");
       const scope = await authorizeOp(ctx, {
         from,
         operation: op,
@@ -470,15 +481,15 @@ const dispatchJson = async (
       return json({ ok: true });
     }
     case "url": {
-      const key = str(body.key, "key");
-      const expiresIn = optNum(body.expiresIn, "expiresIn");
+      const key = str(body, "key");
+      const expiresIn = optNum(body, "expiresIn");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "url",
         params: { expiresIn },
       });
       const disposition = routerUrlDisposition(
-        optStr(body.responseContentDisposition, "responseContentDisposition"),
+        optStr(body, "responseContentDisposition"),
         scope.disposition
       );
       const url = await ctx.files.url(scopeKey(scope.prefix, key), {
@@ -489,11 +500,11 @@ const dispatchJson = async (
     }
     case "list": {
       const scope = await authorizeOp(ctx, { operation: "list", params: {} });
-      const clientPrefix = optStr(body.prefix, "prefix") ?? "";
+      const clientPrefix = optStr(body, "prefix") ?? "";
       assertSafePrefix(clientPrefix);
       const listPrefix = scope.prefix + clientPrefix;
       const limit = Math.min(
-        optNum(body.limit, "limit") ?? ctx.maxListLimit,
+        optNum(body, "limit") ?? ctx.maxListLimit,
         scope.maxResults ?? ctx.maxListLimit,
         ctx.maxListLimit
       );
@@ -501,40 +512,37 @@ const dispatchJson = async (
       const result = await ctx.files.list({
         limit,
         signal,
-        ...(listPrefix ? { prefix: listPrefix } : {}),
-        ...(body.cursor === undefined
-          ? {}
-          : { cursor: str(body.cursor, "cursor") }),
-        ...(body.delimiter === undefined
-          ? {}
-          : { delimiter: str(body.delimiter, "delimiter") }),
+        ...(listPrefix && { prefix: listPrefix }),
+        ...(body.cursor !== undefined && { cursor: str(body, "cursor") }),
+        ...(body.delimiter !== undefined && {
+          delimiter: str(body, "delimiter"),
+        }),
       });
       return json({
         items: result.items.map((f) => storedFileToWire(f, unscope)),
-        ...(result.prefixes ? { prefixes: result.prefixes.map(unscope) } : {}),
-        ...(result.cursor ? { cursor: result.cursor } : {}),
+        ...(result.prefixes && { prefixes: result.prefixes.map(unscope) }),
+        ...(result.cursor && { cursor: result.cursor }),
       });
     }
     case "search": {
       const scope = await authorizeOp(ctx, { operation: "search", params: {} });
-      const clientPrefix = optStr(body.prefix, "prefix") ?? "";
+      const clientPrefix = optStr(body, "prefix") ?? "";
       assertSafePrefix(clientPrefix);
       const searchPrefix = scope.prefix + clientPrefix;
-      const match = optStr(body.match, "match") ?? "glob";
+      const match = optStr(body, "match") ?? "glob";
       if (!isSearchMatch(match)) {
         return fail(
           `expected one of ${SEARCH_MATCHES.map((m) => `"${m}"`).join(" | ")}: match`
         );
       }
-      const caseInsensitive =
-        optBool(body.caseInsensitive, "caseInsensitive") ?? false;
-      const pageLimit = optNum(body.limit, "limit");
+      const caseInsensitive = optBool(body, "caseInsensitive") ?? false;
+      const pageLimit = optNum(body, "limit");
       let pattern: string | RegExp;
-      if (optBool(body.isRegex, "isRegex")) {
+      if (optBool(body, "isRegex")) {
         try {
           pattern = new RegExp(
-            str(body.pattern, "pattern"),
-            optStr(body.flags, "flags") ?? "u"
+            str(body, "pattern"),
+            optStr(body, "flags") ?? "u"
           );
         } catch {
           throw new RouterError("Validation", "invalid search regex");
@@ -543,10 +551,10 @@ const dispatchJson = async (
           throw new RouterError("Validation", "search pattern is too complex");
         }
       } else {
-        pattern = str(body.pattern, "pattern");
+        pattern = str(body, "pattern");
       }
       const cap = Math.min(
-        optNum(body.maxResults, "maxResults") ?? ctx.maxSearchResults,
+        optNum(body, "maxResults") ?? ctx.maxSearchResults,
         scope.maxResults ?? ctx.maxSearchResults,
         ctx.maxSearchResults
       );
@@ -577,62 +585,61 @@ const dispatchJson = async (
     }
     case "signed-upload-url": {
       requireOrigin(ctx, parsed);
-      const key = str(body.key, "key");
-      const expiresIn = num(body.expiresIn, "expiresIn");
+      const key = str(body, "key");
+      const expiresIn = num(body, "expiresIn");
       const maxSize = clampUploadMaxSize(
-        optNum(body.maxSize, "maxSize"),
+        optNum(body, "maxSize"),
         ctx.maxUploadSize
       );
-      const minSize = optNum(body.minSize, "minSize");
+      const minSize = optNum(body, "minSize");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "signedUploadUrl",
         params: {
           expiresIn,
-          ...(maxSize === undefined ? {} : { maxSize }),
-          ...(minSize === undefined ? {} : { minSize }),
+          ...(maxSize !== undefined && { maxSize }),
+          ...(minSize !== undefined && { minSize }),
         },
       });
+      const contentType = optStr(body, "contentType");
       const signed = await ctx.files.signedUploadUrl(
         scopeKey(scope.prefix, key),
         {
           expiresIn: clampExpiry(ctx, expiresIn, scope),
-          ...(optStr(body.contentType, "contentType")
-            ? { contentType: body.contentType as string }
-            : {}),
-          ...(maxSize === undefined ? {} : { maxSize }),
-          ...(minSize === undefined ? {} : { minSize }),
+          ...(contentType && { contentType }),
+          ...(maxSize !== undefined && { maxSize }),
+          ...(minSize !== undefined && { minSize }),
         }
       );
       return json({ signed });
     }
     case "presign": {
       requireOrigin(ctx, parsed);
-      const files = fileInfos(body.files);
+      const files = fileInfos(body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handlePresign(
         uploadCfg(ctx, parsed),
         files,
-        optNum(body.expiresIn, "expiresIn"),
+        optNum(body, "expiresIn"),
         scope,
         unscoper(scope)
       );
     }
     case "complete": {
       requireOrigin(ctx, parsed);
-      const items = completions(body.completions);
+      const items = completions(body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handleComplete(uploadCfg(ctx, parsed), items, unscoper(scope));
     }
     case "versions": {
-      const key = str(body.key, "key");
+      const key = str(body, "key");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "versions",
         params: {},
       });
       const plugin = pluginMethods(ctx);
-      if (typeof plugin.versions !== "function") {
+      if (!isFunction(plugin.versions)) {
         return notConfigured("versioning");
       }
       const versions = await plugin.versions(scopeKey(scope.prefix, key));
@@ -640,8 +647,8 @@ const dispatchJson = async (
     }
     case "restore-version": {
       requireOrigin(ctx, parsed);
-      const key = str(body.key, "key");
-      const versionId = optStr(body.versionId, "versionId");
+      const key = str(body, "key");
+      const versionId = optStr(body, "versionId");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "restoreVersion",
@@ -650,10 +657,7 @@ const dispatchJson = async (
       const plugin = pluginMethods(ctx);
       // Disambiguate the shared `restore` via `versions`, which only `versioning`
       // adds — so a softDelete-only instance 422s instead of silently restoring.
-      if (
-        typeof plugin.versions !== "function" ||
-        typeof plugin.restore !== "function"
-      ) {
+      if (!isFunction(plugin.versions) || !isFunction(plugin.restore)) {
         return notConfigured("versioning");
       }
       const file = await plugin.restore(scopeKey(scope.prefix, key), versionId);
@@ -665,7 +669,7 @@ const dispatchJson = async (
         params: {},
       });
       const plugin = pluginMethods(ctx);
-      if (typeof plugin.trashed !== "function") {
+      if (!isFunction(plugin.trashed)) {
         return notConfigured("softDelete");
       }
       const unscope = unscoper(scope);
@@ -683,7 +687,7 @@ const dispatchJson = async (
     }
     case "restore-trashed": {
       requireOrigin(ctx, parsed);
-      const key = str(body.key, "key");
+      const key = str(body, "key");
       const scope = await authorizeOp(ctx, {
         key,
         operation: "restoreTrashed",
@@ -691,10 +695,7 @@ const dispatchJson = async (
       });
       const plugin = pluginMethods(ctx);
       // `trashed` is softDelete-only, disambiguating the shared `restore`.
-      if (
-        typeof plugin.trashed !== "function" ||
-        typeof plugin.restore !== "function"
-      ) {
+      if (!isFunction(plugin.trashed) || !isFunction(plugin.restore)) {
         return notConfigured("softDelete");
       }
       const file = await plugin.restore(scopeKey(scope.prefix, key));
@@ -702,14 +703,14 @@ const dispatchJson = async (
     }
     case "purge": {
       requireOrigin(ctx, parsed);
-      const key = optStr(body.key, "key");
+      const key = optStr(body, "key");
       const scope = await authorizeOp(ctx, {
-        ...(key === undefined ? {} : { key }),
+        ...(key !== undefined && { key }),
         operation: "purge",
         params: {},
       });
       const plugin = pluginMethods(ctx);
-      if (typeof plugin.purge !== "function") {
+      if (!isFunction(plugin.purge)) {
         return notConfigured("softDelete");
       }
       if (key !== undefined) {
@@ -724,7 +725,7 @@ const dispatchJson = async (
       } else if (scope.prefix) {
         // Empty-trash under a scope must never purge another tenant's keys, and
         // a bare `purge()` empties everything — so purge only our own entries.
-        if (typeof plugin.trashed !== "function") {
+        if (!isFunction(plugin.trashed)) {
           return notConfigured("softDelete");
         }
         const entries = await plugin.trashed();

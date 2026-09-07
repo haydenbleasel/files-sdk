@@ -15,6 +15,7 @@ import type {
 import { createFilesClient } from "../client/index.js";
 import type { ListResult, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isFunction } from "../internal/is.js";
 import type { UseFilesOptions } from "./use-files.js";
 
 export type QueryConfig = UseFilesOptions & { enabled?: boolean };
@@ -37,21 +38,21 @@ const useClient = (config?: QueryConfig): FilesClient => {
   // through the ref like `headers`: an inline function would otherwise rebuild
   // the client every render and refetch forever; a swap applies to the next
   // request. `transport` only serves uploads, which these read hooks never do.
-  return useMemo(
-    () =>
-      createFilesClient({
-        endpoint,
-        fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) =>
-          (ref.current?.fetchImpl ?? fetch)(input, init)) as typeof fetch,
-        headers: async () => {
-          const headers = ref.current?.headers;
-          return typeof headers === "function"
-            ? await headers()
-            : (headers ?? {});
-        },
-      }),
-    [endpoint]
-  );
+  return useMemo(() => {
+    // SAFETY: the client only ever calls `fetchImpl(input, init)`; the runtime
+    // `typeof fetch` also declares static helpers (Bun's `preconnect`) that no
+    // client code path reads.
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      (ref.current?.fetchImpl ?? fetch)(input, init)) as typeof fetch;
+    return createFilesClient({
+      endpoint,
+      fetchImpl,
+      headers: async () => {
+        const headers = ref.current?.headers;
+        return isFunction(headers) ? await headers() : (headers ?? {});
+      },
+    });
+  }, [endpoint]);
 };
 
 const useQuery = <T>(
@@ -133,6 +134,8 @@ export const useFile = (
 ): QueryResult<StoredFile> => {
   const client = useClient(config);
   const enabled = (config?.enabled ?? true) && key !== undefined;
+  // SAFETY: `enabled` is false whenever `key` is undefined, and `useQuery`
+  // never invokes `run` while disabled.
   return useQuery(
     JSON.stringify({ key, kind: "file" }),
     (signal) => client.head(key as string, { signal }),
@@ -158,6 +161,8 @@ export const useSearch = (
     // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined strips the non-serializable signal from the cache key
     signal: undefined,
   });
+  // SAFETY: `enabled` is false whenever `pattern` is undefined, and `useQuery`
+  // never invokes `run` while disabled.
   return useQuery(
     key,
     async (signal) => {

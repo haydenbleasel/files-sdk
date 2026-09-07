@@ -17,6 +17,7 @@ import type {
 } from "../index.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isString } from "../internal/is.js";
 import { buildAuthProvider, onedrive } from "../onedrive/index.js";
 import type {
   OneDriveAdapter,
@@ -113,7 +114,7 @@ interface GraphDriveList {
   value?: GraphDrive[];
 }
 
-const parseSiteUrl = (url: string): { hostname: string; sitePath: string } => {
+const parseSiteUrl = (url: string) => {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -183,7 +184,7 @@ const buildResolverClient = (
   if (authOpts.client) {
     return authOpts.client;
   }
-  const authProvider = buildAuthProvider(authOpts as OneDriveAdapterOptions);
+  const authProvider = buildAuthProvider(authOpts);
   if (!authProvider) {
     throw new FilesError(
       "Provider",
@@ -218,6 +219,9 @@ const resolveSiteId = async (
   const path = sitePath
     ? `/sites/${hostname}:/${sitePath.replace(/^\/+/u, "")}`
     : `/sites/${hostname}`;
+  // SAFETY: the Graph client types every parsed response as `any`; `GET
+  // /sites/{host}:{path}` returns a `site` resource, whose `id` we still
+  // check below before trusting it.
   const site = (await client.api(path).get()) as GraphSite;
   if (!site.id) {
     const sitePathSuffix = sitePath ? `/${sitePath}` : "";
@@ -234,6 +238,9 @@ const resolveDriveId = async (
   siteId: string,
   documentLibrary: string
 ): Promise<string> => {
+  // SAFETY: the Graph client types every parsed response as `any`; `GET
+  // /sites/{id}/drives` returns a `value` collection of `drive` resources, and
+  // every field read below is optional-guarded.
   const drives = (await client
     .api(`/sites/${siteId}/drives`)
     .get()) as GraphDriveList;
@@ -250,19 +257,19 @@ const resolveDriveId = async (
   return match.id;
 };
 
-const relabelError = (err: unknown): unknown => {
+const relabelError = (cause: unknown) => {
   if (
-    err instanceof FilesError &&
-    typeof err.message === "string" &&
-    err.message.includes("OneDrive error")
+    cause instanceof FilesError &&
+    isString(cause.message) &&
+    cause.message.includes("OneDrive error")
   ) {
     return new FilesError(
-      err.code,
-      err.message.replaceAll("OneDrive error", "SharePoint error"),
-      err.cause
+      cause.code,
+      cause.message.replaceAll("OneDrive error", "SharePoint error"),
+      cause.cause
     );
   }
-  return err;
+  return cause;
 };
 
 export const sharepoint = (
@@ -291,6 +298,9 @@ export const sharepoint = (
           if (libraryName) {
             driveId = await resolveDriveId(resolverClient, siteId, libraryName);
           } else {
+            // SAFETY: the Graph client types every parsed response as `any`;
+            // `GET /sites/{id}/drive` returns a `drive` resource, whose `id` we
+            // check below before trusting it.
             const defaultDrive = (await resolverClient
               .api(`/sites/${siteId}/drive`)
               .get()) as GraphDrive;

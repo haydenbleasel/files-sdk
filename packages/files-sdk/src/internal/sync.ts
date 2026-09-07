@@ -20,6 +20,7 @@ import type {
   StoredFile,
 } from "../index.js";
 import { mapMany } from "./core.js";
+import { isFunction } from "./is.js";
 
 /**
  * How `sync` decides a destination object is already up to date — the predicate
@@ -131,7 +132,7 @@ const unchanged = (
   dest: StoredFile,
   compare: SyncCompare
 ): boolean => {
-  if (typeof compare === "function") {
+  if (isFunction(compare)) {
     return compare(source, dest);
   }
   if (compare === "size") {
@@ -183,12 +184,17 @@ const indexByKey = (files: StoredFile[]): Map<string, StoredFile> => {
 
 // Split the source walk into the keys to upload vs. skip — used to preview the
 // plan under `dryRun`.
+interface SyncPlan {
+  uploads: string[];
+  skips: string[];
+}
+
 const partition = (
   sources: StoredFile[],
   destIndex: Map<string, StoredFile>,
   transformKey: (key: string) => string,
   compare: SyncCompare
-): { uploads: string[]; skips: string[] } => {
+): SyncPlan => {
   const uploads: string[] = [];
   const skips: string[] = [];
   for (const file of sources) {
@@ -249,7 +255,7 @@ const runUploads = async (
       try {
         await dest.upload(destKey, stream, {
           contentType: body.type,
-          ...(body.metadata ? { metadata: body.metadata } : {}),
+          ...(body.metadata && { metadata: body.metadata }),
           ...ctx.signalOpt,
         });
       } catch (error) {

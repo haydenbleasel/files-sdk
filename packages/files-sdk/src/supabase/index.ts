@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import { StorageClient } from "@supabase/storage-js";
+import type { FileMetadata } from "@supabase/storage-js";
 
 import type {
   Adapter,
@@ -21,6 +22,9 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { isJsonObject } from "../internal/json.js";
+import type { JsonObject, JsonValue } from "../internal/json.js";
 import { sameOriginSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -109,24 +113,25 @@ const _supabaseErrorMapper = makeErrorMapper({
     unauthorized: SUPABASE_UNAUTH_CODES,
   },
   extract: (err) => {
-    const e = (err ?? {}) as {
-      message?: string;
-      status?: number;
-      statusCode?: string | number;
-    };
+    if (!isObject(err)) {
+      return {};
+    }
     // `statusCode` from StorageApiError is the server's string code (e.g.
     // "NotFound", "Duplicate"). Fall back to `status` (HTTP) which is
     // present on every StorageApiError and many transport errors.
-    const code = typeof e.statusCode === "string" ? e.statusCode : undefined;
+    const statusCode = "statusCode" in err ? err.statusCode : undefined;
+    const code = isString(statusCode) ? statusCode : undefined;
     let status: number | undefined;
-    if (typeof e.status === "number") {
-      ({ status } = e);
-    } else if (typeof e.statusCode === "number") {
-      status = e.statusCode;
+    if ("status" in err && isNumber(err.status)) {
+      ({ status } = err);
+    } else if (isNumber(statusCode)) {
+      status = statusCode;
     }
+    const message =
+      "message" in err && isString(err.message) ? err.message : undefined;
     return {
       ...(code && { code }),
-      ...(e.message && { message: e.message }),
+      ...(message && { message }),
       ...(status !== undefined && { status }),
     };
   },
@@ -136,8 +141,8 @@ const _supabaseErrorMapper = makeErrorMapper({
 // `mapSupabaseError(undefined)` was a documented shape (the SDK can return
 // `error: null` and a few call sites pass it straight through). Preserve
 // the optional-arg signature.
-export const mapSupabaseError = (err?: unknown): FilesError =>
-  _supabaseErrorMapper(err);
+export const mapSupabaseError = (cause?: unknown): FilesError =>
+  _supabaseErrorMapper(cause);
 
 const stripEtag = (etag: string | undefined): string | undefined => {
   if (!etag) {
@@ -163,7 +168,7 @@ const normalizeBody = async (
   contentLength?: number;
   isBlob: boolean;
 }> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     const data = new TextEncoder().encode(body);
     return {
       contentLength: data.byteLength,
@@ -190,8 +195,7 @@ const normalizeBody = async (
     };
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const data = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     return {
       contentLength: data.byteLength,
       contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
@@ -265,10 +269,7 @@ const downloadOptionFor = (disposition: string): true | string => {
 const isStorageClientLike = (
   candidate: unknown
 ): candidate is { storage: StorageClient } =>
-  typeof candidate === "object" &&
-  candidate !== null &&
-  "storage" in candidate &&
-  typeof (candidate as { storage?: unknown }).storage === "object";
+  isObject(candidate) && "storage" in candidate && isObject(candidate.storage);
 
 const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
   if (opts.client) {
@@ -333,6 +334,8 @@ const resolveTusConfig = (
   return { endpoint: `${storageUrl}/upload/resumable`, key };
 };
 
+// The system metadata block on a listing row. The SDK declares every field
+// required, but older deployments omit some, so they are read as optional.
 interface SupabaseListItemMetadata {
   eTag?: string;
   size?: number;
@@ -340,7 +343,16 @@ interface SupabaseListItemMetadata {
   cacheControl?: string;
   lastModified?: string | number | Date;
   contentLength?: number;
-  [key: string]: unknown;
+}
+
+// A `listV2` row. `metadata` is the SDK-typed system block; `user_metadata`
+// is not declared by the SDK and only returned by some deployments, so it
+// arrives as untyped JSON.
+interface SupabaseV2Row {
+  metadata?: FileMetadata | null;
+  user_metadata?: JsonValue;
+  key?: string;
+  name: string;
 }
 
 interface SupabaseInfoLike {
@@ -349,7 +361,7 @@ interface SupabaseInfoLike {
   etag?: string;
   lastModified?: string | number | Date;
   cacheControl?: string;
-  metadata?: Record<string, unknown> | null;
+  metadata?: JsonObject | null;
 }
 
 const toMs = (
@@ -362,7 +374,7 @@ const toMs = (
   if (value instanceof Date) {
     return value.getTime();
   }
-  if (typeof value === "number") {
+  if (isNumber(value)) {
     return value;
   }
   const t = new Date(value).getTime();
@@ -370,7 +382,7 @@ const toMs = (
 };
 
 const stringifyMetadata = (
-  metadata: Record<string, unknown> | null | undefined
+  metadata: JsonObject | null | undefined
 ): Record<string, string> | undefined => {
   if (!metadata) {
     return;
@@ -381,7 +393,7 @@ const stringifyMetadata = (
     if (v === undefined || v === null) {
       continue;
     }
-    out[k] = typeof v === "string" ? v : JSON.stringify(v);
+    out[k] = isString(v) ? v : JSON.stringify(v);
     any = true;
   }
   return any ? out : undefined;
@@ -399,7 +411,7 @@ const safeInfo = async (
     if (error || !data) {
       return;
     }
-    return data as SupabaseInfoLike;
+    return data;
   } catch {
     // info() may not be supported on older Supabase deployments.
   }
@@ -423,7 +435,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     if (error) {
       throw mapSupabaseError(error);
     }
-    return blobToUint8(data as Blob);
+    return blobToUint8(data);
   };
 
   const downloadAsStreamFile = async (
@@ -436,7 +448,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     if (error) {
       throw mapSupabaseError(error);
     }
-    const stream = data as ReadableStream<Uint8Array>;
+    const stream: ReadableStream<Uint8Array> = data;
     // Supabase's stream download doesn't surface metadata alongside
     // the body. Issue an `info()` call for size/type/etag so the
     // returned StoredFile is usable. info() may not be supported on
@@ -475,7 +487,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     if (error) {
       throw mapSupabaseError(error);
     }
-    const blob = data as Blob;
+    const blob = data;
     const bytes = await blobToUint8(blob);
     // Blob.type may be empty when Supabase doesn't echo a Content-Type;
     // fall back to info() in that case so callers get a useful type.
@@ -571,7 +583,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       if (error) {
         throw mapSupabaseError(error);
       }
-      const info = data as SupabaseInfoLike;
+      const info: SupabaseInfoLike = data;
       return createStoredFile(
         {
           ...(info.etag && { etag: stripEtag(info.etag) }),
@@ -599,23 +611,15 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // nested keys would miss every nested object and surface phantom
       // zero-byte "files" for the folders. listV2 without a delimiter is a
       // plain string-prefix scan over full keys, with a real cursor.
-      const v2Item = (
-        obj: {
-          metadata?: unknown;
-          user_metadata?: unknown;
-          key?: string;
-          name: string;
-        },
-        fullKey: string
-      ): StoredFile => {
-        const meta = (obj.metadata ?? {}) as SupabaseListItemMetadata;
+      const v2Item = (obj: SupabaseV2Row, fullKey: string): StoredFile => {
+        const meta: SupabaseListItemMetadata = obj.metadata ?? {};
         // `metadata` on a listing row is Supabase's *system* block (eTag,
         // size, mimetype, cacheControl, ...) — never user metadata. Surfacing
         // it as `metadata` would report phantom keys that head()/download()
         // don't. User metadata, when the API returns it at all, lives under
         // `user_metadata`.
         const userMetadata = stringifyMetadata(
-          obj.user_metadata as Record<string, unknown> | null | undefined
+          isJsonObject(obj.user_metadata) ? obj.user_metadata : undefined
         );
         return createStoredFile(
           {
@@ -710,7 +714,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         }
         return uri;
       };
-      const authHeaders = (): Record<string, string> => ({
+      const authHeaders = () => ({
         Authorization: `Bearer ${requireTus().key}`,
         "Tus-Resumable": "1.0.0",
         apikey: requireTus().key,
@@ -779,8 +783,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 6 * 1024 * 1024,
         async probe(): Promise<{ nextOffset: number }> {
@@ -802,8 +805,13 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           data,
           signal,
         }): Promise<{ nextOffset: number }> {
+          // SAFETY: `BodyInit` pins the view to `ArrayBuffer` backing (TS 5.7
+          // widened typed arrays to `ArrayBufferLike`); the orchestrator
+          // slices each chunk from the upload body into a fresh view, never
+          // shared memory.
+          const chunk = data as BodyInit;
           const res = await fetch(requireUri(), {
-            body: data as unknown as BodyInit,
+            body: chunk,
             headers: {
               ...authHeaders(),
               "Content-Type": "application/offset+octet-stream",
@@ -845,7 +853,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       if (error) {
         throw mapSupabaseError(error);
       }
-      const { signedUrl } = data as { signedUrl: string; token: string };
+      const { signedUrl } = data;
       return {
         headers: {
           ...(signOpts.contentType && { "Content-Type": signOpts.contentType }),
@@ -929,7 +937,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       if (error) {
         throw mapSupabaseError(error);
       }
-      return (data as { signedUrl: string }).signedUrl;
+      return data.signedUrl;
     },
   };
 };

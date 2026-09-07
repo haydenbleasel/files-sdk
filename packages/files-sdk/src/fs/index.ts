@@ -4,7 +4,6 @@ import type { Dirent } from "node:fs";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- namespace import of node:fs/promises; many members (readdir/stat/rename/mkdir/...) are used.
 import * as fsp from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 import type {
@@ -25,6 +24,8 @@ import {
 } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
+import { isNumber, isObject, isString } from "../internal/is.js";
+import { toWebStream } from "../internal/node-stream";
 import { createStoredFile } from "../internal/stored-file.js";
 import { pageKeyList } from "../internal/walk-paginate.js";
 
@@ -74,12 +75,9 @@ interface Sidecar {
   lastModified: number;
 }
 
-const errorCode = (err: unknown): string | undefined => {
-  if (err && typeof err === "object" && "code" in err) {
-    const { code } = err as { code?: unknown };
-    if (typeof code === "string") {
-      return code;
-    }
+const errorCode = (cause: unknown): string | undefined => {
+  if (isObject(cause) && "code" in cause && isString(cause.code)) {
+    return cause.code;
   }
   return undefined;
 };
@@ -104,16 +102,16 @@ const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
-export const mapFsError = (err: unknown): FilesError => {
-  if (err instanceof FilesError) {
-    return err;
+export const mapFsError = (cause: unknown): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
   }
-  const code = classifyFsError(errorCode(err));
+  const code = classifyFsError(errorCode(cause));
   const message =
-    err instanceof Error
-      ? err.message
-      : (DEFAULT_MESSAGES[code] ?? String(err));
-  return new FilesError(code, message, err);
+    cause instanceof Error
+      ? cause.message
+      : (DEFAULT_MESSAGES[code] ?? String(cause));
+  return new FilesError(code, message, cause);
 };
 
 const stringBodyEncoder = new TextEncoder();
@@ -123,7 +121,7 @@ const stringBodyEncoder = new TextEncoder();
 type NonStreamBody = Exclude<Body, ReadableStream<Uint8Array>>;
 
 const bodyToBytes = async (body: NonStreamBody): Promise<Uint8Array> => {
-  if (typeof body === "string") {
+  if (isString(body)) {
     return stringBodyEncoder.encode(body);
   }
   if (body instanceof Uint8Array) {
@@ -133,8 +131,7 @@ const bodyToBytes = async (body: NonStreamBody): Promise<Uint8Array> => {
     return new Uint8Array(body);
   }
   if (ArrayBuffer.isView(body)) {
-    const view = body as ArrayBufferView;
-    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
   }
   return new Uint8Array(await body.arrayBuffer());
 };
@@ -143,7 +140,7 @@ const defaultContentType = (body: Body, override?: string): string => {
   if (override) {
     return override;
   }
-  if (typeof body === "string") {
+  if (isString(body)) {
     return "text/plain; charset=utf-8";
   }
   if (body instanceof Blob && body.type) {
@@ -280,13 +277,13 @@ const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
 const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
   try {
     const raw = await fsp.readFile(sidecarPathOf(bodyPath), "utf-8");
+    // SAFETY: sidecars are only ever written by `writeSidecar` from a
+    // `Sidecar`; the three required fields are checked below so a foreign or
+    // truncated file reads as absent rather than as a half-typed record.
     const parsed = JSON.parse(raw) as Partial<Sidecar>;
-    if (
-      typeof parsed.contentType === "string" &&
-      typeof parsed.etag === "string" &&
-      typeof parsed.lastModified === "number"
-    ) {
-      return parsed as Sidecar;
+    const { contentType, etag, lastModified } = parsed;
+    if (isString(contentType) && isString(etag) && isNumber(lastModified)) {
+      return { ...parsed, contentType, etag, lastModified };
     }
     return undefined;
   } catch (error) {
@@ -563,9 +560,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             },
             {
               factory: () =>
-                Readable.toWeb(
-                  createReadStream(realBodyPath, streamRange)
-                ) as unknown as ReadableStream<Uint8Array>,
+                toWebStream(createReadStream(realBodyPath, streamRange)),
               kind: "stream",
             }
           );
@@ -574,9 +569,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           // Read just the slice off disk rather than buffering the whole file
           // and trimming — the point of a range request is to touch less data.
           const bytes = await collectStream(
-            Readable.toWeb(
-              createReadStream(realBodyPath, streamRange)
-            ) as unknown as ReadableStream<Uint8Array>
+            toWebStream(createReadStream(realBodyPath, streamRange))
           );
           return createStoredFile(
             { ...baseMeta, size: bytes.byteLength },
@@ -796,8 +789,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         },
         mode: "offset",
         partSize:
-          typeof resumableOpts.multipart === "object" &&
-          resumableOpts.multipart.partSize
+          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
             ? resumableOpts.multipart.partSize
             : 8 * 1024 * 1024,
         async probe(): Promise<{ nextOffset: number }> {

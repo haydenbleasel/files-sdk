@@ -31,6 +31,10 @@ export interface FilePreviewProps {
   className?: string;
 }
 
+/** The `file` prop is either a bare key or an already-resolved record. */
+const isKey = (file: string | StoredFile): file is string =>
+  typeof file === "string";
+
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) {
     return "0 B";
@@ -117,9 +121,9 @@ export const FilePreview = ({
   renderPreview,
   className,
 }: FilePreviewProps) => {
-  const key = typeof file === "string" ? file : file.key;
+  const key = isKey(file) ? file : file.key;
   const [meta, setMeta] = useState<StoredFile | undefined>(
-    typeof file === "string" ? undefined : file
+    isKey(file) ? undefined : file
   );
   const [src, setSrc] = useState<string>();
   const [text, setText] = useState<string>();
@@ -148,8 +152,7 @@ export const FilePreview = ({
       setText(undefined);
       setIsLoading(true);
       try {
-        const resolved =
-          typeof file === "string" ? await filesRef.current.head(key) : file;
+        const resolved = isKey(file) ? await filesRef.current.head(key) : file;
         if (controller.signal.aborted) {
           return;
         }
