@@ -102,9 +102,8 @@ interface SupaInfo {
   metadata?: Record<string, unknown>;
   size?: number;
 }
-const infoMock = mock(
-  (_path: string): Promise<SupaResult<SupaInfo>> =>
-    Promise.resolve(ok(baseInfo()))
+const infoMock = mock((_path: string): Promise<SupaResult<SupaInfo>> =>
+  Promise.resolve(ok(baseInfo()))
 );
 const removeMock = mock((_paths: string[]) => Promise.resolve(ok([])));
 const copyMock = mock((_from: string, _to: string) =>

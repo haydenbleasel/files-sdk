@@ -404,7 +404,13 @@ const runLibStorageUpload = async (
     await upload.abort();
     throw abortError(signal.reason);
   }
-  signal?.addEventListener("abort", () => void upload.abort(), { once: true });
+  signal?.addEventListener(
+    "abort",
+    () => {
+      void upload.abort();
+    },
+    { once: true }
+  );
   const result = await upload.done();
   return stripEtag(result.ETag);
 };

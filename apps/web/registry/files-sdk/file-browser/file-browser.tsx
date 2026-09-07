@@ -225,7 +225,9 @@ export const FileBrowser = ({
 
       {cursor && !isLoading && (
         <Button
-          onClick={() => void load(cursor)}
+          onClick={() => {
+            void load(cursor);
+          }}
           size="sm"
           type="button"
           variant="outline"

@@ -44,7 +44,9 @@ const Example = () => {
           accept="image/*,text/*,application/pdf"
           aria-label="Choose a file to preview"
           className="hidden"
-          onChange={(event) => void handleChange(event)}
+          onChange={(event) => {
+            void handleChange(event);
+          }}
           ref={inputRef}
           type="file"
         />

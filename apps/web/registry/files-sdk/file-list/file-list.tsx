@@ -229,7 +229,9 @@ export const FileList = ({
       <div className="flex items-center justify-between">
         <p className="text-muted-foreground text-xs">{items.length} files</p>
         <Button
-          onClick={() => void refresh()}
+          onClick={() => {
+            void refresh();
+          }}
           size="icon-sm"
           type="button"
           variant="ghost"
@@ -265,7 +267,9 @@ export const FileList = ({
               </span>
             </button>
             <Button
-              onClick={() => void download(item)}
+              onClick={() => {
+                void download(item);
+              }}
               size="icon-sm"
               type="button"
               variant="ghost"
@@ -274,7 +278,9 @@ export const FileList = ({
             </Button>
             {!readOnly && (
               <Button
-                onClick={() => void remove(item.key)}
+                onClick={() => {
+                  void remove(item.key);
+                }}
                 size="icon-sm"
                 type="button"
                 variant="destructive"

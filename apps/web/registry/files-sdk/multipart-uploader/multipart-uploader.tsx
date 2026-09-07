@@ -195,7 +195,9 @@ export const MultipartUploader = ({
         <div className="flex gap-2">
           <Button
             disabled={!pendingCount || isUploading}
-            onClick={() => void start()}
+            onClick={() => {
+              void start();
+            }}
             type="button"
           >
             {isUploading

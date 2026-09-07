@@ -149,7 +149,11 @@ export const FileActions = ({
           {/* onClick rather than Radix's onSelect: Base UI menu items have no
               onSelect prop, and Radix items fire a real click on both pointer
               and keyboard selection, so onClick works with both flavors. */}
-          <DropdownMenuItem onClick={() => void download()}>
+          <DropdownMenuItem
+            onClick={() => {
+              void download();
+            }}
+          >
             <DownloadIcon />
             Download
           </DropdownMenuItem>
@@ -207,7 +211,9 @@ export const FileActions = ({
             </Button>
             <Button
               disabled={busy || (!isDelete && (!dest.trim() || destUnchanged))}
-              onClick={() => void confirm()}
+              onClick={() => {
+                void confirm();
+              }}
               type="button"
               variant={isDelete ? "destructive" : "default"}
             >

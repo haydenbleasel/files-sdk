@@ -132,7 +132,9 @@ export const VersionHistory = ({
           </div>
           <Button
             disabled={restoring !== undefined}
-            onClick={() => void restore(version.versionId)}
+            onClick={() => {
+              void restore(version.versionId);
+            }}
             size="sm"
             type="button"
             variant="outline"

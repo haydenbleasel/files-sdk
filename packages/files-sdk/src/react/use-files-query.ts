@@ -27,7 +27,7 @@ export interface QueryResult<T> {
   refetch: () => void;
 }
 
-/* oxlint-disable react/react-compiler, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo, the live `ref.current = …` config sync, and the effect's setState (aborting the in-flight query on dep-change) are required correctness, not dead weight */
+/* oxlint-disable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react/set-state-in-effect, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo, the live `ref.current = …` config sync, and the effect's setState (aborting the in-flight query on dep-change) are required correctness, not dead weight */
 const useClient = (config?: QueryConfig): FilesClient => {
   const ref = useRef(config);
   ref.current = config;
@@ -109,7 +109,7 @@ const useQuery = <T>(
     refetch: () => setTick((t) => t + 1),
   };
 };
-/* oxlint-enable react/react-compiler, react-doctor/react-compiler-no-manual-memoization */
+/* oxlint-enable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react/set-state-in-effect, react-doctor/react-compiler-no-manual-memoization */
 
 export const useList = (
   opts: ListCallOptions = {},

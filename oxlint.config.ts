@@ -25,8 +25,21 @@ export default defineConfig({
       // Remotion videos + web app / shadcn registry: presentational React.
       files: ["packages/videos/**", "apps/web/**"],
       rules: {
+        // The React Compiler rule family (formerly the single
+        // `react/react-compiler` rule): these trees aren't compiled and lean
+        // on refs/effects idiomatically.
+        "react/exhaustive-effect-dependencies": "off",
+        "react/memo-dependencies": "off",
         "react/no-unescaped-entities": "off",
-        "react/react-compiler": "off",
+        "react/refs": "off",
+        "react/set-state-in-effect": "off",
+      },
+    },
+    {
+      // Adapter tests stub an SDK's client + error classes side by side.
+      files: ["packages/files-sdk/test/**"],
+      rules: {
+        "max-classes-per-file": "off",
       },
     },
   ],
@@ -36,5 +49,9 @@ export default defineConfig({
     // rule (deprecated in ESLint core) can't tell the difference and fires on
     // every plugin verb, so it's off here.
     "node/callback-return": "off",
+    // The SDK isn't compiled by the React Compiler, so "syntax the compiler
+    // can't lower yet" (for-await, try/finally) is not a defect here — and the
+    // rule also fires on the Vue/Svelte `use*` composables.
+    "react/todo": "off",
   },
 });

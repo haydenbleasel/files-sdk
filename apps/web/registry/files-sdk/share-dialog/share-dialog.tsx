@@ -205,7 +205,9 @@ export const ShareDialog = ({
             <div className="flex gap-2">
               <Input readOnly value={url} />
               <Button
-                onClick={() => void copy()}
+                onClick={() => {
+                  void copy();
+                }}
                 type="button"
                 variant="outline"
               >
@@ -220,7 +222,9 @@ export const ShareDialog = ({
           ) : (
             <Button
               disabled={isGenerating}
-              onClick={() => void generate()}
+              onClick={() => {
+                void generate();
+              }}
               type="button"
             >
               {isGenerating && <Loader2Icon className="animate-spin" />}

@@ -58,7 +58,9 @@ const Example = () => {
           aria-label="Choose files to upload"
           className="hidden"
           multiple
-          onChange={(event) => void handleChange(event)}
+          onChange={(event) => {
+            void handleChange(event);
+          }}
           ref={inputRef}
           type="file"
         />

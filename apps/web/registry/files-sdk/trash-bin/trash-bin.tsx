@@ -156,7 +156,9 @@ export const TrashBin = ({ files, onChanged, className }: TrashBinProps) => {
             </div>
             <Button
               disabled={busy !== undefined}
-              onClick={() => void restore(item.key)}
+              onClick={() => {
+                void restore(item.key);
+              }}
               size="icon-sm"
               type="button"
               variant="ghost"
@@ -207,7 +209,9 @@ export const TrashBin = ({ files, onChanged, className }: TrashBinProps) => {
             </Button>
             <Button
               disabled={busy !== undefined}
-              onClick={() => void purge()}
+              onClick={() => {
+                void purge();
+              }}
               type="button"
               variant="destructive"
             >

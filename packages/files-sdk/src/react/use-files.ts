@@ -35,7 +35,7 @@ export interface UseFilesResult extends FilesClient {
   abort: (reason?: unknown) => void;
 }
 
-/* oxlint-disable react/react-compiler, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo and the lazy ref-init pattern (`if (ref.current === null) ref.current = …`) are required correctness, not dead weight */
+/* oxlint-disable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo and the lazy ref-init pattern (`if (ref.current === null) ref.current = …`) are required correctness, not dead weight */
 export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
   const optsRef = useRef(opts);
   optsRef.current = opts;
@@ -202,4 +202,4 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
     };
   }, [client, store, state]);
 };
-/* oxlint-enable react/react-compiler, react-doctor/react-compiler-no-manual-memoization */
+/* oxlint-enable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react-doctor/react-compiler-no-manual-memoization */

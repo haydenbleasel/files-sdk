@@ -77,17 +77,16 @@ interface DownloadResult {
   metadata?: Record<string, string>;
   readableStreamBody?: Readable;
 }
-const downloadMock = mock(
-  (): Promise<DownloadResult> =>
-    Promise.resolve({
-      ...baseProps(),
-      readableStreamBody: Readable.from([Buffer.from("hello")]),
-    })
+const downloadMock = mock((): Promise<DownloadResult> =>
+  Promise.resolve({
+    ...baseProps(),
+    readableStreamBody: Readable.from([Buffer.from("hello")]),
+  })
 );
 const downloadToBufferMock = mock(() => Promise.resolve(Buffer.from("hello")));
 const existsMock = mock(() => Promise.resolve(true));
-const getPropertiesMock = mock(
-  (): Promise<DownloadResult> => Promise.resolve(baseProps())
+const getPropertiesMock = mock((): Promise<DownloadResult> =>
+  Promise.resolve(baseProps())
 );
 const deleteIfExistsMock = mock(() => Promise.resolve({ succeeded: true }));
 const syncCopyFromURLMock = mock((_source: string) =>

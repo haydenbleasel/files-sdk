@@ -99,11 +99,12 @@ const limitBody = (
   body: ReadableStream<Uint8Array>;
   getError: () => RouterError | undefined;
 } => {
+  let limitError: RouterError | undefined;
+  const getError = () => limitError;
   if (maxSize === undefined) {
-    return { body, getError: () => void 0 };
+    return { body, getError };
   }
   let total = 0;
-  let limitError: RouterError | undefined;
   return {
     body: body.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
@@ -118,7 +119,7 @@ const limitBody = (
         },
       })
     ),
-    getError: () => limitError,
+    getError,
   };
 };
 

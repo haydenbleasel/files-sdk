@@ -66,8 +66,7 @@ const captureExit = (): Capture => {
   const origExit = process.exit.bind(process) as ExitFn;
   const origErr = process.stderr.write.bind(process.stderr) as WriteFn;
 
-  (process.stderr as { write: WriteFn }).write = ((_: unknown) =>
-    true) as WriteFn;
+  (process.stderr as { write: WriteFn }).write = (() => true) as WriteFn;
   (process as { exit: ExitFn }).exit = ((code?: number): never => {
     exits.push(code ?? 0);
     throw new Error(`__exit:${code ?? 0}`);

@@ -297,7 +297,7 @@ const makeRequestBuilder = (path: string) => {
       headers[k as string] = v as string;
       return builder;
     },
-    patch(_: unknown) {
+    patch() {
       throw new Error("PATCH not implemented in test fake");
     },
     post(body: unknown) {

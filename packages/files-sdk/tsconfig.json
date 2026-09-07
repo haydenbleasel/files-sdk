@@ -7,7 +7,12 @@
     // build scripts too. Setting `rootDir: "src"` made the typecheck fail every
     // non-src file with TS6059 ("not under rootDir").
     "outDir": "dist",
-    "types": ["bun", "@cloudflare/workers-types"],
+    // Not `@cloudflare/workers-types`: its ambient `index.d.ts` declares
+    // global `Buffer: any` / `process: any` (since 5.20260907), which would
+    // shadow @types/node's Buffer everywhere. The r2 adapter imports the R2
+    // types it needs explicitly, which resolves to the package's ES module
+    // (`index.ts`) and never loads the globals.
+    "types": ["bun"],
     "strictNullChecks": true
   },
   "include": ["src/**/*", "test/**/*", "scripts/**/*"]
