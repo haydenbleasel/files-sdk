@@ -10,8 +10,6 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
-  PartsResumableDriver,
-  ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
   StoredFile,
@@ -20,20 +18,18 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
-  deleteManyWithFallback,
   joinPublicUrl,
   rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
+import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
 import { s3FetchAdapter } from "../internal/s3-fetch.js";
 import { createStoredFile } from "../internal/stored-file.js";
-// Note: the s3 engine is *not* imported eagerly (and only its types are
-// referenced here). The aws-sdk HTTP path loads it via dynamic import on
-// first use so that a Worker bundle on the binding or fetch paths never
-// pulls in @aws-sdk/client-s3 (~500KB+). See `lazyS3` below.
-import type { S3Adapter, S3AdapterOptions } from "../s3/core.js";
+// Note: the s3 engine is *not* imported here. The aws-sdk HTTP path loads it
+// via `lazyS3Adapter` on first use so that a Worker bundle on the binding or
+// fetch paths never pulls in @aws-sdk/client-s3 (~500KB+).
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
@@ -162,38 +158,6 @@ export interface R2BindingOptions {
 export type R2AdapterOptions = R2BindingOptions | R2HttpOptions;
 
 export type R2Adapter = Adapter<S3Client | R2Bucket | AwsClient>;
-
-// Lazy-load the s3 engine via dynamic imports so a binding-only Worker
-// bundle doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). This goes
-// through the SDK-parameterized ../s3/core.js rather than ../s3/index.js:
-// consumer bundlers resolve even dynamically-reached chunks at build time,
-// so the entry's *static* `@aws-sdk/*` imports would hard-error against an
-// optional-peer placeholder when the SDK isn't installed (#105). Dynamic
-// specifiers stay unexecuted on the binding/fetch paths, so the placeholder
-// never throws. The returned function is single-shot: it builds the adapter
-// once on first call and returns the same promise on subsequent calls.
-const lazyS3 = (config: S3AdapterOptions): (() => Promise<S3Adapter>) => {
-  let promise: Promise<S3Adapter> | null = null;
-  // oxlint-disable-next-line react/function-component-definition -- not a React component; the rule misreads this returned thunk as one.
-  return () => {
-    if (!promise) {
-      promise = (async () => {
-        const [core, clientS3, presignedPost, requestPresigner] =
-          await Promise.all([
-            import("../s3/core.js"),
-            import("@aws-sdk/client-s3"),
-            import("@aws-sdk/s3-presigned-post"),
-            import("@aws-sdk/s3-request-presigner"),
-          ]);
-        return core.createS3Adapter(
-          { clientS3, presignedPost, requestPresigner },
-          config
-        );
-      })();
-    }
-    return promise;
-  };
-};
 
 const normalizeForR2 = async (
   body: Body,
@@ -623,36 +587,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     );
   }
 
-  // The aws-sdk engine is not workerd-compatible out of the box:
-  // @aws-sdk/client-s3's browser-targeted bundle resolves @aws-sdk/xml-builder's
-  // *browser* XML parser, which needs `DOMParser` — undefined in workerd. Every
-  // S3 XML parse (list, error bodies) then throws `DOMParser is not defined`
-  // at runtime, long after adapter construction. When the caller didn't pick
-  // a client, default to the fetch engine on workerd instead of failing there.
-  //
-  // `navigator.userAgent === "Cloudflare-Workers"` is the documented workerd
-  // check. `navigator` is absent on compatibility dates before 2022-03-21 or
-  // under the `no_global_navigator` flag; only *then* fall back to the
-  // workerd-only `WebSocketPair` global — Node-hosted Workers shims (Miniflare
-  // v2, jest-environment-miniflare) also define it, and `navigator` is the
-  // signal that tells them apart from the real thing.
-  //
-  // A `DOMParser` on the global is the one precondition the aws-sdk engine
-  // needs, and the standard workaround for this bug is to polyfill exactly
-  // that (linkedom, @xmldom/xmldom). Keep those deployments on the full
-  // engine — swapping them to fetch would silently drop multipart/resumable
-  // uploads, batched deletes, and `raw` as an `S3Client`.
-  const g = globalThis as {
-    DOMParser?: unknown;
-    WebSocketPair?: unknown;
-    navigator?: { userAgent?: string };
-  };
-  const onWorkerd = g.navigator
-    ? g.navigator.userAgent === "Cloudflare-Workers"
-    : typeof g.WebSocketPair === "function";
-  const awsSdkCanParseXml = typeof g.DOMParser === "function";
-  const client =
-    opts.client ?? (onWorkerd && !awsSdkCanParseXml ? "fetch" : "aws-sdk");
+  const client = resolveS3Engine(opts.client);
 
   // The lightweight engine: aws4fetch-signed fetch, no @aws-sdk/* anywhere.
   // The only R2-specific bit layered on top is the friendlier `maxSize`
@@ -683,160 +618,39 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
   }
 
   // The s3 adapter is loaded lazily via dynamic import — every method on
-  // this proxy `await`s the inner instance, and the import is memoized
-  // after the first hit. The trade-off vs. a static import: a Worker
-  // bundle that imports `files-sdk/r2` but only uses the binding path
-  // never includes @aws-sdk/client-s3. The cost is one extra microtask
-  // on first call and a `raw` getter that returns `undefined` until the
-  // import resolves (call any method first to force the load).
-  const getInner = lazyS3({
-    bucket: opts.bucket,
-    credentials: { accessKeyId, secretAccessKey },
-    defaultProviderMessage: "R2 error",
-    ...(opts.defaultUrlExpiresIn !== undefined && {
-      defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
-    }),
-    endpoint,
-    forcePathStyle: true,
-    ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
-    region: "auto",
-  });
-
-  let cachedRaw: S3Client | undefined;
-  const ensure = async (): Promise<S3Adapter> => {
-    const inner = await getInner();
-    cachedRaw ??= inner.raw;
-    return inner;
-  };
+  // the returned proxy `await`s the inner instance, and the import is
+  // memoized after the first hit. The trade-off vs. a static import: a
+  // Worker bundle that imports `files-sdk/r2` but only uses the binding
+  // path never includes @aws-sdk/client-s3. The cost is one extra
+  // microtask on first call and a `raw` getter that returns `undefined`
+  // until the import resolves (call any method first to force the load).
+  const inner = lazyS3Adapter(
+    {
+      bucket: opts.bucket,
+      credentials: { accessKeyId, secretAccessKey },
+      defaultProviderMessage: "R2 error",
+      ...(opts.defaultUrlExpiresIn !== undefined && {
+        defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+      }),
+      endpoint,
+      forcePathStyle: true,
+      ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
+      region: "auto",
+    },
+    "r2-http"
+  );
 
   return {
-    async copy(from, to, operationOpts) {
-      const adapter = await ensure();
-      return adapter.copy(from, to, operationOpts);
-    },
-    async delete(key, operationOpts) {
-      const adapter = await ensure();
-      return adapter.delete(key, operationOpts);
-    },
-    async deleteMany(keys, deleteOpts) {
-      const adapter = await ensure();
-      return (
-        adapter.deleteMany?.(keys, deleteOpts) ??
-        deleteManyWithFallback(keys, (key) => adapter.delete(key), deleteOpts)
-      );
-    },
-    async download(key, downloadOpts) {
-      const adapter = await ensure();
-      return adapter.download(key, downloadOpts);
-    },
-    async exists(key, operationOpts) {
-      const adapter = await ensure();
-      return adapter.exists(key, operationOpts);
-    },
-    async head(key, operationOpts) {
-      const adapter = await ensure();
-      return adapter.head(key, operationOpts);
-    },
-    async list(listOpts) {
-      const adapter = await ensure();
-      return adapter.list(listOpts);
-    },
-    name: "r2-http",
-    // `raw` reflects the underlying S3Client once the lazy import has
-    // resolved. Returns `undefined` if accessed before any method has
-    // run — call any method first (the import is memoized, so it's a
-    // one-time cost).
+    ...inner,
+    // Spreading snapshots the lazy `raw` getter as `undefined`; re-bind it.
     get raw(): S3Client {
-      return cachedRaw as S3Client;
+      return inner.raw;
     },
-    // `upload` delegates to the underlying S3 adapter, which reports
-    // byte-level progress via @aws-sdk/lib-storage when onProgress is set.
-    reportsUploadProgress: true,
-    // Resumable uploads delegate to the inner S3 driver. The driver must be
-    // returned synchronously, but the S3 adapter loads lazily — so wrap it:
-    // each async method awaits the (memoized) inner driver, and the sync
-    // `adopt` just stashes the token for the first async call to apply.
-    resumableUpload(key, resumableOpts): PartsResumableDriver {
-      let inner: PartsResumableDriver | undefined;
-      let stored: ResumableUploadSession | undefined;
-      let partSize = 5 * 1024 * 1024;
-      const build = async (): Promise<PartsResumableDriver> => {
-        if (!inner) {
-          const adapter = await ensure();
-          // The inner S3 adapter always defines `resumableUpload`.
-          inner = (
-            adapter.resumableUpload as NonNullable<
-              typeof adapter.resumableUpload
-            >
-          )(key, resumableOpts) as PartsResumableDriver;
-          if (stored) {
-            inner.adopt(stored);
-          }
-          ({ partSize } = inner);
-        }
-        return inner;
-      };
-      return {
-        adopt(session) {
-          stored = session;
-          if (session.provider === "s3") {
-            ({ partSize } = session);
-          }
-        },
-        begin: async (meta) => {
-          const driver = await build();
-          return driver.begin(meta);
-        },
-        complete: async (parts) => {
-          const driver = await build();
-          return driver.complete(parts);
-        },
-        discard: async () => {
-          if (inner || stored) {
-            const driver = await build();
-            await driver.discard();
-          }
-        },
-        mode: "parts",
-        get partSize() {
-          return inner?.partSize ?? partSize;
-        },
-        probe: async () => {
-          const driver = await build();
-          return driver.probe();
-        },
-        uploadPart: async (part) => {
-          const driver = await build();
-          return driver.uploadPart(part);
-        },
-      };
-    },
-    async signedUploadUrl(key, signOpts) {
+    signedUploadUrl(key, signOpts) {
       // Reject before loading the inner s3 adapter — `maxSize` is
       // unsupported on R2 regardless of whether the import has resolved.
       assertNoMaxSize(signOpts);
-      const adapter = await ensure();
-      return adapter.signedUploadUrl(key, signOpts);
-    },
-    // Upload/list/download all delegate to the inner S3 adapter, which honors
-    // `metadata`, `cacheControl`, ListObjectsV2 `Delimiter`, and `Range`
-    // against R2's S3-compatible API — so advertise the same capabilities the
-    // binding does (the binding sets these directly).
-    // HTTP mode signs via the underlying S3 signer (SigV4 GetObject).
-    signedUrl: { supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` delegates to the S3 adapter's server-side CopyObject.
-    supportsServerSideCopy: true,
-    async upload(key, body, uploadOpts) {
-      const adapter = await ensure();
-      return adapter.upload(key, body, uploadOpts);
-    },
-    async url(key, urlOpts) {
-      const adapter = await ensure();
-      return adapter.url(key, urlOpts);
+      return inner.signedUploadUrl(key, signOpts);
     },
   };
 };

@@ -636,3 +636,66 @@ describe("s3-fetch core — post-dispatch failures map to FilesError", () => {
     );
   });
 });
+
+const xmlError = (body: string, status: number) => () =>
+  Promise.resolve(
+    new Response(body, {
+      headers: { "content-type": "application/xml" },
+      status,
+    })
+  );
+
+describe("s3-fetch core — NoSuchBucket addressing hint (#155)", () => {
+  test("virtual-hosted NoSuchBucket points at forcePathStyle", async () => {
+    // A service without per-bucket DNS reads the key's first folder as the
+    // bucket — the fake models exactly that by matching on the path alone.
+    const fake = makeFakeS3();
+    const adapter = s3FetchAdapter({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      endpoint: "https://minio.example.com",
+      fetch: fake.fetchImpl,
+      secretAccessKey: "SECRET",
+    });
+    const error = await expectCode(
+      adapter.upload("org/a.txt", "hi"),
+      "NotFound"
+    );
+    expect(error.message).toStartWith("No such bucket");
+    expect(error.message).toContain("`forcePathStyle: true`");
+  });
+
+  test("path-style NoSuchBucket is a real missing bucket — no hint", async () => {
+    const fake = makeFakeS3("other-bucket");
+    const adapter = makeAdapter({ fetch: fake.fetchImpl });
+    const error = await expectCode(adapter.upload("a.txt", "hi"), "NotFound");
+    expect(error.message).toBe("No such bucket");
+  });
+
+  test("other codes under virtual-hosted addressing are untouched", async () => {
+    const adapter = s3FetchAdapter({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      endpoint: "https://s3.example.com",
+      fetch: xmlError(
+        "<Error><Code>NoSuchKey</Code><Message>No such key</Message></Error>",
+        404
+      ),
+      secretAccessKey: "SECRET",
+    });
+    const error = await expectCode(adapter.download("a.txt"), "NotFound");
+    expect(error.message).toBe("No such key");
+  });
+
+  test("a Message without a Code passes through verbatim", async () => {
+    const adapter = s3FetchAdapter({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      endpoint: "https://s3.example.com",
+      fetch: xmlError("<Error><Message>boom</Message></Error>", 500),
+      secretAccessKey: "SECRET",
+    });
+    const error = await expectCode(adapter.download("a.txt"), "Provider");
+    expect(error.message).toBe("boom");
+  });
+});

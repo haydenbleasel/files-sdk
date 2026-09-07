@@ -885,7 +885,7 @@ export const PROVIDERS = {
   },
   minio: {
     description:
-      "MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled.",
+      'MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled. `client: "fetch"` swaps in an @aws-sdk-free SigV4 fetch engine (the default inside Cloudflare Workers).',
     env: s3Compatible("MINIO_ACCESS_KEY_ID", "MINIO_SECRET_ACCESS_KEY", [
       "bucket",
       "endpoint",

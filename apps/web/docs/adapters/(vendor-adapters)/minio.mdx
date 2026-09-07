@@ -1,11 +1,17 @@
 ---
 title: MinIO
-description: MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled.
+description: MinIO and other self-hosted S3-compatible servers. Path-style addressing on by default; region defaulted; errors relabelled; optional @aws-sdk-free fetch client for Workers.
 ---
 
 ## Installation
 
-`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+The `@aws-sdk/*` packages are only needed for the `"aws-sdk"` client (the default outside Cloudflare Workers). The [lightweight fetch client](#lightweight-fetch-client) needs none of them - `files-sdk` alone is enough:
+
+```package-install
+files-sdk
+```
+
+For the `"aws-sdk"` client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -27,6 +33,38 @@ const files = new Files({
 });
 ```
 
+The `"aws-sdk"` client is loaded on first use, so `files.raw` is `undefined` until any method has run - call one first if you need the underlying `S3Client`.
+
+## Lightweight fetch client
+
+Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). No `@aws-sdk/*` packages are installed or bundled - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: minio({
+    bucket: "uploads",
+    endpoint: "https://minio.internal:9000",
+    client: "fetch",
+  }),
+});
+```
+
+Prefer this over pointing the generic [`s3Fetch()`](/docs/adapters/s3-fetch) at a MinIO server: it is the same engine, but MinIO's defaults ride along - path-style addressing (MinIO has no per-bucket DNS, so virtual-hosted requests surface as a misleading `NoSuchBucket`), the `us-east-1` signing region, and `MinIO error` labels.
+
+The fetch client covers `upload`, `download` (including [ranges](/docs/api/download#byte-ranges)), `head`, `exists`, `delete`, `list` (including `delimiter` folding), server-side `copy`, presigned `url()`, and `signedUploadUrl()`. Trade-offs against the `"aws-sdk"` client:
+
+- `ReadableStream` bodies are buffered in memory before a single PUT (a lone PUT needs a `Content-Length`, and single-request uploads cap at 5&nbsp;GB).
+- `multipart` and resumable (`control`) uploads throw instead of engaging the S3 multipart API.
+- Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests. On Workers each call is a subrequest, so chunk large bulk deletes to stay under the per-invocation subrequest cap.
+- `signedUploadUrl()` returns a presigned PUT; `maxSize` throws because enforcing it needs a presigned POST policy this engine doesn't implement.
+- Keys containing `.` or `..` path segments are rejected - URL normalization would silently sign a request for a different key.
+- Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
+- `files.raw` is the aws4fetch `AwsClient`, not an `S3Client`.
+
+### Default inside Cloudflare Workers
+
+Inside Cloudflare Workers the fetch client is the default. The `"aws-sdk"` client's XML parsing needs a `DOMParser`, which workerd doesn't provide, so it fails at runtime on the first list or error-body parse - long after construction. Detection uses `navigator.userAgent === "Cloudflare-Workers"`, or the workerd-only `WebSocketPair` global on compatibility dates where `navigator` is disabled. Two things keep the `"aws-sdk"` default even in a Worker: an explicit `client: "aws-sdk"`, and a `DOMParser` on the global (the usual polyfill workaround), since the SDK works once that is present.
+
 ## Options
 
 <AutoTypeTable
@@ -35,6 +73,8 @@ const files = new Files({
 />
 
 ## Compatibility
+
+### `client: "aws-sdk"` (default)
 
 | Method | Status | Notes |
 | --- | :-: | --- |
@@ -48,3 +88,18 @@ const files = new Files({
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
 | `signedUploadUrl` | ✅ |  |
+
+### `client: "fetch"`
+
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ⚠️ | Single PUT - `ReadableStream` bodies are buffered in memory first, and `multipart` / resumable `control` uploads throw. Multipart needs the `"aws-sdk"` client, which runs on Workers only with a `DOMParser` polyfill. |
+| `download` | ✅ |  |
+| `delete` | ✅ | Bulk deletes fan out per key (no batched `DeleteObjects`). |
+| `list` | ⚠️ | The S3 list API returns no per-object `Content-Type`, so `type` is inferred from the key's extension (`application/octet-stream` when unknown). Use `head()` for the stored value. |
+| `search` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ✅ |  |
+| `signedUploadUrl` | ⚠️ | PUT URL only - `maxSize` throws (no presigned POST policy). |

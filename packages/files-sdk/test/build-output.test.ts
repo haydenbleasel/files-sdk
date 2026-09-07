@@ -166,6 +166,20 @@ test(
   COLD_BUILD_TIMEOUT_MS
 );
 
+// minio() offers the same two engines as r2(); on the fetch engine a Worker
+// bundle must stay `@aws-sdk/*`-free, so the aws-sdk path is lazy (#155).
+test(
+  "minio bundle never statically imports an optional peer, even across dynamic chunks",
+  () => {
+    ensureBuilt();
+    const minioBundle = path.resolve(distDir, "minio/index.js");
+    expect(
+      offendingOptionalPeers(minioBundle, { followDynamic: true })
+    ).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
 // The firebase-storage entry reaches `firebase-admin` only through the
 // `createRequire` loader — invisible to bundlers — so an injected `Bucket`
 // works without the peer being resolvable. Guard against a top-level

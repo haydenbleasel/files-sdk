@@ -55,6 +55,8 @@ s3Fetch({
 });
 ```
 
+Get this wrong against such a service and the first request fails with a `NotFound` whose message names the wrong bucket: with no per-bucket DNS the server reads the key's first folder as the bucket name. The error message points at `forcePathStyle` when that happens. For MinIO specifically, prefer [`minio({ client: "fetch" })`](/docs/adapters/minio#lightweight-fetch-client) - the same engine with path style, region, and error labels already defaulted.
+
 Only the endpoint's origin is used; a path component is dropped. Front the service with a hostname rather than a route prefix.
 
 ## Trade-offs

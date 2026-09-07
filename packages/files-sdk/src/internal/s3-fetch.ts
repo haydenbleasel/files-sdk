@@ -266,12 +266,28 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     providerLabel,
   });
 
+  // A NoSuchBucket under virtual-hosted addressing is usually a routing
+  // mistake, not a missing bucket: services without per-bucket DNS (MinIO,
+  // LocalStack, most self-hosted gateways) read the first path segment as the
+  // bucket name, so the "missing" bucket is the key's first folder and the
+  // bare message sends people hunting the wrong thing (#155).
+  const ADDRESSING_HINT =
+    " Requests use virtual-hosted addressing (`https://<bucket>.<host>/<key>`); if the service has no per-bucket DNS (MinIO, LocalStack, most self-hosted gateways), pass `forcePathStyle: true`.";
+  const withAddressingHint = (code: string, message: string): string =>
+    code === "NoSuchBucket" && !opts.forcePathStyle
+      ? `${message}${ADDRESSING_HINT}`
+      : message;
+
   const errorFromXml = (xml: string, status: number): FilesError => {
-    const code = XML_CODE_RE.exec(xml)?.groups?.value;
-    const message = XML_MESSAGE_RE.exec(xml)?.groups?.value;
+    const rawCode = XML_CODE_RE.exec(xml)?.groups?.value;
+    const rawMessage = XML_MESSAGE_RE.exec(xml)?.groups?.value;
+    const code = rawCode && decodeXmlText(rawCode);
+    const message = rawMessage && decodeXmlText(rawMessage);
     return mapError({
-      ...(code && { code: decodeXmlText(code) }),
-      ...(message && { message: decodeXmlText(message) }),
+      ...(code && { code }),
+      ...(message && {
+        message: code ? withAddressingHint(code, message) : message,
+      }),
       status,
     });
   };
