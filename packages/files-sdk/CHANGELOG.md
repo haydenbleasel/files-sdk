@@ -1,5 +1,28 @@
 # files-sdk
 
+## 2.4.0
+
+### Minor Changes
+
+- 8d25273: minio: add the `client: "fetch"` engine (#155). `minio({ client: "fetch" })` runs on the same SigV4-signed `aws4fetch` core as `r2({ client: "fetch" })` and `s3Fetch()` — no `@aws-sdk/*` packages installed or bundled — while keeping MinIO's defaults: path-style addressing, the `us-east-1` signing region, and `MinIO error` labels. Pointing the generic `s3Fetch()` at MinIO dropped those, and the virtual-hosted default then surfaced as a misleading `NotFound: The specified bucket does not exist` (MinIO has no per-bucket DNS, so it reads the key's first folder as the bucket). Inside Cloudflare Workers the fetch engine is now the default, exactly as for `r2()`: the aws-sdk engine's XML parsing needs `DOMParser`, which workerd lacks; an explicit `client: "aws-sdk"` or a `DOMParser` polyfill keeps the SDK engine. A `fetch` option overrides the fetch implementation for tests and instrumented runtimes.
+  
+  The `"aws-sdk"` engine behind `minio()` is now loaded lazily on first use, so a Worker bundle on the fetch engine never includes `@aws-sdk/client-s3`. One visible consequence: `files.raw` is `undefined` until any method has run — call one first if you read the underlying `S3Client` directly.
+  
+  s3-fetch: a `NoSuchBucket` error received under virtual-hosted addressing now appends a hint to pass `forcePathStyle: true`, since on services without per-bucket DNS (MinIO, LocalStack, most self-hosted gateways) that error almost always means the bucket landed in the hostname rather than that it is missing.
+
+### Patch Changes
+
+- 248443a: Type-evidence pass across the SDK (adopting the `anti-slop` lint rules): every remaining type assertion now states the invariant that makes it hold, `unknown` no longer leaks through internal signatures, and runtime `typeof` probes go through named predicates. Along the way this surfaced and fixed a few real defects:
+  
+  - `box()`: `lastModified` was silently dropped on real responses. The Box SDK deserializes `modified_at` into a date wrapper (`{ value: Date }`), and the adapter was reading it as an ISO string, so `new Date(...)` produced an Invalid Date. Both the wrapper and the string form are now unwrapped correctly.
+  - `getProvider()` no longer resolves `Object.prototype` names: `getProvider("constructor")` returned `Object.prototype.constructor` instead of `undefined`.
+  - Provider error mappers (Vercel Blob, UploadThing, Bunny, PocketBase, Supabase, Cloudinary, Netlify) only adopt `message`/`status`/`code`/`name` from a thrown value when they have the expected primitive type, instead of copying whatever was there into the `FilesError`.
+  - `supabase()`'s client detection no longer treats `{ storage: null }` as a Supabase client.
+  - CLI: `--to` and `--config-json` values that decode to a non-object JSON value (an array, a string, a number) are rejected up front with a clear message instead of failing later or being spread character-by-character into the adapter options.
+  
+  No public type changes in meaning. Two parameter _names_ in exported types changed from `reason` to `cause` (`UploadControl.abort` and the `abort` returned by `useFiles`), which does not affect assignability.
+- 55a1b3b: Widen optional peer ranges to the current majors: `@google-cloud/storage` 8, `@googleapis/drive` 21–22, `@netlify/blobs` 11, `@openai/agents` 0.12–0.17, `ai` 7, `astro` 7, `disk` 1, `google-auth-library` 11, `node-appwrite` 29 and `openai` 7. Refresh all dev/runtime dependencies (`picomatch` 4.0.7, `p-map` 7.0.7).
+
 ## 2.3.1
 
 ### Patch Changes
