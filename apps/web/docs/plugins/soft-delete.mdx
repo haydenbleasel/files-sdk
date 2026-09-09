@@ -1,9 +1,9 @@
 ---
 title: soft-delete
-description: Turn delete into a recoverable move into a hidden trash prefix, with trashed(), restore(), and purge() - body-transparent, works on any adapter.
+description: Turn delete into a recoverable move into a hidden trash prefix, with trashed(), restoreTrashed(), and purge() - body-transparent, works on any adapter.
 ---
 
-The built-in `softDelete()` plugin gives you a recycle bin. Instead of destroying an object, [`delete`](/docs/api/delete) server-side **moves** it to a hidden trash prefix; the bytes only ever leave storage when you `purge()`. Three new methods - `trashed()`, `restore()`, and `purge()` - let you list, recover, and permanently remove what's been deleted.
+The built-in `softDelete()` plugin gives you a recycle bin. Instead of destroying an object, [`delete`](/docs/api/delete) server-side **moves** it to a hidden trash prefix; the bytes only ever leave storage when you `purge()`. Three new methods - `trashed()`, `restoreTrashed()`, and `purge()` - let you list, recover, and permanently remove what's been deleted.
 
 Like [`versioning()`](/docs/plugins/versioning), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
 
@@ -21,11 +21,11 @@ await files.upload("notes.txt", "hi");
 await files.delete("notes.txt"); // moved to .trash/notes.txt, not destroyed
 
 await files.trashed(); // [{ key: "notes.txt", trashKey: ".trash/notes.txt", … }]
-await files.restore("notes.txt"); // back to "notes.txt"
+await files.restoreTrashed("notes.txt"); // back to "notes.txt"
 ```
 
 :::note
-`trashed()`, `restore()`, and `purge()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime).
+`trashed()`, `restoreTrashed()`, and `purge()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime).
 :::
 
 ## How it works
@@ -40,18 +40,18 @@ Because a move relocates whatever is **already stored**, the plugin composes cle
 
 ## Restoring
 
-`restore(key)` moves the trashed copy back over the live key and resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring also clears the copy from the trash:
+`restoreTrashed(key)` moves the trashed copy back over the live key and resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring also clears the copy from the trash:
 
 ```ts lineNumbers
 await files.delete("report.pdf");
-await files.restore("report.pdf"); // undeletes it
+await files.restoreTrashed("report.pdf"); // undeletes it
 ```
 
 If a live object already exists at `key` - say you re-created it after the delete - restoring **overwrites** it. It throws when nothing is trashed for the key.
 
 ## Listing the trash
 
-`trashed()` returns everything currently in the trash, each entry carrying the original `key` you'd pass to `restore()` or `purge()`:
+`trashed()` returns everything currently in the trash, each entry carrying the original `key` you'd pass to `restoreTrashed()` or `purge()`:
 
 ```ts lineNumbers
 const items = await files.trashed();
@@ -92,6 +92,12 @@ Soft delete operates on logical keys and relocates whatever the rest of the pipe
 
 ```ts
 plugins: [softDelete(), encryption(key)];
+```
+
+The one plugin that goes **before** it is [`versioning()`](/docs/plugins/versioning): place versioning outermost so deletes are snapshotted as well as trashed, and pass it the trash prefix as `ignore` so a `purge()` isn't itself versioned. See [pairing with soft delete](/docs/plugins/versioning#pairing-with-soft-delete):
+
+```ts
+plugins: [versioning({ ignore: [".trash"] }), softDelete()];
 ```
 
 ## Things to keep in mind

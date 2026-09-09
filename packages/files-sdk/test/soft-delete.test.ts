@@ -88,7 +88,7 @@ describe("soft-delete plugin — restore", () => {
     await files.upload("notes.txt", "hi");
     await files.delete("notes.txt");
 
-    const restored = await files.restore("notes.txt");
+    const restored = await files.restoreTrashed("notes.txt");
     expect(restored.key).toBe("notes.txt");
     expect(await bodyOf(files, "notes.txt")).toBe("hi");
     // Restoring removes it from the trash.
@@ -101,13 +101,13 @@ describe("soft-delete plugin — restore", () => {
     await files.delete("k.txt");
     await files.upload("k.txt", "new");
 
-    await files.restore("k.txt");
+    await files.restoreTrashed("k.txt");
     expect(await bodyOf(files, "k.txt")).toBe("old");
   });
 
   test("throws when nothing is trashed for the key", async () => {
     const files = withSoftDelete();
-    await expect(files.restore("never.txt")).rejects.toThrow(
+    await expect(files.restoreTrashed("never.txt")).rejects.toThrow(
       /nothing trashed for "never\.txt"/u
     );
   });
@@ -284,7 +284,7 @@ describe("soft-delete plugin — bulk delete", () => {
     expect(result.deleted).toEqual(["a.txt", "b.txt"]);
     expect(await files.list().then((r) => r.items)).toEqual([]);
 
-    await files.restore("a.txt");
+    await files.restoreTrashed("a.txt");
     expect(await bodyOf(files, "a.txt")).toBe("1");
   });
 });

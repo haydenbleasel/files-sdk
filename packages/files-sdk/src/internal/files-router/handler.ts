@@ -289,10 +289,10 @@ const filtered = (scope: Scope, keys: string[]): string[] =>
 /**
  * The optional methods `versioning()` / `softDelete()` graft onto a `Files`
  * instance. They aren't on the base `Files` type, so the handler feature-detects
- * them and 422s when the matching plugin isn't configured. `restore` is shared:
- * `versioning` takes `(key, versionId?)`, `softDelete` takes `(key)`. When both
- * plugins wrap one instance the outermost owns `restore` — an inherent property
- * of the plugin model, not the gateway.
+ * them and 422s when the matching plugin isn't configured. The two restores are
+ * namespaced — `restoreVersion(key, versionId?)` from `versioning`,
+ * `restoreTrashed(key)` from `softDelete` — so both plugins can sit on one
+ * instance and each wire op maps to exactly one method.
  */
 interface PluginMethods {
   versions?: (key: string) => Promise<
@@ -303,10 +303,11 @@ interface PluginMethods {
       etag?: string;
     }[]
   >;
+  restoreVersion?: (key: string, versionId?: string) => Promise<StoredFile>;
   trashed?: () => Promise<
     { key: string; size: number; lastModified?: number; etag?: string }[]
   >;
-  restore?: (key: string, versionId?: string) => Promise<StoredFile>;
+  restoreTrashed?: (key: string) => Promise<StoredFile>;
   purge?: (key?: string) => Promise<void>;
 }
 
@@ -655,12 +656,13 @@ const dispatchJson = async (
         params: { versionId },
       });
       const plugin = pluginMethods(ctx);
-      // Disambiguate the shared `restore` via `versions`, which only `versioning`
-      // adds — so a softDelete-only instance 422s instead of silently restoring.
-      if (!isFunction(plugin.versions) || !isFunction(plugin.restore)) {
+      if (!isFunction(plugin.restoreVersion)) {
         return notConfigured("versioning");
       }
-      const file = await plugin.restore(scopeKey(scope.prefix, key), versionId);
+      const file = await plugin.restoreVersion(
+        scopeKey(scope.prefix, key),
+        versionId
+      );
       return json({ file: storedFileToWire(file, unscoper(scope)) });
     }
     case "trashed": {
@@ -694,11 +696,10 @@ const dispatchJson = async (
         params: {},
       });
       const plugin = pluginMethods(ctx);
-      // `trashed` is softDelete-only, disambiguating the shared `restore`.
-      if (!isFunction(plugin.trashed) || !isFunction(plugin.restore)) {
+      if (!isFunction(plugin.restoreTrashed)) {
         return notConfigured("softDelete");
       }
-      const file = await plugin.restore(scopeKey(scope.prefix, key));
+      const file = await plugin.restoreTrashed(scopeKey(scope.prefix, key));
       return json({ file: storedFileToWire(file, unscoper(scope)) });
     }
     case "purge": {

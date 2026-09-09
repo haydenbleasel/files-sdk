@@ -14,11 +14,11 @@ import { FilesError } from "../internal/errors.js";
 /**
  * A trashed object, as returned by {@link SoftDeleteApi.trashed}. Pass its
  * {@link TrashedFile.key} (the original, live key) back to
- * {@link SoftDeleteApi.restore} to bring it back, or
+ * {@link SoftDeleteApi.restoreTrashed} to bring it back, or
  * {@link SoftDeleteApi.purge} to delete it for good.
  */
 export interface TrashedFile {
-  /** The original key the object was deleted from — hand it to `restore()` / `purge()`. */
+  /** The original key the object was deleted from — hand it to `restoreTrashed()` / `purge()`. */
   key: string;
   /** The underlying storage key the trashed copy lives at, under the trash prefix. */
   trashKey: string;
@@ -44,7 +44,7 @@ export interface TrashedFile {
 export type SoftDeleteApi = {
   /**
    * List everything currently in the trash, each entry carrying the original
-   * `key` you'd pass to {@link SoftDeleteApi.restore}. Returns an empty array
+   * `key` you'd pass to {@link SoftDeleteApi.restoreTrashed}. Returns an empty array
    * when the trash is empty.
    */
   trashed: () => Promise<TrashedFile[]>;
@@ -54,7 +54,7 @@ export type SoftDeleteApi = {
    * nothing is trashed for `key`. A live object at `key` (e.g. one re-created
    * after the delete) is overwritten.
    */
-  restore: (key: string) => Promise<StoredFile>;
+  restoreTrashed: (key: string) => Promise<StoredFile>;
   /**
    * Permanently delete a trashed object — the one for `key`, or the **entire**
    * trash when `key` is omitted. Idempotent: purging a key with nothing trashed
@@ -94,7 +94,7 @@ const normalizeDir = (prefix: string): string => {
 
 /**
  * Turn `delete` into a recoverable move into a trash prefix, and add `trashed()`
- * / `restore()` / `purge()` so you can list, recover, and permanently remove
+ * / `restoreTrashed()` / `purge()` so you can list, recover, and permanently remove
  * what's been deleted. Instead of destroying an object, a `delete` server-side
  * **moves** it to a time-of-deletion copy under a trash prefix (`.trash/` by
  * default); the bytes only ever leave storage when you `purge()`.
@@ -106,7 +106,7 @@ const normalizeDir = (prefix: string): string => {
  * **first** (outermost): `plugins: [softDelete(), encryption(key)]`.
  *
  * It uses `extend`, so reach for {@link createFiles} to surface
- * `files.trashed()` / `files.restore()` / `files.purge()` on the type.
+ * `files.trashed()` / `files.restoreTrashed()` / `files.purge()` on the type.
  *
  * Trade-offs, by design:
  * - **One copy per key.** A delete relocates to `"<prefix>/<key>"`, so deleting
@@ -119,6 +119,10 @@ const normalizeDir = (prefix: string): string => {
  *   trashed; it's a safety net, not a security control, so it doesn't fail
  *   closed the way `validation()` does.
  * - **Trash grows until you `purge()`.** Nothing expires on its own.
+ * - **Pairs with `versioning()`, versioning outermost.** Put `versioning()`
+ *   before this plugin so deletes are snapshotted, and hand it the trash prefix
+ *   as `ignore` so a `purge()` isn't itself versioned:
+ *   `plugins: [versioning({ ignore: [".trash"] }), softDelete()]`.
  *
  * @param options optional `{ prefix }` — where trashed objects live.
  * @example
@@ -136,7 +140,7 @@ const normalizeDir = (prefix: string): string => {
  * await files.delete("notes.txt"); // moved to .trash/notes.txt, not destroyed
  *
  * await files.trashed(); // [{ key: "notes.txt", trashKey: ".trash/notes.txt", … }]
- * await files.restore("notes.txt"); // back to "notes.txt"
+ * await files.restoreTrashed("notes.txt"); // back to "notes.txt"
  * await files.delete("notes.txt");
  * await files.purge("notes.txt"); // now it's really gone
  * ```
@@ -303,7 +307,7 @@ export const softDelete = (
   return {
     extend: (files) => ({
       purge: (key) => purge(files, key),
-      restore: (key) => restore(files, key),
+      restoreTrashed: (key) => restore(files, key),
       trashed: () => listTrashed(files),
     }),
     name: "soft-delete",

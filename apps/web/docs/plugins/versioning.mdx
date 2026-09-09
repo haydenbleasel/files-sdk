@@ -1,9 +1,9 @@
 ---
 title: versioning
-description: Snapshot an object's prior bytes before every overwrite or delete and roll a key back with versions() and restore() - server-side, body-transparent.
+description: Snapshot an object's prior bytes before every overwrite or delete and roll a key back with versions() and restoreVersion() - server-side, body-transparent.
 ---
 
-The built-in `versioning()` plugin keeps a history of every object. Before an [`upload`](/docs/api/upload), [`delete`](/docs/api/delete), or the destination of a [`copy`](/docs/api/copy) / [`move`](/docs/api/move) clobbers an existing object, it server-side-copies the current bytes to a time-stamped key under a hidden version prefix. Two new methods - `versions()` and `restore()` - let you list that history and roll a key back.
+The built-in `versioning()` plugin keeps a history of every object. Before an [`upload`](/docs/api/upload), [`delete`](/docs/api/delete), or the destination of a [`copy`](/docs/api/copy) / [`move`](/docs/api/move) clobbers an existing object, it server-side-copies the current bytes to a time-stamped key under a hidden version prefix. Two new methods - `versions()` and `restoreVersion()` - let you list that history and roll a key back.
 
 Unlike [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression), it's **body-transparent**: it never buffers, transforms, or even reads the body, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies** and works on any adapter.
 
@@ -21,11 +21,11 @@ await files.upload("notes.txt", "v1");
 await files.upload("notes.txt", "v2"); // "v1" snapshotted first
 
 const [previous] = await files.versions("notes.txt");
-await files.restore("notes.txt", previous.versionId); // back to "v1"
+await files.restoreVersion("notes.txt", previous.versionId); // back to "v1"
 ```
 
 :::note
-`versions()` and `restore()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime). `versioning()` is the first built-in plugin to use `extend`.
+`versions()` and `restoreVersion()` are contributed by the plugin's `extend`, so they only appear on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles) (identical to `new Files()` at runtime). `versioning()` is the first built-in plugin to use `extend`.
 :::
 
 ## How it works
@@ -42,25 +42,25 @@ Because snapshots are copies of whatever is **already stored**, the plugin compo
 
 ## Restoring
 
-`restore(key, versionId?)` copies a version back over the live key. Omit the `versionId` to restore the **newest** version - an undo of the last change:
+`restoreVersion(key, versionId?)` copies a version back over the live key. Omit the `versionId` to restore the **newest** version - an undo of the last change:
 
 ```ts lineNumbers
 await files.upload("report.pdf", v1);
 await files.upload("report.pdf", v2); // overwrites; v1 is snapshotted
 
-await files.restore("report.pdf"); // back to v1
+await files.restoreVersion("report.pdf"); // back to v1
 ```
 
 A restore **snapshots the current bytes first**, so it's itself reversible - you can always roll forward again. It resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring works after a delete too, since the delete was snapshotted:
 
 ```ts lineNumbers
 await files.delete("report.pdf");
-await files.restore("report.pdf"); // undeletes it
+await files.restoreVersion("report.pdf"); // undeletes it
 ```
 
 ## Listing history
 
-`versions(key)` returns the saved versions **newest-first**, each with the `versionId` you pass to `restore()`:
+`versions(key)` returns the saved versions **newest-first**, each with the `versionId` you pass to `restoreVersion()`:
 
 ```ts lineNumbers
 const history = await files.versions("report.pdf");
@@ -80,7 +80,7 @@ By default history grows unbounded. Set `limit` to keep only the newest N versio
 versioning({ limit: 20 });
 ```
 
-A `restore()` under a `limit` prunes only **after** the restored bytes have landed, so restoring the oldest kept version (or the only one, with `limit: 1`) always works - the restore's own snapshot of the current bytes is what takes the freed slot.
+A `restoreVersion()` under a `limit` prunes only **after** the restored bytes have landed, so restoring the oldest kept version (or the only one, with `limit: 1`) always works - the restore's own snapshot of the current bytes is what takes the freed slot.
 
 ## Choosing the prefix
 
@@ -92,6 +92,16 @@ versioning({ prefix: ".history" });
 
 Objects under the version prefix are **hidden from [`list()`](/docs/api/list)** so snapshots don't clutter your listings - unless you explicitly list within the prefix (which is how `versions()` reads them). Filtering preserves the page `cursor`, so [pagination](/docs/api/list) still resumes correctly; pages may just come back shorter.
 
+## Leaving prefixes un-versioned
+
+Pass `ignore` to skip snapshots for keys under the given prefixes, on top of the version prefix itself. Writes and deletes there pass straight through:
+
+```ts
+versioning({ ignore: [".trash"] });
+```
+
+Its main use is keeping another plugin's housekeeping out of the history - see [pairing with soft delete](#pairing-with-soft-delete) below.
+
 ## Ordering
 
 Versioning operates on logical keys and snapshots whatever the rest of the pipeline stored, so place it **first** (outermost):
@@ -99,6 +109,26 @@ Versioning operates on logical keys and snapshots whatever the rest of the pipel
 ```ts
 plugins: [versioning(), compression(), encryption(key)];
 ```
+
+## Pairing with soft delete
+
+Version history and a recycle bin are a common pair, and both plugins can sit on one instance. Put `versioning()` **before** [`softDelete()`](/docs/plugins/soft-delete) and hand it the trash prefix as `ignore`:
+
+```ts lineNumbers
+const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [versioning({ ignore: [".trash"] }), softDelete()],
+});
+
+await files.delete("report.pdf"); // snapshotted, then moved to the trash
+await files.restoreTrashed("report.pdf"); // back from the trash
+await files.restoreVersion("report.pdf"); // or roll back to the last version
+await files.purge("report.pdf"); // after a delete: bytes really leave storage
+```
+
+The order matters. With versioning outermost, a `delete` is snapshotted **and** trashed, so the last bytes survive a purge as a version. The other way round, versioning only sees the move into the trash and snapshots nothing, so a `purge()` destroys the last write for good.
+
+The `ignore` matters too. A `purge()` is a real `delete` of the trash key, which versioning would otherwise snapshot into `.versions/.trash/…` - a copy nothing lists and nothing reclaims. Ignoring the trash prefix keeps a purge a purge.
 
 ## Things to keep in mind
 

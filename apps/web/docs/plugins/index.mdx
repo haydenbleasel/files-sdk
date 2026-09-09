@@ -34,12 +34,12 @@ A set of plugins ships with the SDK, each as its own subpath export:
 - [`encryption()`](/docs/plugins/encryption) - envelope AES-256-GCM encryption at rest.
 - [`compression()`](/docs/plugins/compression) - gzip/deflate bodies via Compression Streams.
 - [`validation()`](/docs/plugins/validation) - fail-closed size, MIME, and key guards on writes.
-- [`versioning()`](/docs/plugins/versioning) - snapshot on overwrite/delete, with `versions()` and `restore()`.
+- [`versioning()`](/docs/plugins/versioning) - snapshot on overwrite/delete, with `versions()` and `restoreVersion()`.
 - [`contentType()`](/docs/plugins/content-type) - magic-byte sniffing that sets and guards `Content-Type`.
 - [`dedup()`](/docs/plugins/dedup) - content-addressed storage that shares identical blobs.
 - [`usage()`](/docs/plugins/usage) - meter operations and bytes up/down, optionally grouped.
 - [`tracing()`](/docs/plugins/tracing) - an OpenTelemetry span per operation.
-- [`softDelete()`](/docs/plugins/soft-delete) - a trash-prefix recycle bin with restore and purge.
+- [`softDelete()`](/docs/plugins/soft-delete) - a trash-prefix recycle bin with `trashed()`, `restoreTrashed()`, and `purge()`.
 - [`audit()`](/docs/plugins/audit) - a durable who/what/when log of mutations.
 - [`cache()`](/docs/plugins/cache) - LRU/KV caching for `head()`, `url()`, and small downloads.
 - [`tiering()`](/docs/plugins/tiering) - route hot and cold keys to different backends.
@@ -160,7 +160,7 @@ const files = createFiles({
 files.usage(); // ✅ typed
 ```
 
-The built-in [`versioning()`](/docs/plugins/versioning) plugin is a real example of this - it uses `extend` to add `files.versions()` and `files.restore()`, so you construct it with `createFiles`.
+The built-in [`versioning()`](/docs/plugins/versioning) plugin is a real example of this - it uses `extend` to add `files.versions()` and `files.restoreVersion()`, so you construct it with `createFiles`. Extension names must be unique across the plugins on one instance (the constructor throws on a collision), which is why the built-in restores are namespaced: `restoreVersion()` from `versioning()`, `restoreTrashed()` from `softDelete()`.
 
 ## Things to keep in mind
 

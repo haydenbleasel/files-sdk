@@ -74,7 +74,7 @@ describe("versioning plugin — snapshots on delete, copy, move", () => {
     await files.delete("gone.txt");
 
     expect(await files.exists("gone.txt")).toBe(false);
-    await files.restore("gone.txt");
+    await files.restoreVersion("gone.txt");
     expect(await bodyOf(files, "gone.txt")).toBe("bye");
   });
 
@@ -116,7 +116,7 @@ describe("versioning plugin — restore", () => {
     await files.upload("doc", "one");
     await files.upload("doc", "two");
 
-    const restored = await files.restore("doc");
+    const restored = await files.restoreVersion("doc");
     expect(restored.key).toBe("doc");
     expect(await bodyOf(files, "doc")).toBe("one");
   });
@@ -131,7 +131,7 @@ describe("versioning plugin — restore", () => {
     const versions = await files.versions("doc");
     const oldest = versions.at(-1);
     expect(oldest).toBeDefined();
-    await files.restore("doc", oldest?.versionId);
+    await files.restoreVersion("doc", oldest?.versionId);
     expect(await bodyOf(files, "doc")).toBe("one");
   });
 
@@ -142,7 +142,7 @@ describe("versioning plugin — restore", () => {
     await files.upload("doc", "two");
 
     // Live becomes "one"; "two" gets snapshotted on the way.
-    await files.restore("doc");
+    await files.restoreVersion("doc");
     expect(await bodyOf(files, "doc")).toBe("one");
 
     const versions = await files.versions("doc");
@@ -152,7 +152,7 @@ describe("versioning plugin — restore", () => {
 
   test("throws when the key has no versions", async () => {
     const files = withVersioning();
-    await expect(files.restore("never.txt")).rejects.toThrow(
+    await expect(files.restoreVersion("never.txt")).rejects.toThrow(
       /no versions to restore for "never\.txt"/u
     );
   });
@@ -161,7 +161,7 @@ describe("versioning plugin — restore", () => {
     const files = withVersioning();
     await files.upload("doc", "one");
     await files.upload("doc", "two");
-    await expect(files.restore("doc", "nope")).rejects.toThrow(
+    await expect(files.restoreVersion("doc", "nope")).rejects.toThrow(
       /no version "nope" for "doc"/u
     );
   });
@@ -277,7 +277,7 @@ describe("versioning plugin — limit", () => {
     // The restore's own snapshot (of "v2") pushes the sole kept version past
     // the limit; pruning it before the copy would fail the restore and destroy
     // the version. The restore must land first, then the limit applies.
-    await files.restore("k");
+    await files.restoreVersion("k");
     expect(await bodyOf(files, "k")).toBe("v1");
     const versions = await files.versions("k");
     expect(versions).toHaveLength(1);
@@ -293,7 +293,7 @@ describe("versioning plugin — limit", () => {
     const before = await files.versions("k");
     expect(before).toHaveLength(2);
     const oldest = before.at(-1);
-    await files.restore("k", oldest?.versionId);
+    await files.restoreVersion("k", oldest?.versionId);
     expect(await bodyOf(files, "k")).toBe("v1");
     // The oldest version was consumed by the prune only after it was copied
     // back; the two newest snapshots ("v2" and the pre-restore "v3") remain.
@@ -380,7 +380,7 @@ describe("versioning plugin — bulk operations", () => {
 
     expect(result.deleted).toEqual(["gone.txt"]);
     expect(await files.exists("gone.txt")).toBe(false);
-    await files.restore("gone.txt");
+    await files.restoreVersion("gone.txt");
     expect(await bodyOf(files, "gone.txt")).toBe("bye");
   });
 });
@@ -410,7 +410,7 @@ describe("versioning plugin — nested keys", () => {
     await files.upload("a/b", "ab-v1");
     await files.upload("a/b", "ab-v2");
 
-    await files.restore("a");
+    await files.restoreVersion("a");
     expect(await bodyOf(files, "a")).toBe("a-v1");
   });
 
@@ -422,9 +422,9 @@ describe("versioning plugin — nested keys", () => {
     await files.upload("a/b", "ab-v2");
 
     const [nested] = await files.versions("a/b");
-    await expect(files.restore("a", `b/${nested?.versionId}`)).rejects.toThrow(
-      /version ids never contain/u
-    );
+    await expect(
+      files.restoreVersion("a", `b/${nested?.versionId}`)
+    ).rejects.toThrow(/version ids never contain/u);
   });
 
   test("pruning a key leaves a nested key's snapshots alone", async () => {

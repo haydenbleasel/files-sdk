@@ -13,11 +13,11 @@ import { FilesError } from "../internal/errors.js";
 
 /**
  * A saved snapshot of a key, as returned by {@link VersioningApi.versions}.
- * Pass {@link FileVersion.versionId} back to {@link VersioningApi.restore} to
+ * Pass {@link FileVersion.versionId} back to {@link VersioningApi.restoreVersion} to
  * roll a key back to this point.
  */
 export interface FileVersion {
-  /** Opaque, time-ordered id for this version; hand it to `restore()`. */
+  /** Opaque, time-ordered id for this version; hand it to `restoreVersion()`. */
   versionId: string;
   /** The underlying storage key this snapshot lives at, under the version prefix. */
   key: string;
@@ -39,7 +39,7 @@ export interface FileVersion {
 export type VersioningApi = {
   /**
    * List the saved versions of `key`, **newest first**. Each entry's
-   * `versionId` can be passed to {@link VersioningApi.restore}. Returns an empty
+   * `versionId` can be passed to {@link VersioningApi.restoreVersion}. Returns an empty
    * array when the key has no history.
    */
   versions: (key: string) => Promise<FileVersion[]>;
@@ -52,7 +52,7 @@ export type VersioningApi = {
    * (via `head`). Throws when the key has no versions, or the given
    * `versionId` doesn't exist.
    */
-  restore: (key: string, versionId?: string) => Promise<StoredFile>;
+  restoreVersion: (key: string, versionId?: string) => Promise<StoredFile>;
 };
 
 export interface VersioningOptions {
@@ -69,6 +69,14 @@ export interface VersioningOptions {
    * grows unbounded). Must be a positive integer.
    */
   limit?: number;
+  /**
+   * Key prefixes that are never snapshotted, in addition to the version prefix
+   * itself. Writes and deletes under these pass through un-versioned. Use it to
+   * keep another plugin's housekeeping out of the history — most usefully
+   * `softDelete()`'s trash, so a `purge()` really frees the bytes instead of
+   * versioning them: `versioning({ ignore: [".trash"] })`.
+   */
+  ignore?: string[];
 }
 
 /** Pad ms-epoch times to a fixed width so version ids sort chronologically. */
@@ -122,6 +130,10 @@ const ownVersionId = (listedKey: string, dir: string): string | undefined => {
   return id.includes("/") ? undefined : id;
 };
 
+/** Whether `key` is `dir` itself or lives anywhere beneath it. */
+const under = (key: string, dir: string): boolean =>
+  key === dir || key.startsWith(`${dir}/`);
+
 /** Recover the source object's last-modified time from a {@link versionId}. */
 const timeOf = (id: string): number => {
   const dash = id.indexOf("-");
@@ -132,7 +144,7 @@ const timeOf = (id: string): number => {
 
 /**
  * Snapshot the prior bytes of any object before an overwrite or delete, and add
- * `versions()` / `restore()` so you can roll a key back. Before an `upload`,
+ * `versions()` / `restoreVersion()` so you can roll a key back. Before an `upload`,
  * `delete`, or the destination of a `copy` / `move` clobbers an existing object,
  * the plugin server-side-copies it to a time-stamped key under a version prefix
  * (`.versions/` by default); the live object is untouched.
@@ -146,7 +158,7 @@ const timeOf = (id: string): number => {
  * `plugins: [versioning(), compression(), encryption(key)]`.
  *
  * This is the first plugin to use `extend`, so reach for {@link createFiles} to
- * surface `files.versions()` / `files.restore()` on the type.
+ * surface `files.versions()` / `files.restoreVersion()` on the type.
  *
  * Trade-offs, by design:
  * - **A `head` + `copy` per overwrite/delete.** Snapshotting costs two extra
@@ -159,9 +171,13 @@ const timeOf = (id: string): number => {
  * - **`move` snapshots only its destination.** A rename relocates the bytes
  *   rather than destroying them, so the source isn't snapshotted.
  * - **History is unbounded** unless you set `limit`.
+ * - **Pairs with `softDelete()`, versioning outermost.** Place it before the
+ *   trash plugin so deletes are snapshotted, and pass the trash prefix as
+ *   `ignore` so a `purge()` isn't itself versioned:
+ *   `plugins: [versioning({ ignore: [".trash"] }), softDelete()]`.
  *
- * @param options optional `{ prefix, limit }` — where snapshots live and how
- *   many to keep per key.
+ * @param options optional `{ prefix, limit, ignore }` — where snapshots live,
+ *   how many to keep per key, and which prefixes to leave un-versioned.
  * @example
  * ```ts
  * import { createFiles } from "files-sdk";
@@ -177,13 +193,14 @@ const timeOf = (id: string): number => {
  * await files.upload("notes.txt", "v2"); // "v1" snapshotted first
  *
  * const [previous] = await files.versions("notes.txt");
- * await files.restore("notes.txt", previous.versionId); // back to "v1"
+ * await files.restoreVersion("notes.txt", previous.versionId); // back to "v1"
  * ```
  */
 export const versioning = (
   options: VersioningOptions = {}
 ): FilesPlugin<VersioningApi> => {
   const versionDir = normalizeDir(options.prefix ?? ".versions");
+  const ignoreDirs = (options.ignore ?? []).map(normalizeDir);
   const { limit } = options;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
     throw new FilesError(
@@ -193,9 +210,12 @@ export const versioning = (
   }
 
   const versionsDirFor = (key: string): string => `${versionDir}/${key}/`;
-  /** Whether a key lives in the version store — those are never re-versioned. */
-  const isVersionKey = (key: string): boolean =>
-    key === versionDir || key.startsWith(`${versionDir}/`);
+  /**
+   * Whether a key lives in the version store — those are never re-versioned —
+   * or under an `ignore` prefix, which the caller has asked to leave alone.
+   */
+  const isUnversioned = (key: string): boolean =>
+    under(key, versionDir) || ignoreDirs.some((dir) => under(key, dir));
 
   /** Drop the oldest versions of `key` beyond `max`, after a fresh snapshot. */
   const prune = async (
@@ -237,11 +257,11 @@ export const versioning = (
   /**
    * Copy the current bytes of `key` (if any) to a fresh version key. Runs via
    * `next`, so the snapshot ops stay on the inner chain — they never re-enter
-   * this plugin, which is what keeps `restore`'s copy from recursing. Resolves
+   * this plugin, which is what keeps `restoreVersion`'s copy from recursing. Resolves
    * to whether a snapshot was taken, so the caller knows to enforce `limit`.
    */
   const snapshot = async (key: string, next: PluginNext): Promise<boolean> => {
-    if (isVersionKey(key)) {
+    if (isUnversioned(key)) {
       return false;
     }
     let current: StoredFile;
@@ -421,7 +441,7 @@ export const versioning = (
 
   return {
     extend: (files) => ({
-      restore: (key, requested) => restore(files, key, requested),
+      restoreVersion: (key, requested) => restore(files, key, requested),
       versions: (key) => listVersions(files, key),
     }),
     name: "versioning",
