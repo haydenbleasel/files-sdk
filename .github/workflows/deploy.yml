@@ -39,8 +39,6 @@ jobs:
         env:
           # Changelog is built from GitHub releases; the token avoids rate limits.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Cloudflare Web Analytics beacon token (optional).
-          CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
         run: bunx turbo run build --filter=web
 
       - name: Deploy web to Cloudflare Workers

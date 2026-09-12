@@ -33,4 +33,4 @@ bun run build      # dist/
 bun run deploy     # wrangler deploy (needs CLOUDFLARE_API_TOKEN or `wrangler login`)
 ```
 
-Deploys run from GitHub Actions (`.github/workflows/deploy.yml`) on every push to `main` and again after each npm release so the changelog picks up the new GitHub release. The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN` (Workers Scripts, Workers Routes, DNS and SSL edit) and `CLOUDFLARE_ACCOUNT_ID`, and one optional repository variable, `CLOUDFLARE_WEB_ANALYTICS_TOKEN` (Web Analytics beacon). The changelog fetch uses the workflow's own `GITHUB_TOKEN`.
+Deploys run from GitHub Actions (`.github/workflows/deploy.yml`) on every push to `main` and again after each npm release so the changelog picks up the new GitHub release. The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN` (Workers Scripts, Workers Routes, DNS and SSL edit) and `CLOUDFLARE_ACCOUNT_ID`. The changelog fetch uses the workflow's own `GITHUB_TOKEN`. Web Analytics is Cloudflare's automatic zone-level injection, so nothing is configured in the build.
