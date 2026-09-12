@@ -1,0 +1,23 @@
+# Cloudflare response headers (Workers static assets / Pages).
+#
+# Shipping this file from public/ replaces the _headers Blume would otherwise
+# emit, so its rules are reproduced below (copy them from a fresh dist/_headers
+# after temporarily moving this file aside, whenever Blume's set changes).
+
+# shadcn registry: allow browser clients (v0, playgrounds) to fetch items.
+/r/*
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: GET, OPTIONS
+
+# --- Blume's rules: UTF-8 charsets for the raw Markdown / llms.txt endpoints,
+# the homepage agent-discovery Link header, and the API catalog media type.
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+/*.mdx
+  Content-Type: text/markdown; charset=utf-8
+/*.txt
+  Content-Type: text/plain; charset=utf-8
+/
+  Link: </.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json", </openapi.json>; rel="service-desc"; type="application/json", </agent-readability.json>; rel="describedby"; type="application/json", </llms.txt>; rel="describedby"; type="text/plain", </index.md>; rel="alternate"; type="text/markdown"
+/.well-known/api-catalog
+  Content-Type: application/linkset+json

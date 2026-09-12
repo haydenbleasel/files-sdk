@@ -7,6 +7,7 @@
     "build": "bun scripts/build-registry.ts && blume build",
     "preview": "blume preview",
     "audit": "blume audit",
+    "deploy": "wrangler deploy",
     "types": "tsc --noEmit",
     "test": "echo 'no tests'"
   },
@@ -30,7 +31,8 @@
     "@types/node": "^26",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^7"
+    "typescript": "^7",
+    "wrangler": "^4.129.1"
   },
   "ignoreScripts": [
     "sharp",

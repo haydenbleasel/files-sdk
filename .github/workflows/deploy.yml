@@ -1,0 +1,51 @@
+name: Deploy
+
+# Builds the docs site (apps/web) and ships it to Cloudflare Workers. Runs on
+# every push to main, on demand, and from release.yml after a publish so the
+# changelog picks up the new GitHub release.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        name: Install Bun
+
+      - uses: actions/cache@v6
+        name: Setup Bun cache
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build web
+        env:
+          # Changelog is built from GitHub releases; the token avoids rate limits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cloudflare Web Analytics beacon token (optional).
+          CLOUDFLARE_WEB_ANALYTICS_TOKEN: ${{ vars.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}
+        run: bunx turbo run build --filter=web
+
+      - name: Deploy web to Cloudflare Workers
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bun run deploy

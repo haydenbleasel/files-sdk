@@ -1,0 +1,34 @@
+# Cloudflare redirects (Workers static assets / Pages). Blume ships this file
+# as-is because it's in public/; keep every redirect here.
+#
+# Old root URLs → /docs/*
+/adapters/* /docs/adapters/:splat 301
+/ai/* /docs/ai/:splat 301
+/api/* /docs/api/:splat 301
+/cli/* /docs/cli/:splat 301
+/plugins/* /docs/plugins/:splat 301
+/ui/* /docs/ui/:splat 301
+/overview /docs 301
+/installation /docs/installation 301
+/usage /docs/usage 301
+/bulk /docs/bulk 301
+/multipart /docs/multipart 301
+/resumable /docs/resumable 301
+/prefixes /docs/prefixes 301
+/retries /docs/retries 301
+/timeouts /docs/timeouts 301
+/cancellations /docs/cancellations 301
+/readonly /docs/readonly 301
+/receipts /docs/receipts 301
+/escape-hatch /docs/escape-hatch 301
+/capabilities /docs/capabilities 301
+/provider-gaps /docs/provider-gaps 301
+/faq /docs/faq 301
+/troubleshooting /docs/troubleshooting 301
+/providers /docs/providers 301
+
+# Index-less sidebar groups → their first page
+/docs/adapters /docs/adapters/s3 302
+/docs/ai /docs/ai/openai 302
+
+/docs/overview /docs 301

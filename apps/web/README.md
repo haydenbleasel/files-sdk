@@ -24,9 +24,13 @@ bun run build      # bun scripts/build-registry.ts && blume build → dist/
 bun run preview    # serve the built dist/
 ```
 
-## Deploy (Vercel)
+## Deploy (Cloudflare Workers)
 
-Static output goes to `dist/`. Redirects and `/r/*` CORS headers live in `vercel.json`. Two settings must be configured in the Vercel project dashboard (they can't be committed):
+Static output goes to `dist/` and is served as Workers static assets per `wrangler.jsonc`. Redirects live in `public/_redirects` and the `/r/*` CORS headers in `public/_headers`; Blume copies both into `dist/` untouched.
 
-- **Root Directory** = `apps/web`
-- **Node version** = 22+
+```bash
+bun run build      # dist/
+bun run deploy     # wrangler deploy (needs CLOUDFLARE_API_TOKEN or `wrangler login`)
+```
+
+Deploys run from GitHub Actions (`.github/workflows/deploy.yml`) on every push to `main` and again after each npm release so the changelog picks up the new GitHub release. The workflow needs two repository secrets, `CLOUDFLARE_API_TOKEN` (Workers Scripts, Workers Routes, DNS and SSL edit) and `CLOUDFLARE_ACCOUNT_ID`, and one optional repository variable, `CLOUDFLARE_WEB_ANALYTICS_TOKEN` (Web Analytics beacon). The changelog fetch uses the workflow's own `GITHUB_TOKEN`.

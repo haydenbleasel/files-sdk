@@ -150,3 +150,6 @@ out
 
 # Vercel
 .vercel
+
+# Cloudflare
+.wrangler
