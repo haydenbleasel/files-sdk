@@ -9,6 +9,11 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# The GITHUB_TOKEN only reads public releases for the changelog; deploys
+# authenticate to Cloudflare with their own secret.
+permissions:
+  contents: read
+
 concurrency:
   group: deploy-web
   cancel-in-progress: true
