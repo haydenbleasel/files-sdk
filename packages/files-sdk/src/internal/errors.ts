@@ -7,7 +7,25 @@ export type FilesErrorCode =
 
 export type ProviderFilesErrorCode = Exclude<FilesErrorCode, "ReadOnly">;
 
+// Edge, Node and client-framework entries are bundled in separate passes, so a
+// consumer can load more than one copy of this class (`files-sdk` and
+// `files-sdk/api` each ship their own). The brand lets `instanceof` match
+// across copies.
+const FILES_ERROR_BRAND = Symbol.for("files-sdk.FilesError");
+
 export class FilesError extends Error {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- `instanceof` hands any value to `Symbol.hasInstance`; this method is the check
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    if (this !== FilesError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return FILES_ERROR_BRAND in new Object(value);
+  }
+
+  static {
+    Object.defineProperty(this.prototype, FILES_ERROR_BRAND, { value: true });
+  }
+
   readonly code: FilesErrorCode;
   readonly aborted: boolean;
   /**

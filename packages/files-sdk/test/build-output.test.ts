@@ -3,6 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
+import type * as ApiModule from "../src/api/index.js";
+import type * as RootModule from "../src/index.js";
+import type * as MemoryModule from "../src/memory/index.js";
 
 // Regression guard for #67: the published CLI bundle must never statically
 // import an optional peer dependency. The registry lazy-loads providers via
@@ -127,6 +130,44 @@ test(
     expect(typeof mod.loadFiles).toBe("function");
 
     expect(offendingOptionalPeers(loaderBundle)).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// Regression guard for #164: `files-sdk` and `files-sdk/api` are built in
+// separate passes, so each bundles its own copy of `FilesError`. A
+// `FilesError` from the package root thrown in `authorize` must still map to
+// its status, not fall through to a generic 500.
+test(
+  "api router maps a FilesError from the root entry to its status (#164)",
+  async () => {
+    ensureBuilt();
+    const { createFiles, FilesError } = (await import(
+      path.resolve(distDir, "index.js")
+    )) as typeof RootModule;
+    const { createFilesRouter } = (await import(
+      path.resolve(distDir, "api/index.js")
+    )) as typeof ApiModule;
+    const { memory } = (await import(
+      path.resolve(distDir, "memory/index.js")
+    )) as typeof MemoryModule;
+
+    const router = createFilesRouter({
+      authorize: () => {
+        throw new FilesError("Unauthorized", "Sign in first.");
+      },
+      files: createFiles({ adapter: memory() }),
+      secret: "x".repeat(40),
+    });
+    const res = await router.handle(
+      new Request("http://localhost/api/files", {
+        body: JSON.stringify({ op: "list" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+
+    expect(res.status).toBe(401);
   },
   COLD_BUILD_TIMEOUT_MS
 );

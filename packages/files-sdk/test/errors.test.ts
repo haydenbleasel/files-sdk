@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { FilesError } from "../src/internal/errors.js";
+import { ValidationError } from "../src/validation/index.js";
 
 describe("FilesError", () => {
   test("constructor sets name, code, message, and cause", () => {
@@ -31,6 +32,11 @@ describe("FilesError", () => {
     const wrapped = FilesError.wrap("kaboom");
     expect(wrapped.message).toBe("kaboom");
     expect(wrapped.cause).toBe("kaboom");
+  });
+
+  test("subclasses keep prototype-based instanceof", () => {
+    expect(new ValidationError("size", "too big")).toBeInstanceOf(FilesError);
+    expect(new FilesError("Provider", "x")).not.toBeInstanceOf(ValidationError);
   });
 
   test("wrap honors fallbackCode", () => {
