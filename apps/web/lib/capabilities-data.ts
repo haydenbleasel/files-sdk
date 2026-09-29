@@ -27,7 +27,7 @@ for await (const f of files.listAll({ prefix: "img/" })) {
 // pass an array to batch with bounded concurrency
 await files.delete(["old/1.png", "old/2.png"]);`,
     description:
-      "upload, download, head, exists, copy, move, list, delete — the same calls on every adapter. Hand any of them an array to batch with bounded concurrency, or walk a listing as a plain async iterable.",
+      "upload, download, head, exists, copy, move, list, delete — the same calls on every adapter. Hand upload, download, head, exists, or delete an array to batch with bounded concurrency, or walk a listing as a plain async iterable.",
     docHref: "/docs/api",
     panel: "methods",
     title: "Every operation, one interface",
@@ -119,7 +119,7 @@ await files.upload(items, {
   },
 });`,
     description:
-      "Pass one callback and get byte-level progress for every file — buffered or streamed, single or bulk. Drive a progress bar per key without ever touching the transport.",
+      "Pass one callback and get progress for every file, single or bulk. Streams report byte by byte on any adapter, and S3-family adapters report every body byte by byte; elsewhere a buffered body reports its start and finish. Drive a progress bar per key without ever touching the transport.",
     docHref: "/docs/api/onprogress",
     panel: "upload-progress",
     title: "Live upload progress",

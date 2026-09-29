@@ -3,20 +3,26 @@
 import { PANEL_CLASS } from "./panel";
 import { interpolate, useSceneFrame } from "./use-scene-frame";
 
-// The command types out, then the JSON result streams in line by line —
-// `--json` output is one object per line — and the prompt returns.
+// The command types out, then the JSON result prints and the prompt returns.
+// `files list` writes one compact JSON document on a single line —
+// `{"cursor":…,"items":[…]}`, with `cursor` omitted on the last page — not one
+// object per file, so the items fill in left to right inside that one
+// (wrapping) line. Each item's other fields (name, type, etag, lastModified)
+// are elided with "…" to fit the panel.
 const COMMAND = "files --provider s3 list --prefix reports/";
 
-const OUTPUT = [
-  '{"key":"reports/q1.pdf","size":184320}',
-  '{"key":"reports/q2.pdf","size":201618}',
-  '{"key":"reports/q3.pdf","size":176244}',
+const OUTPUT_OPEN = '{"items":[';
+const OUTPUT_ITEMS = [
+  '{"key":"reports/q1.pdf","size":184320,…}',
+  '{"key":"reports/q2.pdf","size":201618,…}',
+  '{"key":"reports/q3.pdf","size":176244,…}',
 ];
+const OUTPUT_CLOSE = "]}";
 
 const TYPE_END = 30;
 const OUTPUT_START = 40;
 const OUTPUT_STEP = 12;
-const PROMPT_AT = OUTPUT_START + OUTPUT.length * OUTPUT_STEP;
+const PROMPT_AT = OUTPUT_START + OUTPUT_ITEMS.length * OUTPUT_STEP;
 const TOTAL = PROMPT_AT + 6;
 
 const Cursor = () => (
@@ -38,20 +44,39 @@ export const Cli = () => {
           {COMMAND.slice(0, typed)}
           {typing && <Cursor />}
         </div>
-        {OUTPUT.map((line, i) => {
-          const appearAt = OUTPUT_START + i * OUTPUT_STEP;
-          return (
-            <div
-              className="text-muted-foreground"
-              key={line}
-              style={{
-                opacity: interpolate(frame, [appearAt, appearAt + 8], [0, 1]),
-              }}
-            >
-              {line}
-            </div>
-          );
-        })}
+        <div
+          className="text-muted-foreground break-all"
+          style={{
+            opacity: interpolate(
+              frame,
+              [OUTPUT_START, OUTPUT_START + 4],
+              [0, 1]
+            ),
+          }}
+        >
+          {OUTPUT_OPEN}
+          {OUTPUT_ITEMS.map((item, i) => {
+            const appearAt = OUTPUT_START + i * OUTPUT_STEP;
+            return (
+              <span
+                key={item}
+                style={{
+                  opacity: interpolate(frame, [appearAt, appearAt + 8], [0, 1]),
+                }}
+              >
+                {i > 0 && ","}
+                {item}
+              </span>
+            );
+          })}
+          <span
+            style={{
+              opacity: interpolate(frame, [PROMPT_AT - 4, PROMPT_AT], [0, 1]),
+            }}
+          >
+            {OUTPUT_CLOSE}
+          </span>
+        </div>
         <div
           className="text-foreground"
           style={{

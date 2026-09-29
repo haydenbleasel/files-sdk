@@ -26,25 +26,37 @@ const { command = "npm install files-sdk", class: className } = Astro.props;
 </button>
 
 <script>
-  for (const btn of document.querySelectorAll<HTMLButtonElement>(
-    "[data-install-command]"
-  )) {
-    const copy = btn.querySelector(".copy-icon");
-    const check = btn.querySelector(".check-icon");
-    let timer: ReturnType<typeof setTimeout>;
-    btn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(btn.dataset.command ?? "");
-      } catch {
-        // Clipboard access can be blocked; fail silently.
-      }
-      copy?.classList.add("hidden");
-      check?.classList.remove("hidden");
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        copy?.classList.remove("hidden");
-        check?.classList.add("hidden");
-      }, 1800);
-    });
-  }
+  // Bundled module scripts run once per full page load, but Blume's layouts
+  // use Astro's <ClientRouter />: navigating back to "/" swaps in fresh
+  // buttons without re-running this module. `astro:page-load` fires on the
+  // initial load and after every client-side navigation, so bind there (and
+  // mark each button so a persisted one is never bound twice).
+  const bind = () => {
+    for (const btn of document.querySelectorAll<HTMLButtonElement>(
+      "[data-install-command]:not([data-bound])"
+    )) {
+      btn.dataset.bound = "";
+      const copy = btn.querySelector(".copy-icon");
+      const check = btn.querySelector(".check-icon");
+      let timer: ReturnType<typeof setTimeout>;
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.command ?? "");
+        } catch {
+          // Clipboard access can be blocked; leave the copy icon in place
+          // rather than claim a copy that didn't happen.
+          return;
+        }
+        copy?.classList.add("hidden");
+        check?.classList.remove("hidden");
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          copy?.classList.remove("hidden");
+          check?.classList.add("hidden");
+        }, 1800);
+      });
+    }
+  };
+
+  document.addEventListener("astro:page-load", bind);
 </script>

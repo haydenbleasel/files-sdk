@@ -10,7 +10,12 @@ interface Props {
 }
 
 const { adapterCount, latestVersion } = Astro.props;
-const marquee = [...ADAPTER_LOGOS, ...ADAPTER_LOGOS];
+// The marquee loops by translating a doubled strip -50%; the second copy is
+// purely visual, so it's hidden from assistive tech (no duplicate alt text).
+const marquee = [
+  ...ADAPTER_LOGOS.map((logo) => ({ ...logo, duplicate: false })),
+  ...ADAPTER_LOGOS.map((logo) => ({ ...logo, duplicate: true })),
+];
 ---
 
 <section class="relative overflow-hidden">
@@ -60,13 +65,14 @@ const marquee = [...ADAPTER_LOGOS, ...ADAPTER_LOGOS];
       class="overflow-x-clip py-2 [-webkit-mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)] [mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)]"
     >
       <div
-        class="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-7 sm:gap-10"
+        class="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-7 motion-reduce:animate-none sm:gap-10"
       >
         {
           marquee.map((logo) => (
             <img
-              alt={logo.alt}
-              class="size-10 shrink-0 rounded transition-transform duration-200 hover:-translate-y-1 sm:size-14"
+              alt={logo.duplicate ? "" : logo.alt}
+              aria-hidden={logo.duplicate ? "true" : undefined}
+              class="size-10 shrink-0 rounded transition-transform duration-200 hover:-translate-y-1 motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:size-14"
               height="56"
               loading="lazy"
               src={logo.src}

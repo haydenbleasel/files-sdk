@@ -4,11 +4,14 @@ import Tab from "blume/components/content/Tab.astro";
 import Tabs from "blume/components/content/Tabs.astro";
 import { highlightCode } from "blume/markdown";
 
+// Step 2 uses the S3 adapter, whose native client is an optional peer, so
+// step 1 installs it alongside the SDK.
+const PACKAGES = "files-sdk @aws-sdk/client-s3";
 const INSTALL = [
-  { code: "npm install files-sdk", label: "npm" },
-  { code: "pnpm add files-sdk", label: "pnpm" },
-  { code: "bun add files-sdk", label: "bun" },
-  { code: "yarn add files-sdk", label: "yarn" },
+  { code: `npm install ${PACKAGES}`, label: "npm" },
+  { code: `pnpm add ${PACKAGES}`, label: "pnpm" },
+  { code: `bun add ${PACKAGES}`, label: "bun" },
+  { code: `yarn add ${PACKAGES}`, label: "yarn" },
 ];
 const installTabs = await Promise.all(
   INSTALL.map(async (i) => ({
@@ -56,8 +59,9 @@ await files.upload("hello.txt", "world");`;
         <p
           class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
         >
-          Each adapter's native SDK is an optional peer dependency — install only
-          the ones you actually use.
+          Each adapter's native SDK is an optional peer dependency — here,
+          @aws-sdk/client-s3 for the S3 adapter. Install only the ones you
+          actually use.
         </p>
       </div>
       <div class="flex min-w-0 flex-col gap-3">
@@ -69,7 +73,7 @@ await files.upload("hello.txt", "world");`;
           class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
         >
           Construct a Files instance with your provider's adapter, then call
-          upload, download, list, delete on it.
+          upload, download, list, and delete on it.
         </p>
       </div>
     </div>

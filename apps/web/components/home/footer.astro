@@ -1,5 +1,6 @@
 ---
-const year = 2026;
+// Evaluated at build time (static output), so it tracks the latest deploy.
+const year = new Date().getFullYear();
 
 const PROJECT_LINKS = [
   { href: "/docs", label: "Docs" },
