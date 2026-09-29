@@ -69,19 +69,42 @@ export interface SignUploadCallOptions extends CallOptions {
   minSize?: number;
 }
 
+/**
+ * Upload progress callback. Fires on every change to any file's state: once
+ * when a file starts (`"uploading"`), on each byte-progress event, and a final
+ * time after the file reaches a terminal status — `"success"`, `"error"` (with
+ * `state.error` set), or `"aborted"` — on every path, including failures. Each
+ * file is one `FileUploadState` object for the whole upload, mutated in place,
+ * so `perFile` entries can be tracked by identity.
+ */
+export type UploadProgressCallback = (
+  progress: AggregateProgress,
+  perFile: readonly FileUploadState[]
+) => void;
+
 export interface UploadCallOptions extends CallOptions {
+  /**
+   * The stored `Content-Type`. On the keyless path it is what `presign` binds
+   * (overriding the file's own `type`); on the keyed path it is the PUT header.
+   */
   contentType?: string;
   /** Presign expiry for the keyless path, seconds. */
   expiresIn?: number;
-  onProgress?: (
-    progress: AggregateProgress,
-    perFile: readonly FileUploadState[]
-  ) => void;
+  onProgress?: UploadProgressCallback;
 }
 
 export interface BulkCallOptions extends CallOptions {
   concurrency?: number;
   stopOnError?: boolean;
+}
+
+export interface UploadManyCallOptions extends BulkCallOptions {
+  /**
+   * Progress across the batch: `perFile` holds one state per item, in `items`
+   * order. Items still `"pending"` when a `stopOnError` failure ends the batch
+   * are reported `"aborted"`.
+   */
+  onProgress?: UploadProgressCallback;
 }
 
 export interface UploadOutcome {
@@ -163,7 +186,7 @@ export interface FilesClient {
     ): Promise<UploadOutcome>;
     (
       items: UploadManyClientItem[],
-      opts?: BulkCallOptions
+      opts?: UploadManyCallOptions
     ): Promise<UploadManyResult>;
   };
 

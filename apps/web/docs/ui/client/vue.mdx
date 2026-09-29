@@ -3,7 +3,7 @@ title: Vue
 description: The full Files API in the browser as a Vue 3 composable - useFiles returns the verbs plus refs for ambient state, with reactive useList / useFile / useSearch.
 ---
 
-`files-sdk/vue` brings the full Files API to the browser as an idiomatic Vue 3 composable. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as refs that unwrap automatically in templates.
+`files-sdk/vue` brings the full Files API to the browser as an idiomatic Vue 3 composable. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as refs. The refs are nested in the returned object, so use `.value` in templates (as below) or destructure them first.
 
 ```vue
 <script setup lang="ts">
@@ -31,7 +31,7 @@ const onUpload = async (event: Event) => {
 
 ## The verbs
 
-Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods (no `.value`):
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities`, plus the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) when the gateway exposes them — including the bulk array forms. They are plain methods (no `.value`):
 
 ```ts lineNumbers
 const { key } = await files.upload(file); // keyless → server mints the key
@@ -42,16 +42,18 @@ await files.delete(["a.txt", "b.txt"]); // bulk → { deleted, errors? }
 
 ## Ambient state (refs)
 
-Upload progress and the last error are exposed as refs, so they unwrap automatically in templates and stay reactive in script:
+Upload progress and the last error are exposed as refs nested in the returned object. Use `.value` in templates, or destructure them (`const { uploads, error } = files`) so the template unwraps them. They stay reactive in script either way:
 
 ```ts lineNumbers
-files.isUploading; // Ref<boolean>
-files.progress; // Ref<{ loaded, total, fraction }>
-files.uploads; // Ref<FileUploadState[]> — per-file live state
-files.error; // Ref<FilesError | undefined> — last error from any verb
-files.reset(); // clear ambient error + upload state (re-arms after abort)
+files.isUploading; // Ref<boolean> - true while any upload() is running
+files.uploads; // Ref<FileUploadState[]> - one entry per file, across every upload() call
+files.progress; // Ref<{ loaded, total, fraction }> over the current entries
+files.error; // Ref<FilesError | undefined> - last error from any verb
+files.reset(); // clear the error + finished uploads (re-arms after abort)
 files.abort(); // abort every in-flight call
 ```
+
+`uploads` accumulates one entry per file from every `upload()` call, including each item of a bulk `upload([...])`. Each entry keeps its position and is replaced by a fresh snapshot on every change. Its `status` ends as `"success"`, `"error"` (with `error` set), or `"aborted"` on every path. `reset()` leaves uploads that are still running in place. `error` also catches failures thrown while iterating `listAll()`/`search()`.
 
 The composable owns an `AbortController` that is aborted automatically on scope dispose (component unmount), so in-flight requests are cancelled for you.
 
@@ -60,6 +62,7 @@ The composable owns an `AbortController` that is aborted automatically on scope 
 The query composables accept `MaybeRefOrGetter` inputs, so they re-run when their source changes — a file browser bound to a reactive `prefix` updates itself:
 
 ```ts lineNumbers
+import { ref } from "vue";
 import { useList, useFile, useSearch } from "files-sdk/vue";
 
 const prefix = ref("docs/");
@@ -78,4 +81,4 @@ Like the React versions they are cache-free and dependency-light; for shared cac
 
 ## Setting up the gateway
 
-Point the composable at a mounted [gateway](/docs/ui/server/gateway) — `createFilesRouter` on Next, Hono, Express, or any Web-`Request` runtime — and lock it down with [`authorize`](/docs/ui/server/authorization).
+Point the composable at a mounted [gateway](/docs/ui/server/gateway) (`createFilesRouter` on Nitro/Nuxt, Next, Hono, Express, or any Web-`Request` runtime) and lock it down with [`authorize`](/docs/ui/server/authorization).

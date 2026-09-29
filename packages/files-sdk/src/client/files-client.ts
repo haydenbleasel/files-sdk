@@ -12,6 +12,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { assertRangeHonored } from "../internal/core.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { FilesError } from "../internal/errors.js";
 import type {
@@ -22,7 +23,7 @@ import type {
   WireFilesError,
   WireStoredFile,
 } from "../internal/files-router/protocol.js";
-import { isFunction, isString } from "../internal/is.js";
+import { isFunction, isObject, isString } from "../internal/is.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { decodeDownload } from "./download-decode.js";
@@ -42,8 +43,10 @@ import type {
   TrashedFile,
   UploadBody,
   UploadCallOptions,
+  UploadManyCallOptions,
   UploadManyClientItem,
   UploadOutcome,
+  UploadProgressCallback,
   UrlCallOptions,
 } from "./types.js";
 import { isNativeFileRef } from "./types.js";
@@ -151,6 +154,76 @@ const toBody = (
   }
 };
 
+// --- upload state lifecycle ---
+
+const isAbortFailure = (
+  cause: unknown,
+  signal: AbortSignal | undefined
+): boolean =>
+  signal?.aborted === true ||
+  (cause instanceof FilesError && cause.aborted) ||
+  (isObject(cause) && "name" in cause && cause.name === "AbortError");
+
+const settleFailed = (
+  state: FileUploadState,
+  cause: unknown,
+  signal: AbortSignal | undefined
+): void => {
+  state.status = isAbortFailure(cause, signal) ? "aborted" : "error";
+  state.error = FilesError.wrap(cause);
+};
+
+const settleSucceeded = (state: FileUploadState, key: string): void => {
+  state.status = "success";
+  state.key = key;
+  state.loaded = state.total;
+  state.progress = 1;
+};
+
+const applyBytes = (
+  state: FileUploadState,
+  loaded: number,
+  total: number
+): void => {
+  state.loaded = loaded;
+  state.total = total || state.size;
+  state.progress = state.total ? loaded / state.total : 0;
+};
+
+/** One file's state plus the callback that reports it (with its batch). */
+interface Tracked {
+  state: FileUploadState;
+  report: () => void;
+}
+
+const trackOne = (
+  state: FileUploadState,
+  onProgress: UploadProgressCallback | undefined
+): Tracked => {
+  const states = [state];
+  return {
+    report: () => onProgress?.(aggregate(states), states),
+    state,
+  };
+};
+
+/** A keyed upload body, normalized where that can happen synchronously. */
+type Prepared =
+  | { ref: NativeFileRef; norm?: undefined }
+  | { ref?: undefined; norm: NormalizedBody };
+
+const prepare = (body: UploadBody, contentType?: string): Prepared =>
+  isNativeFileRef(body) ? { ref: body } : { norm: toBody(body, contentType) };
+
+const keyedState = (key: string, prepared: Prepared): FileUploadState => {
+  const state = initialState(prepared.ref ?? prepared.norm.body);
+  state.key = key;
+  if (prepared.norm?.type) {
+    state.type = prepared.norm.type;
+  }
+  return state;
+};
+
 export const createFilesClient = (
   config: FilesClientConfig = {}
 ): FilesClient => {
@@ -233,6 +306,11 @@ export const createFilesClient = (
     if (!res.ok) {
       throw await wireError(res);
     }
+    if (opts?.range) {
+      // A gateway or storage host that ignores `Range` answers 200 with the
+      // whole object; never hand that back as if it were the slice.
+      assertRangeHonored(res.status, "files-sdk/client");
+    }
     return decodeDownload(res, key);
   };
 
@@ -302,133 +380,191 @@ export const createFilesClient = (
     }
   };
 
+  // The keyless 3-step upload (presign → bytes → complete). `tracked.state`
+  // is reported "uploading" up front and settles on every path.
   const uploadKeyless = async (
     file: Blob | NativeFileRef,
     opts?: UploadCallOptions
   ): Promise<UploadOutcome> => {
-    const info = {
-      name: fileName(file),
-      size: file.size ?? 0,
-      type: file.type || "application/octet-stream",
-    };
-    const presign = await post<{ uploads: PresignedUpload[] }>(
-      {
-        files: [info],
-        op: "presign",
-        ...(opts?.expiresIn && { expiresIn: opts.expiresIn }),
-      },
-      opts?.signal
-    );
-    const [first] = presign.uploads;
-    if (!first) {
-      throw new FilesError("Provider", "presign returned no upload target");
-    }
-    const { id, key, target } = first;
-
-    // A descriptor can ride RN's FormData only on a POST target; a raw PUT
-    // needs the actual bytes, so resolve the uri to a Blob first.
-    const body =
-      isNativeFileRef(file) && target.method === "PUT"
-        ? await resolveRef(file)
-        : file;
-
-    const state = initialState(file);
+    const type = opts?.contentType || file.type || "application/octet-stream";
+    const { report, state } = trackOne(initialState(file), opts?.onProgress);
+    state.type = type;
     state.status = "uploading";
-    state.key = key;
-    const states: FileUploadState[] = [state];
-    await sendToTarget(target, body, opts?.signal, (loaded, total) => {
-      state.loaded = loaded;
-      state.total = total || state.size;
-      state.progress = state.total ? loaded / state.total : 0;
-      opts?.onProgress?.(aggregate(states), states);
-    });
+    report();
+    try {
+      const presign = await post<{ uploads: PresignedUpload[] }>(
+        {
+          files: [{ name: fileName(file), size: file.size ?? 0, type }],
+          op: "presign",
+          ...(opts?.expiresIn && { expiresIn: opts.expiresIn }),
+        },
+        opts?.signal
+      );
+      const [first] = presign.uploads;
+      if (!first) {
+        throw new FilesError("Provider", "presign returned no upload target");
+      }
+      const { id, key, target } = first;
+      state.key = key;
 
-    const complete = await post<CompleteResponse>(
-      { completions: [{ id, key }], op: "complete" },
-      opts?.signal
-    );
-    const [done] = complete.files;
-    if (!done) {
-      const error = complete.errors?.[0];
-      throw error
-        ? reviveError(error.error)
-        : new FilesError("Provider", "upload did not complete");
+      // A descriptor can ride RN's FormData only on a POST target; a raw PUT
+      // needs the actual bytes, so resolve the uri to a Blob first.
+      const body =
+        isNativeFileRef(file) && target.method === "PUT"
+          ? await resolveRef(file)
+          : file;
+
+      await sendToTarget(target, body, opts?.signal, (loaded, total) => {
+        applyBytes(state, loaded, total);
+        report();
+      });
+
+      const complete = await post<CompleteResponse>(
+        { completions: [{ id, key }], op: "complete" },
+        opts?.signal
+      );
+      const [done] = complete.files;
+      if (!done) {
+        const error = complete.errors?.[0];
+        throw error
+          ? reviveError(error.error)
+          : new FilesError("Provider", "upload did not complete");
+      }
+      settleSucceeded(state, done.key);
+      report();
+      return {
+        etag: done.etag,
+        key: done.key,
+        lastModified: done.lastModified,
+        size: done.size,
+        type: done.type,
+      };
+    } catch (error) {
+      settleFailed(state, error, opts?.signal);
+      report();
+      throw error;
     }
-    state.status = "success";
-    state.progress = 1;
-    return {
-      etag: done.etag,
-      key: done.key,
-      lastModified: done.lastModified,
-      size: done.size,
-      type: done.type,
-    };
   };
 
-  const uploadExplicit = async (
+  // One explicit-key PUT through the endpoint, driving `tracked.state` from
+  // "uploading" to a terminal status on every path.
+  const putExplicit = async (
+    key: string,
+    prepared: Prepared,
+    opts: UploadCallOptions | undefined,
+    tracked: Tracked
+  ): Promise<UploadOutcome> => {
+    const { report, state } = tracked;
+    state.status = "uploading";
+    report();
+    try {
+      // The through-endpoint is a raw PUT, so a picker ref becomes a Blob
+      // here; its declared type fills in when no explicit contentType is given.
+      const norm = prepared.ref
+        ? toBody(
+            await resolveRef(prepared.ref),
+            opts?.contentType ?? prepared.ref.type
+          )
+        : prepared.norm;
+      state.size = norm.size;
+      state.total = norm.size;
+      const result = await transport({
+        body: norm.body,
+        headers: {
+          "content-type": norm.type || "application/octet-stream",
+          ...(await resolveHeaders()),
+        },
+        method: "PUT",
+        onProgress: (loaded, total) => {
+          applyBytes(state, loaded, total);
+          report();
+        },
+        signal: opts?.signal,
+        url: `${endpoint}${sep}op=upload&key=${encodeURIComponent(key)}`,
+      });
+      const parsed = handleEndpointResult<{ file: UploadOutcome }>(
+        result.status,
+        result.text
+      );
+      settleSucceeded(state, parsed.file.key);
+      report();
+      return parsed.file;
+    } catch (error) {
+      settleFailed(state, error, opts?.signal);
+      report();
+      throw error;
+    }
+  };
+
+  const uploadExplicit = (
     key: string,
     body: UploadBody,
     opts?: UploadCallOptions
   ): Promise<UploadOutcome> => {
-    // The through-endpoint is a raw PUT, so a picker ref becomes a Blob here;
-    // its declared type fills in when no explicit contentType is given.
-    const norm = isNativeFileRef(body)
-      ? toBody(await resolveRef(body), opts?.contentType ?? body.type)
-      : toBody(body, opts?.contentType);
-    const result = await transport({
-      body: norm.body,
-      headers: {
-        "content-type": norm.type || "application/octet-stream",
-        ...(await resolveHeaders()),
-      },
-      method: "PUT",
-      onProgress: opts?.onProgress
-        ? (loaded, total) => {
-            const state = initialState(norm.body);
-            state.key = key;
-            state.status = "uploading";
-            state.loaded = loaded;
-            state.total = total || norm.size;
-            state.progress = state.total ? loaded / state.total : 0;
-            opts.onProgress?.(aggregate([state]), [state]);
-          }
-        : undefined,
-      signal: opts?.signal,
-      url: `${endpoint}${sep}op=upload&key=${encodeURIComponent(key)}`,
-    });
-    const parsed = handleEndpointResult<{ file: UploadOutcome }>(
-      result.status,
-      result.text
+    const prepared = prepare(body, opts?.contentType);
+    return putExplicit(
+      key,
+      prepared,
+      opts,
+      trackOne(keyedState(key, prepared), opts?.onProgress)
     );
-    return parsed.file;
   };
 
   const uploadMany = async (
     items: UploadManyClientItem[],
-    opts?: BulkCallOptions
+    opts?: UploadManyCallOptions
   ) => {
-    const results = await pMap(
-      items,
-      async (item) => {
-        try {
-          const out = await uploadExplicit(item.key, item.body, {
-            contentType: item.contentType,
-            signal: opts?.signal,
-          });
-          return { ok: true as const, out };
-        } catch (error) {
-          if (opts?.stopOnError) {
-            throw error;
+    // Every item gets its state up front, so the batch reports as one list.
+    const entries = items.map((item) => {
+      const prepared = prepare(item.body, item.contentType);
+      return { item, prepared, state: keyedState(item.key, prepared) };
+    });
+    const states = entries.map((entry) => entry.state);
+    const report = () => opts?.onProgress?.(aggregate(states), states);
+    let results;
+    try {
+      results = await pMap(
+        entries,
+        async ({ item, prepared, state }) => {
+          try {
+            const out = await putExplicit(
+              item.key,
+              prepared,
+              { contentType: item.contentType, signal: opts?.signal },
+              { report, state }
+            );
+            return { ok: true as const, out };
+          } catch (error) {
+            if (opts?.stopOnError) {
+              throw error;
+            }
+            return {
+              error: FilesError.wrap(error),
+              key: item.key,
+              ok: false as const,
+            };
           }
-          return {
-            error: FilesError.wrap(error),
-            key: item.key,
-            ok: false as const,
-          };
-        }
-      },
-      { concurrency: opts?.concurrency ?? concurrency }
-    );
+        },
+        { concurrency: opts?.concurrency ?? concurrency }
+      );
+    } catch (error) {
+      // A `stopOnError` failure ends the batch: items that never started
+      // won't, so settle them rather than leave them "pending" forever.
+      const notStarted = states.filter((state) => state.status === "pending");
+      for (const state of notStarted) {
+        state.status = "aborted";
+        state.error = new FilesError(
+          "Provider",
+          "upload not started: an earlier upload in the batch failed",
+          error,
+          { aborted: true }
+        );
+      }
+      if (notStarted.length > 0) {
+        report();
+      }
+      throw error;
+    }
     const uploaded: UploadResult[] = [];
     const errors: BulkError[] = [];
     for (const result of results) {
@@ -696,12 +832,12 @@ export const createFilesClient = (
 
     upload: ((
       a: Blob | NativeFileRef | string | UploadManyClientItem[],
-      b?: UploadBody | UploadCallOptions | BulkCallOptions,
+      b?: UploadBody | UploadCallOptions | UploadManyCallOptions,
       c?: UploadCallOptions
     ) => {
       if (Array.isArray(a)) {
-        // SAFETY: the `items[]` overload pairs an array with `BulkCallOptions`.
-        return uploadMany(a, b as BulkCallOptions | undefined);
+        // SAFETY: the `items[]` overload pairs an array with `UploadManyCallOptions`.
+        return uploadMany(a, b as UploadManyCallOptions | undefined);
       }
       if (isString(a)) {
         // SAFETY: the `(key, body, opts?)` overload pairs a string key with a body.

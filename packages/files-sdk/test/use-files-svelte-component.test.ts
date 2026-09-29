@@ -50,6 +50,8 @@ const { createFilesRouter } = await import("../src/api/index.js");
 const { memory } = await import("../src/memory/index.js");
 const probeModule = await import("./fixtures/use-files-probe.svelte");
 const Probe = probeModule.default;
+const listProbeModule = await import("./fixtures/use-list-probe.svelte");
+const ListProbe = listProbeModule.default;
 
 const config = (adapter: Adapter) => {
   const router = createFilesRouter({
@@ -126,5 +128,37 @@ describe("svelte useFiles inside a real component", () => {
     expect(cell(target, "error")).toBe("none");
 
     unmount(component);
+  });
+});
+
+describe("svelte useList inside a real component", () => {
+  test("destroying the component aborts its in-flight query", async () => {
+    const aborted: string[] = [];
+    // Every list call hangs until its signal aborts.
+    const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted.push(JSON.parse(String(init.body)).prefix ?? "");
+          reject(new Error("aborted"));
+        });
+      })) as typeof fetch;
+    const target = document.createElement("div");
+    const component = mount(ListProbe, {
+      props: {
+        config: { endpoint: "https://app.test/api/files", fetchImpl },
+        prefix: "a/",
+      },
+      target,
+    });
+    flushSync();
+    expect(cell(target, "loading")).toBe("true");
+    // Let the `$` subscriptions outlive their tick (what arms the abort).
+    await Bun.sleep(0);
+    expect(aborted).toEqual([]);
+
+    unmount(component);
+    await Bun.sleep(0);
+    expect(aborted).toEqual(["a/"]);
   });
 });

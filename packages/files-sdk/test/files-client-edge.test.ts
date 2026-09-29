@@ -168,6 +168,279 @@ describe("upload edge paths", () => {
   });
 });
 
+describe("upload state lifecycle", () => {
+  const presignOk = (): typeof fetch =>
+    ((_input: unknown, init?: RequestInit) => {
+      const { op } = JSON.parse(String(init?.body));
+      const body =
+        op === "presign"
+          ? {
+              uploads: [
+                {
+                  id: "t",
+                  key: "minted.bin",
+                  target: { method: "PUT", url: "https://s/up" },
+                },
+              ],
+            }
+          : { files: [{ key: "minted.bin", size: 3, type: "x/y" }] };
+      return Promise.resolve(Response.json(body, { status: 200 }));
+    }) as unknown as typeof fetch;
+
+  const endpointOk: Transport = (req) => {
+    req.onProgress?.(1, 3);
+    const key = new URL(req.url).searchParams.get("key");
+    return Promise.resolve({
+      status: 200,
+      text: JSON.stringify({ file: { key, size: 3, type: "x" } }),
+    });
+  };
+
+  const snapshots = () => {
+    const seen: FileUploadState[][] = [];
+    return {
+      onProgress: (_agg: unknown, perFile: readonly FileUploadState[]) => {
+        seen.push(perFile.map((state) => ({ ...state })));
+      },
+      seen,
+    };
+  };
+
+  test("keyless success reports uploading → success, one object throughout", async () => {
+    const identities = new Set<FileUploadState>();
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: presignOk(),
+      transport: (req) => {
+        req.onProgress?.(3, 3);
+        return Promise.resolve({ status: 200, text: "" });
+      },
+    });
+    await client.upload(new Blob(["abc"]), {
+      onProgress: (agg, perFile) => {
+        for (const state of perFile) {
+          identities.add(state);
+        }
+        onProgress(agg, perFile);
+      },
+    });
+    expect(identities.size).toBe(1);
+    expect(seen[0]?.[0]?.status).toBe("uploading");
+    const last = seen.at(-1)?.[0];
+    expect(last?.status).toBe("success");
+    expect(last?.key).toBe("minted.bin");
+    expect(last?.progress).toBe(1);
+  });
+
+  test("keyless failure reports error with the FilesError", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: presignOk(),
+      transport: () => Promise.resolve({ status: 500, text: "" }),
+    });
+    await expect(
+      client.upload(new Blob(["abc"]), { onProgress })
+    ).rejects.toBeDefined();
+    const last = seen.at(-1)?.[0];
+    expect(last?.status).toBe("error");
+    expect(last?.error?.code).toBe("Provider");
+  });
+
+  test("a presign failure still settles the state", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() =>
+        Response.json(
+          { error: { code: "Forbidden", message: "no" } },
+          { status: 403 }
+        )
+      ),
+    });
+    await expect(
+      client.upload(new Blob(["abc"]), { onProgress })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+    expect(seen.at(-1)?.[0]?.status).toBe("error");
+  });
+
+  test("an aborted keyless upload reports aborted", async () => {
+    const controller = new AbortController();
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: presignOk(),
+      transport: () => {
+        controller.abort(new Error("user cancelled"));
+        return Promise.reject(new Error("user cancelled"));
+      },
+    });
+    await expect(
+      client.upload(new Blob(["abc"]), {
+        onProgress,
+        signal: controller.signal,
+      })
+    ).rejects.toThrow(/user cancelled/u);
+    expect(seen.at(-1)?.[0]?.status).toBe("aborted");
+  });
+
+  test("a DOMException AbortError is recognised as an abort", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () =>
+        Promise.reject(
+          new DOMException("The operation was aborted.", "AbortError")
+        ),
+    });
+    await expect(
+      client.upload("k", "abc", { onProgress })
+    ).rejects.toBeDefined();
+    expect(seen.at(-1)?.[0]?.status).toBe("aborted");
+  });
+
+  test("keyed success settles to success (and reports without byte events)", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: endpointOk,
+    });
+    await client.upload("k", "abc", { onProgress });
+    expect(seen.map((batch) => batch[0]?.status)).toEqual([
+      "uploading",
+      "uploading",
+      "success",
+    ]);
+    expect(seen.at(-1)?.[0]?.progress).toBe(1);
+  });
+
+  test("keyed failure settles to error", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () => Promise.resolve({ status: 500, text: "" }),
+    });
+    await expect(
+      client.upload("k", "abc", { onProgress })
+    ).rejects.toBeDefined();
+    expect(seen.at(-1)?.[0]?.status).toBe("error");
+    expect(seen.at(-1)?.[0]?.error).toBeDefined();
+  });
+
+  test("bulk upload reports one state per item and settles each", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: (req) =>
+        req.url.includes("bad")
+          ? Promise.resolve({ status: 500, text: "" })
+          : endpointOk(req),
+    });
+    const result = await client.upload(
+      [
+        { body: "abc", key: "good" },
+        { body: "abc", key: "bad" },
+      ],
+      { concurrency: 1, onProgress }
+    );
+    expect(result.errors).toHaveLength(1);
+    const last = seen.at(-1);
+    expect(last?.map((state) => state.key)).toEqual(["good", "bad"]);
+    expect(last?.map((state) => state.status)).toEqual(["success", "error"]);
+  });
+
+  test("stopOnError settles never-started items as aborted", async () => {
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () => Promise.resolve({ status: 500, text: "" }),
+    });
+    await expect(
+      client.upload(
+        [
+          { body: "a", key: "one" },
+          { body: "b", key: "two" },
+        ],
+        { concurrency: 1, onProgress, stopOnError: true }
+      )
+    ).rejects.toBeDefined();
+    const last = seen.at(-1);
+    expect(last?.map((state) => state.status)).toEqual(["error", "aborted"]);
+    expect(last?.[1]?.error?.aborted).toBe(true);
+  });
+
+  test("stopOnError with nothing left pending rethrows without a report", async () => {
+    let reports = 0;
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () => Promise.resolve({ status: 500, text: "" }),
+    });
+    await expect(
+      client.upload([{ body: "a", key: "one" }], {
+        onProgress: () => {
+          reports += 1;
+        },
+        stopOnError: true,
+      })
+    ).rejects.toBeDefined();
+    // uploading + error only — no extra "aborted" sweep.
+    expect(reports).toBe(2);
+  });
+
+  test("keyless upload honours opts.contentType over the file's type", async () => {
+    const presigned: unknown[] = [];
+    const fetchImpl = ((_input: unknown, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      if (payload.op === "presign") {
+        presigned.push(...payload.files);
+      }
+      return presignOk()(_input as RequestInfo, init);
+    }) as unknown as typeof fetch;
+    const { onProgress, seen } = snapshots();
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl,
+      transport: () => Promise.resolve({ status: 200, text: "" }),
+    });
+    await client.upload(new Blob(["abc"], { type: "text/plain" }), {
+      contentType: "text/markdown",
+      onProgress,
+    });
+    expect(presigned).toEqual([
+      { name: "blob", size: 3, type: "text/markdown" },
+    ]);
+    expect(seen[0]?.[0]?.type).toBe("text/markdown");
+  });
+});
+
+describe("ranged download", () => {
+  test("rejects a 200 answer to a ranged request", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() => new Response("whole", { status: 200 })),
+    });
+    await expect(
+      client.download("k", { range: { end: 1, start: 0 } })
+    ).rejects.toThrow(/ignored the requested byte range/u);
+  });
+
+  test("accepts a 206 slice", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() => new Response("wh", { status: 206 })),
+    });
+    const file = await client.download("k", { range: { end: 1, start: 0 } });
+    expect(await file.text()).toBe("wh");
+  });
+});
+
 describe("download edge paths", () => {
   test("downloadMany collects per-key failures", async () => {
     const fetchImpl = fetchReturning(

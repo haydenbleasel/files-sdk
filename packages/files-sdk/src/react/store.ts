@@ -19,7 +19,6 @@ export interface FilesStore {
   subscribe: (listener: () => void) => () => void;
   patch: (next: Partial<FilesStoreState>) => void;
   setUploads: (uploads: FileUploadState[]) => void;
-  reset: () => void;
 }
 
 export const createStore = (): FilesStore => {
@@ -34,10 +33,6 @@ export const createStore = (): FilesStore => {
     getState: () => state,
     patch(next) {
       state = { ...state, ...next };
-      emit();
-    },
-    reset() {
-      state = INITIAL_STATE;
       emit();
     },
     setUploads(uploads) {

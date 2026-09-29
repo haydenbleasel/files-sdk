@@ -164,6 +164,158 @@ describe("svelte useFiles", () => {
   });
 });
 
+describe("svelte useFiles upload ledger and error mirroring", () => {
+  test("uploads accumulate across calls; reset() keeps in-flight entries", async () => {
+    const base = config(memory());
+    const gate = Promise.withResolvers<null>();
+    const transport: Transport = async (req) => {
+      if (req.url.includes("slow")) {
+        await gate.promise;
+      }
+      return base.transport(req);
+    };
+    const files = useFiles({ ...base, transport });
+    await files.upload(new File(["a"], "a.txt"));
+    await files.upload([
+      { body: "1", key: "m/1" },
+      { body: "2", key: "m/2" },
+    ]);
+    expect(read(files.uploads).map((u) => u.status)).toEqual([
+      "success",
+      "success",
+      "success",
+    ]);
+    const slow = files.upload("slow.txt", "zzz");
+    await Bun.sleep(0);
+    files.reset();
+    expect(read(files.uploads).map((u) => u.key)).toEqual(["slow.txt"]);
+    expect(read(files.isUploading)).toBe(true);
+    gate.resolve(null);
+    await slow;
+    expect(read(files.uploads).map((u) => u.status)).toEqual(["success"]);
+    expect(read(files.progress).fraction).toBe(1);
+  });
+
+  test("plugin verbs and listAll/search failures reach error", async () => {
+    const router = createFilesRouter({
+      files: createFiles({ adapter: memory() }),
+      operations: ["head"],
+      secret: "s",
+    });
+    const files = useFiles({
+      endpoint: "https://app.test/api/files",
+      fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) =>
+        router.handle(new Request(input, init))) as typeof fetch,
+    });
+    const calls: [string, () => Promise<unknown>][] = [
+      ["versions", () => files.versions("k")],
+      ["restoreVersion", () => files.restoreVersion("k", "v")],
+      ["trashed", () => files.trashed()],
+      ["restoreTrashed", () => files.restoreTrashed("k")],
+      ["purge", () => files.purge()],
+      [
+        "listAll",
+        async () => {
+          for await (const _file of files.listAll()) {
+            // drain
+          }
+        },
+      ],
+      [
+        "search",
+        async () => {
+          for await (const _file of files.search("*")) {
+            // drain
+          }
+        },
+      ],
+    ];
+    for (const [verb, call] of calls) {
+      files.reset();
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      await expect(call()).rejects.toBeDefined();
+      expect([verb, read(files.error)?.code]).toEqual([verb, "Unauthorized"]);
+    }
+  });
+});
+
+// A list call that hangs until aborted, recording whether it was.
+const hangingConfig = () => {
+  const aborted: boolean[] = [];
+  let calls = 0;
+  const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1;
+    // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted.push(true);
+        reject(new Error("aborted"));
+      });
+    });
+  }) as typeof fetch;
+  return {
+    aborted,
+    calls: () => calls,
+    config: { endpoint: "https://app.test/api/files", fetchImpl },
+  };
+};
+
+describe("svelte query lifecycle", () => {
+  test("the last subscriber leaving aborts the in-flight query", async () => {
+    const { aborted, config: cfg } = hangingConfig();
+    const list = useList({}, cfg);
+    // A component's `$data`/`$isLoading` subscriptions outlive the tick.
+    const offData = list.data.subscribe(() => {});
+    const offLoading = list.isLoading.subscribe(() => {});
+    await flush();
+    offData();
+    expect(aborted).toEqual([]);
+    offLoading();
+    expect(aborted).toEqual([true]);
+  });
+
+  test("a synchronous peek does not abort; resubscribing re-runs an idled query", async () => {
+    const { aborted, calls, config: cfg } = hangingConfig();
+    const list = useList({}, cfg);
+    read(list.isLoading);
+    await flush();
+    expect(aborted).toEqual([]);
+
+    const off = list.data.subscribe(() => {});
+    await flush();
+    off();
+    expect(aborted).toEqual([true]);
+    const before = calls();
+    const again = list.data.subscribe(() => {});
+    await flush();
+    expect(calls()).toBe(before + 1);
+    again();
+  });
+
+  test("a settled query is left alone when its subscribers leave", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("docs/a", "1");
+    const list = useList({ prefix: "docs/" }, config(adapter));
+    const off = list.data.subscribe(() => {});
+    await flush();
+    off();
+    expect(read(list.data)?.items).toHaveLength(1);
+    expect(read(list.isFetching)).toBe(false);
+  });
+
+  test("subscribing the same callback twice yields independent unsubscribes", () => {
+    const list = useList({}, { enabled: false });
+    const values: unknown[] = [];
+    const run = (value: unknown) => values.push(value);
+    const first = list.data.subscribe(run);
+    const second = list.data.subscribe(run);
+    first();
+    first();
+    second();
+    expect(values).toHaveLength(2);
+  });
+});
+
 describe("svelte reactive query stores", () => {
   test("useList loads and refetches", async () => {
     const adapter = memory();

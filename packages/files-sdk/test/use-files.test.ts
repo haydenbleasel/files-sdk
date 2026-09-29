@@ -101,6 +101,13 @@ const pluginConfig = (files: Files) => {
   return { endpoint: "https://app.test/api/files", fetchImpl, transport };
 };
 
+// A transport that only settles when its signal aborts.
+const hanging: Transport = (req) =>
+  // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+  new Promise((_resolve, reject) => {
+    req.signal?.addEventListener("abort", () => reject(req.signal?.reason));
+  });
+
 afterEach(() => cleanup());
 
 describe("useFiles", () => {
@@ -252,6 +259,130 @@ describe("useFiles", () => {
       ).rejects.toBeDefined();
     });
     expect(result.current.error).toBeDefined();
+  });
+
+  test("uploads accumulate across calls; reset() keeps in-flight entries", async () => {
+    const adapter = memory();
+    const base = config(adapter);
+    const gate = Promise.withResolvers<null>();
+    const transport: Transport = async (req) => {
+      if (req.url.includes("slow")) {
+        await gate.promise;
+      }
+      return base.transport(req);
+    };
+    const { result } = renderHook(() => useFiles({ ...base, transport }));
+
+    await act(async () => {
+      await result.current.upload(new File(["a"], "a.txt"));
+      await result.current.upload("b.txt", "bb");
+      await result.current.upload([
+        { body: "1", key: "m/1" },
+        { body: "2", key: "m/2" },
+      ]);
+    });
+    expect(result.current.uploads.map((u) => u.status)).toEqual([
+      "success",
+      "success",
+      "success",
+      "success",
+    ]);
+    expect(result.current.uploads.map((u) => u.key)).toEqual([
+      expect.any(String),
+      "b.txt",
+      "m/1",
+      "m/2",
+    ]);
+
+    let slow: Promise<unknown> = Promise.resolve();
+    act(() => {
+      slow = result.current.upload("slow.txt", "zzz");
+    });
+    await waitFor(() => {
+      expect(result.current.uploads.at(-1)?.status).toBe("uploading");
+    });
+    expect(result.current.isUploading).toBe(true);
+
+    act(() => {
+      result.current.reset();
+    });
+    // Finished entries are gone; the running one (and isUploading) stays.
+    expect(result.current.uploads.map((u) => u.key)).toEqual(["slow.txt"]);
+    expect(result.current.isUploading).toBe(true);
+
+    await act(async () => {
+      gate.resolve(null);
+      await slow;
+    });
+    expect(result.current.uploads.map((u) => u.status)).toEqual(["success"]);
+    expect(result.current.isUploading).toBe(false);
+    expect(result.current.progress.fraction).toBe(1);
+  });
+
+  test("an upload stopped by abort() ends as aborted", async () => {
+    const base = config(memory());
+    const { result } = renderHook(() =>
+      useFiles({ ...base, transport: hanging })
+    );
+
+    let pending: Promise<unknown> = Promise.resolve();
+    act(() => {
+      pending = result.current.upload("k.txt", "abc").catch(() => {});
+    });
+    await waitFor(() => {
+      expect(result.current.uploads.at(-1)?.status).toBe("uploading");
+    });
+    await act(async () => {
+      result.current.abort(new Error("stop"));
+      await pending;
+    });
+    expect(result.current.uploads.at(-1)?.status).toBe("aborted");
+    expect(result.current.uploads.at(-1)?.error).toBeDefined();
+  });
+
+  test("a rejected upload settles its entry as error", async () => {
+    const { result } = renderHook(() => useFiles(config(memory())));
+    await act(async () => {
+      await expect(
+        result.current.upload("../escape", "x")
+      ).rejects.toBeDefined();
+    });
+    const [entry] = result.current.uploads;
+    expect(entry?.status).toBe("error");
+    expect(entry?.error?.code).toBe("Provider");
+    expect(result.current.isUploading).toBe(false);
+  });
+
+  test("listAll/search failures reach error", async () => {
+    const router = createFilesRouter({
+      files: createFiles({ adapter: memory() }),
+      operations: ["head"],
+      secret: "s",
+    });
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      router.handle(new Request(input, init))) as typeof fetch;
+    const { result } = renderHook(() =>
+      useFiles({ endpoint: "https://app.test/api/files", fetchImpl })
+    );
+    await act(async () => {
+      await expect(async () => {
+        for await (const _file of result.current.listAll()) {
+          // drain
+        }
+      }).toThrow();
+    });
+    expect(result.current.error?.code).toBe("Unauthorized");
+    act(() => {
+      result.current.reset();
+    });
+    await act(async () => {
+      await expect(async () => {
+        for await (const _file of result.current.search("*")) {
+          // drain
+        }
+      }).toThrow();
+    });
+    expect(result.current.error?.code).toBe("Unauthorized");
   });
 
   test("abort() re-arms after reset", async () => {

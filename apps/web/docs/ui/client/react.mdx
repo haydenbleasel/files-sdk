@@ -61,14 +61,18 @@ Track progress per call, or read the hook's ambient state:
 
 ```tsx lineNumbers
 await files.upload(file, {
-  onProgress: (p) => console.log(p.fraction), // 0 → 1
+  onProgress: (p, perFile) => console.log(p.fraction, perFile[0]?.status),
 });
 
-// or, ambient across any in-flight upload this hook started:
-files.isUploading; // boolean
-files.progress; // { loaded, total, fraction }
-files.uploads; // per-file FileUploadState[]
+// or read the ambient state this hook keeps across every upload() call:
+files.isUploading; // true while any upload() from this hook is running
+files.uploads; // FileUploadState[] - one entry per file
+files.progress; // { loaded, total, fraction } over the current entries
 ```
+
+`uploads` accumulates: every file from every `upload()` call — keyless, keyed, and each item of a bulk `upload([...])`, whether they run one after another or at the same time — gets one entry. An entry keeps its position for the whole upload and is replaced by a fresh snapshot each time it changes, so it re-renders like any other state. Its `status` moves from `"uploading"` to a terminal value on every path: `"success"`, `"error"` (with `error` set to the `FilesError`), or `"aborted"`. `onProgress` follows the same lifecycle and fires once more after the terminal status.
+
+`files.reset()` clears the finished entries. Uploads that are still running keep their entries, and `isUploading` stays `true` until they settle.
 
 ## Downloading vs linking
 
@@ -91,9 +95,11 @@ const src = await files.url("avatar.png");
 
 The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/docs/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `type`, `etag`, `metadata`.
 
+A ranged `download` must come back as `206 Partial Content`. If the gateway (or the storage it redirects to) ignores the range and sends the whole object, the call rejects rather than handing you the full body as if it were the slice.
+
 ## Errors & cancellation
 
-A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"`), rebuilt from the wire envelope. The last error is also mirrored to `files.error` for render-time display:
+A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"`), rebuilt from the wire envelope. The last error from any verb is also mirrored to `files.error` for render-time display. That includes errors thrown while you iterate `listAll()` or `search()`:
 
 ```tsx lineNumbers
 try {
@@ -101,16 +107,16 @@ try {
 } catch (e) {
   // e instanceof FilesError
 }
-{
-  files.error && (
-    <p>
-      {files.error.code}: {files.error.message}
-    </p>
-  );
-}
+
+// …and in the component's render:
+return files.error ? (
+  <p>
+    {files.error.code}: {files.error.message}
+  </p>
+) : null;
 ```
 
-The hook owns an `AbortController` merged into every call. `files.abort()` cancels everything in flight; unmounting does the same automatically. `files.reset()` clears the ambient error/upload state and re-arms after an abort. Pass a per-call `signal` (or a hook-level `signal` option) to cancel selectively.
+The hook owns an `AbortController` merged into every call. `files.abort()` cancels everything in flight (their `uploads` entries end `"aborted"`); unmounting does the same automatically. `files.reset()` clears the ambient error and the finished upload entries, and re-arms after an abort. Pass a per-call `signal` (or a hook-level `signal` option) to cancel selectively.
 
 ## Reactive reads
 

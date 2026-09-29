@@ -31,7 +31,7 @@ The binding ships **no Svelte runtime** — its stores are a tiny implementation
 
 ## The verbs
 
-Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities` — including the bulk array forms. They are plain methods:
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities`, plus the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) when the gateway exposes them — including the bulk array forms. They are plain methods:
 
 ```ts lineNumbers
 const { key } = await files.upload(file); // keyless → server mints the key
@@ -43,28 +43,30 @@ await files.delete(["a.txt", "b.txt"]); // bulk → { deleted, errors? }
 ## Ambient state (stores)
 
 ```ts lineNumbers
-files.isUploading; // Readable<boolean>      → $isUploading
-files.progress; // Readable<{ loaded, total, fraction }>
-files.uploads; // Readable<FileUploadState[]> — per-file live state
-files.error; // Readable<FilesError | undefined> — last error from any verb
-files.reset(); // clear ambient error + upload state (re-arms after abort)
-files.abort(); // abort every in-flight call — wire to onDestroy
+files.isUploading; // Readable<boolean> → $isUploading
+files.uploads; // Readable<FileUploadState[]> - one entry per file, across every upload() call
+files.progress; // Readable<{ loaded, total, fraction }> over the current entries
+files.error; // Readable<FilesError | undefined> - last error from any verb
+files.reset(); // clear the error + finished uploads (re-arms after abort)
+files.abort(); // abort every in-flight call - wire to onDestroy
 ```
 
-Svelte's lifecycle hooks need the compiler, so cancel in-flight work by calling `files.abort` from `onDestroy` — one line, as above.
+`uploads` accumulates one entry per file from every `upload()` call, including each item of a bulk `upload([...])`. Each entry keeps its position and is replaced by a fresh snapshot on every change. Its `status` ends as `"success"`, `"error"` (with `error` set), or `"aborted"` on every path. `reset()` leaves uploads that are still running in place. `error` also catches failures thrown while iterating `listAll()`/`search()`.
+
+The binding imports no Svelte lifecycle hooks, so cancel `useFiles` work by calling `files.abort` from `onDestroy`, as above.
 
 ## Reactive reads
 
-The query stores load on creation and expose `data` / `error` / `isLoading` / `isFetching` stores plus `refetch()`. Svelte's reactivity lives at the component level, so re-run them from a `$:` block when a dependency changes:
+The query stores load on creation and expose `data` / `error` / `isLoading` / `isFetching` stores plus `refetch()`. A query reads its options once, so to follow a changing input, re-create it in a `$:` block:
 
 ```svelte
 <script lang="ts">
   import { useList } from "files-sdk/svelte";
 
-  let prefix = "docs/";
-  const { data, isLoading, refetch } = useList({ prefix });
+  export let prefix = "docs/";
 
-  $: prefix, refetch(); // re-run whenever `prefix` changes
+  // A new query whenever `prefix` changes.
+  $: ({ data, isLoading } = useList({ prefix }));
 </script>
 
 {#if $isLoading}Loading…{:else}
@@ -72,8 +74,10 @@ The query stores load on creation and expose `data` / `error` / `isLoading` / `i
 {/if}
 ```
 
+When the last subscriber of a query's stores goes away, its in-flight request is aborted, like React and Vue do on unmount. That happens when the component is destroyed, or when a `$:` block swaps in a new query. A one-off read such as `get(store)` doesn't count. `refetch()` re-runs the same query on demand.
+
 `useFile(key)` (a `head()` for previews) and `useSearch(pattern, opts)` work the same way.
 
 ## Setting up the gateway
 
-Point the binding at a mounted [gateway](/docs/ui/server/gateway) — `createFilesRouter` on Next, Hono, Express, or any Web-`Request` runtime — and lock it down with [`authorize`](/docs/ui/server/authorization).
+Point the binding at a mounted [gateway](/docs/ui/server/gateway) (`createFilesRouter` on SvelteKit, Hono, Express, or any Web-`Request` runtime) and lock it down with [`authorize`](/docs/ui/server/authorization).

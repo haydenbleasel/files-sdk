@@ -170,6 +170,79 @@ describe("vue useFiles", () => {
     });
   });
 
+  test("uploads accumulate across calls; reset() keeps in-flight entries", async () => {
+    const base = config(memory());
+    const gate = Promise.withResolvers<null>();
+    const transport: Transport = async (req) => {
+      if (req.url.includes("slow")) {
+        await gate.promise;
+      }
+      return base.transport(req);
+    };
+    const files = useFiles({ ...base, transport });
+    await files.upload(new File(["a"], "a.txt"));
+    await files.upload([
+      { body: "1", key: "m/1" },
+      { body: "2", key: "m/2" },
+    ]);
+    expect(files.uploads.value.map((u) => u.status)).toEqual([
+      "success",
+      "success",
+      "success",
+    ]);
+    const slow = files.upload("slow.txt", "zzz");
+    await Bun.sleep(0);
+    files.reset();
+    expect(files.uploads.value.map((u) => u.key)).toEqual(["slow.txt"]);
+    expect(files.isUploading.value).toBe(true);
+    gate.resolve(null);
+    await slow;
+    expect(files.uploads.value.map((u) => u.status)).toEqual(["success"]);
+    expect(files.progress.value.fraction).toBe(1);
+  });
+
+  test("plugin verbs and listAll/search failures reach error", async () => {
+    const router = createFilesRouter({
+      files: createFiles({ adapter: memory() }),
+      operations: ["head"],
+      secret: "s",
+    });
+    const files = useFiles({
+      endpoint: "https://app.test/api/files",
+      fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) =>
+        router.handle(new Request(input, init))) as typeof fetch,
+    });
+    const calls: [string, () => Promise<unknown>][] = [
+      ["versions", () => files.versions("k")],
+      ["restoreVersion", () => files.restoreVersion("k", "v")],
+      ["trashed", () => files.trashed()],
+      ["restoreTrashed", () => files.restoreTrashed("k")],
+      ["purge", () => files.purge()],
+      [
+        "listAll",
+        async () => {
+          for await (const _file of files.listAll()) {
+            // drain
+          }
+        },
+      ],
+      [
+        "search",
+        async () => {
+          for await (const _file of files.search("*")) {
+            // drain
+          }
+        },
+      ],
+    ];
+    for (const [verb, call] of calls) {
+      files.reset();
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      await expect(call()).rejects.toBeDefined();
+      expect([verb, files.error.value?.code]).toEqual([verb, "Unauthorized"]);
+    }
+  });
+
   test("works without an active effect scope", async () => {
     const files = useFiles(config(memory()));
     await files.upload("loose", "1");

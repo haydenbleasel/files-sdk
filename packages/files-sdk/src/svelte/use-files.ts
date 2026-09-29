@@ -1,18 +1,20 @@
 import type {
   AggregateProgress,
-  BulkCallOptions,
   FileUploadState,
   FilesClient,
   FilesClientConfig,
   NativeFileRef,
   UploadBody,
   UploadCallOptions,
+  UploadManyCallOptions,
   UploadManyClientItem,
   UploadOutcome,
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
+import { rememberIteration } from "../client/remember.js";
 import { defaultTransport } from "../client/transport.js";
+import { createUploadLedger } from "../client/upload-ledger.js";
 import type { UploadManyResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { isString } from "../internal/is.js";
@@ -28,13 +30,23 @@ export interface UseFilesOptions extends FilesClientConfig {
 export interface UseFilesReturn extends FilesClient {
   /** `true` while any `upload()` started here is in flight. */
   isUploading: ReadableStore<boolean>;
-  /** Per-file live state of the most recent upload. */
+  /**
+   * One entry per file uploaded through this binding — accumulated across
+   * every `upload()` call (keyless, keyed, and each item of a bulk
+   * `upload([...])`, concurrent or sequential) until `reset()` clears the
+   * finished ones. An entry keeps its position for the file's whole upload and
+   * is replaced by a fresh snapshot on each change; its `status` always ends
+   * `"success"`, `"error"` (with `error` set), or `"aborted"`.
+   */
   uploads: ReadableStore<readonly FileUploadState[]>;
-  /** Aggregate progress across in-flight uploads. */
+  /** Aggregate progress over the current `uploads` entries. */
   progress: ReadableStore<AggregateProgress>;
-  /** The last error from any verb. */
+  /** The last error from any verb (including errors thrown while iterating `listAll`/`search`). */
   error: ReadableStore<FilesError | undefined>;
-  /** Clear the ambient error + upload state (and re-arm after an `abort`). */
+  /**
+   * Clear the ambient error and the finished `uploads` entries (in-flight ones
+   * stay, as does `isUploading`), and re-arm after an `abort`.
+   */
   reset: () => void;
   /** Abort every in-flight call started here (call from `onDestroy`); `cause` becomes the abort reason. */
   abort: (cause?: unknown) => void;
@@ -47,6 +59,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
   const uploads = writable<readonly FileUploadState[]>([]);
   const isUploading = writable(false);
   const progress = writable<AggregateProgress>(aggregate([]));
+  const ledger = createUploadLedger();
 
   const setUploads = (next: readonly FileUploadState[]) => {
     uploads.set(next);
@@ -91,36 +104,46 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
       }),
   });
 
+  const recordError = (cause: unknown): void => {
+    errorStore.set(FilesError.wrap(cause));
+  };
   const remember = async <T>(run: () => Promise<T>): Promise<T> => {
     try {
       return await run();
     } catch (error) {
-      errorStore.set(FilesError.wrap(error));
+      recordError(error);
       throw error;
     }
   };
 
-  const trackProgress = (base?: UploadCallOptions): UploadCallOptions => ({
+  // Folds every report into the ledger (so `uploads` accumulates across
+  // calls), and hands the client the merged signal so an `abort()` settles
+  // the file as "aborted" rather than "error".
+  const trackProgress = (
+    base?: UploadCallOptions & UploadManyCallOptions
+  ): UploadCallOptions & UploadManyCallOptions => ({
     ...base,
     onProgress: (p, perFile) => {
-      setUploads([...perFile]);
+      setUploads(ledger.report(perFile));
       base?.onProgress?.(p, perFile);
     },
+    signal: mergedSignal(base?.signal),
   });
 
   // Mirrors the client's three `upload` overloads, dispatching on the same
   // argument shapes so progress tracking can be threaded into each.
   const upload = async (
     a: Blob | NativeFileRef | string | UploadManyClientItem[],
-    b?: UploadBody | UploadCallOptions | BulkCallOptions,
+    b?: UploadBody | UploadCallOptions | UploadManyCallOptions,
     c?: UploadCallOptions
   ): Promise<UploadOutcome | UploadManyResult> => {
     setInFlight(inFlight + 1);
     errorStore.set(undefined);
     try {
       if (Array.isArray(a)) {
-        // SAFETY: the bulk overload pairs an item array with `BulkCallOptions`.
-        return await client.upload(a, b as BulkCallOptions | undefined);
+        // SAFETY: the bulk overload pairs an item array with `UploadManyCallOptions`.
+        const bulkOpts = b as UploadManyCallOptions | undefined;
+        return await client.upload(a, trackProgress(bulkOpts));
       }
       if (isString(a)) {
         // SAFETY: the keyed overload pairs a key with its `UploadBody`.
@@ -159,18 +182,26 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
       remember(() => client.head(k, o))) as FilesClient["head"],
     isUploading,
     list: (o) => remember(() => client.list(o)),
+    listAll: (o) => rememberIteration(client.listAll(o), recordError),
     move: (from, to, o) => remember(() => client.move(from, to, o)),
     progress,
+    purge: (k, o) => remember(() => client.purge(k, o)),
     reset: () => {
       if (root.signal.aborted) {
         root = new AbortController();
       }
       errorStore.set(undefined);
-      setUploads([]);
+      setUploads(ledger.clearFinished());
     },
+    restoreTrashed: (k, o) => remember(() => client.restoreTrashed(k, o)),
+    restoreVersion: (k, v, o) => remember(() => client.restoreVersion(k, v, o)),
+    search: (pattern, o) =>
+      rememberIteration(client.search(pattern, o), recordError),
     signedUploadUrl: (k, o) => remember(() => client.signedUploadUrl(k, o)),
+    trashed: (o) => remember(() => client.trashed(o)),
     upload: upload as FilesClient["upload"],
     uploads,
     url: (k, o) => remember(() => client.url(k, o)),
+    versions: (k, o) => remember(() => client.versions(k, o)),
   };
 };
