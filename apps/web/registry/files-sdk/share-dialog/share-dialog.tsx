@@ -291,6 +291,7 @@ export const ShareDialog = ({
             <div className="flex flex-wrap gap-1.5">
               {presets.map((preset) => (
                 <Button
+                  aria-pressed={preset.seconds === expiresIn}
                   key={preset.seconds}
                   onClick={() => {
                     setExpiresIn(preset.seconds);
@@ -312,6 +313,7 @@ export const ShareDialog = ({
               <div className="flex flex-wrap gap-1.5">
                 {(["attachment", "inline"] as const).map((value) => (
                   <Button
+                    aria-pressed={value === disposition}
                     key={value}
                     onClick={() => {
                       setDisposition(value);

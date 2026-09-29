@@ -123,6 +123,7 @@ export const FileSearch = ({
       <form className="flex flex-col gap-2" onSubmit={run}>
         <div className="flex gap-2">
           <Input
+            aria-label="Search keys"
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search keys…"
             value={query}
@@ -139,6 +140,7 @@ export const FileSearch = ({
         <div className="flex flex-wrap items-center gap-1.5">
           {MATCH_MODES.map((mode) => (
             <Button
+              aria-pressed={mode === match}
               key={mode}
               onClick={() => setMatch(mode)}
               size="xs"

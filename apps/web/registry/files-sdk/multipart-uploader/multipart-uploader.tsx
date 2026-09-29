@@ -174,24 +174,26 @@ export const MultipartUploader = ({
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
+      {/* The file input sits beside the button, not inside it: interactive
+          content can't nest in a <button>. */}
+      <input
+        accept={accept}
+        aria-label="Add files"
+        className="hidden"
+        multiple
+        onChange={(event) => {
+          add(event.currentTarget.files);
+          event.currentTarget.value = "";
+        }}
+        ref={inputRef}
+        type="file"
+      />
       <Button
-        className="flex h-auto flex-col items-center justify-center gap-2 p-6"
+        className="flex h-auto flex-col items-center justify-center gap-2 p-6 whitespace-normal"
         onClick={() => inputRef.current?.click()}
         type="button"
         variant="outline"
       >
-        <input
-          accept={accept}
-          aria-label="Add files"
-          className="hidden"
-          multiple
-          onChange={(event) => {
-            add(event.currentTarget.files);
-            event.currentTarget.value = "";
-          }}
-          ref={inputRef}
-          type="file"
-        />
         <UploadIcon className="text-muted-foreground size-5" />
         <span className="text-sm font-medium">Add files</span>
         <span className="text-muted-foreground text-xs">

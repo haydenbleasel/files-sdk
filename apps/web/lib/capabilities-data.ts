@@ -55,9 +55,10 @@ const recent = await Array.fromAsync(
     code: `import { createFileTools } from "files-sdk/ai-sdk";
 import { generateText } from "ai";
 
+// unlisted writes default to needing approval
 const tools = createFileTools({
   files,
-  requireApproval: { deleteFile: true },
+  requireApproval: { deleteFile: true, uploadFile: false },
 });
 
 await generateText({
@@ -115,7 +116,7 @@ await files.upload("db.tar", stream, {
 
 await files.upload(items, {
   onProgress({ key, loaded, total }) {
-    bars.get(key)?.set(loaded / total);
+    if (total) bars.get(key)?.set(loaded / total);
   },
 });`,
     description:

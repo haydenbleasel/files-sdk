@@ -126,6 +126,11 @@ export const CapabilitiesBadges = ({
           <span className={cn(!row.supported && "text-muted-foreground")}>
             {row.label}
           </span>
+          {/* The check/cross icons are decorative (aria-hidden), so state the
+              support level in text for screen readers. */}
+          <span className="sr-only">
+            {row.supported ? "(supported)" : "(not supported)"}
+          </span>
         </Badge>
       ))}
     </div>

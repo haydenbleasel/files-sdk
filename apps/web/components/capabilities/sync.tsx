@@ -97,7 +97,7 @@ export const Sync = () => {
         <span className="text-muted-foreground flex items-center gap-1.5">
           Syncing
           <img
-            alt="S3"
+            alt=""
             className="size-4 rounded-[3px]"
             height={16}
             src="/logos/s3.svg"
@@ -106,7 +106,7 @@ export const Sync = () => {
           <span className="text-foreground">S3</span>
           to
           <img
-            alt="R2"
+            alt=""
             className="size-4 rounded-[3px]"
             height={16}
             src="/logos/r2.svg"

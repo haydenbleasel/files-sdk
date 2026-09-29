@@ -329,25 +329,40 @@ export const Dropzone = ({
   // The file input sits beside the button, not inside it (interactive
   // content can't nest in a <button>), and every built-in state renders
   // phrasing content (spans) so the button's content model stays valid.
+  //
+  // While uploading, the zone is only *marked* disabled (`aria-disabled`), not
+  // given the `disabled` attribute: a disabled button gets no drag events (and
+  // the Button's `disabled:pointer-events-none` lets them fall through), so a
+  // file dropped mid-upload would reach the page and the browser would
+  // navigate away to open it. Keeping the handlers live lets the drop be
+  // swallowed and ignored instead.
+  const busy = files.isUploading;
   return (
     <DropzoneContext.Provider value={contextValue}>
       <Button
+        aria-disabled={busy || undefined}
         className={cn(
           "relative flex h-auto w-full flex-col items-center justify-center gap-2 overflow-hidden p-8 whitespace-normal",
           isDragActive && "border-primary ring-primary ring-1",
+          busy && "cursor-not-allowed opacity-50",
           className
         )}
-        disabled={files.isUploading}
-        onClick={open}
+        onClick={() => {
+          if (!busy) {
+            open();
+          }
+        }}
         onDragLeave={() => setIsDragActive(false)}
         onDragOver={(event) => {
           event.preventDefault();
-          setIsDragActive(true);
+          setIsDragActive(!busy);
         }}
         onDrop={(event) => {
           event.preventDefault();
           setIsDragActive(false);
-          void handleDrop(event.dataTransfer);
+          if (!busy) {
+            void handleDrop(event.dataTransfer);
+          }
         }}
         type="button"
         variant="outline"
