@@ -13,25 +13,24 @@ const STORAGE_URL = `${PROJECT_URL}/storage/v1`;
 const KEY = "service-role-key";
 const BUCKET = "uploads";
 
-type SupaErr = Error & {
-  name: string;
-  status: number;
-  statusCode: string;
-};
+// Capture the real storage-js before `mock.module` swaps it below, so error
+// cases use genuine `StorageApiError` instances and an end-to-end client can
+// run storage-js's own response-to-error handling.
+const { StorageApiError, StorageClient: RealStorageClient } =
+  await import("@supabase/storage-js");
+
+type SupaErr = InstanceType<typeof StorageApiError>;
 type SupaResult<T> = { data: T; error: null } | { data: null; error: SupaErr };
 
 const ok = <T>(data: T): SupaResult<T> => ({ data, error: null });
 const fail = (
   status: number,
   statusCode: string,
-  message: string
+  message: string,
+  code?: string
 ): SupaResult<never> => ({
   data: null,
-  error: Object.assign(new Error(message), {
-    name: "StorageApiError",
-    status,
-    statusCode,
-  }),
+  error: new StorageApiError(message, status, statusCode, "storage", code),
 });
 
 const baseInfo = () => ({
@@ -357,9 +356,40 @@ describe("supabase adapter", () => {
         upsert?: boolean;
       };
       expect(o.contentType).toBe("text/plain");
-      expect(o.cacheControl).toBe("public, max-age=60");
+      // storage-js takes seconds and adds `max-age=` itself.
+      expect(o.cacheControl).toBe("60");
       expect(o.metadata).toEqual({ author: "me" });
       expect(o.upsert).toBe(true);
+    });
+
+    test("cacheControl maps to Supabase's seconds form", async () => {
+      const adapter = makeAdapter();
+      const sent = async (cacheControl: string) => {
+        uploadMock.mockClear();
+        await adapter.upload("a.txt", "hi", { cacheControl });
+        const opts = uploadMock.mock.calls[0]?.[2] as { cacheControl?: string };
+        return opts.cacheControl;
+      };
+      expect(await sent("max-age=31536000")).toBe("31536000");
+      expect(await sent("Public, MAX-AGE=5,")).toBe("5");
+      // A bare integer is already storage-js's native seconds form.
+      expect(await sent(" 3600 ")).toBe("3600");
+    });
+
+    test("cacheControl Supabase can't store throws before any upload", async () => {
+      const adapter = makeAdapter();
+      for (const cacheControl of [
+        "no-store",
+        "public",
+        "public, max-age=60, immutable",
+        "max-age=60, max-age=120",
+      ]) {
+        // oxlint-disable-next-line no-await-in-loop -- each case must reject independently
+        await expect(
+          adapter.upload("a.txt", "hi", { cacheControl })
+        ).rejects.toThrow(/stores only a max-age/u);
+      }
+      expect(uploadMock).not.toHaveBeenCalled();
     });
 
     test("Uint8Array passes through and reports its byteLength", async () => {
@@ -509,6 +539,50 @@ describe("supabase adapter", () => {
         Promise.resolve(fail(404, "NotFound", "missing"))
       );
       await expect(files.exists("missing.txt")).resolves.toBe(false);
+    });
+
+    test("exists is false for Supabase's HTTP 400 + statusCode '404' NoSuchKey shape", async () => {
+      // What storage-js builds from the real response: HTTP 400 on `status`,
+      // the body's `statusCode: "404"` and `code: "NoSuchKey"`.
+      infoMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(400, "404", "Object not found", "NoSuchKey"))
+      );
+      await expect(makeAdapter().exists("missing.txt")).resolves.toBe(false);
+    });
+
+    test("a real StorageClient maps Supabase's missing-object response to NotFound", async () => {
+      // End to end through storage-js's own error handling: the server
+      // answers HTTP 400 with the real status in the JSON body.
+      const fetchMock = mock((_url: string, _init?: RequestInit) =>
+        Promise.resolve(
+          Response.json(
+            {
+              code: "NoSuchKey",
+              error: "not_found",
+              message: "Object not found",
+              statusCode: "404",
+            },
+            { status: 400 }
+          )
+        )
+      );
+      const adapter = supabase({
+        bucket: BUCKET,
+        client: new RealStorageClient(
+          STORAGE_URL,
+          { apikey: KEY },
+          fetchMock as unknown as typeof fetch
+        ),
+      });
+      await expect(adapter.exists("missing.txt")).resolves.toBe(false);
+      await expect(adapter.head("missing.txt")).rejects.toMatchObject({
+        code: "NotFound",
+        message: "Object not found",
+      });
+      await expect(adapter.download("missing.txt")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
     test("exists rethrows a non-NotFound error rather than reporting false", async () => {
@@ -850,15 +924,16 @@ describe("supabase adapter", () => {
       expect(createSignedUploadUrlMock).toHaveBeenCalledTimes(1);
     });
 
-    test("includes Content-Type header when contentType passed", async () => {
-      const out = await makeAdapter().signedUploadUrl("a.png", {
-        contentType: "image/png",
-        expiresIn: 60,
-      });
-      if (out.method !== "PUT") {
-        throw new Error("expected PUT");
-      }
-      expect(out.headers?.["Content-Type"]).toBe("image/png");
+    test("throws when contentType is set (Supabase can't bind it)", async () => {
+      // An advisory Content-Type header isn't enforcement; the contract says
+      // throw instead of returning one.
+      await expect(
+        makeAdapter().signedUploadUrl("a.png", {
+          contentType: "image/png",
+          expiresIn: 60,
+        })
+      ).rejects.toThrow(/`contentType` is not supported/u);
+      expect(createSignedUploadUrlMock).not.toHaveBeenCalled();
     });
 
     test("throws when maxSize is set", async () => {
@@ -919,6 +994,51 @@ describe("supabase adapter", () => {
         })
       );
       expect(err.code).toBe("Conflict");
+    });
+
+    test("a numeric body statusCode wins over the HTTP 400", () => {
+      const err = mapSupabaseError(
+        new StorageApiError("Object not found", 400, "404", "storage")
+      );
+      expect(err.code).toBe("NotFound");
+      expect(err.message).toBe("Object not found");
+      expect(
+        mapSupabaseError(new StorageApiError("denied", 400, "403", "storage"))
+          .code
+      ).toBe("Unauthorized");
+      expect(
+        mapSupabaseError(
+          new StorageApiError(
+            "exists",
+            400,
+            "409",
+            "storage",
+            "KeyAlreadyExists"
+          )
+        ).code
+      ).toBe("Conflict");
+    });
+
+    test("the body's `code` classifies when statusCode is absent", () => {
+      // Without a body statusCode, storage-js copies `code` into statusCode.
+      const err = mapSupabaseError(
+        new StorageApiError("gone", 400, "NoSuchKey", "storage", "NoSuchKey")
+      );
+      expect(err.code).toBe("NotFound");
+    });
+
+    test("a raw body's legacy `error` field classifies", () => {
+      expect(
+        mapSupabaseError({ error: "not_found", message: "nope", status: 400 })
+          .code
+      ).toBe("NotFound");
+    });
+
+    test("InvalidKey (a malformed object key) is not Unauthorized", () => {
+      const err = mapSupabaseError(
+        new StorageApiError("bad key", 400, "400", "storage", "InvalidKey")
+      );
+      expect(err.code).toBe("Provider");
     });
 
     test("status 500 maps to Provider", () => {
@@ -1253,6 +1373,89 @@ describe("supabase resumable uploads (TUS)", () => {
     expect(result.size).toBe(SIX_MIB + 10);
     expect(control.status).toBe("completed");
     expect(control.session?.provider).toBe("supabase");
+    expect(offsets).toEqual(["0", String(SIX_MIB)]);
+  });
+
+  test("the TUS session carries cacheControl (as seconds) and user metadata", async () => {
+    let uploadMetadata = "";
+    installFetch((_url, init) => {
+      const headers = init.headers as Record<string, string>;
+      if (init.method === "POST") {
+        uploadMetadata = headers["Upload-Metadata"] ?? "";
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      return new Response(null, {
+        headers: {
+          "Upload-Offset": String(
+            Number(headers["Upload-Offset"]) +
+              ((init.body as Uint8Array)?.byteLength ?? 0)
+          ),
+        },
+        status: 204,
+      });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    await files.upload("file", "hello", {
+      cacheControl: "public, max-age=60",
+      control: new UploadControl(),
+      metadata: { author: "me" },
+    });
+    const pairs = Object.fromEntries(
+      uploadMetadata.split(",").map((pair) => {
+        const [name = "", value = ""] = pair.split(" ");
+        return [name, Buffer.from(value, "base64").toString()];
+      })
+    );
+    expect(pairs).toEqual({
+      bucketName: BUCKET,
+      cacheControl: "60",
+      contentType: "text/plain; charset=utf-8",
+      metadata: JSON.stringify({ author: "me" }),
+      objectName: "file",
+    });
+  });
+
+  test("an unrepresentable cacheControl rejects before the TUS session opens", async () => {
+    const fetchSpy = mock(() => new Response(null, { status: 201 }));
+    installFetch(fetchSpy);
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("file", "hello", {
+        cacheControl: "no-store",
+        control: new UploadControl(),
+      })
+    ).rejects.toThrow(/stores only a max-age/u);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  test("chunks stay 6 MiB whatever multipart.partSize asks for", async () => {
+    // Supabase's TUS endpoint requires exactly 6 MiB chunks.
+    const offsets: string[] = [];
+    installFetch((_url, init) => {
+      if (init.method === "POST") {
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      const headers = init.headers as Record<string, string>;
+      offsets.push(headers["Upload-Offset"] ?? "");
+      const next =
+        Number(headers["Upload-Offset"]) +
+        ((init.body as Uint8Array)?.byteLength ?? 0);
+      return new Response(null, {
+        headers: { "Upload-Offset": String(next) },
+        status: 204,
+      });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    await files.upload("file", new Uint8Array(SIX_MIB + 10), {
+      control: new UploadControl(),
+      multipart: { partSize: 1024 * 1024 },
+    });
     expect(offsets).toEqual(["0", String(SIX_MIB)]);
   });
 

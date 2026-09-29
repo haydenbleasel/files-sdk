@@ -231,6 +231,36 @@ afterEach(() => {
   delete process.env.NETLIFY_BLOBS_TOKEN;
 });
 
+// Mirrors the real `BlobsInternalError` shape: when the response has an
+// `x-nf-error` header, the message carries that header's text instead of
+// "<status> status code", and `.status` is the only structured signal.
+const internalError = (status: number, details: string): Error =>
+  Object.assign(
+    new Error(
+      `Netlify Blobs has generated an internal error (${details}, ID: 01H)`
+    ),
+    { name: "BlobsInternalError", responseBody: undefined, status }
+  );
+
+// One delimiter-mode page: two files and two folders interleaved in key order.
+const folderPage = () => ({
+  async *[Symbol.asyncIterator]() {
+    yield {
+      blobs: [
+        { etag: '"1"', key: "p/a.txt" },
+        { etag: '"2"', key: "p/c.txt" },
+      ],
+      directories: ["p/b/", "p/d/"],
+    };
+  },
+});
+
+// Seeds the mock store in key order (the `set` mock records insertion order,
+// which the paginated list mock replays).
+const seedKeys = async (keys: string[]): Promise<void> => {
+  await Promise.all(keys.map((k) => setMock(k, k)));
+};
+
 describe("netlify-blobs adapter", () => {
   test("missing name throws at construction", () => {
     expect(() =>
@@ -363,8 +393,33 @@ describe("netlify-blobs adapter", () => {
     if (!entry) {
       throw new Error("missing entry");
     }
-    // No explicit contentType in opts — the adapter records the default.
-    expect(entry.metadata.__contentType).toBe("application/octet-stream");
+    // No explicit contentType in opts — the Blob's own type is recorded.
+    expect(entry.metadata.__contentType).toBe("image/png");
+  });
+
+  test("upload infers content types like the other adapters", async () => {
+    const adapter = netlifyBlobs({ name: "s" });
+    const text = await adapter.upload("a.txt", "hello");
+    expect(text.contentType).toBe("text/plain; charset=utf-8");
+    expect(backing.get("a.txt")?.metadata.__contentType).toBe(
+      "text/plain; charset=utf-8"
+    );
+    const untyped = await adapter.upload(
+      "b.bin",
+      new Blob([new Uint8Array([1])])
+    );
+    expect(untyped.contentType).toBe("application/octet-stream");
+    const bytes = await adapter.upload("c.bin", new Uint8Array([1]));
+    expect(bytes.contentType).toBe("application/octet-stream");
+    // An explicit contentType still wins over the Blob's own type.
+    const override = await adapter.upload(
+      "d.png",
+      new Blob([new Uint8Array([1])], { type: "image/png" }),
+      { contentType: "image/webp" }
+    );
+    expect(override.contentType).toBe("image/webp");
+    const stored = await adapter.download("d.png");
+    expect(stored.type).toBe("image/webp");
   });
 
   test("download returns a buffered StoredFile with metadata round-tripped", async () => {
@@ -601,11 +656,107 @@ describe("netlify-blobs adapter", () => {
     expect(call?.paginate).toBe(true);
   });
 
-  test("list returns no cursor (Netlify pagination is opaque)", async () => {
+  test("list returns no cursor when nothing is left to fetch", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    await files.upload("a", "1");
-    const out = await files.list();
-    expect(out.cursor).toBeUndefined();
+    await seedKeys(["a", "b"]);
+    const all = await files.list();
+    expect(all.cursor).toBeUndefined();
+    // Exactly `limit` entries: no phantom next page.
+    const exact = await files.list({ limit: 2 });
+    expect(exact.cursor).toBeUndefined();
+  });
+
+  test("list with a limit returns a cursor that resumes after the last key", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await seedKeys(["a", "b", "c", "d", "e"]);
+    const first = await files.list({ limit: 2 });
+    expect(first.items.map((i) => i.key)).toEqual(["a", "b"]);
+    expect(first.cursor).toBe("b");
+    const second = await files.list({ cursor: first.cursor, limit: 2 });
+    expect(second.items.map((i) => i.key)).toEqual(["c", "d"]);
+    expect(second.cursor).toBe("d");
+    const third = await files.list({ cursor: second.cursor, limit: 2 });
+    expect(third.items.map((i) => i.key)).toEqual(["e"]);
+    expect(third.cursor).toBeUndefined();
+    // A cursor with no limit returns everything after it.
+    const rest = await files.list({ cursor: "b" });
+    expect(rest.items.map((i) => i.key)).toEqual(["c", "d", "e"]);
+    expect(rest.cursor).toBeUndefined();
+  });
+
+  test("listAll with a limit walks every page instead of stopping after one", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    const keys = ["a", "b", "c", "d", "e", "f", "g"];
+    await seedKeys(keys);
+    const seen: string[] = [];
+    for await (const item of files.listAll({ limit: 3 })) {
+      seen.push(item.key);
+    }
+    expect(seen).toEqual(keys);
+  });
+
+  test("list resumes correctly when the cursor key was deleted between pages", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await seedKeys(["a", "b", "c", "d"]);
+    const first = await files.list({ limit: 2 });
+    await Promise.all(first.items.map((item) => files.delete(item.key)));
+    const second = await files.list({ cursor: first.cursor, limit: 2 });
+    expect(second.items.map((i) => i.key)).toEqual(["c", "d"]);
+    expect(second.cursor).toBeUndefined();
+  });
+
+  test("list drains and sorts locally when keys arrive out of order", async () => {
+    // The local `netlify dev` server walks the filesystem, so its order is
+    // not guaranteed. Stopping early would drop or repeat entries.
+    const unordered = () => ({
+      async *[Symbol.asyncIterator]() {
+        listPagesYielded += 1;
+        yield {
+          blobs: [
+            { etag: '"c"', key: "c" },
+            { etag: '"a"', key: "a" },
+          ],
+          directories: [],
+        };
+        listPagesYielded += 1;
+        yield {
+          blobs: [
+            { etag: '"d"', key: "d" },
+            { etag: '"b"', key: "b" },
+          ],
+          directories: [],
+        };
+      },
+    });
+    listMock.mockImplementationOnce(unordered);
+    listMock.mockImplementationOnce(unordered);
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    const first = await files.list({ limit: 1 });
+    expect(first.items.map((i) => [i.key, i.etag])).toEqual([["a", '"a"']]);
+    expect(first.cursor).toBe("a");
+    expect(listPagesYielded).toBe(2);
+    const second = await files.list({ cursor: first.cursor, limit: 2 });
+    expect(second.items.map((i) => i.key)).toEqual(["b", "c"]);
+    expect(second.cursor).toBe("c");
+  });
+
+  test("list with a delimiter counts folders against the limit and pages through them", async () => {
+    listMock.mockImplementationOnce(folderPage);
+    listMock.mockImplementationOnce(folderPage);
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    const first = await files.list({ delimiter: "/", limit: 2, prefix: "p/" });
+    expect(first.items.map((i) => i.key)).toEqual(["p/a.txt"]);
+    expect(first.prefixes).toEqual(["p/b/"]);
+    expect(first.cursor).toBe("p/b/");
+    const second = await files.list({
+      cursor: first.cursor,
+      delimiter: "/",
+      limit: 2,
+      prefix: "p/",
+    });
+    expect(second.items.map((i) => i.key)).toEqual(["p/c.txt"]);
+    expect(second.prefixes).toEqual(["p/d/"]);
+    expect(second.cursor).toBeUndefined();
   });
 
   test("copy reads the source and re-writes at the destination", async () => {
@@ -797,6 +948,44 @@ describe("netlify-blobs adapter", () => {
     } catch (error) {
       expect((error as FilesError).code).toBe("NotFound");
     }
+  });
+
+  test("error: BlobsInternalError.status wins when x-nf-error replaces the status in the message", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(internalError(404, "blob missing"))
+    );
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(internalError(404, "blob missing"))
+    );
+    expect(await files.exists("a.txt")).toBe(false);
+
+    setMock.mockImplementationOnce(() =>
+      Promise.reject(internalError(403, "store is read-only"))
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+
+    setMock.mockImplementationOnce(() =>
+      Promise.reject(internalError(412, "etag mismatch"))
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+
+    // A structured status beats a misleading message.
+    setMock.mockImplementationOnce(() =>
+      Promise.reject(internalError(503, "404 status code"))
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+    });
   });
 
   test("error: MissingBlobsEnvironmentError is wrapped as Provider", async () => {

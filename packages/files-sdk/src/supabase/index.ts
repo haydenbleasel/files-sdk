@@ -90,21 +90,52 @@ export type SupabaseAdapter = Adapter<StorageClient> & {
 
 const DEFAULT_LIST_LIMIT = 100;
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
 
 const SUPABASE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NotFound",
   "NoSuchKey",
+  "not_found",
 ]);
+// `InvalidKey` is deliberately absent: Supabase uses it for a malformed
+// *object* key (HTTP 400), not a bad API key.
 const SUPABASE_UNAUTH_CODES: ReadonlySet<string> = new Set([
   "InvalidJWT",
   "Unauthorized",
   "AccessDenied",
-  "InvalidKey",
 ]);
 const SUPABASE_CONFLICT_CODES: ReadonlySet<string> = new Set([
   "Duplicate",
   "AlreadyExists",
+  "ResourceAlreadyExists",
+  "KeyAlreadyExists",
 ]);
+
+// A numeric-looking status carried in the response body (`"404"`).
+const NUMERIC_STATUS = /^\d{3}$/u;
+
+interface SupabaseStatusCode {
+  /** The real status, from a numeric body `statusCode` ("404"). */
+  bodyStatus?: number;
+  /** A non-numeric `statusCode` ("NoSuchKey", older servers' "NotFound"). */
+  codeName?: string;
+}
+
+// Split `StorageApiError.statusCode`: a numeric string ("404") is the real
+// status from the response body; anything else is a code name.
+const splitStatusCode = (
+  statusCode: string | number | undefined
+): SupabaseStatusCode => {
+  if (isNumber(statusCode)) {
+    return { bodyStatus: statusCode };
+  }
+  if (statusCode === undefined) {
+    return {};
+  }
+  return NUMERIC_STATUS.test(statusCode)
+    ? { bodyStatus: Number(statusCode) }
+    : { codeName: statusCode };
+};
 
 const _supabaseErrorMapper = makeErrorMapper({
   codes: {
@@ -116,17 +147,28 @@ const _supabaseErrorMapper = makeErrorMapper({
     if (!isObject(err)) {
       return {};
     }
-    // `statusCode` from StorageApiError is the server's string code (e.g.
-    // "NotFound", "Duplicate"). Fall back to `status` (HTTP) which is
-    // present on every StorageApiError and many transport errors.
-    const statusCode = "statusCode" in err ? err.statusCode : undefined;
-    const code = isString(statusCode) ? statusCode : undefined;
-    let status: number | undefined;
-    if ("status" in err && isNumber(err.status)) {
-      ({ status } = err);
-    } else if (isNumber(statusCode)) {
-      status = statusCode;
-    }
+    // Supabase Storage answers most errors with HTTP 400 and puts the real
+    // status in the JSON body: `{ statusCode: "404", code: "NoSuchKey" }`.
+    // storage-js's `StorageApiError` keeps the HTTP status on `status`, the
+    // body's `statusCode` (or, without one, the body's `code`, or the HTTP
+    // status as a string) on `statusCode`, and the body's `code` on `code`.
+    // So a numeric `statusCode` is the authoritative status and wins over
+    // `status`; a non-numeric one is a code name (older servers).
+    const { bodyStatus, codeName } = splitStatusCode(
+      "statusCode" in err &&
+        (isString(err.statusCode) || isNumber(err.statusCode))
+        ? err.statusCode
+        : undefined
+    );
+    const bodyCode = "code" in err && isString(err.code) ? err.code : undefined;
+    // `error` is the legacy body's code field ("not_found", "Duplicate"),
+    // seen when a raw response body is mapped directly.
+    const legacyCode =
+      "error" in err && isString(err.error) ? err.error : undefined;
+    const code = bodyCode ?? legacyCode ?? codeName;
+    const httpStatus =
+      "status" in err && isNumber(err.status) ? err.status : undefined;
+    const status = bodyStatus ?? httpStatus;
     const message =
       "message" in err && isString(err.message) ? err.message : undefined;
     return {
@@ -264,6 +306,44 @@ const downloadOptionFor = (disposition: string): true | string => {
     }
   }
   return true;
+};
+
+const MAX_AGE_DIRECTIVE = /^max-age=(?<seconds>\d+)$/u;
+const BARE_SECONDS = /^\d+$/u;
+
+/**
+ * Map the SDK-wide `cacheControl` (a full `Cache-Control` header value) onto
+ * Supabase's `cacheControl`, which is a number of **seconds**: storage-js and
+ * the Storage server wrap it as `max-age=<seconds>` themselves, so passing
+ * the header through stored `max-age=public, max-age=60`. Supabase can only
+ * store a `max-age`, so `max-age=<n>` (alongside an optional `public`, which
+ * Supabase-served objects don't carry) maps to `"<n>"`, a bare integer is
+ * taken as seconds, and anything else (`no-store`, `immutable`, `private`,
+ * `s-maxage`, …) throws rather than being silently dropped.
+ */
+const cacheControlSeconds = (value: string): string => {
+  const trimmed = value.trim();
+  if (BARE_SECONDS.test(trimmed)) {
+    return trimmed;
+  }
+  let seconds: string | undefined;
+  for (const part of trimmed.split(",")) {
+    const directive = part.trim().toLowerCase();
+    const maxAge = MAX_AGE_DIRECTIVE.exec(directive)?.groups?.seconds;
+    if (maxAge !== undefined && seconds === undefined) {
+      seconds = maxAge;
+    } else if (directive !== "public" && directive !== "") {
+      seconds = undefined;
+      break;
+    }
+  }
+  if (seconds === undefined) {
+    throw new FilesError(
+      "Provider",
+      `supabase: cacheControl "${value}" is not supported — Supabase stores only a max-age. Pass "max-age=<seconds>" (optionally with "public").`
+    );
+  }
+  return seconds;
 };
 
 const isStorageClientLike = (
@@ -693,6 +773,21 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     raw: client,
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const tus = resolveTusConfig(opts);
+      // Supabase's TUS endpoint reads `cacheControl` as seconds and user
+      // metadata as a JSON string under `metadata` (its `user_metadata`).
+      // Validate the cache-control mapping up front, before any request.
+      const cacheSeconds =
+        resumableOpts.cacheControl === undefined
+          ? undefined
+          : cacheControlSeconds(resumableOpts.cacheControl);
+      const extraMetadata = [
+        ...(cacheSeconds === undefined
+          ? []
+          : [`cacheControl ${b64(cacheSeconds)}`]),
+        ...(resumableOpts.metadata
+          ? [`metadata ${b64(JSON.stringify(resumableOpts.metadata))}`]
+          : []),
+      ];
       let uri: string | undefined;
       let contentType = DEFAULT_CONTENT_TYPE;
       let lastOffset = 0;
@@ -747,7 +842,12 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             headers: {
               ...authHeaders(),
               "Upload-Length": String(meta.total),
-              "Upload-Metadata": `bucketName ${b64(bucket)},objectName ${b64(key)},contentType ${b64(meta.contentType)}`,
+              "Upload-Metadata": [
+                `bucketName ${b64(bucket)}`,
+                `objectName ${b64(key)}`,
+                `contentType ${b64(meta.contentType)}`,
+                ...extraMetadata,
+              ].join(","),
               "x-upsert": "true",
             },
             method: "POST",
@@ -782,10 +882,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           await fetch(uri, { headers: authHeaders(), method: "DELETE" });
         },
         mode: "offset",
-        partSize:
-          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
-            ? resumableOpts.multipart.partSize
-            : 6 * 1024 * 1024,
+        // Supabase's TUS endpoint requires exactly 6 MiB chunks ("must be set
+        // to 6MB, do not change it"), so a caller's `multipart.partSize` is
+        // rounded to that one valid size rather than forwarded.
+        partSize: TUS_CHUNK_SIZE,
         async probe(): Promise<{ nextOffset: number }> {
           const res = await fetch(requireUri(), {
             headers: authHeaders(),
@@ -845,6 +945,16 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           "supabase: `maxSize` is not supported. Supabase signed upload URLs have no server-enforced size limit equivalent to S3's content-length-range policy. Set the bucket-level file size limit in the Supabase dashboard, or enforce the limit at your application gateway before issuing the signed URL."
         );
       }
+      // Same gap for `contentType`: the signed upload token doesn't bind a
+      // Content-Type, so the uploader could send any type. Returning it as a
+      // header would be advisory only, which the `signedUploadUrl` contract
+      // forbids — throw, as Azure does.
+      if (signOpts.contentType !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "supabase: `contentType` is not supported for signed upload URLs. Supabase signed upload tokens don't bind the request Content-Type, so restrict types with the bucket's allowed MIME types in the Supabase dashboard, or validate at your application gateway before issuing the signed URL."
+        );
+      }
       // `expiresIn` is intentionally ignored — Supabase fixes the TTL at
       // 2 hours server-side and offers no per-URL override.
       const { data, error } = await bucketRef.createSignedUploadUrl(key, {
@@ -856,7 +966,6 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       const { signedUrl } = data;
       return {
         headers: {
-          ...(signOpts.contentType && { "Content-Type": signOpts.contentType }),
           "x-upsert": "true",
         },
         method: "PUT",
@@ -878,7 +987,9 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       const fileOptions = {
         contentType,
         upsert: true,
-        ...(options?.cacheControl && { cacheControl: options.cacheControl }),
+        ...(options?.cacheControl && {
+          cacheControl: cacheControlSeconds(options.cacheControl),
+        }),
         ...(options?.metadata && { metadata: options.metadata }),
       };
       // Supabase requires `duplex: 'half'` when uploading a ReadableStream.

@@ -18,6 +18,7 @@ import type { FilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import type { JsonObject } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
+import { compareKeys } from "../internal/walk-paginate.js";
 
 export interface NetlifyBlobsAdapterOptions {
   /**
@@ -69,6 +70,22 @@ const META_LAST_MODIFIED = "__lastModified";
 const META_CACHE_CONTROL = "__cacheControl";
 const META_USER = "__user";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+
+// Same inference as `normalizeBody` in `internal/core.ts`: an explicit
+// `contentType` wins, strings are UTF-8 text, and a Blob/File keeps its own
+// `type`. Everything else is opaque bytes.
+const inferContentType = (body: Body, override?: string): string => {
+  if (override) {
+    return override;
+  }
+  if (isString(body)) {
+    return "text/plain; charset=utf-8";
+  }
+  if (body instanceof Blob && body.type) {
+    return body.type;
+  }
+  return DEFAULT_CONTENT_TYPE;
+};
 
 // The metadata block this adapter writes. It is a JSON object (Netlify
 // serializes metadata as JSON) so it stays assignable to the SDK's
@@ -157,11 +174,19 @@ const bodyToStorable = async (
   return { data: ab, size: ab.byteLength };
 };
 
-// Netlify throws `BlobsInternalError` whose message embeds the upstream
-// status code (e.g. "Netlify Blobs has generated an internal error
-// (401 status code, ID: ...)"). Pattern-match on that since the SDK doesn't
-// expose a structured status field.
+// Netlify throws `BlobsInternalError` with the upstream HTTP status on
+// `.status`. Its message only embeds the status ("… (401 status code, ID:
+// …)") when the response has no `x-nf-error` header, so the message is a
+// fallback for errors that carry no structured status.
 const STATUS_RE = /(?<status>\d{3}) status code/u;
+
+const statusOf = (cause: unknown, message: string): number | undefined => {
+  if (isObject(cause) && "status" in cause && isNumber(cause.status)) {
+    return cause.status;
+  }
+  const status = STATUS_RE.exec(message)?.groups?.status;
+  return status ? Number(status) : undefined;
+};
 
 interface NetlifyErrorClass {
   code: FilesErrorCode;
@@ -180,8 +205,7 @@ const classifyNetlifyError = (cause: unknown): NetlifyErrorClass => {
   if (name === "MissingBlobsEnvironmentError") {
     return { code: "Provider", message };
   }
-  const match = STATUS_RE.exec(message);
-  const status = match?.[1] ? Number(match[1]) : undefined;
+  const status = statusOf(cause, message);
   if (status === 404) {
     return { code: "NotFound", message };
   }
@@ -246,6 +270,77 @@ const readPackedMetadata = (
     size: isNumber(size) ? size : 0,
     userMetadata: unpackUserMetadata(meta),
   };
+};
+
+interface ListWalkOptions {
+  prefix?: string;
+  cursor?: string;
+  limit?: number;
+  directories: boolean;
+}
+
+interface ListWalk {
+  /** Blob key → etag, for every blob after the cursor that was walked. */
+  blobs: Map<string, string>;
+  /** Directories after the cursor that were walked. */
+  directories: Set<string>;
+}
+
+// Netlify's own pagination cursor lives inside the SDK's iterator and can't be
+// handed back to resume a listing, so the adapter synthesizes the cursor every
+// key-list adapter uses: the last entry of the previous page, with the next
+// page starting at the first entry strictly greater than it. Each call re-walks
+// the SDK's pages from the start and skips everything up to the cursor.
+//
+// Stopping as soon as more than `limit` entries are in hand (so a small `limit`
+// still bounds server-side I/O) relies on Netlify listing keys in ascending
+// order. If a key ever arrives out of order (the local `netlify dev` server
+// walks the filesystem), the walk drains every page instead and the caller
+// sorts locally, so an entry is never skipped or repeated.
+const walkList = async (
+  store: Store,
+  options: ListWalkOptions
+): Promise<ListWalk> => {
+  const { cursor, limit } = options;
+  const blobs = new Map<string, string>();
+  const directories = new Set<string>();
+  const afterCursor = (key: string): boolean =>
+    cursor === undefined || key > cursor;
+  let previous: string | undefined;
+  let ordered = true;
+  const iter = store.list({
+    paginate: true,
+    ...(options.prefix && { prefix: options.prefix }),
+    ...(options.directories && { directories: true }),
+  });
+  for await (const page of iter) {
+    // `directories` is only populated when requested, and repeats across
+    // pages, hence the Set.
+    for (const d of page.directories ?? []) {
+      if (afterCursor(d)) {
+        directories.add(d);
+      }
+    }
+    for (const b of page.blobs) {
+      if (previous !== undefined && b.key <= previous) {
+        ordered = false;
+      }
+      previous = b.key;
+      if (afterCursor(b.key)) {
+        blobs.set(b.key, b.etag);
+      }
+    }
+    // One entry past `limit` proves another page exists, so a cursor is only
+    // returned when there is something left to fetch.
+    if (
+      ordered &&
+      limit !== undefined &&
+      blobs.size + directories.size > limit
+    ) {
+      break;
+    }
+  }
+  return { blobs, directories };
 };
 
 interface NetlifyStoreOptions {
@@ -444,74 +539,70 @@ export const netlifyBlobs = (
       );
     },
     async list(options): Promise<ListResult> {
-      // Use the paginated iterator so a small `limit` actually bounds
+      // Uses the SDK's paginated iterator so a small `limit` bounds
       // server-side I/O — the non-paginated form drains every page
-      // internally, which on a large store could cost MBs of network
-      // traffic for `limit: 10`. Netlify's pagination cursor is opaque
-      // (not exposed on the iterator value), so we still can't thread
-      // it through the unified `cursor` API; we just stop iterating
-      // when we have enough.
+      // internally. See `walkList` for how the unified `cursor` is
+      // synthesized on top of it.
       if (options?.delimiter) {
         assertSlashDelimiter("netlify-blobs", options.delimiter);
       }
       const limit = options?.limit;
-      const blobs: { etag: string; key: string }[] = [];
-      // Directories repeat across pages, so collect them in a Set.
-      const directories = new Set<string>();
-      const reachedLimit = (): boolean =>
-        limit !== undefined && blobs.length >= limit;
+      let walk: ListWalk;
       try {
-        const iter = store.list({
-          paginate: true,
+        walk = await walkList(store, {
+          directories: Boolean(options?.delimiter),
+          ...(options?.cursor !== undefined && { cursor: options.cursor }),
+          ...(limit !== undefined && { limit }),
           ...(options?.prefix && { prefix: options.prefix }),
-          ...(options?.delimiter && { directories: true }),
         });
-        for await (const page of iter) {
-          // `directories` is only populated when requested via the option.
-          for (const d of page.directories ?? []) {
-            directories.add(d);
-          }
-          for (const b of page.blobs) {
-            blobs.push(b);
-            if (reachedLimit()) {
-              break;
-            }
-          }
-          if (reachedLimit()) {
-            break;
-          }
-        }
       } catch (error) {
         throw mapNetlifyError(error);
       }
-      const items: StoredFile[] = blobs.map((b) =>
-        createStoredFile(
-          {
-            etag: b.etag,
-            key: b.key,
-            // Netlify's list response only carries key + etag. Rich metadata
-            // (size, contentType, lastModified) requires a per-item head().
-            size: 0,
-            type: DEFAULT_CONTENT_TYPE,
-          },
-          {
-            factory: async () => {
-              const got = await store.get(b.key, { type: "arrayBuffer" });
-              if (!got) {
-                throw new FilesError(
-                  "NotFound",
-                  `netlify-blobs: not found: ${b.key}`
-                );
-              }
-              return new Uint8Array(got);
-            },
-            kind: "lazy",
-          }
-        )
+      // Files and folders share one `limit` budget and one cursor, like the
+      // other key-list adapters (a folder counts as one entry).
+      const entries = [...walk.blobs.keys(), ...walk.directories].toSorted(
+        compareKeys
       );
+      const page = limit === undefined ? entries : entries.slice(0, limit);
+      const cursor = page.length < entries.length ? page.at(-1) : undefined;
+      const prefixes = page.filter((entry) => walk.directories.has(entry));
+      const items: StoredFile[] = [];
+      for (const key of page) {
+        const etag = walk.blobs.get(key);
+        if (etag === undefined) {
+          continue;
+        }
+        items.push(
+          createStoredFile(
+            {
+              etag,
+              key,
+              // Netlify's list response only carries key + etag. Rich
+              // metadata (size, contentType, lastModified) requires a
+              // per-item head().
+              size: 0,
+              type: DEFAULT_CONTENT_TYPE,
+            },
+            {
+              factory: async () => {
+                const got = await store.get(key, { type: "arrayBuffer" });
+                if (!got) {
+                  throw new FilesError(
+                    "NotFound",
+                    `netlify-blobs: not found: ${key}`
+                  );
+                }
+                return new Uint8Array(got);
+              },
+              kind: "lazy",
+            }
+          )
+        );
+      }
       return {
         items,
-        ...(directories.size && { prefixes: [...directories] }),
+        ...(prefixes.length && { prefixes }),
+        ...(cursor !== undefined && { cursor }),
       };
     },
     name: "netlify-blobs",
@@ -530,10 +621,10 @@ export const netlifyBlobs = (
     // No native copy — `copy()` reads the source and re-writes the body.
     supportsServerSideCopy: false,
     async upload(key, body, options): Promise<UploadResult> {
-      const contentType = options?.contentType ?? DEFAULT_CONTENT_TYPE;
+      const contentType = inferContentType(body, options?.contentType);
       let storable: Awaited<ReturnType<typeof bodyToStorable>>;
       try {
-        storable = await bodyToStorable(body, options?.contentType);
+        storable = await bodyToStorable(body, contentType);
       } catch (error) {
         throw mapNetlifyError(error);
       }
