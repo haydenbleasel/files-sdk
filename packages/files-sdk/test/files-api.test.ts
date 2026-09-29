@@ -265,6 +265,96 @@ describe("createFilesRouter — read verbs", () => {
     ).toContain("too complex");
   });
 
+  test("search refuses glob patterns with too many wildcards, fast", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    // `*a` ×10 + `*b` backtracks polynomially per key (seconds on one 40-char
+    // key); it must be refused before any key is matched.
+    const started = performance.now();
+    const res = await r.handle(
+      post({ op: "search", pattern: `${"*a".repeat(10)}*b` })
+    );
+    expect(res.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toContain("too complex");
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  test("search refuses flat regex quantifier chains and nested repeats", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    // Flat `(.*a){10}` passes safe-regex2 (no nested star) but is just as slow.
+    const chain = ["^(.*a)", "{10}", ".*b$"].join("");
+    for (const pattern of [chain, ".*a.*a.*a.*b"]) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      const res = await r.handle(
+        post({ flags: "u", isRegex: true, op: "search", pattern })
+      );
+      expect(res.status).toBe(422);
+    }
+    // A regex string under `match: "regex"` is measured the same way.
+    const viaMatch = await r.handle(
+      post({ match: "regex", op: "search", pattern: chain })
+    );
+    expect(viaMatch.status).toBe(422);
+    // An ordinary pattern still answers.
+    const ok = await r.handle(
+      post({
+        flags: "u",
+        isRegex: true,
+        op: "search",
+        pattern: "^docs/.*\\.txt$",
+      })
+    );
+    expect(ok.status).toBe(200);
+  });
+
+  test("search pattern limits are configurable", async () => {
+    const strict = router({
+      adapter,
+      maxSearchPatternLength: 8,
+      maxSearchWildcards: 1,
+      operations: ["search"],
+    });
+    const long = await strict.handle(
+      post({ match: "substring", op: "search", pattern: "docs/a.txt" })
+    );
+    expect(long.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(long)).error.message
+    ).toContain("too long");
+    expect(
+      (await strict.handle(post({ op: "search", pattern: "*/*.txt" }))).status
+    ).toBe(422);
+    const loose = router({
+      adapter,
+      maxSearchWildcards: 12,
+      operations: ["search"],
+    });
+    expect(
+      (await loose.handle(post({ op: "search", pattern: "*/*/*/*/*.png" })))
+        .status
+    ).toBe(200);
+  });
+
+  test("search clamps the page limit to maxListLimit", async () => {
+    const limits: (number | undefined)[] = [];
+    const spy = memory();
+    await seed(spy, "docs/a.txt", "alpha");
+    const list = spy.list.bind(spy);
+    spy.list = (opts) => {
+      limits.push(opts?.limit);
+      return list(opts);
+    };
+    const r = router({ adapter: spy, maxListLimit: 5, operations: ["search"] });
+    const res = await r.handle(
+      post({ limit: 100_000, op: "search", pattern: "docs/*" })
+    );
+    expect(res.status).toBe(200);
+    expect(limits.every((limit) => limit !== undefined && limit <= 5)).toBe(
+      true
+    );
+  });
+
   test("search under a keyPrefix scope matches the unscoped key", async () => {
     const scoped = memory();
     await seed(scoped, "users/1/a.png", "x");
@@ -391,6 +481,91 @@ describe("createFilesRouter — bulk verbs", () => {
     expect((await readJson<{ deleted: string[] }>(del)).deleted).toEqual(["a"]);
   });
 
+  test("bulk arrays are capped by maxBatchSize (413, reason count)", async () => {
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxBatchSize: 2,
+      operations: ["head", "exists", "delete", "upload"],
+    });
+    const keys = ["a", "b", "c"];
+    const responses = await Promise.all(
+      ["head-many", "exists-many", "delete-many"].map((op) =>
+        r.handle(post({ keys, op }))
+      )
+    );
+    expect(responses.map((res) => res.status)).toEqual([413, 413, 413]);
+    const bodies = await Promise.all(
+      responses.map((res) => readJson<{ error: { reason: string } }>(res))
+    );
+    expect(bodies.map((body) => body.error.reason)).toEqual([
+      "count",
+      "count",
+      "count",
+    ]);
+    const file = { name: "x.txt", size: 1, type: "text/plain" };
+    const presign = await r.handle(
+      post({ files: [file, file, file], op: "presign" })
+    );
+    expect(presign.status).toBe(413);
+    const complete = await r.handle(
+      post({
+        completions: keys.map((key) => ({ id: "t", key })),
+        op: "complete",
+      })
+    );
+    expect(complete.status).toBe(413);
+    // At the cap still answers.
+    expect(
+      (await r.handle(post({ keys: ["a", "b"], op: "head-many" }))).status
+    ).toBe(200);
+  });
+
+  test("client concurrency is clamped to maxConcurrency", async () => {
+    let active = 0;
+    let peak = 0;
+    const slow = memory();
+    for (const key of ["k1", "k2", "k3", "k4", "k5", "k6"]) {
+      // oxlint-disable-next-line no-await-in-loop -- seeding
+      await seed(slow, key, "x");
+    }
+    const head = slow.head.bind(slow);
+    slow.head = async (key, opts) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await Bun.sleep(5);
+      active -= 1;
+      return head(key, opts);
+    };
+    const r = router({
+      adapter: slow,
+      maxConcurrency: 2,
+      operations: ["head"],
+    });
+    const res = await r.handle(
+      post({
+        concurrency: 1000,
+        keys: ["k1", "k2", "k3", "k4", "k5", "k6"],
+        op: "head-many",
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(peak).toBeLessThanOrEqual(2);
+    // A zero/fractional request still runs (floored to at least 1).
+    const one = await r.handle(
+      post({ concurrency: 0.5, keys: ["k1"], op: "head-many" })
+    );
+    expect(one.status).toBe(200);
+  });
+
+  test("head-many is a read: no Origin check, like head/exists", async () => {
+    const r = router({ adapter, operations: ["head"] });
+    const res = await r.handle(
+      post({ keys: ["a"], op: "head-many" }, { origin: "https://other.test" })
+    );
+    expect(res.status).toBe(200);
+  });
+
   test("copy and move", async () => {
     const r = router({
       adapter,
@@ -482,6 +657,88 @@ describe("createFilesRouter — download", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("hello");
+  });
+
+  test("proxied downloads are nosniff and advertise range support honestly", async () => {
+    const ranged = memory();
+    await seed(ranged, "a.txt", "hello");
+    const res = await router({
+      adapter: ranged,
+      operations: ["download"],
+    }).handle(get("op=download&key=a.txt"));
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("accept-ranges")).toBe("bytes");
+
+    const plain = fakeAdapter() as unknown as Adapter;
+    await seed(plain, "a.txt", "hello");
+    const noRange = await router({
+      adapter: plain,
+      operations: ["download"],
+    }).handle(get("op=download&key=a.txt"));
+    expect(noRange.headers.get("accept-ranges")).toBe("none");
+  });
+
+  test("If-Range: a stale validator gets the full object (200), a fresh one the slice", async () => {
+    const adapter = memory();
+    await seed(adapter, "a.txt", "hello world");
+    const r = router({ adapter, operations: ["download"] });
+    const initial = await r.handle(get("op=download&key=a.txt"));
+    const etag = initial.headers.get("etag") ?? "";
+    expect(etag).not.toBe("");
+    await initial.text();
+
+    const fresh = await r.handle(
+      get("op=download&key=a.txt", { "if-range": etag, range: "bytes=6-" })
+    );
+    expect(fresh.status).toBe(206);
+    expect(await fresh.text()).toBe("world");
+
+    // The object changes between the first slice and the resume.
+    await seed(adapter, "a.txt", "HELLO WORLD!");
+    const stale = await r.handle(
+      get("op=download&key=a.txt", { "if-range": etag, range: "bytes=6-" })
+    );
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get("content-range")).toBeNull();
+    expect(await stale.text()).toBe("HELLO WORLD!");
+
+    // A weak validator never satisfies If-Range.
+    const weak = await r.handle(
+      get("op=download&key=a.txt", {
+        "if-range": `W/${stale.headers.get("etag") ?? ""}`,
+        range: "bytes=0-4",
+      })
+    );
+    expect(weak.status).toBe(200);
+  });
+
+  test("If-Range with an HTTP-date compares against lastModified", async () => {
+    const adapter = memory();
+    await seed(adapter, "a.txt", "hello world");
+    const r = router({ adapter, operations: ["download"] });
+    const meta = await createFiles({ adapter }).head("a.txt");
+    const when = new Date(meta.lastModified ?? 0).toUTCString();
+    const same = await r.handle(
+      get("op=download&key=a.txt", { "if-range": when, range: "bytes=0-4" })
+    );
+    expect(same.status).toBe(206);
+    const older = await r.handle(
+      get("op=download&key=a.txt", {
+        "if-range": new Date(0).toUTCString(),
+        range: "bytes=0-4",
+      })
+    );
+    expect(older.status).toBe(200);
+    // A stale validator also bypasses a non-range adapter's 416.
+    const plain = fakeAdapter() as unknown as Adapter;
+    await seed(plain, "b.txt", "hello");
+    const bypass = await router({
+      adapter: plain,
+      operations: ["download"],
+    }).handle(
+      get("op=download&key=b.txt", { "if-range": '"nope"', range: "bytes=0-2" })
+    );
+    expect(bypass.status).toBe(200);
   });
 
   test("forced proxy mode + missing key", async () => {
@@ -827,6 +1084,44 @@ describe("createFilesRouter — protocol errors", () => {
     expect(
       (await readJson<{ error: { reason: string } }>(res)).error.reason
     ).toBe("origin");
+  });
+
+  test("an oversized JSON body is refused with 413", async () => {
+    const r = router({ maxJsonBodySize: 64, operations: ["head"] });
+    const big = JSON.stringify({ key: "x".repeat(200), op: "head" });
+    // Declared too large up front (refused before the body is read).
+    const declared = await r.handle(
+      post(JSON.parse(big), { "content-length": String(big.length) })
+    );
+    expect(declared.status).toBe(413);
+    expect(
+      (await readJson<{ error: { reason: string } }>(declared)).error.reason
+    ).toBe("size");
+    // Streamed without a length: refused once the running total passes the cap.
+    const streamed = await r.handle(
+      new Request(ENDPOINT, {
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            const bytes = new TextEncoder().encode(big);
+            controller.enqueue(bytes.subarray(0, 40));
+            controller.enqueue(bytes.subarray(40));
+            controller.close();
+          },
+        }),
+        // @ts-expect-error -- Bun/undici streaming request bodies need `duplex`
+        duplex: "half",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    expect(streamed.status).toBe(413);
+    // No body at all is just invalid JSON.
+    const empty = await r.handle(new Request(ENDPOINT, { method: "POST" }));
+    expect(empty.status).toBe(422);
+    // Under the cap is fine.
+    expect((await r.handle(post({ key: "a", op: "head" }))).status).not.toBe(
+      413
+    );
   });
 
   test("invalid JSON, unknown op, unsupported method", async () => {

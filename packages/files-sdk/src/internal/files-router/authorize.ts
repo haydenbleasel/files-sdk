@@ -27,7 +27,11 @@ export interface AuthorizeContext {
 export type AuthorizeResult = void | {
   /** Prepended to every key/from/to before the `Files` call. */
   keyPrefix?: string;
-  /** Hard cap on `url()`/`download` expiry (further clamped by capability). */
+  /**
+   * Hard cap, in seconds, on `url()`/`download` and upload-URL expiry (further
+   * clamped by capability). The router's `defaultExpiresIn` only applies when a
+   * client doesn't ask; this is the ceiling on what it may ask for.
+   */
   maxExpiresIn?: number;
   /** Allow inline disposition for download/url (default forces attachment). */
   disposition?: "attachment" | "inline" | string;

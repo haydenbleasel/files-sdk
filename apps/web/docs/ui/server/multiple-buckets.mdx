@@ -17,7 +17,7 @@ import { createRouteHandler } from "files-sdk/next";
 
 const router = createFilesRouter({
   files: createFiles({
-    adapter: minio({ bucket: process.env.S3_FILES_BUCKET }),
+    adapter: minio({ bucket: process.env.S3_FILES_BUCKET! }),
   }),
   authorize: async ({ req }) => {
     const userId = await requireUser(req); // throw to deny
@@ -31,9 +31,11 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 ```ts title="app/api/images/route.ts" lineNumbers
 const router = createFilesRouter({
   files: createFiles({
-    adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET }),
+    adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET! }),
   }),
-  operations: ["download", "url", "head", "list"], // public reads
+  // `operations` is a hard gate that runs before `authorize`, so it must list
+  // every verb the route serves, writes included.
+  operations: ["download", "url", "head", "list", "upload", "delete"],
   authorize: async ({ operation, req }) => {
     if (operation === "upload" || operation === "delete") {
       await requireUser(req);
@@ -50,7 +52,7 @@ On the client, point each hook (or `createFilesClient`) at its route and pass it
 const files = useFiles({ endpoint: "/api/files" });
 const images = useFiles({ endpoint: "/api/images" });
 
-<FileBrowser endpoint="/api/files" files={files} />
+<FileBrowser files={files} />
 <Dropzone files={images} />
 ```
 
@@ -62,10 +64,10 @@ The gateway also accepts a **per-request factory** â€” `files: (req) => Files` â
 
 ```ts title="app/api/files/route.ts" lineNumbers
 const filesInstance = createFiles({
-  adapter: minio({ bucket: process.env.S3_FILES_BUCKET }),
+  adapter: minio({ bucket: process.env.S3_FILES_BUCKET! }),
 });
 const imagesInstance = createFiles({
-  adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET }),
+  adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET! }),
 });
 
 const router = createFilesRouter({

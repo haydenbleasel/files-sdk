@@ -259,4 +259,18 @@ describe("gateway — softDelete ops", () => {
     );
     expect(body.trashed.map((t) => t.key)).toEqual(["tenant/a.txt"]);
   });
+
+  test("purge-all under filterKeys alone (no keyPrefix) keeps hidden entries", async () => {
+    const files = await seedTrashed(["a.txt", "b.txt", "c.txt"]);
+    const r = router(files, ["purge", "trashed"], () => ({
+      filterKeys: (key) => key !== "a.txt",
+    }));
+    expect((await r.handle(post({ op: "purge" }))).status).toBe(200);
+
+    const unscoped = router(files, ["trashed"]);
+    const body = await readJson<{ trashed: { key: string }[] }>(
+      await unscoped.handle(post({ op: "trashed" }))
+    );
+    expect(body.trashed.map((t) => t.key)).toEqual(["a.txt"]);
+  });
 });

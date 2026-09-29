@@ -77,6 +77,60 @@ const encodeMeta = (meta: DownloadMeta): string => {
   return btoa(binary);
 };
 
+/** The byte-range request headers the proxy path honours. */
+export interface RangeRequest {
+  range: string | null;
+  ifRange: string | null;
+}
+
+const opaqueTag = (tag: string): string | undefined => {
+  const trimmed = tag.trim();
+  // A weak validator never satisfies If-Range (RFC 9110 §13.1.5).
+  if (trimmed.startsWith("W/")) {
+    return undefined;
+  }
+  return trimmed.replace(/^"(?<tag>.*)"$/u, "$<tag>");
+};
+
+/**
+ * Whether an `If-Range` validator still names the current representation — a
+ * strong entity-tag match, or an HTTP-date equal to `lastModified` (to the
+ * second). Anything else means the object changed since the client's first
+ * slice, so the range must be ignored and the full body sent (200) rather than
+ * splicing a slice of the new object onto the old one.
+ */
+const ifRangeMatches = (
+  validator: string,
+  etag: string | undefined,
+  lastModified: number | undefined
+): boolean => {
+  const value = validator.trim();
+  const date = Date.parse(value);
+  if (
+    !(value.startsWith('"') || value.startsWith("W/") || Number.isNaN(date))
+  ) {
+    return (
+      lastModified !== undefined &&
+      Math.floor(date / 1000) === Math.floor(lastModified / 1000)
+    );
+  }
+  // An entity-tag — quoted per spec, or echoed bare from an adapter whose
+  // `etag` header carries no quotes.
+  const wanted = opaqueTag(value);
+  const current = etag === undefined ? undefined : opaqueTag(etag);
+  return wanted !== undefined && wanted === current;
+};
+
+/** The `Range` to honour: dropped when an `If-Range` validator is stale. */
+const honouredRange = (
+  request: RangeRequest,
+  meta: { etag?: string; lastModified?: number }
+): string | null =>
+  request.ifRange === null ||
+  ifRangeMatches(request.ifRange, meta.etag, meta.lastModified)
+    ? request.range
+    : null;
+
 const rangeNotSatisfiable = (size: number): ResultModel => ({
   headers: { "content-range": `bytes */${size}` },
   kind: "empty",
@@ -87,10 +141,10 @@ export const handleDownload = async (
   cfg: DownloadConfig,
   storageKey: string,
   unscopedKey: string,
-  rangeHeader: string | null,
+  request: RangeRequest,
   scope: Scope,
   signal: AbortSignal
-  // oxlint-disable-next-line sonarjs/cognitive-complexity -- download flow (redirect vs proxy, range, disposition, conditional headers) is cohesive; splitting it would scatter tightly-coupled response logic
+  // oxlint-disable-next-line sonarjs/cognitive-complexity -- download flow (redirect vs proxy, Range + If-Range, disposition) is cohesive; splitting it would scatter tightly-coupled response logic
 ): Promise<ResultModel> => {
   const caps = cfg.files.capabilities;
   const disposition =
@@ -117,6 +171,7 @@ export const handleDownload = async (
 
   const meta = await cfg.files.head(storageKey, { signal });
   const { size } = meta;
+  const rangeHeader = honouredRange(request, meta);
 
   let range: ByteRange | undefined;
   let length = size;
@@ -144,9 +199,12 @@ export const handleDownload = async (
   });
 
   const headers = {
-    "accept-ranges": "bytes",
+    "accept-ranges": caps.rangeRead ? "bytes" : "none",
     "content-length": String(length),
     "content-type": file.type || "application/octet-stream",
+    // The body is storage content served from the app's origin: never let the
+    // browser sniff it into something executable (HTML/script).
+    "x-content-type-options": "nosniff",
     "x-files-meta": encodeMeta({
       etag: meta.etag,
       key: unscopedKey,

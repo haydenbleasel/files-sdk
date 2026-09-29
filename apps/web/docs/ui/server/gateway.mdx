@@ -41,15 +41,23 @@ createFilesRouter({
   // CSRF/origin allow-list for state-changing actions. Defaults to same-origin.
   allowedOrigins?: string[] | ((origin: string) => boolean),
 
-  // url()/download expiry default + ceiling, seconds. Default 300.
+  // Expiry for url()/download/upload URLs when the client doesn't ask for one,
+  // seconds. Default 300. Not a ceiling — cap it with authorize's maxExpiresIn.
   defaultExpiresIn?: number,
 
   // Force Content-Disposition: attachment on proxied downloads. Default true.
   forceDownloadDisposition?: boolean,
 
-  maxListLimit?: number,       // cap a list page. Default 1000.
+  maxListLimit?: number,       // cap a list page (and a search's walk page). Default 1000.
   maxSearchResults?: number,   // cap a search page. Default 1000.
   maxUploadSize?: number,      // reject larger uploads (bound + verified).
+
+  // Limits on client-driven load (see "Request limits" below).
+  maxBatchSize?: number,           // keys[]/files[]/completions[] per request. Default 1000.
+  maxConcurrency?: number,         // ceiling on a bulk op's `concurrency`. Default 16.
+  maxJsonBodySize?: number,        // JSON request body, bytes. Default 1 MiB.
+  maxSearchPatternLength?: number, // search pattern, characters. Default 256.
+  maxSearchWildcards?: number,     // unbounded wildcards per search pattern. Default 4.
 
   downloadMode?: "auto" | "redirect" | "proxy",      // default "auto"
   onUnsupportedRange?: "reject" | "ignore",          // default "reject" (416)
@@ -67,7 +75,9 @@ createFilesRouter({
 - **Redirect** — when the adapter can sign URLs (S3, R2, GCS, …), the gateway `302`s to a short-lived signed URL and the bytes flow **directly from storage**. Your server never touches them, and `Range` requests are handled by the provider.
 - **Proxy** — when the adapter can't sign (Vercel Blob in public mode, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
 
-Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`.
+Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. They also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type.
+
+On the proxy path, `Accept-Ranges` reflects the adapter: `bytes` when it can serve ranges, `none` when it can't. A `Range` request that carries an `If-Range` validator (the `ETag` or date from an earlier response) only gets a `206` slice while the object is unchanged. If the object changed, the gateway sends the whole new object with a `200`, so a resumed download never splices bytes from two versions. With `onUnsupportedRange: "ignore"` a ranged request to a non-range adapter also gets the whole object with a `200`, and the browser client rejects that instead of treating it as the slice.
 
 The JSON `url` operation applies the same safe default before calling `files.url()`: a browser request for `responseContentDisposition: "inline"` is rewritten to `attachment`, while an existing `attachment; filename="..."` value keeps its filename. Return `{ disposition: "inline" }` from `authorize` only for routes where inline rendering is deliberate server policy.
 
@@ -77,10 +87,19 @@ A keyless `upload(file)` runs a three-step protocol so bytes never round-trip th
 
 1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target.
 2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress.
-3. **complete** — the server verifies the token and `head`s the object — the authoritative size/type check that rejects an oversized "unbounded" upload — then returns the stored metadata.
+3. **complete** — the server verifies the token and `head`s the object — the authoritative size check that rejects an oversized "unbounded" upload — then returns the stored metadata.
 
 An explicit `upload(key, body)` skips presign and streams straight through the gateway.
 
+## Request limits
+
+Every JSON request is untrusted input that turns into storage calls, so the gateway bounds how much work one request can ask for:
+
+- **Batch size.** `keys[]` (`head`/`exists`/`delete` bulk forms), `files[]` (`presign`) and `completions[]` (`complete`) are capped at `maxBatchSize` (default 1000). A larger request gets `413` with `reason: "count"` before any storage call.
+- **Concurrency.** A bulk op's client-supplied `concurrency` is clamped to `maxConcurrency` (default 16).
+- **Body size.** A JSON body over `maxJsonBodySize` (default 1 MiB) gets `413` with `reason: "size"`. It is refused from `Content-Length` up front, or as soon as a streamed body passes the cap, without buffering the rest.
+- **Search.** A `search` page's `limit` is clamped to `maxListLimit`. Patterns are also bounded: at most `maxSearchPatternLength` characters (default 256) and `maxSearchWildcards` unbounded wildcards or quantifiers (default 4). `*`, `**`, `+`, and `{n,}` each count, and an unanchored regex counts one more. Nested repetition such as `(a+)+` is always refused. A pattern over either limit gets `422` before any key is matched. Globs and regexes both run on a backtracking engine, where each wildcard multiplies the worst-case work per key, so this bounds what one request can cost in CPU. Raise the limit if your patterns need more, or lower it if `search` is open to untrusted users.
+
 ## Other frameworks
 
-The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for [Next.js](/docs/ui/server/next), [Hono](/docs/ui/server/hono), and [Express](/docs/ui/server/express). For anything else, call `router.handle(request)` directly from any handler that gives you a Web `Request`.
+The gateway core accepts any `{ handle(req: Request): Promise<Response> }` consumer, so a binding is a few lines. Ready-made adapters ship for [Next.js](/docs/ui/server/next), [Hono](/docs/ui/server/hono), [Express](/docs/ui/server/express), [Fastify](/docs/ui/server/fastify), [Koa](/docs/ui/server/koa), [NestJS](/docs/ui/server/nestjs), [Nitro](/docs/ui/server/nitro), [SvelteKit](/docs/ui/server/sveltekit), [Astro](/docs/ui/server/astro), and [TanStack Start](/docs/ui/server/tanstack-start). For anything else (Elysia, Bun, Deno, …), call `router.handle(request)` directly from any handler that gives you a Web `Request`.

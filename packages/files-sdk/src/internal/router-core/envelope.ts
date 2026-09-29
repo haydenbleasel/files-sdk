@@ -20,12 +20,20 @@ import type {
 export class RouterError extends Error {
   readonly code: WireErrorCode;
   readonly reason?: WireErrorReason;
+  /** HTTP status override (e.g. 413 for an oversized request); else derived from `code`. */
+  readonly status?: number;
 
-  constructor(code: WireErrorCode, message: string, reason?: WireErrorReason) {
+  constructor(
+    code: WireErrorCode,
+    message: string,
+    reason?: WireErrorReason,
+    status?: number
+  ) {
     super(message);
     this.name = "RouterError";
     this.code = code;
     this.reason = reason;
+    this.status = status;
   }
 }
 
@@ -96,7 +104,10 @@ export const toErrorResult = (cause: unknown): ErrorResult => {
     if (cause.reason) {
       body.reason = cause.reason;
     }
-    return { body: { error: body }, status: httpStatus(cause.code) };
+    return {
+      body: { error: body },
+      status: cause.status ?? httpStatus(cause.code),
+    };
   }
   if (cause instanceof FilesError) {
     const code = wireCodeFromFilesError(cause.code);

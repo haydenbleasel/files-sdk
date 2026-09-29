@@ -17,10 +17,12 @@ import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
 import type { ParsedRequest, ResultModel } from "../router-core/web.js";
+import type { SearchPatternLimits } from "../search-matcher.js";
 import {
   SEARCH_MATCHES,
   buildSearchMatcher,
   isSearchMatch,
+  searchPatternProblem,
 } from "../search-matcher.js";
 import { isSafeSearchRegex } from "../search-regex.js";
 import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
@@ -58,6 +60,12 @@ export interface HandlerContext {
   maxListLimit: number;
   maxSearchResults: number;
   maxUploadSize?: number;
+  /** Cap on `keys[]` / `files[]` / `completions[]` in one request. */
+  maxBatchSize: number;
+  /** Ceiling on a bulk request's client-supplied `concurrency`. */
+  maxConcurrency: number;
+  /** Complexity bounds on a `search` pattern. */
+  searchPatternLimits: SearchPatternLimits;
   downloadMode: "auto" | "redirect" | "proxy";
   onUnsupportedRange: "reject" | "ignore";
   proxyUrl: (token: string) => string;
@@ -118,11 +126,42 @@ const routerUrlDisposition = (
   return isAttachmentDisposition(requested) ? requested : "attachment";
 };
 
-const fileInfos = (body: JsonObject): ClientFileInfo[] => {
+// A bulk request's array length is client-controlled work (one provider call
+// per entry), so cap it before touching storage: 413 with reason `count`.
+const capBatch = (ctx: HandlerContext, field: string, length: number): void => {
+  if (length > ctx.maxBatchSize) {
+    throw new RouterError(
+      "Validation",
+      `too many ${field}: ${length} (at most ${ctx.maxBatchSize})`,
+      "count",
+      413
+    );
+  }
+};
+
+const keyBatch = (ctx: HandlerContext, record: JsonObject): string[] => {
+  const keys = strArray(record, "keys");
+  capBatch(ctx, "keys", keys.length);
+  return keys;
+};
+
+// The client's bulk fan-out, clamped to the router ceiling (and at least 1).
+const bulkConcurrency = (
+  ctx: HandlerContext,
+  record: JsonObject
+): number | undefined => {
+  const requested = optNum(record, "concurrency");
+  return requested === undefined
+    ? undefined
+    : Math.max(1, Math.min(Math.floor(requested), ctx.maxConcurrency));
+};
+
+const fileInfos = (ctx: HandlerContext, body: JsonObject): ClientFileInfo[] => {
   const value = body.files;
   if (!isJsonArray(value) || value.length === 0) {
     return fail("expected a non-empty files[]");
   }
+  capBatch(ctx, "files", value.length);
   return value.map((item) => {
     const r = asRecord(item);
     return {
@@ -133,11 +172,15 @@ const fileInfos = (body: JsonObject): ClientFileInfo[] => {
   });
 };
 
-const completions = (body: JsonObject): { id: string; key: string }[] => {
+const completions = (
+  ctx: HandlerContext,
+  body: JsonObject
+): { id: string; key: string }[] => {
   const value = body.completions;
   if (!isJsonArray(value)) {
     return fail("expected completions[]");
   }
+  capBatch(ctx, "completions", value.length);
   return value.map((item) => {
     const r = asRecord(item);
     return { id: str(r, "id"), key: str(r, "key") };
@@ -375,8 +418,7 @@ const dispatchJson = async (
       return json({ file: storedFileToWire(file, unscoper(scope)) });
     }
     case "head-many": {
-      requireOrigin(ctx, parsed);
-      const keys = strArray(body, "keys");
+      const keys = keyBatch(ctx, body);
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "head",
@@ -386,7 +428,7 @@ const dispatchJson = async (
       const result = await ctx.files.head(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body, "concurrency"),
+          concurrency: bulkConcurrency(ctx, body),
           stopOnError: optBool(body, "stopOnError"),
         }
       );
@@ -409,7 +451,7 @@ const dispatchJson = async (
       return json({ exists });
     }
     case "exists-many": {
-      const keys = strArray(body, "keys");
+      const keys = keyBatch(ctx, body);
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "exists",
@@ -419,7 +461,7 @@ const dispatchJson = async (
       const result = await ctx.files.exists(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body, "concurrency"),
+          concurrency: bulkConcurrency(ctx, body),
           stopOnError: optBool(body, "stopOnError"),
         }
       );
@@ -443,7 +485,7 @@ const dispatchJson = async (
     }
     case "delete-many": {
       requireOrigin(ctx, parsed);
-      const keys = strArray(body, "keys");
+      const keys = keyBatch(ctx, body);
       const scope = await authorizeOp(ctx, {
         keys,
         operation: "delete",
@@ -453,7 +495,7 @@ const dispatchJson = async (
       const result = await ctx.files.delete(
         filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
         {
-          concurrency: optNum(body, "concurrency"),
+          concurrency: bulkConcurrency(ctx, body),
           stopOnError: optBool(body, "stopOnError"),
         }
       );
@@ -537,7 +579,11 @@ const dispatchJson = async (
         );
       }
       const caseInsensitive = optBool(body, "caseInsensitive") ?? false;
-      const pageLimit = optNum(body, "limit");
+      const requestedLimit = optNum(body, "limit");
+      const pageLimit =
+        requestedLimit === undefined
+          ? undefined
+          : Math.min(requestedLimit, ctx.maxListLimit);
       let pattern: string | RegExp;
       if (optBool(body, "isRegex")) {
         try {
@@ -553,6 +599,15 @@ const dispatchJson = async (
         }
       } else {
         pattern = str(body, "pattern");
+      }
+      const problem = searchPatternProblem(
+        pattern,
+        match,
+        caseInsensitive,
+        ctx.searchPatternLimits
+      );
+      if (problem) {
+        throw new RouterError("Validation", problem);
       }
       const cap = Math.min(
         optNum(body, "maxResults") ?? ctx.maxSearchResults,
@@ -616,7 +671,7 @@ const dispatchJson = async (
     }
     case "presign": {
       requireOrigin(ctx, parsed);
-      const files = fileInfos(body);
+      const files = fileInfos(ctx, body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handlePresign(
         uploadCfg(ctx, parsed),
@@ -628,7 +683,7 @@ const dispatchJson = async (
     }
     case "complete": {
       requireOrigin(ctx, parsed);
-      const items = completions(body);
+      const items = completions(ctx, body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handleComplete(uploadCfg(ctx, parsed), items, unscoper(scope));
     }
@@ -723,9 +778,10 @@ const dispatchJson = async (
           );
         }
         await plugin.purge(scopeKey(scope.prefix, key));
-      } else if (scope.prefix) {
-        // Empty-trash under a scope must never purge another tenant's keys, and
-        // a bare `purge()` empties everything — so purge only our own entries.
+      } else if (scope.prefix || scope.filterKeys) {
+        // Empty-trash under a scope must never purge another tenant's keys (or
+        // ones `filterKeys` hides), and a bare `purge()` empties everything —
+        // so purge only the entries this caller may see.
         if (!isFunction(plugin.trashed)) {
           return notConfigured("softDelete");
         }
@@ -770,7 +826,7 @@ export const dispatch = async (
       downloadCfg(ctx),
       scopeKey(scope.prefix, key),
       key,
-      parsed.rangeHeader,
+      { ifRange: parsed.ifRangeHeader, range: parsed.rangeHeader },
       scope,
       parsed.signal
     );

@@ -18,6 +18,14 @@ export const globMatcher = (
 };
 
 /**
+ * The regex source picomatch compiles `glob` to (same options as
+ * {@link globMatcher}) — what actually runs per key, so a complexity check can
+ * count its quantifiers rather than re-deriving glob semantics.
+ */
+export const globSource = (glob: string, caseInsensitive: boolean): string =>
+  picomatch.makeRe(glob, { dot: true, nocase: caseInsensitive }).source;
+
+/**
  * The literal key prefix every match must start with — picomatch's scanned
  * `base` — used to push a `prefix` down to `listAll` so a search doesn't walk
  * the whole bucket. Empty for a negated pattern (matches by exclusion, so no

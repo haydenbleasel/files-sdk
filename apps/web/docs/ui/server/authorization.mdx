@@ -20,7 +20,7 @@ createFilesRouter({
 });
 ```
 
-`authorize` runs on every request. **Throw** to deny — a `FilesError` maps to its status (`Unauthorized` → 401, `ReadOnly` → 403, …). **Return** a constraint object to allow, optionally narrowing what the caller can do. **Return nothing** (`void`) to allow as-is.
+`authorize` runs on every request except the proxy-upload `PUT` of a keyless upload. That request carries the HMAC token `presign` minted, and the token is what authorizes it, since `presign` already ran `authorize` as `"upload"`. **Throw** to deny — a `FilesError` maps to its status (`Unauthorized` → 401, `ReadOnly` → 403, …). **Return** a constraint object to allow, optionally narrowing what the caller can do. **Return nothing** (`void`) to allow as-is.
 
 ## The context
 
@@ -31,7 +31,9 @@ authorize(ctx: {
   key?: string;               // single-key ops (client-supplied, pre-prefix)
   keys?: string[];            // bulk ops
   from?: string; to?: string; // copy / move
-  params: Readonly<Record<string, unknown>>; // expiresIn, range, …
+  // Parsed op params: url → { expiresIn }; signedUploadUrl → { expiresIn,
+  // maxSize?, minSize? }; restoreVersion → { versionId }; {} for the rest.
+  params: Readonly<Record<string, unknown>>;
 })
 ```
 
@@ -42,7 +44,7 @@ authorize(ctx: {
 ```ts lineNumbers
 return {
   keyPrefix?: string;     // prepended to every key/from/to; stripped from results
-  maxExpiresIn?: number;  // ceiling on url()/download expiry (seconds)
+  maxExpiresIn?: number;  // ceiling on url()/download/upload-URL expiry (seconds)
   disposition?: "attachment" | "inline" | string; // download/url Content-Disposition
   filterKeys?: (key: string) => boolean;           // narrow a bulk op
   maxResults?: number;    // clamp a list/search page
@@ -51,15 +53,26 @@ return {
 
 `keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` require **both** ends under the prefix, preventing exfiltration across scopes.
 
+`maxExpiresIn` is the only expiry ceiling. The router's `defaultExpiresIn` is just what applies when the client doesn't ask, and a client may request a longer `expiresIn` for `url()` or an upload. Return `maxExpiresIn` to cap it.
+
 `disposition` is the server-side override for both proxy downloads and URL minting. The gateway defaults untrusted URLs to `attachment`; return `"inline"` only when that operation is safe for the current user, key, and content type.
 
 ## Recipes
 
-**Read-only session** — deny every write:
+**Read-only session** — deny every write (including the plugin verbs that restore or purge):
 
 ```ts lineNumbers
 authorize: ({ operation }) => {
-  const writes = ["upload", "delete", "copy", "move"];
+  const writes = [
+    "upload", // also covers presign/complete and the explicit-key PUT
+    "signedUploadUrl",
+    "delete",
+    "copy",
+    "move",
+    "restoreVersion",
+    "restoreTrashed",
+    "purge",
+  ];
   if (writes.includes(operation)) {
     throw new FilesError("ReadOnly", "read-only"); // → 403
   }

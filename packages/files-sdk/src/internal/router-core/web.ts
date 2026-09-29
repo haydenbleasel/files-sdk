@@ -16,6 +16,8 @@ export interface ParsedRequest {
   query: URLSearchParams;
   origin: string | null;
   rangeHeader: string | null;
+  /** The `If-Range` validator guarding `rangeHeader`, if any. */
+  ifRangeHeader: string | null;
   /** Parsed JSON body for a POST action; `undefined` otherwise. */
   json: JsonValue | undefined;
   /** Raw body stream for a byte-path PUT; `null` otherwise. */
@@ -36,17 +38,70 @@ export type ResultModel =
       stream: ReadableStream<Uint8Array>;
     };
 
-export const parseRequest = async (req: Request): Promise<ParsedRequest> => {
+/** Default cap on a JSON request body (1 MiB). */
+export const DEFAULT_MAX_JSON_BODY_SIZE = 1024 * 1024;
+
+const bodyTooLarge = (maxBytes: number): RouterError =>
+  new RouterError(
+    "Validation",
+    `JSON request body exceeds ${maxBytes} bytes`,
+    "size",
+    413
+  );
+
+// Read a POST body as text, refusing (413) once it passes `maxBytes` — before
+// buffering the rest — so an oversized body can't be streamed into memory.
+const readBoundedText = async (
+  req: Request,
+  contentLength: number | undefined,
+  maxBytes: number
+): Promise<string> => {
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    throw bodyTooLarge(maxBytes);
+  }
+  if (!req.body) {
+    return "";
+  }
+  const reader = req.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- a stream is read chunk by chunk
+    const { done, value } = await reader.read();
+    if (done) {
+      return text + decoder.decode();
+    }
+    total += value.byteLength;
+    if (total > maxBytes) {
+      // oxlint-disable-next-line no-await-in-loop -- release the stream before refusing it
+      await reader.cancel();
+      throw bodyTooLarge(maxBytes);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+};
+
+export const parseRequest = async (
+  req: Request,
+  maxJsonBodySize: number = DEFAULT_MAX_JSON_BODY_SIZE
+): Promise<ParsedRequest> => {
   const url = new URL(req.url);
   const method = req.method.toUpperCase();
   const action = url.searchParams.get("op");
   const contentType = req.headers.get("content-type");
 
+  const lengthHeader = req.headers.get("content-length");
+  const contentLength =
+    lengthHeader === null ? undefined : Number(lengthHeader);
+  const knownLength = Number.isNaN(contentLength) ? undefined : contentLength;
+
   let json: JsonValue | undefined;
   let bodyStream: ReadableStream<Uint8Array> | null = null;
   if (method === "POST") {
+    const text = await readBoundedText(req, knownLength, maxJsonBodySize);
     try {
-      json = await req.json();
+      json = JSON.parse(text);
     } catch {
       throw new RouterError("Validation", "invalid JSON request body");
     }
@@ -54,15 +109,12 @@ export const parseRequest = async (req: Request): Promise<ParsedRequest> => {
     bodyStream = req.body;
   }
 
-  const lengthHeader = req.headers.get("content-length");
-  const contentLength =
-    lengthHeader === null ? undefined : Number(lengthHeader);
-
   return {
     action,
     bodyStream,
-    contentLength: Number.isNaN(contentLength) ? undefined : contentLength,
+    contentLength: knownLength,
     contentType,
+    ifRangeHeader: req.headers.get("if-range"),
     json,
     method,
     origin: req.headers.get("origin"),
