@@ -17,10 +17,10 @@ Each provider's native SDK is an **optional peer dependency** — install only t
 npm install files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 
 # Google Cloud Storage
-npm install files-sdk @google-cloud/storage google-auth-library
+npm install files-sdk @google-cloud/storage
 
-# Azure Blob Storage
-npm install files-sdk @azure/storage-blob @azure/core-auth @azure/identity
+# Azure Blob Storage (add @azure/identity to authenticate with a Microsoft Entra `credential`)
+npm install files-sdk @azure/storage-blob
 
 # Vercel Blob
 npm install files-sdk @vercel/blob

@@ -2,7 +2,7 @@
   "name": "files-sdk-monorepo",
   "version": "0.0.0",
   "private": true,
-  "license": "ISC",
+  "license": "MIT",
   "workspaces": [
     "apps/*",
     "packages/*"

@@ -2,6 +2,19 @@
   "name": "files-sdk",
   "version": "2.6.0",
   "description": "Unified storage SDK for object/blob backends.",
+  "keywords": [
+    "azure",
+    "blob",
+    "cloudflare-r2",
+    "files",
+    "gcs",
+    "object-storage",
+    "r2",
+    "s3",
+    "sdk",
+    "storage",
+    "upload"
+  ],
   "homepage": "https://github.com/haydenbleasel/files-sdk#readme",
   "bugs": {
     "url": "https://github.com/haydenbleasel/files-sdk/issues"
@@ -639,5 +652,8 @@
   },
   "optionalDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
