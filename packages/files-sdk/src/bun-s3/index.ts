@@ -18,6 +18,21 @@ import { createStoredFile } from "../internal/stored-file.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
+// SigV4 caps a presigned URL at one week. Bun signs a longer `expiresIn`
+// without complaint, but the server rejects the URL when it's used, so fail
+// here instead, matching the rest of the S3 family.
+const SIGV4_MAX_EXPIRES_IN = 604_800;
+
+const expiresInError = (expiresIn: number): FilesError | undefined =>
+  expiresIn > SIGV4_MAX_EXPIRES_IN
+    ? new FilesError(
+        "Provider",
+        `Bun S3 error: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
+        undefined,
+        { permanent: true }
+      )
+    : undefined;
+
 export interface BunS3OperationOptions {
   bucket?: string;
   region?: string;
@@ -54,6 +69,8 @@ export interface BunS3ListObjectsOptions {
 }
 
 export interface BunS3ListObjectsResponse {
+  /** Folder groupings, present only when the request set a `delimiter`. */
+  commonPrefixes?: { prefix: string }[];
   contents?: {
     eTag?: string;
     key: string;
@@ -231,6 +248,16 @@ const storedFromStat = (
     body
   );
 
+// Bun's `S3Stats` exposes its fields as prototype getters, so `{ ...stat }`
+// copies none of them (`lastModified` comes back undefined). Copy each field
+// explicitly when overriding the size for a ranged read.
+const statWithSize = (stat: BunS3Stats, size: number): BunS3Stats => ({
+  etag: stat.etag,
+  lastModified: stat.lastModified,
+  size,
+  type: stat.type,
+});
+
 const CLIENT_CONSTRUCTION_OPTS = [
   "bucket",
   "region",
@@ -342,14 +369,14 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         if (downloadOpts?.as === "stream") {
           return storedFromStat(
             key,
-            range ? { ...stat, size: rangedSize(stat.size, range) } : stat,
+            range ? statWithSize(stat, rangedSize(stat.size, range)) : stat,
             { factory: () => target.stream(), kind: "stream" }
           );
         }
         const bytes = await bytesFromFile(target);
         return storedFromStat(
           key,
-          range ? { ...stat, size: bytes.byteLength } : stat,
+          range ? statWithSize(stat, bytes.byteLength) : stat,
           { data: bytes, kind: "buffer" }
         );
       } catch (error) {
@@ -377,16 +404,13 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         throw mapBunS3Error(error);
       }
     },
-    // No `supportsDelimiter`: although Bun's S3 client accepts a `delimiter`
-    // option, its list response exposes no `commonPrefixes`, so the folder
-    // groupings can't be surfaced. The Files wrapper rejects a `delimiter`
-    // here before any provider call.
     async list(options) {
       try {
         const result = await client.list({
           ...(options?.prefix && { prefix: options.prefix }),
           ...(options?.limit !== undefined && { maxKeys: options.limit }),
           ...(options?.cursor && { continuationToken: options.cursor }),
+          ...(options?.delimiter && { delimiter: options.delimiter }),
         });
         const items = (result.contents ?? []).map((obj) => {
           const lastModified = obj.lastModified
@@ -409,9 +433,11 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
             }
           );
         });
+        const prefixes = (result.commonPrefixes ?? []).map((p) => p.prefix);
         return {
           cursor: result.isTruncated ? result.nextContinuationToken : undefined,
           items,
+          ...(prefixes.length && { prefixes }),
         };
       } catch (error) {
         throw mapBunS3Error(error);
@@ -520,25 +546,39 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           )
         );
       }
+      // Bun's presign signs only the `host` header. Its `type` option becomes
+      // a `response-content-type` query parameter, which binds nothing on an
+      // upload, so a presigned PUT can't enforce a Content-Type. Fail loud
+      // rather than hand back a header the server never checks.
+      if (signOpts.contentType !== undefined) {
+        return Promise.reject(
+          new FilesError(
+            "Provider",
+            "bun-s3 adapter: `contentType` is not supported because Bun.s3 presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use the `s3()` or `s3Fetch()` adapter, which sign it.",
+            undefined,
+            { permanent: true }
+          )
+        );
+      }
+      const tooLong = expiresInError(signOpts.expiresIn);
+      if (tooLong) {
+        return Promise.reject(tooLong);
+      }
       try {
         const url = client.presign(key, {
           expiresIn: signOpts.expiresIn,
           method: "PUT",
-          ...(signOpts.contentType && { type: signOpts.contentType }),
         });
-        return Promise.resolve({
-          headers: signOpts.contentType
-            ? { "Content-Type": signOpts.contentType }
-            : undefined,
-          method: "PUT",
-          url,
-        });
+        return Promise.resolve({ method: "PUT", url });
       } catch (error) {
         return Promise.reject(mapBunS3Error(error));
       }
     },
-    // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`).
-    signedUrl: { supported: true },
+    // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`), capped
+    // at SigV4's one-week lifetime.
+    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
+    // Bun's list forwards `delimiter` and returns `commonPrefixes`.
+    supportsDelimiter: true,
     supportsRange: true,
     // Bun's S3 client has no CopyObject helper — `copy()` streams source→dest
     // through this process, so it's not a server-side copy.
@@ -587,10 +627,15 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       if (strategy === "public" && publicBaseUrl) {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
+      const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
+      const tooLong = expiresInError(expiresIn);
+      if (tooLong) {
+        return Promise.reject(tooLong);
+      }
       try {
         return Promise.resolve(
           client.presign(key, {
-            expiresIn: urlOpts?.expiresIn ?? defaultUrlExpiresIn,
+            expiresIn,
             method: "GET",
             ...(urlOpts?.responseContentDisposition && {
               contentDisposition: urlOpts.responseContentDisposition,

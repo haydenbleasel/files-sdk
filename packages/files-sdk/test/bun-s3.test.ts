@@ -127,9 +127,23 @@ class FakeBunS3Client implements BunS3ClientLike {
   }
 
   list(input?: BunS3ListObjectsOptions | null) {
-    const keys = [...this.entries.keys()]
-      .filter((key) => !input?.prefix || key.startsWith(input.prefix))
+    const prefix = input?.prefix ?? "";
+    const matching = [...this.entries.keys()]
+      .filter((key) => key.startsWith(prefix))
       .toSorted();
+    // Mirror S3: with a delimiter, keys past the next delimiter roll up into
+    // commonPrefixes instead of appearing in contents.
+    const commonPrefixes = new Set<string>();
+    const keys = matching.filter((key) => {
+      const cut = input?.delimiter
+        ? key.indexOf(input.delimiter, prefix.length)
+        : -1;
+      if (cut === -1) {
+        return true;
+      }
+      commonPrefixes.add(key.slice(0, cut + (input?.delimiter?.length ?? 0)));
+      return false;
+    });
     const startIndex = input?.continuationToken
       ? Math.max(0, keys.indexOf(input.continuationToken) + 1)
       : 0;
@@ -137,6 +151,9 @@ class FakeBunS3Client implements BunS3ClientLike {
       input?.maxKeys === undefined ? keys.length : startIndex + input.maxKeys;
     const page = keys.slice(startIndex, endIndex);
     return Promise.resolve({
+      ...(commonPrefixes.size > 0 && {
+        commonPrefixes: [...commonPrefixes].map((p) => ({ prefix: p })),
+      }),
       contents: page.map((key) => {
         const entry = this.mustGet(key);
         return {
@@ -246,12 +263,34 @@ describe("bun-s3 adapter", () => {
     expect(await out.items[0]?.text()).toBe("1");
   });
 
-  test("list with a delimiter is rejected (no commonPrefixes in Bun's S3)", async () => {
+  test("list with a delimiter forwards it and surfaces Bun's commonPrefixes", async () => {
     const client = new FakeBunS3Client();
+    const listCalls: (BunS3ListObjectsOptions | null | undefined)[] = [];
+    const list = client.list.bind(client);
+    client.list = (input) => {
+      listCalls.push(input);
+      return list(input);
+    };
     const files = new Files({ adapter: bunS3({ client }) });
-    await expect(files.list({ delimiter: "/" })).rejects.toMatchObject({
-      code: "Provider",
-    });
+    expect(files.capabilities.delimiter).toBe(true);
+    await files.upload("top.txt", "t");
+    await files.upload("a/1.txt", "1");
+    await files.upload("a/deep/2.txt", "2");
+    await files.upload("b/3.txt", "3");
+
+    const root = await files.list({ delimiter: "/" });
+    expect(listCalls.at(-1)).toMatchObject({ delimiter: "/" });
+    expect(root.items.map((item) => item.key)).toEqual(["top.txt"]);
+    expect(root.prefixes).toEqual(["a/", "b/"]);
+
+    const nested = await files.list({ delimiter: "/", prefix: "a/" });
+    expect(nested.items.map((item) => item.key)).toEqual(["a/1.txt"]);
+    expect(nested.prefixes).toEqual(["a/deep/"]);
+
+    // No delimiter: no prefixes key at all, every key listed.
+    const flat = await files.list();
+    expect(flat.prefixes).toBeUndefined();
+    expect(flat.items).toHaveLength(4);
   });
 
   test("url returns publicBaseUrl unless responseContentDisposition forces signing", async () => {
@@ -274,19 +313,96 @@ describe("bun-s3 adapter", () => {
   test("signedUploadUrl returns PUT URLs and rejects maxSize", async () => {
     const adapter = bunS3({ client: new FakeBunS3Client() });
 
-    const out = await adapter.signedUploadUrl("up.txt", {
-      contentType: "text/plain",
-      expiresIn: 60,
-    });
+    const out = await adapter.signedUploadUrl("up.txt", { expiresIn: 60 });
     expect(out).toEqual({
-      headers: { "Content-Type": "text/plain" },
       method: "PUT",
-      url: "https://signed.example.com/up.txt?expires=60&method=PUT&type=text%2Fplain",
+      url: "https://signed.example.com/up.txt?expires=60&method=PUT",
     });
 
     await expect(
       adapter.signedUploadUrl("up.txt", { expiresIn: 60, maxSize: 1024 })
     ).rejects.toMatchObject({ code: "Provider" });
+  });
+
+  test("url and signedUploadUrl reject expiresIn past the SigV4 one-week cap", async () => {
+    const client = new FakeBunS3Client();
+    let presigned = 0;
+    const { presign } = client;
+    (client as unknown as { presign: BunS3ClientLike["presign"] }).presign = (
+      path,
+      options
+    ) => {
+      presigned += 1;
+      return presign(path, options);
+    };
+    const adapter = bunS3({ client });
+    const eightDays = 8 * 24 * 60 * 60;
+    expect(adapter.signedUrl).toEqual({
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
+
+    const urlError = await adapter.url("k.txt", { expiresIn: eightDays }).then(
+      () => null,
+      (error_: unknown) => error_
+    );
+    expect(urlError).toBeInstanceOf(FilesError);
+    expect((urlError as FilesError).code).toBe("Provider");
+    expect((urlError as FilesError).permanent).toBe(true);
+    expect((urlError as FilesError).message).toMatch(
+      /^Bun S3 error: presigned URLs must expire within 604800 seconds/u
+    );
+    await expect(
+      adapter.signedUploadUrl("k.txt", { expiresIn: eightDays })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    // A too-long default fails the same way.
+    await expect(
+      bunS3({ client, defaultUrlExpiresIn: eightDays }).url("k.txt")
+    ).rejects.toMatchObject({ code: "Provider" });
+    expect(presigned).toBe(0);
+
+    // Exactly one week still signs, and a public URL ignores expiresIn.
+    expect(await adapter.url("k.txt", { expiresIn: 604_800 })).toContain(
+      "expires=604800"
+    );
+    const pub = bunS3({ client, publicBaseUrl: "https://cdn.example.com" });
+    expect(await pub.url("k.txt", { expiresIn: eightDays })).toBe(
+      "https://cdn.example.com/k.txt"
+    );
+  });
+
+  test("signedUploadUrl rejects contentType: Bun's presign can't sign it", async () => {
+    // Bun signs only `host`; its `type` option becomes a response-content-type
+    // query param that binds nothing on a PUT, so the type isn't enforced.
+    const client = new FakeBunS3Client();
+    let presigned = 0;
+    const { presign } = client;
+    (client as unknown as { presign: BunS3ClientLike["presign"] }).presign = (
+      path,
+      options
+    ) => {
+      presigned += 1;
+      return presign(path, options);
+    };
+    const adapter = bunS3({ client });
+    let pending: Promise<unknown> | undefined;
+    expect(() => {
+      pending = adapter.signedUploadUrl("up.txt", {
+        contentType: "text/plain",
+        expiresIn: 60,
+      });
+    }).not.toThrow();
+    const error = await (pending as Promise<unknown>).then(
+      () => null,
+      (error_: unknown) => error_
+    );
+    expect(error).toBeInstanceOf(FilesError);
+    expect((error as FilesError).code).toBe("Provider");
+    expect((error as FilesError).permanent).toBe(true);
+    expect((error as FilesError).message).toMatch(
+      /contentType.*not supported/u
+    );
+    expect(presigned).toBe(0);
   });
 
   test("unsupported upload options throw instead of being ignored", async () => {
@@ -404,6 +520,57 @@ describe("bun-s3 adapter", () => {
     const got = await files.download("r.txt", { range: { end: 4, start: 2 } });
     expect(await got.text()).toBe("234");
     expect(got.size).toBe(3);
+  });
+
+  test("range downloads survive Bun's getter-backed S3Stats (spread copies nothing)", async () => {
+    // Real Bun returns S3Stats whose fields are prototype getters, so
+    // `{ ...stat }` is `{}` and lastModified came back undefined (crash).
+    class GetterStats implements BunS3Stats {
+      readonly #entry: Entry;
+      constructor(entry: Entry) {
+        this.#entry = entry;
+      }
+      get etag(): string {
+        return this.#entry.etag;
+      }
+      get lastModified(): Date {
+        return this.#entry.lastModified;
+      }
+      get size(): number {
+        return this.#entry.bytes.byteLength;
+      }
+      get type(): string {
+        return this.#entry.type;
+      }
+    }
+    class GetterStatClient extends FakeBunS3Client {
+      override stat(path: string): Promise<BunS3Stats> {
+        return Promise.resolve(new GetterStats(this.mustGet(path)));
+      }
+    }
+    const client = new GetterStatClient();
+    const files = new Files({ adapter: bunS3({ client }) });
+    await files.upload("r.txt", "0123456789", { contentType: "text/plain" });
+    const stat = await client.stat("r.txt");
+    // The reproduction: spreading the getter-backed stats copies nothing.
+    expect(Object.keys({ ...stat })).toEqual([]);
+
+    const buffered = await files.download("r.txt", {
+      range: { end: 4, start: 2 },
+    });
+    expect(await buffered.text()).toBe("234");
+    expect(buffered.size).toBe(3);
+    expect(buffered.type).toBe("text/plain");
+    expect(buffered.etag).toBe("etag-r.txt");
+    expect(buffered.lastModified).toBe(stat.lastModified.getTime());
+
+    const streamed = await files.download("r.txt", {
+      as: "stream",
+      range: { start: 7 },
+    });
+    expect(streamed.size).toBe(3);
+    expect(streamed.type).toBe("text/plain");
+    expect(await streamed.text()).toBe("789");
   });
 
   test("open-ended range streams from start to EOF", async () => {
