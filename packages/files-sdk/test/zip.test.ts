@@ -2,6 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { deflateSync } from "fflate";
+
 import { compression } from "../src/compression/index.js";
 import { createFiles, createStoredFile } from "../src/index.js";
 import type { Adapter, DownloadOptions, StoredFile } from "../src/index.js";
@@ -508,6 +510,22 @@ describe("zip plugin — reading archives", () => {
     expect(await files.exists("etc/passwd")).toBe(false);
   });
 
+  test("duplicate entry names fail closed instead of overwriting", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      { data: TEXT.encode("first"), name: "a.txt" },
+      { data: TEXT.encode("second"), name: "a.txt" },
+    ]);
+    await files.upload("in.zip", crafted);
+
+    await expect(files.unzip("in.zip", { into: "out" })).rejects.toThrow(
+      'more than one entry named "a.txt"'
+    );
+    // The second copy never lands on top of the first.
+    const extracted = await files.download("out/a.txt");
+    expect(await extracted.text()).toBe("first");
+  });
+
   test("encrypted entries are refused", async () => {
     const files = withZip();
     const crafted = craftZip([
@@ -553,6 +571,22 @@ describe("zip plugin — reading archives", () => {
     ]);
     await files.upload("in.zip", crafted);
     await expect(files.unzip("in.zip")).rejects.toThrow("failed to inflate");
+  });
+
+  test("an entry inflating past its declared size is corrupt, not over a configured limit", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      {
+        data: deflateSync(TEXT.encode("x".repeat(5000))),
+        method: 8,
+        name: "bomb.txt",
+        size: 10,
+      },
+    ]);
+    await files.upload("in.zip", crafted);
+    await expect(files.unzip("in.zip")).rejects.toThrow(
+      'entry "bomb.txt" inflates past its declared size'
+    );
   });
 
   test.each([

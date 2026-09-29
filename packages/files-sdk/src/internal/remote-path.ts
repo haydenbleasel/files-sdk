@@ -37,7 +37,9 @@ export const assertNotStagingPath = (
   if (isStagingPath(remote)) {
     throw new FilesError(
       "Provider",
-      `${adapter}: keys ending in ${RESUMABLE_STAGING_SUFFIX} are reserved for in-progress resumable uploads: ${JSON.stringify(key)}`
+      `${adapter}: keys ending in ${RESUMABLE_STAGING_SUFFIX} are reserved for in-progress resumable uploads: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
     );
   }
 };
@@ -62,13 +64,17 @@ export const trimSlashes = (s: string): string => {
  * Split a virtual key into clean path segments. Drops empty and `.` segments,
  * and throws `Provider` on a `..` segment or an embedded null byte — those are
  * the shapes that would let a key escape the adapter root or break the
- * underlying protocol command. Pure string math: no host filesystem is touched.
+ * underlying protocol command — and on a key with no segment left (`"/"`,
+ * `"."`, `"./"`), which would address the root directory itself rather than
+ * an object under it. Pure string math: no host filesystem is touched.
  */
 const normalizeKeySegments = (key: string): string[] => {
   if (key.includes("\0")) {
     throw new FilesError(
       "Provider",
-      `key must not contain null bytes: ${JSON.stringify(key)}`
+      `key must not contain null bytes: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
     );
   }
   const segments: string[] = [];
@@ -79,10 +85,23 @@ const normalizeKeySegments = (key: string): string[] => {
     if (segment === "..") {
       throw new FilesError(
         "Provider",
-        `key escapes adapter root: ${JSON.stringify(key)}`
+        `key escapes adapter root: ${JSON.stringify(key)}`,
+        undefined,
+        { permanent: true }
       );
     }
     segments.push(segment);
+  }
+  if (segments.length === 0) {
+    // Mapping such a key onto the root is never an object operation — and on
+    // WebDAV a DELETE (or MOVE) of the root collection takes everything under
+    // it, recursively.
+    throw new FilesError(
+      "Provider",
+      `key must name an object below the adapter root: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
+    );
   }
   return segments;
 };

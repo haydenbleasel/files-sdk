@@ -1651,6 +1651,36 @@ describe("upload progress", () => {
     expect(base.has("a.txt")).toBe(true);
   });
 
+  test("a throwing onProgress can't fail or retry a self-reporting adapter's upload", async () => {
+    const base = fakeAdapter();
+    let uploads = 0;
+    const adapter: Adapter = {
+      ...base,
+      reportsUploadProgress: true,
+      upload(key, body, opts) {
+        uploads += 1;
+        // The adapter reports from inside its own upload, so an unguarded
+        // throw here would reject the attempt and `retries` would re-send it.
+        opts?.onProgress?.({ loaded: 5, total: 5 });
+        return base.upload(key, body, opts);
+      },
+    };
+    const files = new Files({ adapter });
+    let reports = 0;
+
+    const result = await files.upload("a.txt", "hello", {
+      onProgress: () => {
+        reports += 1;
+        throw new Error("reporter boom");
+      },
+      retries: 3,
+    });
+
+    expect(result.size).toBe(5);
+    expect(uploads).toBe(1);
+    expect(reports).toBe(1);
+  });
+
   test("a throwing onProgress does not error a streaming upload", async () => {
     const files = new Files({ adapter: fakeAdapter() });
 

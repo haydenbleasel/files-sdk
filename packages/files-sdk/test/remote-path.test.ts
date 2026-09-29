@@ -31,6 +31,37 @@ describe("joinRemotePath", () => {
     expect(joinRemotePath("/uploads/", "a/b.txt")).toBe("/uploads/a/b.txt");
   });
 
+  test.each([["/"], ["."], ["./"], ["//./"]])(
+    "rejects a key that resolves to the root itself: %j",
+    (key) => {
+      // On WebDAV, a DELETE of the resulting root collection would recurse
+      // through everything under it.
+      for (const root of ["/", "/uploads", "", "."]) {
+        expect(() => joinRemotePath(root, key)).toThrow(
+          /must name an object below the adapter root/u
+        );
+      }
+    }
+  );
+
+  test("validation failures are permanent, so they are never retried", () => {
+    for (const key of ["../etc/passwd", `a${NULL_BYTE}b`, "."]) {
+      try {
+        joinRemotePath("/uploads", key);
+        throw new Error("expected a throw");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).permanent).toBe(true);
+      }
+    }
+    try {
+      assertNotStagingPath("ftp", "up/x.fls-part", "x");
+      throw new Error("expected a throw");
+    } catch (error) {
+      expect((error as FilesError).permanent).toBe(true);
+    }
+  });
+
   test("rejects a key containing a null byte", () => {
     const key = `a${NULL_BYTE}b`;
     expect(() => joinRemotePath("/uploads", key)).toThrow(FilesError);

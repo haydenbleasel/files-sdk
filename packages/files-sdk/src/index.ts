@@ -203,6 +203,8 @@ export interface UploadOptions extends OperationOptions {
   metadata?: Record<string, string>;
   /**
    * Called as the upload makes progress, for driving a progress bar.
+   * Fire-and-forget: a throw from it is swallowed and never fails (or
+   * retries) the upload.
    *
    * Granularity depends on the body and the adapter:
    * - A `ReadableStream` body is reported byte-by-byte as the adapter
@@ -227,11 +229,14 @@ export interface UploadOptions extends OperationOptions {
    * and for `ReadableStream` bodies of unknown length: a single PUT must buffer
    * or know the length up front, while multipart streams part-by-part.
    *
-   * On S3-family adapters this routes through `@aws-sdk/lib-storage` (an
-   * optional peer dependency) and is **auto-engaged for unknown-length
-   * streams** even when this flag is unset. OneDrive, GCS, Firebase, and Azure
-   * map it to their native chunking; other adapters already stream or chunk
-   * transparently and ignore it.
+   * On S3-family adapters (on the `aws-sdk` client) this routes through
+   * `@aws-sdk/lib-storage` (an optional peer dependency) and is
+   * **auto-engaged for unknown-length streams** even when this flag is unset.
+   * OneDrive, GCS, Firebase, and Azure map it to their native chunking; other
+   * adapters already stream or chunk transparently and ignore it. The one
+   * exception is the S3 `fetch` client (`s3Fetch()`, and R2 / MinIO / RustFS
+   * with `client: "fetch"`), which has no multipart path and **throws** rather
+   * than silently buffering the body into a single PUT.
    */
   multipart?: boolean | MultipartOptions;
   /**
@@ -386,15 +391,15 @@ export interface ListOptions extends OperationOptions {
    * those prefixes rather than listed.
    *
    * **Supported** by the object-store adapters with native common-prefix
-   * listing (S3 and the whole `s3()` family, R2, Google Cloud Storage,
-   * Firebase Storage, Azure Blob), the local `fs`, in-memory, FTP, SFTP,
-   * WebDAV, Google Drive, and Cloudinary adapters (any delimiter string), plus
-   * the folder-based providers (Vercel Blob, Netlify Blobs, Supabase, Dropbox,
-   * Box, OneDrive, SharePoint) which only accept `"/"`.
+   * listing (S3 and the whole `s3()` family, R2, Bun's S3, Google Cloud
+   * Storage, Firebase Storage, Azure Blob), the local `fs`, in-memory, FTP,
+   * SFTP, WebDAV, Google Drive, and Cloudinary adapters (any delimiter
+   * string), plus the folder-based providers (Vercel Blob, Netlify Blobs,
+   * Supabase, Dropbox, Box, OneDrive, SharePoint) which only accept `"/"`.
    *
    * **Throws** a {@link FilesError} on adapters with no folder concept
-   * (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage, Bun's S3) rather
-   * than silently returning a flat list. Check
+   * (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) rather than
+   * silently returning a flat list. Check
    * {@link Adapter.supportsDelimiter} to branch at runtime. Must be a
    * non-empty string.
    */
@@ -470,10 +475,13 @@ export interface SearchOptions extends OperationOptions {
 
 export interface DeleteManyOptions {
   /**
-   * How many per-key deletes run in parallel when an adapter falls back to
-   * repeated `delete()` calls. Defaults to `8`. Adapters with a native bulk
-   * primitive (S3, Supabase, UploadThing) ignore this — they delete in one
-   * request.
+   * How many per-key deletes run in parallel when the SDK fans out to
+   * repeated `delete()` calls — on adapters without a native bulk primitive,
+   * and on every adapter once a wrapping plugin is installed. Defaults to `8`.
+   * Otherwise a native bulk primitive ignores it: S3 and the S3-compatible
+   * adapters (on the `aws-sdk` client), Azure, Supabase, and UploadThing batch
+   * the keys into as few requests as the provider allows, and FTP / SFTP
+   * delete sequentially over one connection.
    */
   concurrency?: number;
   /**
@@ -687,7 +695,7 @@ export interface SignedUrlCapability {
    * some providers pin the lifetime server-side and ignore the request; see the
    * provider-gaps page. `false` when the adapter has no signing primitive: it
    * returns only a permanent URL and ignores `expiresIn` (Vercel Blob in public
-   * mode, Appwrite, Convex, the filesystem's `file://` / `publicBaseUrl` URL),
+   * mode, Appwrite, Convex, the filesystem's `file://` / `urlBaseUrl` URL),
    * or throws because it cannot mint a URL at all (FTP/SFTP without a
    * `publicBaseUrl`, OneDrive / Google Drive outside their public-link mode).
    * When `false`, prefer `download()`.
@@ -857,7 +865,7 @@ export interface Adapter<Raw = unknown> {
    * Describes how `url` produces a download URL, surfaced via
    * {@link Files.capabilities} as {@link AdapterCapabilities.signedUrl}. Leave
    * unset for adapters that cannot mint a usable URL — it defaults to
-   * `{ supported: false }`, the conservative value, so a caller that doesn't
+   * `{ supported: false }`, the conservative value, so an adapter that doesn't
    * advertise still reads as "no signed URL" rather than a wrong `true`.
    * Advisory only; it does not gate `url()`.
    */
@@ -1135,15 +1143,11 @@ export interface FileHandle {
 }
 
 /**
- * A single in-flight operation handed to a {@link FilesPlugin}. One variant per
- * public verb (mirroring {@link FilesActionType}), carrying the caller-facing,
- * **un-prefixed** inputs — a plugin never sees the internal prefixed path, the
- * same rule {@link FilesHooks} follow.
- *
- * The array form of `upload` / `download` / `head` / `exists` / `delete` fans
- * out to one op per item, each marked `bulk: true`, so a plugin can tell a
- * single call from one element of a batch. `copy`, `move`, `list`, `url`, and
- * `signedUploadUrl` have no array form and are always single.
+ * The {@link FilesOperation} variants that carry a native conditional
+ * predicate (an `upload` / `copy` / `delete` ETag or create check, or an exact
+ * read), told apart by `mode`. The predicate is a capability boundary: a
+ * plugin may transform the rest of the op, but every `next()` must hand the
+ * predicate on unchanged. See {@link isConditionalOperation}.
  */
 export type ConditionalFilesOperation =
   | {
@@ -1185,6 +1189,17 @@ export type ConditionalFilesOperation =
       options?: OperationOptions;
     };
 
+/**
+ * A single in-flight operation handed to a {@link FilesPlugin}. One variant per
+ * public verb (mirroring {@link FilesActionType}), carrying the caller-facing,
+ * **un-prefixed** inputs — a plugin never sees the internal prefixed path, the
+ * same rule {@link FilesHooks} follow.
+ *
+ * The array form of `upload` / `download` / `head` / `exists` / `delete` fans
+ * out to one op per item, each marked `bulk: true`, so a plugin can tell a
+ * single call from one element of a batch. `copy`, `move`, `list`, `url`, and
+ * `signedUploadUrl` have no array form and are always single.
+ */
 export type FilesOperation =
   | ConditionalFilesOperation
   | {
@@ -1716,11 +1731,6 @@ interface ConditionalSettlement {
   state: "idle" | "pending" | "success" | "error";
 }
 
-/**
- * Invoke a hook without letting it affect the operation it observes: a thrown
- * error is swallowed, and the return value is ignored — hooks are
- * fire-and-forget, like {@link UploadOptions.onProgress}.
- */
 const isPromiseLike = (value: unknown): value is PromiseLike<unknown> =>
   (isObject(value) || isFunction(value)) &&
   "then" in value &&
@@ -1736,6 +1746,11 @@ const consumeHookOutcome = async (
   }
 };
 
+/**
+ * Invoke a hook without letting it affect the operation it observes: a thrown
+ * error is swallowed, and the return value is ignored — hooks are
+ * fire-and-forget, like {@link UploadOptions.onProgress}.
+ */
 const emitHook = <E>(
   hook: ((event: E) => void) | undefined,
   event: E
@@ -2803,9 +2818,26 @@ export class Files<A extends Adapter = Adapter> {
       return result;
     };
 
-    if (!onProgress || this.#adapter.reportsUploadProgress) {
+    if (!onProgress) {
       return this.#run(
         opts,
+        (attemptOpts) => upload(body, attemptOpts),
+        canRetryBody,
+        ctx
+      );
+    }
+
+    if (this.#adapter.reportsUploadProgress) {
+      // The adapter reports progress itself, from inside its upload — so a
+      // throwing reporter would reject the attempt, and `#run` would retry it
+      // as a provider error, re-uploading the body. Hand it a guarded
+      // callback instead: progress stays fire-and-forget on every path.
+      return this.#run(
+        {
+          ...opts,
+          onProgress: (progress: UploadProgress) =>
+            emitHook(onProgress, progress),
+        },
         (attemptOpts) => upload(body, attemptOpts),
         canRetryBody,
         ctx
@@ -3504,8 +3536,9 @@ export class Files<A extends Adapter = Adapter> {
    * missing source) **throws** a {@link FilesError}.
    *
    * Uses the adapter's native rename when it has one (the local filesystem,
-   * FTP, SFTP) and otherwise falls back to `copy()` then `delete()` — the same
-   * two-step every object store does, since none offer an atomic move. The
+   * FTP, SFTP, WebDAV, Cloudinary, and the in-memory adapter) and otherwise
+   * falls back to `copy()` then `delete()` — the same two-step every object
+   * store does, since none offer an atomic move. The
    * fallback is therefore **not atomic**: a crash between the copy and the
    * delete can leave the object at both keys.
    *

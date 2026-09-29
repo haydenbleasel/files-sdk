@@ -493,10 +493,10 @@ const collectLimited = async (
       if (total > maxBytes) {
         // eslint-disable-next-line no-await-in-loop -- cancel the source once the size limit is exceeded.
         await reader.cancel();
-        throw new FilesError(
-          "Provider",
-          `zip: entry "${name}" in "${key}" exceeds the configured unzip size limit`
-        );
+        // `maxBytes` is the entry's declared size (already checked against
+        // `maxEntrySize`), so overrunning it means the archive lied about the
+        // entry — a corrupt or hostile record, not a configured limit.
+        throw corrupt(key, `entry "${name}" inflates past its declared size`);
       }
       chunks.push(value);
     }
@@ -601,9 +601,10 @@ const extractEntry = async (
  * Array position therefore doesn't matter — there's no `wrap` to order.
  *
  * Trade-offs, by design:
- * - **No ZIP64.** Archives are classic ZIP: at most 65535 entries and 4 GiB
- *   per entry / per archive, failing closed (never silently corrupting) when
- *   a limit is crossed. Reading a ZIP64 archive throws too.
+ * - **No ZIP64.** Archives are classic ZIP: at most 65534 entries (65535 is
+ *   the ZIP64 marker) and under 4 GiB per entry / per archive, failing closed
+ *   (never silently corrupting) when a limit is crossed. Reading a ZIP64
+ *   archive throws too.
  * - **`zip()` streams; `unzip()` buffers.** Writing needs only one entry in
  *   flight at a time, so archives of many objects stream with flat memory.
  *   Reading needs the central directory at the end of the file, so `unzip`
@@ -669,6 +670,7 @@ export const zip = (): FilesPlugin<ZipApi> => ({
           );
         }
         const results: UploadResult[] = [];
+        const seen = new Set<string>();
         let totalSize = 0;
         // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- the guard-continues (skip dir entries, skip filtered names) are the clearest form of this extract loop.
         for (const entry of entries) {
@@ -683,6 +685,17 @@ export const zip = (): FilesPlugin<ZipApi> => ({
             entry.name,
             ENCODER.encode(entry.name).byteLength
           );
+          // Two records with one path are ambiguous — which copy a tool shows
+          // depends on how it reads the archive — and extracting both would
+          // silently overwrite the first with the second. Fail closed, the
+          // same rule `zip()` applies when writing.
+          if (seen.has(entry.name)) {
+            throw new FilesError(
+              "Provider",
+              `zip: "${key}" has more than one entry named "${entry.name}"`
+            );
+          }
+          seen.add(entry.name);
           totalSize += entry.size;
           if (totalSize > maxTotalSize) {
             throw new FilesError(

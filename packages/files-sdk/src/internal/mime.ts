@@ -9,7 +9,12 @@
 import mime from "mime";
 
 export const inferTypeFromName = (name: string): string => {
-  const type = mime.getType(name);
+  // `mime` reads a root-level name with no dot as a bare extension (`"json"` →
+  // `application/json`) and a root dotfile by its tail (`".html"` →
+  // `text/html`), so only look it up when the last segment has an extension
+  // after a non-leading dot — nested names already behave this way.
+  const base = name.slice(name.lastIndexOf("/") + 1);
+  const type = base.lastIndexOf(".") > 0 ? mime.getType(name) : null;
   if (!type) {
     return "application/octet-stream";
   }
