@@ -78,6 +78,8 @@ const agent = new Agent({
 const result = await run(agent, "List my files.");
 ```
 
+The Agents SDK runs Zod-typed tools in OpenAI strict mode, so each tool's parameter schema is strict-valid: optional arguments are sent as `null` and read as absent, and `uploadFile` takes no `metadata` argument (strict mode can't express a free-form map). Attach metadata from your own code, or use the Responses factory without `strict`, if the model needs to set it.
+
 Errors thrown from `execute()` are wrapped by the Agents SDK's default `errorFunction` into a model-visible string - the model sees the message and can self-correct on the next turn. This is the standard Agents-SDK pattern, and differs from the Responses flow where `FilesError` rethrows.
 
 ## Approval, read-only, overrides

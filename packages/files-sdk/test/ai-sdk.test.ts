@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { createFileTools } from "../src/ai-sdk/index.js";
 import { Files, FilesError } from "../src/index.js";
+import type { DownloadOptions } from "../src/index.js";
 import { MAX_DOWNLOAD_BYTES } from "../src/internal/ai-tools/schemas.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
@@ -216,6 +217,98 @@ describe("createFileTools", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).message).toMatch(/maxBytes/u);
+    }
+  });
+
+  test("downloadFile enforces maxBytes on the bytes read, not just head()", async () => {
+    // head() under-reports (or the object was replaced after it ran): the
+    // pre-check passes, so the cap must hold while streaming the body.
+    const base = fakeAdapter();
+    let cancelled = false;
+    const lying = {
+      ...base,
+      download: async (key: string, opts?: DownloadOptions) => {
+        const file = await base.download(key, opts);
+        const inner = file.stream();
+        const reader = inner.getReader();
+        return {
+          ...file,
+          stream: () =>
+            new ReadableStream<Uint8Array>({
+              cancel: () => {
+                cancelled = true;
+                return reader.cancel();
+              },
+              // One byte per pull, so the cap trips mid-body.
+              pull: async (controller) => {
+                const { done, value } = await reader.read();
+                if (done) {
+                  controller.close();
+                  return;
+                }
+                for (const byte of value) {
+                  controller.enqueue(new Uint8Array([byte]));
+                }
+              },
+            }),
+        };
+      },
+      head: async (key: string) => ({ ...(await base.head(key)), size: 1 }),
+    };
+    const files = new Files({ adapter: lying });
+    const tools = createFileTools({ files });
+    await files.upload("big.txt", "abcdefghij");
+
+    for (const binary of [false, true]) {
+      cancelled = false;
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one download per encoding
+        await exec(tools.downloadFile, { binary, key: "big.txt", maxBytes: 4 });
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).message).toBe(
+          'File "big.txt" is at least 5 bytes which exceeds the maxBytes limit of 4. Pass a larger maxBytes or use getFileUrl to delegate to the client.'
+        );
+      }
+      expect(cancelled).toBe(true);
+    }
+
+    // At or under the cap it still reads the whole body.
+    const ok = (await exec(tools.downloadFile, {
+      key: "big.txt",
+      maxBytes: 10,
+    })) as { content: string; size: number };
+    expect(ok).toMatchObject({ content: "abcdefghij", size: 10 });
+  });
+
+  test("downloadFile still reports the size error when cancelling the stream fails", async () => {
+    const base = fakeAdapter();
+    const failingCancel = {
+      ...base,
+      download: async (key: string, opts?: DownloadOptions) => ({
+        ...(await base.download(key, opts)),
+        stream: () =>
+          new ReadableStream<Uint8Array>({
+            cancel: () => {
+              throw new Error("cancel failed");
+            },
+            start: (controller) => {
+              controller.enqueue(new TextEncoder().encode("abcdefghij"));
+            },
+          }),
+      }),
+      head: async (key: string) => ({ ...(await base.head(key)), size: 1 }),
+    };
+    const files = new Files({ adapter: failingCancel });
+    const tools = createFileTools({ files });
+    await files.upload("big.txt", "abcdefghij");
+    try {
+      await exec(tools.downloadFile, { key: "big.txt", maxBytes: 4 });
+      throw new Error("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FilesError);
+      expect((error as FilesError).message).toMatch(/maxBytes limit of 4/u);
     }
   });
 

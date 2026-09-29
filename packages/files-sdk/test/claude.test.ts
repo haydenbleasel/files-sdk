@@ -83,8 +83,25 @@ describe("createClaudeFileTools", () => {
     expect(tools.server.name).toBe("files");
   });
 
-  test("allowedTools lists all eight prefixed names by default", () => {
+  test("allowedTools omits approval-gated writes by default", () => {
+    // The Agent SDK auto-approves every allowedTools entry without asking
+    // canUseTool, so a gated write listed here would bypass approval.
     const tools = createClaudeFileTools({ files: newFiles() });
+    expect(tools.allowedTools.toSorted()).toEqual(
+      [
+        "mcp__files__downloadFile",
+        "mcp__files__getFileMetadata",
+        "mcp__files__getFileUrl",
+        "mcp__files__listFiles",
+      ].toSorted()
+    );
+  });
+
+  test("allowedTools lists all eight prefixed names when approval is off", () => {
+    const tools = createClaudeFileTools({
+      files: newFiles(),
+      requireApproval: false,
+    });
     expect(tools.allowedTools.toSorted()).toEqual(
       [
         "mcp__files__copyFile",
@@ -97,6 +114,17 @@ describe("createClaudeFileTools", () => {
         "mcp__files__uploadFile",
       ].toSorted()
     );
+  });
+
+  test("allowedTools includes only the writes a per-tool config ungates", () => {
+    const tools = createClaudeFileTools({
+      files: newFiles(),
+      requireApproval: { copyFile: false, deleteFile: true },
+    });
+    expect(tools.allowedTools).toContain("mcp__files__copyFile");
+    expect(tools.allowedTools).not.toContain("mcp__files__deleteFile");
+    expect(tools.allowedTools).not.toContain("mcp__files__uploadFile");
+    expect(tools.allowedTools).not.toContain("mcp__files__signUploadUrl");
   });
 
   test("readOnly: true strips write tools from allowedTools", () => {
@@ -114,7 +142,7 @@ describe("createClaudeFileTools", () => {
     );
   });
 
-  test("serverName override is reflected in allowedTools and mcpServers key", () => {
+  test("serverName override is reflected in allowedTools and mcpServers key", async () => {
     const tools = createClaudeFileTools({
       files: newFiles(),
       serverName: "storage",
@@ -122,9 +150,20 @@ describe("createClaudeFileTools", () => {
     expect(tools.serverName).toBe("storage");
     expect(tools.mcpServers.storage).toBeDefined();
     expect(tools.mcpServers.files).toBeUndefined();
+    expect(tools.allowedTools.length).toBeGreaterThan(0);
     for (const name of tools.allowedTools) {
       expect(name.startsWith("mcp__storage__")).toBe(true);
     }
+    const own = await callCanUseTool(
+      tools.canUseTool,
+      "mcp__storage__listFiles"
+    );
+    expect(own.behavior).toBe("allow");
+    const other = await callCanUseTool(
+      tools.canUseTool,
+      "mcp__files__listFiles"
+    );
+    expect(other.behavior).toBe("deny");
   });
 
   test("needsApproval: writes true / reads false by default", () => {
@@ -215,6 +254,45 @@ describe("createClaudeFileTools", () => {
     }
   });
 
+  test("canUseTool: denies tools that aren't on the files MCP server", async () => {
+    // canUseTool is the permission callback for the whole session; it must
+    // not wave through built-ins or another server's tools it knows nothing
+    // about, even with approval disabled for its own writes.
+    const tools = createClaudeFileTools({
+      files: newFiles(),
+      requireApproval: false,
+    });
+    for (const name of [
+      "Bash",
+      "Write",
+      "Edit",
+      "mcp__other__listFiles",
+      "mcp__files__notATool",
+      // Bare names are never how the SDK addresses an MCP tool.
+      "listFiles",
+    ]) {
+      // eslint-disable-next-line no-await-in-loop -- checks each tool name against the shared tool set
+      const r = await callCanUseTool(tools.canUseTool, name, { command: "x" });
+      expect(r.behavior).toBe("deny");
+      if (r.behavior === "deny") {
+        expect(r.message).toContain("not a files-sdk tool");
+        expect(r.message).toContain('"files" MCP server');
+      }
+    }
+  });
+
+  test("canUseTool: readOnly denies write tools that were dropped from the server", async () => {
+    const tools = createClaudeFileTools({
+      files: newFiles(),
+      readOnly: true,
+      requireApproval: false,
+    });
+    const r = await callCanUseTool(tools.canUseTool, "mcp__files__deleteFile", {
+      key: "a.txt",
+    });
+    expect(r.behavior).toBe("deny");
+  });
+
   test("upload + list + download round-trip via the bundled server", async () => {
     const files = newFiles();
     createClaudeFileTools({ files });
@@ -301,9 +379,9 @@ describe("createClaudeFileTools", () => {
     // the override mechanism uses Object.assign, so a fresh override-patched
     // SdkMcpToolDefinition should match by inspecting the underlying factory.
     // Direct introspection: the server holds tools internally; we verify here
-    // that allowedTools still names the overridden tools.
+    // that the overridden tools are still served and gated as before.
     expect(tools.allowedTools).toContain("mcp__files__listFiles");
-    expect(tools.allowedTools).toContain("mcp__files__deleteFile");
+    expect(tools.needsApproval("mcp__files__deleteFile")).toBe(true);
   });
 
   test("overrides for unknown tool names are ignored", () => {
@@ -430,8 +508,12 @@ describe("createClaudeFileTools", () => {
     // Destructive writes get destructiveHint
     expect(upload.annotations?.destructiveHint).toBe(true);
     expect(del.annotations?.destructiveHint).toBe(true);
-    // Idempotent writes opt out of destructiveHint
+    // Copy overwrites an existing destination, so it's destructive, but
+    // repeating it changes nothing further.
+    expect(copy.annotations?.destructiveHint).toBe(true);
     expect(copy.annotations?.idempotentHint).toBe(true);
+    // Signing a URL changes nothing in the bucket by itself.
+    expect(sign.annotations?.destructiveHint).toBe(false);
     expect(sign.annotations?.idempotentHint).toBe(true);
 
     // Round-trip through the cherry-picked instances

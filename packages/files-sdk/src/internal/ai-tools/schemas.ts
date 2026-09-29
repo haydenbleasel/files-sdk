@@ -46,7 +46,7 @@ const downloadFileInput = z.object({
     .max(MAX_DOWNLOAD_BYTES)
     .optional()
     .describe(
-      `Reject downloads larger than this byte count (default ${DEFAULT_MAX_DOWNLOAD_BYTES}, maximum ${MAX_DOWNLOAD_BYTES}). Verified via head() before transferring.`
+      `Reject downloads larger than this byte count (default ${DEFAULT_MAX_DOWNLOAD_BYTES}, maximum ${MAX_DOWNLOAD_BYTES}). Checked via head() before transferring and enforced on the bytes actually read.`
     ),
 });
 
@@ -141,7 +141,7 @@ export const TOOL_SCHEMAS = {
   },
   downloadFile: {
     description:
-      "Download a file and return its contents. Returns UTF-8 text by default; set binary=true to receive base64-encoded bytes. Files larger than maxBytes are rejected before transfer.",
+      "Download a file and return its contents. Returns UTF-8 text by default; set binary=true to receive base64-encoded bytes. Files larger than maxBytes are rejected.",
     input: downloadFileInput,
   },
   getFileMetadata: {

@@ -34,6 +34,57 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
+const tooLarge = (key: string, size: number | string, limit: number) =>
+  new FilesError(
+    "Provider",
+    `File "${key}" is ${size} bytes which exceeds the maxBytes limit of ${limit}. Pass a larger maxBytes or use getFileUrl to delegate to the client.`
+  );
+
+/**
+ * Drain `stream` into one buffer, refusing to hold more than `limit` bytes.
+ * The `head()` pre-check can't be trusted on its own — the object can be
+ * replaced between the two calls, or an adapter or plugin can report a size
+ * that doesn't match the body it serves — so the cap is enforced on the bytes
+ * actually read, cancelling the transfer as soon as it's exceeded.
+ */
+const readCapped = async (
+  stream: ReadableStream<Uint8Array>,
+  key: string,
+  limit: number
+): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    total += value.byteLength;
+    if (total > limit) {
+      break;
+    }
+    chunks.push(value);
+  }
+  if (total > limit) {
+    // Stop the transfer so the rest of the body is never pulled.
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cleanup — the size error is what matters.
+    }
+    throw tooLarge(key, `at least ${total}`, limit);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+};
+
 export const executors = {
   copyFile: async (files: Files, { from, to }: CopyFileInput) => {
     await files.copy(from, to);
@@ -56,29 +107,29 @@ export const executors = {
         `maxBytes must be less than or equal to ${MAX_DOWNLOAD_BYTES}. Use getFileUrl to delegate larger downloads to the client.`
       );
     }
+    // Cheap early refusal before any body is transferred.
     const meta = await files.head(key);
     if (meta.size > limit) {
-      throw new FilesError(
-        "Provider",
-        `File "${key}" is ${meta.size} bytes which exceeds the maxBytes limit of ${limit}. Pass a larger maxBytes or use getFileUrl to delegate to the client.`
-      );
+      throw tooLarge(key, meta.size, limit);
     }
-    const file = await files.download(key);
+    // Stream the body so the cap is enforced on what's actually read, not on
+    // what head() reported a moment ago.
+    const file = await files.download(key, { as: "stream" });
+    const bytes = await readCapped(file.stream(), key, limit);
     if (binary) {
-      const buf = await file.arrayBuffer();
       return {
-        content: bytesToBase64(new Uint8Array(buf)),
+        content: bytesToBase64(bytes),
         encoding: "base64" as const,
         key: file.key,
-        size: file.size,
+        size: bytes.byteLength,
         type: file.type,
       };
     }
     return {
-      content: await file.text(),
+      content: new TextDecoder().decode(bytes),
       encoding: "text" as const,
       key: file.key,
-      size: file.size,
+      size: bytes.byteLength,
       type: file.type,
     };
   },

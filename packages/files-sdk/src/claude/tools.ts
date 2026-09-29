@@ -19,6 +19,14 @@ const WRITE_ANNOTATIONS: ToolAnnotations = {
   destructiveHint: true,
   readOnlyHint: false,
 };
+// Copying onto an existing destination overwrites it, so a copy is a
+// destructive update even though repeating it changes nothing further.
+const OVERWRITING_IDEMPOTENT_WRITE_ANNOTATIONS: ToolAnnotations = {
+  destructiveHint: true,
+  idempotentHint: true,
+  readOnlyHint: false,
+};
+// Issuing a presigned URL changes nothing in the bucket by itself.
 const IDEMPOTENT_WRITE_ANNOTATIONS: ToolAnnotations = {
   destructiveHint: false,
   idempotentHint: true,
@@ -122,7 +130,9 @@ export const claudeDeleteFile = (
 
 export const claudeCopyFile = (
   files: Files,
-  { annotations = IDEMPOTENT_WRITE_ANNOTATIONS }: ClaudeWriteToolOptions = {}
+  {
+    annotations = OVERWRITING_IDEMPOTENT_WRITE_ANNOTATIONS,
+  }: ClaudeWriteToolOptions = {}
 ) =>
   tool(
     "copyFile",

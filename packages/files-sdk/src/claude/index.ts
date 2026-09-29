@@ -51,10 +51,12 @@ export interface ClaudeFileToolsOptions {
    */
   readOnly?: boolean;
   /**
-   * Approval gating reflected by {@link ClaudeFileTools.needsApproval} and
-   * the bundled {@link ClaudeFileTools.canUseTool}. Defaults to `true`
-   * (every write requires approval). Pass `false` to disable, or an object
-   * keyed by write-tool name for fine-grained control.
+   * Approval gating reflected by {@link ClaudeFileTools.needsApproval},
+   * {@link ClaudeFileTools.allowedTools} (approval-gated writes are left out,
+   * so the SDK routes them through `canUseTool`), and the bundled
+   * {@link ClaudeFileTools.canUseTool}. Defaults to `true` (every write
+   * requires approval). Pass `false` to disable, or an object keyed by
+   * write-tool name for fine-grained control.
    */
   requireApproval?: ApprovalConfig;
   /**
@@ -82,13 +84,28 @@ export interface ClaudeFileTools {
   /**
    * Pass into `query({ options: { allowedTools: tools.allowedTools } })`.
    * Each entry is of the form `mcp__<serverName>__<toolName>`.
+   *
+   * The Agent SDK runs every `allowedTools` entry **without** consulting
+   * `canUseTool`, so this lists only the tools that need no approval: the
+   * read tools, plus any write tool whose `needsApproval` resolves to
+   * `false`. Approval-gated writes are left out on purpose, so each call
+   * reaches `canUseTool`.
    */
   allowedTools: string[];
   /**
-   * Ready-made `canUseTool` callback. Allows reads unconditionally, allows
-   * writes whose `needsApproval` resolves to `false`, denies the rest with
-   * a `"requires approval"` message. Pass directly into `query()`, or
-   * compose your own using {@link ClaudeFileTools.needsApproval}.
+   * Ready-made `canUseTool` callback, scoped to this bundle's MCP server.
+   * For tools on that server it allows reads and writes whose `needsApproval`
+   * resolves to `false`, and denies approval-gated writes with a
+   * `"requires approval"` message. It denies **every other tool** (built-ins
+   * like `Bash` or `Write`, other MCP servers), because `canUseTool` is the
+   * permission callback for the whole session and this one only knows how to
+   * authorize its own tools.
+   *
+   * Pass it directly into `query()` when files are the only tools that should
+   * run unprompted. To authorize other tools too, write your own callback
+   * that delegates names starting with `mcp__<serverName>__` here (or to
+   * {@link ClaudeFileTools.needsApproval}) and applies your own policy to the
+   * rest.
    */
   canUseTool: CanUseTool;
   /**
@@ -127,6 +144,12 @@ const isWriteTool = (name: string): name is FileWriteToolName =>
  * an `allowedTools` allow-list + a `canUseTool` approval callback. The
  * returned bundle gives you all three, plus the raw server instance and a
  * `needsApproval()` helper if you want to wire your own `canUseTool`.
+ *
+ * `allowedTools` lists only the tools that run without approval (the SDK
+ * never asks `canUseTool` about those), so approval-gated writes always reach
+ * `canUseTool`. The bundled `canUseTool` denies gated writes and any tool
+ * that isn't on this bundle's MCP server; compose your own to prompt a human
+ * or to authorize other tools.
  *
  * @example
  * ```ts
@@ -223,8 +246,22 @@ export const createClaudeFileTools = ({
     return resolveApproval(bare, requireApproval);
   };
 
-  const canUseTool: CanUseTool = (toolName, input) =>
-    Promise.resolve(
+  // `canUseTool` sees the name exactly as the SDK addresses it, so only the
+  // prefixed form of a tool on this server counts as one of ours. Anything
+  // else (Bash, Write, another MCP server's tools) is outside what this
+  // bundle can vouch for and is denied rather than waved through.
+  const ownsTool = (toolName: string): boolean =>
+    toolName.startsWith(prefix) &&
+    includedSet.has(toolName.slice(prefix.length));
+
+  const canUseTool: CanUseTool = (toolName, input) => {
+    if (!ownsTool(toolName)) {
+      return Promise.resolve({
+        behavior: "deny",
+        message: `Tool "${toolName}" is not a files-sdk tool. The files-sdk canUseTool only authorizes tools on the "${serverName}" MCP server; compose it with your own canUseTool to allow other tools.`,
+      });
+    }
+    return Promise.resolve(
       needsApproval(toolName)
         ? {
             behavior: "deny",
@@ -232,6 +269,7 @@ export const createClaudeFileTools = ({
           }
         : { behavior: "allow", updatedInput: input }
     );
+  };
 
   const server = createSdkMcpServer({
     name: serverName,
@@ -240,7 +278,12 @@ export const createClaudeFileTools = ({
   });
 
   return {
-    allowedTools: includedTools.map(([name]) => `${prefix}${name}`),
+    // Only tools that run without approval: the SDK skips `canUseTool` for
+    // anything listed here, so a gated write in this list would never be
+    // asked about.
+    allowedTools: includedTools
+      .filter(([name]) => !needsApproval(name))
+      .map(([name]) => `${prefix}${name}`),
     canUseTool,
     mcpServers: { [serverName]: server },
     needsApproval,

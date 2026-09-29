@@ -45,7 +45,95 @@ const approval = async (t: unknown): Promise<boolean> => {
   return await tool.needsApproval(ctx, {}, "test-call");
 };
 
+// OpenAI strict mode (the Agents SDK's default for Zod parameters) rejects a
+// tool definition unless every object schema sets `additionalProperties:
+// false` and lists every property in `required`. Collect each violation with
+// its JSON path so a failure names the offending node.
+const strictViolations = (node: unknown, at = "$"): string[] => {
+  if (Array.isArray(node)) {
+    return node.flatMap((item, i) => strictViolations(item, `${at}[${i}]`));
+  }
+  if (node === null || typeof node !== "object") {
+    return [];
+  }
+  const schema = node as Record<string, unknown>;
+  const out: string[] = [];
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  if (schema.type === "object") {
+    if (schema.additionalProperties !== false) {
+      out.push(`${at}: additionalProperties must be false`);
+    }
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    for (const name of Object.keys(properties)) {
+      if (!required.includes(name)) {
+        out.push(`${at}.properties.${name}: must be required`);
+      }
+    }
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "properties") {
+      for (const [name, prop] of Object.entries(properties)) {
+        out.push(...strictViolations(prop, `${at}.properties.${name}`));
+      }
+    } else {
+      out.push(...strictViolations(value, `${at}.${key}`));
+    }
+  }
+  return out;
+};
+
 describe("createAgentsFileTools", () => {
+  test("every emitted parameters schema is OpenAI strict-mode valid", () => {
+    const tools = createAgentsFileTools({ files: newFiles() });
+    for (const [name, tool] of Object.entries(tools)) {
+      const t = asTool(tool);
+      expect(t.strict).toBe(true);
+      expect({ name, violations: strictViolations(t.parameters) }).toEqual({
+        name,
+        violations: [],
+      });
+    }
+  });
+
+  test("uploadFile drops the free-form metadata map strict mode can't express", async () => {
+    const files = newFiles();
+    const tools = createAgentsFileTools({ files });
+    const params = asTool(tools.uploadFile).parameters as {
+      properties: Record<string, unknown>;
+    };
+    expect(Object.keys(params.properties)).not.toContain("metadata");
+    // A strict-mode model passes `null` for every optional argument.
+    const uploaded = (await invoke(tools.uploadFile, {
+      cacheControl: null,
+      content: "hi",
+      contentType: null,
+      encoding: null,
+      key: "strict.txt",
+    })) as { key: string; size: number };
+    expect(uploaded).toMatchObject({ key: "strict.txt", size: 2 });
+    const stored = await files.download("strict.txt");
+    expect(await stored.text()).toBe("hi");
+  });
+
+  test("strictViolations flags an open record", () => {
+    expect(
+      strictViolations({
+        properties: {
+          metadata: {
+            additionalProperties: { type: "string" },
+            type: "object",
+          },
+        },
+        required: [],
+        type: "object",
+      })
+    ).toEqual([
+      "$: additionalProperties must be false",
+      "$.properties.metadata: must be required",
+      "$.properties.metadata: additionalProperties must be false",
+    ]);
+  });
+
   test("returns all eight tools by default", () => {
     const tools = createAgentsFileTools({ files: newFiles() });
     expect(Object.keys(tools).toSorted()).toEqual(
@@ -191,10 +279,9 @@ describe("createAgentsFileTools", () => {
     const files = newFiles();
     const tools = createAgentsFileTools({ files });
 
-    await invoke(tools.uploadFile, {
-      content: "payload",
+    // The strict-mode uploadFile tool takes no metadata, so seed it directly.
+    await files.upload("src.txt", "payload", {
       contentType: "text/plain",
-      key: "src.txt",
       metadata: { tenant: "acme" },
     });
 

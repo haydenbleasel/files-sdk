@@ -15,6 +15,15 @@ import type {
 } from "../internal/ai-tools/schemas.js";
 import type { AgentsToolOverrides } from "./types.js";
 
+// The Agents SDK emits every Zod-parameterised tool with `strict: true`, and
+// OpenAI strict mode requires `additionalProperties: false` on every object —
+// a free-form map like `uploadFile`'s `metadata` record can't be expressed and
+// the API rejects the whole tool definition. Drop it here, as the Responses
+// pack does under strict mode.
+const agentsUploadFileInput = TOOL_SCHEMAS.uploadFile.input.omit({
+  metadata: true,
+});
+
 export const agentsListFiles = (files: Files) =>
   tool({
     description: TOOL_SCHEMAS.listFiles.description,
@@ -47,6 +56,11 @@ export const agentsGetFileUrl = (files: Files) =>
     parameters: TOOL_SCHEMAS.getFileUrl.input,
   });
 
+/**
+ * `uploadFile` for the Agents SDK. The tool runs in OpenAI strict mode, which
+ * cannot represent free-form maps, so unlike the AI SDK and Claude packs it
+ * takes no `metadata` argument.
+ */
 export const agentsUploadFile = (
   files: Files,
   { needsApproval = true }: { needsApproval?: boolean } = {}
@@ -56,7 +70,7 @@ export const agentsUploadFile = (
     execute: (input) => executors.uploadFile(files, input),
     name: "uploadFile",
     needsApproval,
-    parameters: TOOL_SCHEMAS.uploadFile.input,
+    parameters: agentsUploadFileInput,
   });
 
 export const agentsDeleteFile = (
@@ -140,6 +154,10 @@ export interface AgentsFileToolsOptions {
  * `new Agent({ tools })`. Write tools require approval by default; the
  * Agents SDK surfaces an `interruption` that the program resolves by
  * approving or rejecting the call.
+ *
+ * The Agents SDK runs these tools in OpenAI strict mode, so every parameter
+ * schema is strict-valid: optional arguments are nullable, and `uploadFile`
+ * takes no `metadata` (strict mode can't express a free-form map).
  *
  * @example
  * ```ts

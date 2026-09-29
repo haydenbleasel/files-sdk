@@ -17,6 +17,8 @@ The `files-sdk/claude` subpath exposes a configured `Files` instance to the [Cla
 
 `createClaudeFileTools` returns `{ mcpServers, allowedTools, canUseTool, needsApproval, server, serverName }`. The first three slot directly into `query()`'s options; the rest are escape hatches for callers that want to compose with existing MCP servers or wire their own approval UX.
 
+`allowedTools` lists only the tools that run without approval. The Agent SDK runs everything in `allowedTools` without asking `canUseTool`, so approval-gated writes are left out and every call to one reaches `canUseTool`. The bundled `canUseTool` covers only this bundle's MCP server: it denies approval-gated writes, and it denies every other tool too (`Bash`, `Write`, other MCP servers). Use it as-is when file tools are the only ones the agent should run unprompted; otherwise [compose your own](#approval-control).
+
 ```tsx lineNumbers
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Files } from "files-sdk";
@@ -40,13 +42,13 @@ for await (const message of query({
 
 ## Approval control
 
-The bundled `canUseTool` denies any tool whose `needsApproval` resolves to `true` with a `"requires approval"` message, and allows everything else. `requireApproval` accepts a boolean for the all-or-nothing case, or an object keyed by write tool name for fine-grained control.
+For tools on its own MCP server, the bundled `canUseTool` denies any tool whose `needsApproval` resolves to `true` with a `"requires approval"` message, and allows the rest. Tools that don't need approval are also listed in `allowedTools`, so the SDK runs them without asking. `requireApproval` accepts a boolean for the all-or-nothing case, or an object keyed by write tool name for fine-grained control.
 
 ```ts lineNumbers
 // All writes require approval (default) - denied by the bundled canUseTool.
 createClaudeFileTools({ files });
 
-// Disable the approval gate entirely.
+// Disable the approval gate entirely - every file tool lands in allowedTools.
 createClaudeFileTools({ files, requireApproval: false });
 
 // Granular: only destructive operations need approval.
@@ -61,16 +63,20 @@ createClaudeFileTools({
 });
 ```
 
-For real human-in-the-loop UX, compose your own `canUseTool` on top of `tools.needsApproval()`. The helper accepts both bare names (`"uploadFile"`) and the MCP-prefixed form (`"mcp__files__uploadFile"`) that the SDK passes in, so the callback is symmetric whichever shape you receive.
+For real human-in-the-loop UX, or to authorize tools beyond this bundle, compose your own `canUseTool`. `canUseTool` is the permission callback for the whole session, so handle file tools with `tools.needsApproval()` (it accepts both bare names like `"uploadFile"` and the MCP-prefixed form the SDK passes in) and apply your own policy to everything else.
 
 ```ts lineNumbers
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 
 const tools = createClaudeFileTools({ files });
+const filesPrefix = `mcp__${tools.serverName}__`;
 
-// Compose your own canUseTool - needsApproval accepts both bare
-// names ("uploadFile") and the mcp-prefixed form passed in by the SDK.
 const canUseTool: CanUseTool = async (name, input) => {
+  if (!name.startsWith(filesPrefix)) {
+    // Not a files-sdk tool: apply your own policy here. Deny by default.
+    return { behavior: "deny", message: `${name} is not allowed.` };
+  }
   if (tools.needsApproval(name)) {
     const approved = await askUser(name, input);
     return approved
@@ -79,6 +85,18 @@ const canUseTool: CanUseTool = async (name, input) => {
   }
   return { behavior: "allow", updatedInput: input };
 };
+
+for await (const message of query({
+  prompt: "Archive last quarter's reports.",
+  options: {
+    mcpServers: tools.mcpServers,
+    // Gated writes aren't listed, so the SDK asks canUseTool about each one.
+    allowedTools: tools.allowedTools,
+    canUseTool,
+  },
+})) {
+  // handle messages
+}
 ```
 
 ## Read-only mode
@@ -101,7 +119,7 @@ Claude addresses each MCP tool as `mcp__<server-name>__<tool-name>`. The default
 // Override the MCP server name - affects the mcp__<server>__<tool>
 // prefix the model sees, and the mcpServers map key.
 const tools = createClaudeFileTools({ files, serverName: "storage" });
-// tools.allowedTools → ["mcp__storage__copyFile", ...]
+// tools.allowedTools → ["mcp__storage__downloadFile", ...]
 // tools.mcpServers   → { storage: <McpSdkServerConfigWithInstance> }
 ```
 
