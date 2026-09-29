@@ -4,7 +4,7 @@ The pattern: server mints a short-lived presigned credential, browser uploads di
 
 ## The cardinal rule: pass `maxSize`
 
-Without `maxSize`, the adapter returns a presigned **`PUT`** URL with **no server-side size limit**. Anyone with the URL can stream an unbounded file until `expiresIn` elapses. With `maxSize`, the adapter returns a presigned **`POST`** form (S3/R2 family) whose `content-length-range` policy is enforced by the storage provider itself.
+Without `maxSize`, the adapter returns a presigned **`PUT`** URL with **no server-side size limit**. Anyone with the URL can stream an unbounded file until `expiresIn` elapses. With `maxSize`, the adapter returns a presigned **`POST`** form (S3 and the S3-compatible adapters on the AWS SDK engine, GCS, Firebase) whose `content-length-range` policy is enforced by the storage provider itself. Vercel Blob enforces `maxSize` on its presigned `PUT` instead. Adapters with no server-side size primitive (R2, Azure, Supabase, the `fetch` S3 engine, …) throw on `maxSize`.
 
 ```ts
 // Bad — no size enforcement
@@ -18,7 +18,7 @@ await files.signedUploadUrl(key, {
 });
 ```
 
-`minSize` defaults to `1` (rejects empty uploads). Pass `0` if zero-byte uploads are legitimate for your use case. Providers with no minimum-size constraint (Cloudinary, UploadThing, Vercel Blob) throw on an explicit positive `minSize`, and adapters that can't bind `contentType` into the signature (bun-s3, Supabase, Cloudinary) throw when you pass it — both fail closed rather than hand out a URL that doesn't enforce what you asked for.
+`minSize` defaults to `1` (rejects empty uploads). Pass `0` if zero-byte uploads are legitimate for your use case. Providers with no minimum-size constraint (Cloudinary, UploadThing, Vercel Blob, Azure, Supabase) throw on an explicit positive `minSize`, and adapters that can't bind `contentType` into the signature (bun-s3, Azure, Supabase, Cloudinary, OneDrive, SharePoint) throw when you pass it — both fail closed rather than hand out a URL that doesn't enforce what you asked for.
 
 ## Return shape (discriminated union)
 
@@ -87,11 +87,11 @@ async function uploadFromBrowser(file: File) {
 }
 ```
 
-**Important detail for the POST path:** the file field must be appended **after** all the policy fields. S3/R2 read fields in order and apply the policy to whatever comes after — putting `file` first means the policy never gets evaluated against it.
+**Important detail for the POST path:** the file field must be appended **after** all the policy fields. S3 and GCS read the form in order and ignore every field after `file`, so putting `file` first drops the policy and signature fields and the upload is rejected.
 
 ## Confirming the upload server-side
 
-The client knows the upload returned 2xx, but a hostile client can lie. If the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `contentType`/`size`.
+The client knows the upload returned 2xx, but a hostile client can lie. If the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `type`/`size`.
 
 ```ts
 const meta = await files.head(key);
@@ -107,4 +107,4 @@ Skip `maxSize` (accept the PUT path) only when:
 
 - The upload happens on a trusted backend, not in a user's browser.
 - You're in a dev script and just want the shortest path to "object lands in bucket."
-- The adapter doesn't support presigned POST at all (some non-S3 adapters fall back to PUT regardless). Treat this as a hard provider limitation, not a security stance.
+- The adapter can't enforce `maxSize` at all (R2, Azure, Supabase, and others throw on it rather than fall back to an unbounded PUT). Treat this as a hard provider limitation, not a security stance, and enforce the limit at your own upload gateway.

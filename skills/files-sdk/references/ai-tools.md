@@ -100,7 +100,7 @@ Notes:
 
 - `tools.execute(call)` parses + validates `arguments`, runs the operation, returns a `function_call_output` item ready to push into the next turn's input.
 - JSON parse and Zod validation failures are returned **as the tool output** so the model can self-correct. `FilesError` from the SDK is rethrown — the caller decides how to surface it.
-- `tools.execute` does **not** enforce approval. Check `tools.needsApproval(item.name)` before executing if you want the gate.
+- `tools.execute` enforces approval: an approval-gated call returns an `approvalRequired` error output instead of running. Check `tools.needsApproval(item.name)`, and pass `tools.execute(item, { approved: true })` only after your approval UX has approved that exact call.
 
 ### Agents SDK
 

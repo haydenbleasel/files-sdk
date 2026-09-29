@@ -21,7 +21,7 @@ await files.upload("backups/db.tar", stream, {
 - **GCS / Firebase**: switch to a resumable upload; `partSize` maps to chunk size.
 - **Azure Blob**: maps `partSize`/`concurrency` to parallel block-upload tuning.
 - **Dropbox**: streams `ReadableStream` bodies through its upload session chunk-by-chunk (never buffers the whole file); `partSize` rounds to a 4 MiB multiple.
-- Everything else either streams natively or only takes a buffered body, so it ignores the flag.
+- Everything else either streams natively or only takes a buffered body, so it ignores the flag — except the `fetch` S3 engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), which throws rather than buffer a body it was asked to chunk.
 
 Adapters that chunk natively round `partSize` to their own granularity (OneDrive → 320 KiB multiple, GCS/Firebase → 256 KiB); S3 enforces a 5 MiB minimum per part except the last, and caps an object at 10,000 parts (so very large objects need a big enough `partSize`). Memory footprint is up to `partSize × concurrency`. Multipart is still **one `upload` call** for retries/timeouts/cancellation — a failure retries the whole call, not a part. To retry individual parts and pause/resume, use `control` below.
 
@@ -111,4 +111,4 @@ await files.upload("big.iso", file, {
 - A buffered body reports `{ loaded: 0, total }` then `{ loaded: total, total }` — _unless_ the adapter reports true progress itself.
 - **S3 + S3-compatible** report true byte-level progress for every body type, including multipart, via `@aws-sdk/lib-storage` (the optional peer dep must be installed to use `onProgress` there).
 
-Only fires while in flight and on success; a failed upload emits no final event, and on retry progress restarts. The bulk `upload([...])` form's `onProgress` additionally carries the item `key`.
+Only fires while in flight and on success; a failed upload emits no final event, and on retry progress restarts. It's fire-and-forget: a throwing `onProgress` never fails or retries the upload. The bulk `upload([...])` form's `onProgress` additionally carries the item `key`.

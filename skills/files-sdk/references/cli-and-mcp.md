@@ -25,7 +25,7 @@ Each maps to a `Files` method:
 | `upload` | `upload` | `--file ./x` or `--stdin`; `--content-type` (else inferred) |
 | `download` | `download` | `--out ./x` to disk, `--stdout` to pipe; `--range start-end` |
 | `head` | `head` | metadata as JSON; takes multiple keys |
-| `exists` | `exists` | one key prints `{ exists, key }` and exits 0 = exists, 1 = missing; many keys print `{ existing, missing, errors? }` and exit 0 only if every key exists |
+| `exists` | `exists` | one key prints `{ exists, key }` and exits 0 = exists, 1 = missing; many keys print `{ existing, missing, errors? }` and exit 0 only if every key exists. A usage error (unknown flag, missing argument) exits 2 on every command, so it never reads as missing |
 | `list` | `list` | `--prefix`, `--limit`, `--cursor`, `--delimiter` (folders), `--all` (follow cursor to the end) |
 | `search` | `search` | `<pattern>` is a glob by default; `--match glob\|regex\|substring\|exact` (or `--regex`), `--prefix`, `--max-results`, `--case-insensitive` |
 | `copy` | `copy` |  |
@@ -90,7 +90,7 @@ files --provider s3 --bucket live --dry-run sync --to '{"provider":"r2","bucket"
 
 ## MCP server
 
-`files … mcp` boots an MCP server on stdio. **Read-only by default** — exposes `download`, `head`, `exists`, `list`, `search`, `url`, `capabilities`. Pass **`--allow-writes`** to also expose `upload`, `delete`, `copy`, `move`, `sign-upload`. The `transfer` and `sync` tools need `--allow-writes` **and** a destination fixed by the operator at startup with `mcp --to '<json>'` — the agent never supplies the destination or its credentials. Provider + credentials are bound at startup (and the global `--key-prefix`/`--timeout`/`--retries` bind to the server's `Files` instance), so the agent only passes operation arguments, never secrets. Tools mirror the CLI surface: `download` takes a byte `range`, `head`/`exists` take arrays + `concurrency`/`stopOnError`, `list` takes `all`; with writes, `upload` takes `multipart` and `delete` takes arrays. Binary payloads roundtrip as base64 (download bytes, and `upload` with a `base64` body).
+`files … mcp` boots an MCP server on stdio. **Read-only by default** — exposes `download`, `head`, `exists`, `list`, `search`, `url`, `capabilities`. Pass **`--allow-writes`** to also expose `upload`, `delete`, `copy`, `move`, `sign-upload`. The `transfer` and `sync` tools need `--allow-writes` **and** a destination fixed by the operator at startup with `mcp --to '<json>'` — the agent never supplies the destination or its credentials. Provider + credentials are bound at startup (and the global `--key-prefix`/`--timeout`/`--retries` bind to the server's `Files` instance), so the agent only passes operation arguments, never secrets. Tools mirror the CLI surface: `download` takes a byte `range` and a `maxBytes` cap (default and maximum 10 MiB, enforced on the bytes actually read; use the CLI for larger bodies), `head`/`exists` take arrays + `concurrency`/`stopOnError`, `list` takes `all`; with writes, `upload` takes `multipart` and `delete` takes arrays. Binary payloads roundtrip as base64 (download bytes, and `upload` with a `base64` body).
 
 ```sh
 files --provider s3 --bucket uploads mcp                 # read-only
