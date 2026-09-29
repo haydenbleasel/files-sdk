@@ -9,6 +9,7 @@ import type {
   ListResult,
   PluginNext,
 } from "../src/index.js";
+import { memory } from "../src/memory/index.js";
 import { versioning } from "../src/versioning/index.js";
 import type { VersioningOptions } from "../src/versioning/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -181,8 +182,94 @@ describe("versioning plugin — versions() metadata", () => {
     expect(version?.etag).toBeDefined();
     expect(version?.lastModified).toBeGreaterThan(0);
     const padded = String(version?.lastModified).padStart(16, "0");
-    // The id encodes the source object's last-modified time.
-    expect(version?.versionId.startsWith(padded)).toBe(true);
+    // `<taken>-<modified>-<etag>`: the id leads with the snapshot time, then
+    // encodes the source object's last-modified time.
+    const [taken, modified] = version?.versionId.split("-") ?? [];
+    expect(modified).toBe(padded);
+    expect(Number(taken)).toBeGreaterThanOrEqual(version?.lastModified ?? 0);
+  });
+});
+
+// A native move keeps the source's older mtime, so the snapshot of the
+// moved-in bytes carries an *older* mtime than the snapshot taken before it.
+const movedOlderObject = async (limit?: number) => {
+  const adapter = memory();
+  const files = createFiles({
+    adapter,
+    plugins: [versioning(limit === undefined ? {} : { limit })],
+  });
+  await files.upload("a", "A");
+  await files.upload("b", "B1");
+  const entryOf = (key: string) => {
+    const entry = adapter.raw.get(key);
+    if (!entry) {
+      throw new Error(`missing ${key}`);
+    }
+    return entry;
+  };
+  entryOf("a").lastModified = 2_000_000;
+  entryOf("b").lastModified = 1_000_000;
+  // Snapshots "A"; "a" is now "B1", still stamped 1_000_000.
+  await files.move("b", "a");
+  // Snapshots "B1".
+  await files.upload("a", "C");
+  return files;
+};
+
+describe("versioning plugin — snapshot-time ordering", () => {
+  test("restoreVersion() undoes the last change, whatever the mtimes", async () => {
+    const files = await movedOlderObject();
+    const versions = await files.versions("a");
+    const bodies = await Promise.all(versions.map((v) => bodyOf(files, v.key)));
+    expect(bodies).toEqual(["B1", "A"]);
+    // lastModified still reports the snapshotted object's own mtime.
+    expect(versions.map((v) => v.lastModified)).toEqual([1_000_000, 2_000_000]);
+    await files.restoreVersion("a");
+    expect(await bodyOf(files, "a")).toBe("B1");
+  });
+
+  test("limit prunes by snapshot time, keeping the fresh snapshot", async () => {
+    const files = await movedOlderObject(1);
+    const versions = await files.versions("a");
+    expect(versions).toHaveLength(1);
+    expect(await bodyOf(files, versions[0]?.key ?? "")).toBe("B1");
+  });
+
+  test("ids from earlier releases still parse and sort before newer ones", async () => {
+    const adapter = memory();
+    const files = createFiles({ adapter, plugins: [versioning()] });
+    // An old-format `<modified>-<etag>` snapshot, as a prior release wrote it.
+    const legacy = `${String(1000).padStart(16, "0")}-etag1`;
+    await files.upload(`.versions/k/${legacy}`, "old");
+    await files.upload("k", "v1");
+    await files.upload("k", "v2");
+
+    const versions = await files.versions("k");
+    expect(versions.map((v) => v.versionId).at(-1)).toBe(legacy);
+    expect(versions.at(-1)?.lastModified).toBe(1000);
+    const bodies = await Promise.all(versions.map((v) => bodyOf(files, v.key)));
+    expect(bodies).toEqual(["v1", "old"]);
+  });
+});
+
+describe("versioning plugin — onto itself", () => {
+  test("copy and move of a key onto itself take no snapshot", async () => {
+    const files = withVersioning({ limit: 1 }, memory());
+    await files.upload("k", "v1");
+    await files.upload("k", "v2");
+    const before = await files.versions("k");
+    expect(before).toHaveLength(1);
+
+    await files.move("k", "k");
+    await files.copy("k", "k");
+
+    // The no-ops neither added a version nor, under the limit, evicted "v1".
+    const after = await files.versions("k");
+    expect(after.map((v) => v.versionId)).toEqual(
+      before.map((v) => v.versionId)
+    );
+    expect(await bodyOf(files, after[0]?.key ?? "")).toBe("v1");
+    expect(await bodyOf(files, "k")).toBe("v2");
   });
 });
 

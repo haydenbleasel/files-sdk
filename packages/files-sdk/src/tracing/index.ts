@@ -121,9 +121,9 @@ const resultAttributes = (
  * `recordException` and an `ERROR` status, then re-thrown untouched.
  *
  * Spans are opened with `startActiveSpan`, so they nest correctly: each op span
- * is a child of whatever span is active when you call, and any sub-operation an
- * inner plugin issues — or an `extend` method calling back into the instance —
- * becomes a child of the op span in turn.
+ * is a child of whatever span is active when you call. An `extend` method that
+ * calls back into the instance goes through the whole pipeline, so each call
+ * it makes gets its own op span.
  *
  * Body-transparent: it never buffers, transforms, or reads the body (result
  * attributes come from declared metadata, not bytes), so streaming, range
@@ -136,9 +136,11 @@ const resultAttributes = (
  *
  * Plugins run **outside** retries, so a span covers the whole logical call
  * including every retry attempt, not one span per attempt. Place `tracing()`
- * **first** (outermost) so the span wraps the caller-facing operation and the
- * work of inner plugins shows up nested beneath it; place it last to time only
- * the provider call.
+ * **first** (outermost) so each span covers the full caller-facing operation,
+ * including time spent in inner plugins; their own sub-operations (a `dedup()`
+ * `exists` check, a `versioning()` snapshot copy) call inward past it and are
+ * not traced separately. Place it **last** to get one span per provider call
+ * instead, sub-operations included.
  *
  * @param options optional `{ tracer, spanPrefix, attributes }`.
  * @example

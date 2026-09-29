@@ -17,13 +17,21 @@ import { FilesError } from "../internal/errors.js";
  * roll a key back to this point.
  */
 export interface FileVersion {
-  /** Opaque, time-ordered id for this version; hand it to `restoreVersion()`. */
+  /**
+   * Opaque id for this version, ordered by when the snapshot was taken; hand
+   * it to `restoreVersion()`.
+   */
   versionId: string;
   /** The underlying storage key this snapshot lives at, under the version prefix. */
   key: string;
   /** Byte length of the snapshot (the logical size, after inner plugins). */
   size: number;
-  /** When the snapshotted object was last modified (ms epoch), parsed from the id. */
+  /**
+   * When the snapshotted object was last modified (ms epoch), parsed from the
+   * id. Versions are ordered by when they were *snapshotted*, not by this: a
+   * native move (fs, memory, FTP, SFTP) carries the source's older time onto
+   * the key, so it isn't necessarily in order.
+   */
   lastModified: number;
   /** The snapshot's ETag, when the adapter reports one. */
   etag?: string;
@@ -101,20 +109,26 @@ const normalizeDir = (prefix: string): string => {
   return normalized;
 };
 
+/** Zero-pad a ms-epoch time so a lexical sort is chronological. */
+const padTime = (ms: number): string => ms.toString().padStart(TIME_WIDTH, "0");
+
 /**
- * A time-ordered, content-unique id for a snapshot: the object's last-modified
- * time (zero-padded so a lexical sort is chronological) plus a slug of its
- * ETag, which changes with the content. Falls back to "now" / "x" on the rare
- * adapter that reports neither.
+ * A time-ordered, content-unique id for a snapshot: `<taken>-<modified>-<etag>`
+ * — when the snapshot was taken, the snapshotted object's last-modified time
+ * (falling back to the snapshot time), and a slug of its ETag (`x` when there
+ * is none), which changes with the content.
+ *
+ * The order comes from the snapshot time, not the object's: a native move (fs,
+ * memory, FTP, SFTP) carries the source's older last-modified time onto the
+ * destination, so ordering by it could restore or prune the wrong version.
+ * Ids written by earlier releases (`<modified>-<etag>`) still parse, and sort
+ * before every newer id: their leading time predates the upgrade.
  */
-const versionId = (file: StoredFile): string => {
-  const time = (file.lastModified ?? Date.now())
-    .toString()
-    .padStart(TIME_WIDTH, "0");
+const versionId = (file: StoredFile, takenAt: number): string => {
   const tag =
     (file.etag ?? "").replaceAll(/[^a-zA-Z0-9]/gu, "").slice(0, ETAG_WIDTH) ||
     "x";
-  return `${time}-${tag}`;
+  return `${padTime(takenAt)}-${padTime(file.lastModified ?? takenAt)}-${tag}`;
 };
 
 /**
@@ -134,10 +148,14 @@ const ownVersionId = (listedKey: string, dir: string): string | undefined => {
 const under = (key: string, dir: string): boolean =>
   key === dir || key.startsWith(`${dir}/`);
 
-/** Recover the source object's last-modified time from a {@link versionId}. */
+/**
+ * Recover the source object's last-modified time from a {@link versionId}: the
+ * second field of a `<taken>-<modified>-<etag>` id, or the first of an older
+ * `<modified>-<etag>` one.
+ */
 const timeOf = (id: string): number => {
-  const dash = id.indexOf("-");
-  const digits = dash === -1 ? id : id.slice(0, dash);
+  const fields = id.split("-");
+  const digits = (fields.length > 2 ? fields[1] : fields[0]) ?? "";
   const parsed = Number.parseInt(digits, RADIX);
   return Number.isNaN(parsed) ? 0 : parsed;
 };
@@ -171,6 +189,10 @@ const timeOf = (id: string): number => {
  * - **`move` snapshots only its destination.** A rename relocates the bytes
  *   rather than destroying them, so the source isn't snapshotted.
  * - **History is unbounded** unless you set `limit`.
+ * - **Ordered by the app's clock.** Versions sort by when each snapshot was
+ *   taken, per the clock of the process that took it, so instances writing
+ *   the same key need reasonably synchronized clocks. A `copy` or `move` of a
+ *   key onto itself changes nothing and takes no snapshot.
  * - **Pairs with `softDelete()`, versioning outermost.** Place it before the
  *   trash plugin so deletes are snapshotted, and pass the trash prefix as
  *   `ignore` so a `purge()` isn't itself versioned:
@@ -210,6 +232,17 @@ export const versioning = (
   }
 
   const versionsDirFor = (key: string): string => `${versionDir}/${key}/`;
+
+  /**
+   * The snapshot clock: wall time, but strictly increasing across this
+   * instance, so snapshots taken within the same millisecond still order by
+   * when they were taken.
+   */
+  let lastTakenAt = 0;
+  const takenAt = (): number => {
+    lastTakenAt = Math.max(Date.now(), lastTakenAt + 1);
+    return lastTakenAt;
+  };
   /**
    * Whether a key lives in the version store — those are never re-versioned —
    * or under an `ignore` prefix, which the caller has asked to leave alone.
@@ -245,7 +278,7 @@ export const versioning = (
     if (own.length <= max) {
       return;
     }
-    // Version keys sort chronologically (padded-time prefix), so the front of
+    // Version keys sort by snapshot time (padded-time prefix), so the front of
     // the sorted list is the oldest.
     const excess = own.toSorted().slice(0, own.length - max);
     for (const versionKey of excess) {
@@ -277,7 +310,7 @@ export const versioning = (
     await next({
       from: key,
       kind: "copy",
-      to: `${versionsDirFor(key)}${versionId(current)}`,
+      to: `${versionsDirFor(key)}${versionId(current, takenAt())}`,
     });
     return true;
   };
@@ -421,6 +454,12 @@ export const versioning = (
       }
       case "copy":
       case "move": {
+        // Onto itself, nothing is clobbered: a move is a documented no-op and
+        // a copy rewrites the same bytes. Snapshotting (and pruning) would
+        // only churn history — with a `limit`, a no-op could evict a version.
+        if (op.from === op.to) {
+          return next(op);
+        }
         const taken = await snapshot(op.to, next);
         const result = await next(op);
         // Prune only once the copy has landed. When the source is one of the

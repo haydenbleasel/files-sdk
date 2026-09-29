@@ -115,9 +115,10 @@ const normalizeDir = (prefix: string): string => {
  * - **`delete` becomes a `copy` + `delete`.** A soft delete is a move, so it
  *   costs an extra round-trip versus a hard delete. Deleting a key that doesn't
  *   exist stays a no-op, the same as a plain `delete`.
- * - **Direct presigned writes bypass it.** Only deletes through the instance are
- *   trashed; it's a safety net, not a security control, so it doesn't fail
- *   closed the way `validation()` does.
+ * - **Only deletes through the instance are trashed.** Overwrites (including
+ *   presigned uploads) and deletes made directly against the provider aren't —
+ *   reach for `versioning()` to keep overwritten bytes. It's a safety net, not
+ *   a security control, so it doesn't fail closed the way `validation()` does.
  * - **Trash grows until you `purge()`.** Nothing expires on its own.
  * - **Pairs with `versioning()`, versioning outermost.** Put `versioning()`
  *   before this plugin so deletes are snapshotted, and hand it the trash prefix

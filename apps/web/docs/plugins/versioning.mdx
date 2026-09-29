@@ -36,7 +36,7 @@ Every snapshot is a plain object **copy**, not a re-upload:
 2. Otherwise it copies the current object to `"<prefix>/<key>/<versionId>"` - the default prefix is `.versions`, so a version of `photos/a.jpg` lands at `.versions/photos/a.jpg/<versionId>`.
 3. The live write then proceeds as normal.
 
-The `versionId` is the object's last-modified time (zero-padded so ids sort chronologically) plus a slug of its ETag, so versions list newest-first and stay unique per change.
+The `versionId` is the time the snapshot was taken and the object's own last-modified time (both zero-padded so ids sort chronologically), plus a slug of its ETag, so versions list newest-first and stay unique per change. Ordering by snapshot time rather than the object's is deliberate: a native move (the local filesystem, memory, FTP, SFTP) carries the source's older last-modified time onto the destination, so the object's time can disagree with the order the key actually changed in. The snapshot time comes from the app's clock, so instances writing the same key need reasonably synchronized clocks. Version ids written before this format still parse and sort ahead of newer ones.
 
 Because snapshots are copies of whatever is **already stored**, the plugin composes cleanly with the transforming plugins: a version of an encrypted object is still encrypted (the wrapped key rides along in its metadata) and restores to readable plaintext.
 
@@ -69,6 +69,8 @@ const history = await files.versions("report.pdf");
 //   …
 // ]
 ```
+
+Each entry's `lastModified` is the snapshotted object's own last-modified time. The list is ordered by when each version was snapshotted, so after a native move those times aren't necessarily in order.
 
 The `key` on each entry is a real, downloadable object, so you can preview a version without restoring it: `await files.download(history[0].key)`.
 
@@ -110,6 +112,8 @@ Versioning operates on logical keys and snapshots whatever the rest of the pipel
 plugins: [versioning(), compression(), encryption(key)];
 ```
 
+Guards that vet the caller's writes - [`contentType()`](/docs/plugins/content-type) and [`validation()`](/docs/plugins/validation) - go in front of it. Its snapshot copies only pass through the plugins after it, so a `validation()` key rule placed after `versioning()` would reject the `.versions/...` keys and break every overwrite and delete.
+
 ## Pairing with soft delete
 
 Version history and a recycle bin are a common pair, and both plugins can sit on one instance. Put `versioning()` **before** [`softDelete()`](/docs/plugins/soft-delete) and hand it the trash prefix as `ignore`:
@@ -134,6 +138,6 @@ The `ignore` matters too. A `purge()` is a real `delete` of the trash key, which
 
 - **A `head` + `copy` per overwrite/delete.** Snapshotting adds two adapter round-trips to writes that hit an existing object; first writes cost only the `head`. It's the price of keeping history.
 - **Direct presigned writes bypass it.** A client `PUT` to a [`signedUploadUrl`](/docs/api/signed-upload-url) never runs the plugin, so no snapshot is taken. Write through the instance to version. It's a safety net, not a security control, so - unlike [`validation()`](/docs/plugins/validation) - it doesn't fail closed.
-- **`move` snapshots only its destination.** A rename relocates the bytes rather than destroying them, so the source isn't snapshotted; the data lives on at the new key.
+- **`move` snapshots only its destination.** A rename relocates the bytes rather than destroying them, so the source isn't snapshotted; the data lives on at the new key. A `copy` or `move` of a key onto itself changes nothing, so it takes no snapshot.
 - **History is unbounded** unless you set `limit`.
 - **Don't store your own data under the version prefix.** Writes there are passed through un-versioned and hidden from `list()`.

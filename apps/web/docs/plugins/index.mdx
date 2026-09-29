@@ -49,14 +49,15 @@ A set of plugins ships with the SDK, each as its own subpath export:
 
 The [plugin API reference](/docs/plugins/api) covers the `FilesPlugin` type, `handlers()`, and `createFiles`.
 
-## The two capabilities
+## Plugin hooks
 
-A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to two optional capabilities. A plugin can use either or both.
+A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to three optional hooks. A plugin can use any combination of them.
 
-| Capability | What it does | Changes the instance type? |
+| Hook | What it does | Changes the instance type? |
 | --- | --- | --- |
 | `wrap` | Intercept every operation - transform the inputs, veto by throwing, or wrap the result. | No |
 | `extend` | Contribute new namespaced methods (e.g. `files.usage()`). | Yes - via [`createFiles`](#typing-extend-with-createfiles) |
+| [`capabilities`](/docs/plugins/api#capabilities) | Narrow what [`files.capabilities`](/docs/capabilities) advertises, e.g. report `signedUrl.supported: false` for a URL the plugin refuses to mint. Folded in `plugins` order. | No |
 
 Because `wrap` doesn't touch the instance type, plugins that only wrap work with plain `new Files({ plugins })`. Only `extend` adds surface, and that's the one case [`createFiles`](/docs/plugins/api#createfiles) exists for.
 
@@ -127,17 +128,20 @@ You don't have to write this plugin yourself - we ship [`encryption()`](/docs/pl
 `extend(files)` returns an object of methods grafted onto the instance. It runs once at construction against the **fully-wrapped** instance, so an extension method that calls back into `files.upload(...)` also passes through every plugin.
 
 ```ts lineNumbers
+import { handlers } from "files-sdk";
+import type { FilesPlugin } from "files-sdk";
+
 const usage = (): FilesPlugin<{ usage: () => number }> => {
   let bytes = 0;
   return {
     name: "usage",
-    wrap: async (op, next) => {
-      const result = await next(op);
-      if (op.kind === "upload") {
+    wrap: handlers({
+      upload: async (op, next) => {
+        const result = await next(op);
         bytes += result.size;
-      }
-      return result;
-    },
+        return result;
+      },
+    }),
     extend: () => ({ usage: () => bytes }),
   };
 };
@@ -164,7 +168,7 @@ The built-in [`versioning()`](/docs/plugins/versioning) plugin is a real example
 
 ## Things to keep in mind
 
-- **Order is the contract.** `[compress, encrypt]` compresses then encrypts (encrypted bytes don't compress); `[validate, scan, transform]` fails fast before doing work. Document each plugin's place even though reads self-order.
+- **Order is the contract.** `plugins[0]` runs first on the way in. `[compress, encrypt]` compresses then encrypts (encrypted bytes don't compress); `[sniff, validate, transform]` corrects the declared type from the bytes, then fails fast on it before doing work - validating before a later plugin can still change what it checked (`[validation(), contentType()]`) lets a relabeled upload past the check. Document each plugin's place even though reads self-order.
 - **Buffering transforms break streaming.** Encrypt / compress / scan need the whole body in memory, which is incompatible with unknown-length streams and [resumable uploads](/docs/resumable) (which re-read the original body). Gate those plugins the way the core already gates streams.
 - **Metadata-stashing needs adapter support.** A plugin that round-trips state through `options.metadata` (an encryption IV, say) only works on adapters that [support metadata](/docs/api/upload) - the same gate a direct `metadata` upload hits.
 - **`wrap` runs outside the timeout.** Per-attempt [timeouts](/docs/timeouts) bound the adapter call, not a slow plugin. The caller's `options` (including `signal`) ride on the operation, so a plugin can opt into cancellation itself.

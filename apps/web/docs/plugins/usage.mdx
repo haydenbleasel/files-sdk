@@ -52,7 +52,10 @@ Pass `group` to bucket usage by a label derived from each operation — a tenant
 const files = createFiles({
   adapter: s3({ bucket: "uploads" }),
   plugins: [
-    usage({ group: (op) => ("key" in op ? op.key.split("/")[0] : "shared") }),
+    usage({
+      group: (op) =>
+        "key" in op ? (op.key.split("/")[0] ?? "shared") : "shared",
+    }),
   ],
 });
 

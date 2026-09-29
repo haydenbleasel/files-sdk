@@ -35,7 +35,7 @@ tracing({ tracer: trace.getTracer("my-app", "1.0.0") });
 
 ## How it works
 
-Spans are opened with `startActiveSpan`, so they **nest** correctly: each op span is a child of whatever span is active when you call (your incoming-request span, say), and any sub-operation an inner plugin issues — or an [`extend`](/docs/plugins/api#filesplugin) method calling back into the instance — becomes a child of the op span in turn.
+Spans are opened with `startActiveSpan`, so they **nest** correctly: each op span is a child of whatever span is active when you call (your incoming-request span, say). An [`extend`](/docs/plugins/api#filesplugin) method that calls back into the instance (like `versioning()`'s `restoreVersion()`) goes through the whole pipeline, so each call it makes gets its own op span.
 
 - **Every verb** opens a span named `files.<verb>` with `files.operation` and the caller-facing `files.key` (or `files.from` / `files.to` for `copy` / `move`). Bulk items carry `files.bulk: true`.
 - **On success** a cheap, body-transparent attribute is added: `files.size` on `upload` / `download` / `head` (read from declared metadata, never the bytes), `files.exists` on `exists`, `files.count` on `list`.
@@ -68,13 +68,13 @@ Object keys can carry user ids, tenant names, or filenames, and spans get export
 
 ## Ordering
 
-Put `tracing()` **first** (outermost) so the span wraps the caller-facing operation and the work of inner plugins shows up **nested beneath it** — a [`dedup()`](/docs/plugins/dedup) internal `exists`, an [`encryption()`](/docs/plugins/encryption) seal — each its own child span.
+Put `tracing()` **first** so each span covers the full caller-facing operation, including time spent in inner plugins. Inner plugins' own sub-operations (a [`dedup()`](/docs/plugins/dedup) internal `exists`, a [`versioning()`](/docs/plugins/versioning) snapshot copy) call inward past it, so they are not traced separately.
 
 ```ts
 plugins: [tracing(), dedup(), encryption(key)];
 ```
 
-Placed **last** (innermost) it instead times only the provider call, with the plugin pipeline above it untraced. Both are valid — pick the layer whose timings you want.
+Put `tracing()` **last** to get one span per provider call instead, sub-operations included, with the time spent in the plugins above it untraced. Both are valid — pick the layer whose timings you want.
 
 ## Things to keep in mind
 
