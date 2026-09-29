@@ -99,6 +99,24 @@ describe("signedUrlPolicy — url() disposition", () => {
     expect(rec.urlOpts?.responseContentDisposition).toBe("  attachment");
   });
 
+  test("overrides an attachment carrying control characters", async () => {
+    const { files, rec } = withPolicy();
+    await files.url("doc.pdf", {
+      responseContentDisposition: "attachment\r\nx-injected: 1",
+    });
+    expect(rec.urlOpts?.responseContentDisposition).toBe("attachment");
+    await files.url("doc.pdf", {
+      responseContentDisposition: "attachment;\tfilename=a.pdf",
+    });
+    expect(rec.urlOpts?.responseContentDisposition).toBe(
+      "attachment;\tfilename=a.pdf"
+    );
+    await files.url("doc.pdf", {
+      responseContentDisposition: "attachment\u007F",
+    });
+    expect(rec.urlOpts?.responseContentDisposition).toBe("attachment");
+  });
+
   test("uses a configured default disposition with a filename", async () => {
     const { files, rec } = withPolicy({
       disposition: 'attachment; filename="download.bin"',

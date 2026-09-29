@@ -164,6 +164,7 @@ export const handleDownload = async (
     }
     const url = await cfg.files.url(storageKey, {
       expiresIn,
+      signal,
       ...(disposition && { responseContentDisposition: disposition }),
     });
     return { kind: "redirect", location: url, status: 302 };

@@ -442,6 +442,42 @@ describe("ranged download", () => {
 });
 
 describe("download edge paths", () => {
+  test("a redirected download that fails at storage keeps its status's code", async () => {
+    // The gateway 302s to a signed URL; the storage host answers with its own
+    // (non-envelope) error body.
+    const fromStorage = (status: number): Response => {
+      const res = new Response("<Error><Code>NoSuchKey</Code></Error>", {
+        status,
+      });
+      Object.defineProperty(res, "redirected", { value: true });
+      return res;
+    };
+    for (const [status, code] of [
+      [404, "NotFound"],
+      [403, "Unauthorized"],
+      [500, "Provider"],
+    ] as const) {
+      const client = createFilesClient({
+        endpoint: ENDPOINT,
+        fetchImpl: fetchReturning(() => fromStorage(status)),
+      });
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      await expect(client.download("missing.txt")).rejects.toMatchObject({
+        code,
+        message: `storage responded ${status}`,
+      });
+    }
+    // A non-envelope failure from the gateway itself stays generic.
+    const direct = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() => new Response("nope", { status: 404 })),
+    });
+    await expect(direct.download("k")).rejects.toMatchObject({
+      code: "Provider",
+      message: "gateway responded 404",
+    });
+  });
+
   test("downloadMany collects per-key failures", async () => {
     const fetchImpl = fetchReturning(
       () => new Response("data", { status: 200 })
@@ -723,6 +759,39 @@ describe("xhrTransport failure + abort", () => {
     });
     controller.abort(new Error("stop"));
     await expect(promise).rejects.toMatchObject({ aborted: true });
+  });
+
+  test("detaches from a long-lived signal once each request settles", async () => {
+    const instances: { aborts: number }[] = [];
+    const Settling = class extends baseXhr() {
+      aborts = 0;
+      constructor() {
+        super();
+        instances.push(this);
+      }
+      override abort() {
+        this.aborts += 1;
+        super.abort();
+      }
+      override send() {
+        this.dispatch(instances.length === 1 ? "load" : "error");
+      }
+    };
+    (globalThis as { XMLHttpRequest?: unknown }).XMLHttpRequest = Settling;
+    const controller = new AbortController();
+    const send = () =>
+      xhrTransport({
+        body: new Blob(["x"]),
+        method: "PUT",
+        signal: controller.signal,
+        url: "u",
+      });
+    await send();
+    await expect(send()).rejects.toMatchObject({ code: "Provider" });
+    // The shared signal outlives both requests; firing it later must not
+    // reach back into either finished XHR.
+    controller.abort();
+    expect(instances.map((xhr) => xhr.aborts)).toEqual([0, 0]);
   });
 });
 

@@ -1,12 +1,14 @@
 // The `upload` byte paths. Keyless uploads use the secure 3-step protocol
 // (`presign` mints a key + HMAC token → direct-to-storage or proxy →
 // `complete` verifies via `head`); an explicit-key `upload(key, body)` streams
-// straight through. The HMAC token binds the server-chosen key + size/type so
-// the server stays stateless and the client can't forge or relax it.
+// straight through. The HMAC token binds the server-chosen key + size/type and
+// the minting endpoint (path + query) so the server stays stateless and the
+// client can't forge, relax, or redeem it anywhere else.
 
 import type { Files, SignedUpload, UploadResult } from "../../index.js";
 import { FilesError } from "../errors.js";
 import { RouterError } from "../router-core/envelope.js";
+import type { TokenPayload } from "../router-core/sign-token.js";
 import { signToken, verifyToken } from "../router-core/sign-token.js";
 import type { ResultModel } from "../router-core/web.js";
 import type { Scope } from "./authorize.js";
@@ -27,7 +29,11 @@ export interface UploadConfig {
   proxyUrl: (token: string) => string;
   /** The request's canonical non-routing query — see {@link boundQuery}. */
   boundQuery: string;
+  /** The request URL's path — a token only redeems at the endpoint that minted it. */
+  boundPath: string;
   now: () => number;
+  /** The request's abort signal, threaded into every storage call. */
+  signal: AbortSignal;
 }
 
 const ROUTING_PARAMS = new Set(["op", "key", "token"]);
@@ -51,10 +57,36 @@ export const boundQuery = (query: URLSearchParams): string => {
   return bound.toString();
 };
 
-const tokenQueryMatches = (
-  payload: { query?: string },
+const PATH_MISMATCH = "upload token was issued for a different endpoint";
+const QUERY_MISMATCH = "upload token was issued for a different endpoint query";
+
+// Why a verified token can't be redeemed by this request, if it can't: it was
+// minted at another path (a sibling router sharing the secret, whose
+// `authorize` never approved the upload) or under another query.
+const bindingMismatch = (
+  payload: TokenPayload,
   cfg: UploadConfig
-): boolean => (payload.query ?? "") === cfg.boundQuery;
+): string | undefined => {
+  if (payload.path !== cfg.boundPath) {
+    return PATH_MISMATCH;
+  }
+  return (payload.query ?? "") === cfg.boundQuery ? undefined : QUERY_MISMATCH;
+};
+
+type Redeemed =
+  | { ok: true; payload: TokenPayload }
+  | { ok: false; message: string };
+
+// Verify `token` and its endpoint binding: the payload this request may act
+// on, or why it may not.
+const redeem = async (token: string, cfg: UploadConfig): Promise<Redeemed> => {
+  const verified = await verifyToken(token, cfg.secret, cfg.now());
+  if (!verified.ok) {
+    return { message: `upload token ${verified.failure}`, ok: false };
+  }
+  const mismatch = bindingMismatch(verified.payload, cfg);
+  return mismatch ? { message: mismatch, ok: false } : verified;
+};
 
 const extFromName = (name: string): string => {
   const dot = name.lastIndexOf(".");
@@ -126,8 +158,6 @@ const limitBody = (
   };
 };
 
-const QUERY_MISMATCH = "upload token was issued for a different endpoint query";
-
 export const handlePresign = async (
   cfg: UploadConfig,
   files: ClientFileInfo[],
@@ -151,6 +181,7 @@ export const handlePresign = async (
         key,
         maxSize: cfg.maxUploadSize,
         minSize: 0,
+        path: cfg.boundPath,
         ...(cfg.boundQuery && { query: cfg.boundQuery }),
       },
       cfg.secret
@@ -163,6 +194,7 @@ export const handlePresign = async (
           contentType: file.type || undefined,
           expiresIn: expires,
           minSize: 0,
+          signal: cfg.signal,
           ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
         });
       } catch {
@@ -189,15 +221,13 @@ export const handleComplete = async (
   // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- each per-completion validation failure (token, size) records an error and continues to the next
   for (const completion of completions) {
     // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- completions verified sequentially; small N
-    const verified = await verifyToken(completion.id, cfg.secret, cfg.now());
-    if (!verified.ok || !tokenQueryMatches(verified.payload, cfg)) {
+    const verified = await redeem(completion.id, cfg);
+    if (!verified.ok) {
       errors.push({
         error: {
           aborted: false,
           code: "Unauthorized",
-          message: verified.ok
-            ? QUERY_MISMATCH
-            : `upload token ${verified.failure}`,
+          message: verified.message,
           timedOut: false,
         },
         key: completion.key,
@@ -207,7 +237,7 @@ export const handleComplete = async (
     const { key, maxSize } = verified.payload;
     try {
       // oxlint-disable-next-line no-await-in-loop -- sequential head per completion.
-      const meta = await cfg.files.head(key);
+      const meta = await cfg.files.head(key, { signal: cfg.signal });
       if (maxSize !== undefined && meta.size > maxSize) {
         errors.push({
           error: {
@@ -242,12 +272,9 @@ export const handleProxyUpload = async (
   if (!token) {
     throw new RouterError("Unauthorized", "missing proxy token");
   }
-  const verified = await verifyToken(token, cfg.secret, cfg.now());
+  const verified = await redeem(token, cfg);
   if (!verified.ok) {
-    throw new RouterError("Unauthorized", `upload token ${verified.failure}`);
-  }
-  if (!tokenQueryMatches(verified.payload, cfg)) {
-    throw new RouterError("Unauthorized", QUERY_MISMATCH);
+    throw new RouterError("Unauthorized", verified.message);
   }
   if (!body) {
     throw new RouterError("Validation", "missing request body");
@@ -262,11 +289,10 @@ export const handleProxyUpload = async (
   }
   const limited = limitBody(body, maxSize, "upload exceeds maxSize");
   try {
-    await cfg.files.upload(
-      key,
-      limited.body,
-      contentType ? { contentType } : {}
-    );
+    await cfg.files.upload(key, limited.body, {
+      signal: cfg.signal,
+      ...(contentType && { contentType }),
+    });
   } catch (error) {
     throw limited.getError() ?? FilesError.wrap(error);
   }
@@ -298,11 +324,10 @@ export const handleExplicitUpload = async (
   );
   let result: UploadResult;
   try {
-    result = await cfg.files.upload(
-      storageKey,
-      limited.body,
-      contentType ? { contentType } : {}
-    );
+    result = await cfg.files.upload(storageKey, limited.body, {
+      signal: cfg.signal,
+      ...(contentType && { contentType }),
+    });
   } catch (error) {
     throw limited.getError() ?? FilesError.wrap(error);
   }

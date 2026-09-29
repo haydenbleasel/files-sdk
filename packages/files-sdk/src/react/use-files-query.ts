@@ -2,7 +2,8 @@
 // declarative data/loading/error/refetch shape React devs expect for a file
 // browser. Deliberately dependency-light: no global cache, each hook owns a
 // `useState`-backed query that aborts its in-flight request on dep-change or
-// unmount. For real caching, bring React Query and call `useFiles()` in `queryFn`.
+// unmount. For real caching, bring React Query: call `useFiles()` at the
+// component's top level and call one of its methods inside `queryFn`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 

@@ -192,6 +192,19 @@ describe("createFilesRouter — read verbs", () => {
       new URL(attachment.url).searchParams.get("response-content-disposition")
     ).toBe('attachment; filename="a.txt"');
 
+    const injected = await readJson<{ url: string }>(
+      await r.handle(
+        post({
+          key: "docs/a.txt",
+          op: "url",
+          responseContentDisposition: "attachment\r\nx-injected: 1",
+        })
+      )
+    );
+    expect(
+      new URL(injected.url).searchParams.get("response-content-disposition")
+    ).toBe("attachment");
+
     const inline = router({
       adapter,
       authorize: () => ({ disposition: "inline" }),
@@ -263,6 +276,34 @@ describe("createFilesRouter — read verbs", () => {
     expect(
       (await readJson<{ error: { message: string } }>(res)).error.message
     ).toContain("too complex");
+  });
+
+  test("an invalid regex under match: regex is a 422, like isRegex", async () => {
+    const r = router({ adapter, operations: ["search"] });
+    const responses = await Promise.all(
+      [{ match: "regex" }, { isRegex: true }].map((extra) =>
+        r.handle(post({ op: "search", pattern: "(", ...extra }))
+      )
+    );
+    for (const res of responses) {
+      expect(res.status).toBe(422);
+    }
+    expect(
+      await Promise.all(responses.map((res) => readJson<unknown>(res)))
+    ).toEqual(
+      Array.from({ length: 2 }, () => ({
+        error: { code: "Validation", message: "invalid search regex" },
+      }))
+    );
+    // scoped too: the keyPrefix path compiles its own matcher
+    const scoped = router({
+      adapter,
+      authorize: () => ({ keyPrefix: "docs/" }),
+    });
+    const res = await scoped.handle(
+      post({ match: "regex", op: "search", pattern: "[" })
+    );
+    expect(res.status).toBe(422);
   });
 
   test("search refuses glob patterns with too many wildcards, fast", async () => {
@@ -1006,6 +1047,80 @@ describe("createFilesRouter — upload", () => {
     expect(await imagesInstance.exists(reordered.key)).toBe(true);
   });
 
+  test("a token only redeems at the endpoint path that minted it", async () => {
+    // Two routers sharing one secret (the `FILES_API_SECRET` default), each
+    // with its own policy: `/api/files` scopes uploads to `users/1/`,
+    // `/api/images` to `public/`. A token `/api/files` minted must not land
+    // bytes in the images bucket outside the scope its `authorize` enforces.
+    const filesInstance = createFiles({ adapter: memory() });
+    const imagesInstance = createFiles({ adapter: memory() });
+    const uploads = createFilesRouter({
+      authorize: () => ({ keyPrefix: "users/1/" }),
+      files: filesInstance,
+      now: () => NOW,
+      secret: SECRET,
+    });
+    const images = createFilesRouter({
+      authorize: () => ({ keyPrefix: "public/" }),
+      files: imagesInstance,
+      now: () => NOW,
+      secret: SECRET,
+    });
+    const presign = await uploads.handle(
+      post({
+        files: [{ name: "x.html", size: 4, type: "text/html" }],
+        op: "presign",
+      })
+    );
+    const minted = first(
+      (
+        await readJson<{
+          uploads: { id: string; key: string; target: { url: string } }[];
+        }>(presign)
+      ).uploads
+    );
+    const token = new URL(minted.target.url).searchParams.get(
+      "token"
+    ) as string;
+    const imagesEndpoint = "https://app.test/api/images";
+
+    const replayed = await images.handle(
+      new Request(
+        `${imagesEndpoint}?op=proxy&token=${encodeURIComponent(token)}`,
+        { body: "evil", method: "PUT" }
+      )
+    );
+    expect(replayed.status).toBe(401);
+    expect(
+      (await readJson<{ error: { message: string } }>(replayed)).error.message
+    ).toBe("upload token was issued for a different endpoint");
+    expect(await imagesInstance.exists(`users/1/${minted.key}`)).toBe(false);
+
+    const complete = await images.handle(
+      new Request(imagesEndpoint, {
+        body: JSON.stringify({
+          completions: [{ id: minted.id, key: minted.key }],
+          op: "complete",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    expect(
+      first(
+        (await readJson<{ errors: { error: { code: string } }[] }>(complete))
+          .errors
+      ).error.code
+    ).toBe("Unauthorized");
+
+    // the minting endpoint still accepts it
+    const up = await uploads.handle(
+      put(`op=proxy&token=${encodeURIComponent(token)}`, "okay")
+    );
+    expect(up.status).toBe(200);
+    expect(await filesInstance.exists(`users/1/${minted.key}`)).toBe(true);
+  });
+
   test("proxy upload with a tampered token → 401", async () => {
     const r = router({ allowedOrigins: () => true, operations: ["upload"] });
     const res = await r.handle(put("op=proxy&token=not.a.token", "x"));
@@ -1146,7 +1261,10 @@ describe("createFilesRouter — protocol errors", () => {
       allowedOrigins: () => true,
       operations: ["upload"],
     });
-    const id = await signToken({ exp: NOW + 60_000, key: "manual" }, SECRET);
+    const id = await signToken(
+      { exp: NOW + 60_000, key: "manual", path: "/api/files" },
+      SECRET
+    );
     const res = await r.handle(
       post({ completions: [{ id, key: "manual" }], op: "complete" })
     );
@@ -1164,5 +1282,145 @@ describe("createFilesRouter — protocol errors", () => {
       secret: SECRET,
     });
     expect((await r.handle(post({ key: "a", op: "head" }))).status).toBe(200);
+  });
+});
+
+describe("createFilesRouter — request signal", () => {
+  // By the time each op reaches storage the client has gone (the request's
+  // signal fired while the per-request `files` factory ran), so the storage
+  // call must see the signal and stop rather than finish for nobody.
+  const disconnecting = (adapter: Adapter) => {
+    const controller = new AbortController();
+    const files = createFiles({ adapter });
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      downloadMode: "redirect",
+      files: () => {
+        controller.abort();
+        return files;
+      },
+      now: () => NOW,
+      operations: ["download", "signedUploadUrl", "upload", "url"],
+      secret: SECRET,
+    });
+    return { files, r, signal: controller.signal };
+  };
+
+  const abortedEnvelope = async (res: Response) => {
+    expect(res.status).toBe(500);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toContain("aborted");
+  };
+
+  test("url, the download redirect, and signed-upload-url stop", async () => {
+    const adapter = signing();
+    await seed(adapter, "a.txt", "hello");
+    const { r, signal } = disconnecting(adapter);
+    await abortedEnvelope(
+      await r.handle(
+        new Request(ENDPOINT, {
+          body: JSON.stringify({ key: "a.txt", op: "url" }),
+          method: "POST",
+          signal,
+        })
+      )
+    );
+    const second = disconnecting(adapter);
+    await abortedEnvelope(
+      await second.r.handle(
+        new Request(`${ENDPOINT}?op=download&key=a.txt`, {
+          signal: second.signal,
+        })
+      )
+    );
+    const third = disconnecting(adapter);
+    await abortedEnvelope(
+      await third.r.handle(
+        new Request(ENDPOINT, {
+          body: JSON.stringify({
+            expiresIn: 60,
+            key: "k.bin",
+            op: "signed-upload-url",
+          }),
+          method: "POST",
+          signal: third.signal,
+        })
+      )
+    );
+  });
+
+  test("explicit and proxy uploads stop and store nothing", async () => {
+    const explicit = disconnecting(memory());
+    await abortedEnvelope(
+      await explicit.r.handle(
+        new Request(`${ENDPOINT}?op=upload&key=a.txt`, {
+          body: "hello",
+          method: "PUT",
+          signal: explicit.signal,
+        })
+      )
+    );
+    expect(await explicit.files.exists("a.txt")).toBe(false);
+
+    const proxy = disconnecting(memory());
+    const token = await signToken(
+      { exp: NOW + 60_000, key: "p.txt", path: "/api/files" },
+      SECRET
+    );
+    await abortedEnvelope(
+      await proxy.r.handle(
+        new Request(`${ENDPOINT}?op=proxy&token=${encodeURIComponent(token)}`, {
+          body: "hello",
+          method: "PUT",
+          signal: proxy.signal,
+        })
+      )
+    );
+    expect(await proxy.files.exists("p.txt")).toBe(false);
+  });
+
+  test("presign and complete hand storage the signal", async () => {
+    const presign = disconnecting(signing());
+    const res = await presign.r.handle(
+      new Request(ENDPOINT, {
+        body: JSON.stringify({
+          files: [{ name: "x.bin", size: 3, type: "application/octet-stream" }],
+          op: "presign",
+        }),
+        method: "POST",
+        signal: presign.signal,
+      })
+    );
+    // the aborted signing call falls back to the proxy target
+    const { uploads } = await readJson<{
+      uploads: { target: { url: string } }[];
+    }>(res);
+    expect(first(uploads).target.url).toContain("op=proxy");
+
+    const adapter = memory();
+    await seed(adapter, "done.txt", "hi");
+    const complete = disconnecting(adapter);
+    const id = await signToken(
+      { exp: NOW + 60_000, key: "done.txt", path: "/api/files" },
+      SECRET
+    );
+    const body = await readJson<{
+      files: unknown[];
+      errors: { error: { aborted: boolean } }[];
+    }>(
+      await complete.r.handle(
+        new Request(ENDPOINT, {
+          body: JSON.stringify({
+            completions: [{ id, key: "done.txt" }],
+            op: "complete",
+          }),
+          method: "POST",
+          signal: complete.signal,
+        })
+      )
+    );
+    expect(body.files).toEqual([]);
+    expect(first(body.errors).error.aborted).toBe(true);
   });
 });

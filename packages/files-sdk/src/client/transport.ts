@@ -112,15 +112,24 @@ export const xhrTransport: Transport = (req) =>
         }
       });
     }
-    xhr.addEventListener("load", () =>
-      resolve({ status: xhr.status, text: xhr.responseText })
-    );
-    xhr.addEventListener("error", () =>
-      reject(new FilesError("Provider", "network error during upload"))
-    );
-    xhr.addEventListener("abort", () => reject(abortError(req.signal?.reason)));
+    // Detached once the request settles, so a long-lived signal shared across
+    // many uploads doesn't keep every finished XHR (and its response) alive.
+    const onAbort = () => xhr.abort();
+    const detach = () => req.signal?.removeEventListener("abort", onAbort);
+    xhr.addEventListener("load", () => {
+      detach();
+      resolve({ status: xhr.status, text: xhr.responseText });
+    });
+    xhr.addEventListener("error", () => {
+      detach();
+      reject(new FilesError("Provider", "network error during upload"));
+    });
+    xhr.addEventListener("abort", () => {
+      detach();
+      reject(abortError(req.signal?.reason));
+    });
 
-    req.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    req.signal?.addEventListener("abort", onAbort, { once: true });
     xhr.send(buildBody(req));
   });
 

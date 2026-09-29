@@ -268,7 +268,10 @@ describe("upload edges", () => {
       ).error.code
     ).toBe("Unauthorized");
 
-    const id = await signToken({ exp: NOW + 60_000, key: "ghost" }, SECRET);
+    const id = await signToken(
+      { exp: NOW + 60_000, key: "ghost", path: "/api/files" },
+      SECRET
+    );
     const missing = await router.handle(
       post({ completions: [{ id, key: "ghost" }], op: "complete" })
     );

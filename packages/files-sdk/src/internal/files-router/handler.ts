@@ -210,6 +210,7 @@ const uploadCfg = (
   ctx: HandlerContext,
   parsed: ParsedRequest
 ): UploadConfig => ({
+  boundPath: parsed.path,
   boundQuery: boundQuery(parsed.query),
   defaultExpiresIn: ctx.defaultExpiresIn,
   files: ctx.files,
@@ -217,6 +218,7 @@ const uploadCfg = (
   now: ctx.now,
   proxyUrl: ctx.proxyUrl,
   secret: ctx.secret,
+  signal: parsed.signal,
 });
 
 const downloadCfg = (ctx: HandlerContext): DownloadConfig => ({
@@ -280,6 +282,21 @@ const searchScoped = (
       }
     },
   };
+};
+
+// Compile a client-supplied search regex, refusing (422) one that doesn't
+// parse or could backtrack catastrophically.
+const searchRegex = (source: string, flags: string): RegExp => {
+  let regexp: RegExp;
+  try {
+    regexp = new RegExp(source, flags);
+  } catch {
+    throw new RouterError("Validation", "invalid search regex");
+  }
+  if (!isSafeSearchRegex(regexp)) {
+    throw new RouterError("Validation", "search pattern is too complex");
+  }
+  return regexp;
 };
 
 const requireOrigin = (ctx: HandlerContext, parsed: ParsedRequest): void => {
@@ -538,6 +555,7 @@ const dispatchJson = async (
       const url = await ctx.files.url(scopeKey(scope.prefix, key), {
         expiresIn: clampExpiry(ctx, expiresIn ?? ctx.defaultExpiresIn, scope),
         responseContentDisposition: disposition,
+        signal,
       });
       return json({ url });
     }
@@ -586,19 +604,18 @@ const dispatchJson = async (
           : Math.min(requestedLimit, ctx.maxListLimit);
       let pattern: string | RegExp;
       if (optBool(body, "isRegex")) {
-        try {
-          pattern = new RegExp(
-            str(body, "pattern"),
-            optStr(body, "flags") ?? "u"
-          );
-        } catch {
-          throw new RouterError("Validation", "invalid search regex");
-        }
-        if (!isSafeSearchRegex(pattern)) {
-          throw new RouterError("Validation", "search pattern is too complex");
-        }
+        pattern = searchRegex(
+          str(body, "pattern"),
+          optStr(body, "flags") ?? "u"
+        );
       } else {
         pattern = str(body, "pattern");
+        if (match === "regex") {
+          // Compile it here, with the flags `files.search()` would use, so a
+          // bad pattern is the same 422 as the `isRegex` form rather than a
+          // `Provider` 500 from the matcher.
+          searchRegex(pattern, caseInsensitive ? "iu" : "u");
+        }
       }
       const problem = searchPatternProblem(
         pattern,
@@ -662,6 +679,7 @@ const dispatchJson = async (
         scopeKey(scope.prefix, key),
         {
           expiresIn: clampExpiry(ctx, expiresIn, scope),
+          signal,
           ...(contentType && { contentType }),
           ...(maxSize !== undefined && { maxSize }),
           ...(minSize !== undefined && { minSize }),

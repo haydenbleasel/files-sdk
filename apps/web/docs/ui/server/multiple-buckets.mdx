@@ -17,7 +17,10 @@ import { createRouteHandler } from "files-sdk/next";
 
 const router = createFilesRouter({
   files: createFiles({
-    adapter: minio({ bucket: process.env.S3_FILES_BUCKET! }),
+    adapter: minio({
+      bucket: process.env.S3_FILES_BUCKET!,
+      endpoint: process.env.MINIO_ENDPOINT!,
+    }),
   }),
   authorize: async ({ req }) => {
     const userId = await requireUser(req); // throw to deny
@@ -31,7 +34,10 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 ```ts title="app/api/images/route.ts" lineNumbers
 const router = createFilesRouter({
   files: createFiles({
-    adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET! }),
+    adapter: minio({
+      bucket: process.env.S3_IMAGES_BUCKET!,
+      endpoint: process.env.MINIO_ENDPOINT!,
+    }),
   }),
   // `operations` is a hard gate that runs before `authorize`, so it must list
   // every verb the route serves, writes included.
@@ -58,16 +64,24 @@ const images = useFiles({ endpoint: "/api/images" });
 
 Bucket selection is a component prop, so "which bucket" is decided wherever you render — including at runtime.
 
+`FileList` and `FilePreview` build their download-proxy fallback URL (used for thumbnails and previews when the adapter can't sign) from their own `endpoint` prop, which defaults to `/api/files`. Pass them the same endpoint as their hook (including any `?bucket=` selector, see below), e.g. `<FileList endpoint="/api/images" files={images} />`.
+
 ## One route, selected per request
 
-The gateway also accepts a **per-request factory** — `files: (req) => Files` — so a single route can serve several buckets. Put the selector in the endpoint's query string; the client threads it through every call (JSON verbs, downloads, thumbnails, and the presign/proxy upload round-trip):
+The gateway also accepts a **per-request factory** — `files: (req) => Files` — so a single route can serve several buckets. Put the selector in the endpoint's query string; the client threads it through every call (JSON verbs, downloads, and the presign/proxy upload round-trip):
 
 ```ts title="app/api/files/route.ts" lineNumbers
 const filesInstance = createFiles({
-  adapter: minio({ bucket: process.env.S3_FILES_BUCKET! }),
+  adapter: minio({
+    bucket: process.env.S3_FILES_BUCKET!,
+    endpoint: process.env.MINIO_ENDPOINT!,
+  }),
 });
 const imagesInstance = createFiles({
-  adapter: minio({ bucket: process.env.S3_IMAGES_BUCKET! }),
+  adapter: minio({
+    bucket: process.env.S3_IMAGES_BUCKET!,
+    endpoint: process.env.MINIO_ENDPOINT!,
+  }),
 });
 
 const router = createFilesRouter({
@@ -88,7 +102,7 @@ const images = useFiles({ endpoint: "/api/files?bucket=images" });
 ```
 
 :::note
-The selector is client-supplied, so treat it as untrusted input: `authorize` must enforce who may touch which bucket, exactly as it does for keys. The upload tokens `presign` mints are bound to the query they were minted under, so a token issued for `?bucket=images` is refused by the proxy upload and `complete` steps if it is presented with a different selector.
+The selector is client-supplied, so treat it as untrusted input: `authorize` must enforce who may touch which bucket, exactly as it does for keys. The upload tokens `presign` mints are bound to the endpoint path and query they were minted under, so a token issued for `?bucket=images` is refused by the proxy upload and `complete` steps if it is presented with a different selector or at a different route. The token can't bind anything else a factory might read, such as the `Host` or a header or cookie, so give each router its own `secret` when a factory selects the instance that way.
 :::
 
 Prefer separate routes when the buckets have genuinely different policies — two small routers are easier to audit than one branching `authorize`. The factory shines when the instances share a policy shape (per-tenant buckets, region routing) or when adding a route per bucket doesn't scale.

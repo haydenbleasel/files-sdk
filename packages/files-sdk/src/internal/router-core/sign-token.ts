@@ -18,6 +18,13 @@ export interface TokenPayload {
    * by the same instance it was minted for. Absent when the query was empty.
    */
   query?: string;
+  /**
+   * The URL path of the endpoint that minted the token. Routers mounted at
+   * different paths commonly share one secret (`FILES_API_SECRET`), so the
+   * token is only honored by the endpoint it was minted at — never by a
+   * sibling router whose `authorize` never approved the upload.
+   */
+  path?: string;
   /** Expiry, epoch milliseconds. */
   exp: number;
 }

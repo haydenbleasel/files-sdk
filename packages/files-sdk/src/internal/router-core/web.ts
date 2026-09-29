@@ -13,6 +13,8 @@ export interface ParsedRequest {
   action: string | null;
   /** Origin derived from the request URL, used as the default CSRF allowlist. */
   requestOrigin: string;
+  /** The request URL's path — the endpoint an upload token is bound to. */
+  path: string;
   query: URLSearchParams;
   origin: string | null;
   rangeHeader: string | null;
@@ -118,6 +120,7 @@ export const parseRequest = async (
     json,
     method,
     origin: req.headers.get("origin"),
+    path: url.pathname,
     query: url.searchParams,
     rangeHeader: req.headers.get("range"),
     requestOrigin: url.origin,

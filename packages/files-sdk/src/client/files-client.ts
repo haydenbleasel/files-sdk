@@ -12,7 +12,7 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
-import { assertRangeHonored } from "../internal/core.js";
+import { assertRangeHonored, makeErrorMapper } from "../internal/core.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { FilesError } from "../internal/errors.js";
 import type {
@@ -91,6 +91,19 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
   const revived = reviveBulk(errors);
   return revived ? { ...base, errors: revived } : base;
 };
+
+// A download the gateway redirected fails at the storage host, whose error
+// body isn't the gateway's envelope: classify it by HTTP status the way an
+// adapter would (a missing key is `NotFound`, a refused or expired signature
+// `Unauthorized`), not as a generic `Provider` failure.
+const storageError = makeErrorMapper({
+  codes: { conflict: new Set(), notFound: new Set(), unauthorized: new Set() },
+  extract: (cause) => {
+    const status = cause instanceof Response ? cause.status : undefined;
+    return { message: `storage responded ${String(status)}`, status };
+  },
+  providerLabel: "files-sdk/client",
+});
 
 /** The gateway's failure envelope (see `toErrorResult`). */
 interface ErrorEnvelope {
@@ -266,7 +279,9 @@ export const createFilesClient = (
     } catch {
       // fall through
     }
-    return new FilesError("Provider", `gateway responded ${res.status}`);
+    return res.redirected
+      ? storageError(res)
+      : new FilesError("Provider", `gateway responded ${res.status}`);
   };
 
   const post = async <T>(
