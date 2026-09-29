@@ -572,6 +572,75 @@ describe("cli/mcp tools (write-enabled)", () => {
   });
 });
 
+describe("cli/mcp download byte cap", () => {
+  test("enforces maxBytes on the bytes read, not just on head()", async () => {
+    // head() reports a 4-byte object but the GET body is 1 MiB — the object
+    // was replaced between the two calls, or the backend misreports its size.
+    // The download must stop pulling once the cap is crossed instead of
+    // buffering the whole body and only then refusing it.
+    const bodyBytes = 1024 * 1024;
+    const chunk = 1024;
+    let pulled = 0;
+    let cancelled = false;
+    const headers = {
+      "content-type": "application/octet-stream",
+      etag: '"abc"',
+      "last-modified": new Date(0).toUTCString(),
+    };
+    const fetchImpl = (request: Request): Promise<Response> => {
+      if (request.method === "HEAD") {
+        return Promise.resolve(
+          new Response(null, {
+            headers: { ...headers, "content-length": "4" },
+          })
+        );
+      }
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled = true;
+        },
+        pull(controller) {
+          if (pulled >= bodyBytes) {
+            controller.close();
+            return;
+          }
+          pulled += chunk;
+          controller.enqueue(new Uint8Array(chunk));
+        },
+      });
+      return Promise.resolve(new Response(body, { headers }));
+    };
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-cap-"));
+    const h = await connect(
+      {
+        accessKeyId: "AKIATEST",
+        bucket: "bucket",
+        configJson: { fetch: fetchImpl },
+        endpoint: "https://s3.test",
+        provider: "s3-fetch",
+        region: "us-east-1",
+        secretAccessKey: "secret",
+      },
+      false,
+      root
+    );
+    try {
+      const res = await call(h.client, "download", {
+        key: "k.bin",
+        maxBytes: 4 * chunk,
+      });
+      expect(res.isError).toBe(true);
+      expect((res.data.error as { message: string }).message).toMatch(
+        /at least \d+ bytes, exceeds maxBytes=4096/u
+      );
+      expect(cancelled).toBe(true);
+      expect(pulled).toBeLessThan(bodyBytes);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe("cli/mcp tools (error paths)", () => {
   let h: Harness;
 

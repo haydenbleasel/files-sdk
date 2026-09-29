@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { Buffer } from "node:buffer";
 
 import { loadFiles } from "../src/cli/loader.js";
@@ -393,6 +393,56 @@ describe("cli/registry option merging", () => {
     );
   });
 
+  test("--public-base-url reaches box, dropbox, and bunny-storage", async () => {
+    // Regression: these loaders dropped the global --public-base-url flag, so
+    // it was silently ignored (and bunny-storage's url() threw for want of it)
+    // even though each adapter builds url() from it.
+    for (const opts of [
+      { configJson: { developerToken: "tok" }, provider: "box" },
+      { provider: "dropbox", token: "acc-tok" },
+      {
+        configJson: { accessKey: "key", region: "de", zone: "test-zone" },
+        provider: "bunny-storage",
+      },
+    ]) {
+      // eslint-disable-next-line no-await-in-loop -- one provider at a time keeps a failure attributable
+      const result = await loadFiles({
+        ...opts,
+        publicBaseUrl: "https://cdn.example.test",
+      });
+      // eslint-disable-next-line no-await-in-loop -- see above
+      expect(await result.files.url("a/b.txt")).toBe(
+        "https://cdn.example.test/a/b.txt"
+      );
+    }
+  });
+
+  test("--default-url-expires-in reaches uploadthing", async () => {
+    // Regression: the uploadthing (and vercel-blob, box, dropbox) loaders
+    // dropped the global --default-url-expires-in flag, so private url()s
+    // kept the adapter's 1-hour default.
+    // Spy on the native client rather than signing for real: uploadthing's
+    // own test file swaps `uploadthing/server` via mock.module, which leaks
+    // into this file when both run in one process.
+    const result = await loadFiles({
+      configJson: { acl: "private" },
+      defaultUrlExpiresIn: 60,
+      provider: "uploadthing",
+      token: uploadthingToken,
+    });
+    const utapi = result.files.raw as {
+      generateSignedURL: (
+        key: string,
+        opts: { expiresIn: number }
+      ) => Promise<{ ufsUrl: string }>;
+    };
+    const sign = spyOn(utapi, "generateSignedURL").mockResolvedValue({
+      ufsUrl: "https://signed.example/a.txt",
+    });
+    await result.files.url("a.txt");
+    expect(sign.mock.calls[0]?.[1]).toMatchObject({ expiresIn: 60 });
+  });
+
   test("oracle-cloud without a namespace points at --config-json", async () => {
     // There's no --namespace flag, so the loader's hint has to say where the
     // required namespace goes.
@@ -419,6 +469,11 @@ describe("cli/registry option merging", () => {
     expect(message).toMatch(/hint:/iu);
     // … which mentions the OAuth concept so it's actionable.
     expect(message).toMatch(/oauth/iu);
+    // The adapter's own error is preserved as `cause`, not discarded.
+    const { cause } = caught as Error;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toMatch(/missing auth/iu);
+    expect((cause as Error).message).not.toMatch(/hint:/iu);
   });
 });
 

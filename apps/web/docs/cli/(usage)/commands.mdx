@@ -139,7 +139,7 @@ files --provider s3 --bucket uploads url reports/2026-q1.pdf --expires-in 600
 
 ### sign-upload
 
-Mint a presigned POST policy for browser-direct uploads. `--max-size` is enforced server-side, so the client can't exceed it.
+Mint a presigned upload for browser-direct uploads. `--expires-in` is required. On S3, `--max-size` switches from a presigned PUT URL (no size limit) to a POST policy that enforces the size server-side, so the client can't exceed it. Adapters that can't enforce `--max-size` fail closed.
 
 ```bash lineNumbers
 files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
@@ -148,7 +148,7 @@ files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
 
 ### capabilities
 
-Print the configured adapter's [capability snapshot](/docs/capabilities) as JSON — range reads, native upload progress, list delimiters, metadata, cache-control, multipart, server-side copy, and signed URLs. Pure introspection; it makes no provider call.
+Print the configured adapter's [capability snapshot](/docs/capabilities) as JSON — range reads, native upload progress, list delimiters, metadata, cache-control, multipart, server-side copy, signed URLs, and conditional operations. Pure introspection; it makes no provider call.
 
 ```bash lineNumbers
 files --provider s3 --bucket uploads capabilities

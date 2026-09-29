@@ -150,10 +150,12 @@ export const loadFiles = async (
     // The adapter's own missing-required-field error is the most accurate
     // message — wrap it with the provider's `notes` hint so OAuth-only
     // providers don't leave the user guessing where to plug credentials in.
+    // The adapter's error rides along as `cause`, as with every FilesError.
     if (entry.notes && error instanceof Error) {
       throw new FilesError(
         error instanceof FilesError ? error.code : "Provider",
-        `${error.message}\n  hint: ${entry.notes}`
+        `${error.message}\n  hint: ${entry.notes}`,
+        error
       );
     }
     throw error;

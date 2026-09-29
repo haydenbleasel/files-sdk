@@ -3,7 +3,7 @@ title: JSON output
 description: JSON-by-default output on stdout, a stable error envelope on stderr, and meaningful exit codes for scripting - pipe straight to jq.
 ---
 
-Every command emits one JSON line on success. Errors go to `stderr` with a stable `{ error: { code, message } }` envelope, never mixed with the success channel — so a JSON parser downstream sees either a clean record or nothing.
+Every command emits one JSON line on success (except `download --stdout`, which writes the raw bytes). Errors go to `stderr` with a stable `{ error: { code, message } }` envelope, never mixed with the success channel — so a JSON parser downstream sees either a clean record or nothing.
 
 ```bash lineNumbers
 # JSON output is the default — pipe straight to jq.
@@ -13,7 +13,7 @@ $ files --provider fs --root /tmp/store head reports/q1.pdf
 # Errors go to stderr with a stable error code. Exit codes:
 #   0  ok
 #   1  NotFound (or exists → false)
-#   2  Provider / unknown error
+#   2  Provider / unknown error, or a usage error (unknown flag, missing option)
 #   3  Unauthorized
 #   4  Conflict
 $ files --provider fs --root /tmp/store head nope.txt

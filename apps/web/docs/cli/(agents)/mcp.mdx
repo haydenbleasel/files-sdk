@@ -37,4 +37,4 @@ files --provider s3 --bucket uploads mcp --allow-writes \
 }
 ```
 
-Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and, when writes are enabled, uploads (`upload` with a `base64` body) survive intact. Because the whole body travels in one tool response, `download` is capped at 10 MiB; an agent can lower the cap per call with `maxBytes` but can't raise it.
+Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and, when writes are enabled, uploads (`upload` with a `base64` body) survive intact. Because the whole body travels in one tool response, `download` is capped at 10 MiB; an agent can lower the cap per call with `maxBytes` but can't raise it. The cap is checked against `head()` before the transfer and enforced again on the bytes actually read, so an object that grows in between is cut off rather than buffered.

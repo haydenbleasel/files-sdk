@@ -148,10 +148,10 @@ const buildGlobal = (program: Command): void => {
       "--bucket <name>",
       `${G.SHARED} bucket / container name (S3 family, GCS, Supabase, Azure via --container)`
     )
-    .option("--region <region>", `${G.S3} region (S3 family, GCS)`)
+    .option("--region <region>", `${G.S3} region (S3 family)`)
     .option(
       "--endpoint <url>",
-      `${G.S3} endpoint override (MinIO, IBM COS, Akamai, Oracle, custom S3-compatibles)`
+      `${G.S3} endpoint (required for MinIO, RustFS, iDrive e2, s3-fetch; optional elsewhere)`
     )
     .option("--force-path-style", `${G.S3} force path-style URLs`)
     .option("--access-key-id <id>", `${G.S3} access key id`)
@@ -159,7 +159,7 @@ const buildGlobal = (program: Command): void => {
     .option("--session-token <token>", `${G.S3} STS session token`)
     .option(
       "--public-base-url <url>",
-      `${G.SHARED} origin for url() — skip signing (S3 family, R2, GCS, Azure, Supabase)`
+      `${G.SHARED} origin for url() — skip signing (S3 family, R2, GCS, Azure, Supabase, Firebase, Box, Dropbox, Bunny, FTP, SFTP, WebDAV, PocketBase)`
     )
     .option(
       "--default-url-expires-in <seconds>",
@@ -250,56 +250,56 @@ interface RawGlobalFlags {
   dryRun?: boolean;
 }
 
-interface ResolvedOpts {
-  dryRun: boolean;
-  global: GlobalCliOptions;
-  out: OutputOpts;
-}
+// commander merges parent options when getOptionValue is called on the child —
+// use optsWithGlobals() which walks the chain.
+const rawFlags = (cmd: Command): RawGlobalFlags =>
+  cmd.optsWithGlobals<RawGlobalFlags>();
 
-const resolveOpts = (cmd: Command): ResolvedOpts => {
-  // commander merges parent options when getOptionValue is called on the
-  // child — use opts() which walks the chain
-  const raw = cmd.optsWithGlobals<RawGlobalFlags>();
-  const global: GlobalCliOptions = {
-    access: raw.access,
-    accessKeyId: raw.accessKeyId,
-    accountId: raw.accountId,
-    accountKey: raw.accountKey,
-    accountName: raw.accountName,
-    applicationKey: raw.applicationKey,
-    applicationKeyId: raw.applicationKeyId,
-    bucket: raw.bucket,
-    configJson: parseJsonObject(raw.configJson, "--config-json"),
-    connectionString: raw.connectionString,
-    container: raw.container,
-    defaultUrlExpiresIn: raw.defaultUrlExpiresIn,
-    endpoint: raw.endpoint,
-    forcePathStyle: raw.forcePathStyle,
-    keyFilename: raw.keyFilename,
-    prefix: raw.keyPrefix,
-    projectId: raw.projectId,
-    provider: raw.provider,
-    publicBaseUrl: raw.publicBaseUrl,
-    region: raw.region,
-    retries: raw.retries,
-    root: raw.root,
-    secretAccessKey: raw.secretAccessKey,
-    serviceRoleKey: raw.serviceRoleKey,
-    sessionToken: raw.sessionToken,
-    siteId: raw.siteId,
-    storeName: raw.storeName,
-    timeout: raw.timeout,
-    token: raw.token,
-    url: raw.url,
-    urlBaseUrl: raw.urlBaseUrl,
-  };
-  const out: OutputOpts = {
-    json: raw.json !== false,
-    pretty: raw.pretty === true,
-    verbose: raw.verbose === true,
-  };
-  return { dryRun: raw.dryRun === true, global, out };
-};
+/**
+ * The output flags. Resolved on their own because they can't fail, so an
+ * error in the rest of the global flags (a malformed `--config-json`) is still
+ * reported in the format the user asked for.
+ */
+const resolveOutput = (raw: RawGlobalFlags): OutputOpts => ({
+  json: raw.json !== false,
+  pretty: raw.pretty === true,
+  verbose: raw.verbose === true,
+});
+
+/** The provider config from the global flags. Throws on a bad `--config-json`. */
+const resolveGlobal = (raw: RawGlobalFlags): GlobalCliOptions => ({
+  access: raw.access,
+  accessKeyId: raw.accessKeyId,
+  accountId: raw.accountId,
+  accountKey: raw.accountKey,
+  accountName: raw.accountName,
+  applicationKey: raw.applicationKey,
+  applicationKeyId: raw.applicationKeyId,
+  bucket: raw.bucket,
+  configJson: parseJsonObject(raw.configJson, "--config-json"),
+  connectionString: raw.connectionString,
+  container: raw.container,
+  defaultUrlExpiresIn: raw.defaultUrlExpiresIn,
+  endpoint: raw.endpoint,
+  forcePathStyle: raw.forcePathStyle,
+  keyFilename: raw.keyFilename,
+  prefix: raw.keyPrefix,
+  projectId: raw.projectId,
+  provider: raw.provider,
+  publicBaseUrl: raw.publicBaseUrl,
+  region: raw.region,
+  retries: raw.retries,
+  root: raw.root,
+  secretAccessKey: raw.secretAccessKey,
+  serviceRoleKey: raw.serviceRoleKey,
+  sessionToken: raw.sessionToken,
+  siteId: raw.siteId,
+  storeName: raw.storeName,
+  timeout: raw.timeout,
+  token: raw.token,
+  url: raw.url,
+  urlBaseUrl: raw.urlBaseUrl,
+});
 
 /**
  * A command's own option bag as commander hands it to the action: the run
@@ -331,9 +331,14 @@ const wrap =
     // SAFETY: everything before that trailing Command is the positional/option
     // tuple the command registered, which `buildOpts` declares as `A`.
     const commandArgs = args.slice(0, -1) as A;
-    const { global, out, dryRun } = resolveOpts(cmd);
-    const common: CommonRunOpts = { ...out, dryRun, global };
+    const raw = rawFlags(cmd);
+    const out = resolveOutput(raw);
     try {
+      const common: CommonRunOpts = {
+        ...out,
+        dryRun: raw.dryRun === true,
+        global: resolveGlobal(raw),
+      };
       await fn(buildOpts(common, ...commandArgs));
     } catch (error) {
       fail(error, out);
@@ -373,7 +378,15 @@ export const buildProgram = (
       `agent-friendly CLI for files-sdk — uniform interface over ${PROVIDER_NAMES.length} object storage providers`
     )
     .version(VERSION)
-    .showHelpAfterError();
+    .showHelpAfterError()
+    // Commander exits 1 on a usage error (unknown flag, missing argument, bad
+    // choice), but 1 is this CLI's NotFound / "exists → false" code. Report
+    // usage errors as 2, the generic failure code, so a typo can't read as
+    // "missing"; --help and --version still exit 0. Set before the
+    // subcommands are added so each one inherits it.
+    .exitOverride(({ exitCode }) => {
+      process.exit(exitCode === 0 ? 0 : 2);
+    });
 
   buildGlobal(program);
 
@@ -805,8 +818,10 @@ export const buildProgram = (
       "operator-trusted destination provider options for MCP transfer/sync"
     )
     .action(async (opts: McpFlags, cmd: Command) => {
-      const { global, out } = resolveOpts(cmd);
+      const raw = rawFlags(cmd);
+      const out = resolveOutput(raw);
       try {
+        const global = resolveGlobal(raw);
         const destination = parseDestination(opts.to);
         // `@modelcontextprotocol/sdk` is an optional dependency — pulling
         // it in lazily means library-only consumers don't pay the install

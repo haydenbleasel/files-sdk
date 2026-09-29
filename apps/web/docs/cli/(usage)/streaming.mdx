@@ -5,11 +5,11 @@ description: Stream bodies through stdin/stdout with no temp files, and use --dr
 
 `upload --stdin` reads the body from `stdin`; `download --stdout` writes it to `stdout`. No intermediate file, no extra copy. Metadata for stdout downloads is suppressed by default and only emitted to `stderr` when `--verbose` is set, so the byte stream stays clean.
 
-`--dry-run` resolves the provider and prints the operation it _would_ run, without making a network call. Handy as a sanity check inside an agent loop before letting it execute writes.
+`--dry-run` resolves the provider and prints the operation it _would_ run, without making a network call. The exception is `sync`, which still lists both providers to print its real plan. Handy as a sanity check inside an agent loop before letting it execute writes.
 
 ```bash lineNumbers
-# Stream binary in/out without temp files
-ffmpeg -i talk.mov -c copy -f mp4 - \
+# Stream binary in/out without temp files (piped MP4 must be fragmented)
+ffmpeg -i talk.mov -c copy -movflags frag_keyframe+empty_moov -f mp4 - \
   | files --provider r2 --bucket talks upload 2026/q1/keynote.mp4 --stdin --content-type video/mp4
 
 files --provider r2 --bucket talks download 2026/q1/keynote.mp4 --stdout \

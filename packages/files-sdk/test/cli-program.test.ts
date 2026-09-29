@@ -282,7 +282,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         "--match",
         "global"
       )
-    ).rejects.toThrow("__exit:1");
+    ).rejects.toThrow("__exit:2");
     expect(cap.stderr.join("")).toContain(
       "Allowed choices are glob, regex, substring, exact"
     );
@@ -412,10 +412,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     }
   });
 
-  test("invalid --config-json throws a Provider FilesError", async () => {
-    // resolveOpts() parses --config-json *before* the wrap()'s try/catch,
-    // so the error propagates straight out of parseAsync rather than going
-    // through fail(). The shape still matches the rest of the SDK.
+  test("invalid --config-json routes through fail() with exit 2", async () => {
     await expect(
       run(
         "--provider",
@@ -427,7 +424,55 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         "head",
         "k"
       )
-    ).rejects.toThrow("invalid JSON in --config-json");
+    ).rejects.toThrow("__exit:2");
+    const payload = JSON.parse(cap.stderr.join(""));
+    expect(payload.error.code).toBe("Provider");
+    expect(payload.error.message).toContain("invalid JSON in --config-json");
+  });
+
+  test("invalid --config-json honors --no-json in the error it prints", async () => {
+    // Regression: --config-json was parsed before the output flags were in
+    // hand, so the error escaped wrap() and always printed the JSON envelope.
+    for (const command of [["head", "k"], ["mcp"]]) {
+      cap.stderr.length = 0;
+      // eslint-disable-next-line no-await-in-loop -- each run asserts against the shared stderr capture it just reset
+      await expect(
+        run(
+          "--provider",
+          "fs",
+          "--root",
+          root,
+          "--no-json",
+          "--config-json",
+          "{bad json",
+          ...command
+        )
+      ).rejects.toThrow("__exit:2");
+      expect(cap.stderr.join("")).toStartWith(
+        "error (Provider): invalid JSON in --config-json"
+      );
+    }
+  });
+
+  test("usage errors exit 2, not the NotFound code 1", async () => {
+    // Regression: commander exits 1 on a usage error, which is the CLI's
+    // NotFound / "exists → false" code — a mistyped flag on `exists` read as
+    // "missing".
+    await expect(
+      run("--provider", "fs", "--root", root, "exists", "--bogus", "k")
+    ).rejects.toThrow("__exit:2");
+    expect(cap.stderr.join("")).toContain("unknown option '--bogus'");
+    await expect(
+      run("--provider", "fs", "--root", root, "sign-upload", "k")
+    ).rejects.toThrow("__exit:2");
+    expect(cap.exits).toEqual([2, 2]);
+  });
+
+  test("--help and --version still exit 0", async () => {
+    await expect(run("--help")).rejects.toThrow("__exit:0");
+    await expect(run("--version")).rejects.toThrow("__exit:0");
+    await expect(run("head", "--help")).rejects.toThrow("__exit:0");
+    expect(cap.exits).toEqual([0, 0, 0]);
   });
 
   test("--pretty + --no-json affect output shape", async () => {

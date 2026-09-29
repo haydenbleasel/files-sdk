@@ -19,7 +19,7 @@ One-shot, no install:
 npx -p files-sdk files --provider fs --root ./uploads list
 ```
 
-Adapter SDKs (AWS, GCP, Azure, Dropbox, etc.) are loaded lazily on first use, so cold-start cost matches whichever single provider you select — not the union of all of them. Those SDKs are optional peer dependencies of `files-sdk`, so install the one for the provider you intend to use alongside the CLI — for example `npm install -g files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner` for S3. See the per-adapter docs for the exact package list.
+Adapter SDKs (AWS, GCP, Azure, Dropbox, etc.) are loaded lazily on first use, so cold-start cost matches whichever single provider you select — not the union of all of them. Those SDKs are optional peer dependencies of `files-sdk`, so install the one for the provider you intend to use alongside the CLI — for example `npm install -g files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage` for S3. The CLI streams upload bodies, and on the S3 family an unknown-length stream goes through `@aws-sdk/lib-storage`, so include it if you'll run `upload`. See the per-adapter docs for the exact package list.
 
 ## Pick a provider
 

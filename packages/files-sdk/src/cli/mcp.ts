@@ -72,17 +72,65 @@ export const mcpDownloadSize = (
   range?: { end?: number; start: number }
 ): number => (range ? rangedSize(fullSize, range) : fullSize);
 
+const mcpDownloadTooLarge = (key: string, size: number | string, cap: number) =>
+  new FilesError(
+    "Provider",
+    `object "${key}" is ${size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
+  );
+
 export const assertMcpDownloadFitsCap = (
   key: string,
   size: number,
   cap: number
 ): void => {
   if (size > cap) {
-    throw new FilesError(
-      "Provider",
-      `object "${key}" is ${size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
-    );
+    throw mcpDownloadTooLarge(key, size, cap);
   }
+};
+
+/**
+ * Drain a download body into one buffer, refusing to hold more than `cap`
+ * bytes. The `head()` pre-check can't be trusted on its own — the object can
+ * be replaced between the two calls, or an adapter or plugin can report a size
+ * that doesn't match the body it serves — so the cap is enforced on the bytes
+ * actually read, cancelling the transfer as soon as it's exceeded.
+ */
+export const readMcpDownloadCapped = async (
+  stream: ReadableStream<Uint8Array>,
+  key: string,
+  cap: number
+): Promise<Uint8Array> => {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    total += value.byteLength;
+    if (total > cap) {
+      break;
+    }
+    chunks.push(value);
+  }
+  if (total > cap) {
+    // Stop the transfer so the rest of the body is never pulled.
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cleanup — the size error is what matters.
+    }
+    throw mcpDownloadTooLarge(key, `at least ${total}`, cap);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 };
 
 const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
@@ -294,17 +342,25 @@ export const buildMcpServer = async (
     async ({ key, maxBytes, range, condition }) => {
       try {
         const cap = resolveMcpDownloadCap(maxBytes);
+        // Cheap early refusal before any body is transferred.
         const meta = await files.head(key);
         assertMcpDownloadFitsCap(key, mcpDownloadSize(meta.size, range), cap);
+        // Stream the body so the cap is enforced on what's actually read, not
+        // on what head() reported a moment ago.
         const file = await files.download(key, {
+          as: "stream",
           ...(range && { range }),
           ...(condition && { condition }),
         });
-        const buf = Buffer.from(await file.arrayBuffer());
-        assertMcpDownloadFitsCap(key, buf.byteLength, cap);
+        const bytes = await readMcpDownloadCapped(file.stream(), key, cap);
         return ok({
           ...storedFileToJson(file),
-          base64: buf.toString("base64"),
+          base64: Buffer.from(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).toString("base64"),
+          size: bytes.byteLength,
         });
       } catch (error) {
         return errorPayload(error);

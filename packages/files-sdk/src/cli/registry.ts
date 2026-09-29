@@ -228,7 +228,14 @@ export const PROVIDERS: ProviderRegistry = {
   box: {
     load: async (opts) => {
       const { box } = await import("../box/index.js");
-      return construct(box, {}, opts.extra);
+      return construct(
+        box,
+        {
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          publicBaseUrl: opts.publicBaseUrl,
+        },
+        opts.extra
+      );
     },
     notes:
       'OAuth-based — configure via --config-json with one auth shape: {"oauth":{"clientId":"…","clientSecret":"…","refreshToken":"…"}}, {"ccg":{"clientId":"…","clientSecret":"…","enterpriseId":"…"}}, {"jwt":{"configFilePath":"…"}}, or {"developerToken":"…"} (plus optional "rootFolderId"); BOX_DEVELOPER_TOKEN is the only env fallback',
@@ -237,10 +244,14 @@ export const PROVIDERS: ProviderRegistry = {
   "bunny-storage": {
     load: async (opts) => {
       const { bunnyStorage } = await import("../bunny-storage/index.js");
-      return construct(bunnyStorage, {}, opts.extra);
+      return construct(
+        bunnyStorage,
+        { publicBaseUrl: opts.publicBaseUrl },
+        opts.extra
+      );
     },
     notes:
-      "configure via --config-json (zone, accessKey, region, publicBaseUrl) or BUNNY_STORAGE_* env vars (STORAGE_* as aliases)",
+      "configure via --config-json (zone, accessKey, region) or BUNNY_STORAGE_* env vars (STORAGE_* as aliases); url() needs --public-base-url (a Pull Zone or CDN origin)",
     required: [],
   },
   cloudinary: {
@@ -263,7 +274,15 @@ export const PROVIDERS: ProviderRegistry = {
   dropbox: {
     load: async (opts) => {
       const { dropbox } = await import("../dropbox/index.js");
-      return construct(dropbox, { accessToken: opts.token }, opts.extra);
+      return construct(
+        dropbox,
+        {
+          accessToken: opts.token,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
+          publicBaseUrl: opts.publicBaseUrl,
+        },
+        opts.extra
+      );
     },
     notes:
       "OAuth-based — pass --token <accessToken>, or use --config-json for refresh-token flows / DROPBOX_ACCESS_TOKEN env var",
@@ -553,7 +572,11 @@ export const PROVIDERS: ProviderRegistry = {
   uploadthing: {
     load: async (opts) => {
       const { uploadthing } = await import("../uploadthing/index.js");
-      return construct(uploadthing, { token: opts.token }, opts.extra);
+      return construct(
+        uploadthing,
+        { defaultUrlExpiresIn: opts.defaultUrlExpiresIn, token: opts.token },
+        opts.extra
+      );
     },
     notes: "pass --token <uploadthingToken> or set UPLOADTHING_TOKEN",
     required: [],
@@ -565,6 +588,7 @@ export const PROVIDERS: ProviderRegistry = {
         vercelBlob,
         {
           access: opts.access,
+          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
           token: opts.token,
         },
         opts.extra
