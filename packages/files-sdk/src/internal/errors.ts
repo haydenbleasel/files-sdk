@@ -1,3 +1,5 @@
+import { isObject } from "./is.js";
+
 export type FilesErrorCode =
   | "NotFound"
   | "Unauthorized"
@@ -7,7 +9,21 @@ export type FilesErrorCode =
 
 export type ProviderFilesErrorCode = Exclude<FilesErrorCode, "ReadOnly">;
 
+// Edge, Node and client-framework entries are bundled in separate passes, so a
+// consumer can load more than one copy of this class (`files-sdk` and
+// `files-sdk/api` each ship their own). The brand lets `instanceof` match
+// across copies.
+const FILES_ERROR_BRAND = Symbol.for("files-sdk.FilesError");
+
 export class FilesError extends Error {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- `instanceof` hands any value to `Symbol.hasInstance`; this method is the check
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    if (this !== FilesError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return isObject(value) && FILES_ERROR_BRAND in value;
+  }
+
   readonly code: FilesErrorCode;
   readonly aborted: boolean;
   /**
@@ -102,3 +118,8 @@ export class FilesError extends Error {
     return new FilesError(fallbackCode, message, cause);
   }
 }
+
+// Set once on the prototype (not per instance) so subclasses inherit it and it
+// stays out of `JSON.stringify`/`Object.keys`. A plain statement rather than a
+// `static {}` block keeps ES2022 class syntax out of the browser bundles.
+Object.defineProperty(FilesError.prototype, FILES_ERROR_BRAND, { value: true });

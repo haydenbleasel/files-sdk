@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { FilesError } from "../src/internal/errors.js";
+import { ValidationError } from "../src/validation/index.js";
 
 describe("FilesError", () => {
   test("constructor sets name, code, message, and cause", () => {
@@ -31,6 +32,23 @@ describe("FilesError", () => {
     const wrapped = FilesError.wrap("kaboom");
     expect(wrapped.message).toBe("kaboom");
     expect(wrapped.cause).toBe("kaboom");
+  });
+
+  test("instanceof matches another bundled copy by its brand", () => {
+    // Stands in for the `FilesError` another entry's bundle defines (#164).
+    const foreign = Object.create(Error.prototype, {
+      [Symbol.for("files-sdk.FilesError")]: { value: true },
+    });
+    expect(foreign instanceof FilesError).toBe(true);
+    const others: unknown[] = [new Error("x"), null, "FilesError"];
+    for (const value of others) {
+      expect(value instanceof FilesError).toBe(false);
+    }
+  });
+
+  test("subclasses keep prototype-based instanceof", () => {
+    expect(new ValidationError("size", "too big")).toBeInstanceOf(FilesError);
+    expect(new FilesError("Provider", "x")).not.toBeInstanceOf(ValidationError);
   });
 
   test("wrap honors fallbackCode", () => {
