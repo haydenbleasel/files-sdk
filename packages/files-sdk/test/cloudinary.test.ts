@@ -541,8 +541,8 @@ describe("cloudinary adapter", () => {
       }),
     });
     const signed = await files.signedUploadUrl("upload-key", {
-      contentType: "text/plain",
       expiresIn: 3600,
+      minSize: 0,
     });
     expect(signed.method).toBe("POST");
     expect(signed.url).toBe(
@@ -554,14 +554,71 @@ describe("cloudinary adapter", () => {
     expect(signed.fields.api_key).toBe(API_KEY);
     expect(signed.fields.signature).toBe("signature-abc");
     expect(signed.fields.public_id).toBe("upload-key");
-    expect(signed.fields.content_type).toBe("text/plain");
+    // The default `upload` type is Cloudinary's default, so it isn't sent.
+    expect(signed.fields.type).toBeUndefined();
+    expect(signed.fields.content_type).toBeUndefined();
+    const [signedParams, secret] = apiSignRequestMock.mock.calls[0] ?? [];
+    expect(secret).toBe(API_SECRET);
+    expect(Object.keys(signedParams ?? {}).toSorted()).toEqual([
+      "public_id",
+      "timestamp",
+    ]);
+  });
+
+  test("signedUploadUrl > signs and sends a private/authenticated delivery type", async () => {
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+        type: "authenticated",
+      }),
+    });
+    const signed = await files.signedUploadUrl("upload-key", {
+      expiresIn: 3600,
+    });
+    if (signed.method !== "POST") {
+      throw new Error("expected POST shape");
+    }
+    expect(signed.fields.type).toBe("authenticated");
     expect(apiSignRequestMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        content_type: "text/plain",
         public_id: "upload-key",
+        type: "authenticated",
       }),
       API_SECRET
     );
+  });
+
+  test("signedUploadUrl > rejects contentType because Cloudinary cannot bind it", async () => {
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("upload-key", {
+        contentType: "text/plain",
+        expiresIn: 3600,
+      })
+    ).rejects.toThrow(/contentType.*not supported/u);
+    expect(apiSignRequestMock).not.toHaveBeenCalled();
+  });
+
+  test("signedUploadUrl > rejects a positive minSize because Cloudinary cannot enforce it", async () => {
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+      }),
+    });
+    await expect(
+      files.signedUploadUrl("upload-key", { expiresIn: 3600, minSize: 1 })
+    ).rejects.toThrow(/minSize.*not supported/u);
+    expect(apiSignRequestMock).not.toHaveBeenCalled();
   });
 
   test("signedUploadUrl > throws when apiSecret is missing", async () => {
@@ -908,6 +965,72 @@ describe("cloudinary adapter", () => {
     expect(Math.abs(expiresAt - expected)).toBeLessThan(5);
   });
 
+  test("download > type=private reads through a signed download URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = mock((url: string) => {
+      seen.push(url);
+      return Promise.resolve(new Response("hello", { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "private" }),
+    });
+    const file = await files.download("test-file");
+    expect(await file.text()).toBe("hello");
+    expect(privateDownloadUrlMock).toHaveBeenCalledWith(
+      "test-file",
+      "txt",
+      expect.objectContaining({ resource_type: "raw", type: "private" })
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("signed=1");
+    expect(urlMock).not.toHaveBeenCalled();
+  });
+
+  test("download > type=authenticated without a stored format fails permanently", async () => {
+    resourceMock.mockResolvedValueOnce({
+      bytes: 0,
+      public_id: "raw-no-ext",
+      resource_type: "raw",
+      type: "authenticated",
+    } as never);
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("x", { status: 200 }))
+    ) as unknown as typeof globalThis.fetch;
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "authenticated" }),
+    });
+    await expect(files.download("raw-no-ext")).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("no format"),
+      permanent: true,
+    });
+    expect(resourceMock).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("head/list > type=private lazy bodies fetch a signed download URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = mock((url: string) => {
+      seen.push(url);
+      return Promise.resolve(new Response("hello", { status: 200 }));
+    }) as unknown as typeof globalThis.fetch;
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "private" }),
+    });
+    const head = await files.head("test-file");
+    expect(await head.text()).toBe("hello");
+    const { items } = await files.list();
+    expect(await items[0]?.text()).toBe("hello");
+    expect(seen).toHaveLength(2);
+    expect(seen.every((url) => url.includes("signed=1"))).toBe(true);
+    expect(privateDownloadUrlMock).toHaveBeenCalledWith(
+      "a.txt",
+      "txt",
+      expect.objectContaining({ type: "private" })
+    );
+    expect(urlMock).not.toHaveBeenCalled();
+  });
+
   test("download forwards the signal to the delivery fetch", async () => {
     let seenSignal: AbortSignal | undefined;
     globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -985,6 +1108,55 @@ describe("cloudinary resumable uploads (chunked)", () => {
     expect(control.session?.provider).toBe("cloudinary");
     expect(headers[0]?.["Content-Range"]).toBe("bytes 0-4/5");
     expect(headers[0]?.["X-Unique-Upload-Id"]).toBeDefined();
+  });
+
+  test("a private/authenticated type is signed and sent with each chunk", async () => {
+    const forms: FormData[] = [];
+    installFetch((_url, init) => {
+      forms.push(init.body as FormData);
+      return finalJson(5);
+    });
+    apiSignRequestMock.mockClear();
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+        type: "private",
+      }),
+    });
+    await files.upload("doc", "hello", { control: new UploadControl() });
+    expect(forms[0]?.get("type")).toBe("private");
+    expect(apiSignRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ public_id: "doc", type: "private" }),
+      API_SECRET
+    );
+  });
+
+  test("the default upload type is not sent", async () => {
+    const forms: FormData[] = [];
+    installFetch((_url, init) => {
+      forms.push(init.body as FormData);
+      return finalJson(5);
+    });
+    const files = new Files({ adapter: withCreds() });
+    await files.upload("doc", "hello", { control: new UploadControl() });
+    expect(forms[0]?.has("type")).toBe(false);
+  });
+
+  test("an empty body goes up single-shot, without a chunk Content-Range", async () => {
+    const inits: RequestInit[] = [];
+    installFetch((_url, init) => {
+      inits.push(init);
+      return finalJson(0);
+    });
+    const files = new Files({ adapter: withCreds() });
+    const result = await files.upload("doc", "", {
+      control: new UploadControl(),
+    });
+    expect(result.size).toBe(0);
+    expect(inits).toHaveLength(1);
+    expect(inits[0]?.headers).toBeUndefined();
   });
 
   test("resume continues from the token's offset", async () => {

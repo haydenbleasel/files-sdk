@@ -634,6 +634,20 @@ describe("uploadthing adapter", () => {
     ).rejects.toThrow(/maxSize.*not supported/u);
   });
 
+  test("signedUploadUrl rejects a positive minSize but accepts minSize 0", async () => {
+    const files = new Files({
+      adapter: uploadthing({ slug: "mediaUploader" }),
+    });
+    await expect(
+      files.signedUploadUrl("uploads/x.png", { expiresIn: 60, minSize: 1 })
+    ).rejects.toThrow(/minSize.*not supported/u);
+    const out = await files.signedUploadUrl("uploads/x.png", {
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(out.method).toBe("PUT");
+  });
+
   test("signedUploadUrl region override is honored", async () => {
     const files = new Files({
       adapter: uploadthing({ region: "fra1" }),

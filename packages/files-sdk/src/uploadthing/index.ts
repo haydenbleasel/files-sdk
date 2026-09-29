@@ -273,7 +273,7 @@ const hex = (bytes: Uint8Array): string => {
 };
 
 // HMAC-SHA256(url, apiKey) → hex. Uses Web Crypto so the adapter works in
-// every modern runtime (Node 18+, Workers, Bun, Deno) without pulling in
+// every modern runtime (Node 20+, Workers, Bun, Deno) without pulling in
 // `node:crypto`.
 const hmacSha256Hex = async (
   message: string,
@@ -610,6 +610,14 @@ export const uploadthing = (
         throw new FilesError(
           "Provider",
           "uploadthing: `maxSize` is not supported for signed upload URLs. UploadThing UFS presigned PUT URLs do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded PUT."
+        );
+      }
+      // `minSize: 0` (no minimum) holds trivially; a positive floor has no
+      // UFS equivalent, so fail closed like `maxSize`.
+      if (options.minSize !== undefined && options.minSize > 0) {
+        throw new FilesError(
+          "Provider",
+          "uploadthing: `minSize` is not supported for signed upload URLs. UploadThing UFS presigned PUT URLs have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
         );
       }
       const fileKey = randomFileKey();

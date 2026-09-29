@@ -52,7 +52,8 @@ export interface CloudinaryAdapterOptions {
   /**
    * Cloudinary API secret. Falls back to `CLOUDINARY_API_SECRET` or the value
    * parsed out of `CLOUDINARY_URL`. Required for `signedUploadUrl()` and for
-   * private/authenticated `url()` signing.
+   * private/authenticated `url()` signing and reads (`download()` and lazy
+   * `head()`/`list()` bodies fetch through a signed URL for those types).
    */
   apiSecret?: string;
   /**
@@ -285,24 +286,49 @@ export const cloudinaryAdapter = (
       type,
     });
 
+  // private / authenticated assets are served only through a signed URL.
+  // private_download_url needs the asset's stored format, which callers read
+  // from an Admin API `resource` lookup.
   const buildSignedDeliveryUrl = (
     key: string,
-    format: string,
+    format: string | undefined,
     expiresIn: number
-  ): string =>
-    sdk.utils.private_download_url(key, format, {
+  ): string => {
+    if (!format) {
+      throw new FilesError(
+        "Provider",
+        `cloudinary: cannot mint signed URL for "${key}" — resource has no format. Raw assets must store their extension in the public_id.`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    return sdk.utils.private_download_url(key, format, {
       expires_at: Math.floor(Date.now() / 1000) + expiresIn,
       resource_type: resourceType,
       type,
     });
+  };
+
+  // The URL a read fetches: the public delivery URL for `upload` assets, a
+  // signed one for private / authenticated assets (whose unsigned delivery
+  // URL answers 401).
+  const readUrl = (key: string, format: string | undefined): string =>
+    type === "upload"
+      ? buildDeliveryUrl(key)
+      : buildSignedDeliveryUrl(key, format, signedUrlExpiresIn);
 
   // `signal` is only threaded when `download()` calls this inline; the
   // head()/list() factories invoke it lazily (outside any operation scope) and
   // pass none, matching how the other adapters leave deferred bodies unsigned.
   const lazyDownload =
-    (key: string, signal?: AbortSignal, range?: ByteRange) =>
+    (
+      key: string,
+      format: string | undefined,
+      signal?: AbortSignal,
+      range?: ByteRange
+    ) =>
     async (): Promise<Uint8Array> => {
-      const url = buildDeliveryUrl(key);
+      const url = readUrl(key, format);
       const res = await fetch(url, {
         ...(signal && { signal }),
         ...(range && { headers: rangeRequestHeaders(range) }),
@@ -357,10 +383,24 @@ export const cloudinaryAdapter = (
           key,
           { resource_type: resourceType, type }
         );
-        const [resource, bytes] = await Promise.all([
-          resourcePromise,
-          lazyDownload(key, downloadOpts?.signal, range)(),
-        ]);
+        // Public assets fetch bytes and metadata in parallel; a signed read
+        // needs the resource's format first.
+        let resource: CloudinaryResource;
+        let bytes: Uint8Array;
+        if (type === "upload") {
+          [resource, bytes] = await Promise.all([
+            resourcePromise,
+            lazyDownload(key, undefined, downloadOpts?.signal, range)(),
+          ]);
+        } else {
+          resource = await resourcePromise;
+          bytes = await lazyDownload(
+            key,
+            resource.format,
+            downloadOpts?.signal,
+            range
+          )();
+        }
         return createStoredFile(
           {
             ...(resource.etag && { etag: resource.etag }),
@@ -407,7 +447,7 @@ export const cloudinaryAdapter = (
             size: resource.bytes ?? 0,
             type: resolveContentType(resource),
           },
-          { factory: lazyDownload(key), kind: "lazy" }
+          { factory: lazyDownload(key, resource.format), kind: "lazy" }
         );
       } catch (error) {
         throw mapCloudinaryError(error);
@@ -426,7 +466,10 @@ export const cloudinaryAdapter = (
               size: resource.bytes ?? 0,
               type: resolveContentType(resource),
             },
-            { factory: lazyDownload(resource.public_id), kind: "lazy" }
+            {
+              factory: lazyDownload(resource.public_id, resource.format),
+              kind: "lazy",
+            }
           );
         // resources() lists every public_id under the prefix (recursively),
         // with no native folder mode that matches our API, so gather them all
@@ -596,8 +639,16 @@ export const cloudinaryAdapter = (
         }> {
           const current = requireSession();
           const timestamp = Math.floor(Date.now() / 1000);
+          // Cloudinary signs every param except file / api_key /
+          // resource_type / cloud_name, so a non-default delivery `type` must
+          // be both signed and sent — otherwise the asset lands as a public
+          // `upload` one that this adapter's type-scoped reads can't see.
           const signature = sdk.utils.api_sign_request(
-            { public_id: key, timestamp },
+            {
+              public_id: key,
+              timestamp,
+              ...(type !== "upload" && { type }),
+            },
             signingSecret
           );
           const form = new FormData();
@@ -610,14 +661,23 @@ export const cloudinaryAdapter = (
           form.append("timestamp", String(timestamp));
           form.append("signature", signature);
           form.append("public_id", key);
+          if (type !== "upload") {
+            form.append("type", type);
+          }
+          // An empty body has no valid byte range (`bytes 0--1/0`), so it
+          // goes up as a plain single-shot upload instead of a chunk.
+          const chunkHeaders =
+            data.byteLength > 0
+              ? {
+                  "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
+                  "X-Unique-Upload-Id": current.uploadId,
+                }
+              : undefined;
           const res = await fetch(
             `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`,
             {
               body: form,
-              headers: {
-                "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
-                "X-Unique-Upload-Id": current.uploadId,
-              },
+              ...(chunkHeaders && { headers: chunkHeaders }),
               method: "POST",
               ...(signal && { signal }),
             }
@@ -667,28 +727,43 @@ export const cloudinaryAdapter = (
           "cloudinary: `maxSize` is not supported for signed upload URLs. Cloudinary upload signatures do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded signed upload."
         );
       }
+      // `minSize: 0` (no minimum) holds trivially; a positive floor can't be
+      // bound into the signature, so fail closed like `maxSize`.
+      if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `minSize` is not supported for signed upload URLs. Cloudinary upload signatures have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
+        );
+      }
+      // Cloudinary upload params have no MIME-type field to bind (it detects
+      // the format from the bytes), so a `contentType` would only be advisory.
+      if (signOpts.contentType) {
+        throw new FilesError(
+          "Provider",
+          "cloudinary: `contentType` is not supported for signed upload URLs. Cloudinary detects the format from the uploaded bytes and has no Content-Type field to bind into the upload signature; omit `contentType`, or restrict formats with an upload preset's `allowed_formats`."
+        );
+      }
       // Cloudinary signatures are computed over a sorted, ampersand-joined
       // parameter set excluding `file`, `cloud_name`, `resource_type`, and
-      // `api_key`. The SDK helper handles the sort+hash for us.
+      // `api_key`. The SDK helper handles the sort+hash for us. A non-default
+      // delivery `type` is signed and sent so the asset lands as the type this
+      // adapter reads.
       const timestamp = Math.floor(Date.now() / 1000);
-      const paramsToSign = {
-        public_id: key,
-        timestamp,
-        ...(signOpts.contentType && { content_type: signOpts.contentType }),
-      };
-      const signature = sdk.utils.api_sign_request(paramsToSign, apiSecret);
+      const typeParam: Record<string, string> =
+        type === "upload" ? {} : { type };
+      const signature = sdk.utils.api_sign_request(
+        { public_id: key, timestamp, ...typeParam },
+        apiSecret
+      );
       const url = `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`;
-      const baseFields = {
-        api_key: apiKey,
-        public_id: key,
-        signature,
-        timestamp: String(timestamp),
-      };
-      const fields = signOpts.contentType
-        ? { ...baseFields, content_type: signOpts.contentType }
-        : baseFields;
       return Promise.resolve({
-        fields,
+        fields: {
+          api_key: apiKey,
+          public_id: key,
+          signature,
+          timestamp: String(timestamp),
+          ...typeParam,
+        },
         method: "POST",
         url,
       });
@@ -743,18 +818,12 @@ export const cloudinaryAdapter = (
           return buildDeliveryUrl(key);
         }
         // private / authenticated — sign with expiry. private_download_url
-        // needs the asset format, so do a HEAD to learn it.
+        // needs the asset format, so look the resource up to learn it.
         const expiresIn = urlOpts?.expiresIn ?? signedUrlExpiresIn;
         const resource: CloudinaryResource = await sdk.api.resource(key, {
           resource_type: resourceType,
           type,
         });
-        if (!resource.format) {
-          throw new FilesError(
-            "Provider",
-            `cloudinary: cannot mint signed URL for "${key}" — resource has no format. Raw assets must store their extension in the public_id.`
-          );
-        }
         return buildSignedDeliveryUrl(key, resource.format, expiresIn);
       } catch (error) {
         throw mapCloudinaryError(error);
