@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
+import { createFilesRouter } from "../src/api/index.js";
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
-import { createFiles, FilesError } from "../src/index.js";
+import { createFiles, FilesError, sync, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
   Files,
   PluginNext,
 } from "../src/index.js";
+import { memory } from "../src/memory/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
@@ -161,6 +163,174 @@ describe("dedup plugin — head and metadata", () => {
   });
 });
 
+describe("dedup plugin — head and list bodies", () => {
+  test("head() body accessors read the content, not the empty pointer", async () => {
+    const files = withDedup();
+    await files.upload("a.txt", "hello world");
+    const forText = await files.head("a.txt");
+    expect(await forText.text()).toBe("hello world");
+    const forBytes = await files.head("a.txt");
+    const bytes = await forBytes.arrayBuffer();
+    expect(new TextDecoder().decode(bytes)).toBe("hello world");
+    const forStream = await files.head("a.txt", { timeout: 5000 });
+    const streamed = await new Response(forStream.stream()).text();
+    expect(streamed).toBe("hello world");
+  });
+
+  test("list() item bodies read the content", async () => {
+    const files = withDedup();
+    await files.upload("a.txt", "first");
+    await files.upload("b.txt", "second");
+    const { items } = await files.list();
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["first", "second"]);
+  });
+
+  test("a head() body is fetched only when read, and cancels cleanly", async () => {
+    const inner = fakeAdapter();
+    const downloads: string[] = [];
+    const adapter: Adapter = {
+      ...inner,
+      download(key, opts) {
+        downloads.push(key);
+        return inner.download(key, opts);
+      },
+    };
+    const files = createFiles({ adapter, plugins: [dedup()] });
+    await files.upload("a.txt", "lazy");
+    const head = await files.head("a.txt");
+    expect(downloads).toEqual([]);
+
+    const stream = head.stream();
+    await Bun.sleep(0);
+    expect(downloads).toEqual([]);
+    await stream.cancel("not needed");
+    expect(downloads).toEqual([]);
+
+    const again = await files.head("a.txt");
+    const reader = again.stream().getReader();
+    await reader.read();
+    await reader.cancel("done early");
+    expect(downloads).toHaveLength(1);
+  });
+});
+
+describe("dedup plugin — etag", () => {
+  test("reports the content hash, so it tracks content rather than the pointer", async () => {
+    // memory() derives ETags from the body, so every (empty) pointer has the
+    // same native ETag — the case the content hash has to fix.
+    const files = withDedup({}, memory());
+    const uploaded = await files.upload("a.txt", "one");
+    await files.upload("b.txt", "two");
+    await files.upload("c.txt", "one");
+
+    const a = await files.head("a.txt");
+    const b = await files.head("b.txt");
+    const c = await files.head("c.txt");
+    expect(a.etag).toMatch(/^[0-9a-f]{64}$/u);
+    expect(b.etag).not.toBe(a.etag);
+    expect(c.etag).toBe(a.etag);
+    expect(uploaded.etag).toBe(a.etag);
+    const downloaded = await files.download("a.txt");
+    expect(downloaded.etag).toBe(a.etag);
+    const ranged = await files.download("a.txt", {
+      range: { end: 1, start: 0 },
+    });
+    expect(ranged.etag).toBe(a.etag);
+    const { items } = await files.list();
+    expect(items.map((file) => file.etag)).toEqual([a.etag, b.etag, c.etag]);
+
+    await files.upload("a.txt", "six");
+    const edited = await files.head("a.txt");
+    expect(edited.etag).not.toBe(a.etag);
+  });
+
+  test("sync() between dedup instances copies a same-size edit", async () => {
+    const source = withDedup({}, memory());
+    const dest = withDedup({}, memory());
+    await source.upload("doc.txt", "draft-1");
+    const first = await sync(source, dest);
+    expect(first.uploaded).toEqual(["doc.txt"]);
+
+    await source.upload("doc.txt", "draft-2");
+    const second = await sync(source, dest);
+    expect(second.uploaded).toEqual(["doc.txt"]);
+    expect(second.skipped).toEqual([]);
+    expect(await bodyText(dest, "doc.txt")).toBe("draft-2");
+
+    const third = await sync(source, dest);
+    expect(third.skipped).toEqual(["doc.txt"]);
+  });
+});
+
+describe("dedup plugin — resumable uploads", () => {
+  test("a control drives the blob write only, never the pointer", async () => {
+    const adapter = memory();
+    const files = withDedup({}, adapter);
+    const control = new UploadControl();
+    const result = await files.upload("a.txt", "resumable body", { control });
+    expect(result.size).toBe(14);
+    expect(control.status).toBe("completed");
+    expect(await bodyText(files, "a.txt")).toBe("resumable body");
+
+    // Content already stored: no bytes move, and the pointer write doesn't
+    // touch the (fresh) control either.
+    await files.upload("b.txt", "resumable body", {
+      control: new UploadControl(),
+      multipart: true,
+    });
+    expect(await bodyText(files, "b.txt")).toBe("resumable body");
+  });
+});
+
+describe("dedup plugin — capabilities", () => {
+  test("advertises no presigned URLs or conditional ops, and keeps ranges", () => {
+    const adapter: Adapter = {
+      ...fakeAdapter({ supportsRange: true }),
+      signedUrl: { maxExpiresIn: 3600, supported: true },
+    };
+    const caps = withDedup({}, adapter).capabilities;
+    expect(caps.signedUrl).toEqual({ supported: false });
+    expect(caps.rangeRead).toBe(true);
+    expect(caps.metadata).toBe(true);
+    expect(caps.conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      exactRead: false,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
+  });
+
+  test("a gateway over a signing adapter proxies downloads through the plugin", async () => {
+    const adapter: Adapter = { ...memory(), signedUrl: { supported: true } };
+    const files = withDedup({}, adapter);
+    await files.upload("a.txt", "0123456789");
+    const router = createFilesRouter({
+      files,
+      operations: ["download"],
+      secret: "test-secret",
+    });
+    const endpoint = "https://app.test/api/files?op=download&key=a.txt";
+
+    const full = await router.handle(new Request(endpoint));
+    expect(full.status).toBe(200);
+    expect(await full.text()).toBe("0123456789");
+
+    const ranged = await router.handle(
+      new Request(endpoint, { headers: { range: "bytes=2-5" } })
+    );
+    expect(ranged.status).toBe(206);
+    expect(await ranged.text()).toBe("2345");
+  });
+});
+
 describe("dedup plugin — ranged downloads", () => {
   test("reads a byte range from the verbatim blob", async () => {
     const adapter = fakeAdapter({ supportsRange: true });
@@ -239,15 +409,97 @@ describe("dedup plugin — delete leaves blobs", () => {
   });
 });
 
-describe("dedup plugin — store prefix is inert", () => {
-  test("writes and reads under the store prefix pass through verbatim", async () => {
+describe("dedup plugin — store prefix is write-protected", () => {
+  test("reads and deletes under the store prefix pass through verbatim", async () => {
     const adapter = fakeAdapter();
     const files = withDedup({}, adapter);
-    await files.upload(".dedup/manual", "raw-bytes");
+    await files.upload("a.txt", "raw-bytes");
+    const [blobKey = ""] = blobKeys(adapter);
 
-    expect(await bodyText(files, ".dedup/manual")).toBe("raw-bytes");
-    // No pointer, no hashing — exactly the one verbatim object.
-    expect(blobKeys(adapter)).toEqual([".dedup/manual"]);
+    expect(await bodyText(files, blobKey)).toBe("raw-bytes");
+    const blob = await files.head(blobKey);
+    expect(blob.size).toBe(9);
+    expect(await files.exists(blobKey)).toBe(true);
+    // A sweep can reclaim a blob; its pointers then read as NotFound.
+    await files.delete(blobKey);
+    expect(blobKeys(adapter)).toEqual([]);
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  test("an upload can't overwrite a blob and change every pointer to it", async () => {
+    const adapter = fakeAdapter();
+    const files = withDedup({}, adapter);
+    await files.upload("alice/contract.txt", "I agree");
+    const [blobKey = ""] = blobKeys(adapter);
+
+    await expect(files.upload(blobKey, "I do NOT agree")).rejects.toMatchObject(
+      { code: "Provider", permanent: true }
+    );
+    await expect(files.upload(blobKey, "x")).rejects.toThrow(
+      /upload into the content store/u
+    );
+    expect(await bodyText(files, "alice/contract.txt")).toBe("I agree");
+  });
+
+  test("refuses the store however the key is spelled", async () => {
+    const files = withDedup();
+    for (const key of [
+      ".dedup",
+      ".dedup/abc",
+      "/.dedup/abc",
+      ".dedup//abc",
+      "./.dedup/abc",
+      "a/../.dedup/abc",
+      "../.dedup/abc",
+      ".DEDUP/abc",
+    ]) {
+      // eslint-disable-next-line no-await-in-loop -- each key is asserted independently
+      await expect(files.upload(key, "x")).rejects.toThrow(/content store/u);
+    }
+    // Look-alikes outside the store are ordinary keys.
+    for (const key of [".dedupe/abc", "x/.dedup/abc", "dedup/abc"]) {
+      // eslint-disable-next-line no-await-in-loop -- each key is asserted independently
+      await files.upload(key, "fine");
+      // eslint-disable-next-line no-await-in-loop -- each key is asserted independently
+      expect(await bodyText(files, key)).toBe("fine");
+    }
+  });
+
+  test("refuses bulk uploads, presigned uploads, and copy/move into the store", async () => {
+    const adapter = fakeAdapter();
+    const files = withDedup({}, adapter);
+    await files.upload("a.txt", "keep");
+    const [blobKey = ""] = blobKeys(adapter);
+
+    const bulk = await files.upload([
+      { body: "ok", key: "b.txt" },
+      { body: "poison", key: blobKey },
+    ]);
+    expect(bulk.uploaded.map((item) => item.key)).toEqual(["b.txt"]);
+    expect(bulk.errors?.[0]?.key).toBe(blobKey);
+
+    await expect(
+      files.signedUploadUrl(blobKey, { expiresIn: 60 })
+    ).rejects.toThrow(/signedUploadUrl into the content store/u);
+    await expect(files.copy("b.txt", blobKey)).rejects.toThrow(
+      /copy into the content store/u
+    );
+    await expect(files.move("b.txt", blobKey)).rejects.toThrow(
+      /move into the content store/u
+    );
+    expect(await bodyText(files, "a.txt")).toBe("keep");
+    expect(await files.exists("b.txt")).toBe(true);
+  });
+
+  test("guards a custom multi-segment store prefix", async () => {
+    const files = withDedup({ prefix: "cas/Blobs" });
+    await expect(files.upload("cas/blobs/abc", "x")).rejects.toThrow(
+      /content store/u
+    );
+    await files.upload("cas/other", "fine");
+    expect(await bodyText(files, "cas/other")).toBe("fine");
   });
 });
 

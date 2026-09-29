@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
+import { createFilesRouter } from "../src/api/index.js";
 import { compression } from "../src/compression/index.js";
 import type { CompressionFormat } from "../src/compression/index.js";
-import { Files } from "../src/index.js";
+import { Files, UploadControl } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
+import { memory } from "../src/memory/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const compressed = (
-  adapter = fakeAdapter(),
+  adapter: Adapter = fakeAdapter(),
   format?: CompressionFormat
 ): Files =>
   new Files({ adapter, plugins: [compression(format ? { format } : {})] });
@@ -108,6 +110,8 @@ describe("compression plugin — incompressible data", () => {
     const meta = await files.head("rand.bin");
     expect(meta.size).toBe(4096);
     expect(meta.metadata).toBeUndefined();
+    // The stored bytes already are the original, so head's body is too.
+    expect(new Uint8Array(await meta.arrayBuffer())).toEqual(random);
   });
 });
 
@@ -148,6 +152,93 @@ describe("compression plugin — metadata", () => {
 
     const head = await files.head("plain.txt");
     expect(head.size).toBe(4);
+  });
+});
+
+describe("compression plugin — head and list bodies", () => {
+  test("head() body accessors decompress instead of returning gzip bytes", async () => {
+    const files = compressed();
+    await files.upload("a.txt", TEXT);
+    const forText = await files.head("a.txt");
+    expect(await forText.text()).toBe(TEXT);
+    const forStream = await files.head("a.txt", { timeout: 5000 });
+    expect(await new Response(forStream.stream()).text()).toBe(TEXT);
+  });
+
+  test("list() item bodies decompress; plaintext siblings keep their own", async () => {
+    const adapter = fakeAdapter();
+    const files = compressed(adapter);
+    await files.upload("zip.txt", TEXT);
+    await new Files({ adapter }).upload("plain.txt", "open");
+    const { items } = await files.list();
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["open", TEXT]);
+  });
+});
+
+// A signing-capable adapter: without the plugin's capabilities hook, the
+// gateway would redirect downloads to a url() the plugin refuses.
+const signing = (): Adapter => ({
+  ...memory(),
+  signedUrl: { maxExpiresIn: 3600, supported: true },
+});
+
+describe("compression plugin — resumable uploads", () => {
+  test("a control upload is refused before any I/O", async () => {
+    const adapter = memory();
+    const files = compressed(adapter);
+    const control = new UploadControl();
+    const failure = await files
+      .upload("a.txt", TEXT, { control })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "Provider", permanent: true });
+    expect((failure as Error).message).toMatch(
+      /compression: resumable uploads \(`control`\) are unsupported/u
+    );
+    expect(control.status).toBe("idle");
+    expect(await new Files({ adapter }).exists("a.txt")).toBe(false);
+  });
+
+  test("advertises no resumable uploads; multipart without control still works", async () => {
+    const adapter = memory();
+    expect(new Files({ adapter }).capabilities.multipart).toBe(true);
+    const files = compressed(adapter);
+    expect(files.capabilities.multipart).toBe(false);
+    await files.upload("a.txt", TEXT, { multipart: true });
+    const file = await files.download("a.txt");
+    expect(await file.text()).toBe(TEXT);
+  });
+});
+
+describe("compression plugin — capabilities + gateway", () => {
+  test("advertises no presigned URLs and no range reads", () => {
+    const { capabilities } = compressed(signing());
+    expect(capabilities.signedUrl).toEqual({ supported: false });
+    expect(capabilities.rangeRead).toBe(false);
+    expect(capabilities.metadata).toBe(true);
+  });
+
+  test("the gateway proxies downloads through the plugin instead of failing", async () => {
+    const files = compressed(signing());
+    await files.upload("a.txt", TEXT);
+    const endpoint = "https://app.test/api/files?op=download&key=a.txt";
+    const gateway = createFilesRouter({
+      files,
+      onUnsupportedRange: "ignore",
+      operations: ["download"],
+      secret: "test-secret",
+    });
+
+    const full = await gateway.handle(new Request(endpoint));
+    expect(full.status).toBe(200);
+    expect(full.headers.get("content-length")).toBe(String(TEXT.length));
+    expect(await full.text()).toBe(TEXT);
+
+    const ranged = await gateway.handle(
+      new Request(endpoint, { headers: { range: "bytes=0-4" } })
+    );
+    expect(ranged.status).toBe(200);
+    expect(await ranged.text()).toBe(TEXT);
   });
 });
 

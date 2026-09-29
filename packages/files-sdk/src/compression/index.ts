@@ -1,5 +1,12 @@
 import { handlers } from "../index.js";
-import type { FilesPlugin, StoredFile } from "../index.js";
+import type {
+  FilesOperation,
+  FilesPlugin,
+  OperationOptions,
+  PluginNext,
+  StoredFile,
+  UploadOptions,
+} from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -42,6 +49,8 @@ const IDENTITY = "identity";
 /** Real algorithms we can hand to {@link DecompressionStream} on read. */
 const FORMATS = new Set(["deflate", "deflate-raw", "gzip"]);
 const RADIX = 10;
+
+type DownloadOp = Extract<FilesOperation, { kind: "download" }>;
 
 /**
  * Run `data` through a {@link CompressionStream}/{@link DecompressionStream}.
@@ -90,9 +99,9 @@ const stripInternalMeta = (
 
 /**
  * Re-report a stored file's logical (uncompressed) size and hide the internal
- * metadata fields, without touching the body. Used by `head` and `list`, which
- * never decompress, and by `download` for verbatim-stored objects. Objects this
- * plugin didn't write pass through untouched.
+ * metadata fields, without touching the body. Used for verbatim-stored
+ * (`identity`) objects, whose stored bytes already are the original. Objects
+ * this plugin didn't write pass through untouched.
  */
 const correctMeta = (file: StoredFile): StoredFile => {
   const { metadata } = file;
@@ -127,12 +136,22 @@ const correctMeta = (file: StoredFile): StoredFile => {
  *
  * Trade-offs, by design:
  * - **Buffers the whole body** to compare compressed vs original size, so it's
- *   unsuitable for unknown-length streams and resumable uploads.
+ *   unsuitable for unknown-length streams.
+ * - **Resumable uploads (`control`) throw** — compressed output isn't
+ *   byte-for-byte stable across runtimes or versions (Node and Bun already
+ *   differ), so a session resumed in another process could splice two
+ *   different compressed streams into an object that can't be decompressed.
+ *   `files.capabilities` reports `multipart` as `false` to match;
+ *   `multipart: true` still splits a large body within one call.
  * - **Range downloads throw** — a byte range of the original maps to no fixed
  *   slice of the compressed bytes.
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET hands out
  *   compressed bytes with no `Content-Encoding`, which clients can't read, and a
- *   presigned PUT would silently bypass compression.
+ *   presigned PUT would silently bypass compression. `files.capabilities`
+ *   reports `signedUrl.supported` and `rangeRead` as `false` to match, so the
+ *   `files-sdk/api` gateway proxies downloads through the instance.
+ * - **`head` / `list` never decompress eagerly** — they report the original
+ *   size, and their body accessors download and decompress only when called.
  * - **`copy` / `move` just work** — the algorithm marker travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
@@ -157,61 +176,116 @@ const correctMeta = (file: StoredFile): StoredFile => {
 export const compression = (options: CompressionOptions = {}): FilesPlugin => {
   const format = options.format ?? "gzip";
 
-  return {
-    name: "compression",
-    wrap: handlers({
-      download: async (op, next) => {
-        if (op.options?.range) {
-          throw new FilesError(
-            "Provider",
-            `compression: range downloads are unsupported on compressed objects ("${op.key}")`
-          );
-        }
-        const file = await next(op);
-        const alg = file.metadata?.[META.alg];
-        // No marker → an object we didn't write; pass it straight through.
-        // Stored verbatim → only the bookkeeping needs fixing, not the bytes.
-        if (!alg) {
-          return file;
-        }
-        if (alg === IDENTITY) {
-          return correctMeta(file);
-        }
-        if (!FORMATS.has(alg)) {
-          throw new FilesError(
-            "Provider",
-            `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`
-          );
-        }
-        const compressed = new Uint8Array(await file.arrayBuffer());
-        let original: Uint8Array;
-        try {
-          // SAFETY: `FORMATS` holds exactly the `CompressionFormat` names this
-          // plugin writes, and the `has` check above rejected anything else.
-          original = await decompress(compressed, alg as CompressionFormat);
-        } catch (error) {
-          throw new FilesError(
-            "Provider",
-            `compression: failed to decompress "${op.key}" (corrupted data)`,
-            error
-          );
-        }
-        return createStoredFile(
-          {
-            etag: file.etag,
-            key: file.key,
-            lastModified: file.lastModified,
-            metadata: stripInternalMeta(file.metadata ?? {}),
-            size: original.byteLength,
-            type: file.type,
-          },
-          { data: original, kind: "buffer" }
-        );
+  const download = async (
+    op: DownloadOp,
+    next: (op: DownloadOp) => Promise<StoredFile>
+  ): Promise<StoredFile> => {
+    if (op.options?.range) {
+      throw new FilesError(
+        "Provider",
+        `compression: range downloads are unsupported on compressed objects ("${op.key}")`
+      );
+    }
+    const file = await next(op);
+    const alg = file.metadata?.[META.alg];
+    // No marker → an object we didn't write; pass it straight through.
+    // Stored verbatim → only the bookkeeping needs fixing, not the bytes.
+    if (!alg) {
+      return file;
+    }
+    if (alg === IDENTITY) {
+      return correctMeta(file);
+    }
+    if (!FORMATS.has(alg)) {
+      throw new FilesError(
+        "Provider",
+        `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`
+      );
+    }
+    const compressed = new Uint8Array(await file.arrayBuffer());
+    let original: Uint8Array;
+    try {
+      // SAFETY: `FORMATS` holds exactly the `CompressionFormat` names this
+      // plugin writes, and the `has` check above rejected anything else.
+      original = await decompress(compressed, alg as CompressionFormat);
+    } catch (error) {
+      throw new FilesError(
+        "Provider",
+        `compression: failed to decompress "${op.key}" (corrupted data)`,
+        error
+      );
+    }
+    return createStoredFile(
+      {
+        etag: file.etag,
+        key: file.key,
+        lastModified: file.lastModified,
+        metadata: stripInternalMeta(file.metadata ?? {}),
+        size: original.byteLength,
+        type: file.type,
       },
-      head: async (op, next) => correctMeta(await next(op)),
+      { data: original, kind: "buffer" }
+    );
+  };
+
+  /**
+   * Re-report a `head` / `list` result's logical (uncompressed) size and hide
+   * the internal metadata fields. Neither verb decompresses eagerly, so a
+   * compressed object's body accessors are replaced with a lazy download back
+   * through this plugin — `text()` / `stream()` then yield the original bytes,
+   * never the stored compressed ones. Verbatim-stored objects keep their own
+   * body (it already is the original); objects this plugin didn't write pass
+   * through untouched.
+   */
+  const logical = (
+    file: StoredFile,
+    next: PluginNext,
+    readOptions?: OperationOptions
+  ): StoredFile => {
+    const alg = file.metadata?.[META.alg];
+    if (!alg || alg === IDENTITY) {
+      return correctMeta(file);
+    }
+    const { metadata, size } = correctMeta(file);
+    return createStoredFile(
+      {
+        etag: file.etag,
+        key: file.key,
+        lastModified: file.lastModified,
+        metadata,
+        size,
+        type: file.type,
+      },
+      {
+        factory: async () => {
+          const original = await download(
+            {
+              key: file.key,
+              kind: "download",
+              ...(readOptions && { options: readOptions }),
+            },
+            next
+          );
+          return new Uint8Array(await original.arrayBuffer());
+        },
+        kind: "lazy",
+      }
+    );
+  };
+
+  // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
+  // lazy body reads to a `download` (the per-verb `next` is typed to its own
+  // verb).
+  const verbs = (outer: PluginNext): NonNullable<FilesPlugin["wrap"]> =>
+    handlers({
+      download,
+      head: async (op, next) => logical(await next(op), outer, op.options),
       list: async (op, next) => {
         const result = await next(op);
-        return { ...result, items: result.items.map(correctMeta) };
+        return {
+          ...result,
+          items: result.items.map((file) => logical(file, outer)),
+        };
       },
       signedUploadUrl: () => {
         throw new FilesError(
@@ -220,6 +294,16 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
         );
       },
       upload: async (op, next) => {
+        const uploadOptions: Omit<UploadOptions, "condition"> | undefined =
+          op.options;
+        if (uploadOptions?.control) {
+          throw new FilesError(
+            "Provider",
+            `compression: resumable uploads (\`control\`) are unsupported ("${op.key}") — compressed output isn't byte-for-byte stable across runtimes or versions, so a session resumed in another process could splice two different compressed streams into an object that can't be decompressed; upload without \`control\``,
+            undefined,
+            { permanent: true }
+          );
+        }
         const normalized = await normalizeBody(
           op.body,
           op.options?.contentType
@@ -253,6 +337,20 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
           "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead"
         );
       },
+    });
+
+  return {
+    // Advertise what the plugin refuses, so `files.capabilities` (and the
+    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
+    // plans a presigned URL, a ranged read, or a resumable upload that would
+    // throw.
+    capabilities: (caps) => ({
+      ...caps,
+      multipart: false,
+      rangeRead: false,
+      signedUrl: { supported: false },
     }),
+    name: "compression",
+    wrap: (op, next) => verbs(next)(op, next),
   };
 };

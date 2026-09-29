@@ -26,8 +26,10 @@ The logical key (`a.png`) becomes an empty object whose `metadata` records the c
 
 - **`upload`** hashes the body, writes the blob only if that hash isn't already stored (`exists()`), then writes the pointer.
 - **`download`** follows the pointer to the blob and returns it under your key — **ranges included**, because blobs are stored verbatim (unlike [`compression()`](/docs/plugins/compression)).
-- **`head` / `list`** report the logical content size with the internal fields stripped, without fetching the blob. List hides the blob store from normal listings.
+- **`head` / `list`** report the logical content size with the internal fields stripped, without fetching the blob. Their body accessors (`text()`, `stream()`, …) are lazy: reading one fetches the blob, so it returns the content, never the empty pointer. List hides the blob store from normal listings.
 - **`copy` / `move`** relocate the small pointer, so duplicating a de-duplicated file is near-free and the copy shares the original blob.
+
+Every result reports the **content hash as its `etag`** (`upload`, `download`, `head`, and `list` alike). The pointer's own ETag is the same for every key — its body is always empty — so the hash is what changes exactly when the content does. That keeps [`sync()`](/docs/api/sync)'s default etag comparison and [`versioning()`](/docs/plugins/versioning) ids correct.
 
 Bulk `upload([...])` / `download([...])` are de-duplicated per item. Objects without this plugin's marker — pre-existing, or written by another tool — **pass straight through** on read, so it's safe to enable on a bucket that already has data.
 
@@ -35,9 +37,13 @@ Bulk `upload([...])` / `download([...])` are de-duplicated per item. Objects wit
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `prefix` | `".dedup"` | Where the content-addressed blobs live. Hidden from `list()`. |
+| `prefix` | `".dedup"` | Where the content-addressed blobs live. Hidden from `list()`, and write-protected. |
 
-Objects under `prefix` are never themselves de-duplicated and are hidden from `list()` (unless you list within the prefix). Don't store your own data there.
+Objects under `prefix` are never themselves de-duplicated and are hidden from `list()` (unless you list within the prefix). You can read them, but writes into the store through the instance are refused: an `upload`, a `signedUploadUrl()`, or a `copy` / `move` whose destination is inside `prefix` throws a permanent `FilesError`. Otherwise anyone who can write a key could overwrite `.dedup/<sha256>` and change what every pointer to that content returns. The check resolves the key the way a filesystem would, so `/.dedup/x`, `a/../.dedup/x`, and `.DEDUP/x` are refused too.
+
+:::warning
+Blob reads don't re-verify the hash (that would mean buffering every download), so anyone with **raw provider write access** to the store can still substitute content. Lock the bucket down like you would for any other data.
+:::
 
 ## Ordering
 
@@ -51,8 +57,10 @@ With this order the one stored blob is itself compressed and encrypted, and read
 
 ## Things to keep in mind
 
-- **It buffers the whole body** to hash it, so — like [`compression()`](/docs/plugins/compression) — it's unsuitable for unknown-length [streaming uploads](/docs/api/upload) and [resumable uploads](/docs/resumable).
+- **It buffers the whole body** to hash it, so — like [`compression()`](/docs/plugins/compression) — it's unsuitable for very large or unknown-length [streaming uploads](/docs/api/upload). `multipart` and a [resumable](/docs/resumable) `control` apply to the blob write only; the pointer is always one small write. When the content is already stored, no bytes move and the `control` is left undriven. In front of [`compression()`](/docs/plugins/compression) or [`encryption()`](/docs/plugins/encryption), which refuse resumable uploads, a `control` on new content throws.
 - **Reads cost a second fetch.** A download reads the pointer, then the blob; a ranged download does a `head` first. `head` and `list` add nothing — they only read the pointer.
 - **It needs adapter metadata support.** The hash round-trips through `metadata`, the same gate a direct `metadata` upload hits.
 - **`url()` and `signedUploadUrl()` fail closed.** A presigned GET would hand out the empty pointer, not the content, and a presigned PUT would write directly and bypass content-addressing — so both throw. Download through the `Files` instance instead.
-- **Blobs aren't garbage-collected.** `delete` (and an overwrite) drop the pointer but leave the content addressed — so it's reused if the same bytes reappear. Reclaim unreferenced blobs with a storage lifecycle rule or a periodic sweep.
+- **[Conditional operations](/docs/conditional-operations) fail closed.** A pointer's native ETag is the same for every key, so no provider compare-and-set can guard its content; every conditional mode throws.
+- **It narrows [`files.capabilities`](/docs/capabilities).** `signedUrl.supported` and every `conditional` flag read `false` while the plugin is installed; `rangeRead` stays whatever the adapter reports, since ranges apply to the verbatim blob. The [gateway](/docs/ui/server/gateway) branches on these, so with the default `downloadMode: "auto"` it streams downloads through the instance (following the pointer, with full `Range`/`206` support) instead of redirecting to a URL the plugin refuses, and it uploads through the instance too.
+- **Blobs aren't garbage-collected.** `delete` (and an overwrite) drop the pointer but leave the content addressed — so it's reused if the same bytes reappear. Reclaim unreferenced blobs with a storage lifecycle rule or a periodic sweep. Deleting a blob through the instance is allowed (that's how a sweep works), but only delete blobs no pointer references: a pointer to a missing blob reads as `NotFound`.

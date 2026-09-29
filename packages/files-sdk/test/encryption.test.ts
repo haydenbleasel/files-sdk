@@ -1,16 +1,24 @@
 import { describe, expect, test } from "bun:test";
 
+import { createFilesRouter } from "../src/api/index.js";
+import { cache } from "../src/cache/index.js";
 import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
-import { createStoredFile, Files } from "../src/index.js";
+import {
+  createFiles,
+  createStoredFile,
+  Files,
+  UploadControl,
+} from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
   FilesOperation,
   PluginNext,
 } from "../src/index.js";
+import { memory } from "../src/memory/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
-const encrypted = async (adapter = fakeAdapter()): Promise<Files> =>
+const encrypted = async (adapter: Adapter = fakeAdapter()): Promise<Files> =>
   new Files({ adapter, plugins: [encryption(await generateEncryptionKey())] });
 
 describe("encryption plugin — round-trips", () => {
@@ -242,6 +250,123 @@ describe("encryption plugin — metadata", () => {
     // head on a plaintext object also passes straight through.
     const head = await files.head("plain.txt");
     expect(head.size).toBe(4);
+  });
+});
+
+describe("encryption plugin — head and list bodies", () => {
+  test("head() body accessors decrypt instead of returning ciphertext", async () => {
+    const files = await encrypted();
+    await files.upload("a.txt", "hello");
+    const forText = await files.head("a.txt");
+    expect(await forText.text()).toBe("hello");
+    const forStream = await files.head("a.txt", { timeout: 5000 });
+    expect(await new Response(forStream.stream()).text()).toBe("hello");
+  });
+
+  test("list() item bodies decrypt; plaintext siblings keep their own", async () => {
+    const adapter = fakeAdapter();
+    const files = await encrypted(adapter);
+    await files.upload("enc.txt", "secret");
+    await new Files({ adapter }).upload("plain.txt", "open");
+    const { items } = await files.list();
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["secret", "open"]);
+  });
+
+  test("a head() body surfaces decryption failures", async () => {
+    const adapter = fakeAdapter();
+    const writer = await encrypted(adapter);
+    await writer.upload("a.txt", "hello");
+    const other = await encrypted(adapter);
+    const head = await other.head("a.txt");
+    expect(head.size).toBe(5);
+    await expect(head.text()).rejects.toThrow(/failed to decrypt/u);
+  });
+
+  test("a cache() head hit and miss return the same plaintext body", async () => {
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [cache(), encryption(await generateEncryptionKey())],
+    });
+    await files.upload("a.txt", "hello");
+    const miss = await files.head("a.txt");
+    const hit = await files.head("a.txt");
+    expect(files.cacheStats()).toEqual({ hits: 1, misses: 1 });
+    expect(await miss.text()).toBe("hello");
+    expect(await hit.text()).toBe("hello");
+  });
+});
+
+// A signing-capable adapter: without the plugin's capabilities hook, the
+// gateway would redirect downloads to a url() the plugin refuses.
+const signing = (): Adapter => ({
+  ...memory(),
+  signedUrl: { maxExpiresIn: 3600, supported: true },
+});
+
+describe("encryption plugin — resumable uploads", () => {
+  test("a control upload is refused before any I/O", async () => {
+    const adapter = memory();
+    const files = await encrypted(adapter);
+    const control = new UploadControl();
+    const failure = await files
+      .upload("a.txt", "hello", { control })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "Provider", permanent: true });
+    expect((failure as Error).message).toMatch(
+      /encryption: resumable uploads \(`control`\) are unsupported/u
+    );
+    expect(control.status).toBe("idle");
+    expect(await new Files({ adapter }).exists("a.txt")).toBe(false);
+  });
+
+  test("advertises no resumable uploads; multipart without control still works", async () => {
+    const adapter = memory();
+    expect(new Files({ adapter }).capabilities.multipart).toBe(true);
+    const files = await encrypted(adapter);
+    expect(files.capabilities.multipart).toBe(false);
+    await files.upload("a.txt", "hello", { multipart: true });
+    const file = await files.download("a.txt");
+    expect(await file.text()).toBe("hello");
+  });
+});
+
+describe("encryption plugin — capabilities + gateway", () => {
+  test("advertises no presigned URLs and no range reads", async () => {
+    const files = await encrypted(signing());
+    expect(files.capabilities.signedUrl).toEqual({ supported: false });
+    expect(files.capabilities.rangeRead).toBe(false);
+    expect(files.capabilities.metadata).toBe(true);
+  });
+
+  test("the gateway proxies downloads through the plugin instead of failing", async () => {
+    const files = await encrypted(signing());
+    await files.upload("a.txt", "hello gateway");
+    const endpoint = "https://app.test/api/files?op=download&key=a.txt";
+    const gateway = (onUnsupportedRange?: "ignore" | "reject") =>
+      createFilesRouter({
+        files,
+        operations: ["download"],
+        secret: "test-secret",
+        ...(onUnsupportedRange && { onUnsupportedRange }),
+      });
+
+    const full = await gateway().handle(new Request(endpoint));
+    expect(full.status).toBe(200);
+    expect(full.headers.get("content-length")).toBe("13");
+    expect(await full.text()).toBe("hello gateway");
+
+    // A Range header gets the non-range-adapter treatment, never a 500.
+    const rangeHeaders = { headers: { range: "bytes=0-4" } };
+    const rejected = await gateway().handle(
+      new Request(endpoint, rangeHeaders)
+    );
+    expect(rejected.status).toBe(416);
+    const ignored = await gateway("ignore").handle(
+      new Request(endpoint, rangeHeaders)
+    );
+    expect(ignored.status).toBe(200);
+    expect(await ignored.text()).toBe("hello gateway");
   });
 });
 

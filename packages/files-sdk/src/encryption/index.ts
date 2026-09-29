@@ -1,5 +1,12 @@
 import { handlers } from "../index.js";
-import type { FilesPlugin, StoredFile } from "../index.js";
+import type {
+  FilesOperation,
+  FilesPlugin,
+  OperationOptions,
+  PluginNext,
+  StoredFile,
+  UploadOptions,
+} from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -54,23 +61,7 @@ const stripInternalMeta = (
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
-/**
- * Re-report a stored file's logical (plaintext) size and hide the internal
- * metadata fields, without touching the body. Used by `head` and `list`, which
- * never decrypt. Objects this plugin didn't write pass through untouched.
- */
-const correctMeta = (file: StoredFile): StoredFile => {
-  const { metadata } = file;
-  if (!metadata?.[META.scheme]) {
-    return file;
-  }
-  const size = Number.parseInt(metadata[META.size] ?? "", RADIX);
-  return {
-    ...file,
-    metadata: stripInternalMeta(metadata),
-    size: Number.isNaN(size) ? file.size : size,
-  };
-};
+type DownloadOp = Extract<FilesOperation, { kind: "download" }>;
 
 const importRawKey = (bytes: Uint8Array): Promise<CryptoKey> => {
   if (!RAW_KEY_BYTES.has(bytes.byteLength)) {
@@ -187,10 +178,20 @@ export const generateEncryptionKey = (): Promise<CryptoKey> =>
  *
  * Trade-offs, by design:
  * - **Buffers the whole body** to compute the GCM tag, so it's unsuitable for
- *   unknown-length streams and resumable uploads.
+ *   unknown-length streams.
+ * - **Resumable uploads (`control`) throw** — every upload seals the body
+ *   under a fresh random data key, so a session resumed in another process
+ *   would splice two different ciphertexts into an object that can't be
+ *   decrypted. `files.capabilities` reports `multipart` as `false` to match;
+ *   `multipart: true` still splits a large body within one call.
  * - **Range downloads throw** — a slice of a GCM ciphertext can't be decrypted.
  * - **`url()` / `signedUploadUrl()` throw** — presigned URLs bypass the plugin,
  *   handing out ciphertext or letting a client store plaintext.
+ *   `files.capabilities` reports `signedUrl.supported` and `rangeRead` as
+ *   `false` to match, so the `files-sdk/api` gateway proxies downloads
+ *   through the instance.
+ * - **`head` / `list` never decrypt eagerly** — they report the plaintext
+ *   size, and their body accessors download and decrypt only when called.
  * - **`copy` / `move` just work** — the wrapped DEK travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
@@ -231,62 +232,108 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
     return kek;
   };
 
-  return {
-    name: "encryption",
-    wrap: handlers({
-      download: async (op, next) => {
-        if (op.options?.range) {
-          throw new FilesError(
-            "Provider",
-            `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`
-          );
-        }
-        const file = await next(op);
-        const { metadata } = file;
-        if (!metadata?.[META.scheme]) {
-          return file;
-        }
-        const ciphertext = await file.arrayBuffer();
-        let plaintext: ArrayBuffer;
-        try {
-          plaintext = await open(metadata, ciphertext, await getKek());
-        } catch (error) {
-          throw new FilesError(
-            "Provider",
-            `encryption: failed to decrypt "${op.key}" (wrong key or corrupted data)`,
-            error
-          );
-        }
-        // GCM authenticates the body and the wrapped DEK, but `fsenc_size`
-        // is plain metadata — the one envelope field an attacker with raw
-        // provider write access could forge (head/list report it without
-        // decrypting). Where decryption *does* happen, verify it.
-        const declaredSize = Number.parseInt(metadata[META.size] ?? "", RADIX);
-        if (
-          !Number.isNaN(declaredSize) &&
-          declaredSize !== plaintext.byteLength
-        ) {
-          throw new FilesError(
-            "Provider",
-            `encryption: "${op.key}" decrypted to ${plaintext.byteLength} bytes but its envelope declares ${declaredSize} — the metadata has been tampered with`
-          );
-        }
-        return createStoredFile(
-          {
-            etag: file.etag,
-            key: file.key,
-            lastModified: file.lastModified,
-            metadata: stripInternalMeta(metadata),
-            size: plaintext.byteLength,
-            type: file.type,
-          },
-          { data: new Uint8Array(plaintext), kind: "buffer" }
-        );
+  const download = async (
+    op: DownloadOp,
+    next: (op: DownloadOp) => Promise<StoredFile>
+  ): Promise<StoredFile> => {
+    if (op.options?.range) {
+      throw new FilesError(
+        "Provider",
+        `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`
+      );
+    }
+    const file = await next(op);
+    const { metadata } = file;
+    if (!metadata?.[META.scheme]) {
+      return file;
+    }
+    const ciphertext = await file.arrayBuffer();
+    let plaintext: ArrayBuffer;
+    try {
+      plaintext = await open(metadata, ciphertext, await getKek());
+    } catch (error) {
+      throw new FilesError(
+        "Provider",
+        `encryption: failed to decrypt "${op.key}" (wrong key or corrupted data)`,
+        error
+      );
+    }
+    // GCM authenticates the body and the wrapped DEK, but `fsenc_size`
+    // is plain metadata — the one envelope field an attacker with raw
+    // provider write access could forge (head/list report it without
+    // decrypting). Where decryption *does* happen, verify it.
+    const declaredSize = Number.parseInt(metadata[META.size] ?? "", RADIX);
+    if (!Number.isNaN(declaredSize) && declaredSize !== plaintext.byteLength) {
+      throw new FilesError(
+        "Provider",
+        `encryption: "${op.key}" decrypted to ${plaintext.byteLength} bytes but its envelope declares ${declaredSize} — the metadata has been tampered with`
+      );
+    }
+    return createStoredFile(
+      {
+        etag: file.etag,
+        key: file.key,
+        lastModified: file.lastModified,
+        metadata: stripInternalMeta(metadata),
+        size: plaintext.byteLength,
+        type: file.type,
       },
-      head: async (op, next) => correctMeta(await next(op)),
+      { data: new Uint8Array(plaintext), kind: "buffer" }
+    );
+  };
+
+  /**
+   * Re-report a `head` / `list` result's logical (plaintext) size and hide the
+   * internal metadata fields. Neither verb decrypts eagerly, so the body
+   * accessors are replaced with a lazy download back through this plugin —
+   * `text()` / `stream()` then yield plaintext, never the stored ciphertext.
+   * Objects this plugin didn't write pass through untouched.
+   */
+  const logical = (
+    file: StoredFile,
+    next: PluginNext,
+    options?: OperationOptions
+  ): StoredFile => {
+    const { metadata } = file;
+    if (!metadata?.[META.scheme]) {
+      return file;
+    }
+    const size = Number.parseInt(metadata[META.size] ?? "", RADIX);
+    return createStoredFile(
+      {
+        etag: file.etag,
+        key: file.key,
+        lastModified: file.lastModified,
+        metadata: stripInternalMeta(metadata),
+        size: Number.isNaN(size) ? file.size : size,
+        type: file.type,
+      },
+      {
+        factory: async () => {
+          const plain = await download(
+            { key: file.key, kind: "download", ...(options && { options }) },
+            next
+          );
+          return new Uint8Array(await plain.arrayBuffer());
+        },
+        kind: "lazy",
+      }
+    );
+  };
+
+  // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
+  // lazy body reads to a `download` (the per-verb `next` is typed to its own
+  // verb).
+  const verbs = (outer: PluginNext): NonNullable<FilesPlugin["wrap"]> =>
+    handlers({
+      download,
+      head: async (op, next) => logical(await next(op), outer, op.options),
       list: async (op, next) => {
         const result = await next(op);
-        return { ...result, items: result.items.map(correctMeta) };
+        return {
+          ...result,
+          items: result.items.map((file) => logical(file, outer)),
+        };
       },
       signedUploadUrl: () => {
         throw new FilesError(
@@ -295,6 +342,16 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
         );
       },
       upload: async (op, next) => {
+        const uploadOptions: Omit<UploadOptions, "condition"> | undefined =
+          op.options;
+        if (uploadOptions?.control) {
+          throw new FilesError(
+            "Provider",
+            `encryption: resumable uploads (\`control\`) are unsupported ("${op.key}") — each upload encrypts under a fresh random data key, so a session resumed in another process would splice two different ciphertexts into an object that can't be decrypted; upload without \`control\``,
+            undefined,
+            { permanent: true }
+          );
+        }
         const normalized = await normalizeBody(
           op.body,
           op.options?.contentType
@@ -328,6 +385,20 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
           "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead"
         );
       },
+    });
+
+  return {
+    // Advertise what the plugin refuses, so `files.capabilities` (and the
+    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
+    // plans a presigned URL, a ranged read, or a resumable upload that would
+    // throw.
+    capabilities: (caps) => ({
+      ...caps,
+      multipart: false,
+      rangeRead: false,
+      signedUrl: { supported: false },
     }),
+    name: "encryption",
+    wrap: (op, next) => verbs(next)(op, next),
   };
 };

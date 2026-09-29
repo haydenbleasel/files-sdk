@@ -1,12 +1,15 @@
 import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
+  AdapterCapabilities,
   FilesOperation,
   FilesPlugin,
   ListOptions,
   ListResult,
+  OperationOptions,
   OperationResult,
   PluginNext,
   StoredFile,
+  UploadOptions,
   UploadResult,
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
@@ -19,7 +22,10 @@ export interface DedupOptions {
    * `".dedup"`. The bytes of `photos/a.jpg` are stored once at
    * `".dedup/<sha256>"`, and the logical key holds a small pointer to it.
    * Objects under this prefix are hidden from `list()` (unless you list within
-   * it) and are never themselves de-duplicated. Don't store your own data here.
+   * it) and are never themselves de-duplicated. Writes into it through the
+   * instance (`upload`, `signedUploadUrl`, or a `copy` / `move` destination)
+   * are rejected, so a caller can't overwrite the content every pointer
+   * resolves to.
    */
   prefix?: string;
 }
@@ -84,21 +90,81 @@ const stripInternalMeta = (
 };
 
 /**
- * Re-report a pointer's logical (content) size and hide the internal metadata
- * fields, without fetching the blob. Used by `head` and `list`, which never
- * read the body. Objects this plugin didn't write (no marker) pass through.
+ * A body stream that opens `load()` on first read, so a `head` / `list` result
+ * can expose the content without fetching it until a body accessor is called —
+ * and then streams it rather than buffering.
  */
-const correctMeta = (file: StoredFile): StoredFile => {
-  const { metadata } = file;
-  if (!metadata?.[META.ref]) {
-    return file;
+const deferredStream = (
+  load: () => Promise<StoredFile>
+): ReadableStream<Uint8Array> => {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  return new ReadableStream<Uint8Array>(
+    {
+      async cancel(reason) {
+        await reader?.cancel(reason);
+      },
+      async pull(controller) {
+        if (!reader) {
+          const file = await load();
+          reader = file.stream().getReader();
+        }
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      },
+      // No read-ahead: the blob is fetched on the first read, not on `stream()`.
+    },
+    { highWaterMark: 0 }
+  );
+};
+
+/**
+ * Split a key into its path segments the way a filesystem would resolve it —
+ * empty and `.` segments dropped, `..` popping its parent — lowercased, so a
+ * spelling like `/.dedup//x`, `a/../.dedup/x`, or `.DEDUP/x` (the same file on
+ * a case-insensitive filesystem) is still recognized as a store key.
+ */
+const resolvedSegments = (key: string): string[] => {
+  const segments: string[] = [];
+  for (const segment of key.toLowerCase().split("/")) {
+    if (segment === "..") {
+      segments.pop();
+    } else if (segment !== "" && segment !== ".") {
+      segments.push(segment);
+    }
   }
-  const size = Number.parseInt(metadata[META.size] ?? "", RADIX);
-  return {
-    ...file,
-    metadata: stripInternalMeta(metadata),
-    size: Number.isNaN(size) ? file.size : size,
-  };
+  return segments;
+};
+
+/** Refuse a caller write that would land in the blob store. */
+const rejectStoreWrite = (verb: string, key: string): never => {
+  throw new FilesError(
+    "Provider",
+    `dedup: ${verb} into the content store ("${key}") is refused — blobs are written only by the plugin, and overwriting one would change what every pointer to it returns`,
+    undefined,
+    { permanent: true }
+  );
+};
+
+/**
+ * Every conditional mode off: a pointer's native ETag never reflects its
+ * content, so the plugin vetoes them all (see the `wrap` below).
+ */
+const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
+  copy: {
+    atomicSourceDestination: false,
+    destinationCreate: false,
+    destinationReplace: false,
+    sourceEtag: false,
+  },
+  create: false,
+  delete: false,
+  exactRead: false,
+  multipart: { create: false, replace: false },
+  replace: false,
 };
 
 /**
@@ -113,9 +179,13 @@ const correctMeta = (file: StoredFile): StoredFile => {
  * Reads are transparent: `download` follows the pointer to the blob (ranges
  * included — blobs are stored verbatim), and `head` / `list` report the logical
  * size with the internal fields stripped, all for `upload([...])` /
- * `download([...])` bulk calls too. Objects without this plugin's marker
- * (pre-existing or written elsewhere) pass straight through, so it's safe to
- * enable on a mixed bucket.
+ * `download([...])` bulk calls too. Their body accessors (`text()`,
+ * `stream()`, …) lazily read the blob, so they return the content, never the
+ * empty pointer. The reported `etag` is the content hash (the pointer's own
+ * ETag is the same for every key), so it changes exactly when the content
+ * does — `sync()`'s default etag comparison and `versioning()` ids stay
+ * correct. Objects without this plugin's marker (pre-existing or written
+ * elsewhere) pass straight through, so it's safe to enable on a mixed bucket.
  *
  * Provider-agnostic: it uses only the Web Crypto API (no native deps) and the
  * `metadata` the SDK already round-trips, so it works on any adapter that
@@ -125,17 +195,30 @@ const correctMeta = (file: StoredFile): StoredFile => {
  * it first: `plugins: [dedup(), compression(), encryption(key)]`.
  *
  * Trade-offs, by design:
- * - **Buffers the whole body** to hash it, so it's unsuitable for unknown-length
- *   streams and resumable uploads (the same gate `compression()` makes).
+ * - **Buffers the whole body** to hash it, so it's unsuitable for very large or
+ *   unknown-length streams. `multipart` / `control` apply to the blob write
+ *   only (the pointer is always a single empty write); when the content is
+ *   already stored, no bytes are sent and a `control` is left undriven.
  * - **Reads cost a second fetch** — the pointer, then the blob (a ranged read
  *   does a `head` first). `head` / `list` add nothing; they read the pointer.
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET would hand out the
  *   empty pointer, and a presigned PUT would bypass content-addressing. Download
- *   through the instance instead.
+ *   through the instance instead. `files.capabilities` reports
+ *   `signedUrl.supported` as `false` to match, so the `files-sdk/api` gateway
+ *   proxies downloads through the instance.
  * - **Blobs aren't garbage-collected.** `delete` (and overwrite) drop the
  *   pointer but leave the content addressed, so it's reused if the content
  *   reappears; reclaim unreferenced blobs with a storage lifecycle rule or a
- *   periodic sweep.
+ *   periodic sweep. Deleting a blob that a pointer still references makes
+ *   that pointer's reads fail with `NotFound`.
+ * - **The store is write-protected through the instance.** `upload`,
+ *   `signedUploadUrl`, and `copy` / `move` into the store prefix throw, so no
+ *   caller can overwrite `.dedup/<sha256>` and change what every pointer to it
+ *   returns. Blob reads don't re-verify the hash (that would buffer every
+ *   download), so anyone with raw provider write access to the store can
+ *   still substitute content — lock that down like the rest of the bucket.
+ * - **Conditional operations throw** — a pointer's native ETag is identical
+ *   for every key, so no provider compare-and-set can guard its content.
  *
  * @param options optional `{ prefix }` — where blobs are stored.
  * @example
@@ -160,16 +243,68 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   /** Whether a key lives in the blob store — those bypass de-duplication. */
   const isStoreKey = (key: string): boolean =>
     key === store || key.startsWith(`${store}/`);
+  const storeSegments = resolvedSegments(store);
+  /**
+   * Whether a write to `key` would land in the blob store, however it's
+   * spelled — stricter than {@link isStoreKey}, since a false positive only
+   * refuses an odd key while a miss would let a caller overwrite a blob.
+   */
+  const targetsStore = (key: string): boolean => {
+    const segments = resolvedSegments(key);
+    return storeSegments.every((segment, index) => segments[index] === segment);
+  };
+
+  /**
+   * Re-report a pointer's logical (content) size and content-hash `etag`, and
+   * hide the internal metadata fields, without fetching the blob. Used by
+   * `head` and `list`: the body accessors lazily read the blob (only when
+   * called), so they return the content rather than the empty pointer.
+   * Objects this plugin didn't write (no marker) pass through.
+   */
+  const logical = (
+    file: StoredFile,
+    next: PluginNext,
+    readOptions?: OperationOptions
+  ): StoredFile => {
+    const ref = file.metadata?.[META.ref];
+    if (ref === undefined) {
+      return file;
+    }
+    const size = Number.parseInt(file.metadata?.[META.size] ?? "", RADIX);
+    return createStoredFile(
+      {
+        etag: ref,
+        key: file.key,
+        lastModified: file.lastModified,
+        metadata: stripInternalMeta(file.metadata ?? {}),
+        size: Number.isNaN(size) ? file.size : size,
+        type: file.type,
+      },
+      {
+        factory: () =>
+          deferredStream(() =>
+            next({
+              key: blobKeyOf(ref),
+              kind: "download",
+              ...(readOptions && { options: readOptions }),
+            })
+          ),
+        kind: "stream",
+      }
+    );
+  };
 
   /** Build the caller-facing {@link StoredFile} for a followed pointer. */
   const rewrap = (
     key: string,
+    ref: string,
     pointer: StoredFile,
     blob: StoredFile
   ): StoredFile =>
     createStoredFile(
       {
-        etag: pointer.etag,
+        // The content hash, not the pointer's own (always-empty-body) ETag.
+        etag: ref,
         key,
         lastModified: pointer.lastModified,
         metadata: stripInternalMeta(pointer.metadata ?? {}),
@@ -189,7 +324,8 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
    */
   const hideBlobs = (
     result: ListResult,
-    listOptions: ListOptions | undefined
+    listOptions: ListOptions | undefined,
+    next: PluginNext
   ): ListResult => {
     const requested = listOptions?.prefix;
     if (
@@ -200,7 +336,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     }
     const marker = `${store}/`;
     const items = result.items.flatMap((file) =>
-      file.key.startsWith(marker) ? [] : [correctMeta(file)]
+      file.key.startsWith(marker) ? [] : [logical(file, next)]
     );
     const prefixes = result.prefixes?.filter(
       (entry) => !entry.startsWith(marker)
@@ -242,26 +378,35 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       });
     }
     // The logical key becomes a pointer: an empty object whose metadata carries
-    // the hash and the content length. Progress reporting belongs to the blob
-    // write above, so it's dropped here.
+    // the hash and the content length. Progress reporting, multipart, and a
+    // resumable `control` all belong to the blob write above — an
+    // `UploadControl` drives exactly one upload, so forwarding it here would
+    // throw after the blob landed — so they're dropped from this one.
+    const uploadOptions: Omit<UploadOptions, "condition"> = op.options ?? {};
+    const {
+      control: _control,
+      multipart: _multipart,
+      onProgress: _onProgress,
+      ...pointerOptions
+    } = uploadOptions;
     const result = await next({
       ...op,
       body: EMPTY,
       options: {
-        ...op.options,
+        ...pointerOptions,
         contentType: normalized.contentType,
         metadata: {
           ...op.options?.metadata,
           [META.ref]: hash,
           [META.size]: String(bytes.byteLength),
         },
-        // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = "drop progress on the pointer write"; null would change the op shape.
-        onProgress: undefined,
       },
     });
     return {
       ...result,
       contentType: normalized.contentType,
+      // The content hash, matching what `head` / `list` / `download` report.
+      etag: hash,
       size: bytes.byteLength,
     };
   };
@@ -287,7 +432,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         kind: "download",
         options: op.options,
       });
-      return rewrap(op.key, pointer, blob);
+      return rewrap(op.key, ref, pointer, blob);
     }
     const pointer = await next(op);
     const ref = pointer.metadata?.[META.ref];
@@ -300,7 +445,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       kind: "download",
       options: op.options,
     });
-    return rewrap(op.key, pointer, blob);
+    return rewrap(op.key, ref, pointer, blob);
   };
 
   // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
@@ -323,8 +468,21 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         "a pointer's ETag never reflects its content, so no native compare-and-set can guard it"
       );
     }
-    // Direct traffic to the blob store bypasses the plugin: blobs are stored
-    // and read verbatim, never treated as pointers or re-de-duplicated.
+    // Blobs are written only by the plugin itself (through `next`, which this
+    // wrap never sees). A caller write into the store could replace the
+    // content every pointer to that hash resolves to, so it's refused.
+    if (
+      (op.kind === "upload" || op.kind === "signedUploadUrl") &&
+      targetsStore(op.key)
+    ) {
+      rejectStoreWrite(op.kind, op.key);
+    }
+    if ((op.kind === "copy" || op.kind === "move") && targetsStore(op.to)) {
+      rejectStoreWrite(op.kind, op.to);
+    }
+    // Direct reads of the blob store bypass the plugin: blobs are read
+    // verbatim, never treated as pointers. Deleting a blob is allowed (it's how
+    // a sweep reclaims unreferenced content).
     if ("key" in op && isStoreKey(op.key)) {
       return next(op);
     }
@@ -336,10 +494,10 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         return download(op, next);
       }
       case "head": {
-        return correctMeta(await next(op));
+        return logical(await next(op), next, op.options);
       }
       case "list": {
-        return hideBlobs(await next(op), op.options);
+        return hideBlobs(await next(op), op.options, next);
       }
       case "url": {
         throw new FilesError(
@@ -362,6 +520,15 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
+    // Advertise what the plugin refuses, so `files.capabilities` (and the
+    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
+    // plans a presigned URL or a compare-and-set that would throw. Ranges
+    // stay as the adapter reports them: they're applied to the verbatim blob.
+    capabilities: (caps) => ({
+      ...caps,
+      conditional: NO_CONDITIONAL,
+      signedUrl: { supported: false },
+    }),
     name: "dedup",
     wrap,
   };
