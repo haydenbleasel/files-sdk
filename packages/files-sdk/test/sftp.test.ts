@@ -6,7 +6,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type SftpClient from "ssh2-sftp-client";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { ResumableUploadSession } from "../src/index.js";
+import type {
+  OffsetResumableDriver,
+  ResumableUploadSession,
+} from "../src/index.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z").getTime();
 
@@ -195,10 +198,15 @@ const makeFakeClient = () =>
     },
     rename(from: string, to: string) {
       const entry = store.get(from);
-      if (entry) {
-        store.set(to, entry);
-        store.delete(from);
+      if (!entry) {
+        return Promise.reject(sftpError(2, "No such file"));
       }
+      // Base SFTP v3 rename (OpenSSH): an existing target is refused.
+      if (store.has(to)) {
+        return Promise.reject(sftpError(4, "Failure"));
+      }
+      store.set(to, entry);
+      store.delete(from);
       return Promise.resolve("ok");
     },
     stat(remote: string) {
@@ -220,13 +228,17 @@ const makeFakeClient = () =>
 // module-level store) plus connect()/end() to model the connection lifecycle.
 let sftpConnectConfigs: unknown[] = [];
 let sftpEndCount = 0;
+// When set, connect() rejects with this error.
+let sftpConnectError: Error | undefined;
 // oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new SftpClient()`, so the stub must be constructable.
 class MockSftpClient {
   constructor() {
     Object.assign(this, makeFakeClient(), {
       connect: (config: unknown) => {
         sftpConnectConfigs.push(config);
-        return Promise.resolve();
+        return sftpConnectError
+          ? Promise.reject(sftpConnectError)
+          : Promise.resolve();
       },
       end: () => {
         sftpEndCount += 1;
@@ -505,6 +517,35 @@ describe("sftp connect-per-op (mocked ssh2-sftp-client)", () => {
   beforeEach(() => {
     sftpConnectConfigs = [];
     sftpEndCount = 0;
+    sftpConnectError = undefined;
+  });
+
+  test("a rejected login is Unauthorized, not a retryable Provider", async () => {
+    // ssh2-sftp-client rejects connect() with a codeless Error; it has to go
+    // through the mapper like every operation error.
+    sftpConnectError = new Error(
+      "getConnection: All configured authentication methods failed"
+    );
+    const files = new Files({
+      adapter: sftp({ host: "h", password: "bad", username: "u" }),
+    });
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    await expect(
+      files.download("a.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
+  test("a refused connection is a retryable Provider error", async () => {
+    sftpConnectError = Object.assign(
+      new Error("getConnection: Remote host refused connection"),
+      { code: "ECONNREFUSED" }
+    );
+    const files = new Files({ adapter: sftp({ host: "h", username: "u" }) });
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+    });
   });
 
   test("connects and ends the connection for each operation", async () => {
@@ -670,6 +711,35 @@ describe("sftp edge cases (injected client)", () => {
     expect(result.cursor).toBeUndefined();
   });
 
+  test("list skips a subdirectory that vanished mid-walk", async () => {
+    // A NotFound on a nested directory must not wipe out the whole listing —
+    // only a missing root lists as empty.
+    const client = makeFakeClient();
+    const realList = client.list.bind(client);
+    client.list = (dir: string) =>
+      dir.endsWith("gone")
+        ? Promise.reject(sftpError(2, "No such file"))
+        : realList(dir);
+    store.set("a.txt", { bytes: Buffer.from("1") });
+    store.set("gone/b.txt", { bytes: Buffer.from("2") });
+    store.set("kept/c.txt", { bytes: Buffer.from("3") });
+    const files = new Files({ adapter: sftp({ client }) });
+    const result = await files.list();
+    expect(result.items.map((i) => i.key)).toEqual(["a.txt", "kept/c.txt"]);
+  });
+
+  test("list rethrows a nested non-NotFound error", async () => {
+    const client = makeFakeClient();
+    const realList = client.list.bind(client);
+    client.list = (dir: string) =>
+      dir.endsWith("nested")
+        ? Promise.reject(sftpError(3, "permission denied"))
+        : realList(dir);
+    store.set("nested/b.txt", { bytes: Buffer.from("2") });
+    const files = new Files({ adapter: sftp({ client }) });
+    await expect(files.list()).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
   test("list rethrows a non-NotFound walk error", async () => {
     const client = {
       end() {
@@ -701,6 +771,7 @@ describe("mapSftpError", () => {
       }).code
     ).toBe("Unauthorized");
     expect(mapSftpError({ code: "ECONNREFUSED" }).code).toBe("Provider");
+    expect(mapSftpError({ code: "ERR_BAD_AUTH" }).code).toBe("Unauthorized");
   });
 
   test("passes through an existing FilesError unchanged", () => {
@@ -804,6 +875,111 @@ describe("sftp resumable uploads", () => {
     await expect(promise).rejects.toMatchObject({ aborted: true });
     await aborting;
     expect(await files.exists("a.bin")).toBe(false);
+  });
+
+  test("a paused upload stages its partial and leaves the existing object intact", async () => {
+    const files = newFiles();
+    await files.upload("r.bin", "old");
+    const control = new UploadControl();
+    const { promise: reachedPause, resolve: onPause } =
+      Promise.withResolvers<undefined>();
+    const pending = files
+      .upload("r.bin", "abcdefghijkl", {
+        control,
+        multipart: { concurrency: 1, partSize: 4 },
+        onProgress: ({ loaded }) => {
+          if (loaded === 4 && control.status !== "paused") {
+            control.pause();
+            onPause();
+          }
+        },
+      })
+      .catch(() => {
+        // Abandoned — resumed below.
+      });
+    await reachedPause;
+    // The key still serves the old bytes; the partial sits beside it and
+    // never shows up in list().
+    expect(store.get("r.bin")?.bytes.toString()).toBe("old");
+    expect(store.get("r.bin.fls-part")?.bytes.toString()).toBe("abcd");
+    const listed = await files.list();
+    expect(listed.items.map((i) => i.key)).toEqual(["r.bin"]);
+
+    // Completing renames over the existing file, which base SFTP rename
+    // refuses: the target is replaced only now.
+    const token = structuredClone(control.toJSON()) as ResumableUploadSession;
+    const result = await newFiles().upload("r.bin", "abcdefghijkl", {
+      control: UploadControl.from(token),
+      multipart: { concurrency: 1, partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(store.get("r.bin")?.bytes.toString()).toBe("abcdefghijkl");
+    expect(store.has("r.bin.fls-part")).toBe(false);
+    void pending;
+  });
+
+  test("abort discards the partial but keeps an existing object", async () => {
+    const files = newFiles();
+    await files.upload("a.bin", "old");
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", "abcdefghijkl", {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(store.get("a.bin")?.bytes.toString()).toBe("old");
+    expect(store.has("a.bin.fls-part")).toBe(false);
+  });
+
+  const driverFor = (
+    client: SftpClient,
+    key: string
+  ): OffsetResumableDriver => {
+    const adapter = sftp({ client });
+    if (!adapter.resumableUpload) {
+      throw new Error("sftp adapter lost resumableUpload");
+    }
+    return adapter.resumableUpload(key, {}) as OffsetResumableDriver;
+  };
+
+  test("complete leaves the target alone when the staged partial is gone", async () => {
+    store.set("t.bin", { bytes: Buffer.from("old") });
+    await expect(
+      driverFor(makeFakeClient(), "t.bin").complete([])
+    ).rejects.toMatchObject({ code: "NotFound" });
+    expect(store.get("t.bin")?.bytes.toString()).toBe("old");
+  });
+
+  test("complete surfaces a rename failure that isn't an existing target", async () => {
+    const client = makeFakeClient();
+    client.rename = () => Promise.reject(sftpError(3, "permission denied"));
+    store.set("t.bin.fls-part", { bytes: Buffer.from("new") });
+    await expect(driverFor(client, "t.bin").complete([])).rejects.toMatchObject(
+      { code: "Unauthorized" }
+    );
+    expect(store.has("t.bin.fls-part")).toBe(true);
+  });
+
+  test("keys ending in the staging suffix are reserved for writes", async () => {
+    const files = newFiles();
+    await files.upload("src.txt", "s");
+    await expect(files.upload("x.fls-part", "x")).rejects.toThrow(/reserved/u);
+    await expect(files.copy("src.txt", "d/y.FLS-PART")).rejects.toThrow(
+      /reserved/u
+    );
+    await expect(files.move("src.txt", "z.fls-part")).rejects.toThrow(
+      /reserved/u
+    );
+    await expect(
+      files.upload("r.fls-part", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/reserved/u);
   });
 
   test("metadata is rejected", async () => {

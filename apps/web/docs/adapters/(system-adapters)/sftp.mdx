@@ -62,6 +62,8 @@ await client.end();
 
 Connect-per-operation means a high call rate becomes a high connection rate, and SSH servers commonly cap sessions per IP - inject a pre-connected `client` (shown above) for batch jobs.
 
+Resumable uploads (`upload({ control })`) append each chunk to a `<key>.fls-part` staging file next to the target and rename it over the key only when the upload completes, so an existing object stays readable until then and `abort()` removes just the partial. `list()` hides staging files, and writes to keys ending in `.fls-part` throw. Base SFTP `rename` refuses an existing target on most servers, so when one is in the way it is deleted and the rename retried: the key is briefly absent at that moment.
+
 ## Compatibility
 
 | Method | Status | Notes |
@@ -69,7 +71,7 @@ Connect-per-operation means a high call rate becomes a high connection rate, and
 | `upload` | ⚠️ | User `metadata` and `cacheControl` throw - SFTP files have no arbitrary-metadata or cache-header field. `contentType` is accepted for the return value but not stored (it's inferred from the key's extension on read). Stream bodies upload directly. Node-only (raw sockets). |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Walks the directory tree recursively on every call - SFTP has no native prefix scan or pagination - and skips symlinks. `prefix`/`limit`/`cursor` are applied client-side over the full walk, so they're accurate but a large tree means a full traversal per call. Content type is inferred from each key's extension; `size`/`lastModified` come from the listing. |
+| `list` | ⚠️ | Walks the directory tree recursively on every call - SFTP has no native prefix scan or pagination - and skips symlinks. A subdirectory that disappears mid-walk is skipped; a missing root lists as empty. `prefix`/`limit`/`cursor` are applied client-side over the full walk, so they're accurate but a large tree means a full traversal per call. Content type is inferred from each key's extension; `size`/`lastModified` come from the listing. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ⚠️ | SFTP stores no content type, etag, or user metadata - `head()` infers the type from the key's extension (or `application/octet-stream`) and returns no etag. `size` and `lastModified` come from `stat`. |
 | `exists` | ✅ |  |

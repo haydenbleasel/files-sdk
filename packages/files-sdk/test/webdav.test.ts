@@ -574,6 +574,35 @@ describe("webdav edge cases (injected client)", () => {
     expect(result.cursor).toBeUndefined();
   });
 
+  test("list skips a subcollection that vanished mid-walk", async () => {
+    // A 404 on a nested collection must not wipe out the whole listing —
+    // only a missing root lists as empty.
+    const client = makeFakeClient();
+    const realList = client.getDirectoryContents.bind(client);
+    client.getDirectoryContents = ((dir: string) =>
+      dir === "/gone"
+        ? Promise.reject(webdavError(404, "Not Found"))
+        : realList(dir)) as WebDAVClient["getDirectoryContents"];
+    store.set("/a.txt", { bytes: new TextEncoder().encode("1") });
+    store.set("/gone/b.txt", { bytes: new TextEncoder().encode("2") });
+    store.set("/kept/c.txt", { bytes: new TextEncoder().encode("3") });
+    const files = new Files({ adapter: webdav({ client }) });
+    const result = await files.list();
+    expect(result.items.map((i) => i.key)).toEqual(["a.txt", "kept/c.txt"]);
+  });
+
+  test("list rethrows a nested non-NotFound error", async () => {
+    const client = makeFakeClient();
+    const realList = client.getDirectoryContents.bind(client);
+    client.getDirectoryContents = ((dir: string) =>
+      dir === "/nested"
+        ? Promise.reject(webdavError(403, "Forbidden"))
+        : realList(dir)) as WebDAVClient["getDirectoryContents"];
+    store.set("/nested/b.txt", { bytes: new TextEncoder().encode("2") });
+    const files = new Files({ adapter: webdav({ client }) });
+    await expect(files.list()).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
   test("list rethrows a non-NotFound walk error", async () => {
     const client = {
       getDirectoryContents() {
@@ -656,6 +685,27 @@ describe("webdav connection config", () => {
       token: { access_token: "abc", token_type: "Bearer" },
     });
     expect(adapter.raw).toBeDefined();
+  });
+
+  test("a token without authType sends token auth", () => {
+    // The webdav library alone would infer AuthType.None here and send no
+    // Authorization header at all.
+    const adapter = webdav({
+      baseUrl: "https://dav.example.com",
+      token: { access_token: "abc", token_type: "Bearer" },
+    });
+    expect(adapter.raw.getHeaders()).toMatchObject({
+      Authorization: "Bearer abc",
+    });
+  });
+
+  test("an explicit authType still wins over a token", () => {
+    const adapter = webdav({
+      authType: "none",
+      baseUrl: "https://dav.example.com",
+      token: { access_token: "abc", token_type: "Bearer" },
+    });
+    expect(adapter.raw.getHeaders().Authorization).toBeUndefined();
   });
 
   test("reads WEBDAV_* env vars", () => {

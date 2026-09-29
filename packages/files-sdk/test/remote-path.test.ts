@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import { FilesError } from "../src/internal/errors.js";
-import { joinRemotePath, trimSlashes } from "../src/internal/remote-path.js";
+import {
+  assertNotStagingPath,
+  isStagingPath,
+  joinRemotePath,
+  trimSlashes,
+} from "../src/internal/remote-path.js";
 
 const NULL_BYTE = String.fromCodePoint(0);
 
@@ -35,5 +40,21 @@ describe("joinRemotePath", () => {
       expect((error as FilesError).code).toBe("Provider");
       expect((error as FilesError).message).toMatch(/null byte/u);
     }
+  });
+});
+
+describe("resumable staging paths", () => {
+  test("isStagingPath matches the suffix case-insensitively", () => {
+    expect(isStagingPath("a/b.bin.fls-part")).toBe(true);
+    expect(isStagingPath("a/b.bin.FLS-PART")).toBe(true);
+    expect(isStagingPath("a/b.bin")).toBe(false);
+    expect(isStagingPath("a/b.fls-part.bin")).toBe(false);
+  });
+
+  test("assertNotStagingPath throws Provider on a staging path only", () => {
+    expect(() => assertNotStagingPath("ftp", "up/x.fls-part", "x")).toThrow(
+      /ftp: keys ending in \.fls-part are reserved/u
+    );
+    expect(() => assertNotStagingPath("sftp", "up/x.bin", "x")).not.toThrow();
   });
 });

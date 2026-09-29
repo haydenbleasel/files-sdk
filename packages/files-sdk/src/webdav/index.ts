@@ -61,7 +61,10 @@ export interface WebdavAdapterOptions {
    * back to `WEBDAV_AUTH_TYPE`.
    */
   authType?: WebdavAuthType;
-  /** OAuth token for `authType: "token"`. */
+  /**
+   * OAuth token, sent as `Authorization: <token_type> <access_token>`. Implies
+   * `authType: "token"` when no `authType` is given.
+   */
   token?: OAuthToken;
   /** Extra headers sent on every request (e.g. a custom auth header). */
   headers?: Record<string, string>;
@@ -230,9 +233,12 @@ const resolveClient = (opts: WebdavAdapterOptions): WebDAVClient => {
   const username =
     opts.username ?? readEnv("WEBDAV_USERNAME") ?? readEnv("WEBDAV_USER");
   const password = opts.password ?? readEnv("WEBDAV_PASSWORD");
-  const authType = resolveAuthType(
-    opts.authType ?? readEnv("WEBDAV_AUTH_TYPE")
-  );
+  // With no explicit mode, a `token` means token auth: the `webdav` library
+  // itself only infers password auth (from `username`/`password`) and would
+  // otherwise default to none, silently sending no Authorization header.
+  const authType =
+    resolveAuthType(opts.authType ?? readEnv("WEBDAV_AUTH_TYPE")) ??
+    (opts.token ? AuthType.Token : undefined);
   return createClient(baseUrl, {
     ...(username && { username }),
     ...(password && { password }),
@@ -447,10 +453,21 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         { size: number; lastModified?: number; type?: string }
       >();
       const walk = async (dir: string, prefix: string): Promise<void> => {
-        const entries = await client.getDirectoryContents(dir, {
-          details: false,
-          ...(signal && { signal }),
-        });
+        let entries: FileStat[];
+        try {
+          entries = await client.getDirectoryContents(dir, {
+            details: false,
+            ...(signal && { signal }),
+          });
+        } catch (error) {
+          // A subcollection that vanished between its parent's listing and
+          // this one is skipped rather than ending the whole walk. The root
+          // (empty prefix) propagates to the handler below.
+          if (prefix && mapWebdavError(error).code === "NotFound") {
+            return;
+          }
+          throw error;
+        }
         for (const entry of entries) {
           const childKey = prefix
             ? `${prefix}/${entry.basename}`

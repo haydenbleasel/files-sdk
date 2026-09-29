@@ -418,8 +418,14 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
       // eslint-disable-next-line no-await-in-loop -- stack-based tree walk reads one directory per iteration.
       entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch (error) {
+      // A missing root lists as empty; a subdirectory that vanished between
+      // its parent's readdir and this one is skipped rather than ending the
+      // whole walk.
       if (errorCode(error) === "ENOENT") {
-        return;
+        if (dir === root) {
+          return;
+        }
+        continue;
       }
       throw error;
     }

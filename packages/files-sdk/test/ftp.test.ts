@@ -7,7 +7,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Client } from "basic-ftp";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { ResumableUploadSession } from "../src/index.js";
+import type {
+  OffsetResumableDriver,
+  ResumableUploadSession,
+} from "../src/index.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z");
 
@@ -20,6 +23,9 @@ let symlinks: Set<string>;
 // Directories created via ensureDir. A directory also exists implicitly when
 // a stored key lives under it (uploadFrom's own ensureDir put it there).
 let dirs: Set<string>;
+// When set, RNTO onto an existing file is refused (IIS-style) instead of
+// replacing it (the Unix-server default).
+let renameRefusesExisting = false;
 
 const dirExists = (dir: string): boolean => {
   if (!dir || dirs.has(dir)) {
@@ -111,6 +117,9 @@ const makeFakeClient = () => {
     },
     list(dir: string) {
       const prefix = normalizeDir(resolve(dir));
+      if (!dirExists(prefix)) {
+        return Promise.reject(ftpError(550, "550 No such directory"));
+      }
       const children = new Map<string, "file" | "dir">();
       for (const key of store.keys()) {
         if (prefix && !key.startsWith(`${prefix}/`)) {
@@ -159,11 +168,20 @@ const makeFakeClient = () => {
           Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
         );
       }
-      if (!store.has(target)) {
-        if (ignoreErrorCodes) {
-          return Promise.resolve({ code: 250 });
-        }
-        return Promise.reject(ftpError(550, "550 not found"));
+      let reply: Error | undefined;
+      if (target.includes("locked")) {
+        reply = ftpError(550, "550 Permission denied");
+      } else if (target.includes("busy")) {
+        reply = ftpError(450, "450 File busy");
+      } else if (!store.has(target)) {
+        reply = ftpError(550, "550 not found");
+      }
+      if (reply) {
+        // Like basic-ftp's sendIgnoringError: the flag swallows EVERY FTP
+        // error reply, not just "not found".
+        return ignoreErrorCodes
+          ? Promise.resolve({ code: 250 })
+          : Promise.reject(reply);
       }
       store.delete(target);
       return Promise.resolve({ code: 250 });
@@ -173,6 +191,9 @@ const makeFakeClient = () => {
       const entry = store.get(src);
       if (!entry) {
         return Promise.reject(ftpError(550, "550 not found"));
+      }
+      if (renameRefusesExisting && store.has(resolve(to))) {
+        return Promise.reject(ftpError(550, "550 File exists"));
       }
       store.delete(src);
       store.set(resolve(to), entry);
@@ -208,13 +229,17 @@ const makeFakeClient = () => {
 // module-level store) plus access()/close() to model the connection lifecycle.
 let ftpAccessConfigs: unknown[] = [];
 let ftpCloseCount = 0;
+// When set, access() (connect + login) rejects with this error.
+let ftpAccessError: Error | undefined;
 // oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new Client()`, so the stub must be constructable.
 class MockBasicFtpClient {
   constructor(_timeout?: number) {
     Object.assign(this, makeFakeClient(), {
       access: (config: unknown) => {
         ftpAccessConfigs.push(config);
-        return Promise.resolve({ code: 220 });
+        return ftpAccessError
+          ? Promise.reject(ftpAccessError)
+          : Promise.resolve({ code: 220 });
       },
       close: () => {
         ftpCloseCount += 1;
@@ -234,6 +259,7 @@ beforeEach(() => {
   store = new Map();
   symlinks = new Set();
   dirs = new Set();
+  renameRefusesExisting = false;
 });
 
 describe("ftp adapter", () => {
@@ -333,6 +359,57 @@ describe("ftp adapter", () => {
     await files.delete("gone.txt");
     await files.delete("gone.txt");
     expect(await files.exists("gone.txt")).toBe(false);
+  });
+
+  test("delete of a key in a missing directory is a no-op", async () => {
+    const files = newFiles();
+    await files.delete("no/such/dir/a.txt");
+  });
+
+  test("delete of a key that names a directory is a no-op", async () => {
+    const files = newFiles();
+    await files.upload("dir/a.txt", "x");
+    await files.delete("dir");
+    expect(await files.exists("dir/a.txt")).toBe(true);
+  });
+
+  test("delete surfaces a 550 refusal for a file that is still there", async () => {
+    // 550 also means "permission denied": only a file that is really gone
+    // makes the delete a no-op.
+    const files = newFiles();
+    store.set("locked.txt", Buffer.from("x"));
+    await expect(files.delete("locked.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: expect.stringContaining("550 Permission denied"),
+    });
+    expect(store.has("locked.txt")).toBe(true);
+  });
+
+  test("delete surfaces non-550 replies instead of reporting success", async () => {
+    const files = newFiles();
+    store.set("busy.txt", Buffer.from("x"));
+    await expect(files.delete("busy.txt")).rejects.toMatchObject({
+      code: "Provider",
+    });
+    expect(store.has("busy.txt")).toBe(true);
+  });
+
+  test("delete rethrows when the post-550 listing itself fails", async () => {
+    const client = {
+      close() {
+        // no-op
+      },
+      list() {
+        return Promise.reject(ftpError(421, "421 Service not available"));
+      },
+      remove() {
+        return Promise.reject(ftpError(550, "550 not found"));
+      },
+    } as unknown as Client;
+    const files = new Files({ adapter: ftp({ client }) });
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+    });
   });
 
   test("download of a missing key throws NotFound", async () => {
@@ -470,6 +547,35 @@ describe("ftp connect-per-op (mocked basic-ftp)", () => {
   beforeEach(() => {
     ftpAccessConfigs = [];
     ftpCloseCount = 0;
+    ftpAccessError = undefined;
+  });
+
+  test("a rejected login is Unauthorized and closes the socket", async () => {
+    // Connect/login runs before the operation; its errors must go through the
+    // mapper (530 → Unauthorized, not a retryable Provider) and the half-open
+    // control connection must be closed.
+    ftpAccessError = ftpError(530, "530 Login incorrect.");
+    const files = new Files({
+      adapter: ftp({ host: "h", password: "bad", user: "u" }),
+    });
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    await expect(
+      files.download("a.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+    expect(ftpCloseCount).toBe(2);
+  });
+
+  test("a refused connection is a retryable Provider error", async () => {
+    ftpAccessError = Object.assign(new Error("connect ECONNREFUSED"), {
+      code: "ECONNREFUSED",
+    });
+    const files = new Files({ adapter: ftp({ host: "h", user: "u" }) });
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+    });
+    expect(ftpCloseCount).toBe(1);
   });
 
   test("connects and closes the connection for each operation", async () => {
@@ -571,6 +677,17 @@ describe("ftp edge cases (injected client)", () => {
     const result = await files.delete(["ok.txt", "boom.txt", "after.txt"]);
     expect(result.deleted).toEqual(["ok.txt", "after.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+  });
+
+  test("deleteMany reports a refused delete instead of listing it as deleted", async () => {
+    const files = newFiles();
+    await files.upload("ok.txt", "1");
+    store.set("locked.txt", Buffer.from("2"));
+    const result = await files.delete(["ok.txt", "locked.txt"]);
+    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.errors?.map((e) => [e.key, e.error.code])).toEqual([
+      ["locked.txt", "Unauthorized"],
+    ]);
   });
 
   test("deleteMany stops at the first error when stopOnError is set", async () => {
@@ -712,6 +829,48 @@ describe("ftp edge cases (injected client)", () => {
     expect(result.cursor).toBeUndefined();
   });
 
+  test("list skips a subdirectory that vanished mid-walk", async () => {
+    // A NotFound on a nested directory must not wipe out the whole listing —
+    // only a missing root lists as empty.
+    const client = makeFakeClient();
+    const realList = client.list.bind(client);
+    client.list = (dir?: string) =>
+      dir === "gone"
+        ? Promise.reject(ftpError(550, "550 No such directory"))
+        : realList(dir);
+    store.set("a.txt", Buffer.from("1"));
+    store.set("gone/b.txt", Buffer.from("2"));
+    store.set("kept/c.txt", Buffer.from("3"));
+    const files = new Files({ adapter: ftp({ client }) });
+    const result = await files.list();
+    expect(result.items.map((i) => i.key)).toEqual(["a.txt", "kept/c.txt"]);
+  });
+
+  test("list rethrows a nested non-NotFound error", async () => {
+    const client = makeFakeClient();
+    const realList = client.list.bind(client);
+    client.list = (dir?: string) =>
+      dir === "nested"
+        ? Promise.reject(ftpError(530, "530 not logged in"))
+        : realList(dir);
+    store.set("nested/b.txt", Buffer.from("2"));
+    const files = new Files({ adapter: ftp({ client }) });
+    await expect(files.list()).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
+  test("a transient 450 on the root is an error, not an empty listing", async () => {
+    const client = {
+      close() {
+        // no-op
+      },
+      list() {
+        return Promise.reject(ftpError(450, "450 Directory busy"));
+      },
+    } as unknown as Client;
+    const files = new Files({ adapter: ftp({ client }) });
+    await expect(files.list()).rejects.toMatchObject({ code: "Provider" });
+  });
+
   test("list rethrows a non-NotFound walk error", async () => {
     const client = {
       close() {
@@ -736,6 +895,8 @@ describe("mapFtpError", () => {
     expect(mapFtpError(ftpError(421, "service unavailable")).code).toBe(
       "Provider"
     );
+    // 450 "file unavailable (busy)" is transient → retryable, not NotFound.
+    expect(mapFtpError(ftpError(450, "file busy")).code).toBe("Provider");
     // Socket errors arrive with a string code → Provider (retryable).
     expect(mapFtpError({ code: "ECONNREFUSED" }).code).toBe("Provider");
   });
@@ -854,6 +1015,149 @@ describe("ftp resumable uploads", () => {
     expect(result.size).toBe(12);
     const got = await files.download("lost.bin");
     expect(await got.text()).toBe("abcdefghijkl");
+  });
+
+  test("a paused upload stages its partial and leaves the existing object intact", async () => {
+    const files = newFiles();
+    await files.upload("r.bin", "old");
+    const control = new UploadControl();
+    const { promise: reachedPause, resolve: onPause } =
+      Promise.withResolvers<undefined>();
+    const pending = files
+      .upload("r.bin", "abcdefghijkl", {
+        control,
+        multipart: { concurrency: 1, partSize: 4 },
+        onProgress: ({ loaded }) => {
+          if (loaded === 4 && control.status !== "paused") {
+            control.pause();
+            onPause();
+          }
+        },
+      })
+      .catch(() => {
+        // Abandoned — resumed below.
+      });
+    await reachedPause;
+    // The key still serves the old bytes; the partial sits beside it and
+    // never shows up in list().
+    expect(store.get("r.bin")?.toString()).toBe("old");
+    expect(store.get("r.bin.fls-part")?.toString()).toBe("abcd");
+    const listed = await files.list();
+    expect(listed.items.map((i) => i.key)).toEqual(["r.bin"]);
+
+    const token = structuredClone(control.toJSON()) as ResumableUploadSession;
+    const result = await newFiles().upload("r.bin", "abcdefghijkl", {
+      control: UploadControl.from(token),
+      multipart: { concurrency: 1, partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(store.get("r.bin")?.toString()).toBe("abcdefghijkl");
+    expect(store.has("r.bin.fls-part")).toBe(false);
+    void pending;
+  });
+
+  test("abort discards the partial but keeps an existing object", async () => {
+    const files = newFiles();
+    await files.upload("a.bin", "old");
+    const control = new UploadControl();
+    let aborting: Promise<void> | undefined;
+    const promise = files.upload("a.bin", "abcdefghijkl", {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !aborting) {
+          aborting = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await aborting;
+    expect(store.get("a.bin")?.toString()).toBe("old");
+    expect(store.has("a.bin.fls-part")).toBe(false);
+  });
+
+  test("complete replaces the target on a server that refuses RNTO over a file", async () => {
+    renameRefusesExisting = true;
+    const files = newFiles();
+    await files.upload("w.bin", "old");
+    const result = await files.upload("w.bin", "abcdefghijkl", {
+      control: new UploadControl(),
+      multipart: { partSize: 4 },
+    });
+    expect(result.size).toBe(12);
+    expect(store.get("w.bin")?.toString()).toBe("abcdefghijkl");
+    expect(store.has("w.bin.fls-part")).toBe(false);
+  });
+
+  const driverFor = (client: Client, key: string): OffsetResumableDriver => {
+    const adapter = ftp({ client });
+    if (!adapter.resumableUpload) {
+      throw new Error("ftp adapter lost resumableUpload");
+    }
+    return adapter.resumableUpload(key, {}) as OffsetResumableDriver;
+  };
+
+  test("complete leaves the target alone when the rename fails transiently", async () => {
+    const client = makeFakeClient();
+    client.rename = () => Promise.reject(ftpError(450, "450 busy"));
+    store.set("t.bin", Buffer.from("old"));
+    store.set("t.bin.fls-part", Buffer.from("new"));
+    await expect(driverFor(client, "t.bin").complete([])).rejects.toMatchObject(
+      { code: "Provider" }
+    );
+    expect(store.get("t.bin")?.toString()).toBe("old");
+  });
+
+  test("complete leaves the target alone when the staged partial is gone", async () => {
+    const client = makeFakeClient();
+    const realSize = client.size.bind(client);
+    let sizeCalls = 0;
+    client.size = (path: string) => {
+      sizeCalls += 1;
+      return sizeCalls === 1
+        ? realSize(path)
+        : Promise.reject(ftpError(550, "550 not found"));
+    };
+    client.rename = () => Promise.reject(ftpError(550, "550 not found"));
+    store.set("t.bin", Buffer.from("old"));
+    store.set("t.bin.fls-part", Buffer.from("new"));
+    await expect(driverFor(client, "t.bin").complete([])).rejects.toMatchObject(
+      { code: "NotFound" }
+    );
+    expect(store.get("t.bin")?.toString()).toBe("old");
+  });
+
+  test("complete surfaces a transport error from the rename", async () => {
+    const client = makeFakeClient();
+    client.rename = () =>
+      Promise.reject(
+        Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
+      );
+    store.set("t.bin.fls-part", Buffer.from("new"));
+    await expect(driverFor(client, "t.bin").complete([])).rejects.toMatchObject(
+      { code: "Provider" }
+    );
+  });
+
+  test("keys ending in the staging suffix are reserved for writes", async () => {
+    const files = newFiles();
+    await files.upload("src.txt", "s");
+    await expect(files.upload("x.fls-part", "x")).rejects.toThrow(/reserved/u);
+    await expect(files.copy("src.txt", "d/y.FLS-PART")).rejects.toThrow(
+      /reserved/u
+    );
+    await expect(files.move("src.txt", "z.fls-part")).rejects.toThrow(
+      /reserved/u
+    );
+    await expect(
+      files.upload("r.fls-part", "data", { control: new UploadControl() })
+    ).rejects.toThrow(/reserved/u);
+    // Reads and deletes of a stray staging file still work.
+    store.set("stray.fls-part", Buffer.from("p"));
+    const stray = await files.download("stray.fls-part");
+    expect(await stray.text()).toBe("p");
+    await files.delete("stray.fls-part");
+    expect(store.has("stray.fls-part")).toBe(false);
   });
 
   test("metadata is rejected", async () => {

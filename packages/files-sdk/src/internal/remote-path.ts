@@ -9,6 +9,40 @@
 import { FilesError } from "./errors.js";
 
 /**
+ * Suffix of the staging file an in-progress resumable upload appends to before
+ * it is renamed over the target key (the fs adapter reserves the same one).
+ * `list()` hides staging files, and writes refuse keys that would land on one,
+ * so a paused or crashed upload never surfaces as a truncated object.
+ */
+export const RESUMABLE_STAGING_SUFFIX = ".fls-part";
+
+/**
+ * Whether a remote name or path is a resumable-upload staging file. Folded to
+ * lower case because FTP/SFTP servers on Windows hosts match names
+ * case-insensitively.
+ */
+export const isStagingPath = (path: string): boolean =>
+  path.toLowerCase().endsWith(RESUMABLE_STAGING_SUFFIX);
+
+/**
+ * Throw `Provider` when a write would land on a resumable-upload staging path.
+ * Reads and deletes of such a path stay allowed, so a stray staging file can
+ * still be inspected or cleaned up.
+ */
+export const assertNotStagingPath = (
+  adapter: string,
+  remote: string,
+  key: string
+): void => {
+  if (isStagingPath(remote)) {
+    throw new FilesError(
+      "Provider",
+      `${adapter}: keys ending in ${RESUMABLE_STAGING_SUFFIX} are reserved for in-progress resumable uploads: ${JSON.stringify(key)}`
+    );
+  }
+};
+
+/**
  * Strip leading and trailing slashes. `"/uploads/"`, `"uploads/"`, and
  * `"uploads"` all collapse to `"uploads"`; `"/"` collapses to `""`.
  */

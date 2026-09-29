@@ -32,7 +32,13 @@ import { FilesError } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
-import { joinRemotePath, trimSlashes } from "../internal/remote-path.js";
+import {
+  RESUMABLE_STAGING_SUFFIX,
+  assertNotStagingPath,
+  isStagingPath,
+  joinRemotePath,
+  trimSlashes,
+} from "../internal/remote-path.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
@@ -85,7 +91,9 @@ const DEFAULT_PORT = 21;
 export const mapFtpError = makeErrorMapper({
   codes: {
     conflict: new Set(["552", "553"]),
-    notFound: new Set(["550", "450", "551"]),
+    // 450 ("file unavailable, e.g. busy") is transient, so it stays a
+    // retryable Provider error rather than a definitive NotFound.
+    notFound: new Set(["550", "551"]),
     unauthorized: new Set(["530", "532"]),
   },
   // basic-ftp's FTPError carries the numeric reply code on `.code`. Classify on
@@ -100,6 +108,13 @@ export const mapFtpError = makeErrorMapper({
   },
   providerLabel: "FTP error",
 });
+
+// The numeric FTP reply code basic-ftp's FTPError carries, or undefined for a
+// transport error (whose `.code` is a string like "ECONNRESET").
+const ftpReplyCode = (cause: unknown): number | undefined =>
+  isObject(cause) && "code" in cause && isNumber(cause.code)
+    ? cause.code
+    : undefined;
 
 const uint8ToBuffer = (u8: Uint8Array): Buffer =>
   Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
@@ -173,6 +188,81 @@ const ensureDirRestoringCwd = async (
   }
 };
 
+// Whether `remote` still shows up as a file in its parent directory's listing.
+// A parent that is itself missing (550) means the file can't be there either.
+const listedInParent = async (
+  client: Client,
+  remote: string
+): Promise<boolean> => {
+  const { dir, base } = splitRemote(remote);
+  let entries: FileInfo[];
+  try {
+    entries = await client.list(dir);
+  } catch (error) {
+    if (ftpReplyCode(error) === 550) {
+      return false;
+    }
+    throw error;
+  }
+  return entries.some((entry) => entry.name === base && !entry.isDirectory);
+};
+
+// Idempotent DELE. 550 is FTP's catch-all "file unavailable": it answers a
+// missing file, but also "permission denied" and "not a plain file". Only a
+// file that is really gone is a no-op; one still listed after a 550 means the
+// server refused the delete, which surfaces as Unauthorized. Every other reply
+// (450 busy, 530 not logged in, …) and every transport error propagates.
+// (basic-ftp's `remove(path, true)` would swallow *every* FTP error reply.)
+const removeIfPresent = async (
+  client: Client,
+  remote: string
+): Promise<void> => {
+  try {
+    await client.remove(remote);
+  } catch (error) {
+    if (ftpReplyCode(error) !== 550) {
+      throw error;
+    }
+    if (await listedInParent(client, remote)) {
+      const reply = error instanceof Error ? error.message : String(error);
+      throw new FilesError(
+        "Unauthorized",
+        `ftp: the server refused to delete ${remote}: ${reply}`,
+        error
+      );
+    }
+  }
+};
+
+// RNFR/RNTO `from` over `to`. Unix servers replace an existing target
+// atomically; others (IIS among them) refuse with a permanent 5xx while the
+// target exists. On that refusal, and only while the staged source is still in
+// place, remove the target and rename again — the one window where the key is
+// briefly absent.
+const renameOver = async (
+  client: Client,
+  from: string,
+  to: string
+): Promise<void> => {
+  try {
+    await client.rename(from, to);
+  } catch (error) {
+    const code = ftpReplyCode(error);
+    if (code === undefined || code < 500) {
+      throw error;
+    }
+    try {
+      await client.size(from);
+    } catch {
+      // The source is gone (or unreadable): the target isn't what's in the
+      // way, so don't touch it.
+      throw error;
+    }
+    await removeIfPresent(client, to);
+    await client.rename(from, to);
+  }
+};
+
 /* oxlint-disable promise/prefer-await-to-callbacks -- basic-ftp downloads into a Node Writable, whose write API is callback-based. */
 const downloadToBuffer = async (
   client: Client,
@@ -237,7 +327,14 @@ const resolveConnection = (opts: FtpAdapterOptions): Resolved => {
   };
   const access = async (): Promise<Client> => {
     const client = new Client(opts.timeout);
-    await client.access(accessConfig);
+    try {
+      await client.access(accessConfig);
+    } catch (error) {
+      // A failed connect/login still holds a control socket — close it, or
+      // every failed (and retried) attempt leaks one.
+      client.close();
+      throw error;
+    }
     return client;
   };
   return { access };
@@ -290,11 +387,24 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     };
   };
 
+  // Connect/login failures go through the same mapper as operation errors, so
+  // a rejected login (530) is Unauthorized rather than a retryable Provider.
+  const acquireMapped = async (): Promise<{
+    client: Client;
+    release: () => void;
+  }> => {
+    try {
+      return await acquire();
+    } catch (error) {
+      throw mapFtpError(error);
+    }
+  };
+
   const run = async <T>(
     signal: AbortSignal | undefined,
     fn: (client: Client) => Promise<T>
   ): Promise<T> => {
-    const { client, release } = await acquire();
+    const { client, release } = await acquireMapped();
     const onAbort = (): void => {
       release();
     };
@@ -333,6 +443,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     async copy(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
+      assertNotStagingPath("ftp", toRemote, to);
       await run(opts2?.signal, async (client) => {
         // No server-side copy in FTP: download the bytes, then re-upload.
         // Download happens first, while cwd is still the login dir; ensureDir
@@ -344,8 +455,8 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     async delete(key, opts2) {
       const remote = keyToRemote(key);
       await run(opts2?.signal, async (client) => {
-        // ignoreErrorCodes=true → idempotent: a missing file is not an error.
-        await client.remove(remote, true);
+        // Idempotent for a missing file only; see `removeIfPresent`.
+        await removeIfPresent(client, remote);
       });
     },
     async deleteMany(
@@ -363,7 +474,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         for (const key of keys) {
           try {
             // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- single FTP control connection cannot multiplex; concurrent removes would corrupt the protocol, and stopOnError early-exits
-            await client.remove(keyToRemote(key), true);
+            await removeIfPresent(client, keyToRemote(key));
             deleted.push(key);
           } catch (error) {
             errors.push({ error: mapFtpError(error), key });
@@ -410,7 +521,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       if (downloadOpts?.as === "stream") {
         // The stream outlives this method, so we bypass `run`'s finally-close
         // and release the connection when the stream ends, errors, or closes.
-        const { client, release } = await acquire();
+        const { client, release } = await acquireMapped();
         try {
           const size = await client.size(remote);
           const lastModified = await tryLastMod(client, remote);
@@ -507,7 +618,18 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         const keys: string[] = [];
         const meta = new Map<string, { size: number; lastModified?: number }>();
         const walk = async (dir: string, prefix: string): Promise<void> => {
-          const entries: FileInfo[] = await client.list(dir);
+          let entries: FileInfo[];
+          try {
+            entries = await client.list(dir);
+          } catch (error) {
+            // A subdirectory that vanished between its parent's listing and
+            // this one is skipped rather than ending the whole walk. The
+            // root (empty prefix) propagates to the handler below.
+            if (prefix && mapFtpError(error).code === "NotFound") {
+              return;
+            }
+            throw error;
+          }
           for (const entry of entries) {
             if (entry.isSymbolicLink) {
               // Skip symlinks: following them risks loops and root escapes.
@@ -517,6 +639,9 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
             if (entry.isDirectory) {
               // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- recursive walk over a single FTP control connection that cannot multiplex
               await walk(childListPath(dir, entry.name), childKey);
+            } else if (isStagingPath(entry.name)) {
+              // An in-progress resumable upload's partial, not an object.
+              continue;
             } else {
               keys.push(childKey);
               meta.set(childKey, {
@@ -568,6 +693,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     async move(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
+      assertNotStagingPath("ftp", toRemote, to);
       await run(opts2?.signal, async (client) => {
         // Native rename — no body round-trip. RNFR/RNTO won't create the
         // destination's parent, so ensure it first (ensureDir changes cwd, so
@@ -590,6 +716,13 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     reportsUploadProgress: true,
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const remote = keyToRemote(key);
+      assertNotStagingPath("ftp", remote, key);
+      // Chunks append to a staging file next to the target, renamed over it
+      // only by `complete()`: the existing object stays intact (and readable)
+      // until then, a paused or crashed upload never shows up as a truncated
+      // object, and `discard()` only removes the partial. The path derives
+      // from the key alone, so a resume in another process finds it.
+      const staging = `${remote}${RESUMABLE_STAGING_SUFFIX}`;
       return {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "ftp") {
@@ -617,14 +750,14 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
               await ensureDirRestoringCwd(client, dir);
             }
             // Clear any stale partial so appended chunks build a fresh file.
-            await client.remove(remote, true);
+            await removeIfPresent(client, staging);
           });
           return { key, provider: "ftp" };
         },
         complete(): Promise<UploadResult> {
           return run(undefined, async (client) => {
-            const size = await client.size(remote);
-            // oxlint-disable-next-line react-doctor/server-sequential-independent-await -- single FTP control connection cannot multiplex; these commands must run one at a time
+            const size = await client.size(staging);
+            await renameOver(client, staging, remote);
             const lastModified = await tryLastMod(client, remote);
             return {
               contentType: inferTypeFromName(key),
@@ -635,7 +768,8 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           });
         },
         async discard() {
-          await run(undefined, (client) => client.remove(remote, true));
+          // Only the partial: an existing object at the key is untouched.
+          await run(undefined, (client) => removeIfPresent(client, staging));
         },
         mode: "offset",
         partSize:
@@ -645,7 +779,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         probe(): Promise<{ nextOffset: number }> {
           return run(undefined, async (client) => {
             try {
-              return { nextOffset: await client.size(remote) };
+              return { nextOffset: await client.size(staging) };
             } catch {
               // No partial yet (or server lacks SIZE) — start from the top.
               return { nextOffset: 0 };
@@ -663,14 +797,17 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
             // from there.
             let current: number | undefined;
             try {
-              current = await client.size(remote);
+              current = await client.size(staging);
             } catch {
               // No partial yet (or the server lacks SIZE) — append as-is.
             }
             if (current !== undefined && current !== offset) {
               return { nextOffset: current };
             }
-            await client.appendFrom(Readable.from(uint8ToBuffer(data)), remote);
+            await client.appendFrom(
+              Readable.from(uint8ToBuffer(data)),
+              staging
+            );
             return { nextOffset: offset + data.byteLength };
           });
         },
@@ -699,6 +836,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       // (this adapter advertises neither) — FTP files have no arbitrary-metadata
       // or cache-header field.
       const remote = keyToRemote(key);
+      assertNotStagingPath("ftp", remote, key);
       return run(options?.signal, async (client) => {
         const { data, contentType, contentLength } = await normalizeBody(
           body,

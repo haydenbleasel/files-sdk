@@ -31,7 +31,13 @@ import { FilesError } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
-import { joinRemotePath, trimSlashes } from "../internal/remote-path.js";
+import {
+  RESUMABLE_STAGING_SUFFIX,
+  assertNotStagingPath,
+  isStagingPath,
+  joinRemotePath,
+  trimSlashes,
+} from "../internal/remote-path.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
@@ -98,7 +104,14 @@ export const mapSftpError = makeErrorMapper({
   codes: {
     conflict: new Set(["EEXIST"]),
     notFound: new Set(["ENOENT", "ENOTDIR", "NO_SUCH_FILE"]),
-    unauthorized: new Set(["EACCES", "EPERM", "EAUTH", "EAUTHFAIL"]),
+    unauthorized: new Set([
+      "EACCES",
+      "EPERM",
+      "EAUTH",
+      "EAUTHFAIL",
+      // ssh2-sftp-client's own "bad authentication" code.
+      "ERR_BAD_AUTH",
+    ]),
   },
   // SFTP errors aren't HTTP — classify purely on the (normalized) string code,
   // with a message sniff for the auth/transport cases ssh2 reports as plain
@@ -147,6 +160,29 @@ const remoteDirname = (path: string): string => {
     return "";
   }
   return idx === 0 ? "/" : path.slice(0, idx);
+};
+
+// Base SFTP (v3) `rename` refuses an existing target on OpenSSH and most other
+// servers. Replace the target only when that's what is in the way: the staged
+// source is still there and so is a file at the target. Deleting the target
+// first is the one window where the key is briefly absent.
+const renameOver = async (
+  client: SftpClient,
+  from: string,
+  to: string
+): Promise<void> => {
+  try {
+    await client.rename(from, to);
+  } catch (error) {
+    if (
+      (await client.exists(from)) !== "-" ||
+      (await client.exists(to)) !== "-"
+    ) {
+      throw error;
+    }
+    await client.delete(to, true);
+    await client.rename(from, to);
+  }
 };
 
 type Resolved =
@@ -236,11 +272,24 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     };
   };
 
+  // Connect/auth failures go through the same mapper as operation errors, so a
+  // rejected login is Unauthorized rather than a retryable Provider.
+  const acquireMapped = async (): Promise<{
+    client: SftpClient;
+    release: () => Promise<void>;
+  }> => {
+    try {
+      return await acquire();
+    } catch (error) {
+      throw mapSftpError(error);
+    }
+  };
+
   const run = async <T>(
     signal: AbortSignal | undefined,
     fn: (client: SftpClient) => Promise<T>
   ): Promise<T> => {
-    const { client, release } = await acquire();
+    const { client, release } = await acquireMapped();
     // On abort, tear the socket down so the in-flight op stops promptly. The
     // core (`runWithSignal`) has already rejected the caller's promise; this
     // just stops us holding the connection until the op finishes naturally.
@@ -288,6 +337,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     async copy(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
+      assertNotStagingPath("sftp", toRemote, to);
       // SFTP has no portable server-side copy, so round-trip the bytes through
       // the client over a single connection. Buffers the whole object — see
       // the adapter docs for the large-file caveat.
@@ -350,7 +400,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         // Streaming holds the connection open until the stream is consumed, so
         // we bypass `run`'s finally-close and instead release when the stream
         // ends, errors, or closes.
-        const { client, release } = await acquire();
+        const { client, release } = await acquireMapped();
         try {
           const stat = await client.stat(remote);
           const nodeStream = client.createReadStream(remote, readStreamOptions);
@@ -458,7 +508,18 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         const keys: string[] = [];
         const meta = new Map<string, { size: number; modifyTime: number }>();
         const walk = async (dir: string, prefix: string): Promise<void> => {
-          const entries = await client.list(dir);
+          let entries: SftpClient.FileInfo[];
+          try {
+            entries = await client.list(dir);
+          } catch (error) {
+            // A subdirectory that vanished between its parent's listing and
+            // this one is skipped rather than ending the whole walk. The
+            // root (empty prefix) propagates to the handler below.
+            if (prefix && mapSftpError(error).code === "NotFound") {
+              return;
+            }
+            throw error;
+          }
           for (const entry of entries) {
             if (entry.type === "l") {
               // Skip symlinks: following them risks loops and root escapes.
@@ -470,6 +531,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
             if (entry.type === "d") {
               // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- recursive walk over a single shared SFTP connection that cannot multiplex
               await walk(childPath, childKey);
+            } else if (isStagingPath(entry.name)) {
+              // An in-progress resumable upload's partial, not an object.
+              continue;
             } else {
               keys.push(childKey);
               meta.set(childKey, {
@@ -520,6 +584,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     async move(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
+      assertNotStagingPath("sftp", toRemote, to);
       await run(opts2?.signal, async (client) => {
         // Native rename — no body round-trip. Ensure the destination's parent
         // exists first (rename won't create it). Base SFTP `rename` fails if
@@ -538,6 +603,13 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     },
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const remote = keyToRemote(key);
+      assertNotStagingPath("sftp", remote, key);
+      // Chunks append to a staging file next to the target, renamed over it
+      // only by `complete()`: the existing object stays intact (and readable)
+      // until then, a paused or crashed upload never shows up as a truncated
+      // object, and `discard()` only removes the partial. The path derives
+      // from the key alone, so a resume in another process finds it.
+      const staging = `${remote}${RESUMABLE_STAGING_SUFFIX}`;
       return {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "sftp") {
@@ -559,12 +631,13 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           await run(undefined, async (client) => {
             await ensureParentDir(client, remote);
             // Clear any stale partial so appended chunks build a fresh file.
-            await client.delete(remote, true);
+            await client.delete(staging, true);
           });
           return { key, provider: "sftp" };
         },
         complete(): Promise<UploadResult> {
           return run(undefined, async (client) => {
+            await renameOver(client, staging, remote);
             const stat = await client.stat(remote);
             return {
               contentType: inferTypeFromName(key),
@@ -577,7 +650,8 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           });
         },
         async discard() {
-          await run(undefined, (client) => client.delete(remote, true));
+          // Only the partial: an existing object at the key is untouched.
+          await run(undefined, (client) => client.delete(staging, true));
         },
         mode: "offset",
         partSize:
@@ -587,7 +661,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         probe(): Promise<{ nextOffset: number }> {
           return run(undefined, async (client) => {
             try {
-              const stat = await client.stat(remote);
+              const stat = await client.stat(staging);
               return { nextOffset: stat.size };
             } catch {
               // No partial yet — start from the top.
@@ -606,7 +680,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
             // orchestrator re-slices from there.
             let current: number | undefined;
             try {
-              const stat = await client.stat(remote);
+              const stat = await client.stat(staging);
               current = stat.size;
             } catch {
               // No partial yet — append as-is.
@@ -614,7 +688,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
             if (current !== undefined && current !== offset) {
               return { nextOffset: current };
             }
-            await client.append(uint8ToBuffer(data), remote);
+            await client.append(uint8ToBuffer(data), staging);
             return { nextOffset: offset + data.byteLength };
           });
         },
@@ -650,6 +724,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       // unset and let the Files wrapper report generically (byte-level for
       // stream bodies, start/finish for buffered ones).
       const remote = keyToRemote(key);
+      assertNotStagingPath("sftp", remote, key);
       return run(options?.signal, async (client) => {
         const { data, contentType, contentLength } = await normalizeBody(
           body,

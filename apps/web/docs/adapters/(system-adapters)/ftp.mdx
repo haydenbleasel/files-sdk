@@ -50,14 +50,16 @@ Auth falls back to `FTP_HOST`, `FTP_USERNAME` (alias `FTP_USER`), `FTP_PASSWORD`
 
 Connect-per-operation means a high call rate becomes a high connection rate, and FTP servers commonly cap connections per IP - inject a pre-connected `client` for batch jobs.
 
+Resumable uploads (`upload({ control })`) append each chunk to a `<key>.fls-part` staging file next to the target and rename it over the key only when the upload completes, so an existing object stays readable until then and `abort()` removes just the partial. `list()` hides staging files, and writes to keys ending in `.fls-part` throw. Servers that refuse to rename onto an existing file (IIS, for one) have the target deleted and the rename retried, so the key is briefly absent at that moment.
+
 ## Compatibility
 
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ⚠️ | User `metadata` and `cacheControl` throw - FTP files have no arbitrary-metadata or cache-header field. `contentType` is accepted for the return value but not stored (it's inferred from the key's extension on read). Stream bodies upload directly. Node-only (raw sockets). |
 | `download` | ✅ |  |
-| `delete` | ✅ |  |
-| `list` | ⚠️ | Walks the directory tree recursively on every call - FTP has no native prefix scan or pagination - and skips symlinks. `prefix`/`limit`/`cursor` are applied client-side over the full walk, so they're accurate but a large tree means a full traversal per call. Content type is inferred from each key's extension; `lastModified` comes from the listing. |
+| `delete` | ✅ | Idempotent: a key that doesn't exist is a no-op. FTP answers "not found" and "permission denied" with the same `550`, so the adapter checks the parent listing: a file that is still there throws `Unauthorized`, and any other error reply (`450` busy, `530` not logged in, …) throws too. |
+| `list` | ⚠️ | Walks the directory tree recursively on every call - FTP has no native prefix scan or pagination - and skips symlinks. A subdirectory that disappears mid-walk is skipped; a missing root lists as empty. `prefix`/`limit`/`cursor` are applied client-side over the full walk, so they're accurate but a large tree means a full traversal per call. Content type is inferred from each key's extension; `lastModified` comes from the listing. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ⚠️ | FTP stores no content type, etag, or user metadata - `head()` infers the type from the key's extension (or `application/octet-stream`) and returns no etag. `size` comes from `SIZE`; `lastModified` is an `MDTM` probe that many servers don't support, so it can be absent. |
 | `exists` | ✅ |  |

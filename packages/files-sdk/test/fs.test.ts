@@ -610,6 +610,34 @@ describe("fs adapter", () => {
       }
     });
 
+    test("skips a subdirectory that vanishes mid-walk", async () => {
+      // A nested ENOENT (the directory was removed between its parent's
+      // readdir and its own) must not end the whole walk — only a missing
+      // root lists as empty.
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("a/1.txt", "1");
+      await files.upload("gone/2.txt", "2");
+      await files.upload("z/3.txt", "3");
+      const originalReaddir = fsp.readdir;
+      const readdirSpy = spyOn(fsp, "readdir");
+      readdirSpy.mockImplementation(((
+        p: Parameters<typeof fsp.readdir>[0],
+        o: Parameters<typeof fsp.readdir>[1]
+      ) =>
+        String(p).endsWith(`${path.sep}gone`)
+          ? Promise.reject(
+              Object.assign(new Error("vanished"), { code: "ENOENT" })
+            )
+          : originalReaddir(p, o)) as typeof fsp.readdir);
+      try {
+        const result = await files.list();
+        expect(result.items.map((i) => i.key)).toEqual(["a/1.txt", "z/3.txt"]);
+      } finally {
+        readdirSpy.mockRestore();
+      }
+    });
+
     test("surfaces non-ENOENT walk errors as FilesError", async () => {
       // Force fsp.readdir on a subdirectory to fail with EACCES by chmod'ing
       // it to 0o000. Exercises the walk's non-ENOENT throw branch and the
