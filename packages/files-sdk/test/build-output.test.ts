@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
@@ -20,6 +20,7 @@ const COLD_BUILD_TIMEOUT_MS = 120_000;
 
 const pkgRoot = path.resolve(import.meta.dirname, "..");
 const distDir = path.resolve(pkgRoot, "dist");
+const srcDir = path.resolve(pkgRoot, "src");
 const cliBundle = path.resolve(distDir, "cli/index.js");
 const loaderBundle = path.resolve(distDir, "loader/index.js");
 
@@ -84,33 +85,25 @@ const offendingOptionalPeers = (
   );
 };
 
-test(
-  "CLI bundle never statically imports an optional peer dependency (#67)",
-  () => {
-    // CI's test job runs `bun test` on a fresh checkout without building, so
-    // produce dist/ with the real build script when the bundle is absent —
-    // the guard must scan output of the actual build config, not a replica.
-    if (!existsSync(cliBundle)) {
-      const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
-        cwd: pkgRoot,
-        stderr: "pipe",
-        stdout: "pipe",
-      });
-      if (!proc.success) {
-        throw new Error(`build failed:\n${proc.stderr.toString()}`);
-      }
-    }
+const newestSourceMtime = () =>
+  Math.max(
+    statSync(path.resolve(pkgRoot, "scripts/build.ts")).mtimeMs,
+    ...readdirSync(srcDir, { encoding: "utf-8", recursive: true }).map(
+      (entry) => statSync(path.resolve(srcDir, entry)).mtimeMs
+    )
+  );
 
-    // Sanity: an empty list would make the assertion below pass vacuously.
-    expect(optionalPeers.length).toBeGreaterThan(0);
-
-    expect(offendingOptionalPeers(cliBundle)).toEqual([]);
-  },
-  COLD_BUILD_TIMEOUT_MS
-);
-
+// CI's test job runs `bun test` on a fresh checkout without building, so
+// produce dist/ with the real build script when it is absent — the guards must
+// scan output of the actual build config, not a replica. Rebuild a dist/ older
+// than the sources too: the behavioural guards (#164) would otherwise test
+// whatever was last built rather than the code being committed.
 const ensureBuilt = () => {
-  if (!(existsSync(cliBundle) && existsSync(loaderBundle))) {
+  const isFresh =
+    existsSync(cliBundle) &&
+    existsSync(loaderBundle) &&
+    statSync(cliBundle).mtimeMs >= newestSourceMtime();
+  if (!isFresh) {
     const proc = Bun.spawnSync(["bun", "scripts/build.ts"], {
       cwd: pkgRoot,
       stderr: "pipe",
@@ -121,6 +114,19 @@ const ensureBuilt = () => {
     }
   }
 };
+
+test(
+  "CLI bundle never statically imports an optional peer dependency (#67)",
+  () => {
+    ensureBuilt();
+
+    // Sanity: an empty list would make the assertion below pass vacuously.
+    expect(optionalPeers.length).toBeGreaterThan(0);
+
+    expect(offendingOptionalPeers(cliBundle)).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
 
 test(
   "public loader exports loadFiles without eager optional peer imports",

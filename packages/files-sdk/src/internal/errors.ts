@@ -1,3 +1,5 @@
+import { isObject } from "./is.js";
+
 export type FilesErrorCode =
   | "NotFound"
   | "Unauthorized"
@@ -19,11 +21,7 @@ export class FilesError extends Error {
     if (this !== FilesError) {
       return Function.prototype[Symbol.hasInstance].call(this, value);
     }
-    return FILES_ERROR_BRAND in new Object(value);
-  }
-
-  static {
-    Object.defineProperty(this.prototype, FILES_ERROR_BRAND, { value: true });
+    return isObject(value) && FILES_ERROR_BRAND in value;
   }
 
   readonly code: FilesErrorCode;
@@ -120,3 +118,8 @@ export class FilesError extends Error {
     return new FilesError(fallbackCode, message, cause);
   }
 }
+
+// Set once on the prototype (not per instance) so subclasses inherit it and it
+// stays out of `JSON.stringify`/`Object.keys`. A plain statement rather than a
+// `static {}` block keeps ES2022 class syntax out of the browser bundles.
+Object.defineProperty(FilesError.prototype, FILES_ERROR_BRAND, { value: true });
