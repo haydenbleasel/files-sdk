@@ -131,7 +131,7 @@ Conventions:
 ## Tests
 
 - We use `bun test`. Test files live in `packages/files-sdk/test/`.
-- **Coverage is gated per file at 98% lines and 98% functions** (`packages/files-sdk/bunfig.toml`). New code needs tests that meet it; the pre-commit hook enforces it (CI runs plain `bun test` without the threshold, so don't skip the hook).
+- **Coverage is gated per file at 98% lines and 98% functions** (`packages/files-sdk/bunfig.toml`). New code needs tests that meet it; the pre-commit hook enforces it (CI runs plain `bun test` without the threshold, so don't skip the hook). Every Validate job is a required check on `main`, so a PR can't merge until the build, test, lint, typecheck, and docs-build jobs are green.
 - The S3 tests and the aws-sdk path of every S3-compatible wrapper use [`aws-sdk-client-mock`](https://github.com/m-radzikowski/aws-sdk-client-mock). The fetch engine is tested against `test/fake-s3-server.ts`. Other adapters mock at the `fetch` or SDK-client boundary as appropriate.
 - Don't use `mock.module` — it leaks across test files and can't be reverted. Inject the dependency instead.
 - For tests that exercise the `Files` class itself (not a specific provider), use `fake-adapter.ts` or the `memory` adapter rather than mocking a real provider.
