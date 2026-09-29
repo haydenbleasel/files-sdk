@@ -39,7 +39,7 @@ try {
 The key does not exist (or the bucket / container does not exist on providers that don't distinguish).
 
 - `download`, `head`, `copy` (source key), and `delete` on strict providers will throw this.
-- `exists` returns `false` instead of throwing. If you're seeing `NotFound` from `exists`, the underlying error wasn't actually a missing-key signal - check `cause`.
+- `exists` returns `false` instead of throwing. Any other failure still throws, so if `exists` rejects, the underlying error wasn't a missing-key signal - check `cause`.
 - `delete` is idempotent on providers that treat it that way (S3, R2, Vercel Blob, FTP, Bunny Storage, the local `fs` adapter): a missing key is a no-op, but real failures still surface - FTP maps a refused delete of an existing file (550) to `Unauthorized`, and Bunny Storage reports auth and 5xx errors. Strict providers (some SaaS and BaaS backends) throw `NotFound` for missing keys.
 
 ### `Unauthorized`

@@ -79,8 +79,9 @@ files.progress; // { loaded, total, fraction } over the current entries
 Two tools, two jobs:
 
 ```ts lineNumbers
-// download(key) → StoredFile: the bytes flow through your gateway. Works on
-// every adapter. Use it when you need the data programmatically.
+// download(key) → StoredFile: fetched via your gateway (proxied, or redirected
+// to a signed URL). Works on every adapter. Use it when you need the data
+// programmatically.
 const file = await files.download("report.pdf");
 const blob = await file.blob(); // lazy - only fetched on access
 const text = await file.text();
@@ -130,7 +131,7 @@ const file = useFile(selectedKey); // head() for a preview; disabled without a k
 const hits = useSearch(query, { match: "substring" });
 ```
 
-They are deliberately cache-free and dependency-light. For shared caching, bring React Query or SWR and call `useFiles()` inside your `queryFn` — the imperative methods are designed for exactly that.
+They are deliberately cache-free and dependency-light. For shared caching, bring React Query or SWR and call a `useFiles()` method inside your `queryFn` — the imperative methods are designed for exactly that.
 
 ## Outside React
 

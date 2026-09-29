@@ -30,7 +30,7 @@ const replaced = await files.upload("reports/q3.json", nextBody, {
 });
 ```
 
-Conditional uploads return a non-optional ETag. They are not available for array, multipart, resumable, or signed-upload paths; the initial S3 implementation also rejects unknown-length streams before I/O. See [Conditional operations](/docs/conditional-operations) for capabilities, plugin behavior, and ambiguous retry outcomes.
+Conditional uploads return a non-optional ETag. They are not available for array, multipart, resumable, or signed-upload paths; the initial S3 implementation also rejects `ReadableStream` bodies before I/O, so buffer to a `Blob` or `Uint8Array` first. See [Conditional operations](/docs/conditional-operations) for capabilities, plugin behavior, and ambiguous retry outcomes.
 
 ## Options
 

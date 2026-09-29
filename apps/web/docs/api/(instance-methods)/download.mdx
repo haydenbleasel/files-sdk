@@ -62,10 +62,10 @@ const chunk = await files.download("video.mp4", {
 
 For the HTTP-header adapters the SDK verifies the response came back `206 Partial Content` and **throws if the host answered `200`** (i.e. ignored the range and sent the whole object), so a ranged read never silently transfers — and bills you for — the full file.
 
-**Throws** a [`FilesError`](/docs/api/errors) on adapters whose provider has no range primitive at all — Supabase, Appwrite, Netlify Blobs, Bunny Storage, Convex, and Vercel Blob **private** blobs (read through the SDK, which can't range). The SDK fails loudly rather than downloading the whole object and slicing it client-side, so the bandwidth saving is never quietly lost. Branch on the adapter's `supportsRange` flag to handle both at runtime:
+**Throws** a [`FilesError`](/docs/api/errors) on adapters whose provider has no range primitive at all — Supabase, Appwrite, Netlify Blobs, Bunny Storage, Convex, and Vercel Blob **private** blobs (read through the SDK, which can't range). The SDK fails loudly rather than downloading the whole object and slicing it client-side, so the bandwidth saving is never quietly lost. Branch on [`files.capabilities.rangeRead`](/docs/capabilities) to handle both at runtime. It also accounts for plugins, such as [`encryption()`](/docs/plugins/encryption), that refuse ranged reads:
 
 ```ts lineNumbers
-const opts = files.adapter.supportsRange ? { range: { start, end } } : {};
+const opts = files.capabilities.rangeRead ? { range: { start, end } } : {};
 const file = await files.download(key, opts);
 ```
 

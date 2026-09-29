@@ -93,4 +93,4 @@ export class UploadsService {
 
 The configured gateway router is also available under the `FILES_API` token for manual wiring or tests.
 
-Options beyond `path` and `global` are the [gateway options](/docs/ui/server/gateway) (minus the per-request `files` factory form — mount [`files-sdk/express`](/docs/ui/server/express) manually for multi-tenant routing), and the endpoint speaks the same protocol as every other binding: point [`useFiles`](/docs/ui/client/react) or [`createFilesClient`](/docs/ui) at your mount path and lock it down with [`authorize`](/docs/ui/server/authorization).
+Options beyond `path` and `global` are the [gateway options](/docs/ui/server/gateway) (minus the per-request `files` factory form — mount [`files-sdk/express`](/docs/ui/server/express) manually for multi-tenant routing), and the endpoint speaks the same protocol as every other binding: point [`useFiles`](/docs/ui/client/react) or [`createFilesClient`](/docs/ui/client/react#outside-react) at your mount path and lock it down with [`authorize`](/docs/ui/server/authorization).

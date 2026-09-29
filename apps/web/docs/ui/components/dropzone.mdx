@@ -1,9 +1,9 @@
 ---
 title: Dropzone
-description: A drag-and-drop (or click) upload area wired to useFiles - streams bytes straight to your gateway, with composable success, prompt and error states.
+description: A drag-and-drop (or click) upload area wired to useFiles - uploads through your gateway, with composable success, prompt and error states.
 ---
 
-A compound dropzone that uploads through a [`useFiles`](/docs/ui/client/react) instance. Drag files in or click to open the picker; bytes stream straight to your [gateway](/docs/ui/server/gateway).
+A compound dropzone that uploads through a [`useFiles`](/docs/ui/client/react) instance. Drag files in or click to open the picker. With no `prefix` (and outside folder uploads), the server mints each key and the bytes go straight to storage on a presigned URL, or through your [gateway](/docs/ui/server/gateway) when the adapter can't sign. With a `prefix` or a folder path, each file gets an explicit key and streams through the gateway.
 
 <Component path="dropzone/examples/dropzone-basic" />
 

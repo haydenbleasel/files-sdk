@@ -21,12 +21,14 @@ Install the peer deps for your adapter alongside the SDK. For S3 - and every S3-
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
+Add `@aws-sdk/lib-storage` as well if you use `multipart` or `onProgress`, or upload a `ReadableStream` of unknown length, on an S3-family adapter using the AWS SDK client. Without it, those uploads throw a `FilesError` that names the missing package.
+
 The shape is the same for every adapter, only the packages change: Google Cloud Storage adds `@google-cloud/storage`; Azure adds `@azure/storage-blob` (plus `@azure/identity` only if you build a `credential` with it); Vercel Blob needs only `@vercel/blob`. A few adapters need no extra packages at all - `files-sdk/fs`, `files-sdk/memory`, and `files-sdk/bun-s3` use primitives the runtime already provides, and `files-sdk/s3-fetch` signs requests with the bundled `aws4fetch`.
 
 The [per-adapter docs](/docs/adapters/s3) list the exact packages for each provider, and the [provider catalog](/docs/providers) exposes the same data programmatically (`peerDeps`) if you're generating install commands or building a config UI.
 
 ## Missing a peer dependency?
 
-Import an adapter without its peer installed and Node throws `ERR_MODULE_NOT_FOUND` naming the package that's missing - the SDK doesn't vendor or shim provider clients, so the failure is loud and specific rather than a silent fallback. Install the named package and the import resolves.
+Import an adapter without its peer installed and Node throws `ERR_MODULE_NOT_FOUND` naming the package that's missing - the SDK doesn't vendor or shim provider clients, so the failure is loud and specific rather than a silent fallback. Install the named package and the import resolves. R2, MinIO, and RustFS are the exception: they load the AWS SDK lazily (so a `client: "fetch"` bundle never pulls it in), so the missing-module error arrives on the first call instead, as the `cause` of a `FilesError`.
 
 Once your adapter's packages are in place, head to [Usage](/docs/usage) to construct a `Files` instance and run the core methods.

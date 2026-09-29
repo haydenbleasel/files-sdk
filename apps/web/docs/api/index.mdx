@@ -35,7 +35,7 @@ Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create
 
 ## Per-operation options
 
-Every method accepts `signal`, `timeout`, and `retries`. Set them once on the constructor as defaults, then override per call - a per-call value wins over the constructor default for that operation.
+Every single-key call (plus `list`, `listAll`, and `search`) accepts `signal`, `timeout`, and `retries`; the array forms take `concurrency` / `stopOnError` instead (see [Bulk actions](/docs/bulk)). Set them once on the constructor as defaults, then override per call - a per-call value wins over the constructor default for that operation.
 
 ```ts lineNumbers
 const files = new Files({

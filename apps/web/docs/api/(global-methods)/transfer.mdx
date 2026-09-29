@@ -63,7 +63,7 @@ await transfer(from, to, {
 
 `transformKey` maps the _logical_ key — each instance applies its own `prefix` independently — which makes re-homing under a new namespace (or moving between two prefixed instances) a one-liner. With `overwrite: false`, every key costs one extra `exists()` against the destination.
 
-`concurrency` bounds how many objects stream at once (and therefore memory, since each in-flight key holds one open stream). It's ignored under `stopOnError`, which runs sequentially and returns the keys transferred so far plus the first error. `signal` is forwarded to every `list` / `exists` / `download` / `upload` and stops new keys from being scheduled; keys already in flight may still finish or surface as errors.
+`concurrency` bounds how many objects stream at once (and therefore memory, since each in-flight key holds one open stream). It's ignored under `stopOnError`, which runs sequentially and returns the keys transferred so far plus the first error. `signal` is forwarded to every `list` / `exists` / `download` / `upload`. Aborting during the source walk rejects the call; aborting once transfers have started fails every key that hasn't landed yet, and those keys surface in `errors`.
 
 ## Progress
 

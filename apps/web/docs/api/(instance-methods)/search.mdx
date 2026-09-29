@@ -59,7 +59,7 @@ files.search("invoices/2024/q1.pdf", { match: "exact" });
 files.search("*.PNG", { caseInsensitive: true });
 ```
 
-An invalid `regex` pattern throws a [`FilesError`](/docs/api/errors) before the walk begins.
+An invalid `regex` pattern throws a [`FilesError`](/docs/api/errors) before the walk begins. So does a regex (string or `RegExp`) that is prone to catastrophic backtracking, such as one with nested quantifiers like `(a+)+`.
 
 ## Scoping the walk with `prefix`
 

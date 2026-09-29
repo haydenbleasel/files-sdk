@@ -89,7 +89,7 @@ A keyless `upload(file)` runs a three-step protocol so bytes never round-trip th
 2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress.
 3. **complete** — the server verifies the token and `head`s the object — the authoritative size check that rejects an oversized "unbounded" upload — then returns the stored metadata.
 
-An explicit `upload(key, body)` skips presign and streams straight through the gateway.
+An explicit `upload(key, body)` skips presign and streams straight through the gateway. The stream reaches the adapter with no known length, so the S3-family adapters on their AWS SDK client need the optional `@aws-sdk/lib-storage` package for this path.
 
 ## Request limits
 

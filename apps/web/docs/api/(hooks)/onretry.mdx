@@ -3,7 +3,7 @@ title: onRetry
 description: Runs each time the SDK schedules a retry for a single-operation call, with the upcoming attempt, its delay, and the triggering error.
 ---
 
-A constructor [`hook`](/docs/usage#hooks) that runs each time the SDK schedules a retry for a single-operation call, with the upcoming `attempt`, the `delayMs` before it, and the `error` that triggered it. It never fires on the first attempt, for non-retryable errors, or for stream uploads (which aren't retried). The array forms never fire it either — they settle as a single aggregated [`onAction`](/docs/api/onaction) event for the whole call. See [Retries](/docs/retries) for what counts as retryable.
+A constructor [`hook`](/docs/usage#hooks) that runs each time the SDK schedules a retry for a single-operation call, with the upcoming `attempt`, the `delayMs` before it, and the `error` that triggered it. It never fires on the first attempt, for non-retryable errors, or for stream uploads (which aren't retried). The array forms' own per-item calls never fire it either — they settle as a single aggregated [`onAction`](/docs/api/onaction) event for the whole call. The exception is a sub-operation a plugin re-routes an item to (such as [`softDelete()`](/docs/plugins/soft-delete) turning a bulk `delete` into a `move`), which runs the full single-operation path and can retry. See [Retries](/docs/retries) for what counts as retryable.
 
 ```ts lineNumbers
 const files = new Files({

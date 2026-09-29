@@ -17,12 +17,15 @@ Some adapters return a working URL but don't honor the requested lifetime — th
 - **Box** — `url()` returns a tokenized download URL, but Box controls its TTL server-side. `expiresIn` is accepted for API symmetry and ignored. With `publicBaseUrl` or `publicByDefault`, `url()` returns a permanent public link instead, and `signedUrl.supported` is `false`.
 - **PocketBase** — file-token URLs have a server-controlled TTL (short, ~minutes). `expiresIn` is ignored.
 - **Convex** — serving URLs do not expire while the file exists. `expiresIn` is ignored.
+- **UploadThing** (default `public-read` ACL) — `url()` returns the permanent public URL, so `expiresIn` is ignored. `signedUrl.supported` still reads `true`, because the [gateway](/docs/ui/server/gateway) keys direct-to-storage upload presigning on it.
 
 ### `expiresIn` has a hard ceiling
 
 - **Dropbox** — temporary links cap at **4 hours** (14400s), enforced in code: `url()` throws above that, and the ceiling is surfaced as `capabilities.signedUrl.maxExpiresIn`. Use `publicByDefault: true` (or `publicBaseUrl`) for a permanent public link instead; in those modes the cap doesn't apply, `expiresIn` is ignored, and `signedUrl.supported` is `false`.
 - **Azure** — user-delegation SAS (AAD credentials) cannot exceed **7 days**, the lifetime of the delegation key that signs it; `url()` throws above that, and the cap is surfaced as `maxExpiresIn` in user-delegation mode only. Account-key SAS has **no** such limit, so an account-key adapter leaves `maxExpiresIn` unset.
-- **S3 and S3-compatible providers** — SigV4 presigned URLs cap at **604800 seconds** (7 days). Both S3 engines (the AWS SDK client and the `fetch` engine) reject a longer `expiresIn` in `url()` and `signedUploadUrl()` before signing, with a non-retryable error, and surface the cap as `maxExpiresIn`. This covers every `s3()` wrapper and R2 over HTTP or in hybrid mode; a bare R2 binding can't sign at all. Some S3-compatible providers enforce a shorter limit server-side, which the SDK doesn't know about.
+- **S3 and S3-compatible providers** — SigV4 presigned URLs cap at **604800 seconds** (7 days). Both S3 engines (the AWS SDK client and the `fetch` engine) and Bun's S3 reject a longer `expiresIn` in `url()` and `signedUploadUrl()` before signing, with a non-retryable error, and surface the cap as `maxExpiresIn`. This covers every `s3()` wrapper and R2 over HTTP or in hybrid mode; a bare R2 binding can't sign at all. Some S3-compatible providers enforce a shorter limit server-side, which the SDK doesn't know about.
+- **Google Cloud Storage** / **Firebase Storage** — V4 signed URLs and POST policies cap at **7 days** (604800s). `@google-cloud/storage` throws on a longer `expiresIn` in `url()` and `signedUploadUrl()`, and the cap is surfaced as `maxExpiresIn`.
+- **UploadThing** (`acl: "private"`) — `url()` mints a signed URL through `generateSignedURL`, which throws above **7 days**; the cap is surfaced as `maxExpiresIn`. With the default `public-read` ACL, `url()` returns the permanent public URL and no cap applies.
 
 ### `url()` requires explicit public-mode configuration
 

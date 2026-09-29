@@ -5,7 +5,7 @@ description: A multi-file queue uploader with bounded concurrency, live per-file
 
 A heavier-duty uploader for many or large files. Queue files, upload them with bounded concurrency, watch each one's progress, and cancel everything in flight.
 
-How a file travels depends on `prefix`. With a prefix, each file gets an explicit key and streams through your [gateway](/docs/ui/server/gateway) into `files.upload(key, stream)`; the S3-family adapters (S3, R2, MinIO and the other S3-compatible providers, on their AWS SDK client rather than `client: "fetch"`) turn a large stream into a [multipart upload](/docs/multipart) automatically, while other adapters write it however their provider does. Without a prefix, the server mints each key and the browser uploads the file in a single request to a presigned URL, or through the gateway when the adapter can't sign — no multipart.
+How a file travels depends on `prefix`. With a prefix, each file gets an explicit key and streams through your [gateway](/docs/ui/server/gateway) into `files.upload(key, stream)`; the S3-family adapters (S3, R2, MinIO and the other S3-compatible providers, on their AWS SDK client rather than `client: "fetch"`) turn a large stream into a [multipart upload](/docs/multipart) automatically (through the optional `@aws-sdk/lib-storage` package, which they need for any stream body of unknown length), while other adapters write it however their provider does. Without a prefix, the server mints each key and the browser uploads the file in a single request to a presigned URL, or through the gateway when the adapter can't sign — no multipart.
 
 <Component path="multipart-uploader/examples/multipart-basic" />
 

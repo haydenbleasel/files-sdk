@@ -43,6 +43,6 @@ Adapters that chunk natively round `partSize` to their own valid granularity —
 
 ## Progress and retries
 
-When [`onProgress`](/docs/api/onprogress) is set, the S3 family reports true byte-level progress across the whole multipart upload through the same `@aws-sdk/lib-storage` path. Multipart is still a single [`upload`](/docs/api/upload) call as far as [retries](/docs/retries), [timeouts](/docs/timeouts), and [cancellation](/docs/cancellations) are concerned — a failure retries the call, not an individual part, and an aborted [`signal`](/docs/cancellations) fails it fast.
+When [`onProgress`](/docs/api/onprogress) is set, the S3 family reports true byte-level progress across the whole multipart upload through the same `@aws-sdk/lib-storage` path. Multipart is still a single [`upload`](/docs/api/upload) call as far as [retries](/docs/retries), [timeouts](/docs/timeouts), and [cancellation](/docs/cancellations) are concerned — a failure retries the whole call, not an individual part (and only for a buffered body, since a `ReadableStream` is never retried), and an aborted [`signal`](/docs/cancellations) fails it fast.
 
 To pause and resume an upload — or resume one after a crash from a serializable token, retrying individual parts rather than the whole call — reach for a [resumable upload](/docs/resumable) instead.

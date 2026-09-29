@@ -62,7 +62,7 @@ Pass the canonical bare strong ETag exposed by a conditional-capable adapter: fo
 
 Each primitive is declared separately under `files.capabilities.conditional`. The declaration is conservative, and invocation checks it again.
 
-These flags describe the adapter's native primitives. They are necessary, not sufficient, after composition: a plugin may still veto a mode when its own side effects cannot preserve the same atomic boundary.
+These flags start from the adapter's native primitives, and the bundled plugins that veto a mode (below) clear its flag through their [`capabilities` hook](/docs/plugins/api#capabilities), so `files.capabilities` reflects them. They are still necessary, not sufficient: a third-party plugin may veto a mode when its own side effects cannot preserve the same atomic boundary, without narrowing the flag.
 
 ```ts lineNumbers
 const c = files.capabilities.conditional;
@@ -94,7 +94,7 @@ For a conditional root call, the SDK freezes the operation family, mode, and ETa
 
 The built-in [`encryption()`](/docs/plugins/encryption) plugin is compatible with conditional create, replace, and exact read: conditional uploads store its transformed bytes, and exact reads traverse its inverse transform. As with every use of that plugin, its documented key and plaintext-compatibility policy still applies.
 
-Other bundled plugins keep only the modes whose side effects preserve one native operation. Compression, content-type inference, and validation use their existing same-verb transforms. Exact reads bypass the ordinary cache, and the cache invalidates a key after any write settles — including a failed conditional one, since a `Conflict` is proof the cached ETag is stale. Soft delete rejects a conditional delete outside the trash prefix (a delete of an already-trashed key is a real delete and keeps its predicate); versioning rejects conditional writes and copies; deduplication rejects every conditional mode, because a pointer's ETag never reflects its content; and failover and tiering reject every conditional mode. Those vetoes happen before the plugin performs provider I/O.
+Other bundled plugins keep only the modes whose side effects preserve one native operation. Compression, content-type inference, and validation use their existing same-verb transforms. Exact reads bypass the ordinary cache, and the cache invalidates a key after any write settles — including a failed conditional one, since a `Conflict` is proof the cached ETag is stale. Soft delete rejects a conditional delete outside the trash prefix (a delete of an already-trashed key is a real delete and keeps its predicate); versioning rejects conditional writes and copies; deduplication rejects every conditional mode, because a pointer's ETag never reflects its content; and failover and tiering reject every conditional mode. Those vetoes happen before the plugin performs provider I/O, and each of these plugins clears the matching `files.capabilities.conditional` flags.
 
 ## CLI and MCP
 
