@@ -565,6 +565,18 @@ describe("uploadthing adapter", () => {
     expect(generateSignedURLMock.mock.calls[0]?.[1]?.expiresIn).toBe(120);
   });
 
+  test("private reports the 7-day cap; public-read keeps upload presigning", () => {
+    // Private mints generateSignedURL, which throws above 7 days. Public-read
+    // stays `supported` so the gateway keeps presigning direct uploads.
+    expect(
+      new Files({ adapter: uploadthing() }).capabilities.signedUrl
+    ).toEqual({ supported: true });
+    expect(
+      new Files({ adapter: uploadthing({ acl: "private" }) }).capabilities
+        .signedUrl
+    ).toEqual({ maxExpiresIn: 604_800, supported: true });
+  });
+
   test("url maps a generateSignedURL failure through mapUploadThingError", async () => {
     generateSignedURLMock.mockImplementationOnce(() =>
       Promise.reject(
@@ -917,6 +929,32 @@ describe("uploadthing adapter", () => {
     expect(thrown).toBeInstanceOf(FilesError);
     expect((thrown as FilesError).code).toBe("Provider");
     expect((thrown as FilesError).message).toMatch(/403/u);
+  });
+
+  test("lazy bodies map a raw failure instead of letting it escape", async () => {
+    // A transport error on head()'s body read, and a signing error on a
+    // private list item's (it resolves its URL at read time), are mapped.
+    const files = new Files({ adapter: uploadthing() });
+    const info = await files.head("a.txt");
+    const raw = new TypeError("fetch failed");
+    globalThis.fetch = (() => Promise.reject(raw)) as unknown as typeof fetch;
+    const headError = await info.text().catch((error: unknown) => error);
+    expect(headError).toBeInstanceOf(FilesError);
+    expect(headError).toMatchObject({ cause: raw, code: "Provider" });
+
+    const privateFiles = new Files({
+      adapter: uploadthing({ acl: "private" }),
+    });
+    const listed = await privateFiles.list();
+    const [item] = listed.items;
+    generateSignedURLMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error("denied"), { code: "FORBIDDEN", status: 403 })
+      )
+    );
+    await expect(item?.text()).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
   });
 
   test("downloadTimeoutMs: 0 disables AbortSignal.timeout on fetches", async () => {

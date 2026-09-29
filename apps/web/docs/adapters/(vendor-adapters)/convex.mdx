@@ -5,7 +5,7 @@ description: Convex file storage via the function context (ctx.storage). Runs in
 
 ## Installation
 
-`convex` is already in your project if you're using Convex. It's declared as an optional peer dependency so the adapter's types resolve.
+`convex` is already in your project if you're using Convex. It's declared as an optional peer dependency, but the adapter imports nothing from it: `ctx` is typed structurally, so any Convex function context fits.
 
 ```package-install
 files-sdk convex

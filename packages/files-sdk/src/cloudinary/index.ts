@@ -32,6 +32,7 @@ import { FilesError } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
+import { statusError } from "../internal/resumable-offset-http.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -320,6 +321,8 @@ export const cloudinaryAdapter = (
   // `signal` is only threaded when `download()` calls this inline; the
   // head()/list() factories invoke it lazily (outside any operation scope) and
   // pass none, matching how the other adapters leave deferred bodies unsigned.
+  // Those lazy reads run after the operation returned, so failures are mapped
+  // here rather than escaping raw (a transport error) out of `text()`.
   const lazyDownload =
     (
       key: string,
@@ -328,22 +331,26 @@ export const cloudinaryAdapter = (
       range?: ByteRange
     ) =>
     async (): Promise<Uint8Array> => {
-      const url = readUrl(key, format);
-      const res = await fetch(url, {
-        ...(signal && { signal }),
-        ...(range && { headers: rangeRequestHeaders(range) }),
-      });
-      if (!res.ok) {
-        throw new FilesError(
-          res.status === 404 ? "NotFound" : "Provider",
-          `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
-        );
+      try {
+        const url = readUrl(key, format);
+        const res = await fetch(url, {
+          ...(signal && { signal }),
+          ...(range && { headers: rangeRequestHeaders(range) }),
+        });
+        if (!res.ok) {
+          throw new FilesError(
+            res.status === 404 ? "NotFound" : "Provider",
+            `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
+          );
+        }
+        if (range) {
+          assertRangeHonored(res.status, "cloudinary");
+        }
+        const buf = await res.arrayBuffer();
+        return new Uint8Array(buf);
+      } catch (error) {
+        throw mapCloudinaryError(error);
       }
-      if (range) {
-        assertRangeHonored(res.status, "cloudinary");
-      }
-      const buf = await res.arrayBuffer();
-      return new Uint8Array(buf);
     };
 
   return {
@@ -683,10 +690,13 @@ export const cloudinaryAdapter = (
             }
           );
           if (!res.ok) {
-            const text = await res.text();
-            throw new FilesError(
-              "Provider",
-              `cloudinary: chunk upload failed (HTTP ${res.status}): ${text}`.trim()
+            // Classified by status like the other resumable drivers: a 401
+            // (bad signature) is Unauthorized and isn't retried per chunk.
+            const body = await res.text();
+            throw statusError(
+              res.status,
+              "cloudinary: chunk upload failed",
+              body.trim() || undefined
             );
           }
           // Cloudinary answers the final chunk with the full upload response

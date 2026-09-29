@@ -24,10 +24,18 @@ const nextFromRange = (range: string | null, fallback: number): number =>
  * `Conflict`, anything else → `Provider`. The classified 4xx answers are
  * deterministic for this session — re-sending the same chunk can only fail the
  * same way — so they're flagged `permanent`; only a `Provider` failure (5xx,
- * 408, 429, …) stays retryable.
+ * 408, 429, …) stays retryable. Shared with the hand-rolled offset drivers
+ * (Supabase TUS, Cloudinary chunked uploads); `detail` appends the response
+ * body where a provider explains the failure there.
  */
-const statusError = (status: number, message: string): FilesError => {
-  const text = `${message} (HTTP ${status}).`;
+export const statusError = (
+  status: number,
+  message: string,
+  detail?: string
+): FilesError => {
+  const text = detail
+    ? `${message} (HTTP ${status}): ${detail}`
+    : `${message} (HTTP ${status}).`;
   if (status === 404 || status === 410) {
     return new FilesError("NotFound", text, undefined, { permanent: true });
   }

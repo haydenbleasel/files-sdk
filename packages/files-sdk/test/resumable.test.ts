@@ -345,6 +345,50 @@ describe("resumable orchestrator (parts mode)", () => {
     await pending;
   });
 
+  test("resume ignores probed parts this body can't have produced", async () => {
+    // Azure's uncommitted-block list also returns blocks an abandoned upload
+    // to the same blob left behind. Only a part this body's slicing produces,
+    // at the size it produces, may be trusted and committed.
+    const server = newServer();
+    const files = makeFiles(server, "parts");
+    server.partSessions.set(
+      "stale",
+      new Map([
+        // This session's own part 1: kept, not re-uploaded.
+        [1, new Uint8Array(4).fill(5)],
+        // Wrong size for part 2 (a stale block at another size): re-uploaded.
+        [2, new Uint8Array(3).fill(1)],
+        // Past the body's last part: dropped, never committed.
+        [4, new Uint8Array(4).fill(1)],
+        // Not a valid part number: dropped.
+        [0, new Uint8Array(4).fill(1)],
+      ])
+    );
+    const token: ResumableUploadSession = {
+      bucket: "fake",
+      key: "s.bin",
+      partSize: 4,
+      provider: "s3",
+      uploadId: "stale",
+    };
+    const control = UploadControl.from(token);
+    const loaded: number[] = [];
+    const result = await files.upload("s.bin", new Uint8Array(10).fill(5), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: (progress) => loaded.push(progress.loaded),
+    });
+
+    // Parts 2 and 3 uploaded; part 1 reused; parts 0 and 4 never committed.
+    expect(server.drivers[0]?.uploadCalls).toBe(2);
+    expect(result.size).toBe(10);
+    expect(server.objects.get("s.bin")?.bytes).toEqual(
+      new Uint8Array(10).fill(5)
+    );
+    // Progress starts from the trusted part only.
+    expect(loaded[0]).toBe(4);
+  });
+
   test("abort() rejects, discards the session, and clears the token", async () => {
     const server = newServer();
     const files = makeFiles(server, "parts");

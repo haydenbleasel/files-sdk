@@ -329,6 +329,26 @@ describe("cloudinary adapter", () => {
     expect(globalThis.fetch).toHaveBeenCalled();
   });
 
+  test("head/list > a lazy body's transport failure is a mapped FilesError", async () => {
+    // The body read runs after head()/list() returned; a raw fetch failure
+    // must not escape `text()` unmapped.
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+    });
+    const file = await files.head("test-file");
+    const listed = await files.list();
+    const [item] = listed.items;
+    const raw = new TypeError("fetch failed");
+    globalThis.fetch = mock(() =>
+      Promise.reject(raw)
+    ) as unknown as typeof globalThis.fetch;
+    const headError = await file.text().catch((error: unknown) => error);
+    expect(headError).toBeInstanceOf(FilesError);
+    expect(headError).toMatchObject({ cause: raw, code: "Provider" });
+    const listError = await item?.text().catch((error: unknown) => error);
+    expect(listError).toBeInstanceOf(FilesError);
+  });
+
   test("exists > returns true when found", async () => {
     const files = new Files({
       adapter: cloudinary({ cloudName: CLOUD_NAME }),
@@ -1211,7 +1231,25 @@ describe("cloudinary resumable uploads (chunked)", () => {
     const files = new Files({ adapter: withCreds() });
     await expect(
       files.upload("x", "data", { control: new UploadControl(), retries: 0 })
-    ).rejects.toThrow(/chunk upload failed/u);
+    ).rejects.toThrow(/chunk upload failed \(HTTP 500\): nope/u);
+  });
+
+  test("a 401 chunk maps to Unauthorized and isn't retried", async () => {
+    // A rejected signature fails the same way on every attempt, so it must
+    // surface as Unauthorized at once rather than a retried Provider error.
+    let calls = 0;
+    installFetch(() => {
+      calls += 1;
+      return new Response(null, { status: 401 });
+    });
+    const files = new Files({ adapter: withCreds() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl(), retries: 3 })
+    ).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "cloudinary: chunk upload failed (HTTP 401).",
+    });
+    expect(calls).toBe(1);
   });
 
   test("resumable requires apiKey + apiSecret", async () => {

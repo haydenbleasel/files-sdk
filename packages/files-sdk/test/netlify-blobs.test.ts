@@ -1156,6 +1156,29 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
+  test("head and list lazy bodies map a store.get rejection", async () => {
+    // A rejected token surfaces from the body read, after head()/list()
+    // returned; it must still be a mapped FilesError, not a raw SDK error.
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    await files.upload("a.txt", "hello");
+    const info = await files.head("a.txt");
+    const listed = await files.list();
+    const [item] = listed.items;
+    const raw = internalError(401, "token expired");
+    getMock
+      .mockImplementationOnce(() => Promise.reject(raw))
+      .mockImplementationOnce(() => Promise.reject(raw));
+    // Both reads settle before any assertion, so neither queued rejection
+    // can leak into a later test.
+    const headError = await info.text().catch((error: unknown) => error);
+    const listError = await item
+      ?.arrayBuffer()
+      .catch((error: unknown) => error);
+    expect(headError).toBeInstanceOf(FilesError);
+    expect(headError).toMatchObject({ cause: raw, code: "Unauthorized" });
+    expect(listError).toMatchObject({ code: "Unauthorized" });
+  });
+
   test("list item's lazy body throws NotFound if the blob is gone before the lazy fetch", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     await files.upload("a.txt", "hello");

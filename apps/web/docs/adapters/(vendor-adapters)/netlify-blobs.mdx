@@ -45,9 +45,9 @@ Netlify Blobs has no native size, content-type, or last-modified fields, so the 
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ⚠️ | Stream bodies are buffered up-front - Netlify's `set()` has no streaming form, so streaming uploads can't avoid materializing the body in memory. Resumable uploads (`control`) are not supported — Netlify Blobs has no chunked/resumable upload primitive. |
-| `download` | ✅ |  |
+| `download` | ⚠️ | Netlify's `get()` has no range primitive, so `range` throws. |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Netlify's list response only carries key + etag - size, content type, and last-modified come from a follow-up `head()` per item, so list entries return `size: 0` and `type: 'application/octet-stream'` by default. Netlify's pagination cursor is internal to its SDK, so the adapter returns its own `cursor` (the last key of the page) whenever `limit` leaves entries behind, and each call re-walks Netlify's pages from the start up to that key. `limit` bounds server-side I/O for the first page; later pages cost a walk from the start. With `delimiter`, a folder counts against `limit` like a file. |
+| `list` | ⚠️ | Netlify's list response only carries key + etag - size, content type, and last-modified need a follow-up `head()` per item, so list entries always return `size: 0` and `type: 'application/octet-stream'`. Netlify's pagination cursor is internal to its SDK, so the adapter returns its own `cursor` (the last key of the page) whenever `limit` leaves entries behind, and each call re-walks Netlify's pages from the start up to that key. `limit` bounds server-side I/O for the first page; later pages cost a walk from the start. With `delimiter`, a folder counts against `limit` like a file. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ⚠️ | Netlify Blobs has no native size, content-type, or last-modified - the adapter packs them into Netlify's metadata at upload time and reads them back via `getMetadata`. Blobs written outside the SDK come back with `size: 0` and `type: 'application/octet-stream'` because the embedded fields are absent. |
 | `exists` | ✅ |  |

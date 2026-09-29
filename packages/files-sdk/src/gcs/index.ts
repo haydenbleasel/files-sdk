@@ -82,6 +82,10 @@ export type GCSAdapter = Adapter<StorageClient> & { readonly bucket: string };
 
 const expiresAt = (seconds: number): number => Date.now() + seconds * 1000;
 
+// V4 signing caps a signed URL or POST policy at 7 days, and
+// `@google-cloud/storage` throws above that in code on every signing call.
+const V4_MAX_EXPIRES_IN = 604_800;
+
 export const mapGCSError = makeErrorMapper({
   codes: {
     conflict: new Set(),
@@ -115,6 +119,18 @@ const uint8ToBuffer = (u8: Uint8Array): Buffer =>
 
 const bufferToUint8 = (buf: Buffer): Uint8Array =>
   new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+
+// The lazy body behind head()/list() results runs after the operation has
+// returned, so it maps its own failures (an object deleted in between reads
+// as NotFound) instead of leaking a raw ApiError out of `text()`.
+const readFileBytes = async (file: File): Promise<Uint8Array> => {
+  try {
+    const [buf] = await file.download();
+    return bufferToUint8(buf);
+  } catch (error) {
+    throw mapGCSError(error);
+  }
+};
 
 const pipeWebToNode = async (
   web: ReadableStream<Uint8Array>,
@@ -275,13 +291,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         const m = metaToStored(meta);
         return createStoredFile(
           { key, ...m },
-          {
-            factory: async () => {
-              const [buf] = await file.download();
-              return bufferToUint8(buf);
-            },
-            kind: "lazy",
-          }
+          { factory: () => readFileBytes(file), kind: "lazy" }
         );
       } catch (error) {
         throw mapGCSError(error);
@@ -302,13 +312,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
           const m = metaToStored(f.metadata);
           return createStoredFile(
             { key: f.name, ...m },
-            {
-              factory: async () => {
-                const [buf] = await f.download();
-                return bufferToUint8(buf);
-              },
-              kind: "lazy",
-            }
+            { factory: () => readFileBytes(f), kind: "lazy" }
           );
         });
         const cursor = nextQuery?.pageToken;
@@ -377,8 +381,9 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         throw mapGCSError(error);
       }
     },
-    // `url()` returns a V4 signed URL (or `publicBaseUrl` when set).
-    signedUrl: { supported: true },
+    // `url()` returns a V4 signed URL (or `publicBaseUrl` when set). The SDK
+    // rejects an expiry past V4's 7-day limit, so declare that ceiling.
+    signedUrl: { maxExpiresIn: V4_MAX_EXPIRES_IN, supported: true },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,

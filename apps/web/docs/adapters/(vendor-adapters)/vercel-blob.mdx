@@ -38,7 +38,7 @@ const files = new Files({
 });
 ```
 
-`downloadTimeoutMs` bounds the public-URL fetches issued by `download()` and the lazy bodies returned from `head()`/`list()`. Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
+`downloadTimeoutMs` bounds the body reads issued by `download()` and the lazy bodies returned from `head()`/`list()` (the public-URL fetch, or `blob.get()` in private mode). Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
 
 `access` selects public or private blobs and is fixed at construction. Defaults to `"public"`. With `access: "private"`, uploads use Vercel's private mode and reads route through `blob.get()` with whichever credentials the adapter resolved (OIDC or read-write token) instead of a public URL fetch. There is no permanent public URL for private blobs, so `url()` mints a [Vercel Signed URL](https://vercel.com/docs/vercel-blob/vercel-signed-urls) instead - a presigned GET scoped to that key that expires after `expiresIn` seconds (1 hour by default, `defaultUrlExpiresIn` changes the default). Need both? Use two adapters.
 

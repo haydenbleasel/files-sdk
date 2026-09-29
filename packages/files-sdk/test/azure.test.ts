@@ -1149,6 +1149,28 @@ describe("azure adapter", () => {
       expect(await info.text()).toBe("hello");
       expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
     });
+
+    test("a lazy body read that fails is mapped (blob deleted after head)", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const info = await files.head("a.txt");
+      const raw = Object.assign(
+        new Error("The specified blob does not exist."),
+        {
+          details: { errorCode: "BlobNotFound" },
+          statusCode: 404,
+        }
+      );
+      downloadToBufferMock.mockImplementationOnce(() => Promise.reject(raw));
+      const thrown = await info.text().catch((error: unknown) => error);
+      expect(thrown).toBeInstanceOf(FilesError);
+      expect(thrown).toMatchObject({ cause: raw, code: "NotFound" });
+    });
   });
 
   describe("exists", () => {
@@ -1529,6 +1551,29 @@ describe("azure adapter", () => {
       downloadToBufferMock.mockClear();
       expect(await item.text()).toBe("hello");
       expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("a lazy item body that fails is mapped (blob deleted after list)", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const listed = await files.list();
+      const [item] = listed.items;
+      downloadToBufferMock.mockImplementationOnce(() =>
+        Promise.reject(
+          Object.assign(new Error("gone"), {
+            details: { errorCode: "BlobNotFound" },
+            statusCode: 404,
+          })
+        )
+      );
+      await expect(item?.arrayBuffer()).rejects.toMatchObject({
+        code: "NotFound",
+      });
     });
   });
 
@@ -1938,6 +1983,24 @@ describe("azure adapter", () => {
       }
     });
 
+    test("throws on a positive minSize and accepts minSize: 0", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      // A SAS can't enforce a minimum size, so a positive floor fails closed.
+      await expect(
+        adapter.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
+      ).rejects.toThrow(/minSize/u);
+      expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+      const out = await adapter.signedUploadUrl("a.txt", {
+        expiresIn: 60,
+        minSize: 0,
+      });
+      expect(out.method).toBe("PUT");
+    });
+
     test("throws when no shared key is available", async () => {
       const adapter = azure({
         accountName: ACCOUNT,
@@ -2268,6 +2331,40 @@ describe("azure resumable uploads", () => {
     expect(result.size).toBe(12);
     // Block 1 already staged → only blocks 2 and 3 staged on resume.
     expect(stageBlockMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("resume never commits stale blocks an abandoned upload left behind", async () => {
+    // An earlier, larger upload to the same blob was abandoned (discard is a
+    // no-op), so its uncommitted blocks 3–5 are still listed alongside this
+    // session's block 1. Only blocks this body produces may be committed.
+    getBlockListMock.mockImplementation(() =>
+      Promise.resolve({
+        uncommittedBlocks: [
+          { name: blockId(1), size: 4 },
+          { name: blockId(3), size: 4 },
+          { name: blockId(4), size: 4 },
+          { name: blockId(5), size: 4 },
+        ],
+      })
+    );
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "big.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(10), {
+      control: UploadControl.from(token),
+      multipart: { partSize: 4 },
+    });
+    // Block 2 is new; block 3 is re-staged, since this body's last block is
+    // 2 bytes, not the stale 4; blocks 4 and 5 are never committed.
+    expect(stageBlockMock).toHaveBeenCalledTimes(2);
+    const [committed] = commitBlockListMock.mock.calls.at(-1) ?? [];
+    expect(committed).toEqual([blockId(1), blockId(2), blockId(3)]);
+    expect(result.size).toBe(10);
   });
 
   test("resume before any block landed treats GetBlockList 404 as an empty session", async () => {

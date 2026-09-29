@@ -1096,6 +1096,16 @@ describe("vercel-blob adapter", () => {
     expect((thrown as FilesError).message).toMatch(/403/u);
   });
 
+  test("a public lazy body maps a transport failure to a FilesError", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    const info = await files.head("a.txt");
+    const raw = new TypeError("fetch failed");
+    globalThis.fetch = (() => Promise.reject(raw)) as unknown as typeof fetch;
+    const thrown = await info.text().catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(FilesError);
+    expect(thrown).toMatchObject({ cause: raw, code: "Provider" });
+  });
+
   test("url throws Provider when the head response has no public URL", async () => {
     headMock.mockImplementationOnce((pathname: string) =>
       Promise.resolve({
@@ -1290,6 +1300,28 @@ describe("vercel-blob adapter", () => {
       expect(await item.text()).toBe("hello");
       expect(getMock).toHaveBeenCalledTimes(1);
       expect(fetchCalls).toEqual([]);
+    });
+
+    test("head and list lazy bodies map a blob.get rejection", async () => {
+      // The body read runs after head()/list() returned, so a raw SDK error
+      // (a revoked token, say) must still surface as a mapped FilesError.
+      const files = new Files({ adapter: vercelBlob({ access: "private" }) });
+      const info = await files.head("a.txt");
+      const listed = await files.list();
+      const [item] = listed.items;
+      const raw = Object.assign(new Error("denied"), { status: 403 });
+      getMock
+        .mockImplementationOnce(() => Promise.reject(raw))
+        .mockImplementationOnce(() => Promise.reject(raw));
+      // Both reads settle before any assertion, so neither queued rejection
+      // can leak into a later test.
+      const headError = await info.text().catch((error: unknown) => error);
+      const listError = await item
+        ?.arrayBuffer()
+        .catch((error: unknown) => error);
+      expect(headError).toBeInstanceOf(FilesError);
+      expect(headError).toMatchObject({ cause: raw, code: "Unauthorized" });
+      expect(listError).toMatchObject({ code: "Unauthorized" });
     });
 
     test("url mints a presigned GET scoped to the key with a 1h default expiry", async () => {
@@ -1775,6 +1807,37 @@ describe("vercel-blob resumable uploads", () => {
     expect(createMultipartUploadMock).not.toHaveBeenCalled();
     // Part 1 was already in the token → only part 2 is uploaded.
     expect(uploadPartMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("resume slices on the token's pinned partSize, not the call's", async () => {
+    // The token was minted with 6 MiB parts; the resuming call passes no
+    // `multipart`, whose default is 5 MiB. Slicing at 5 MiB would misalign
+    // with the token's 6 MiB part 1 and commit overlapping bytes.
+    const SIX_MIB = 6 * 1024 * 1024;
+    const files = new Files({ adapter: vercelBlob() });
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "big.bin",
+      partSize: SIX_MIB,
+      parts: [{ etag: "etag-1", partNumber: 1, size: SIX_MIB }],
+      provider: "vercel-blob",
+      storageKey: "big.bin",
+      uploadId: "mpu-1",
+    };
+    const result = await files.upload("big.bin", new Uint8Array(SIX_MIB * 2), {
+      control: UploadControl.from(token),
+    });
+    expect(result.size).toBe(SIX_MIB * 2);
+    // Only part 2 is uploaded, as the second 6 MiB slice.
+    expect(uploadPartMock).toHaveBeenCalledTimes(1);
+    const [, data, partOpts] = uploadPartMock.mock.calls[0] ?? [];
+    expect((data as Uint8Array).byteLength).toBe(SIX_MIB);
+    expect(partOpts).toMatchObject({ partNumber: 2 });
+    const [, parts] = completeMultipartUploadMock.mock.calls[0] ?? [];
+    expect(parts).toEqual([
+      { etag: "etag-1", partNumber: 1 },
+      { etag: expect.any(String), partNumber: 2 },
+    ]);
   });
 
   test("a createMultipartUpload failure is wrapped", async () => {

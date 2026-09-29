@@ -735,6 +735,18 @@ describe("firebase-storage adapter", () => {
     expect(opts.conditions[0]).toEqual(["content-length-range", 1, 5_000_000]);
   });
 
+  test("capabilities report V4 signing's 7-day expiry ceiling", () => {
+    // `@google-cloud/storage` throws for a V4 signed URL or POST policy that
+    // outlives 7 days, so the cap is enforced in code on every signing call.
+    const files = new Files({
+      adapter: firebaseStorage({ projectId: "p" }),
+    });
+    expect(files.capabilities.signedUrl).toEqual({
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
+  });
+
   describe("error mapping", () => {
     test("404 maps to NotFound", () => {
       const err = mapFirebaseStorageError(
@@ -900,6 +912,21 @@ describe("firebase-storage adapter", () => {
       downloadMock.mockClear();
       expect(await item.text()).toBe("hello");
       expect(downloadMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("a failed lazy read is mapped (object deleted in between)", async () => {
+      const adapter = firebaseStorage({ projectId: "p" });
+      const info = await adapter.head("a.txt");
+      const listed = await adapter.list();
+      const [item] = listed.items;
+      const raw = Object.assign(new Error("No such object"), { code: 404 });
+      downloadMock.mockImplementation(() => Promise.reject(raw));
+      const headError = await info.text().catch((error: unknown) => error);
+      expect(headError).toBeInstanceOf(FilesError);
+      expect(headError).toMatchObject({ cause: raw, code: "NotFound" });
+      await expect(item?.arrayBuffer()).rejects.toMatchObject({
+        code: "NotFound",
+      });
     });
   });
 

@@ -502,6 +502,21 @@ describe("gcs adapter", () => {
     expect(downloadMock).toHaveBeenCalledTimes(1);
   });
 
+  test("lazy head/list bodies map a failed read (object deleted in between)", async () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    const info = await files.head("a.txt");
+    const listed = await files.list();
+    const [item] = listed.items;
+    const raw = Object.assign(new Error("No such object"), { code: 404 });
+    downloadMock.mockImplementation(() => Promise.reject(raw));
+    const headError = await info.text().catch((error: unknown) => error);
+    expect(headError).toBeInstanceOf(FilesError);
+    expect(headError).toMatchObject({ cause: raw, code: "NotFound" });
+    await expect(item?.arrayBuffer()).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
   test("url returns publicBaseUrl when configured", async () => {
     const files = new Files({
       adapter: gcs({
@@ -643,6 +658,16 @@ describe("gcs adapter", () => {
     }
     const opts = policyCall[0] as { conditions: unknown[][] };
     expect(opts.conditions[0]).toEqual(["content-length-range", 0, 1000]);
+  });
+
+  test("capabilities report V4 signing's 7-day expiry ceiling", () => {
+    // `@google-cloud/storage` throws for a V4 signed URL or POST policy that
+    // outlives 7 days, so the cap is enforced in code on every signing call.
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    expect(files.capabilities.signedUrl).toEqual({
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
   });
 
   describe("error mapping", () => {

@@ -75,6 +75,8 @@ export interface UploadThingAdapterOptions {
 }
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+// `UTApi.generateSignedURL` throws for an `expiresIn` above 7 days.
+const SIGNED_URL_MAX_EXPIRES_IN = 604_800;
 const DEFAULT_REGION = "sea1";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const ACL_PUBLIC_READ = "public-read" as const;
@@ -385,6 +387,32 @@ export const uploadthing = (
     };
   };
 
+  // The lazy body behind head()/list() results. head() passes the URL it
+  // already resolved; list() resolves one at read time. It runs after the
+  // operation returned, so failures are mapped here rather than escaping raw
+  // (a transport error, or an UploadThingError from signing) out of `text()`.
+  const readLazyBody = async (
+    key: string,
+    url?: string
+  ): Promise<Uint8Array> => {
+    try {
+      const res = await fetchWithTimeout(
+        url ?? (await resolveFetchUrl(key)),
+        undefined,
+        downloadTimeoutMs
+      );
+      if (!res.ok) {
+        throw new FilesError(
+          res.status === 404 ? "NotFound" : "Provider",
+          `uploadthing fetch failed: ${res.status} ${res.statusText} for ${key}`
+        );
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (error) {
+      throw mapUploadThingError(error);
+    }
+  };
+
   const adapter: UploadThingAdapter = {
     async copy(from, to, opts) {
       // UploadThing has no server-side copy, so this downloads and
@@ -515,23 +543,7 @@ export const uploadthing = (
           size: info.size,
           type: info.type,
         },
-        {
-          factory: async () => {
-            const res = await fetchWithTimeout(
-              url,
-              undefined,
-              downloadTimeoutMs
-            );
-            if (!res.ok) {
-              throw new FilesError(
-                res.status === 404 ? "NotFound" : "Provider",
-                `uploadthing fetch failed: ${res.status} ${res.statusText} for ${key}`
-              );
-            }
-            return new Uint8Array(await res.arrayBuffer());
-          },
-          kind: "lazy",
-        }
+        { factory: () => readLazyBody(key, url), kind: "lazy" }
       );
     },
     async list(options): Promise<ListResult> {
@@ -567,24 +579,7 @@ export const uploadthing = (
             size: f.size,
             type: DEFAULT_CONTENT_TYPE,
           },
-          {
-            factory: async () => {
-              const url = await resolveFetchUrl(itemKey);
-              const res = await fetchWithTimeout(
-                url,
-                undefined,
-                downloadTimeoutMs
-              );
-              if (!res.ok) {
-                throw new FilesError(
-                  res.status === 404 ? "NotFound" : "Provider",
-                  `uploadthing fetch failed: ${res.status} ${res.statusText} for ${itemKey}`
-                );
-              }
-              return new Uint8Array(await res.arrayBuffer());
-            },
-            kind: "lazy",
-          }
+          { factory: () => readLazyBody(itemKey), kind: "lazy" }
         );
       });
       return {
@@ -645,9 +640,16 @@ export const uploadthing = (
         url: url.toString(),
       };
     },
-    // `url()` mints a `generateSignedURL` for private files (public-read
-    // returns the CDN URL).
-    signedUrl: { supported: true },
+    // `url()` mints a `generateSignedURL` for private files, capped at 7 days
+    // by the SDK. Public-read returns the permanent CDN URL and ignores
+    // `expiresIn`, but still reports `supported: true`: the `files-sdk/api`
+    // gateway keys direct-to-storage upload presigning on this flag, and
+    // public-read (the default) must keep handing out ingest URLs rather than
+    // proxying every upload through the app server.
+    signedUrl:
+      acl === ACL_PUBLIC_READ
+        ? { supported: true }
+        : { maxExpiresIn: SIGNED_URL_MAX_EXPIRES_IN, supported: true },
     supportsRange: true,
     // No server-side copy — `copy()` downloads then re-uploads (buffered).
     supportsServerSideCopy: false,

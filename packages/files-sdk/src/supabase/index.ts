@@ -25,6 +25,7 @@ import { FilesError } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
+import { statusError } from "../internal/resumable-offset-http.js";
 import { sameOriginSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -853,9 +854,9 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             method: "POST",
           });
           if (res.status !== 201) {
-            throw new FilesError(
-              "Provider",
-              `supabase: resumable session init failed (HTTP ${res.status}).`
+            throw statusError(
+              res.status,
+              "supabase: resumable session init failed"
             );
           }
           const location = res.headers.get("location");
@@ -892,9 +893,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             method: "HEAD",
           });
           if (!res.ok) {
-            throw new FilesError(
-              "Provider",
-              `supabase: resume status check failed (HTTP ${res.status}).`
+            // An expired or terminated TUS upload answers 404/410 (NotFound).
+            throw statusError(
+              res.status,
+              "supabase: resume status check failed"
             );
           }
           lastOffset = Number(res.headers.get("upload-offset") ?? 0);
@@ -921,10 +923,9 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             ...(signal && { signal }),
           });
           if (!res.ok) {
-            throw new FilesError(
-              "Provider",
-              `supabase: chunk upload failed (HTTP ${res.status}).`
-            );
+            // A TUS offset mismatch answers 409 (Conflict): re-sending the
+            // same chunk can only fail the same way, so it isn't retried.
+            throw statusError(res.status, "supabase: chunk upload failed");
           }
           lastOffset = Number(
             res.headers.get("upload-offset") ?? offset + data.byteLength
@@ -943,6 +944,14 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         throw new FilesError(
           "Provider",
           "supabase: `maxSize` is not supported. Supabase signed upload URLs have no server-enforced size limit equivalent to S3's content-length-range policy. Set the bucket-level file size limit in the Supabase dashboard, or enforce the limit at your application gateway before issuing the signed URL."
+        );
+      }
+      // `minSize: 0` (no minimum) holds trivially; a positive floor has no
+      // Supabase equivalent, so fail closed like `maxSize`.
+      if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+        throw new FilesError(
+          "Provider",
+          "supabase: `minSize` is not supported. Supabase signed upload URLs have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
         );
       }
       // Same gap for `contentType`: the signed upload token doesn't bind a

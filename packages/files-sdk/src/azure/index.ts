@@ -685,6 +685,18 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures (a blob deleted in between reads as
+  // NotFound) instead of leaking a raw RestError out of `text()`.
+  const readBlobBytes = async (key: string): Promise<Uint8Array> => {
+    try {
+      const buf = await containerClient.getBlobClient(key).downloadToBuffer();
+      return bufferToUint8(buf);
+    } catch (error) {
+      throw mapAzureError(error);
+    }
+  };
+
   const buildSasUrl = async ({
     contentDisposition,
     expiresIn,
@@ -1008,13 +1020,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
             size: Number(props.contentLength ?? 0),
             type: props.contentType ?? DEFAULT_CONTENT_TYPE,
           },
-          {
-            factory: async () => {
-              const buf = await blobClient.downloadToBuffer();
-              return bufferToUint8(buf);
-            },
-            kind: "lazy",
-          }
+          { factory: () => readBlobBytes(key), kind: "lazy" }
         );
       } catch (error) {
         throw mapAzureError(error);
@@ -1039,15 +1045,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
               size: Number(props.contentLength ?? 0),
               type: props.contentType ?? DEFAULT_CONTENT_TYPE,
             },
-            {
-              factory: async () => {
-                const buf = await containerClient
-                  .getBlobClient(itemKey)
-                  .downloadToBuffer();
-                return bufferToUint8(buf);
-              },
-              kind: "lazy",
-            }
+            { factory: () => readBlobBytes(itemKey), kind: "lazy" }
           );
         };
         // Hierarchy listing returns both blobs and "folders" (blobPrefixes);
@@ -1134,6 +1132,14 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw new FilesError(
           "Provider",
           "azure: `maxSize` is not supported. Azure SAS has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway / proxy before issuing the SAS, or omit `maxSize` and accept the unbounded PUT."
+        );
+      }
+      // `minSize: 0` (no minimum) holds trivially; a positive floor has no
+      // SAS equivalent, so fail closed like `maxSize`.
+      if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+        throw new FilesError(
+          "Provider",
+          "azure: `minSize` is not supported. Azure SAS has no minimum upload size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway / proxy."
         );
       }
       if (signOpts.contentType !== undefined) {

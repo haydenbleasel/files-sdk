@@ -42,7 +42,7 @@ const files = new Files({
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ⚠️ | `cacheControl` maps to Supabase's seconds-based field, so only a `max-age=<n>` (optionally with `public`) or a bare number of seconds is accepted; other directives (`no-store`, `immutable`, `private`, …) throw rather than being dropped. Pause/resume via `control` uses Supabase's TUS endpoint (needs `url` + `key`, not a pre-built `client`) in fixed 6 MiB chunks - Supabase requires that size, so `multipart.partSize` is ignored. |
-| `download` | ✅ |  |
+| `download` | ⚠️ | Supabase's `download()` has no range primitive, so `range` throws. |
 | `delete` | ✅ |  |
 | `list` | ✅ | Uses Supabase's V2 list API: a flat, recursive, string-prefix scan over full keys with a real server cursor. (The legacy V1 API is folder-scoped and non-recursive, so it could not back the unified `list` contract.) |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
@@ -50,4 +50,4 @@ const files = new Files({
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ⚠️ | Default mints a signed read URL via `createSignedUrl` (1-hour default). With `public: true`, returns the permanent unsigned `getPublicUrl` result. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` forces the signed path and maps onto Supabase's `download` option, which can only force an attachment: `attachment` and `attachment; filename="…"` work, while `inline` or any other disposition throws. |
-| `signedUploadUrl` | ⚠️ | PUT URL only - Supabase has no POST policy equivalent. `maxSize` and `contentType` throw (Supabase signed upload URLs bind neither a `content-length-range` policy nor a Content-Type; set the bucket-level size limit and allowed MIME types in the dashboard instead). `expiresIn` is silently ignored - Supabase fixes the TTL at 2 hours server-side. The returned headers include `x-upsert: true`. |
+| `signedUploadUrl` | ⚠️ | PUT URL only - Supabase has no POST policy equivalent. `maxSize` and `contentType` throw (Supabase signed upload URLs bind neither a `content-length-range` policy nor a Content-Type; set the bucket-level size limit and allowed MIME types in the dashboard instead). A positive `minSize` throws too - there's no minimum-size constraint (`minSize: 0` is accepted). `expiresIn` is silently ignored - Supabase fixes the TTL at 2 hours server-side. The returned headers include `x-upsert: true`. |

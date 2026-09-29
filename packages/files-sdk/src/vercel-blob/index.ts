@@ -497,6 +497,25 @@ export const vercelBlob = (
     };
   };
 
+  // The lazy body behind head()/list() results: private blobs read through
+  // `blob.get`, public ones from the CDN URL. It runs after the operation has
+  // returned, so it maps its own failures instead of leaking a raw SDK or
+  // transport error out of `text()`.
+  const readLazyBody = async (
+    key: string,
+    url: string
+  ): Promise<Uint8Array> => {
+    try {
+      if (access === "private") {
+        const got = await getPrivateBody(key);
+        return new Uint8Array(await new Response(got.stream).arrayBuffer());
+      }
+      return await fetchPublicBody(url);
+    } catch (error) {
+      throw mapBlobError(error);
+    }
+  };
+
   // Prefer the explicit storeId (option or `BLOB_STORE_ID` env, whatever the
   // active auth scheme) since it works for OIDC and any future credential
   // shape. Fall back to deriving it from a read-write token (the only
@@ -636,18 +655,7 @@ export const vercelBlob = (
           size: result.size,
           type: result.contentType ?? DEFAULT_CONTENT_TYPE,
         },
-        {
-          factory: async () => {
-            if (access === "private") {
-              const got = await getPrivateBody(key);
-              return new Uint8Array(
-                await new Response(got.stream).arrayBuffer()
-              );
-            }
-            return fetchPublicBody(result.url);
-          },
-          kind: "lazy",
-        }
+        { factory: () => readLazyBody(key, result.url), kind: "lazy" }
       );
     },
     async list(options): Promise<ListResult> {
@@ -672,18 +680,7 @@ export const vercelBlob = (
               size: b.size,
               type: DEFAULT_CONTENT_TYPE,
             },
-            {
-              factory: async () => {
-                if (access === "private") {
-                  const got = await getPrivateBody(b.pathname);
-                  return new Uint8Array(
-                    await new Response(got.stream).arrayBuffer()
-                  );
-                }
-                return fetchPublicBody(b.url);
-              },
-              kind: "lazy",
-            }
+            { factory: () => readLazyBody(b.pathname, b.url), kind: "lazy" }
           )
         );
         // `mode: "folded"` is only sent alongside a delimiter; an expanded
@@ -722,7 +719,9 @@ export const vercelBlob = (
       const requestedPart = isObject(resumableOpts.multipart)
         ? resumableOpts.multipart.partSize
         : undefined;
-      const partSize =
+      // Pinned in the token by `begin()` and re-read by `adopt()`, so a resume
+      // slices on the same boundaries as the parts the token already holds.
+      let partSize =
         requestedPart && requestedPart > minPart ? requestedPart : minPart;
       // Same write options as a plain `upload()`: the overwrite policy and the
       // cache max-age ride on both the create and the complete request.
@@ -747,6 +746,7 @@ export const vercelBlob = (
             );
           }
           session = adopted;
+          ({ partSize } = adopted);
         },
         async begin(meta): Promise<ResumableUploadSession> {
           try {
@@ -808,7 +808,9 @@ export const vercelBlob = (
           return Promise.resolve();
         },
         mode: "parts",
-        partSize,
+        get partSize() {
+          return partSize;
+        },
         probe(): Promise<{ committedParts: PartMeta[] }> {
           return Promise.resolve({ committedParts: requireSession().parts });
         },

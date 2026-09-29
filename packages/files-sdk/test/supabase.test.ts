@@ -948,6 +948,20 @@ describe("supabase adapter", () => {
         expect((error as FilesError).message).toMatch(/maxSize/u);
       }
     });
+
+    test("throws on a positive minSize and accepts minSize: 0", async () => {
+      // A signed upload token can't enforce a minimum size, so a positive
+      // floor fails closed instead of being silently dropped.
+      await expect(
+        makeAdapter().signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
+      ).rejects.toThrow(/`minSize` is not supported/u);
+      expect(createSignedUploadUrlMock).not.toHaveBeenCalled();
+      const out = await makeAdapter().signedUploadUrl("a.txt", {
+        expiresIn: 60,
+        minSize: 0,
+      });
+      expect(out.method).toBe("PUT");
+    });
   });
 
   describe("error mapping", () => {
@@ -1566,6 +1580,36 @@ describe("supabase resumable uploads (TUS)", () => {
     ).rejects.toThrow(/chunk upload failed/u);
   });
 
+  test("a session init rejected with 403 maps to Unauthorized", async () => {
+    installFetch(() => new Response(null, { status: 403 }));
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl() })
+    ).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "supabase: resumable session init failed (HTTP 403).",
+    });
+  });
+
+  test("a TUS offset mismatch (409) is a Conflict and isn't re-sent", async () => {
+    let patches = 0;
+    installFetch((_url, init) => {
+      if (init.method === "POST") {
+        return new Response(null, {
+          headers: { Location: SESSION },
+          status: 201,
+        });
+      }
+      patches += 1;
+      return new Response(null, { status: 409 });
+    });
+    const files = new Files({ adapter: makeAdapter() });
+    await expect(
+      files.upload("x", "data", { control: new UploadControl(), retries: 3 })
+    ).rejects.toMatchObject({ code: "Conflict" });
+    expect(patches).toBe(1);
+  });
+
   test("the client escape hatch can't do resumable (no url/key)", async () => {
     installFetch(() => new Response(null, { status: 201 }));
     // A pre-built client lets construction succeed, but there's no URL/key to
@@ -1604,7 +1648,12 @@ describe("supabase resumable uploads (TUS)", () => {
         multipart: { partSize: SIX_MIB },
         retries: 0,
       })
-    ).rejects.toThrow(/status check failed/u);
+    ).rejects.toMatchObject({
+      // An expired or terminated TUS upload (410) is NotFound, so a caller
+      // can tell "start over" apart from a transient failure.
+      code: "NotFound",
+      message: expect.stringMatching(/status check failed/u),
+    });
   });
 
   test("a trailing-slash project url still resolves the TUS endpoint", async () => {

@@ -560,10 +560,25 @@ const runParts = async (
   const { partSize } = driver;
   const total = source.size;
   const numParts = Math.max(1, Math.ceil(total / partSize));
-  const committedByNumber = new Map(committed.map((p) => [p.partNumber, p]));
-  const results: PartMeta[] = [...committed];
+  // Trust a probed part only if it is one this body's slicing produces, at
+  // the size it produces. Anything else can't belong to this upload: Azure's
+  // uncommitted-block list also returns blocks an abandoned upload to the
+  // same blob left behind (its block ids are deterministic per part number),
+  // and committing those would splice stale bytes into the object. A part
+  // that fails the check is simply uploaded again.
+  const expectedSize = (partNumber: number): number =>
+    Math.min(partSize, total - (partNumber - 1) * partSize);
+  const usable = committed.filter(
+    (p) =>
+      Number.isInteger(p.partNumber) &&
+      p.partNumber >= 1 &&
+      p.partNumber <= numParts &&
+      p.size === expectedSize(p.partNumber)
+  );
+  const committedByNumber = new Map(usable.map((p) => [p.partNumber, p]));
+  const results: PartMeta[] = [...committedByNumber.values()];
 
-  let loaded = committed.reduce((sum, p) => sum + p.size, 0);
+  let loaded = results.reduce((sum, p) => sum + p.size, 0);
   state.loaded = loaded;
   reportProgress(opts.onProgress, { loaded, total });
 

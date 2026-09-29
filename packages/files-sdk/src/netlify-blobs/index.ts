@@ -386,6 +386,21 @@ export const netlifyBlobs = (
     throw mapNetlifyError(error);
   }
 
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures instead of leaking a raw
+  // BlobsInternalError out of `text()`.
+  const readLazyBody = async (key: string): Promise<Uint8Array> => {
+    try {
+      const got = await store.get(key, { type: "arrayBuffer" });
+      if (!got) {
+        throw new FilesError("NotFound", `netlify-blobs: not found: ${key}`);
+      }
+      return new Uint8Array(got);
+    } catch (error) {
+      throw mapNetlifyError(error);
+    }
+  };
+
   const packMetadata = (
     contentType: string,
     size: number,
@@ -523,19 +538,7 @@ export const netlifyBlobs = (
           size: packed.size,
           type: packed.contentType,
         },
-        {
-          factory: async () => {
-            const got = await store.get(key, { type: "arrayBuffer" });
-            if (!got) {
-              throw new FilesError(
-                "NotFound",
-                `netlify-blobs: not found: ${key}`
-              );
-            }
-            return new Uint8Array(got);
-          },
-          kind: "lazy",
-        }
+        { factory: () => readLazyBody(key), kind: "lazy" }
       );
     },
     async list(options): Promise<ListResult> {
@@ -583,19 +586,7 @@ export const netlifyBlobs = (
               size: 0,
               type: DEFAULT_CONTENT_TYPE,
             },
-            {
-              factory: async () => {
-                const got = await store.get(key, { type: "arrayBuffer" });
-                if (!got) {
-                  throw new FilesError(
-                    "NotFound",
-                    `netlify-blobs: not found: ${key}`
-                  );
-                }
-                return new Uint8Array(got);
-              },
-              kind: "lazy",
-            }
+            { factory: () => readLazyBody(key), kind: "lazy" }
           )
         );
       }
