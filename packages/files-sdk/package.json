@@ -1,6 +1,6 @@
 {
   "name": "files-sdk",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Unified storage SDK for object/blob backends.",
   "keywords": [
     "azure",

@@ -47,7 +47,7 @@
     },
     "packages/files-sdk": {
       "name": "files-sdk",
-      "version": "2.4.1",
+      "version": "2.6.0",
       "bin": {
         "files": "./dist/cli/index.js",
       },
