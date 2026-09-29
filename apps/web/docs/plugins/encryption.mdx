@@ -37,6 +37,8 @@ On `download` it unwraps the DEK with your master key, decrypts the body, and ha
 
 `head` and `list` report the same plaintext size without decrypting anything. Their body accessors (`text()`, `arrayBuffer()`, `stream()`, …) are lazy: reading one downloads the object back through the plugin, so it returns plaintext, never the stored ciphertext.
 
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters), a `list()` item can't be recognized as encrypted, so it reports the **stored** (ciphertext) size. Its body accessors still decrypt, and `head()` and `download()` report the plaintext size as usual.
+
 A fresh per-object DEK means the same master key is never reused to encrypt two bodies directly, which sidesteps IV-reuse concerns at scale and leaves room for key rotation later (re-wrap the DEK without re-encrypting the body).
 
 ## Managing the key
@@ -60,10 +62,16 @@ The master key is the only thing that can decrypt your data. If you lose it, the
 
 ## Ordering
 
-Encryption should be the **innermost** layer, so put it **last** in the array. Anything that needs to see plaintext - compression, validation, virus scanning - must run before it:
+Encryption should sit inside everything that needs to see plaintext - compression, validation, virus scanning - so put those **before** it:
 
 ```ts
 plugins: [compression(), encryption(key)];
+```
+
+The exceptions are [`failover()`](/docs/plugins/failover) and [`tiering()`](/docs/plugins/tiering). They drive their secondary / cold backends outside the rest of the onion, so they go **after** encryption; placed before it, whatever they route to another backend is stored unencrypted:
+
+```ts
+plugins: [compression(), encryption(key), tiering({ cold, route })];
 ```
 
 Because reads unwind the [onion](/docs/plugins#wrap-intercepting-operations) in reverse, a download automatically runs decrypt → decompress. You never hand-manage the symmetry.
@@ -74,6 +82,7 @@ Because reads unwind the [onion](/docs/plugins#wrap-intercepting-operations) in 
 AES-GCM authenticates the whole ciphertext, so the plugin **buffers the entire body in memory** to encrypt or decrypt it. It's unsuitable for unknown-length streams.
 :::
 
+- **Only the body is encrypted.** The object's key, `contentType`, and your own `metadata` are stored as-is, so anyone who can read the raw bucket can read them. Keep secrets out of keys and metadata.
 - **[Resumable uploads](/docs/resumable) throw.** Every upload encrypts under a fresh random data key, so a session resumed in another process would splice parts of two different ciphertexts into an object that can't be decrypted. An `upload` with a `control` is refused with a permanent `FilesError` before any bytes move, and [`files.capabilities`](/docs/capabilities) reports `multipart: false`. `multipart: true` without a `control` still splits a large body into parts within one call.
 - **Range downloads throw.** A slice of a GCM ciphertext can't be decrypted, so a [`download`](/docs/api/download) with a `range` is refused.
 - **`url()` and `signedUploadUrl()` throw.** A presigned URL bypasses the plugin entirely - a signed GET would hand out ciphertext nobody can decrypt, and a signed PUT would let a client store unencrypted bytes. Both fail closed.

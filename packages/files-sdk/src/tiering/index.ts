@@ -221,6 +221,10 @@ const transferAcross = async (
   // multi-GB cross-tier copy would materialize the object in memory.
   const file = await src.download(from, { ...opts, as: "stream" });
   const uploadOpts: UploadOptions = {
+    // The caller's `signal` / `timeout` govern the upload leg too — it's the
+    // bulk of a cross-tier copy, and without them a hung destination tier
+    // would ignore the caller's abort or deadline.
+    ...opts,
     contentType: file.type,
     ...(file.metadata &&
       Object.keys(file.metadata).length > 0 && { metadata: file.metadata }),
@@ -641,7 +645,7 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     }
     if (fallback) {
       // Drop any stale copy of the destination key in the tier it didn't land in.
-      await pick(hot, otherTier(dstTier)).delete(to);
+      await pick(hot, otherTier(dstTier)).delete(to, opts);
     }
   };
 
@@ -761,6 +765,25 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
+    // Advertise what the wrap refuses: every conditional primitive is vetoed
+    // (cross-tier routing can't preserve one native compare-and-set), so
+    // callers branching on `files.capabilities` don't plan one.
+    capabilities: (caps) => ({
+      ...caps,
+      conditional: {
+        ...caps.conditional,
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        exactRead: false,
+        replace: false,
+      },
+    }),
     extend: (files) => {
       const { defaults } = files;
       cold = coldFor(defaults);

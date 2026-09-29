@@ -5,7 +5,7 @@ description: Read and write the primary adapter and fall back to one or more sec
 
 The built-in `failover()` plugin keeps a `Files` instance serving while a backend is down. Every operation tries the **primary** first; if it throws because the backend is unreachable, the plugin retries against a **secondary** - and the next, and the next - until one succeeds. The primary is the instance's own adapter (reached through the rest of the pipeline); the secondaries are backup adapters you pass in.
 
-It's **body-transparent**: it never buffers or transforms bytes, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies**, adds no methods (`wrap` only, so plain `new Files()` is enough), and works on any set of adapters.
+It's **body-transparent**: it never buffers or transforms bytes, so streaming, [range downloads](/docs/api/download), [`url()`](/docs/api/url), and [`signedUploadUrl()`](/docs/api/signed-upload-url) all keep working. It has **no native dependencies**, adds no methods (so plain `new Files()` is enough), and works on any set of adapters.
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
@@ -59,7 +59,7 @@ By default, the plugin fails over **only** on a `Provider` [error](/docs/api/err
 
 - a `NotFound` stays a `NotFound` - a genuine 404 isn't turned into a slow scan of every replica;
 - an `Unauthorized` / `Conflict` / `ReadOnly` is likewise a real answer, not a reason to try elsewhere;
-- a `permanent` error is deterministic, so it isn't failed over either. That covers the SDK's own capability checks, which reject before any provider I/O: an invalid key, or an option the primary's adapter can't honor (`metadata`, `cacheControl`, `range`, `delimiter`, `control`). A request the primary can't serve fails loudly instead of quietly landing on a secondary that happens to accept it.
+- a `permanent` error is deterministic, so it isn't failed over either. That covers the SDK's own capability checks, which reject before any provider I/O: an invalid key, or an option the primary's adapter can't honor (`metadata`, `cacheControl`, `range`, `delimiter`, `control`). It also covers the refusals of the bundled plugins that sit inside `failover()` - a [`validation()`](/docs/plugins/validation) or [`contentType()`](/docs/plugins/content-type) rejection, an [`encryption()`](/docs/plugins/encryption) or [`compression()`](/docs/plugins/compression) refusal of `url()`, `signedUploadUrl()`, or a range, or a [`dedup()`](/docs/plugins/dedup) refusal of `url()` or `signedUploadUrl()`. A request the primary can't serve fails loudly instead of quietly landing on a secondary that happens to accept it.
 
 This keeps reads honest: the primary is the source of truth, and the secondary only answers when the primary can't.
 
@@ -132,3 +132,4 @@ Failover buys **availability**, not consistency. An object written to a secondar
 - **Secondaries are real stores.** A failed-over read pays the secondary's latency, and it must actually hold the object (keep it in sync with your provider's native replication, or [`sync`](/docs/api/sync) / [`transfer`](/docs/api/transfer)).
 - **The primary is the source of truth.** With the default predicate, a healthy primary's `NotFound` is returned without consulting any replica.
 - **Streaming uploads don't fail over.** A `ReadableStream` can't be replayed; buffer it first if it must survive a primary outage.
+- **[Conditional operations](/docs/conditional-operations) are refused.** Retrying on another backend can't preserve one native compare-and-set, so every conditional mode throws before any I/O, and [`files.capabilities`](/docs/capabilities) reports every `conditional` flag as `false`.

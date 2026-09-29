@@ -14,6 +14,24 @@ import { softDelete } from "../src/soft-delete/index.js";
 import type { SoftDeleteOptions } from "../src/soft-delete/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
+/** An adapter advertising every native conditional primitive. */
+const conditionalAdapter = (): Adapter => ({
+  ...fakeAdapter(),
+  conditional: {
+    copy: {
+      atomicSourceDestination: true,
+      destinationCreate: true,
+      destinationReplace: true,
+      run: () => Promise.resolve(),
+      sourceEtag: true,
+    },
+    create: () => Promise.reject(new Error("unused")),
+    delete: () => Promise.resolve(),
+    exactRead: () => Promise.reject(new Error("unused")),
+    replace: () => Promise.reject(new Error("unused")),
+  },
+});
+
 const withSoftDelete = (
   options: SoftDeleteOptions = {},
   adapter: Adapter = fakeAdapter()
@@ -340,6 +358,19 @@ describe("soft-delete plugin — error propagation", () => {
     const files = createFiles({ adapter: broken, plugins: [softDelete()] });
     await files.upload("a.txt", "x");
     await expect(files.delete("a.txt")).rejects.toThrow(/boom/u);
+  });
+});
+
+describe("soft-delete plugin — capabilities", () => {
+  test("stops advertising the conditional delete it vetoes", () => {
+    const adapter = conditionalAdapter();
+    expect(createFiles({ adapter }).capabilities.conditional.delete).toBe(true);
+    const { conditional } = withSoftDelete({}, adapter).capabilities;
+    expect(conditional.delete).toBe(false);
+    // Everything else is left as the adapter reports it.
+    expect(conditional.create).toBe(true);
+    expect(conditional.exactRead).toBe(true);
+    expect(conditional.copy.sourceEtag).toBe(true);
   });
 });
 

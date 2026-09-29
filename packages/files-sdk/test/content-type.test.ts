@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { contentType, detectContentType } from "../src/content-type/index.js";
 import type { ContentTypeOptions } from "../src/content-type/index.js";
-import { Files } from "../src/index.js";
+import { failover } from "../src/failover/index.js";
+import { Files, FilesError } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
@@ -383,5 +384,31 @@ describe("contentType plugin — pass-through verbs", () => {
     const file = await files.download("a.png");
     const out = new Uint8Array(await file.arrayBuffer());
     expect(out).toEqual(PNG);
+  });
+});
+
+describe("contentType plugin — rejections are permanent", () => {
+  test("an outer failover() doesn't re-send a rejected write to a plugin-less secondary", async () => {
+    const secondary = fakeAdapter();
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [
+        failover({ secondaries: secondary }),
+        contentType({ onMismatch: "reject", onUnknown: "reject" }),
+      ],
+    });
+    const rejections = [
+      () => files.upload("avatar.png", "<html><body>hi</body></html>"),
+      () => files.upload("notes.bin", "plain words"),
+      () => files.signedUploadUrl("avatar.png", { expiresIn: 60 }),
+    ];
+    for (const rejected of rejections) {
+      // eslint-disable-next-line no-await-in-loop -- each rejection is inspected on its own
+      const failure = await rejected().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as FilesError).message).toMatch(/^contentType: /u);
+    }
+    expect(secondary.raw.size).toBe(0);
   });
 });

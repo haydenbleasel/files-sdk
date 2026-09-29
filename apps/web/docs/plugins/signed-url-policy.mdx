@@ -90,7 +90,7 @@ Enforcing a `maxSize` makes supporting adapters mint a presigned **POST** form (
 Put `signedUrlPolicy()` **first** (outermost) so it sees the caller's original `url()` / `signedUploadUrl()` request before anything downstream, and so the options it rewrites reach the adapter that actually signs - and [`cache()`](/docs/plugins/cache), which must key and cap each cached URL by the expiry the policy applied, not the one the caller asked for:
 
 ```ts
-plugins: [signedUrlPolicy({ maxExpiresIn: 900 }), cache(), encryption(key)];
+plugins: [signedUrlPolicy({ maxExpiresIn: 900 }), cache()];
 ```
 
 ## Things to keep in mind

@@ -152,6 +152,9 @@ const correctMeta = (file: StoredFile): StoredFile => {
  *   `files-sdk/api` gateway proxies downloads through the instance.
  * - **`head` / `list` never decompress eagerly** — they report the original
  *   size, and their body accessors download and decompress only when called.
+ *   On adapters whose `list()` returns no metadata (S3 and the
+ *   S3-compatibles), `list()` items report the stored (compressed) size; their
+ *   bodies still decompress.
  * - **`copy` / `move` just work** — the algorithm marker travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
@@ -183,7 +186,9 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
     if (op.options?.range) {
       throw new FilesError(
         "Provider",
-        `compression: range downloads are unsupported on compressed objects ("${op.key}")`
+        `compression: range downloads are unsupported on compressed objects ("${op.key}")`,
+        undefined,
+        { permanent: true }
       );
     }
     const file = await next(op);
@@ -199,7 +204,9 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
     if (!FORMATS.has(alg)) {
       throw new FilesError(
         "Provider",
-        `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`
+        `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`,
+        undefined,
+        { permanent: true }
       );
     }
     const compressed = new Uint8Array(await file.arrayBuffer());
@@ -212,7 +219,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       throw new FilesError(
         "Provider",
         `compression: failed to decompress "${op.key}" (corrupted data)`,
-        error
+        error,
+        { permanent: true }
       );
     }
     return createStoredFile(
@@ -227,6 +235,21 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       { data: original, kind: "buffer" }
     );
   };
+
+  /** A lazy body that reads `key` back through this plugin, decompressed. */
+  const readBack =
+    (key: string, next: PluginNext, readOptions?: OperationOptions) =>
+    async (): Promise<Uint8Array> => {
+      const original = await download(
+        {
+          key,
+          kind: "download",
+          ...(readOptions && { options: readOptions }),
+        },
+        next
+      );
+      return new Uint8Array(await original.arrayBuffer());
+    };
 
   /**
    * Re-report a `head` / `list` result's logical (uncompressed) size and hide
@@ -256,22 +279,30 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
         size,
         type: file.type,
       },
-      {
-        factory: async () => {
-          const original = await download(
-            {
-              key: file.key,
-              kind: "download",
-              ...(readOptions && { options: readOptions }),
-            },
-            next
-          );
-          return new Uint8Array(await original.arrayBuffer());
-        },
-        kind: "lazy",
-      }
+      { factory: readBack(file.key, next, readOptions), kind: "lazy" }
     );
   };
+
+  /**
+   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
+   * return it from a listing — can't be told apart from an uncompressed
+   * object, so its size is left as stored, but its body still reads back
+   * through this plugin, so a compressed object's `text()` / `stream()` yield
+   * the original bytes rather than the compressed ones.
+   */
+  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
+    file.metadata === undefined
+      ? createStoredFile(
+          {
+            etag: file.etag,
+            key: file.key,
+            lastModified: file.lastModified,
+            size: file.size,
+            type: file.type,
+          },
+          { factory: readBack(file.key, next), kind: "lazy" }
+        )
+      : logical(file, next);
 
   // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
   // lazy body reads to a `download` (the per-verb `next` is typed to its own
@@ -284,13 +315,15 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
         const result = await next(op);
         return {
           ...result,
-          items: result.items.map((file) => logical(file, outer)),
+          items: result.items.map((file) => listed(file, outer)),
         };
       },
       signedUploadUrl: () => {
         throw new FilesError(
           "Provider",
-          "compression: signedUploadUrl() bypasses compression (the client would store uncompressed bytes); upload through the Files instance instead"
+          "compression: signedUploadUrl() bypasses compression (the client would store uncompressed bytes); upload through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       },
       upload: async (op, next) => {
@@ -334,7 +367,9 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       url: () => {
         throw new FilesError(
           "Provider",
-          "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead"
+          "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       },
     });

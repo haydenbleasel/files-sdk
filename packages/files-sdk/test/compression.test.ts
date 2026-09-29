@@ -3,7 +3,13 @@ import { describe, expect, test } from "bun:test";
 import { createFilesRouter } from "../src/api/index.js";
 import { compression } from "../src/compression/index.js";
 import type { CompressionFormat } from "../src/compression/index.js";
-import { Files, UploadControl } from "../src/index.js";
+import { failover } from "../src/failover/index.js";
+import {
+  createStoredFile,
+  Files,
+  FilesError,
+  UploadControl,
+} from "../src/index.js";
 import type { Adapter } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -174,6 +180,43 @@ describe("compression plugin — head and list bodies", () => {
     const texts = await Promise.all(items.map((file) => file.text()));
     expect(texts).toEqual(["open", TEXT]);
   });
+
+  test("list() item bodies decompress on an adapter whose listing has no metadata", async () => {
+    // S3 and the S3-compatibles return no metadata from list(), so there's no
+    // algorithm marker to spot; the body must still read back through the
+    // plugin rather than hand out the stored gzip bytes.
+    const inner = fakeAdapter();
+    const adapter: Adapter = {
+      ...inner,
+      async list(opts) {
+        const page = await inner.list(opts);
+        return {
+          ...page,
+          items: page.items.map((file) =>
+            createStoredFile(
+              {
+                etag: file.etag,
+                key: file.key,
+                lastModified: file.lastModified,
+                size: file.size,
+                type: file.type,
+              },
+              {
+                factory: async () => new Uint8Array(await file.arrayBuffer()),
+                kind: "lazy",
+              }
+            )
+          ),
+        };
+      },
+    };
+    const files = compressed(adapter);
+    await files.upload("zip.txt", TEXT);
+    await new Files({ adapter }).upload("plain.txt", "open");
+    const { items } = await files.list();
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["open", TEXT]);
+  });
 });
 
 // A signing-capable adapter: without the plugin's capabilities hook, the
@@ -317,5 +360,47 @@ describe("compression plugin — bulk + copy", () => {
     await files.copy("a.txt", "b.txt");
     const file = await files.download("b.txt");
     expect(await file.text()).toBe(TEXT);
+  });
+});
+
+describe("compression plugin — refusals are permanent", () => {
+  test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
+    const secondary = fakeAdapter();
+    await new Files({ adapter: secondary }).upload("a.txt", "replica");
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [failover({ secondaries: secondary }), compression()],
+    });
+    await files.upload("a.txt", TEXT);
+    const refusals = [
+      () => files.url("a.txt"),
+      () => files.signedUploadUrl("a.txt", { expiresIn: 60 }),
+      () => files.download("a.txt", { range: { end: 1, start: 0 } }),
+    ];
+    for (const refused of refusals) {
+      // eslint-disable-next-line no-await-in-loop -- each refusal is inspected on its own
+      const failure = await refused().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as FilesError).message).toMatch(/^compression: /u);
+    }
+  });
+
+  test("unreadable stored objects fail permanently", async () => {
+    const adapter = fakeAdapter();
+    const raw = new Files({ adapter });
+    await raw.upload("unknown.txt", "x", { metadata: { fscmp_alg: "brotli" } });
+    await raw.upload("corrupt.txt", "not gzip", {
+      metadata: { fscmp_alg: "gzip" },
+    });
+    const files = compressed(adapter);
+    for (const key of ["unknown.txt", "corrupt.txt"]) {
+      // eslint-disable-next-line no-await-in-loop -- each failure is inspected on its own
+      const failure = await files
+        .download(key)
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+    }
   });
 });

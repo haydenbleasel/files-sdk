@@ -3,7 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { createFilesRouter } from "../src/api/index.js";
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
-import { createFiles, FilesError, sync, UploadControl } from "../src/index.js";
+import { failover } from "../src/failover/index.js";
+import {
+  createFiles,
+  createStoredFile,
+  FilesError,
+  sync,
+  UploadControl,
+} from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
@@ -184,6 +191,44 @@ describe("dedup plugin — head and list bodies", () => {
     const { items } = await files.list();
     const texts = await Promise.all(items.map((file) => file.text()));
     expect(texts).toEqual(["first", "second"]);
+  });
+
+  test("list() item bodies follow the pointer on an adapter whose listing has no metadata", async () => {
+    // S3 and the S3-compatibles return no metadata from list(), so a pointer
+    // can't be recognized there; its body must still follow the pointer
+    // rather than return the empty placeholder.
+    const inner = fakeAdapter();
+    const adapter: Adapter = {
+      ...inner,
+      async list(opts) {
+        const page = await inner.list(opts);
+        return {
+          ...page,
+          items: page.items.map((file) =>
+            createStoredFile(
+              {
+                etag: file.etag,
+                key: file.key,
+                lastModified: file.lastModified,
+                size: file.size,
+                type: file.type,
+              },
+              {
+                factory: async () => new Uint8Array(await file.arrayBuffer()),
+                kind: "lazy",
+              }
+            )
+          ),
+        };
+      },
+    };
+    const files = createFiles({ adapter, plugins: [dedup()] });
+    await files.upload("a.txt", "first");
+    await createFiles({ adapter }).upload("b.txt", "plain");
+    const { items } = await files.list();
+    expect(items.map((file) => file.key)).toEqual(["a.txt", "b.txt"]);
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["first", "plain"]);
   });
 
   test("a head() body is fetched only when read, and cancels cleanly", async () => {
@@ -632,5 +677,28 @@ describe("dedup plugin — conditional policy", () => {
     ).rejects.toMatchObject({ code: "Provider", permanent: true });
     const survived = await files.download("k.txt");
     expect(await survived.text()).toBe("second");
+  });
+});
+
+describe("dedup plugin — refusals are permanent", () => {
+  test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
+    const secondary = fakeAdapter();
+    await createFiles({ adapter: secondary }).upload("a.txt", "replica");
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [failover({ secondaries: secondary }), dedup()],
+    });
+    await files.upload("a.txt", "hello");
+    const refusals = [
+      () => files.url("a.txt"),
+      () => files.signedUploadUrl("a.txt", { expiresIn: 60 }),
+    ];
+    for (const refused of refusals) {
+      // eslint-disable-next-line no-await-in-loop -- each refusal is inspected on its own
+      const failure = await refused().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as FilesError).message).toMatch(/^dedup: /u);
+    }
   });
 });

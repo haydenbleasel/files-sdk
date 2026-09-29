@@ -16,6 +16,25 @@ import type { FakeAdapter } from "./fake-adapter.js";
  * An adapter whose every verb rejects with a `Provider` error — a backend that
  * is fully down, so the default predicate fails over off it.
  */
+
+/** An adapter advertising every native conditional primitive. */
+const conditionalAdapter = (): Adapter => ({
+  ...fakeAdapter(),
+  conditional: {
+    copy: {
+      atomicSourceDestination: true,
+      destinationCreate: true,
+      destinationReplace: true,
+      run: () => Promise.resolve(),
+      sourceEtag: true,
+    },
+    create: () => Promise.reject(new Error("unused")),
+    delete: () => Promise.resolve(),
+    exactRead: () => Promise.reject(new Error("unused")),
+    replace: () => Promise.reject(new Error("unused")),
+  },
+});
+
 const downAdapter = (message = "backend down"): Adapter => {
   const fail = (): Promise<never> =>
     Promise.reject(new FilesError("Provider", message));
@@ -458,6 +477,30 @@ describe("failover — a single secondary passed directly", () => {
       plugins: [failover({ secondaries: secondary })],
     });
     expect(await files.download("a.txt").then((f) => f.text())).toBe("solo");
+  });
+});
+
+describe("failover — capabilities", () => {
+  test("stops advertising the conditional primitives it vetoes", () => {
+    const adapter = conditionalAdapter();
+    expect(new Files({ adapter }).capabilities.conditional.create).toBe(true);
+    const files = new Files({
+      adapter,
+      plugins: [failover({ secondaries: fakeAdapter() })],
+    });
+    expect(files.capabilities.conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      exactRead: false,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
   });
 });
 

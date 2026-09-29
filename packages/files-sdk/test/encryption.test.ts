@@ -3,10 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { createFilesRouter } from "../src/api/index.js";
 import { cache } from "../src/cache/index.js";
 import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
+import { failover } from "../src/failover/index.js";
 import {
   createFiles,
   createStoredFile,
   Files,
+  FilesError,
   UploadControl,
 } from "../src/index.js";
 import type {
@@ -273,6 +275,45 @@ describe("encryption plugin — head and list bodies", () => {
     expect(texts).toEqual(["secret", "open"]);
   });
 
+  test("list() item bodies decrypt on an adapter whose listing has no metadata", async () => {
+    // S3 and the S3-compatibles return no metadata from list(), so there's no
+    // envelope marker to spot; the body must still read back through the
+    // plugin rather than hand out the stored ciphertext.
+    const inner = fakeAdapter();
+    const adapter: Adapter = {
+      ...inner,
+      async list(opts) {
+        const page = await inner.list(opts);
+        return {
+          ...page,
+          items: page.items.map((file) =>
+            createStoredFile(
+              {
+                etag: file.etag,
+                key: file.key,
+                lastModified: file.lastModified,
+                size: file.size,
+                type: file.type,
+              },
+              {
+                factory: async () => new Uint8Array(await file.arrayBuffer()),
+                kind: "lazy",
+              }
+            )
+          ),
+        };
+      },
+    };
+    const files = await encrypted(adapter);
+    await files.upload("enc.txt", "secret");
+    await new Files({ adapter }).upload("plain.txt", "open");
+    const { items } = await files.list();
+    const texts = await Promise.all(items.map((file) => file.text()));
+    expect(texts).toEqual(["secret", "open"]);
+    const [enc] = items;
+    expect(await new Response(enc?.stream()).text()).toBe("secret");
+  });
+
   test("a head() body surfaces decryption failures", async () => {
     const adapter = fakeAdapter();
     const writer = await encrypted(adapter);
@@ -510,5 +551,67 @@ describe("encryption plugin — bulk + copy", () => {
     await files.copy("a.txt", "b.txt");
     const file = await files.download("b.txt");
     expect(await file.text()).toBe("hello");
+  });
+});
+
+describe("encryption plugin — refusals are permanent", () => {
+  test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
+    const secondary = fakeAdapter();
+    await new Files({ adapter: secondary }).upload("a.txt", "replica");
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [
+        failover({ secondaries: secondary }),
+        encryption(await generateEncryptionKey()),
+      ],
+    });
+    await files.upload("a.txt", "hello");
+    const refusals = [
+      () => files.url("a.txt"),
+      () => files.signedUploadUrl("a.txt", { expiresIn: 60 }),
+      () => files.download("a.txt", { range: { end: 1, start: 0 } }),
+    ];
+    for (const refused of refusals) {
+      // eslint-disable-next-line no-await-in-loop -- each refusal is inspected on its own
+      const failure = await refused().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as FilesError).message).toMatch(/^encryption: /u);
+    }
+  });
+
+  test("decryption and envelope failures are permanent", async () => {
+    const adapter = fakeAdapter();
+    const writer = await encrypted(adapter);
+    await writer.upload("a.txt", "hello");
+    const wrongKey = await encrypted(adapter);
+    const failed = await wrongKey
+      .download("a.txt")
+      .catch((error: unknown) => error);
+    expect((failed as FilesError).permanent).toBe(true);
+
+    const key = await generateEncryptionKey();
+    await new Files({ adapter, plugins: [encryption(key)] }).upload(
+      "b.txt",
+      "hello"
+    );
+    const entry = adapter.raw.get("b.txt");
+    if (entry?.metadata) {
+      entry.metadata.fsenc_size = "4";
+    }
+    const tampered = await new Files({ adapter, plugins: [encryption(key)] })
+      .download("b.txt")
+      .catch((error: unknown) => error);
+    expect((tampered as FilesError).message).toMatch(/tampered/u);
+    expect((tampered as FilesError).permanent).toBe(true);
+
+    expect(() => encryption(new Uint8Array(7))).not.toThrow();
+    const badKey = await new Files({
+      adapter,
+      plugins: [encryption(new Uint8Array(7))],
+    })
+      .upload("c.txt", "x")
+      .catch((error: unknown) => error);
+    expect((badKey as FilesError).permanent).toBe(true);
   });
 });

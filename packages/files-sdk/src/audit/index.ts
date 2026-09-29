@@ -243,7 +243,7 @@ const buildRecord = (op: FilesOperation, ctx: RecordContext): AuditRecord => {
  * keys, never the internal prefixed path. Bulk `upload([...])` / `delete([...])`
  * fan out to **one record per item**, each flagged `bulk: true`. Place
  * `audit()` **first** (outermost) so it records the caller's logical intent — a
- * `delete` that an inner [`softDelete()`](/plugins/soft-delete) turns into a
+ * `delete` that an inner `softDelete()` turns into a
  * `move` is still audited as the `delete` the caller asked for.
  *
  * It's `wrap`-only (adds no methods), so plain `new Files({ plugins })` works.

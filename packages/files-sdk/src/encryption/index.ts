@@ -67,7 +67,9 @@ const importRawKey = (bytes: Uint8Array): Promise<CryptoKey> => {
   if (!RAW_KEY_BYTES.has(bytes.byteLength)) {
     throw new FilesError(
       "Provider",
-      `encryption: a raw key must be 16, 24, or 32 bytes, received ${bytes.byteLength}`
+      `encryption: a raw key must be 16, 24, or 32 bytes, received ${bytes.byteLength}`,
+      undefined,
+      { permanent: true }
     );
   }
   return crypto.subtle.importKey(
@@ -174,7 +176,11 @@ export const generateEncryptionKey = (): Promise<CryptoKey> =>
  *
  * Place it **last** in the plugin array so it's the innermost layer — anything
  * that needs to see plaintext (compression, validation, virus scanning) must run
- * before it: `plugins: [compression(), encryption(key)]`.
+ * before it: `plugins: [compression(), encryption(key)]`. The exceptions are
+ * `failover()` and `tiering()`: their secondary / cold backends are driven
+ * outside the rest of the onion, so they go **after** it
+ * (`[encryption(key), tiering(...)]`) — placed before it, whatever they route
+ * to another backend would be stored unencrypted.
  *
  * Trade-offs, by design:
  * - **Buffers the whole body** to compute the GCM tag, so it's unsuitable for
@@ -192,18 +198,23 @@ export const generateEncryptionKey = (): Promise<CryptoKey> =>
  *   through the instance.
  * - **`head` / `list` never decrypt eagerly** — they report the plaintext
  *   size, and their body accessors download and decrypt only when called.
+ *   On adapters whose `list()` returns no metadata (S3 and the
+ *   S3-compatibles), `list()` items report the stored (ciphertext) size; their
+ *   bodies still decrypt.
  * - **`copy` / `move` just work** — the wrapped DEK travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
  *
  * Threat model: this protects **confidentiality at rest** — a party who reads
  * raw provider bytes (or metadata) learns nothing about the plaintext beyond
- * its length, and any tampering with the ciphertext, the wrapped DEK, the
- * IVs, or the declared size fails loudly at decrypt time. It is **not**
- * integrity binding between an envelope and its key: an attacker with raw
- * provider *write* access can copy one object's whole envelope (ciphertext +
- * `fsenc_*` metadata) onto another key, and a later download of that key will
- * decrypt cleanly to the other object's plaintext. Binding envelopes to keys
+ * its length. Only the body is encrypted: the object's key, `contentType`,
+ * and your own `metadata` are stored as-is. Any tampering with the
+ * ciphertext, the wrapped DEK, the IVs, or the declared size fails loudly at
+ * decrypt time. It is **not** integrity binding between an envelope and its
+ * key: an attacker with raw provider *write* access can copy one object's
+ * whole envelope (ciphertext + `fsenc_*` metadata) onto another key, and a
+ * later download of that key will decrypt cleanly to the other object's
+ * plaintext. Binding envelopes to keys
  * (à la KMS encryption context) would break the server-side `copy`/`move`
  * and key-aliasing plugin compositions above by design — if cross-object
  * splicing is in your threat model, isolate tenants with separate KEKs and
@@ -239,7 +250,9 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
     if (op.options?.range) {
       throw new FilesError(
         "Provider",
-        `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`
+        `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`,
+        undefined,
+        { permanent: true }
       );
     }
     const file = await next(op);
@@ -255,7 +268,8 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       throw new FilesError(
         "Provider",
         `encryption: failed to decrypt "${op.key}" (wrong key or corrupted data)`,
-        error
+        error,
+        { permanent: true }
       );
     }
     // GCM authenticates the body and the wrapped DEK, but `fsenc_size`
@@ -266,7 +280,9 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
     if (!Number.isNaN(declaredSize) && declaredSize !== plaintext.byteLength) {
       throw new FilesError(
         "Provider",
-        `encryption: "${op.key}" decrypted to ${plaintext.byteLength} bytes but its envelope declares ${declaredSize} — the metadata has been tampered with`
+        `encryption: "${op.key}" decrypted to ${plaintext.byteLength} bytes but its envelope declares ${declaredSize} — the metadata has been tampered with`,
+        undefined,
+        { permanent: true }
       );
     }
     return createStoredFile(
@@ -281,6 +297,17 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       { data: new Uint8Array(plaintext), kind: "buffer" }
     );
   };
+
+  /** A lazy body that reads `objectKey` back through this plugin, decrypted. */
+  const readBack =
+    (objectKey: string, next: PluginNext, options?: OperationOptions) =>
+    async (): Promise<Uint8Array> => {
+      const plain = await download(
+        { key: objectKey, kind: "download", ...(options && { options }) },
+        next
+      );
+      return new Uint8Array(await plain.arrayBuffer());
+    };
 
   /**
    * Re-report a `head` / `list` result's logical (plaintext) size and hide the
@@ -308,18 +335,30 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
         size: Number.isNaN(size) ? file.size : size,
         type: file.type,
       },
-      {
-        factory: async () => {
-          const plain = await download(
-            { key: file.key, kind: "download", ...(options && { options }) },
-            next
-          );
-          return new Uint8Array(await plain.arrayBuffer());
-        },
-        kind: "lazy",
-      }
+      { factory: readBack(file.key, next, options), kind: "lazy" }
     );
   };
+
+  /**
+   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
+   * return it from a listing — can't be told apart from a plaintext object, so
+   * its size is left as stored, but its body still reads back through this
+   * plugin, so an encrypted object's `text()` / `stream()` yield plaintext
+   * rather than ciphertext.
+   */
+  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
+    file.metadata === undefined
+      ? createStoredFile(
+          {
+            etag: file.etag,
+            key: file.key,
+            lastModified: file.lastModified,
+            size: file.size,
+            type: file.type,
+          },
+          { factory: readBack(file.key, next), kind: "lazy" }
+        )
+      : logical(file, next);
 
   // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
   // lazy body reads to a `download` (the per-verb `next` is typed to its own
@@ -332,13 +371,15 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
         const result = await next(op);
         return {
           ...result,
-          items: result.items.map((file) => logical(file, outer)),
+          items: result.items.map((file) => listed(file, outer)),
         };
       },
       signedUploadUrl: () => {
         throw new FilesError(
           "Provider",
-          "encryption: signedUploadUrl() bypasses at-rest encryption (the client would store unencrypted bytes); upload through the Files instance instead"
+          "encryption: signedUploadUrl() bypasses at-rest encryption (the client would store unencrypted bytes); upload through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       },
       upload: async (op, next) => {
@@ -382,7 +423,9 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       url: () => {
         throw new FilesError(
           "Provider",
-          "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead"
+          "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       },
     });

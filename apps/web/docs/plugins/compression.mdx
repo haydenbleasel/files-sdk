@@ -29,6 +29,8 @@ await (await files.download("notes.txt")).text(); // the original 10k string
 
 `head` and `list` report the same original size without decompressing anything. Their body accessors (`text()`, `arrayBuffer()`, `stream()`, …) are lazy: reading one downloads the object back through the plugin, so it returns the original bytes, never the stored compressed ones.
 
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters), a `list()` item can't be recognized as compressed, so it reports the **stored** (compressed) size. Its body accessors still decompress, and `head()` and `download()` report the original size as usual.
+
 Because the algorithm is stored per object, reads always decompress with the right one. Changing the `format` option later never breaks objects written under the old format.
 
 ## Choosing a format

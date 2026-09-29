@@ -90,7 +90,7 @@ Plugins run in array order, `plugins[0]` outermost. Two neighbours need to sit i
 ```ts
 plugins: [
   contentType(),
-  validation({ maxSize, allowedTypes, key }),
+  validation({ maxSize, allowedTypes }),
   versioning(),
   compression(),
   encryption(key),

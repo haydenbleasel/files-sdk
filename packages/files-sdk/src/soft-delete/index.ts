@@ -306,6 +306,13 @@ export const softDelete = (
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
+    // Advertise what the wrap refuses: a conditional delete outside the trash
+    // becomes a move no native predicate spans, so it's vetoed, and callers
+    // branching on `files.capabilities` shouldn't plan one.
+    capabilities: (caps) => ({
+      ...caps,
+      conditional: { ...caps.conditional, delete: false },
+    }),
     extend: (files) => ({
       purge: (key) => purge(files, key),
       restoreTrashed: (key) => restore(files, key),

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { contentType } from "../src/content-type/index.js";
 import { dedup } from "../src/dedup/index.js";
+import { failover } from "../src/failover/index.js";
 import { Files, FilesError } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
 import { softDelete } from "../src/soft-delete/index.js";
@@ -367,5 +368,32 @@ describe("validation plugin — placement", () => {
     await files.upload("a.txt", "two");
     await files.delete("a.txt");
     expect(await files.exists("a.txt")).toBe(false);
+  });
+});
+
+describe("validation plugin — rejections are permanent", () => {
+  test("an outer failover() doesn't re-send a rejected write to a plugin-less secondary", async () => {
+    const secondary = fakeAdapter();
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [
+        failover({ secondaries: secondary }),
+        validation({ allowedTypes: ["image/*"], key: /^ok/u, maxSize: 4 }),
+      ],
+    });
+    const rejections = [
+      () => files.upload("ok.png", "too many bytes"),
+      () => files.upload("ok.txt", "tiny"),
+      () => files.upload("bad.png", "tiny"),
+      () => files.signedUploadUrl("ok.png", { expiresIn: 60 }),
+    ];
+    for (const rejected of rejections) {
+      // eslint-disable-next-line no-await-in-loop -- each rejection is inspected on its own
+      const failure = await rejected().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect((failure as FilesError).permanent).toBe(true);
+      expect((failure as FilesError).message).toMatch(/^validation: /u);
+    }
+    expect(secondary.raw.size).toBe(0);
   });
 });

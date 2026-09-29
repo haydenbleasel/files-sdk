@@ -14,6 +14,24 @@ import { versioning } from "../src/versioning/index.js";
 import type { VersioningOptions } from "../src/versioning/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
+/** An adapter advertising every native conditional primitive. */
+const conditionalAdapter = (): Adapter => ({
+  ...fakeAdapter(),
+  conditional: {
+    copy: {
+      atomicSourceDestination: true,
+      destinationCreate: true,
+      destinationReplace: true,
+      run: () => Promise.resolve(),
+      sourceEtag: true,
+    },
+    create: () => Promise.reject(new Error("unused")),
+    delete: () => Promise.resolve(),
+    exactRead: () => Promise.reject(new Error("unused")),
+    replace: () => Promise.reject(new Error("unused")),
+  },
+});
+
 const withVersioning = (
   options: VersioningOptions = {},
   adapter: Adapter = fakeAdapter()
@@ -546,6 +564,28 @@ describe("versioning plugin — error propagation", () => {
     };
     const files = createFiles({ adapter: broken, plugins: [versioning()] });
     await expect(files.upload("a.txt", "x")).rejects.toThrow(/boom/u);
+  });
+});
+
+describe("versioning plugin — capabilities", () => {
+  test("stops advertising the conditional mutations it vetoes", () => {
+    const adapter = conditionalAdapter();
+    expect(createFiles({ adapter }).capabilities.conditional.create).toBe(true);
+    const { conditional } = withVersioning({}, adapter).capabilities;
+    expect(conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      // Exact reads pass straight through, so they stay advertised.
+      exactRead: true,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
   });
 });
 

@@ -196,7 +196,9 @@ const timeOf = (id: string): number => {
  * - **Pairs with `softDelete()`, versioning outermost.** Place it before the
  *   trash plugin so deletes are snapshotted, and pass the trash prefix as
  *   `ignore` so a `purge()` isn't itself versioned:
- *   `plugins: [versioning({ ignore: [".trash"] }), softDelete()]`.
+ *   `plugins: [versioning({ ignore: [".trash"] }), softDelete()]`. With a
+ *   `limit`, the versions it prunes are deleted through the trash plugin too,
+ *   so they sit in the trash (and show in `trashed()`) until you `purge()`.
  *
  * @param options optional `{ prefix, limit, ignore }` — where snapshots live,
  *   how many to keep per key, and which prefixes to leave un-versioned.
@@ -479,6 +481,25 @@ export const versioning = (
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
+    // Advertise what the wrap refuses: every conditional mutation is vetoed
+    // (a snapshot can't be coupled to the native compare-and-set), so callers
+    // branching on `files.capabilities` don't plan one. Exact reads still pass
+    // through.
+    capabilities: (caps) => ({
+      ...caps,
+      conditional: {
+        ...caps.conditional,
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        replace: false,
+      },
+    }),
     extend: (files) => ({
       restoreVersion: (key, requested) => restore(files, key, requested),
       versions: (key) => listVersions(files, key),

@@ -201,6 +201,10 @@ const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
  *   already stored, no bytes are sent and a `control` is left undriven.
  * - **Reads cost a second fetch** — the pointer, then the blob (a ranged read
  *   does a `head` first). `head` / `list` add nothing; they read the pointer.
+ *   On adapters whose `list()` returns no metadata (S3 and the
+ *   S3-compatibles), `list()` items can't be recognized as pointers, so they
+ *   report the pointer's own size (`0`) and ETag; their bodies still follow
+ *   the pointer to the content.
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET would hand out the
  *   empty pointer, and a presigned PUT would bypass content-addressing. Download
  *   through the instance instead. `files.capabilities` reports
@@ -254,6 +258,65 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     return storeSegments.every((segment, index) => segments[index] === segment);
   };
 
+  /** Build the caller-facing {@link StoredFile} for a followed pointer. */
+  const rewrap = (
+    key: string,
+    ref: string,
+    pointer: StoredFile,
+    blob: StoredFile
+  ): StoredFile =>
+    createStoredFile(
+      {
+        // The content hash, not the pointer's own (always-empty-body) ETag.
+        etag: ref,
+        key,
+        lastModified: pointer.lastModified,
+        metadata: stripInternalMeta(pointer.metadata ?? {}),
+        // The blob's size is the content length (the range length for a ranged
+        // read); the pointer's own size is always 0.
+        size: blob.size,
+        type: pointer.type,
+      },
+      { factory: () => blob.stream(), kind: "stream" }
+    );
+
+  const download = async (
+    op: Extract<FilesOperation, { kind: "download" }>,
+    next: PluginNext
+  ): Promise<StoredFile> => {
+    if (op.options?.range) {
+      // A range can't be applied to the empty pointer, so read its metadata
+      // with a `head`, then apply the range to the verbatim blob.
+      const pointer = await next({
+        key: op.key,
+        kind: "head",
+        options: op.options,
+      });
+      const ref = pointer.metadata?.[META.ref];
+      if (ref === undefined) {
+        return next(op);
+      }
+      const blob = await next({
+        key: blobKeyOf(ref),
+        kind: "download",
+        options: op.options,
+      });
+      return rewrap(op.key, ref, pointer, blob);
+    }
+    const pointer = await next(op);
+    const ref = pointer.metadata?.[META.ref];
+    // No marker → an object we didn't write; hand it straight back.
+    if (ref === undefined) {
+      return pointer;
+    }
+    const blob = await next({
+      key: blobKeyOf(ref),
+      kind: "download",
+      options: op.options,
+    });
+    return rewrap(op.key, ref, pointer, blob);
+  };
+
   /**
    * Re-report a pointer's logical (content) size and content-hash `etag`, and
    * hide the internal metadata fields, without fetching the blob. Used by
@@ -294,27 +357,32 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     );
   };
 
-  /** Build the caller-facing {@link StoredFile} for a followed pointer. */
-  const rewrap = (
-    key: string,
-    ref: string,
-    pointer: StoredFile,
-    blob: StoredFile
-  ): StoredFile =>
-    createStoredFile(
-      {
-        // The content hash, not the pointer's own (always-empty-body) ETag.
-        etag: ref,
-        key,
-        lastModified: pointer.lastModified,
-        metadata: stripInternalMeta(pointer.metadata ?? {}),
-        // The blob's size is the content length (the range length for a ranged
-        // read); the pointer's own size is always 0.
-        size: blob.size,
-        type: pointer.type,
-      },
-      { factory: () => blob.stream(), kind: "stream" }
-    );
+  /**
+   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
+   * return it from a listing — can't be told apart from a plain object, so its
+   * size and etag are left as stored, but its body still follows the pointer
+   * (a download back through this plugin), so `text()` / `stream()` return the
+   * content rather than the empty pointer.
+   */
+  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
+    file.metadata === undefined
+      ? createStoredFile(
+          {
+            etag: file.etag,
+            key: file.key,
+            lastModified: file.lastModified,
+            size: file.size,
+            type: file.type,
+          },
+          {
+            factory: () =>
+              deferredStream(() =>
+                download({ key: file.key, kind: "download" }, next)
+              ),
+            kind: "stream",
+          }
+        )
+      : logical(file, next);
 
   /**
    * Hide blob objects from listings so the store doesn't pollute `list()` —
@@ -336,7 +404,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     }
     const marker = `${store}/`;
     const items = result.items.flatMap((file) =>
-      file.key.startsWith(marker) ? [] : [logical(file, next)]
+      file.key.startsWith(marker) ? [] : [listed(file, next)]
     );
     const prefixes = result.prefixes?.filter(
       (entry) => !entry.startsWith(marker)
@@ -411,43 +479,6 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     };
   };
 
-  const download = async (
-    op: Extract<FilesOperation, { kind: "download" }>,
-    next: PluginNext
-  ): Promise<StoredFile> => {
-    if (op.options?.range) {
-      // A range can't be applied to the empty pointer, so read its metadata
-      // with a `head`, then apply the range to the verbatim blob.
-      const pointer = await next({
-        key: op.key,
-        kind: "head",
-        options: op.options,
-      });
-      const ref = pointer.metadata?.[META.ref];
-      if (ref === undefined) {
-        return next(op);
-      }
-      const blob = await next({
-        key: blobKeyOf(ref),
-        kind: "download",
-        options: op.options,
-      });
-      return rewrap(op.key, ref, pointer, blob);
-    }
-    const pointer = await next(op);
-    const ref = pointer.metadata?.[META.ref];
-    // No marker → an object we didn't write; hand it straight back.
-    if (ref === undefined) {
-      return pointer;
-    }
-    const blob = await next({
-      key: blobKeyOf(ref),
-      kind: "download",
-      options: op.options,
-    });
-    return rewrap(op.key, ref, pointer, blob);
-  };
-
   // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
   // re-narrows the result per call; every branch below resolves with the value
   // the matching verb's `next` produces (or a same-typed rewrite of it), so
@@ -502,13 +533,17 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       case "url": {
         throw new FilesError(
           "Provider",
-          "dedup: url() would return a link to the pointer (an empty placeholder), not the content; download through the Files instance instead"
+          "dedup: url() would return a link to the pointer (an empty placeholder), not the content; download through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       }
       case "signedUploadUrl": {
         throw new FilesError(
           "Provider",
-          "dedup: signedUploadUrl() bypasses content-addressing (the client writes directly, never through the plugin); upload through the Files instance instead"
+          "dedup: signedUploadUrl() bypasses content-addressing (the client writes directly, never through the plugin); upload through the Files instance instead",
+          undefined,
+          { permanent: true }
         );
       }
       // copy / move relocate the pointer (sharing the blob); delete drops it;

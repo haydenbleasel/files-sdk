@@ -442,7 +442,9 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
       if (onUnknown === "reject") {
         throw new FilesError(
           "Provider",
-          `contentType: could not identify the contents of "${op.key}" from its signature`
+          `contentType: could not identify the contents of "${op.key}" from its signature`,
+          undefined,
+          { permanent: true }
         );
       }
       return { ...op, body };
@@ -457,7 +459,9 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
     if (onMismatch === "reject" && declared !== GENERIC) {
       throw new FilesError(
         "Provider",
-        `contentType: "${op.key}" is declared "${declared}" but its bytes are "${sniffed}"`
+        `contentType: "${op.key}" is declared "${declared}" but its bytes are "${sniffed}"`,
+        undefined,
+        { permanent: true }
       );
     }
     return { ...op, body, options: { ...op.options, contentType: sniffed } };
@@ -469,7 +473,9 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
       signedUploadUrl: () => {
         throw new FilesError(
           "Provider",
-          "contentType: signedUploadUrl() bypasses magic-byte sniffing (the client uploads directly, never through the plugin); upload through the Files instance to enforce it"
+          "contentType: signedUploadUrl() bypasses magic-byte sniffing (the client uploads directly, never through the plugin); upload through the Files instance to enforce it",
+          undefined,
+          { permanent: true }
         );
       },
       upload: async (op, next) => {

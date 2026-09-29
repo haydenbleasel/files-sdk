@@ -36,7 +36,7 @@ Every snapshot is a plain object **copy**, not a re-upload:
 2. Otherwise it copies the current object to `"<prefix>/<key>/<versionId>"` - the default prefix is `.versions`, so a version of `photos/a.jpg` lands at `.versions/photos/a.jpg/<versionId>`.
 3. The live write then proceeds as normal.
 
-The `versionId` is the time the snapshot was taken and the object's own last-modified time (both zero-padded so ids sort chronologically), plus a slug of its ETag, so versions list newest-first and stay unique per change. Ordering by snapshot time rather than the object's is deliberate: a native move (the local filesystem, memory, FTP, SFTP) carries the source's older last-modified time onto the destination, so the object's time can disagree with the order the key actually changed in. The snapshot time comes from the app's clock, so instances writing the same key need reasonably synchronized clocks. Version ids written before this format still parse and sort ahead of newer ones.
+The `versionId` is the time the snapshot was taken and the object's own last-modified time (both zero-padded so ids sort chronologically), plus a slug of its ETag, so versions list newest-first and stay unique per change. Ordering by snapshot time rather than the object's is deliberate: a native move (the local filesystem, memory, FTP, SFTP) carries the source's older last-modified time onto the destination, so the object's time can disagree with the order the key actually changed in. The snapshot time comes from the app's clock, so instances writing the same key need reasonably synchronized clocks. Version ids written before this format still parse and sort as older than every newer one.
 
 Because snapshots are copies of whatever is **already stored**, the plugin composes cleanly with the transforming plugins: a version of an encrypted object is still encrypted (the wrapped key rides along in its metadata) and restores to readable plaintext.
 
@@ -134,10 +134,13 @@ The order matters. With versioning outermost, a `delete` is snapshotted **and** 
 
 The `ignore` matters too. A `purge()` is a real `delete` of the trash key, which versioning would otherwise snapshot into `.versions/.trash/…` - a copy nothing lists and nothing reclaims. Ignoring the trash prefix keeps a purge a purge.
 
+With a `limit`, the versions it prunes are deleted through `softDelete()` too, so they land in the trash under `.trash/.versions/…`, show up in `trashed()` (as `.versions/…` keys), and take up storage until you `purge()` them.
+
 ## Things to keep in mind
 
 - **A `head` + `copy` per overwrite/delete.** Snapshotting adds two adapter round-trips to writes that hit an existing object; first writes cost only the `head`. It's the price of keeping history.
 - **Direct presigned writes bypass it.** A client `PUT` to a [`signedUploadUrl`](/docs/api/signed-upload-url) never runs the plugin, so no snapshot is taken. Write through the instance to version. It's a safety net, not a security control, so - unlike [`validation()`](/docs/plugins/validation) - it doesn't fail closed.
 - **`move` snapshots only its destination.** A rename relocates the bytes rather than destroying them, so the source isn't snapshotted; the data lives on at the new key. A `copy` or `move` of a key onto itself changes nothing, so it takes no snapshot.
+- **[Conditional](/docs/conditional-operations) writes are refused.** A snapshot can't share the native compare-and-set, so conditional uploads, deletes, and copies throw before any I/O, and [`files.capabilities`](/docs/capabilities) reports those `conditional` flags as `false`. Exact reads still pass through.
 - **History is unbounded** unless you set `limit`.
 - **Don't store your own data under the version prefix.** Writes there are passed through un-versioned and hidden from `list()`.

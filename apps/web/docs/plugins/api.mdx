@@ -22,7 +22,7 @@ capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
 
 Narrows what the instance reports through [`files.capabilities`](/docs/capabilities). The getter starts from the adapter's snapshot and folds every installed plugin's `capabilities` hook over it in `plugins` order, so each hook receives the snapshot as the earlier plugins left it. [`files.readonly()`](/docs/readonly) clones carry the plugins, so they report the same result.
 
-Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported` and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes), and [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported` and every `conditional` flag as `false`.
+Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported` and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes) along with `multipart` (they refuse resumable uploads), and [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported` and every `conditional` flag as `false`. The plugins that veto [conditional operations](/docs/conditional-operations) clear exactly the flags they refuse: [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) every `conditional` flag, [`versioning()`](/docs/plugins/versioning) all but `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) `conditional.delete`.
 
 ```ts lineNumbers
 import { handlers, type FilesPlugin } from "files-sdk";
@@ -51,7 +51,7 @@ The discriminated union handed to `wrap` - one family per public verb, carrying 
 ## handlers
 
 ```ts
-function handlers(map: PluginHandlers): FilesPlugin["wrap"];
+function handlers(map: PluginHandlers): NonNullable<FilesPlugin["wrap"]>;
 ```
 
 Builds a [`wrap`](/docs/plugins#wrap-intercepting-operations) from a per-verb map. Each handler is typed to its own operation and a same-kind `next`; verbs absent from the map pass through untouched.
@@ -91,9 +91,9 @@ const mirror: FilesPlugin = {
 ## createFiles
 
 ```ts
-function createFiles(
-  opts: FilesOptions & { plugins?: FilesPlugin[] }
-): Files & ExtensionsOf<plugins>;
+function createFiles<A extends Adapter, const P extends readonly FilesPlugin[]>(
+  opts: FilesOptions<A> & { plugins?: P }
+): Files<A> & ExtensionsOf<P>;
 ```
 
 Constructs a `Files` instance whose type includes every plugin's [`extend`](/docs/plugins#extend-new-methods) surface. Runtime-identical to `new Files(opts)` - it exists only to surface the added methods on the type.

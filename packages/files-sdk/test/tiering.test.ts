@@ -670,11 +670,98 @@ describe("tiering — instance defaults reach the cold tier", () => {
   });
 });
 
+describe("tiering — per-call options reach a cross-tier copy", () => {
+  test("a per-call timeout cuts off a hung upload to the destination tier", async () => {
+    const cold: Adapter = {
+      ...fakeAdapter(),
+      upload: (_key, _body, opts) =>
+        // oxlint-disable-next-line promise/avoid-new -- hang-until-abort needs callback interop.
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () =>
+            reject(opts.signal?.reason)
+          );
+        }),
+    };
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [tiering({ cold, route: prefixRoute })],
+    });
+    await files.upload("a.txt", "hot bytes");
+    // The copy's own `timeout` must govern the upload leg too, not just the
+    // source read — otherwise the call hangs on the cold tier forever.
+    const err = await files
+      .copy("a.txt", "cold/a.txt", { timeout: 20 })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).timedOut).toBe(true);
+  });
+
+  test("a fallback copy threads its options into the destination eviction", async () => {
+    const seen: (number | undefined)[] = [];
+    const cold = fakeAdapter();
+    const hot = fakeAdapter();
+    const files = createFiles({
+      adapter: {
+        ...hot,
+        delete: (key, opts) => {
+          seen.push(opts?.signal === undefined ? undefined : 1);
+          return hot.delete(key, opts);
+        },
+      },
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    await files.upload("cold/a.txt", "x");
+    seen.length = 0;
+    await files.copy("cold/a.txt", "cold/b.txt", { timeout: 5000 });
+    // The stale-copy eviction on the hot tier ran under the call's timeout.
+    expect(seen).toEqual([1]);
+  });
+});
+
 describe("tiering — copy with a missing source under fallback", () => {
   test("surfaces the provider NotFound", async () => {
     const { files } = harness(sizeRoute, { fallback: true });
     // locate() finds nothing, so the routed-tier copy throws the fake's NotFound.
     await expect(files.copy("ghost", "dest")).rejects.toThrow(/not found/u);
+  });
+});
+
+describe("tiering — capabilities", () => {
+  test("stops advertising the conditional primitives it vetoes", () => {
+    const adapter: Adapter = {
+      ...fakeAdapter(),
+      conditional: {
+        copy: {
+          atomicSourceDestination: true,
+          destinationCreate: true,
+          destinationReplace: true,
+          run: () => Promise.resolve(),
+          sourceEtag: true,
+        },
+        create: () => Promise.reject(new Error("unused")),
+        delete: () => Promise.resolve(),
+        exactRead: () => Promise.reject(new Error("unused")),
+        replace: () => Promise.reject(new Error("unused")),
+      },
+    };
+    expect(createFiles({ adapter }).capabilities.conditional.create).toBe(true);
+    const files = createFiles({
+      adapter,
+      plugins: [tiering({ cold: fakeAdapter(), route: prefixRoute })],
+    });
+    expect(files.capabilities.conditional).toEqual({
+      copy: {
+        atomicSourceDestination: false,
+        destinationCreate: false,
+        destinationReplace: false,
+        sourceEtag: false,
+      },
+      create: false,
+      delete: false,
+      exactRead: false,
+      multipart: { create: false, replace: false },
+      replace: false,
+    });
   });
 });
 

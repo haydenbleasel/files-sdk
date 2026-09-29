@@ -43,7 +43,9 @@ export class ValidationError extends FilesError {
   readonly reason: ValidationReason;
 
   constructor(reason: ValidationReason, message: string) {
-    super("Provider", message);
+    // Permanent: the same write can only fail the same rule again, so it's
+    // never retried — or re-sent by `failover()` to a backend that skips it.
+    super("Provider", message, undefined, { permanent: true });
     this.name = "ValidationError";
     this.reason = reason;
   }
@@ -279,7 +281,9 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
         if (hasBodyRule) {
           throw new FilesError(
             "Provider",
-            "validation: signedUploadUrl() bypasses size and type checks (the client uploads directly, never through the plugin); upload through the Files instance to enforce them"
+            "validation: signedUploadUrl() bypasses size and type checks (the client uploads directly, never through the plugin); upload through the Files instance to enforce them",
+            undefined,
+            { permanent: true }
           );
         }
         return next(op);

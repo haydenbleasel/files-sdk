@@ -385,6 +385,26 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
+    // Advertise what the wrap refuses: every conditional primitive is vetoed
+    // (retrying on another backend can't preserve one native
+    // compare-and-set), so callers branching on `files.capabilities` don't
+    // plan one.
+    capabilities: (caps) => ({
+      ...caps,
+      conditional: {
+        ...caps.conditional,
+        copy: {
+          atomicSourceDestination: false,
+          destinationCreate: false,
+          destinationReplace: false,
+          sourceEtag: false,
+        },
+        create: false,
+        delete: false,
+        exactRead: false,
+        replace: false,
+      },
+    }),
     extend: (files) => {
       const { defaults } = files;
       secondaryRunners = secondaries.map((adapter) =>
