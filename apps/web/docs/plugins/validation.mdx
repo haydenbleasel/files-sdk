@@ -40,11 +40,11 @@ Every option is independent - set any combination, and with none set the plugin 
 
 ### Sizes
 
-`maxSize` and `minSize` are byte counts. The check needs the body's length, so for an unknown-length stream the plugin buffers the body to measure it (the same trade-off the [buffering plugins](/docs/plugins/compression) make). Known-length bodies - strings, `Uint8Array`, `Blob`, `ArrayBuffer` - are measured without a copy.
+`maxSize` and `minSize` are byte counts. Known-length bodies - strings (measured in UTF-8 bytes), `Uint8Array`, `ArrayBuffer`, `Blob`, and `File` - are measured without being read or copied and forwarded as-is, so a multi-gigabyte `File` over `maxSize` is rejected without being loaded into memory. Only an unknown-length stream has to be buffered to measure it (the same trade-off the [buffering plugins](/docs/plugins/compression) make).
 
 ### Types
 
-Each `allowedTypes` entry is an exact type (`"image/png"`) or a group wildcard (`"image/*"`). Matching is case-insensitive and ignores any `; charset=...` parameter. The type checked is the one the object will be stored as: `options.contentType` if you pass it, otherwise a `Blob`/`File`'s own `.type`, otherwise the type inferred from the key's extension.
+Each `allowedTypes` entry is an exact type (`"image/png"`) or a group wildcard (`"image/*"`). Matching is case-insensitive and ignores any `; charset=...` parameter. The type checked is `options.contentType` if you pass it, otherwise a `Blob`/`File`'s own `.type`, otherwise the type inferred from the key's extension - and the plugin forwards that checked type as the upload's `contentType`, so it's the type the object is stored as.
 
 ```ts lineNumbers
 validation({ allowedTypes: ["image/*"] });
@@ -85,11 +85,20 @@ try {
 
 ## Ordering
 
-Put `validation()` **first** so it vets the caller's original key and bytes before anything downstream transforms them:
+Plugins run in array order, `plugins[0]` outermost. Two neighbours need to sit in a particular place relative to `validation()`:
 
 ```ts
-plugins: [validation({ maxSize }), compression(), encryption(key)];
+plugins: [
+  contentType(),
+  validation({ maxSize, allowedTypes, key }),
+  versioning(),
+  compression(),
+  encryption(key),
+];
 ```
+
+- **[`contentType()`](/docs/plugins/content-type) goes before it.** `validation()` checks the type the client _claims_. A `contentType()` placed after it can still relabel the upload from its bytes - a `.png` that's really HTML becomes `text/html` - after `allowedTypes` has already approved `image/png`. With `contentType()` first, `validation()` checks the corrected type and rejects it.
+- **[`versioning()`](/docs/plugins/versioning), [`softDelete()`](/docs/plugins/soft-delete), [`dedup()`](/docs/plugins/dedup), and body transforms go after it.** Those plugins' own housekeeping writes (`.versions/...`, `.trash/...`, `.dedup/...`, and dedup's empty pointer bodies) only pass through the plugins after them. Put `validation()` after them and a rule like `key: /^[\w.-]+$/` or `minSize: 1` rejects those internal writes, so every overwrite, delete, or upload fails. In front of them, it vets only the caller's own keys and bytes.
 
 ## Things to keep in mind
 
@@ -97,7 +106,7 @@ plugins: [validation({ maxSize }), compression(), encryption(key)];
 `signedUploadUrl()` hands upload capability to a client that writes **directly** to the store, bypassing the plugin. When a size or type rule is set, minting one would be a silent hole - so `signedUploadUrl()` **fails closed** and throws. (A key-only policy still mints the URL, after checking the requested key.)
 :::
 
-- **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only guards writes; it transforms nothing, so there's nothing to reverse on download.
+- **Reads and `url()` pass straight through; `copy` and `move` only have their destination key checked.** The plugin only guards writes; it transforms nothing, so there's nothing to reverse on download.
 - **It stores no metadata.** Nothing rides along on the object, so a validated bucket is indistinguishable from an unvalidated one - safe to enable or remove at any time.
 - **Size rules buffer unknown-length streams.** Measuring a stream means draining it, which is incompatible with [resumable uploads](/docs/resumable). Key and type rules never touch the body, so a key/type-only policy stays fully streaming.
-- **It's a guard, not a sanitizer.** It vets the _declared_ type and the key; it doesn't sniff magic bytes or rewrite anything. Pair it with [`contentType()`](/docs/plugins/content-type) if you don't trust the client-declared type.
+- **It's a guard, not a sanitizer.** It vets the _declared_ type and the key; it doesn't sniff magic bytes. Pair it with [`contentType()`](/docs/plugins/content-type), placed **before** it, if you don't trust the client-declared type.

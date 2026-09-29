@@ -27,9 +27,12 @@ export type OnMismatch = "correct" | "reject";
  * What {@link contentType} does when the bytes match no known signature, so the
  * type can't be positively identified.
  *
- * - `"trust"` (the default) — keep the declared/inferred type. Sniffing only
+ * - `"trust"` (the default) — keep the declared type. Sniffing only
  *   overrides types it's sure about, so an unrecognized but legitimate body
- *   (`.csv`, `.docx`, arbitrary binary) keeps its declared type untouched.
+ *   (`.csv`, `.docx`, arbitrary binary) keeps its declared type untouched. An
+ *   explicit `contentType` or a `Blob`'s own `.type` is stored as-is; with
+ *   neither, the adapter's default applies — a type implied only by the key's
+ *   extension is never stored on its own say-so.
  * - `"reject"` — throw. A strict allowlist-by-signature posture: nothing lands
  *   unless its bytes are recognized.
  */
@@ -157,22 +160,20 @@ const HTML_TAGS = [
   "a",
 ];
 
-/**
- * Detect active text-based content — the security-relevant case the binary
- * table can't cover, since HTML and SVG have no fixed magic bytes. Skips a BOM
- * and leading whitespace, then matches the opening tag.
- */
-const sniffText = (bytes: Uint8Array): string | undefined => {
-  let i = matchesAt(bytes, 0, UTF8_BOM) ? UTF8_BOM.length : 0;
-  // SAFETY: the loop guard checks `i < bytes.length` before the index is read.
-  while (i < bytes.length && WHITESPACE.has(bytes[i] as number)) {
+/** Index of the first non-whitespace character in `text` at or after `from`. */
+const skipWhitespace = (text: string, from: number): number => {
+  let i = from;
+  // SAFETY: the loop guard checks `i < text.length` before the index is read,
+  // and every character of an `asciiLower` string is a single code unit.
+  while (i < text.length && WHITESPACE.has(text.codePointAt(i) as number)) {
     i += 1;
   }
-  if (bytes[i] !== LESS_THAN) {
-    return;
-  }
-  const head = asciiLower(bytes, i, 32);
-  if (head.startsWith("<!doctype html") || head.startsWith("<!--")) {
+  return i;
+};
+
+/** The type a markup opening at `head` announces: HTML or SVG, else unknown. */
+const markupType = (head: string): string | undefined => {
+  if (head.startsWith("<!doctype html")) {
     return "text/html";
   }
   if (opensTag(head, "svg")) {
@@ -181,12 +182,56 @@ const sniffText = (bytes: Uint8Array): string | undefined => {
   if (HTML_TAGS.some((tag) => opensTag(head, tag))) {
     return "text/html";
   }
-  if (head.startsWith("<?xml")) {
-    // An XML prolog can precede an `<svg>` root; scan a wider window for it.
-    return asciiLower(bytes, i, SNIFF_BYTES).includes("<svg")
-      ? "image/svg+xml"
-      : "application/xml";
+};
+
+/**
+ * Detect active text-based content — the security-relevant case the binary
+ * table can't cover, since HTML and SVG have no fixed magic bytes. Skips a BOM
+ * and leading whitespace, then matches the opening tag.
+ *
+ * Leading `<!-- … -->` comments are skipped and whatever follows them decides
+ * the type, so an SVG or HTML document that opens with a comment is still
+ * recognized as what it is. A comment followed by nothing recognizable is
+ * HTML (the WHATWG sniffing rule) — unless `xmlDeclared`, when the caller has
+ * declared an XML-family type and a leading comment is ordinary XML.
+ */
+const sniffText = (
+  bytes: Uint8Array,
+  xmlDeclared: boolean
+): string | undefined => {
+  // One character per byte, so indexes line up with the byte offsets.
+  const text = asciiLower(bytes, 0, SNIFF_BYTES);
+  let i = skipWhitespace(
+    text,
+    matchesAt(bytes, 0, UTF8_BOM) ? UTF8_BOM.length : 0
+  );
+  if (text.codePointAt(i) !== LESS_THAN) {
+    return;
   }
+  if (text.startsWith("<?xml", i)) {
+    // An XML prolog can precede an `<svg>` root; scan the window for it.
+    return text.includes("<svg", i) ? "image/svg+xml" : "application/xml";
+  }
+  if (!text.startsWith("<!--", i)) {
+    return markupType(text.slice(i, i + 32));
+  }
+  while (i !== -1 && text.startsWith("<!--", i)) {
+    const close = text.indexOf("-->", i + 4);
+    i = close === -1 ? -1 : skipWhitespace(text, close + 3);
+  }
+  const afterComments =
+    i === -1 ? undefined : markupType(text.slice(i, i + 32));
+  return afterComments ?? (xmlDeclared ? "application/xml" : "text/html");
+};
+
+/** Every byte-level sniff; `xmlDeclared` only matters for comment-led text. */
+const sniff = (bytes: Uint8Array, xmlDeclared: boolean): string | undefined => {
+  for (const { segments, type } of BINARY_SIGNATURES) {
+    if (segments.every(([offset, sig]) => matchesAt(bytes, offset, sig))) {
+      return type;
+    }
+  }
+  return sniffText(bytes, xmlDeclared);
 };
 
 /**
@@ -195,14 +240,8 @@ const sniffText = (bytes: Uint8Array): string | undefined => {
  * first, then falls back to a text scan for HTML/SVG/XML. Exported so callers
  * can sniff outside the plugin; only the first {@link SNIFF_BYTES} bytes matter.
  */
-export const detectContentType = (bytes: Uint8Array): string | undefined => {
-  for (const { segments, type } of BINARY_SIGNATURES) {
-    if (segments.every(([offset, sig]) => matchesAt(bytes, offset, sig))) {
-      return type;
-    }
-  }
-  return sniffText(bytes);
-};
+export const detectContentType = (bytes: Uint8Array): string | undefined =>
+  sniff(bytes, false);
 
 /** Strip any `; charset=…` parameter and normalize for comparison. */
 const baseType = (value: string): string => {
@@ -213,9 +252,32 @@ const baseType = (value: string): string => {
 };
 
 /**
- * The type the object would be stored as without sniffing: an explicit
- * `contentType` wins, then a `Blob`/`File`'s own `.type`, then the type the
- * key's extension implies (the SDK's own fallback).
+ * Registered spellings of a type the sniffer reports under another name — the
+ * `mime` table calls `.ico` `image/vnd.microsoft.icon`, the sniffer (and most
+ * browsers) `image/x-icon`.
+ */
+const ALIASES = new Map([["image/vnd.microsoft.icon", "image/x-icon"]]);
+
+/** Whether `type` (a base type) is XML or an XML-based format, SVG included. */
+const isXmlFamily = (type: string): boolean =>
+  type === "application/xml" || type === "text/xml" || type.endsWith("+xml");
+
+/**
+ * Whether a declared base type already agrees with the sniffed one: the same
+ * type or an alias of it, or — since a bare `<?xml` prolog only proves "some
+ * XML" — any XML-family type (`application/rss+xml`, `image/svg+xml`, …)
+ * against a sniffed `application/xml`.
+ */
+const agrees = (declared: string, sniffed: string): boolean =>
+  (ALIASES.get(declared) ?? declared) === sniffed ||
+  (sniffed === "application/xml" && isXmlFamily(declared));
+
+/**
+ * The type the caller claims for the object: an explicit `contentType` wins,
+ * then a `Blob`/`File`'s own `.type`, then the type the key's extension
+ * implies. The SDK core never infers from the key (it stores the adapter's
+ * default instead), so the plugin forwards this type only once the bytes
+ * confirm it.
  */
 const declaredType = (body: Body, key: string, declared?: string): string => {
   if (declared !== undefined) {
@@ -334,8 +396,18 @@ const peekStream = async (
  * prefix is read, then replayed). Reads, `url()`, `copy`, and `move` pass
  * straight through — there's nothing to undo.
  *
- * Place it **first**, before any body-transforming plugin, so it sniffs the
- * caller's original bytes: `plugins: [contentType(), compression(), encryption(key)]`.
+ * Place it **first** — before `validation()` and before any body-transforming
+ * plugin — so it sniffs the caller's original bytes and every plugin after it
+ * sees the corrected type: `plugins: [contentType(), validation({ allowedTypes }),
+ * compression(), encryption(key)]`. Plugins run in array order, so the reverse
+ * (`[validation(), contentType()]`) is unsafe: `validation()` would approve the
+ * type the client *claimed* (say `image/png` from `avatar.png`), and
+ * `contentType()` would then relabel the upload — to `text/html`, past your
+ * allowlist.
+ *
+ * When the bytes confirm the claimed type, that type is forwarded to the
+ * adapter too, so a `photo.png` of real PNG bytes is stored as `image/png`
+ * rather than the adapter's default.
  *
  * `signedUploadUrl()` hands upload capability to a client that writes directly,
  * bypassing the sniff, so it **fails closed** and throws.
@@ -363,7 +435,9 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
 
   /** Decide the op to forward (or throw) given the sniffed prefix. */
   const reconcile = (op: UploadOp, head: Uint8Array, body: Body): UploadOp => {
-    const sniffed = detectContentType(head);
+    const claimed = declaredType(op.body, op.key, op.options?.contentType);
+    const declared = baseType(claimed);
+    const sniffed = sniff(head, isXmlFamily(declared));
     if (sniffed === undefined) {
       if (onUnknown === "reject") {
         throw new FilesError(
@@ -373,11 +447,12 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
       }
       return { ...op, body };
     }
-    const declared = baseType(
-      declaredType(op.body, op.key, op.options?.contentType)
-    );
-    if (declared === sniffed) {
-      return { ...op, body };
+    if (agrees(declared, sniffed)) {
+      // Forward the confirmed type — params and all — so it's what gets
+      // stored: a type implied only by the key's extension would otherwise
+      // fall back to the adapter's default (`photo.png` stored as
+      // octet-stream).
+      return { ...op, body, options: { ...op.options, contentType: claimed } };
     }
     if (onMismatch === "reject" && declared !== GENERIC) {
       throw new FilesError(

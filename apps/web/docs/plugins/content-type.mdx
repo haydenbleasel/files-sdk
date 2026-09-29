@@ -1,5 +1,5 @@
 ---
-title: contentType
+title: content-type
 description: Decide each upload's Content-Type from its bytes, not the client's claim - magic-byte sniffing stops mislabeled HTML or SVG being stored as an image.
 ---
 
@@ -25,7 +25,7 @@ The sniffer is deliberately scoped to where a verdict is unambiguous and useful:
 
 - **Images** — PNG, JPEG, GIF, BMP, WebP, TIFF, and ICO, by their magic bytes.
 - **PDF** — the `%PDF` signature.
-- **HTML, SVG, and XML** — the security-relevant part. These are text, so they have no fixed magic bytes; a leading text scan (skipping a BOM and whitespace) catches `<!doctype html>`, `<html>`, `<script>`, `<svg>`, `<?xml>`, and friends.
+- **HTML, SVG, and XML** — the security-relevant part. These are text, so they have no fixed magic bytes; a leading text scan (skipping a BOM, whitespace, and any leading `<!-- … -->` comments) catches `<!doctype html>`, `<html>`, `<script>`, `<svg>`, `<?xml>`, and friends. A comment with nothing recognizable after it counts as HTML, unless the declared type is XML-based.
 
 Container formats whose magic bytes are shared by many real types — ZIP (which also backs `.docx`, `.jar`, `.epub`), gzip, and the `ftyp` audio/video family — are intentionally **not** sniffed: relabeling them would do more harm than good. Bodies it can't identify are handled by [`onUnknown`](#onunknown).
 
@@ -45,7 +45,9 @@ When the bytes disagree with the type the caller declared (or that the key's ext
 - **`"correct"`** (default) — overwrite the stored `Content-Type` with the sniffed one, so the object is always stored as what it actually _is_. The mislabeled file still lands, but under its true type.
 - **`"reject"`** — throw, so the upload never reaches the adapter. The security-hardening choice: a `.png` whose bytes are HTML is refused outright.
 
-A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's left **exactly** as you set it, so a `text/html; charset=utf-8` keeps its `charset` parameter.
+A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's stored **exactly** as declared, so a `text/html; charset=utf-8` keeps its `charset` parameter — including a type implied only by the key's extension, so a `photo.png` of real PNG bytes is stored as `image/png` rather than the adapter's default.
+
+Agreement allows for more than one spelling of the same thing: `image/vnd.microsoft.icon` (the registered `.ico` type) agrees with the sniffed `image/x-icon`, and since an `<?xml` prolog only proves "some XML", any XML-based type — `application/rss+xml`, `application/gpx+xml`, `image/svg+xml`, `text/xml`, … — agrees with a sniffed `application/xml`.
 
 :::warning
 `onMismatch: "correct"` makes the stored type _honest_; it does not make a dangerous file safe. Detecting that an upload is really HTML and storing it as `text/html` still leaves it executable if you serve it inline. To **block** mislabeled active content, use `onMismatch: "reject"`; to serve user uploads safely, pair this with a forced `attachment` disposition on [`url()`](/docs/api/url).
@@ -55,16 +57,25 @@ A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_
 
 When the bytes match no known signature:
 
-- **`"trust"`** (default) — keep the declared/inferred type. Sniffing only overrides types it's sure about, so a legitimate `.csv`, `.docx`, or arbitrary binary keeps its declared type untouched.
+- **`"trust"`** (default) — keep the declared type. Sniffing only overrides types it's sure about, so a legitimate `.csv`, `.docx`, or arbitrary binary keeps its declared type untouched. An explicit `contentType` or a `Blob`'s own `.type` is stored as-is; with neither, the adapter's default applies — a type implied only by the key's extension is never stored on its own say-so.
 - **`"reject"`** — throw. A strict allowlist-by-signature posture: nothing lands unless its bytes are recognized.
 
 ## Ordering
 
-Put `contentType()` **first**, before any body-transforming plugin, so it sniffs the caller's original bytes rather than compressed or encrypted ones:
+Plugins run in array order, `plugins[0]` outermost. Put `contentType()` **first** — before [`validation()`](/docs/plugins/validation) and before any body-transforming plugin — so it sniffs the caller's original bytes rather than compressed or encrypted ones, and every plugin after it sees the corrected type:
 
 ```ts
-plugins: [contentType(), compression(), encryption(key)];
+plugins: [
+  contentType(),
+  validation({ allowedTypes }),
+  compression(),
+  encryption(key),
+];
 ```
+
+:::warning
+The reverse order, `[validation(), contentType()]`, lets mislabeled uploads through. `validation()` approves the type the client _claims_ (say `image/png`, from `avatar.png`), then `contentType()` relabels the upload from its bytes — to `text/html`, after the allowlist has already passed it. With `contentType()` first, `validation()` checks the corrected type and rejects it.
+:::
 
 ## Things to keep in mind
 
@@ -72,4 +83,4 @@ plugins: [contentType(), compression(), encryption(key)];
 - **It writes no metadata.** The verdict lands in the object's own `Content-Type`; nothing rides along in `metadata`, so a sniffed bucket is indistinguishable from an un-sniffed one — safe to enable or remove at any time.
 - **Reads, `url()`, `copy`, and `move` pass straight through.** The plugin only acts on `upload`; it stores the right type up front, so there's nothing to undo on the way back out.
 - **`signedUploadUrl()` fails closed.** A presigned upload writes directly to the store, bypassing the sniff, so minting one would be a silent hole — it throws. Upload through the `Files` instance to enforce sniffing.
-- **It's a sniffer, not a validator.** It decides the stored type; it doesn't enforce a size limit or an allowed-type list. Pair it with [`validation()`](/docs/plugins/validation) when you want both.
+- **It's a sniffer, not a validator.** It decides the stored type; it doesn't enforce a size limit or an allowed-type list. Pair it with [`validation()`](/docs/plugins/validation), placed **after** it, when you want both.

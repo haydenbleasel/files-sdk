@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
+import { contentType } from "../src/content-type/index.js";
+import { dedup } from "../src/dedup/index.js";
 import { Files, FilesError } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
+import { softDelete } from "../src/soft-delete/index.js";
 import { validation, ValidationError } from "../src/validation/index.js";
 import type { ValidationOptions } from "../src/validation/index.js";
+import { versioning } from "../src/versioning/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const withValidation = (
@@ -18,6 +22,11 @@ const streamOf = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
       controller.close();
     },
   });
+
+const typeOf = async (files: Files, key: string): Promise<string> => {
+  const file = await files.head(key);
+  return file.type;
+};
 
 const caught = async (promise: Promise<unknown>): Promise<unknown> => {
   try {
@@ -65,6 +74,81 @@ describe("validation plugin — size", () => {
     const file = await files.download("s");
     expect(await file.text()).toBe(text);
   });
+
+  test("rejects an oversize Blob from its size, without reading it", async () => {
+    let read = false;
+    // A stand-in for a huge on-disk File: it reports a size but every read
+    // path is booby-trapped, so the check must not buffer it.
+    class Huge extends Blob {
+      readonly claimed = 5 * 1024 ** 3;
+      override get size(): number {
+        return this.claimed;
+      }
+      override arrayBuffer(): Promise<ArrayBuffer> {
+        read = true;
+        return super.arrayBuffer();
+      }
+      override stream(): ReturnType<Blob["stream"]> {
+        read = true;
+        return super.stream();
+      }
+    }
+    const files = withValidation({ maxSize: 10 * 1024 * 1024 });
+    await expect(files.upload("big.bin", new Huge(["x"]))).rejects.toThrow(
+      /over the 10485760-byte limit/u
+    );
+    expect(read).toBe(false);
+  });
+
+  test("forwards a known-length body as-is, keeping the adapter's type default", async () => {
+    let seen: unknown;
+    const adapter = fakeAdapter();
+    const spy: Adapter = {
+      ...adapter,
+      upload: (key, body, opts) => {
+        seen = { body, contentType: opts?.contentType };
+        return adapter.upload(key, body, opts);
+      },
+    };
+    const files = withValidation({ maxSize: 100 }, spy);
+    const blob = new Blob(["hi"], { type: "image/png" });
+    await files.upload("a", blob);
+    expect(seen).toEqual({ body: blob, contentType: undefined });
+    await files.upload("b", "hi");
+    expect(seen).toEqual({ body: "hi", contentType: undefined });
+  });
+
+  test("measures strings in UTF-8 bytes", async () => {
+    const files = withValidation({ maxSize: 9, minSize: 9 });
+    // 1 + 2 + 3 + 3 (a lone surrogate encodes as U+FFFD) = 9 bytes; the emoji
+    // pair alone is 4.
+    await files.upload("a", "a\u00E9\u20AC\uD800");
+    await files.upload("b", "a\u00E9\u{1F600}\u0000\u0000");
+    await expect(files.upload("c", "\u{1F600}")).rejects.toThrow(
+      /is 4 bytes, under the 9-byte minimum/u
+    );
+    const stored = await files.download("a");
+    expect(await stored.text()).toBe("a\u00E9\u20AC\uFFFD");
+  });
+
+  test("buffers a Blob that can't report a finite size, keeping its type", async () => {
+    class Unsized extends Blob {
+      readonly claimed = Number.NaN;
+      override get size(): number {
+        return this.claimed;
+      }
+    }
+    const files = withValidation({ maxSize: 4 });
+    await expect(
+      files.upload("big", new Unsized(["too long"]))
+    ).rejects.toThrow(/is 8 bytes, over the 4-byte limit/u);
+    await files.upload("ok", new Unsized(["tiny"], { type: "text/csv" }));
+    const file = await files.download("ok");
+    expect(await file.text()).toBe("tiny");
+    expect(file.type).toBe("text/csv");
+    await files.upload("untyped", new Unsized(["tiny"]));
+    expect(await typeOf(files, "untyped")).toBe("application/octet-stream");
+  });
 });
 
 describe("validation plugin — content type", () => {
@@ -87,6 +171,26 @@ describe("validation plugin — content type", () => {
       new Blob([new Uint8Array([1])], { type: "image/png" })
     );
     expect(await files.exists("blob")).toBe(true);
+  });
+
+  test("stores the type it approved from the key", async () => {
+    const files = withValidation({ allowedTypes: ["image/*"] });
+    await files.upload("photo.png", new Uint8Array([1, 2, 3]));
+    expect(await typeOf(files, "photo.png")).toBe("image/png");
+  });
+
+  test("stores the approved type on the size-rule path too", async () => {
+    const files = withValidation({
+      allowedTypes: ["image/*"],
+      maxSize: 100,
+    });
+    await files.upload("photo.png", "not really a png");
+    await files.upload(
+      "clip.png",
+      streamOf(new TextEncoder().encode("streamed"))
+    );
+    expect(await typeOf(files, "photo.png")).toBe("image/png");
+    expect(await typeOf(files, "clip.png")).toBe("image/png");
   });
 
   test("rejects a disallowed type, ignoring charset params", async () => {
@@ -233,5 +337,35 @@ describe("validation plugin — no rules", () => {
     expect(await files.url("a.txt")).toContain("a.txt");
     const signed = await files.signedUploadUrl("a.txt", { expiresIn: 60 });
     expect(signed.url).toBeDefined();
+  });
+});
+
+describe("validation plugin — placement", () => {
+  const html = new TextEncoder().encode("<html><script>x</script></html>");
+
+  test("after contentType(), it checks the corrected type", async () => {
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [contentType(), validation({ allowedTypes: ["image/*"] })],
+    });
+    const error = await caught(files.upload("avatar.png", html));
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).reason).toBe("type");
+  });
+
+  test("before versioning/softDelete/dedup, their internal keys pass", async () => {
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [
+        validation({ key: /^[\w.-]+$/u, minSize: 1 }),
+        versioning(),
+        softDelete(),
+        dedup(),
+      ],
+    });
+    await files.upload("a.txt", "one");
+    await files.upload("a.txt", "two");
+    await files.delete("a.txt");
+    expect(await files.exists("a.txt")).toBe(false);
   });
 });

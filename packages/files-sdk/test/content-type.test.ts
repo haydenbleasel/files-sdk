@@ -80,6 +80,9 @@ describe("detectContentType — text scan", () => {
     ["html tag", "<html lang='en'>", "text/html"],
     ["script", "<script>alert(1)</script>", "text/html"],
     ["comment", "<!-- a comment -->", "text/html"],
+    ["comment then svg", "<!-- made by hand -->\n<svg/>", "image/svg+xml"],
+    ["comments then html", "<!-- a --><!--b--> <html>", "text/html"],
+    ["unclosed comment", "<!-- never closed <svg/>", "text/html"],
     ["uppercase svg", "<SVG xmlns='...'></SVG>", "image/svg+xml"],
     ["bare svg", "<svg/>", "image/svg+xml"],
     ["xml prolog + svg", "<?xml version='1.0'?><svg></svg>", "image/svg+xml"],
@@ -194,6 +197,101 @@ describe("contentType plugin — body shapes", () => {
     const file = await files.download("photo.png");
     const out = new Uint8Array(await file.arrayBuffer());
     expect(out).toEqual(PNG);
+    expect(file.type).toBe("image/png");
+  });
+});
+
+describe("contentType plugin — the stored type is the checked type", () => {
+  test("stores a key-implied type once the bytes confirm it", async () => {
+    const files = withContentType();
+    // Core never infers from the key, so without forwarding the confirmed
+    // type "photo.png" would land as octet-stream while "photo.bin" (a
+    // mismatch) lands as image/png.
+    await files.upload("photo.png", PNG);
+    await files.upload("photo.bin", PNG);
+    expect(await typeOf(files, "photo.png")).toBe("image/png");
+    expect(await typeOf(files, "photo.bin")).toBe("image/png");
+  });
+
+  test("keeps the key-implied params of a confirmed text type", async () => {
+    const files = withContentType();
+    await files.upload("page.html", "<html></html>");
+    expect(await typeOf(files, "page.html")).toBe("text/html; charset=utf-8");
+  });
+
+  test("never stores an unconfirmed key-implied type", async () => {
+    const files = withContentType();
+    // Unrecognized bytes: the ".html" extension alone is no evidence, so the
+    // adapter's own default applies, never text/html.
+    await files.upload("page.html", "hello <b>there</b>");
+    expect(await typeOf(files, "page.html")).toBe("application/octet-stream");
+  });
+});
+
+describe("contentType plugin — aliases and XML formats", () => {
+  test("accepts a real favicon under its registered .ico type", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("favicon.ico", ICO);
+    expect(await typeOf(files, "favicon.ico")).toBe("image/vnd.microsoft.icon");
+  });
+
+  test.each([
+    ["feed.rss", "application/rss+xml", "<rss version='2.0'/>"],
+    ["map.kml", "application/vnd.google-earth.kml+xml", "<kml/>"],
+    ["track.gpx", "application/gpx+xml", "<gpx/>"],
+    ["page.xhtml", "application/xhtml+xml", "<html xmlns='x'/>"],
+    ["data.xml", "application/xml", "<root/>"],
+  ])("keeps %s (%s) behind an XML prolog", async (key, type, root) => {
+    const strict = withContentType({ onMismatch: "reject" });
+    await strict.upload(key, `<?xml version="1.0"?>${root}`);
+    expect(await typeOf(strict, key)).toBe(type);
+  });
+
+  test("accepts an explicit text/xml for a bare XML prolog", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("a", "<?xml version='1.0'?><a/>", {
+      contentType: "text/xml",
+    });
+    expect(await typeOf(files, "a")).toBe("text/xml");
+  });
+
+  test("an SVG that opens with a comment stays SVG", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("logo.svg", "<!-- Generator: x -->\n<svg></svg>");
+    expect(await typeOf(files, "logo.svg")).toBe("image/svg+xml");
+  });
+
+  test("an XML format that opens with a comment keeps its type", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("feed.rss", "<!-- feed --><rss/>");
+    await files.upload("map.kml", "<!-- runs past the window");
+    expect(await typeOf(files, "feed.rss")).toBe("application/rss+xml");
+    expect(await typeOf(files, "map.kml")).toBe(
+      "application/vnd.google-earth.kml+xml"
+    );
+  });
+
+  test("a comment-led body is still HTML for a non-XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload("avatar.png", "<!-- x --><b>hi</b>")
+    ).rejects.toThrow(
+      /is declared "image\/png" but its bytes are "text\/html"/u
+    );
+  });
+
+  test("HTML after a comment is still HTML under an XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload("feed.rss", "<!-- x --><script>alert(1)</script>")
+    ).rejects.toThrow(/its bytes are "text\/html"/u);
+  });
+
+  test("an XML prolog never satisfies a non-XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload("notes.txt", "<?xml version='1.0'?><a/>")
+    ).rejects.toThrow(/its bytes are "application\/xml"/u);
   });
 });
 

@@ -1,8 +1,8 @@
 import { handlers } from "../index.js";
 import type { Body, FilesPlugin } from "../index.js";
-import { collectStream, normalizeBody } from "../internal/core.js";
+import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
-import { isFunction } from "../internal/is.js";
+import { isFunction, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
 /**
@@ -59,7 +59,8 @@ export interface ValidationOptions {
    * wildcard (`"image/*"`). Matching is case-insensitive and ignores any
    * `; charset=…` parameter. The type checked is `options.contentType` when you
    * pass it, else a `Blob`/`File`'s own `.type`, else the type inferred from the
-   * key's extension.
+   * key's extension — and that checked type is forwarded as the upload's
+   * `contentType`, so it's the type that gets stored.
    */
   allowedTypes?: string[];
   /**
@@ -92,9 +93,10 @@ const typeIsAllowed = (type: string, allowed: readonly string[]): boolean => {
 };
 
 /**
- * The MIME type an upload will be stored as, for the `allowedTypes` check:
- * an explicit `contentType` wins, then a `Blob`/`File`'s own type, then the
- * type inferred from the key's extension (the SDK's own fallback).
+ * The MIME type an upload is checked (and then stored) as, for the
+ * `allowedTypes` check: an explicit `contentType` wins, then a `Blob`/`File`'s
+ * own type, then the type inferred from the key's extension. The SDK core
+ * never infers from the key, so the plugin forwards this type explicitly.
  */
 const resolveUploadType = (
   contentType: string | undefined,
@@ -110,6 +112,61 @@ const resolveUploadType = (
   return inferTypeFromName(key);
 };
 
+/** Code points past which UTF-8 needs 2, 3, and 4 bytes. */
+const UTF8_TWO_BYTES = 0x80;
+const UTF8_THREE_BYTES = 0x8_00;
+const UTF8_FOUR_BYTES = 0x1_00_00;
+
+/**
+ * The UTF-8 byte length of `value` — what `TextEncoder` would produce, a lone
+ * surrogate included (it encodes as the 3-byte U+FFFD) — without allocating
+ * the encoded copy.
+ */
+const utf8ByteLength = (value: string): number => {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    // SAFETY: `i < value.length`, so there's a code point at `i`.
+    const code = value.codePointAt(i) as number;
+    if (code < UTF8_TWO_BYTES) {
+      bytes += 1;
+    } else if (code < UTF8_THREE_BYTES) {
+      bytes += 2;
+    } else if (code < UTF8_FOUR_BYTES) {
+      bytes += 3;
+    } else {
+      // A surrogate pair: one code point, two code units.
+      bytes += 4;
+      i += 1;
+    }
+  }
+  return bytes;
+};
+
+/**
+ * An upload body's byte count. Known-length shapes are measured in place —
+ * nothing is read or copied, so a multi-gigabyte `File` over `maxSize` is
+ * rejected without being loaded. Only an unknown-length stream (or a `Blob`
+ * that can't report a finite size) is drained, and its bytes are returned as
+ * `buffered` for the caller to forward in place of the spent original.
+ */
+const measure = async (
+  body: Body
+): Promise<{ size: number; buffered?: Uint8Array }> => {
+  if (isString(body)) {
+    return { size: utf8ByteLength(body) };
+  }
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    return { size: body.byteLength };
+  }
+  if (body instanceof Blob && Number.isFinite(body.size)) {
+    return { size: body.size };
+  }
+  const buffered = await collectStream(
+    body instanceof Blob ? body.stream() : body
+  );
+  return { buffered, size: buffered.byteLength };
+};
+
 /**
  * A fail-closed guard that vets writes **before they happen** — a max/min size,
  * an allowed-MIME-type list, and a key-naming rule. It rejects a bad `upload`
@@ -118,15 +175,31 @@ const resolveUploadType = (
  * ever reach the adapter.
  *
  * Unlike `compression()` / `encryption()`, it never transforms the body or
- * writes metadata, so **reads, `url()`, `copy`, and `move` pass straight
- * through** — there's nothing to undo. The size check is the one exception that
- * has to see the bytes: for an unknown-length stream it buffers the body to
- * measure it (the same trade-off the buffering plugins make), so reach for it
- * before streaming-only setups. Key and type rules never touch the body.
+ * writes metadata, so **reads and `url()` pass straight through** — there's
+ * nothing to undo — and `copy` / `move` only have their destination key
+ * checked. The size check is the one rule that has to see the bytes:
+ * known-length bodies (strings, byte arrays, `Blob`s and `File`s) are measured
+ * without being read, but an unknown-length stream is buffered to measure it
+ * (the same trade-off the buffering plugins make), so reach for it before
+ * streaming-only setups. Key and type rules never touch the body. With
+ * `allowedTypes` set, the checked type is forwarded as the upload's
+ * `contentType`, so the object is stored as the type that was approved.
  *
- * Place it **first** in the array so it vets the caller's original key and bytes
- * before anything downstream transforms them:
- * `plugins: [validation({ maxSize }), compression(), encryption(key)]`.
+ * Plugins run in array order (`plugins[0]` is outermost), so placement matters:
+ * - Put it **before** `versioning()`, `softDelete()`, `dedup()`, and any
+ *   body-transforming plugin, so it vets the caller's original key and bytes.
+ *   Those plugins' own housekeeping writes (`.versions/…`, `.trash/…`,
+ *   `.dedup/…`, and dedup's empty pointer bodies) only pass through the
+ *   plugins after them — so a `key` or `minSize` rule placed after them would
+ *   reject their internal writes and break every overwrite, delete, or upload.
+ * - Put `contentType()` **before** it. `validation()` checks the type the
+ *   client *claims*; a `contentType()` placed after it can still relabel the
+ *   approved upload from its bytes (a `.png` that's really HTML becomes
+ *   `text/html`), slipping past `allowedTypes`. With `contentType()` first,
+ *   `validation()` checks the corrected type.
+ *
+ * `plugins: [contentType(), validation({ maxSize, allowedTypes }), versioning(),
+ * compression(), encryption(key)]`.
  *
  * `signedUploadUrl()` hands upload capability to a client that writes directly,
  * bypassing the plugin — so when a size or type rule is set it **fails closed**
@@ -213,6 +286,7 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
       },
       upload: async (op, next) => {
         assertKey(op.key);
+        let checked = op;
         if (allowedTypes !== undefined) {
           const type = resolveUploadType(
             op.options?.contentType,
@@ -225,28 +299,35 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
               `validation: "${op.key}" has type "${baseType(type)}", which is not one of the allowed types (${allowedTypes.join(", ")})`
             );
           }
+          // Store the type that was approved. A key-inferred type would
+          // otherwise be dropped (core never infers from the key), and the
+          // object would land as the adapter's default instead.
+          checked = { ...op, options: { ...op.options, contentType: type } };
         }
         // No size rule → nothing left to inspect; forward the body untouched
         // so streaming and resumable uploads keep working.
         if (maxSize === undefined && minSize === undefined) {
-          return next(op);
+          return next(checked);
         }
-        // A size rule needs the byte count. Buffer an unknown-length stream to
-        // measure it, then forward the buffer so the check stays outside the
-        // retry loop and a retry replays the same bytes.
-        const normalized = await normalizeBody(
-          op.body,
-          op.options?.contentType
-        );
-        const bytes =
-          normalized.data instanceof Uint8Array
-            ? normalized.data
-            : await collectStream(normalized.data);
-        assertSize(bytes.byteLength, op.key);
+        const { buffered, size } = await measure(op.body);
+        assertSize(size, op.key);
+        if (buffered === undefined) {
+          return next(checked);
+        }
+        // The stream was drained to measure it: forward the buffer, so the
+        // check stays outside the retry loop and a retry replays the same
+        // bytes. A drained Blob's own type rides along, since bare bytes no
+        // longer carry it.
+        const blobType =
+          op.body instanceof Blob && checked.options?.contentType === undefined
+            ? op.body.type
+            : "";
         return next({
-          ...op,
-          body: bytes,
-          options: { ...op.options, contentType: normalized.contentType },
+          ...checked,
+          body: buffered,
+          ...(blobType !== "" && {
+            options: { ...checked.options, contentType: blobType },
+          }),
         });
       },
     }),
