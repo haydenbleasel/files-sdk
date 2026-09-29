@@ -322,6 +322,47 @@ describe("sync", () => {
     expect(await dest.exists("b.txt")).toBe(false);
   });
 
+  test("a throwing onProgress never fails a settled key or the prune", async () => {
+    const source = newFiles();
+    const dest = newFiles();
+    await source.upload("up.txt", "u");
+    await dest.upload("stale.txt", "x");
+
+    const result = await sync(source, dest, {
+      onProgress: () => {
+        throw new Error("ui bug");
+      },
+      prune: true,
+    });
+
+    expect(result).toEqual({
+      deleted: ["stale.txt"],
+      skipped: [],
+      uploaded: ["up.txt"],
+    });
+    expect(await textOf(dest, "up.txt")).toBe("u");
+    expect(await dest.exists("stale.txt")).toBe(false);
+  });
+
+  test("drops metadata for a destination without metadata support", async () => {
+    const source = newFiles();
+    const dest = new Files({
+      adapter: { ...fakeAdapter(), supportsMetadata: false },
+    });
+    await source.upload("a.txt", "alpha", {
+      contentType: "text/plain",
+      metadata: { user: "1" },
+    });
+
+    const result = await sync(source, dest);
+
+    expect(result).toEqual({ skipped: [], uploaded: ["a.txt"] });
+    const a = await dest.download("a.txt");
+    expect(await a.text()).toBe("alpha");
+    expect(a.type).toBe("text/plain");
+    expect(a.metadata).toBeUndefined();
+  });
+
   test("an empty source and destination sync nothing", async () => {
     const result = await sync(newFiles(), newFiles());
     expect(result).toEqual({ skipped: [], uploaded: [] });

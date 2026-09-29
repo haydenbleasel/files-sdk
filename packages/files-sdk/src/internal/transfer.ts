@@ -48,7 +48,10 @@ export interface TransferOptions extends BulkOptions {
    * `list` call fetches, not a cap on the total transferred.
    */
   limit?: number;
-  /** Called once per key after it settles. See {@link TransferProgress}. */
+  /**
+   * Called once per key after it settles. See {@link TransferProgress}. Fire-and-forget:
+   * a throw from it is swallowed and never fails the key.
+   */
   onProgress?: (progress: TransferProgress) => void;
   /**
    * Abort the transfer. Forwarded to every `list` / `exists` / `download` /
@@ -99,9 +102,10 @@ const identity = (key: string): string => key;
  * but only the keys are buffered — every body still streams. Only the body,
  * content type, and user metadata travel with each object; destination-assigned
  * fields (`etag`, `lastModified`) are fresh, and `Cache-Control` is not carried
- * (a `StoredFile` doesn't expose it). Metadata is dropped for adapters with no
- * metadata primitive, and forwarded keys that a destination adapter rejects
- * (e.g. metadata on Bunny/Appwrite/PocketBase) surface as per-key `errors`.
+ * (a `StoredFile` doesn't expose it). Metadata is dropped when the destination
+ * has no metadata primitive (`dest.capabilities.metadata` is `false`) rather
+ * than failing the key; any other destination rejection surfaces as a per-key
+ * `errors` entry.
  */
 export const transfer = async (
   source: Files,
@@ -132,8 +136,16 @@ export const transfer = async (
   const skipped = new Set<string>();
   const report = (key: string, status: TransferProgress["status"]): void => {
     done += 1;
-    onProgress?.({ done, key, status, total });
+    try {
+      onProgress?.({ done, key, status, total });
+    } catch {
+      // Progress is fire-and-forget — a throwing reporter can't fail a key
+      // that already landed.
+    }
   };
+  // A destination that can't store user metadata would reject every
+  // metadata-bearing key; drop it instead (see the JSDoc above).
+  const keepMetadata = dest.capabilities.metadata;
 
   // `mapMany` is the same bounded-concurrency engine the bulk array methods
   // use: input-order results, per-key error collection, `stopOnError`. The
@@ -154,7 +166,7 @@ export const transfer = async (
       try {
         await dest.upload(destKey, body, {
           contentType: file.type,
-          ...(file.metadata && { metadata: file.metadata }),
+          ...(keepMetadata && file.metadata && { metadata: file.metadata }),
           ...signalOpt,
         });
       } catch (error) {

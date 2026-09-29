@@ -50,7 +50,8 @@ export type SyncCompare =
 /**
  * A single per-key report, delivered to {@link SyncOptions.onProgress} once a
  * key has settled (failures surface in the result's `errors`, not here). Skips
- * are reported first, then uploads as each streams through, then prunes.
+ * and uploads are interleaved in completion order as the source pass runs;
+ * prunes are reported last, after every upload has settled.
  */
 export interface SyncProgress {
   /** Keys settled so far — uploaded plus skipped plus deleted. Monotonically increasing. */
@@ -104,7 +105,10 @@ export interface SyncOptions extends BulkOptions {
    * each `list` call fetches, not a cap on the total mirrored.
    */
   limit?: number;
-  /** Called once per key after it settles. See {@link SyncProgress}. */
+  /**
+   * Called once per key after it settles. See {@link SyncProgress}. Fire-and-forget:
+   * a throw from it is swallowed and never fails the key.
+   */
   onProgress?: (progress: SyncProgress) => void;
   /**
    * Abort the sync. Forwarded to every `list` / `download` / `upload` (the bulk
@@ -222,6 +226,8 @@ interface UploadContext {
   compare: SyncCompare;
   destIndex: Map<string, StoredFile>;
   signalOpt: { signal?: AbortSignal };
+  /** Forward user metadata — `false` when the destination can't store it. */
+  keepMetadata: boolean;
   report: (key: string, status: SyncProgress["status"]) => void;
   opts: SyncOptions | undefined;
 }
@@ -255,7 +261,7 @@ const runUploads = async (
       try {
         await dest.upload(destKey, stream, {
           contentType: body.type,
-          ...(body.metadata && { metadata: body.metadata }),
+          ...(ctx.keepMetadata && body.metadata && { metadata: body.metadata }),
           ...ctx.signalOpt,
         });
       } catch (error) {
@@ -314,7 +320,9 @@ const runPrune = async (
  * Both sides are walked in full before any work begins (so `total` is known and
  * `dryRun` can report the plan), but only metadata is buffered — every body
  * still streams. Only the body, content type, and user metadata travel with
- * each object, exactly as in {@link transfer}.
+ * each object, exactly as in {@link transfer} — metadata is dropped when the
+ * destination has no metadata primitive (`dest.capabilities.metadata` is
+ * `false`).
  *
  * Like the bulk array methods, this does **not** throw on a partial failure:
  * successes land in `uploaded` / `deleted`, per-key failures in `errors`. Pass
@@ -392,7 +400,12 @@ export const sync = async (
   let done = 0;
   const report = (key: string, status: SyncProgress["status"]): void => {
     done += 1;
-    onProgress?.({ done, key, status, total });
+    try {
+      onProgress?.({ done, key, status, total });
+    } catch {
+      // Progress is fire-and-forget — a throwing reporter can't fail a key
+      // that already settled (or reject a run whose prune already landed).
+    }
   };
 
   const { uploaded, skipped, errors } = await runUploads(
@@ -402,6 +415,7 @@ export const sync = async (
     {
       compare,
       destIndex,
+      keepMetadata: dest.capabilities.metadata,
       opts,
       report,
       signalOpt,

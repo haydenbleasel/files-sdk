@@ -48,8 +48,24 @@ export interface UnzipOptions {
    * as recorded in the archive (before `into` is prepended).
    */
   filter?: (name: string) => boolean;
+  /**
+   * Refuse an archive whose central directory lists more entries than this
+   * (directory entries included), before extracting anything. Defaults to
+   * `10_000`.
+   */
   maxEntries?: number;
+  /**
+   * Refuse any entry whose declared uncompressed size exceeds this many bytes.
+   * Inflation is also capped at the declared size, so an entry can't expand
+   * past it. Defaults to 512 MiB.
+   */
   maxEntrySize?: number;
+  /**
+   * Refuse the archive once the running total of declared uncompressed sizes
+   * exceeds this many bytes. Checked entry by entry as extraction proceeds, so
+   * entries uploaded before the limit is reached stay uploaded. Defaults to
+   * 1 GiB.
+   */
   maxTotalSize?: number;
 }
 
@@ -338,23 +354,30 @@ const zipChunks = async function* zipChunks(
   yield* drain();
 };
 
-/** Expose the chunk generator as a cancellable byte stream. */
+/**
+ * Expose the chunk generator as a cancellable byte stream. `highWaterMark: 0`
+ * so the stream never pulls ahead of its consumer: nothing is listed or
+ * downloaded until the first read, as the {@link ZipApi.zip} docs promise.
+ */
 const streamFrom = (
   chunks: AsyncGenerator<Uint8Array, void>
 ): ReadableStream<Uint8Array> =>
-  new ReadableStream<Uint8Array>({
-    async cancel() {
-      await chunks.return();
+  new ReadableStream<Uint8Array>(
+    {
+      async cancel() {
+        await chunks.return();
+      },
+      async pull(controller) {
+        const { done, value } = await chunks.next();
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      },
     },
-    async pull(controller) {
-      const { done, value } = await chunks.next();
-      if (done) {
-        controller.close();
-      } else {
-        controller.enqueue(value);
-      }
-    },
-  });
+    { highWaterMark: 0 }
+  );
 
 /** What the central directory says about one entry of an archive being read. */
 interface ParsedEntry {

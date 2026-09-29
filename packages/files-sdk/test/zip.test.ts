@@ -1,5 +1,6 @@
 /* oxlint-disable no-bitwise -- the fixtures hand-craft ZIP records and an independent CRC-32, both of which are bit-defined. */
 import { describe, expect, test } from "bun:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { compression } from "../src/compression/index.js";
 import { createFiles, createStoredFile } from "../src/index.js";
@@ -384,6 +385,31 @@ describe("zip plugin — writing archives", () => {
     await files.unzip("out.zip", { into: "r/" });
     const file = await files.download("r/c.txt");
     expect(await file.text()).toBe(body);
+  });
+
+  test("no listing or download starts until the stream is read", async () => {
+    const calls: string[] = [];
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      hooks: {
+        onAction: (event) => {
+          calls.push(event.type);
+        },
+      },
+      plugins: [zip()],
+    });
+    await files.upload("r/a.txt", "a");
+    await files.upload("r/b.txt", "b");
+    calls.length = 0;
+
+    const stream = files.zip({ prefix: "r/" });
+    await delay(20);
+    expect(calls).toEqual([]);
+
+    const reader = stream.getReader();
+    await reader.read();
+    expect(calls).toContain("list");
+    await reader.cancel();
   });
 
   test("cancelling the stream mid-entry stops cleanly", async () => {

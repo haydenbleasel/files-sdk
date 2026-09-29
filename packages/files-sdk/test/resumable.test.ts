@@ -533,6 +533,65 @@ describe("resumable orchestrator (parts mode)", () => {
     expect(control.status).toBe("error");
   });
 
+  test("a caller signal aborting a paused upload rejects it and keeps the session", async () => {
+    const server = newServer();
+    const files = makeFiles(server, "parts");
+    const control = new UploadControl();
+    const caller = new AbortController();
+    control.pause();
+    const promise = files.upload("sig.bin", new Uint8Array(16), {
+      control,
+      multipart: { concurrency: 2, partSize: 4 },
+      signal: caller.signal,
+    });
+    await tick();
+    await tick();
+    expect(control.status).toBe("paused");
+    caller.abort(new Error("user cancelled"));
+    await expect(promise).rejects.toMatchObject({
+      aborted: true,
+      message: "Operation aborted: user cancelled",
+    });
+    // An external abort is not `control.abort()`: the session survives for a
+    // later `UploadControl.from(token)` resume, and nothing was uploaded.
+    expect(control.status).toBe("error");
+    expect(control.session?.provider).toBe("s3");
+    expect(server.drivers[0]?.uploadCalls).toBe(0);
+    expect(server.drivers[0]?.discarded).toBe(false);
+  });
+
+  test("a pause/resume cycle detaches the caller signal's listener", async () => {
+    const server = newServer();
+    const files = makeFiles(server, "parts");
+    const control = new UploadControl();
+    const caller = new AbortController();
+    let listeners = 0;
+    const { signal } = caller;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = (...args: Parameters<typeof add>) => {
+      listeners += 1;
+      add(...args);
+    };
+    signal.removeEventListener = (...args: Parameters<typeof remove>) => {
+      listeners -= 1;
+      remove(...args);
+    };
+    control.pause();
+    const promise = files.upload("cycle.bin", new Uint8Array(8), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      signal,
+    });
+    await tick();
+    await tick();
+    const parked = listeners;
+    control.resume();
+    await promise;
+    // The parked worker's abort listener was removed once resume() woke it.
+    expect(listeners).toBeLessThan(parked);
+  });
+
   test("abort() racing begin() still discards the fresh session", async () => {
     const server = newServer();
     const started = Promise.withResolvers<null>();
@@ -730,6 +789,44 @@ describe("resumable orchestrator (offset mode)", () => {
     // Clean up the abandoned (paused) first upload.
     await first.abort();
     await pending;
+  });
+
+  test("a caller signal aborting a paused offset upload rejects it", async () => {
+    const server = newServer();
+    const files = makeFiles(server, "offset");
+    const control = new UploadControl();
+    const caller = new AbortController();
+    control.pause();
+    const promise = files.upload("osig.bin", new Uint8Array(10), {
+      control,
+      multipart: { partSize: 5 },
+      signal: caller.signal,
+    });
+    await tick();
+    await tick();
+    expect(control.status).toBe("paused");
+    caller.abort();
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    expect(control.status).toBe("error");
+    expect(control.session?.provider).toBe("gcs");
+    expect(server.drivers[0]?.uploadCalls).toBe(0);
+  });
+
+  test("a caller signal aborting a paused empty offset upload rejects it", async () => {
+    const server = newServer();
+    const files = makeFiles(server, "offset");
+    const control = new UploadControl();
+    const caller = new AbortController();
+    control.pause();
+    const promise = files.upload("oempty.bin", "", {
+      control,
+      signal: caller.signal,
+    });
+    await tick();
+    await tick();
+    caller.abort();
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    expect(server.drivers[0]?.uploadCalls).toBe(0);
   });
 
   test("an empty body finalizes with one empty chunk", async () => {

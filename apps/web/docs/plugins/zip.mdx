@@ -69,8 +69,11 @@ files.zip(
 | --- | --- | --- |
 | `into` | `""` | Key prefix extracted entries land under (a trailing `/` is added when missing). |
 | `filter` | — | `(name) => boolean` — keep only matching entries, judged by their archive path. |
+| `maxEntries` | `10_000` | Refuse an archive whose central directory lists more entries than this, before extracting anything. |
+| `maxEntrySize` | 512 MiB | Refuse any entry whose declared uncompressed size exceeds this many bytes. Inflation is capped at the declared size too. |
+| `maxTotalSize` | 1 GiB | Refuse the archive once the running total of declared uncompressed sizes exceeds this. Entries uploaded before the limit is hit stay uploaded. |
 
-Extracted entries get a content type inferred from their extension; directory entries are skipped.
+Extracted entries get a content type inferred from their extension; directory entries are skipped. The three limits guard against zip bombs — raise them deliberately when you trust the archive.
 
 ## Composition
 
@@ -83,7 +86,7 @@ plugins: [zip(), compression(), encryption(key)];
 ## Things to keep in mind
 
 - **`zip()` streams; `unzip()` buffers.** Writing needs only one entry in flight at a time, so archiving many objects runs with flat memory and an unconsumed or cancelled stream does no further work. Reading needs the central directory at the _end_ of the file, so `unzip` downloads the whole archive into memory first.
-- **No ZIP64.** Archives are classic ZIP: at most 65,535 entries and 4 GiB per entry / per archive. Limits fail closed — a clear error, never a silently corrupt archive — and reading a ZIP64 archive throws too.
+- **No ZIP64.** Archives are classic ZIP: at most 65,534 entries (65,535 is the ZIP64 marker) and under 4 GiB per entry / per archive. Limits fail closed — a clear error, never a silently corrupt archive — and reading a ZIP64 archive throws too.
 - **Entry names are validated on both sides.** Writing rejects duplicate names, `..` segments, backslashes, and absolute paths; extraction rejects the same (the classic [zip-slip](https://security.snyk.io/research/zip-slip-vulnerability) escape), and refuses encrypted entries and unknown compression methods rather than guessing. Extracted data is verified against each entry's recorded CRC-32 and size.
 - **`"store"` is for already-compressed sources.** The default `"deflate"` shrinks text well, but JPEGs, videos, and encrypted-at-rest objects read back as high-entropy bytes — `method: "store"` skips the wasted CPU.
 - **Selection errors surface on the stream.** `zip()` returns its stream synchronously; a missing key, an unsafe name, or an oversized entry rejects the first read (and `zipTo` / the consuming `Response`).

@@ -440,7 +440,34 @@ export const reportProgress = (
 };
 
 /**
+ * Park until `resume()` / `abort()` wakes the control or any of `signals`
+ * aborts. The abort listeners are detached once woken, so a long pause/resume
+ * cycle doesn't pile listeners onto a long-lived caller signal.
+ */
+const parkUntilWoken = (
+  state: ControlInternals,
+  signals: readonly AbortSignal[]
+): Promise<void> =>
+  // oxlint-disable-next-line promise/avoid-new -- resolved by resume()/abort() or a signal's abort event, none of which is a promise.
+  new Promise<void>((resolve) => {
+    const wake = (): void => {
+      for (const signal of signals) {
+        signal.removeEventListener("abort", wake);
+      }
+      resolve();
+    };
+    state.resumeWaiters.push(wake);
+    for (const signal of signals) {
+      signal.addEventListener("abort", wake, { once: true });
+    }
+  });
+
+/**
  * Block while paused; throw if aborted. Checked before each chunk dispatch.
+ * `signals` are the run's abort signals (the control's own plus the caller's
+ * `signal`s): a caller abort while parked rejects the upload — keeping the
+ * session for a later resume, like any external abort — instead of leaving
+ * `upload()` pending until a `resume()` that may never come.
  * `runSignal` is the run-scoped failure latch: when a sibling worker's part
  * fails permanently, parked workers must wake up and bail instead of waiting
  * for a `resume()` that would march them into a dead run — and must not
@@ -448,22 +475,32 @@ export const reportProgress = (
  */
 const pauseGate = async (
   state: ControlInternals,
+  signals: readonly AbortSignal[],
   runSignal?: AbortSignal
 ): Promise<void> => {
-  // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- `runSignal.aborted` flips externally (sibling worker failure), not in the loop body.
-  while (state.paused && state.status !== "aborted" && !runSignal?.aborted) {
+  const wakeOn = runSignal ? [...signals, runSignal] : signals;
+  const abortedSignal = (): AbortSignal | undefined =>
+    signals.find((signal) => signal.aborted);
+  while (
+    state.paused &&
+    state.status !== "aborted" &&
+    // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- `runSignal.aborted` flips externally (sibling worker failure), not in the loop body.
+    !runSignal?.aborted &&
+    abortedSignal() === undefined
+  ) {
     state.status = "paused";
-    // oxlint-disable-next-line promise/avoid-new, no-await-in-loop, react-doctor/async-await-in-loop -- resolved by resume()/abort(); blocks until then, so the await must stay in the loop.
-    await new Promise<void>((resolve) => {
-      state.resumeWaiters.push(resolve);
-      runSignal?.addEventListener("abort", () => resolve(), { once: true });
-    });
+    // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- blocks until resume()/abort()/a signal wakes it, so the await must stay in the loop.
+    await parkUntilWoken(state, wakeOn);
   }
   if (state.status === "aborted") {
     throw abortError(state.abortController.signal.reason);
   }
   if (runSignal?.aborted) {
     return;
+  }
+  const aborted = abortedSignal();
+  if (aborted) {
+    throw abortError(aborted.reason);
   }
   state.status = "uploading";
 };
@@ -555,8 +592,16 @@ const runParts = async (
       }
       // A `const` copy so the narrowing survives into the `attempt` closure.
       const part = partNumber;
-      // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-defer-await -- pauseGate is a synchronization barrier that must block before the failure check; concurrency comes from multiple workers
-      await pauseGate(state, runAbort.signal);
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-defer-await -- pauseGate is a synchronization barrier that must block before the failure check; concurrency comes from multiple workers
+        await pauseGate(state, signals, runAbort.signal);
+      } catch (error) {
+        // An abort while parked fails the run through the same latch as a
+        // part failure, so sibling workers stop rather than keep uploading.
+        failure ??= FilesError.wrap(error);
+        runAbort.abort();
+        return;
+      }
       if (failure !== undefined) {
         return;
       }
@@ -618,7 +663,7 @@ const runOffset = async (
   const total = source.size;
 
   if (total === 0) {
-    await pauseGate(state);
+    await pauseGate(state, signals);
     await attempt(
       (signal) =>
         driver.uploadAt({
@@ -642,7 +687,7 @@ const runOffset = async (
   reportProgress(opts.onProgress, { loaded: offset, total });
   while (offset < total) {
     // eslint-disable-next-line no-await-in-loop -- chunks are offset-chained; each depends on the prior nextOffset.
-    await pauseGate(state);
+    await pauseGate(state, signals);
     const end = Math.min(offset + chunkSize, total);
     // eslint-disable-next-line no-await-in-loop -- slice the current chunk before uploading it.
     const data = await source.slice(offset, end);

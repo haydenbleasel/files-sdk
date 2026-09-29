@@ -17,6 +17,31 @@ import { FilesError } from "./errors.js";
 const nextFromRange = (range: string | null, fallback: number): number =>
   range ? Number(range.slice(range.indexOf("-") + 1)) + 1 : fallback;
 
+/**
+ * Classify a failed session response with the standard status buckets
+ * `makeErrorMapper` uses — 404/410 → `NotFound` (an unknown or expired session
+ * URI: GCS answers 404, Drive 410), 401/403 → `Unauthorized`, 409/412 →
+ * `Conflict`, anything else → `Provider`. The classified 4xx answers are
+ * deterministic for this session — re-sending the same chunk can only fail the
+ * same way — so they're flagged `permanent`; only a `Provider` failure (5xx,
+ * 408, 429, …) stays retryable.
+ */
+const statusError = (status: number, message: string): FilesError => {
+  const text = `${message} (HTTP ${status}).`;
+  if (status === 404 || status === 410) {
+    return new FilesError("NotFound", text, undefined, { permanent: true });
+  }
+  if (status === 401 || status === 403) {
+    return new FilesError("Unauthorized", text, undefined, {
+      permanent: true,
+    });
+  }
+  if (status === 409 || status === 412) {
+    return new FilesError("Conflict", text, undefined, { permanent: true });
+  }
+  return new FilesError("Provider", text);
+};
+
 export const createOffsetHttpDriver = (params: {
   partSize: number;
   /** Open the provider session; return the token plus the URL to PUT chunks to. */
@@ -84,10 +109,7 @@ export const createOffsetHttpDriver = (params: {
           finalResult = await parseResult(res);
           return { nextOffset: Number.MAX_SAFE_INTEGER };
         }
-        throw new FilesError(
-          "Provider",
-          `resume status check failed (HTTP ${res.status}).`
-        );
+        throw statusError(res.status, "resume status check failed");
       } catch (error) {
         throw wrapErr(error);
       }
@@ -112,19 +134,13 @@ export const createOffsetHttpDriver = (params: {
         });
         if (isLast) {
           if (!res.ok) {
-            throw new FilesError(
-              "Provider",
-              `upload failed (HTTP ${res.status}).`
-            );
+            throw statusError(res.status, "upload failed");
           }
           finalResult = await parseResult(res);
           return { nextOffset: total };
         }
         if (res.status !== 308) {
-          throw new FilesError(
-            "Provider",
-            `chunk upload failed (HTTP ${res.status}).`
-          );
+          throw statusError(res.status, "chunk upload failed");
         }
         const range = res.headers.get("range");
         if (range === null) {

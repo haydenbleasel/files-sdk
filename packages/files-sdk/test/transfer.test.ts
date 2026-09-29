@@ -211,6 +211,41 @@ describe("transfer", () => {
     expect(status["b.txt"]).toBe("skipped");
   });
 
+  test("a throwing onProgress never fails a transferred key", async () => {
+    const source = newFiles();
+    const dest = newFiles();
+    await source.upload("a.txt", "alpha");
+    await source.upload("b.txt", "beta");
+
+    const result = await transfer(source, dest, {
+      onProgress: () => {
+        throw new Error("ui bug");
+      },
+    });
+
+    expect(result).toEqual({ transferred: ["a.txt", "b.txt"] });
+    expect(await textOf(dest, "a.txt")).toBe("alpha");
+  });
+
+  test("drops metadata for a destination without metadata support", async () => {
+    const source = newFiles();
+    const dest = new Files({
+      adapter: { ...fakeAdapter(), supportsMetadata: false },
+    });
+    await source.upload("a.txt", "alpha", {
+      contentType: "text/plain",
+      metadata: { user: "1" },
+    });
+
+    const result = await transfer(source, dest);
+
+    expect(result).toEqual({ transferred: ["a.txt"] });
+    const a = await dest.download("a.txt");
+    expect(await a.text()).toBe("alpha");
+    expect(a.type).toBe("text/plain");
+    expect(a.metadata).toBeUndefined();
+  });
+
   test("an empty source transfers nothing", async () => {
     const result = await transfer(newFiles(), newFiles());
     expect(result).toEqual({ transferred: [] });
