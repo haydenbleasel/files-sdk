@@ -10,7 +10,7 @@ Closes #<issue_number>
 
 - [ ] I've reviewed my code
 - [ ] I've written tests
-- [ ] I've generated a change set file
+- [ ] I've added a changeset (or this change doesn't need one)
 - [ ] I've updated the docs, if necessary
 
 ## Screenshots (if applicable)

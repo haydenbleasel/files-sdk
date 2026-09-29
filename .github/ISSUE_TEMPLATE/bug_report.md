@@ -8,19 +8,25 @@ assignees: ""
 
 **Describe the bug** A clear and concise description of what the bug is.
 
-**Files SDK version** I am using version ...
+**Minimal reproduction** The smallest snippet that triggers it — the adapter setup and the failing call:
 
-**To Reproduce** Steps to reproduce the behavior:
+```ts
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3"; // the adapter you use
 
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+const files = new Files({ adapter: s3({ bucket: "..." }) });
 
-**Expected behavior** A clear and concise description of what you expected to happen.
+await files.upload("key.txt", "body"); // the call that fails
+```
+
+**Expected behavior** What you expected to happen.
+
+**Actual behavior** What happened instead. Include the full error (`FilesError` code and message, plus `cause` if relevant — redact credentials and request IDs you don't want public).
 
 **Environment (please complete the following information):**
 
-- Adapter: [e.g. S3, R2, Vercel Blob, MinIO]
-- Runtime: [e.g. Node 22, Bun 1.3, Cloudflare Workers]
+- `files-sdk` version: [e.g. 2.6.0]
+- Adapter: [e.g. `files-sdk/s3`, `files-sdk/r2`, `files-sdk/vercel-blob`]
+- Runtime and version: [e.g. Node 22.11, Bun 1.4.2, Cloudflare Workers, Deno 2.1]
+- Provider SDK version, if relevant: [e.g. `@aws-sdk/client-s3` 3.700.0]
 - OS: [e.g. macOS 15, Ubuntu 24.04]

@@ -25,14 +25,17 @@ Each maps to a `Files` method:
 | `upload` | `upload` | `--file ./x` or `--stdin`; `--content-type` (else inferred) |
 | `download` | `download` | `--out ./x` to disk, `--stdout` to pipe; `--range start-end` |
 | `head` | `head` | metadata as JSON; takes multiple keys |
-| `exists` | `exists` | no output — exit 0 = exists, 1 = missing; takes multiple keys |
-| `list` | `list` | `--prefix`, `--limit`, `--all` (follow cursor to the end) |
+| `exists` | `exists` | one key prints `{ exists, key }` and exits 0 = exists, 1 = missing; many keys print `{ existing, missing, errors? }` and exit 0 only if every key exists |
+| `list` | `list` | `--prefix`, `--limit`, `--cursor`, `--delimiter` (folders), `--all` (follow cursor to the end) |
+| `search` | `search` | `<pattern>` is a glob by default; `--match glob\|regex\|substring\|exact` (or `--regex`), `--prefix`, `--max-results`, `--case-insensitive` |
 | `copy` | `copy` |  |
 | `move` | `move` |  |
 | `delete` | `delete` | takes multiple keys |
 | `url` | `url` | `--expires-in <sec>` |
 | `sign-upload` | `signedUploadUrl` | `--expires-in`, `--max-size`, `--content-type` |
+| `capabilities` | `capabilities` | what the adapter supports, as JSON; no provider round-trip |
 | `transfer` | `transfer` | `--to '<json>'` destination config; `--prefix`, `--no-overwrite` |
+| `sync` | `sync` | `--to '<json>'`; `--prefix`, `--dest-prefix`, `--compare etag\|size`, `--prune` (destructive); global `--dry-run` prints the plan |
 
 ```sh
 files --provider s3 --bucket uploads upload reports/q1.pdf --file ./q1.pdf --content-type application/pdf
@@ -41,6 +44,8 @@ files --provider s3 --bucket uploads download reports/q1.pdf --stdout > q1.pdf
 files --provider s3 --bucket uploads list --prefix logs/ --all | jq '.items[].key'
 files --provider s3 --bucket uploads url reports/q1.pdf --expires-in 600
 files --provider s3 --bucket uploads sign-upload uploads/avatar.png --expires-in 600 --max-size 5242880 --content-type image/png
+files --provider s3 --bucket uploads search 'reports/**/*.pdf' --max-results 20
+files --provider s3 --bucket uploads capabilities
 ```
 
 ## Global flags
@@ -78,15 +83,20 @@ files --provider s3 --bucket uploads download docs/a.pdf docs/b.pdf --out-dir ./
 files --provider s3 --bucket old --verbose transfer \
   --to '{"provider":"r2","bucket":"new","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}' \
   --prefix uploads/ --no-overwrite --concurrency 16
+
+# Mirror only new/changed objects (size compare across providers); preview first
+files --provider s3 --bucket live --dry-run sync --to '{"provider":"r2","bucket":"backup"}' --compare size --prune
 ```
 
 ## MCP server
 
-`files … mcp` boots an MCP server on stdio. **Read-only by default** — exposes `download`, `head`, `exists`, `list`, `url`. Pass **`--allow-writes`** to also expose `upload`, `delete`, `copy`, `move`, `sign-upload`, `transfer`. Provider + credentials are bound at startup (and the global `--key-prefix`/`--timeout`/`--retries` bind to the server's `Files` instance), so the agent only passes operation arguments, never secrets. Tools mirror the CLI surface: `download` takes a byte `range`, `head`/`exists` take arrays + `concurrency`/`stopOnError`, `list` takes `all`; with writes, `upload` takes `multipart`, `delete` takes arrays, `transfer` takes a `to` config. Binary payloads roundtrip as base64 (download bytes, and `upload` with a `base64` body).
+`files … mcp` boots an MCP server on stdio. **Read-only by default** — exposes `download`, `head`, `exists`, `list`, `search`, `url`, `capabilities`. Pass **`--allow-writes`** to also expose `upload`, `delete`, `copy`, `move`, `sign-upload`. The `transfer` and `sync` tools need `--allow-writes` **and** a destination fixed by the operator at startup with `mcp --to '<json>'` — the agent never supplies the destination or its credentials. Provider + credentials are bound at startup (and the global `--key-prefix`/`--timeout`/`--retries` bind to the server's `Files` instance), so the agent only passes operation arguments, never secrets. Tools mirror the CLI surface: `download` takes a byte `range`, `head`/`exists` take arrays + `concurrency`/`stopOnError`, `list` takes `all`; with writes, `upload` takes `multipart` and `delete` takes arrays. Binary payloads roundtrip as base64 (download bytes, and `upload` with a `base64` body).
 
 ```sh
 files --provider s3 --bucket uploads mcp                 # read-only
 files --provider s3 --bucket uploads mcp --allow-writes  # opt into mutations
+files --provider s3 --bucket uploads mcp --allow-writes \
+  --to '{"provider":"r2","bucket":"backup"}'             # + transfer/sync to this destination
 ```
 
 ```jsonc

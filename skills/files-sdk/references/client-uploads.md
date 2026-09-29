@@ -18,7 +18,7 @@ await files.signedUploadUrl(key, {
 });
 ```
 
-`minSize` defaults to `1` (rejects empty uploads). Pass `0` if zero-byte uploads are legitimate for your use case.
+`minSize` defaults to `1` (rejects empty uploads). Pass `0` if zero-byte uploads are legitimate for your use case. Providers with no minimum-size constraint (Cloudinary, UploadThing, Vercel Blob) throw on an explicit positive `minSize`, and adapters that can't bind `contentType` into the signature (bun-s3, Supabase, Cloudinary) throw when you pass it — both fail closed rather than hand out a URL that doesn't enforce what you asked for.
 
 ## Return shape (discriminated union)
 

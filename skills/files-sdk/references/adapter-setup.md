@@ -9,8 +9,8 @@ import { s3 } from "files-sdk/s3";
 
 const adapter = s3({
   bucket: "uploads",
-  region: "us-east-1", // optional; AWS SDK falls back to AWS_REGION
-  // credentials: { accessKeyId, secretAccessKey, sessionToken? }, // optional; ADC otherwise
+  region: "us-east-1", // optional; falls back to AWS_REGION / AWS_DEFAULT_REGION
+  // credentials: { accessKeyId, secretAccessKey, sessionToken? }, // optional; AWS default chain otherwise
   // endpoint, forcePathStyle,                                     // for self-hosted/S3-compatible
   // publicBaseUrl: "https://cdn.example.com",                     // skip signing on url()
   // defaultUrlExpiresIn: 3600,
@@ -66,7 +66,8 @@ Reads/writes still go through the binding (no egress fees, no extra round trip).
 Gotchas:
 
 - Binding-only with no `publicBaseUrl` and no HTTP creds → `url()` throws. There's no signing primitive available to a binding.
-- The HTTP adapter is loaded via dynamic import so a binding-only Worker bundle doesn't pull in `@aws-sdk/client-s3` (~500 KB+).
+- The HTTP engine is loaded lazily, so a binding-only Worker bundle doesn't pull in `@aws-sdk/client-s3` (~500 KB+).
+- HTTP mode has two engines: `client: "aws-sdk"` (full surface, needs the `@aws-sdk/*` peers) and `client: "fetch"` (SigV4 `fetch` via aws4fetch, no AWS SDK; no multipart/resumable uploads, bulk deletes fan out per key). Inside Cloudflare Workers it defaults to `"fetch"`.
 
 ## Vercel Blob — `files-sdk/vercel-blob`
 
@@ -94,7 +95,7 @@ A few things to know:
 - **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either).
 - **Explicit `token` always wins** over OIDC env vars, mirroring the SDK. Set it only when you actually want to override.
 - **`access` is fixed at construction.** A single `Files` instance is unambiguously public or private. Need both? Instantiate two adapters.
-- **`access: "private"` makes `url()` throw.** Private blobs have no permanent public URL. Use `download()` instead. `signedUploadUrl` does still work.
+- **`access: "private"` makes `url()` presign.** Private blobs have no permanent public URL, so `url()` returns a presigned `GET` scoped to that key that expires after `expiresIn` (default 3600 via `defaultUrlExpiresIn`; Vercel caps it at 7 days). `responseContentDisposition` still throws (Vercel URLs can't carry it), and range downloads aren't available in private mode. `signedUploadUrl` works in both modes.
 - **`allowOverwrite: true` is the default** so `addRandomSuffix: false` works at all — Vercel rejects same-pathname uploads otherwise. If you want create-only semantics, set `allowOverwrite: false` and handle the resulting `Conflict`.
 
 ## Google Cloud Storage — `files-sdk/gcs`
@@ -159,6 +160,8 @@ const adapter = minio({
 
 Thin wrapper over `s3()` with MinIO-friendly defaults: `forcePathStyle: true`, region default, error messages relabeled `"MinIO error"`. `endpoint` is required. **`files-sdk/rustfs`** (`rustfs()`) is the same shape for RustFS servers, with `RUSTFS_ACCESS_KEY_ID` / `RUSTFS_SECRET_ACCESS_KEY` env fallbacks (and the server's own `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY`). Other S3-compatible stores (DigitalOcean Spaces, Wasabi, Backblaze B2, Tigris, Storj, Hetzner, etc.) follow the same wrapper pattern with provider-specific defaults.
 
+**No AWS SDK / Cloudflare Workers:** `r2()`, `minio()`, and `rustfs()` accept `client: "fetch"` to swap `@aws-sdk/client-s3` for a SigV4 `fetch` engine (aws4fetch), and default to it inside Workers. For any other S3-compatible endpoint, use `s3Fetch()` from **`files-sdk/s3-fetch`** (static credentials only, `forcePathStyle: true` for MinIO-style hosts). The fetch engine covers upload, download (+ ranges), head, list (+ delimiter), copy, `url()`, and `signedUploadUrl()`; `multipart`/`control` uploads throw and `ReadableStream` bodies are buffered. The other S3 wrappers always use the AWS SDK.
+
 ## Local filesystem — `files-sdk/fs`
 
 ```ts
@@ -174,8 +177,8 @@ Notes:
 
 - Paths that resolve outside `root` (e.g. `../etc/passwd`) throw `Provider`.
 - Without `urlBaseUrl`, `url()` returns a `file://` URL — fine for CLIs/tests, not for browsers.
-- `signedUploadUrl()` returns a URL with `?expires=...` for parity with the cloud adapters; the fs adapter itself does not enforce the expiry — your dev upload handler is expected to validate it.
+- `signedUploadUrl()` throws `Provider` — the fs adapter has no upload server or signer to enforce expiry, size, or content type. Upload through `files.upload()` or your own route.
 
 ## The shape every adapter shares
 
-Every adapter exports a factory that returns an `Adapter` satisfying the `Adapter` interface in `packages/files-sdk/src/index.ts`. As long as it satisfies that interface, the `Files` API works identically. When in doubt about a less-common adapter, read its `index.ts` — they're all small.
+Every adapter exports a factory that returns an `Adapter` satisfying the `Adapter` interface (declared in `node_modules/files-sdk/dist/index.d.ts`). As long as it satisfies that interface, the `Files` API works identically. When in doubt about a less-common adapter, read its options JSDoc in `node_modules/files-sdk/dist/<adapter>/index.d.ts` or its page under the bundled `docs/adapters/`, and check `files.capabilities` at runtime.

@@ -12,7 +12,7 @@ The repository is hosted on GitHub at [haydenbleasel/files-sdk](https://github.c
 
 Files SDK aims for a small, honest API surface that works the same way across every backend. Before opening a PR, it helps to understand the design intent:
 
-- **Common subset, not lowest common denominator.** The core `Files` API only exposes operations every adapter can implement cleanly: `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`/`listAll`, `search`, `url`, `signedUploadUrl`, the `*Many` bulk variants, and `file(key)` handles. Provider-specific features (S3 versioning, R2 lifecycle, Vercel Blob folders, etc.) are reachable through `files.raw`, which returns the underlying native client.
+- **Common subset, not lowest common denominator.** The core `Files` API only exposes operations every adapter can implement cleanly: `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`/`listAll`, `search`, `url`, `signedUploadUrl`, the array (bulk) forms of `upload`/`download`/`head`/`exists`/`delete`, and `file(key)` handles. Provider-specific features (S3 versioning, R2 lifecycle, Vercel Blob folders, etc.) are reachable through `files.raw`, which returns the underlying native client.
 - **Fail loud, never degrade silently.** When an adapter can't honor an option — a byte `range`, a folder `delimiter`, user `metadata`, `cacheControl`, a resumable `control` — the `Files` wrapper throws before any provider I/O, gated on the adapter's `supports*` capability flags. A missing capability is an error, not a quiet correctness bug.
 - **Cross-cutting behavior is a plugin, not a core option.** Validation, encryption, compression, versioning, soft-delete, caching, tiering, failover, auditing, tracing, and so on ship as opt-in plugins (`files-sdk/<plugin>`) that compose as an ordered onion around the core. If a proposal would add a knob to every adapter, it probably belongs in a plugin instead.
 - **Adapter injection, not functional.** The shape is `new Files({ adapter: s3({ ... }), plugins: [...] })`, similar to Vercel's Chat SDK rather than the AI SDK.
@@ -24,7 +24,7 @@ If you're proposing a feature that doesn't fit into the common subset, the answe
 
 The repo is a Bun + Turbo monorepo:
 
-- `packages/files-sdk` — the published `files-sdk` package. Every folder under `src/` that has an `index.ts` is its own subpath export (`files-sdk/s3`, `files-sdk/validation`, …), so consumers only bundle what they import.
+- `packages/files-sdk` — the published `files-sdk` package. Every folder under `src/` that has an `index.ts` is its own subpath export (`files-sdk/s3`, `files-sdk/validation`, …), except `cli/`, which is the `files` bin, so consumers only bundle what they import.
   - `src/index.ts` — the `Files` class, the `Adapter` and `FilesPlugin` contracts, `handlers()`/`createFiles()`, and every shared option/result type (`Body`, `StoredFile`, `UploadResult`, etc.)
   - Adapters (48 at the time of writing; the live list is `src/providers/index.ts`):
     - Object stores with their own implementation: `src/s3/`, `src/gcs/`, `src/azure/`, `src/bun-s3/`
@@ -36,13 +36,13 @@ The repo is a Bun + Turbo monorepo:
   - App layer: `src/api/` (the gateway core), `src/client/`, `src/react/`, `src/vue/`, `src/svelte/` (`useFiles`), and one thin binding per framework (`next`, `hono`, `express`, `fastify`, `koa`, `nestjs`, `nitro`, `astro`, `sveltekit`, `tanstack-start`)
   - AI tools: `src/ai-sdk/`, `src/openai/`, `src/claude/`
   - `src/cli/` — the `files` CLI and MCP server; `registry.ts` lazy-loads one adapter per provider
-  - `src/providers/` — the pure-data provider catalog (names, descriptions, env vars). It imports no SDKs and is the single source of truth behind the docs catalog and the CLI's provider list
+  - `src/providers/` — the pure-data provider catalog (names, descriptions, env vars). It imports no SDKs and is the single source of truth for the provider list: a drift test checks the CLI registry and every adapter's `readEnv` calls against it, and the docs site derives its adapter count from it
   - `src/internal/` — shared helpers used by every adapter and plugin
     - `core.ts` — body normalization, URL helpers, default expiry, the public-vs-sign precedence rule, and the `makeErrorMapper` factory
     - `errors.ts` — `FilesError` and the `FilesErrorCode` union
     - `stored-file.ts` — the `createStoredFile` wrapper returned from `download()`
     - `env.ts` — environment-variable lookup (`readEnv`)
-    - `s3-engine.ts` / `s3-fetch.ts` — the two S3 engines (`@aws-sdk/client-s3` and aws4fetch) every S3-compatible adapter builds on
+    - `s3-engine.ts` / `s3-fetch.ts` — the engine switch (with a lazily loaded `@aws-sdk/client-s3` adapter) and the aws4fetch engine behind the `client: "aws-sdk" | "fetch"` option on `r2`, `minio`, and `rustfs`, and behind `files-sdk/s3-fetch`
     - `retry.ts`, `is.ts`, `json.ts`, `node-stream.ts`, `router-core/`, `files-router/` — retries, type predicates, JSON types, stream helpers, and the shared gateway router
   - `test/` — Bun tests, including `fake-adapter.ts` and `fake-s3-server.ts` for exercising the `Files` class and the fetch engine without a real backend
   - `scripts/build.ts` — the build (Bun bundler for JS, TypeScript 7's native compiler for `.d.ts`, then a docs copy)
@@ -74,7 +74,7 @@ From `packages/files-sdk`:
 
 - `bun run dev` — rebuild on change (Bun bundler + tsgo, watch mode)
 - `bun test` — run only the SDK tests
-- `bun test <substring>` — run a subset (Bun filters are substrings, not globs: `bun test s3` also matches `minio`, `r2`, …)
+- `bun test <substring>` — run a subset (Bun filters are path substrings, not globs: `bun test s3` also runs `bun-s3`, `s3-fetch*`, `cli-conditional-s3`, … but not `minio` or `r2`; pass a file path to run exactly one file)
 - `bun run test:coverage` — tests with the per-file coverage gate (see [Tests](#tests)). Run it from this directory; from the root the threshold isn't applied.
 - `bun run size` — minified/gzipped size of every subpath export
 
@@ -85,7 +85,7 @@ cd apps/web
 bun dev
 ```
 
-A husky pre-commit hook runs `check`, `types`, `test:coverage`, and the SDK build, so expect a commit to take a few minutes. Please don't bypass it with `--no-verify`; CI runs the same steps on Node 20, 22, 24, and Bun.
+A husky pre-commit hook runs `check`, `types`, `test:coverage`, and the SDK build, so expect a commit to take a few minutes. Please don't bypass it with `--no-verify`: it is the only place the coverage gate is enforced. CI builds the SDK and runs `bun test` (without the coverage threshold) in a Node 20/22/24 + Bun matrix — the tests themselves always execute under Bun, and the Node legs smoke-test the built package under that Node version — and runs `check` and `types` once.
 
 ## Code Style
 
@@ -104,7 +104,7 @@ Each adapter lives in its own folder under `packages/files-sdk/src/<provider>/` 
 A few conventions worth keeping:
 
 - **Build on `internal/core.ts`, don't reinvent it.** Body normalization (`normalizeBody`), public URL joining (`joinPublicUrl`), the default expiry (`DEFAULT_URL_EXPIRES_IN`), the public-vs-sign precedence rule (`resolveUrlStrategy`), and the error mapper factory (`makeErrorMapper`) are shared. These exist partly to cut boilerplate but mainly to codify security-relevant invariants (notably "asking for `responseContentDisposition` forces signing") in one place. New adapters should use them; existing adapters that don't yet are good cleanup targets.
-- **S3-compatible providers wrap the S3 engine, they don't fork it.** MinIO, RustFS, R2, DigitalOcean Spaces, Wasabi, Backblaze B2, Tigris, Storj, Hetzner, Akamai, and the rest of the S3-compatible list build on `internal/s3-engine.ts` with provider-specific defaults (`forcePathStyle`, region, error relabeling, `url()` behavior). Most offer `client: "aws-sdk" | "fetch"` — the aws4fetch engine needs no `@aws-sdk/*` install and is selected automatically on Cloudflare Workers. New S3-compatible providers should copy the `minio/` shape. The bundle savings of a hand-rolled implementation aren't worth the maintenance cost.
+- **S3-compatible providers wrap `s3()`, they don't fork it.** DigitalOcean Spaces, Wasabi, Backblaze B2, Tigris, Storj, Hetzner, Akamai, and most of the S3-compatible list import `../s3/index.js` and add provider-specific defaults (`forcePathStyle`, region, endpoint derivation, error relabeling, `url()` behavior); they always use the AWS SDK. R2, MinIO, and RustFS go through `internal/s3-engine.ts` instead and offer `client: "aws-sdk" | "fetch"` — the aws4fetch engine needs no `@aws-sdk/*` install and is selected automatically on Cloudflare Workers. Copy the `minio/` shape if a new provider should offer both engines, or a plain wrapper like `wasabi/` otherwise. The bundle savings of a hand-rolled implementation aren't worth the maintenance cost.
 - **Declare capabilities honestly.** Set `supportsRange`, `supportsDelimiter`, `supportsMetadata`, `supportsCacheControl`, `supportsServerSideCopy`, `signedUrl`, and `conditional` only for what the provider actually does natively. The wrapper uses these to fail loudly instead of silently degrading, and `files.capabilities` surfaces them to callers.
 - **Read credentials via `readEnv`** and declare every env var the adapter reads in the `src/providers/index.ts` catalog entry — a test checks the two stay in sync.
 - **Never statically import an optional peer from a path consumers might take without it.** `files-sdk/s3` imports `@aws-sdk/client-s3` by design; everything that needs to stay SDK-free on edge runtimes goes through the lazy engine in `internal/s3-engine.ts`. `test/build-output.test.ts` walks the built bundles' static import graph and fails if an optional peer leaks in.
@@ -131,7 +131,7 @@ Conventions:
 ## Tests
 
 - We use `bun test`. Test files live in `packages/files-sdk/test/`.
-- **Coverage is gated per file at 98% lines and 98% functions** (`packages/files-sdk/bunfig.toml`). New code needs tests that meet it; the pre-commit hook and CI enforce it.
+- **Coverage is gated per file at 98% lines and 98% functions** (`packages/files-sdk/bunfig.toml`). New code needs tests that meet it; the pre-commit hook enforces it (CI runs plain `bun test` without the threshold, so don't skip the hook).
 - The S3 tests and the aws-sdk path of every S3-compatible wrapper use [`aws-sdk-client-mock`](https://github.com/m-radzikowski/aws-sdk-client-mock). The fetch engine is tested against `test/fake-s3-server.ts`. Other adapters mock at the `fetch` or SDK-client boundary as appropriate.
 - Don't use `mock.module` — it leaks across test files and can't be reverted. Inject the dependency instead.
 - For tests that exercise the `Files` class itself (not a specific provider), use `fake-adapter.ts` or the `memory` adapter rather than mocking a real provider.

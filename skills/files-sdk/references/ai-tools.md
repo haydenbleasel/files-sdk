@@ -121,7 +121,7 @@ const agent = new Agent({
 await run(agent, "List files under reports/.");
 ```
 
-The agents-shape returns a record keyed by tool name; spread or `Object.values()` to plug into the `tools` array.
+The agents-shape returns a record keyed by tool name; spread or `Object.values()` to plug into the `tools` array. Its `uploadFile` takes **no `metadata`** argument — the Agents SDK runs tools in strict JSON-schema mode, which can't express a free-form map. Use the Responses surface (or call `files.upload` yourself) if the model must set metadata.
 
 ## Anthropic Claude Agent SDK — `files-sdk/claude`
 
@@ -151,8 +151,8 @@ for await (const message of query({
 What the bundle exposes:
 
 - `mcpServers` — pass into `query({ options: { mcpServers } })`.
-- `allowedTools` — strings of the form `mcp__<serverName>__<toolName>`. Pass into `query({ options: { allowedTools } })`.
-- `canUseTool` — ready-made approval callback. Allows reads, allows writes whose `needsApproval` resolves to `false`, denies the rest with `"requires approval"`.
+- `allowedTools` — strings of the form `mcp__<serverName>__<toolName>`, listing **only** the included tools that need no approval. The Agent SDK skips `canUseTool` for anything in `allowedTools`, so approval-gated writes are deliberately left out. Pass into `query({ options: { allowedTools } })`.
+- `canUseTool` — ready-made permission callback. Allows this server's (`mcp__<serverName>__*`) tools that need no approval, denies approval-gated writes with `"requires approval"`, and **denies every other tool** (`Bash`, `Write`, other MCP servers) with a message saying so. If the agent needs other tools too, compose it with your own callback (below).
 - `needsApproval(toolName)` — accepts both bare names (`"uploadFile"`) and prefixed (`"mcp__files__uploadFile"`).
 - `server` and `serverName` — the raw MCP server instance and its name, for callers composing into a larger `mcpServers` map.
 
@@ -162,6 +162,20 @@ Override the server name when composing multiple MCP servers:
 createClaudeFileTools({ files, serverName: "user-uploads" });
 // allowedTools entries become `mcp__user-uploads__listFiles`, etc.
 ```
+
+To let the agent use other tools as well, route on the server prefix and hand everything else to your own policy:
+
+```ts
+const tools = createClaudeFileTools({ files });
+const filesPrefix = `mcp__${tools.serverName}__`;
+
+const canUseTool: typeof tools.canUseTool = (toolName, input, options) =>
+  toolName.startsWith(filesPrefix)
+    ? tools.canUseTool(toolName, input, options) // files-sdk's own gate
+    : myCanUseTool(toolName, input, options); // Bash, Write, other servers
+```
+
+The tools carry MCP annotations: reads are `readOnlyHint: true`; `uploadFile`, `deleteFile`, and `copyFile` are `destructiveHint: true` (a copy overwrites its destination); `signUploadUrl` is non-destructive.
 
 ## Choosing across the three
 

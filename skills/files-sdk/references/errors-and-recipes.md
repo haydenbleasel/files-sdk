@@ -79,16 +79,21 @@ If you actually want "best effort, log and move on," catch `FilesError` and insp
 
 ## The `head()` accessor footgun
 
-`head(key)` returns a `StoredFile`. The metadata fields (`size`, `contentType`, `etag`, `metadata`) are populated immediately, but `text()` / `arrayBuffer()` / `blob()` / `stream()` **lazily issue a full GET on first use**. If all you want is metadata, don't touch the body accessors — they are not free.
+`head(key)` returns a `StoredFile`. The metadata fields (`size`, `type`, `etag`, `lastModified`, `metadata`) are populated immediately, but `text()` / `arrayBuffer()` / `blob()` / `stream()` **lazily issue a full GET on first use**. If all you want is metadata, don't touch the body accessors — they are not free.
 
 ## URL key encoding
 
-The SDK does not URL-encode keys when building public URLs (or Vercel Blob's fast path). The caller is responsible. If keys are derived from untrusted input:
+Pass **raw** keys to `url()`. URLs built from `publicBaseUrl` / `urlBaseUrl` (and Vercel Blob's public fast path) percent-encode each key segment for you (`/` is kept as the separator), and signing adapters encode the key through the provider's signer. Pre-encoding double-encodes (`%20` becomes `%2520`) — and on a signing adapter it names a different object.
 
 ```ts
-const safe = pathSegments.map(encodeURIComponent).join("/");
-const url = await files.url(safe);
+// Right — the SDK encodes "reports/Q1 2026.pdf" → reports/Q1%202026.pdf
+const url = await files.url("reports/Q1 2026.pdf");
+
+// Wrong — double-encodes, or points at a key that doesn't exist
+const broken = await files.url(encodeURIComponent("reports/Q1 2026.pdf"));
 ```
+
+If keys are derived from untrusted input, validate them instead (reject `..` segments, control characters, and anything outside the prefix you expect) — or scope the instance with `new Files({ prefix })`.
 
 ## Migration: `@aws-sdk/client-s3` → `files-sdk/s3`
 
@@ -184,7 +189,7 @@ await files.delete("avatars/abc.png");
 
 The big difference: `@vercel/blob` is URL-keyed (`head(url)`, `del(url)`); files-sdk is key-keyed (`head(key)`, `delete(key)`). The key is the pathname you uploaded.
 
-For private blobs, swap `access: "public"` → `access: "private"` and remember that `files.url(key)` will throw — use `files.download(key)` instead.
+For private blobs, swap `access: "public"` → `access: "private"`. `files.url(key)` then returns a presigned `GET` scoped to that key that expires after `expiresIn` (default 3600 seconds) instead of a permanent CDN URL; `files.download(key)` reads the body directly.
 
 ## Migration: `@google-cloud/storage` → `files-sdk/gcs`
 

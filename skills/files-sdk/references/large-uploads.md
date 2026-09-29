@@ -1,6 +1,6 @@
 # Large & resilient transfers
 
-Four per-call options on `upload`/`download` for big objects. All are single-key options — none are available in the [bulk array form](bulk-and-transfer.md) (except `multipart`, which is a per-item field there).
+Four per-call options on `upload`/`download` for big objects. All are single-key options — none are available in the [bulk array form](bulk-and-transfer.md) (except `multipart`, which is a per-item field there, and `onProgress`, which carries the item `key` there).
 
 ## `multipart` — parallel parts
 
@@ -17,7 +17,7 @@ await files.upload("backups/db.tar", stream, {
 ```
 
 - **S3 + S3-compatible** (incl. R2 HTTP): runs through the optional `@aws-sdk/lib-storage` peer dep, falling back to a single `PutObject` for small bodies. **Unknown-length `ReadableStream` bodies auto-engage multipart even without the flag.**
-- **OneDrive**: bodies over 250 MB (and any `multipart` request) use a chunked upload session.
+- **OneDrive / SharePoint**: bodies over 250 MB (and any `multipart` request) use a chunked upload session.
 - **GCS / Firebase**: switch to a resumable upload; `partSize` maps to chunk size.
 - **Azure Blob**: maps `partSize`/`concurrency` to parallel block-upload tuning.
 - **Dropbox**: streams `ReadableStream` bodies through its upload session chunk-by-chunk (never buffers the whole file); `partSize` rounds to a 4 MiB multiple.
@@ -73,9 +73,9 @@ await files.upload("backups/db.tar", file, {
 ### Requirements & support
 
 - **Known-length body only** (`File`, `Blob`, `ArrayBuffer`, typed array, `string`). A bare `ReadableStream` is rejected — a consumed stream can't be replayed. Keep the `File` handle around (as a browser upload widget does).
-- **Cross-process resume:** S3 + S3-compatible (token carries the `UploadId`; resume via `ListParts`, abort via `AbortMultipartUpload`), GCS, Firebase, Google Drive, Azure, OneDrive, Dropbox, Vercel Blob, local `fs` (`.fls-part` temp file), FTP, SFTP, Supabase (TUS), Appwrite, Cloudinary.
+- **Cross-process resume:** S3 + S3-compatible on the AWS SDK engine (token carries the `UploadId`; resume via `ListParts`, abort via `AbortMultipartUpload`), GCS, Firebase, Google Drive, Azure, OneDrive, SharePoint, Dropbox, Vercel Blob, local `fs`, FTP, and SFTP (these three stage to `<key>.fls-part` and rename onto the key on completion, so a partial upload is never visible at the key), Supabase (TUS), Appwrite, Cloudinary.
 - **In-process only** (`toJSON()` can't resume in a new process): Box, bun-s3, memory.
-- **Throws** `FilesError` "not supported" when `control` is passed: Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, and the rest.
+- **Throws** `FilesError` "not supported" when `control` is passed: Netlify Blobs, UploadThing, PocketBase, Bunny Storage, Convex, WebDAV, the R2 Workers binding, the fetch engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), and the rest.
 - `partSize`/`concurrency` come from `multipart` and tune the same trade-off; each part is retried individually under the call's retry policy.
 
 > The Supabase (TUS), Appwrite, and Cloudinary resumable drivers are built to each provider's documented protocol and covered by mocked tests, but haven't been exercised against a live account — verify end-to-end before relying on them in production.
@@ -94,7 +94,7 @@ const head = await files.download("video.mp4", {
 const rest = await files.download("video.mp4", { range: { start: 1024 } });
 ```
 
-Both bounds are **0-based** and `end` is **inclusive**. The returned `StoredFile.size` reflects the range length, not the full object. **Supported** by adapters with a native range primitive (S3 + S3-compatible, bun-s3, GCS, Firebase, Azure, `fs`, memory); **throws** a `FilesError` on the rest rather than silently downloading the whole object and slicing it — check `adapter.supportsRange` to branch at runtime.
+Both bounds are **0-based** and `end` is **inclusive**. The returned `StoredFile.size` reflects the range length, not the full object. **Supported** by adapters with a native range primitive: S3 + S3-compatible (both engines, incl. R2 HTTP and the R2 Workers binding), bun-s3, GCS, Firebase, Azure, Google Drive, Dropbox, Box, OneDrive, SharePoint, Cloudinary, UploadThing, PocketBase, WebDAV, FTP, SFTP, Vercel Blob (public mode), `fs`, and memory. **Throws** a `FilesError` on Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, and Vercel Blob (private mode) rather than silently downloading the whole object and slicing it — check `files.capabilities.rangeRead` (or `adapter.supportsRange`) to branch at runtime.
 
 ## `onProgress` — upload progress
 

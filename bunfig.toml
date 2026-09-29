@@ -1,7 +1,9 @@
 [install]
 # Hoisted (flat) node_modules instead of bun's default isolated `.bun` store.
-# Turbopack's loader resolver can't follow the isolated store's symlinks to
-# nested deps (e.g. the `zod` that fumadocs-mdx's MDX loader imports), which
-# 500s every docs page; a flat layout resolves cleanly and matches a typical
-# npm/CI install. Node and webpack resolve either layout fine.
+# Originally adopted for the old Next.js/Turbopack docs site, which couldn't
+# follow the isolated store's symlinks to nested deps. The site is Blume/Astro
+# now; the flat layout stays because it matches a typical npm/CI install and the
+# workspace is set up around it (e.g. apps/web declares the js-yaml and cookie
+# packages Astro externalizes so they resolve when hoisted). Switching linkers
+# needs a fresh `bun install` and a full build/test pass.
 linker = "hoisted"

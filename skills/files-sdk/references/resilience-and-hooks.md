@@ -15,7 +15,7 @@ const files = new Files({
 await files.upload("avatars/abc.png", file, { retries: 0 }); // opt one call out
 ```
 
-- **Only `Provider` failures** retry — network blips, throttling, 5xx. `NotFound`/`Unauthorized`/`Conflict` are deterministic and returned immediately. Aborts and timeouts are never retried. **`ReadableStream` uploads are never retried** (a consumed stream can't be replayed) — buffered bodies retry normally.
+- **Only `Provider` failures** retry — network blips, throttling, 5xx. `NotFound`/`Unauthorized`/`Conflict` are deterministic and returned immediately. Aborts and timeouts are never retried, and neither is a `Provider` error with `permanent: true` (a deterministic SDK-side rejection, such as an option the adapter can't honor or a fail-closed plugin). **`ReadableStream` uploads are never retried** (a consumed stream can't be replayed) — buffered bodies retry normally.
 - **Default backoff** is exponential — `100 * 2 ** (attempt - 1)` ms (100, 200, 400, …), capped at 30s, no jitter. `attempt` is `1` for the first retry. A caller-supplied `backoff` is used verbatim — no cap — so add your own ceiling/jitter.
 - **Bulk forms don't retry** — they surface per-key failures in `errors[]` so you re-drive only what failed.
 
@@ -87,6 +87,7 @@ const base = new Files({
   timeout: 10_000,
 });
 const view = base.readonly(); // reuses adapter/prefix/timeout/retries/hooks — no second client
+view.isReadOnly; // true (base.isReadOnly is false)
 ```
 
 Still allowed: `download`, `head`, `exists`, `list`, `listAll`, `url`, `file(key)` (for reads). **Blocked** with `FilesError { code: "ReadOnly" }`: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the `file(key)` write helpers (`upload`/`delete`/`copyTo`/`copyFrom`/`moveTo`/`moveFrom`/`signedUploadUrl`). It does **not** lock down `files.raw` — code writing through the escape hatch bypasses the guard by design. (Distinct from the AI-tools `readOnly` option, which _removes_ the write tools from an agent's toolset.)

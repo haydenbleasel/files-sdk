@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository. Humans should read `.gith
 
 ## What this repo is
 
-`files-sdk` is a unified storage SDK for object/blob backends: one `Files` class, one `Adapter` interface, 50+ adapters and ~15 plugins, each published as its own subpath (`files-sdk/s3`, `files-sdk/validation`, …). It also ships a `files` CLI + MCP server, app-layer gateways for most web frameworks, and `useFiles` bindings for React/Vue/Svelte.
+`files-sdk` is a unified storage SDK for object/blob backends: one `Files` class, one `Adapter` interface, 48 adapters and 15 plugins, each published as its own subpath (`files-sdk/s3`, `files-sdk/validation`, …). It also ships a `files` CLI + MCP server, app-layer gateways for most web frameworks, and `useFiles` bindings for React/Vue/Svelte.
 
 Bun + Turbo monorepo:
 
@@ -13,14 +13,14 @@ Bun + Turbo monorepo:
 | `packages/files-sdk` | The SDK, CLI, gateways, plugins. `src/index.ts` (~3.8k lines) is the core. | Yes, npm `files-sdk` |
 | `apps/web` | Docs + marketing site (Blume/Astro), deployed to Cloudflare Workers. Owns the docs source. | No |
 | `packages/videos` | Remotion launch/release videos. | No |
-| `skills/files-sdk` | The agent skill shipped for SDK consumers. Must track user-facing changes. | Bundled |
+| `skills/files-sdk` | The agent skill for SDK consumers. Must track user-facing changes. | Via the repo, not the npm tarball (`files` is `dist` + `docs`) |
 
 Design intent that decides most API questions:
 
 - **Common subset, not lowest common denominator.** Core exposes only what every adapter can do cleanly. Provider-specific features go behind `files.raw` (the native client). "Use `raw`" beats "add it to the core".
 - **Fail loud, never degrade silently.** If an adapter can't honor an option (`range`, `delimiter`, `metadata`, `cacheControl`, `control`), the `Files` wrapper throws before any provider I/O, gated on the adapter's `supports*` flags. Plugins that can't enforce a guarantee fail closed.
 - **Web-standard I/O.** Bodies are `Blob`/`File`/`ReadableStream`/bytes/`string`. No provider types leak into the public surface.
-- **Errors are normalized** to `FilesError` with codes `NotFound | Unauthorized | Conflict | Provider`, original error in `cause`.
+- **Errors are normalized** to `FilesError` with codes `NotFound | Unauthorized | Conflict | Provider` (plus the SDK-native `ReadOnly`), original error in `cause`.
 - **Optional peers are never bundled and never statically imported** from a path that a consumer might take without installing them. See "Bundling".
 
 ## Commands
@@ -37,7 +37,7 @@ bun run fix                # ultracite autofix; run it 2–3× until it reports 
 bun changeset              # add a changeset (see "Changesets")
 
 # packages/files-sdk
-bun test <substring>       # Bun filters are substrings, not globs: `bun test s3` runs s3*, minio, r2…
+bun test <substring>       # path substrings, not globs: `bun test s3` also runs bun-s3, s3-fetch*, cli-conditional-s3… (not minio/r2); pass a path for one file
 bun run test:coverage      # the 98% per-file gate. Only meaningful from THIS directory (root cwd = no gate)
 bun run dev                # rebuild on change
 bun run size               # per-subpath minified/gzipped sizes
@@ -57,14 +57,14 @@ Notes:
 
 - **Pre-commit** (husky) runs `check`, `types`, `test:coverage`, and `build --filter files-sdk`. Budget a few minutes per commit. Don't bypass it with `--no-verify`; fix what it reports.
 - Commits are signed via the maintainer's 1Password SSH agent. If the hook pipeline goes green and the commit then fails with `failed to write commit object`, the vault is locked. Ask the user to unlock it and re-run. Never disable signing.
-- **CI** (`.github/workflows/validate.yml`) builds and tests on Node 20/22/24 and Bun, then lints and typechecks. Linux tsgo catches type errors that a macOS run with stale `node_modules` can miss; when a green local run fails in CI, read the job logs (`gh api .../jobs/<id>/logs`) rather than guessing.
+- **CI** (`.github/workflows/validate.yml`) builds the SDK and runs plain `bun test` in a Node 20/22/24 + Bun matrix (the tests always execute under Bun; the Node legs only smoke-test the built package under that Node), then lints and typechecks once. CI applies no coverage threshold; the pre-commit hook is the only gate. Linux tsgo catches type errors that a macOS run with stale `node_modules` can miss; when a green local run fails in CI, read the job logs (`gh api .../jobs/<id>/logs`) rather than guessing.
 - **Release** runs on every push to `main`: changesets opens/updates a "Version Packages" PR; merging it publishes to npm and only then deploys the docs site. Don't edit `CHANGELOG.md` or bump versions by hand.
 - **Live tests** run only via `workflow_dispatch`, never on fork PRs.
 
 ## Source layout (`packages/files-sdk/src`)
 
 - `index.ts` — `Files`, `Adapter`, `FilesPlugin`, `handlers()`, `createFiles()`, every public option/result type. Big on purpose; read the relevant region, not the whole file.
-- `<provider>/index.ts` — one folder per adapter, published as `files-sdk/<provider>`. S3-compatible providers (minio, rustfs, r2, spaces, wasabi, b2, tigris, hetzner, …) **wrap `s3()` via `internal/s3-engine.ts`**; they do not reimplement S3. Most offer `client: "aws-sdk" | "fetch"`, with the aws4fetch engine (`internal/s3-fetch.ts`, public as `files-sdk/s3-fetch`) auto-selected on Cloudflare Workers.
+- `<provider>/index.ts` — one folder per adapter, published as `files-sdk/<provider>`. S3-compatible providers **wrap `s3()`**; they do not reimplement S3. Most (spaces, wasabi, b2, tigris, hetzner, …) import `../s3/index.js` directly and always use the AWS SDK. r2, minio, and rustfs go through `internal/s3-engine.ts` instead and offer `client: "aws-sdk" | "fetch"`, with the aws4fetch engine (`internal/s3-fetch.ts`, public as `files-sdk/s3-fetch`) auto-selected on Cloudflare Workers.
 - `<plugin>/index.ts` — plugins (`validation`, `encryption`, `versioning`, …), same one-folder-one-subpath rule, kebab-case subpath (`content-type`, `soft-delete`).
 - `internal/` — shared helpers. Use them instead of reinventing: `core.ts` (body normalization, URL joining, `resolveUrlStrategy`, `makeErrorMapper`), `errors.ts`, `stored-file.ts`, `env.ts` (`readEnv`), `retry.ts`, `is.ts` (type predicates), `json.ts` (`JsonValue`), `node-stream.ts`, `s3-engine.ts`, `router-core/` + `files-router/` (gateway core shared by every framework binding).
 - `api/`, `client/`, `react/`, `vue/`, `svelte/`, `next/`, `hono/`, `express/`, `fastify/`, `koa/`, `nestjs/`, `nitro/`, `astro/`, `sveltekit/`, `tanstack-start/` — the gateway + `useFiles` app layer. Deny-by-default `authorize`, feature-detected plugin verbs.
@@ -104,7 +104,7 @@ Notes:
 - **Source of truth is `apps/web/docs/`** (MDX + `meta.ts` per folder, `(group)` folders for sidebar sections). `packages/files-sdk/docs/` is a gitignored copy made at build time. Never edit the copy.
 - Callouts are `:::` fences. Inline SVG `<title>` becomes the page title in Blume; avoid it.
 - User-facing changes also update `skills/files-sdk/SKILL.md` (and the matching `references/*.md`) and `.github/CONTRIBUTING.md` where the adapter/plugin lists live.
-- The site catalog (`apps/web/lib/adapters.tsx`) reads `files-sdk/providers`; there is no separate list to maintain.
+- `apps/web/lib/adapters.tsx` re-exports `files-sdk/providers` and only feeds the homepage adapter count; there is no separate list to maintain. Adapter docs are the hand-written MDX pages (`/docs/adapters` redirects to the S3 page), so a new adapter still needs its page (checklist step 7).
 
 ## Changesets
 

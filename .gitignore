@@ -128,11 +128,8 @@ dist
 # Build artifacts
 **/dist/
 
-# files-sdk docs are copied from apps/web/content/docs at build time
+# files-sdk docs are copied from apps/web/docs at build time
 packages/files-sdk/docs/
-
-# Next.js build output (workspace-wide)
-**/.next/
 
 # yarn v2
 .yarn/cache
@@ -144,9 +141,6 @@ packages/files-sdk/docs/
 # Remotion
 out
 .DS_Store
-
-# Fumadocs
-.source
 
 # Vercel
 .vercel

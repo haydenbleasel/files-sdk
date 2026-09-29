@@ -49,6 +49,21 @@ jobs:
       - name: Build SDK
         run: bun run build --filter files-sdk
 
+      # Tests run under Bun in every leg, so this is the one place the matrix
+      # Node version actually executes the built package.
+      - name: Smoke-test the build under Node
+        if: matrix.runtime != 'bun'
+        run: |
+          node --input-type=module -e "
+            const { Files } = await import('./packages/files-sdk/dist/index.js');
+            const { memory } = await import('./packages/files-sdk/dist/memory/index.js');
+            const files = new Files({ adapter: memory() });
+            await files.upload('smoke.txt', 'ok');
+            const body = await (await files.download('smoke.txt')).text();
+            if (body !== 'ok') throw new Error('memory round-trip failed');
+          "
+          node packages/files-sdk/dist/cli/index.js --help > /dev/null
+
   test:
     needs: build
     runs-on: ubuntu-latest
@@ -130,13 +145,6 @@ jobs:
 
   build-web:
     runs-on: ubuntu-latest
-
-    env:
-      # The demo routes fail closed without a secret: page-data collection
-      # evaluates the route modules at build time, which throws when the secret
-      # is missing. The validation build never uses it for signing, and fork PRs
-      # can't read repository secrets, so fall back to a placeholder.
-      FILES_API_SECRET: "test"
 
     steps:
       - name: Checkout

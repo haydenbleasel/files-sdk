@@ -1,6 +1,6 @@
-# Bulk operations, move, listAll & transfer
+# Bulk operations, move, listAll, transfer & sync
 
-Acting on many objects, renaming, walking a whole bucket, and migrating across providers.
+Acting on many objects, renaming, walking a whole bucket, and migrating or mirroring across providers.
 
 ## Bulk (array) forms
 
@@ -33,7 +33,7 @@ The success arrays are in supplied order. Each `errors` entry is `{ key, error }
 - **`concurrency`** (default 8) — how many per-key ops run in parallel.
 - **`stopOnError: true`** — bail at the first failure, returning results gathered so far plus that error. Runs **sequentially** (ignores `concurrency`).
 - **No `signal` or `retries`** — bulk calls aren't retried (`onRetry` never fires) and don't take a per-call signal; re-drive failed keys from `errors[]` instead. Cancellation/retries are single-key concerns.
-- **Native batch delete:** `delete([...])` uses a provider's native bulk primitive where it has one (S3 `DeleteObjects` chunked at 1000, Supabase, UploadThing) and ignores `concurrency`; others fall back to bounded fan-out. The other four methods always fan out (no provider batch primitive).
+- **Native batch delete:** `delete([...])` uses a provider's native bulk primitive where it has one (S3-family `DeleteObjects` chunked at 1000, Azure Blob Batch chunked at 256, Supabase, UploadThing; FTP/SFTP run the whole batch over one connection) and ignores `concurrency`; others fall back to bounded fan-out. The other four methods always fan out (no provider batch primitive).
 - **Hooks:** one aggregated `onAction` per call (carries `keys` + the aggregated result; per-item failures live in `result.errors`, not `onError`).
 - **`prefix`** is honored throughout — resolved on the way in, stripped on the way out.
 
@@ -53,7 +53,7 @@ await files.move("uploads/tmp-abc.png", "avatars/user-123.png");
 await files.file("avatars/user-123.png").moveFrom("uploads/tmp-abc.png");
 ```
 
-Uses the adapter's native rename where one exists (`fs` renames in place atomically; Cloudinary uses server-side `rename`, keeping the same `asset_id` with no re-upload) and otherwise falls back to `copy` + `delete` — the same two-step every object store takes (none offer an atomic move). Moving a key onto itself is a no-op, so the fallback can't delete a file out of existence. **Throws on Convex** (immutable storage ids, no rename), where `copy` also throws. Fires the lifecycle hooks with a `"move"` action type (`from`/`to`).
+Uses the adapter's native rename where one exists (`fs` renames in place atomically; FTP, SFTP, and WebDAV use the server's rename/`MOVE`; Cloudinary uses server-side `rename`, keeping the same `asset_id` with no re-upload; the in-memory adapter re-keys the entry) and otherwise falls back to `copy` + `delete` — the same two-step every object store takes (none offer an atomic move). Moving a key onto itself is a no-op, so the fallback can't delete a file out of existence. **Throws on Convex** (immutable storage ids, no rename), where `copy` also throws. Fires the lifecycle hooks with a `"move"` action type (`from`/`to`).
 
 ## `listAll`
 
@@ -80,7 +80,7 @@ const { items, prefixes } = await files.list({
 // prefixes → subfolders:       [ "photos/2023/", "photos/2024/" ]   (full keys, trailing delimiter)
 ```
 
-`ListResult.prefixes` is omitted when no delimiter is set or none are found; when the instance has a `prefix`, prefixes are scoped/stripped like item keys. **Supported** by object stores and folder-based providers (the latter only accept `"/"`); **throws** a `FilesError` on flat stores (UploadThing, Appwrite, PocketBase, Convex, bun-s3) — check `adapter.supportsDelimiter`. A cursor is valid only for the exact `prefix` **and** `delimiter` it was produced with — hold both constant across a paginated sequence.
+`ListResult.prefixes` is omitted when no delimiter is set or none are found; when the instance has a `prefix`, prefixes are scoped/stripped like item keys. **Supported** by object stores and folder-based providers (the latter only accept `"/"`); **throws** a `FilesError` on flat stores (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) — check `files.capabilities.delimiter` (or `adapter.supportsDelimiter`). A cursor is valid only for the exact `prefix` **and** `delimiter` it was produced with — hold both constant across a paginated sequence.
 
 ## `transfer` — cross-provider migration
 
@@ -112,4 +112,21 @@ const { transferred, skipped, errors } = await transfer(from, to, {
 | `skipped` | Keys skipped because they already existed. Omitted when none. |
 | `errors` | Per-key `{ key, error }` failures. Omitted when every key wins. |
 
-Each object is streamed download-to-upload — the destination never buffers a whole large file. **Body, content type, and user metadata travel; `etag`/`lastModified` are destination-assigned and `Cache-Control` is not carried.** Metadata a destination adapter rejects (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the run. Like the bulk forms, `transfer` doesn't throw on partial failure. `transformKey` maps the _logical_ key (each instance applies its own `prefix` independently). There's no `total` in progress — the source is walked lazily. Also exposed as the CLI `transfer` command and an MCP `transfer` tool (with `--allow-writes`).
+Each object is streamed download-to-upload — the destination never buffers a whole large file. **Body, content type, and user metadata travel; `etag`/`lastModified` are destination-assigned and `Cache-Control` is not carried.** Metadata a destination adapter rejects (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the run. Like the bulk forms, `transfer` doesn't throw on partial failure. `transformKey` maps the _logical_ key (each instance applies its own `prefix` independently). There's no `total` in progress — the source is walked lazily. Also exposed as the CLI `transfer` command and an MCP `transfer` tool — the MCP tool needs `--allow-writes` **and** an operator-fixed destination (`files … mcp --allow-writes --to '<json>'`); the agent can't choose where data goes.
+
+## `sync` — repeatable mirrors
+
+`transfer` copies everything it walks; `sync(source, dest, options?)` (also a top-level export) uploads only what's **new or changed** and can prune what the source no longer has — the tool for keeping a backup or replica current on a schedule.
+
+```ts
+import { sync } from "files-sdk";
+
+const { uploaded, skipped, deleted, errors } = await sync(from, to, {
+  prefix: "uploads/",
+  compare: "etag", // default; "size", or (source, dest) => boolean
+  prune: true, // delete dest keys the source no longer has — destructive
+  dryRun: false, // true → return the plan without writing anything
+});
+```
+
+`destPrefix` scopes the destination walk (compare + prune) when `transformKey` re-homes keys; it defaults to `prefix`. ETags only match across providers that compute them the same way — use `compare: "size"` (or a function) between different backends. Like `transfer`, it doesn't throw on partial failure. Also the CLI `sync` command and, with `mcp --allow-writes --to '<json>'`, an MCP `sync` tool.
