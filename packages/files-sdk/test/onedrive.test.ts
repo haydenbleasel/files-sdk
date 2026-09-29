@@ -383,6 +383,39 @@ describe("onedrive adapter", () => {
     ).toThrow(/at most one/iu);
   });
 
+  test("an explicit target ignores env targets instead of counting them", async () => {
+    process.env.ONEDRIVE_SITE_ID = "env-site";
+    process.env.ONEDRIVE_USER_ID = "env-user";
+    try {
+      const files = new Files({
+        adapter: onedrive({ ...baseOpts, driveId: "drv-explicit" }),
+      });
+      await files.upload("a.txt", "hi");
+      expect(dispatchPut.mock.calls[0]?.[0]).toBe(
+        "/drives/drv-explicit/root:/a.txt:/content"
+      );
+    } finally {
+      delete process.env.ONEDRIVE_SITE_ID;
+      delete process.env.ONEDRIVE_USER_ID;
+    }
+  });
+
+  test("env targets are used when no option names one, and must be unique", async () => {
+    process.env.ONEDRIVE_SITE_ID = "env-site";
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await files.upload("a.txt", "hi");
+      expect(dispatchPut.mock.calls[0]?.[0]).toBe(
+        "/sites/env-site/drive/root:/a.txt:/content"
+      );
+      process.env.ONEDRIVE_DRIVE_ID = "env-drive";
+      expect(() => onedrive(baseOpts)).toThrow(/at most one/iu);
+    } finally {
+      delete process.env.ONEDRIVE_SITE_ID;
+      delete process.env.ONEDRIVE_DRIVE_ID;
+    }
+  });
+
   test("upload writes content with the right path and content-type", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     const result = await files.upload("docs/a.txt", "hello", {
@@ -666,6 +699,77 @@ describe("onedrive adapter", () => {
     await files.upload("beta.txt", "x");
     const r = await files.list({ prefix: "alp" });
     expect(r.items.map((i) => i.key)).toEqual(["alpha.txt"]);
+  });
+
+  test("a prefix with a folder part lists that folder with full keys", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("top.txt", "x");
+    await files.upload("photos/cover.jpg", "x");
+    await files.upload("photos/cat.jpg", "x");
+    store.set("photos/2024", {
+      id: "fold-2",
+      isFolder: true,
+      name: "2024",
+      size: 0,
+    });
+    const folded = await files.list({ delimiter: "/", prefix: "photos/" });
+    expect(folded.items.map((i) => i.key).toSorted()).toEqual([
+      "photos/cat.jpg",
+      "photos/cover.jpg",
+    ]);
+    expect(folded.prefixes).toEqual(["photos/2024/"]);
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/me/drive/root:/photos:/children"
+    );
+    // The remainder after the last "/" filters by child name.
+    const filtered = await files.list({ prefix: "photos/ca" });
+    expect(filtered.items.map((i) => i.key)).toEqual(["photos/cat.jpg"]);
+    expect(await filtered.items[0]?.text()).toBe("x");
+    // Following a returned folder prefix lists that folder.
+    const nested = await files.list({ delimiter: "/", prefix: "photos/2024/" });
+    expect(nested.items).toEqual([]);
+  });
+
+  test("a Files client prefix lists the matching folder", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts), prefix: "tenant" });
+    await files.upload("a.txt", "x");
+    const r = await files.list();
+    expect(r.items.map((i) => i.key)).toEqual(["a.txt"]);
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/me/drive/root:/tenant:/children"
+    );
+  });
+
+  test("a prefix into a missing folder lists nothing; a missing root still throws", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.reject(new GraphError(404, "itemNotFound"))
+    );
+    expect(await files.list({ prefix: "ghost/" })).toEqual({ items: [] });
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.reject(new GraphError(404, "itemNotFound"))
+    );
+    await expect(files.list({ prefix: "gh" })).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  test("a prefix with dot segments is rejected", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(files.list({ prefix: "../x/" })).rejects.toMatchObject({
+      code: "Provider",
+    });
+    expect(dispatchGet).not.toHaveBeenCalled();
+  });
+
+  test("a folder prefix nests under rootFolderPath", async () => {
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, rootFolderPath: "base" }),
+    });
+    await files.list({ prefix: "docs/" });
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/me/drive/root:/base/docs:/children"
+    );
   });
 
   test("list propagates @odata.nextLink as cursor", async () => {
@@ -1178,6 +1282,49 @@ describe("onedrive resumable uploads", () => {
         multipart: { partSize: CHUNK },
       })
     ).rejects.toThrow(/not trusted/u);
+  });
+
+  test("an empty body takes the simple PUT and drops the unused session", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      return new Response(null, { status: 204 });
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const result = await files.upload("empty.txt", "", {
+      contentType: "text/plain",
+      control: new UploadControl(),
+    });
+    expect(result.size).toBe(0);
+    expect(dispatchPut).toHaveBeenCalledTimes(1);
+    expect(dispatchPut.mock.calls[0]?.[0]).toBe(
+      "/me/drive/root:/empty.txt:/content"
+    );
+    expect(dispatchPut.mock.calls[0]?.[2]).toEqual({
+      "Content-Type": "text/plain",
+    });
+    // No Content-Range PUT against the session — only its DELETE.
+    expect(methods).toEqual(["DELETE"]);
+  });
+
+  test("an empty body still completes when dropping the session fails", async () => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = (() =>
+      Promise.reject(new Error("network down"))) as unknown as typeof fetch;
+    const driver = onedrive(baseOpts).resumableUpload("empty.bin", {});
+    await driver.begin({ contentType: "", total: 0 });
+    await driver.uploadAt({
+      data: new Uint8Array(),
+      isLast: true,
+      offset: 0,
+      total: 0,
+    });
+    const result = await driver.complete([]);
+    expect(result.key).toBe("empty.bin");
+    expect(dispatchPut.mock.calls[0]?.[2]).toEqual({});
   });
 
   test("abort discards the session via DELETE", async () => {

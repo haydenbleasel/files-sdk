@@ -18,7 +18,11 @@ import type {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { isString } from "../internal/is.js";
-import { buildAuthProvider, onedrive } from "../onedrive/index.js";
+import {
+  buildAuthProvider,
+  mapGraphError,
+  onedrive,
+} from "../onedrive/index.js";
 import type {
   OneDriveAdapter,
   OneDriveAdapterOptions,
@@ -328,7 +332,10 @@ export const sharepoint = (
         // Don't cache failures — let a subsequent call re-attempt resolution.
         // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the memoized promise so the next call re-resolves; null would be a cached (falsy) value
         resolved = undefined;
-        throw error;
+        // Site/drive lookups are raw Graph calls: classify their failures
+        // (401/403 → Unauthorized, 404 → NotFound) like every other Graph
+        // error, so auth and missing-site errors aren't retried as Provider.
+        throw mapGraphError(error);
       }
     })();
     return resolved;

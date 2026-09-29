@@ -94,10 +94,10 @@ export interface BoxAdapterOptions {
    */
   publicBaseUrl?: string;
   /**
-   * Default expiry, in seconds, used when `url()` mints a signed download
-   * URL via `getDownloadFileUrl`. Box does not document a hard maximum
-   * for these URLs (they are short-lived by API design); the adapter
-   * passes the value through. Defaults to 3600.
+   * Default expiry, in seconds, for the signed download URLs `url()` mints
+   * via `getDownloadFileUrl`. Accepted for API symmetry but not honoured:
+   * `getDownloadFileUrl` takes no expiry, so Box controls the TTL
+   * server-side (the URLs are short-lived by API design). Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
   /**
@@ -561,31 +561,33 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const folderIdCache = new Map<string, string>();
   const fileIdCache = new Map<string, string>();
 
+  // Folder listings page by marker, not offset: Box rejects an `offset`
+  // above 10000 with a 400, so offset paging can't reach the rest of a
+  // large folder.
   const findChildByName = async (
     folderId: string,
     name: string
   ): Promise<ChildRef | undefined> => {
-    let offset = 0;
-    const limit = 1000;
+    let marker: string | undefined;
     while (true) {
       // eslint-disable-next-line no-await-in-loop -- pagination is sequential by API design.
       const page = await client.folders.getFolderItems(folderId, {
         queryParams: {
           fields: ["id", "name", "type"],
-          limit,
-          offset,
+          limit: 1000,
+          usemarker: true,
+          ...(marker && { marker }),
         },
       });
-      const entries = page.entries ?? [];
-      for (const entry of entries) {
+      for (const entry of page.entries ?? []) {
         if (entry.name === name && entry.id && entry.type) {
           return { id: entry.id, type: entry.type };
         }
       }
-      if (entries.length < limit) {
+      marker = page.nextMarker ?? undefined;
+      if (!marker) {
         return;
       }
-      offset += entries.length;
     }
   };
 
@@ -991,28 +993,37 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         if (options?.delimiter) {
           assertSlashDelimiter("box", options.delimiter);
         }
-        const limit = options?.limit ?? 1000;
-        const offset = options?.cursor
-          ? // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix-10 parse of a numeric cursor string is clearer than Math.trunc(Number(...))
-            Number.parseInt(options.cursor, 10)
-          : 0;
-        if (Number.isNaN(offset) || offset < 0) {
-          throw new FilesError(
-            "Provider",
-            `box: invalid list cursor "${options?.cursor}"`
+        // List one folder, paginated by Box's opaque marker. Subfolders are
+        // not recursed. The key prefix splits at its last "/": the part
+        // before it names the folder to list (resolved under
+        // `rootFolderId`), the rest is matched against the children's names,
+        // so `photos/` lists the `photos` folder with full keys
+        // (`photos/cover.jpg`). Callers who want deep enumeration should
+        // iterate folders themselves via `adapter.raw`.
+        const prefix = options?.prefix ?? "";
+        const slash = prefix.lastIndexOf("/");
+        const namePrefix = prefix.slice(slash + 1);
+        const keyBase = slash === -1 ? "" : prefix.slice(0, slash + 1);
+        let folderId: string;
+        try {
+          folderId = await resolveFolderId(
+            keyBase.split("/").filter((part) => part.length > 0),
+            { create: false }
           );
+        } catch (error) {
+          const mapped = mapBoxError(error);
+          // A prefix into a folder that doesn't exist lists nothing.
+          if (mapped.code === "NotFound") {
+            return { items: [] };
+          }
+          throw mapped;
         }
-
-        // Walk only the configured root folder, paginated. Subfolders are
-        // not recursed — Box's flat folder list is what we expose, with
-        // `prefix` matched against the immediate child's name. Callers who
-        // want deep enumeration should iterate folders themselves via
-        // `adapter.raw`.
-        const page = await client.folders.getFolderItems(rootFolderId, {
+        const page = await client.folders.getFolderItems(folderId, {
           queryParams: {
             fields: ["id", "name", "size", "modified_at", "etag", "type"],
-            limit,
-            offset,
+            limit: options?.limit ?? 1000,
+            usemarker: true,
+            ...(options?.cursor && { marker: options.cursor }),
           },
         });
         const entries = page.entries ?? [];
@@ -1022,25 +1033,22 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         // folded mode only); nested so the loop's branching stays out of
         // `list`.
         const collect = (entry: (typeof entries)[number]) => {
-          if (
-            options?.prefix &&
-            entry.name &&
-            !entry.name.startsWith(options.prefix)
-          ) {
+          if (!entry.name || !entry.name.startsWith(namePrefix)) {
             return;
           }
-          if (folded && entry.type === "folder" && entry.name) {
-            prefixes.push(`${entry.name}/`);
+          const key = `${keyBase}${entry.name}`;
+          if (folded && entry.type === "folder") {
+            prefixes.push(`${key}/`);
             return;
           }
-          if (entry.type !== "file" || !entry.id || !entry.name) {
+          if (entry.type !== "file" || !entry.id) {
             return;
           }
-          fileIdCache.set(entry.name, entry.id);
+          fileIdCache.set(key, entry.id);
           items.push(
             createStoredFile(
-              { key: entry.name, ...fileMetaFromBox(entry) },
-              { factory: lazyDownload(entry.name), kind: "lazy" }
+              { key, ...fileMetaFromBox(entry) },
+              { factory: lazyDownload(key), kind: "lazy" }
             )
           );
         };
@@ -1048,14 +1056,10 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
           collect(entry);
         }
 
-        const nextOffset = offset + entries.length;
-        const total = page.totalCount;
-        const hasMore =
-          entries.length === limit &&
-          (total === undefined || nextOffset < total);
+        const cursor = page.nextMarker;
         return {
           items,
-          ...(hasMore && { cursor: String(nextOffset) }),
+          ...(cursor && { cursor }),
           ...(prefixes.length && { prefixes }),
         };
       } catch (error) {
@@ -1159,10 +1163,11 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         )
       );
     },
-    // `url()` returns a tokenized download URL (or a shared link under
-    // `publicByDefault`). It's time-limited, but Box controls the TTL
-    // server-side, so `expiresIn` is accepted and ignored — see provider-gaps.
-    signedUrl: { supported: true },
+    // By default `url()` returns a tokenized download URL: time-limited, but
+    // Box controls the TTL server-side, so `expiresIn` is accepted and
+    // ignored — see provider-gaps. Under `publicBaseUrl` / `publicByDefault`
+    // it returns a permanent public link instead, which isn't signed.
+    signedUrl: { supported: !(publicBaseUrl || publicByDefault) },
     supportsDelimiter: true,
     supportsRange: true,
     // `copy()` is a server-side `copyFile`.

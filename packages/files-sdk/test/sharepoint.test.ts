@@ -334,6 +334,42 @@ describe("sharepoint adapter", () => {
     expect(attempt).toBe(2);
   });
 
+  test("resolution > Graph errors during site/drive lookup are classified", async () => {
+    getHandler = (path) => {
+      if (path === "/sites/denied") {
+        throw new GraphError(403, "Access denied");
+      }
+      if (path === "/sites/missing") {
+        const err = new GraphError(404, "Not found");
+        err.code = "itemNotFound";
+        throw err;
+      }
+      return {};
+    };
+    await expect(
+      sharepoint({ clientCredentials: CREDS, hostname: "denied" }).list()
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+    await expect(
+      sharepoint({ clientCredentials: CREDS, hostname: "missing" }).list()
+    ).rejects.toMatchObject({ code: "NotFound" });
+  });
+
+  test("resolution > ONEDRIVE_* drive targets in env don't clash with the resolved drive", async () => {
+    process.env.ONEDRIVE_SITE_ID = "unrelated-site";
+    process.env.ONEDRIVE_USER_ID = "unrelated-user";
+    try {
+      getHandler = (path) =>
+        path === "/drives/d/root/children" ? { value: [] } : {};
+      const adapter = sharepoint({ clientCredentials: CREDS, driveId: "d" });
+      const result = await adapter.list();
+      expect(result.items).toEqual([]);
+      expect(lastCalls.at(-1)?.path).toBe("/drives/d/root/children");
+    } finally {
+      Reflect.deleteProperty(process.env, "ONEDRIVE_SITE_ID");
+      Reflect.deleteProperty(process.env, "ONEDRIVE_USER_ID");
+    }
+  });
+
   test("error relabel > 'OneDrive error' becomes 'SharePoint error'", async () => {
     getHandler = (path) => {
       if (path === "/drives/d/root:/missing:") {

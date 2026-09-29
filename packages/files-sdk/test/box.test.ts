@@ -88,15 +88,28 @@ const getFolderItemsMock = mock(
   (
     folderId: string,
     optionals?: {
-      queryParams?: { offset?: number; limit?: number };
+      queryParams?: {
+        offset?: number;
+        limit?: number;
+        usemarker?: boolean;
+        marker?: string;
+      };
     }
   ) => {
     const folder = store.get(folderId);
     if (!folder || folder.type !== "folder") {
       return Promise.reject(apiError(404, "not_found", "folder not found"));
     }
-    const offset = optionals?.queryParams?.offset ?? 0;
-    const limit = optionals?.queryParams?.limit ?? 1000;
+    const query = optionals?.queryParams;
+    // Box rejects offset paging past 10000; marker paging is the fix.
+    if ((query?.offset ?? 0) > 10_000) {
+      return Promise.reject(apiError(400, "bad_request", "offset too large"));
+    }
+    // Markers are opaque to the adapter; the fake encodes the next offset.
+    const offset = query?.usemarker
+      ? Number(query.marker?.replace(/^mk_/u, "") ?? 0)
+      : (query?.offset ?? 0);
+    const limit = query?.limit ?? 1000;
     const children = [...store.values()]
       .filter(
         (it) =>
@@ -112,7 +125,14 @@ const getFolderItemsMock = mock(
         type: it.type,
       }));
     const slice = children.slice(offset, offset + limit);
-    return Promise.resolve({ entries: slice, totalCount: children.length });
+    const next = offset + limit;
+    // Marker paging returns `nextMarker` and omits `totalCount`.
+    return Promise.resolve({
+      entries: slice,
+      nextMarker:
+        query?.usemarker && next < children.length ? `mk_${next}` : null,
+      ...(!query?.usemarker && { totalCount: children.length }),
+    });
   }
 );
 
@@ -852,10 +872,61 @@ describe("box adapter", () => {
     await files.upload("c.txt", "z");
     const r1 = await files.list({ limit: 2 });
     expect(r1.items).toHaveLength(2);
-    expect(r1.cursor).toBe("2");
+    expect(r1.cursor).toBe("mk_2");
     const r2 = await files.list({ cursor: r1.cursor, limit: 2 });
     expect(r2.items).toHaveLength(1);
     expect(r2.cursor).toBeUndefined();
+    // Marker-based, never offset-based (Box caps `offset` at 10000).
+    const query = getFolderItemsMock.mock.calls.at(-1)?.[1]?.queryParams;
+    expect(query).toMatchObject({ marker: "mk_2", usemarker: true });
+    expect(query?.offset).toBeUndefined();
+  });
+
+  test("a prefix with a folder part lists that folder with full keys", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("top.txt", "x");
+    await files.upload("photos/cover.jpg", "cover");
+    await files.upload("photos/cat.jpg", "cat");
+    await files.upload("photos/2024/a.jpg", "a");
+    const folded = await files.list({ delimiter: "/", prefix: "photos/" });
+    expect(folded.items.map((i) => i.key).toSorted()).toEqual([
+      "photos/cat.jpg",
+      "photos/cover.jpg",
+    ]);
+    expect(folded.prefixes).toEqual(["photos/2024/"]);
+    // Following a returned folder prefix lists that folder.
+    const nested = await files.list({ delimiter: "/", prefix: "photos/2024/" });
+    expect(nested.items.map((i) => i.key)).toEqual(["photos/2024/a.jpg"]);
+    // The remainder after the last "/" filters by child name, and the
+    // listed keys resolve for later reads.
+    const filtered = await files.list({ prefix: "photos/ca" });
+    expect(filtered.items.map((i) => i.key)).toEqual(["photos/cat.jpg"]);
+    stubFetchToServeStore();
+    expect(await filtered.items[0]?.text()).toBe("cat");
+  });
+
+  test("a Files client prefix lists the matching folder", async () => {
+    const files = new Files({ adapter: box(baseOpts), prefix: "tenant" });
+    await files.upload("a.txt", "x");
+    await files.upload("sub/b.txt", "x");
+    // A flat (undelimited) listing skips the subfolder.
+    const r = await files.list();
+    expect(r.items.map((i) => i.key)).toEqual(["a.txt"]);
+    expect(r.prefixes).toBeUndefined();
+  });
+
+  test("a prefix into a missing folder lists nothing", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("a.txt", "x");
+    expect(await files.list({ prefix: "ghost/" })).toEqual({ items: [] });
+  });
+
+  test("a prefix through a file (not a folder) surfaces Conflict", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("a.txt", "x");
+    await expect(files.list({ prefix: "a.txt/" })).rejects.toMatchObject({
+      code: "Conflict",
+    });
   });
 
   test("url returns signed download URL by default", async () => {
@@ -885,6 +956,21 @@ describe("box adapter", () => {
     });
     const url = await files.url("a.txt");
     expect(url).toBe("https://cdn.example.com/files/a.txt");
+  });
+
+  test("signedUrl.supported reflects whether url() signs or returns a permanent link", () => {
+    expect(
+      new Files({ adapter: box(baseOpts) }).capabilities.signedUrl.supported
+    ).toBe(true);
+    expect(
+      new Files({ adapter: box({ ...baseOpts, publicByDefault: true }) })
+        .capabilities.signedUrl.supported
+    ).toBe(false);
+    expect(
+      new Files({
+        adapter: box({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
+      }).capabilities.signedUrl.supported
+    ).toBe(false);
   });
 
   test("url throws on responseContentDisposition", async () => {
@@ -1105,7 +1191,7 @@ describe("box adapter", () => {
 
   test("findChildByName paginates when the first page is full", async () => {
     // Pre-fill the root with > limit entries so the SDK's pagination code
-    // path runs at least once. The mocked manager honours offset/limit, so
+    // path runs at least once. The mocked manager honours marker/limit, so
     // the next page call is real.
     const realLimit = 1000;
     for (let i = 0; i < realLimit + 5; i += 1) {
@@ -1125,6 +1211,27 @@ describe("box adapter", () => {
     const head = await files.head(`bulk-${realLimit + 2}.txt`);
     expect(head.size).toBe(2);
     expect(getFolderItemsMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("findChildByName reaches entries past Box's 10000-offset cap", async () => {
+    const count = 11_005;
+    for (let i = 0; i < count; i += 1) {
+      const id = `many_${i}`;
+      store.set(id, {
+        bytes: Buffer.from("xy"),
+        etag: `etag_${id}`,
+        id,
+        modifiedAt: STABLE_MODIFIED,
+        name: `many-${i}.txt`,
+        parentId: ROOT_ID,
+        size: 2,
+        type: "file",
+      });
+    }
+    const files = new Files({ adapter: box(baseOpts) });
+    const head = await files.head(`many-${count - 1}.txt`);
+    expect(head.size).toBe(2);
+    expect(getFolderItemsMock.mock.calls.length).toBe(12);
   });
 
   test("resolveFolderId throws Conflict when a path segment exists as a file", async () => {
@@ -1427,16 +1534,6 @@ describe("box adapter", () => {
       Promise.resolve({ entries: [] })
     );
     await expect(files.upload("a.txt", "v2")).rejects.toMatchObject({
-      code: "Provider",
-    });
-  });
-
-  test("list() throws Provider on an invalid cursor", async () => {
-    const files = new Files({ adapter: box(baseOpts) });
-    await expect(files.list({ cursor: "not-a-number" })).rejects.toMatchObject({
-      code: "Provider",
-    });
-    await expect(files.list({ cursor: "-1" })).rejects.toMatchObject({
       code: "Provider",
     });
   });

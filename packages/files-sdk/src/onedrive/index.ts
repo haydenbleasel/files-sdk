@@ -318,6 +318,19 @@ const encodePathSegments = (path: string): string =>
     .map(encodeURIComponent)
     .join("/");
 
+// Graph lists one folder at a time, so a `list()` key prefix splits at its
+// last "/": the folder it points into (`folderKey`), the child-name prefix
+// matched within it, and the `keyBase` child names are joined onto to form
+// full keys (`photos/` → list `photos`, keys `photos/<name>`).
+const splitListPrefix = (prefix: string) => {
+  const slash = prefix.lastIndexOf("/");
+  return {
+    folderKey: prefix.slice(0, Math.max(slash, 0)),
+    keyBase: prefix.slice(0, slash + 1),
+    namePrefix: prefix.slice(slash + 1),
+  };
+};
+
 const GRAPH_API_VERSION_PREFIX = "/v1.0";
 
 const throwListCursorRootMismatch = (): never => {
@@ -682,11 +695,22 @@ export const buildAuthProvider = (
 };
 
 const resolveBasePath = (opts: OneDriveAdapterOptions): string => {
-  const driveId = opts.driveId ?? readEnv("ONEDRIVE_DRIVE_ID");
-  const siteId = opts.siteId ?? readEnv("ONEDRIVE_SITE_ID");
-  const userId = opts.userId ?? readEnv("ONEDRIVE_USER_ID");
+  // An explicit target wins outright: env targets are only read when no
+  // option names one, so e.g. an explicit `driveId` (which `sharepoint()`
+  // always passes) isn't rejected over an unrelated ONEDRIVE_SITE_ID.
+  const hasExplicitTarget = [opts.driveId, opts.siteId, opts.userId].some(
+    (t) => isString(t) && t.length > 0
+  );
+  const source = hasExplicitTarget
+    ? opts
+    : {
+        driveId: readEnv("ONEDRIVE_DRIVE_ID"),
+        siteId: readEnv("ONEDRIVE_SITE_ID"),
+        userId: readEnv("ONEDRIVE_USER_ID"),
+      };
+  const { driveId, siteId, userId } = source;
   const targets = [driveId, siteId, userId].filter(
-    (t): t is string => typeof t === "string" && t.length > 0
+    (t): t is string => isString(t) && t.length > 0
   );
   if (targets.length > 1) {
     throw new FilesError(
@@ -767,6 +791,18 @@ export const onedrive = (
     }
     const encoded = encodePathSegments(rootFolderPath);
     return `${basePath}/root:/${encoded}:`;
+  };
+
+  // The folder a `list()` reads: the root, or the key folder `folderKey`
+  // (a key prefix up to its last "/") beneath it.
+  const folderApiPath = (folderKey: string): string => {
+    const trimmed = trimSlashes(folderKey);
+    if (!trimmed) {
+      return containerApiPath();
+    }
+    assertNoRelativeSegments(trimmed, "prefix");
+    const fullPath = rootFolderPath ? `${rootFolderPath}/${trimmed}` : trimmed;
+    return `${basePath}/root:/${encodePathSegments(fullPath)}:`;
   };
 
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
@@ -895,6 +931,7 @@ export const onedrive = (
   ): OffsetResumableDriver => {
     const partSize = resolveRangeSize(resumableOpts.multipart);
     let uploadUrl: string | undefined;
+    let contentType: string | undefined;
     let finalItem: DriveItem | undefined;
     const requireUrl = (): string => {
       if (!uploadUrl) {
@@ -934,9 +971,10 @@ export const onedrive = (
           ["up.1drv.com", "up.1drv.ms", "sharepoint.com"]
         );
       },
-      async begin(): Promise<ResumableUploadSession> {
+      async begin(meta): Promise<ResumableUploadSession> {
         // `metadata` / `cacheControl` are rejected centrally by the Files
         // wrapper before a resumable upload ever reaches here.
+        ({ contentType } = meta);
         try {
           // SAFETY: the Graph client types every parsed response as `any`;
           // `createUploadSession` returns an `uploadSession` resource whose
@@ -1006,6 +1044,28 @@ export const onedrive = (
         nextOffset: number;
       }> {
         try {
+          if (data.byteLength === 0) {
+            // An upload session needs at least one byte (`bytes 0--1/0` is
+            // not a valid range), so an empty body takes the simple PUT —
+            // the same path `upload()` uses for 0-byte bodies — and the
+            // unused session is dropped.
+            const req = client.api(`${itemApiPath(key)}/content`);
+            const typed = contentType
+              ? req.header("Content-Type", contentType)
+              : req;
+            // SAFETY: the Graph client types every parsed response as
+            // `any`; a PUT to `/content` returns the created or updated
+            // `driveItem`.
+            finalItem = (await typed.put(Buffer.alloc(0))) as DriveItem;
+            if (uploadUrl) {
+              try {
+                await fetch(uploadUrl, { method: "DELETE" });
+              } catch {
+                // Best effort: an unused session expires on its own.
+              }
+            }
+            return { nextOffset: 0 };
+          }
           const end = offset + data.byteLength;
           // SAFETY: a `Uint8Array` is a valid fetch body at runtime; only its
           // generic `ArrayBufferLike` backing keeps it out of the DOM `BodyInit`
@@ -1202,8 +1262,14 @@ export const onedrive = (
       if (options?.delimiter) {
         assertSlashDelimiter("onedrive", options.delimiter);
       }
+      // List the folder the key prefix points into and match the rest
+      // against the children's names, so `photos/` lists the `photos`
+      // folder and child keys come back in full (`photos/cover.jpg`).
+      const { folderKey, keyBase, namePrefix } = splitListPrefix(
+        options?.prefix ?? ""
+      );
       try {
-        const listPath = `${containerApiPath()}/children`;
+        const listPath = `${folderApiPath(folderKey)}/children`;
         const initial = options?.cursor
           ? normalizeListCursor(options.cursor, listPath)
           : listPath;
@@ -1221,19 +1287,20 @@ export const onedrive = (
         // mode only); nested so the loop's branching stays out of `list`.
         const collect = (item: DriveItem) => {
           const name = item.name ?? "";
-          if (options?.prefix && !name.startsWith(options.prefix)) {
+          if (!name.startsWith(namePrefix)) {
             return;
           }
+          const key = `${keyBase}${name}`;
           if (item.folder) {
             if (folded && name) {
-              prefixes.push(`${name}/`);
+              prefixes.push(`${key}/`);
             }
             return;
           }
           items.push(
             createStoredFile(
-              { key: name, ...itemToStoredMeta(item) },
-              { factory: lazyDownload(name), kind: "lazy" }
+              { key, ...itemToStoredMeta(item) },
+              { factory: lazyDownload(key), kind: "lazy" }
             )
           );
         };
@@ -1247,7 +1314,12 @@ export const onedrive = (
           ...(prefixes.length && { prefixes }),
         };
       } catch (error) {
-        throw mapGraphError(error);
+        const mapped = mapGraphError(error);
+        // A prefix into a folder that doesn't exist lists nothing.
+        if (trimSlashes(folderKey) && mapped.code === "NotFound") {
+          return { items: [] };
+        }
+        throw mapped;
       }
     },
     name: "onedrive",
@@ -1277,6 +1349,11 @@ export const onedrive = (
         if (!uploadUrl) {
           throw new FilesError("Provider", MISSING_UPLOAD_URL_MESSAGE);
         }
+        // The session URL is a Graph upload session, not a plain presigned
+        // PUT: every PUT must carry `Content-Range: bytes 0-{n-1}/{n}` (the
+        // client knows `n`; we don't, so no header is minted here), and one
+        // request tops out below 60 MiB — larger files need the client to
+        // PUT 320 KiB-multiple fragments against the same URL.
         return {
           method: "PUT",
           url: uploadUrl,
