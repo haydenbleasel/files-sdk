@@ -24,7 +24,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
-import { isNumber, isObject, isString } from "../internal/is.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
@@ -109,7 +109,10 @@ export interface VercelBlobAdapterOptions {
    * **Trade-off:** with the defaults, an `upload(key, ...)` call silently
    * clobbers any existing object at `key`. If keys are derived from
    * untrusted input or your callers expect "create-only" semantics, set
-   * `allowOverwrite: false` and handle the resulting Conflict.
+   * `allowOverwrite: false` and handle the resulting Conflict (Vercel
+   * reports the existing blob as a bad request, which the adapter maps to
+   * `Conflict`). Applies to `upload()` (including resumable/multipart
+   * uploads), `copy()`, and `signedUploadUrl()`.
    */
   allowOverwrite?: boolean;
   /**
@@ -181,10 +184,88 @@ const parseCacheControlMaxAge = (header: string): number | undefined => {
   return match?.[1] ? Number(match[1]) : undefined;
 };
 
-// Prefer HTTP status codes (stable contract) over error name substrings
-// (e.g. "BlobNotFoundError"), which would silently break if @vercel/blob
-// renames its error classes upstream. Name matching is kept as a fallback
-// for environments where the underlying fetch error doesn't surface a status.
+// Vercel Blob stores a single `cacheControlMaxAge` (seconds) and writes the
+// rest of the header itself. A value with no `max-age` directive (e.g.
+// "no-store") has nothing to map to, so throw rather than drop it.
+const cacheControlMaxAge = (header: string): number => {
+  const maxAge = parseCacheControlMaxAge(header);
+  if (maxAge === undefined) {
+    throw new FilesError(
+      "Provider",
+      `vercel-blob: \`cacheControl\` "${header}" cannot be represented. Vercel Blob only stores a max-age (\`cacheControlMaxAge\`), so pass a value with a \`max-age=<seconds>\` directive, e.g. "public, max-age=3600".`,
+      undefined,
+      { permanent: true }
+    );
+  }
+  return maxAge;
+};
+
+interface BlobErrorClassification {
+  code: ProviderFilesErrorCode;
+  aborted?: boolean;
+  permanent?: boolean;
+}
+
+type BlobErrorClass = abstract new (...args: never[]) => Error;
+
+// Each class is read off the namespace at call time and checked before use,
+// so a peer build (or test double) that lacks one simply doesn't match.
+const isInstance = (
+  cause: unknown,
+  ctor: BlobErrorClass | undefined
+): boolean => isFunction(ctor) && cause instanceof ctor;
+
+// With `allowOverwrite: false`, an existing pathname comes back as a
+// `bad_request`, which the SDK surfaces as a bare `BlobError` carrying the
+// server's "This blob already exists, use `allowOverwrite: true` …" message.
+const BLOB_EXISTS_RE = /blob already exists/iu;
+
+// `@vercel/blob` errors are `BlobError` subclasses with no `status`, and their
+// `name` stays "Error" (only the constructor differs), so classify them by
+// class. Returns `undefined` for anything that isn't a known SDK error.
+const classifyBlobErrorClass = (
+  cause: unknown
+): BlobErrorClassification | undefined => {
+  if (isInstance(cause, blob.BlobNotFoundError)) {
+    return { code: "NotFound" };
+  }
+  if (
+    isInstance(cause, blob.BlobAccessError) ||
+    isInstance(cause, blob.BlobClientTokenExpiredError) ||
+    isInstance(cause, blob.BlobPathnameMismatchError) ||
+    isInstance(cause, blob.BlobStoreSuspendedError)
+  ) {
+    return { code: "Unauthorized" };
+  }
+  if (isInstance(cause, blob.BlobPreconditionFailedError)) {
+    return { code: "Conflict" };
+  }
+  if (isInstance(cause, blob.BlobRequestAbortedError)) {
+    return { aborted: true, code: "Provider" };
+  }
+  // Deterministic rejections: re-sending the same request fails the same way,
+  // so flag them permanent to keep `retries` from re-issuing them. A missing
+  // store is a configuration error, not a missing key.
+  if (
+    isInstance(cause, blob.BlobContentTypeNotAllowedError) ||
+    isInstance(cause, blob.BlobFileTooLargeError) ||
+    isInstance(cause, blob.BlobStoreNotFoundError)
+  ) {
+    return { code: "Provider", permanent: true };
+  }
+  if (
+    isInstance(cause, blob.BlobError) &&
+    cause instanceof Error &&
+    BLOB_EXISTS_RE.test(cause.message)
+  ) {
+    return { code: "Conflict" };
+  }
+  return undefined;
+};
+
+// Fallback for errors that aren't `@vercel/blob` classes (e.g. a transport
+// error that carries a status, or a differently-bundled copy of the SDK):
+// HTTP status first, then error-name substrings.
 const classifyBlobError = (
   status: number | undefined,
   name: string
@@ -217,8 +298,22 @@ const mapBlobError = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
     return cause;
   }
-  // `BlobError` subclasses carry `status`; transport errors may carry only a
-  // name/message. Read each field only once its type is established.
+  const message =
+    isObject(cause) && "message" in cause && isString(cause.message)
+      ? cause.message
+      : undefined;
+  const classified = classifyBlobErrorClass(cause);
+  if (classified) {
+    const { code, ...flags } = classified;
+    return new FilesError(
+      code,
+      message ?? DEFAULT_BLOB_MESSAGES[code],
+      cause,
+      flags
+    );
+  }
+  // Transport errors may carry a status or only a name/message. Read each
+  // field only once its type is established.
   const status =
     isObject(cause) && "status" in cause && isNumber(cause.status)
       ? cause.status
@@ -227,10 +322,6 @@ const mapBlobError = (cause: unknown): FilesError => {
     isObject(cause) && "name" in cause && isString(cause.name)
       ? cause.name
       : "";
-  const message =
-    isObject(cause) && "message" in cause && isString(cause.message)
-      ? cause.message
-      : undefined;
   const code = classifyBlobError(status, name);
   return new FilesError(code, message ?? DEFAULT_BLOB_MESSAGES[code], cause);
 };
@@ -633,6 +724,14 @@ export const vercelBlob = (
         : undefined;
       const partSize =
         requestedPart && requestedPart > minPart ? requestedPart : minPart;
+      // Same write options as a plain `upload()`: the overwrite policy and the
+      // cache max-age ride on both the create and the complete request.
+      const writeOptions = {
+        allowOverwrite,
+        ...(resumableOpts.cacheControl && {
+          cacheControlMaxAge: cacheControlMaxAge(resumableOpts.cacheControl),
+        }),
+      };
       return {
         adopt(adopted: ResumableUploadSession) {
           if (adopted.provider !== PROVIDER) {
@@ -654,6 +753,7 @@ export const vercelBlob = (
             const created = await blob.createMultipartUpload(key, {
               access,
               addRandomSuffix,
+              ...writeOptions,
               ...resolveAuth(),
               contentType: meta.contentType,
             });
@@ -684,6 +784,7 @@ export const vercelBlob = (
                 access,
                 key: active.storageKey,
                 uploadId: active.uploadId,
+                ...writeOptions,
                 ...resolveAuth(),
               }
             );
@@ -739,9 +840,10 @@ export const vercelBlob = (
         },
       };
     },
-    // Vercel Blob maps `cacheControl` to its `cacheControlMaxAge`; there is no
-    // arbitrary user-metadata primitive, so `supportsMetadata` stays unset and
-    // a non-empty `metadata` hits the gate's loud throw.
+    // Vercel Blob maps `cacheControl` to its `cacheControlMaxAge` (a value
+    // with no `max-age` directive throws); there is no arbitrary
+    // user-metadata primitive, so `supportsMetadata` stays unset and a
+    // non-empty `metadata` hits the gate's loud throw.
     supportsCacheControl: true,
     supportsDelimiter: true,
     // Range rides on the standard-HTTP fetch of the public blob URL. Private
@@ -818,7 +920,7 @@ export const vercelBlob = (
           ...resolveAuth(),
           ...(options?.contentType && { contentType: options.contentType }),
           ...(options?.cacheControl && {
-            cacheControlMaxAge: parseCacheControlMaxAge(options.cacheControl),
+            cacheControlMaxAge: cacheControlMaxAge(options.cacheControl),
           }),
           // Vercel's event already carries both loaded and total.
           ...(options?.onProgress && {

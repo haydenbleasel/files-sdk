@@ -40,7 +40,7 @@ const files = new Files({
 
 `downloadTimeoutMs` bounds the public-URL fetches issued by `download()` and the lazy bodies returned from `head()`/`list()`. Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
 
-`access` selects public or private blobs and is fixed at construction. Default `"public"` matches the existing behavior. With `access: "private"`, uploads use Vercel's private mode and reads route through `blob.get()` with whichever credentials the adapter resolved (OIDC or read-write token) instead of a public URL fetch. There is no permanent public URL for private blobs, so `url()` mints a [Vercel Signed URL](https://vercel.com/docs/vercel-blob/vercel-signed-urls) instead - a presigned GET scoped to that key that expires after `expiresIn` seconds (1 hour by default, `defaultUrlExpiresIn` changes the default). Need both? Use two adapters.
+`access` selects public or private blobs and is fixed at construction. Defaults to `"public"`. With `access: "private"`, uploads use Vercel's private mode and reads route through `blob.get()` with whichever credentials the adapter resolved (OIDC or read-write token) instead of a public URL fetch. There is no permanent public URL for private blobs, so `url()` mints a [Vercel Signed URL](https://vercel.com/docs/vercel-blob/vercel-signed-urls) instead - a presigned GET scoped to that key that expires after `expiresIn` seconds (1 hour by default, `defaultUrlExpiresIn` changes the default). Need both? Use two adapters.
 
 ## Signed URLs
 
@@ -76,7 +76,9 @@ Public blobs keep returning their permanent CDN URL from `url()` - a presigned c
 
 ## Limitations
 
-User `metadata` isn't supported by the underlying API, so passing a non-empty `metadata` throws rather than silently dropping it. `cacheControl` is supported (it maps to the blob's `cacheControlMaxAge`).
+User `metadata` isn't supported by the underlying API, so passing a non-empty `metadata` throws rather than silently dropping it. `cacheControl` is supported through its `max-age` directive, which maps to the blob's `cacheControlMaxAge`; Vercel writes the rest of the header itself. A value with no `max-age` (e.g. `"no-store"`) throws rather than being dropped.
+
+With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 
 ## Compatibility
 
@@ -87,7 +89,7 @@ User `metadata` isn't supported by the underlying API, so passing a non-empty `m
 | `upload` | ✅ |  |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ✅ |  |
+| `list` | ⚠️ | Listed items' `type` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
@@ -100,9 +102,10 @@ User `metadata` isn't supported by the underlying API, so passing a non-empty `m
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ✅ |  |
-| `download` | ✅ |  |
+| `download` | ⚠️ | Reads go through `blob.get()`, which has no range primitive, so `range` throws. |
 | `delete` | ✅ |  |
-| `list` | ✅ |  |
+| `list` | ⚠️ | Listed items' `type` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
+| `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |

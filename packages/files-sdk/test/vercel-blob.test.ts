@@ -3,6 +3,25 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 
+// The real error classes, captured before the module is mocked and
+// re-exported from the double below. Real `@vercel/blob` errors have
+// `name: "Error"` and no `status`, so the adapter has to classify them by
+// class; hand-rolled `{ name: "BlobNotFoundError" }` errors would hide that.
+const {
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobContentTypeNotAllowedError,
+  BlobError,
+  BlobFileTooLargeError,
+  BlobNotFoundError,
+  BlobPathnameMismatchError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
+} = await import("@vercel/blob");
+
 // Mock @vercel/blob before the adapter imports it.
 const putMock = mock((pathname: string, _body: unknown, _opts?: unknown) =>
   Promise.resolve({
@@ -134,6 +153,18 @@ const presignUrlMock = mock(
 );
 
 mock.module("@vercel/blob", () => ({
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobContentTypeNotAllowedError,
+  BlobError,
+  BlobFileTooLargeError,
+  BlobNotFoundError,
+  BlobPathnameMismatchError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
   completeMultipartUpload: completeMultipartUploadMock,
   copy: copyMock,
   createMultipartUpload: createMultipartUploadMock,
@@ -301,6 +332,27 @@ describe("vercel-blob adapter", () => {
     expect(o.addRandomSuffix).toBe(false);
     expect(o.cacheControlMaxAge).toBe(60);
     expect(o.contentType).toBe("text/plain");
+  });
+
+  test("cacheControl max-age=0 is forwarded, not dropped", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await files.upload("a.txt", "hello", { cacheControl: "max-age=0" });
+    const opts = putMock.mock.calls[0]?.[2];
+    expect((opts as { cacheControlMaxAge?: number }).cacheControlMaxAge).toBe(
+      0
+    );
+  });
+
+  test("cacheControl without max-age throws before any provider call", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await expect(
+      files.upload("a.txt", "hello", { cacheControl: "no-store" })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/cacheControl.*no-store/u),
+      permanent: true,
+    });
+    expect(putMock).not.toHaveBeenCalled();
   });
 
   test("forwards blob.put progress to onProgress", async () => {
@@ -805,31 +857,54 @@ describe("vercel-blob adapter", () => {
     }
   });
 
-  test("head error: name BlobNotFoundError maps to NotFound", async () => {
+  test("real SDK errors carry no status and a generic name", () => {
+    // The shape the adapter has to classify: only the class tells them apart.
+    const error = new BlobNotFoundError();
+    expect(error.name).toBe("Error");
+    expect("status" in error).toBe(false);
+  });
+
+  test("head error: a real BlobNotFoundError maps to NotFound", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobNotFoundError())
+    );
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: "Vercel Blob: The requested blob does not exist",
+    });
+  });
+
+  test("head error: name BlobNotFoundError still maps to NotFound (fallback)", async () => {
     const files = new Files({ adapter: vercelBlob() });
     headMock.mockImplementationOnce(() =>
       Promise.reject(
         Object.assign(new Error("nope"), { name: "BlobNotFoundError" })
       )
     );
-    try {
-      await files.head("a.txt");
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect((error as FilesError).code).toBe("NotFound");
-    }
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
   });
 
-  test("exists returns true for present blobs and false for BlobNotFound errors", async () => {
+  test("exists returns true for present blobs and false for a real BlobNotFoundError", async () => {
     const files = new Files({ adapter: vercelBlob() });
     await expect(files.exists("a.txt")).resolves.toBe(true);
 
     headMock.mockImplementationOnce(() =>
-      Promise.reject(
-        Object.assign(new Error("missing"), { name: "BlobNotFoundError" })
-      )
+      Promise.reject(new BlobNotFoundError())
     );
     await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("exists rethrows a real BlobAccessError as Unauthorized", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobAccessError())
+    );
+    await expect(files.exists("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
   });
 
   test("exists rethrows non-NotFound errors from blob.head()", async () => {
@@ -839,6 +914,94 @@ describe("vercel-blob adapter", () => {
     );
     await expect(files.exists("a.txt")).rejects.toMatchObject({
       code: "Unauthorized",
+    });
+  });
+
+  test.each([
+    ["BlobClientTokenExpiredError", () => new BlobClientTokenExpiredError()],
+    ["BlobPathnameMismatchError", () => new BlobPathnameMismatchError("x")],
+    ["BlobStoreSuspendedError", () => new BlobStoreSuspendedError()],
+  ])("a real %s maps to Unauthorized", async (_name, make) => {
+    const files = new Files({ adapter: vercelBlob() });
+    putMock.mockImplementationOnce(() => Promise.reject(make()));
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
+  test("an existing blob under allowOverwrite: false maps to Conflict", async () => {
+    // Vercel reports it as `bad_request`; the SDK surfaces a bare BlobError.
+    const files = new Files({
+      adapter: vercelBlob({ allowOverwrite: false }),
+    });
+    putMock.mockImplementationOnce(() =>
+      Promise.reject(
+        new BlobError(
+          "This blob already exists, use `allowOverwrite: true` if you want to overwrite it. Or `addRandomSuffix: true` to generate a unique filename."
+        )
+      )
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+  });
+
+  test("a real BlobPreconditionFailedError maps to Conflict", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    copyMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobPreconditionFailedError())
+    );
+    await expect(files.copy("a.txt", "b.txt")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+  });
+
+  test("other bad requests stay Provider", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    putMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobError("Bad request"))
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+      permanent: false,
+    });
+  });
+
+  test.each([
+    [
+      "BlobContentTypeNotAllowedError",
+      () => new BlobContentTypeNotAllowedError("x"),
+    ],
+    ["BlobFileTooLargeError", () => new BlobFileTooLargeError("x")],
+    ["BlobStoreNotFoundError", () => new BlobStoreNotFoundError()],
+  ])("a real %s is a permanent Provider error", async (_name, make) => {
+    const files = new Files({ adapter: vercelBlob() });
+    putMock.mockImplementationOnce(() => Promise.reject(make()));
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+      permanent: true,
+    });
+  });
+
+  test("a real BlobServiceNotAvailable stays a retryable Provider error", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    putMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobServiceNotAvailable())
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+      permanent: false,
+    });
+  });
+
+  test("a real BlobRequestAbortedError is flagged aborted", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    delMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobRequestAbortedError())
+    );
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      aborted: true,
+      code: "Provider",
     });
   });
 
@@ -1547,6 +1710,49 @@ describe("vercel-blob resumable uploads", () => {
     if (session?.provider === "vercel-blob") {
       expect(session.parts).toHaveLength(2);
     }
+  });
+
+  test("create and complete carry allowOverwrite and cacheControl like upload()", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await files.upload("big.bin", new Uint8Array(FIVE_MIB + 10), {
+      cacheControl: "public, max-age=120",
+      control: new UploadControl(),
+      multipart: { partSize: FIVE_MIB },
+    });
+    const [, createOpts] = createMultipartUploadMock.mock.calls[0] ?? [];
+    const completeOpts = completeMultipartUploadMock.mock.calls[0]?.[2];
+    for (const opts of [createOpts, completeOpts]) {
+      expect(opts).toMatchObject({
+        allowOverwrite: true,
+        cacheControlMaxAge: 120,
+      });
+    }
+  });
+
+  test("allowOverwrite: false reaches the multipart requests", async () => {
+    const files = new Files({
+      adapter: vercelBlob({ allowOverwrite: false }),
+    });
+    await files.upload("big.bin", new Uint8Array(FIVE_MIB + 10), {
+      control: new UploadControl(),
+      multipart: { partSize: FIVE_MIB },
+    });
+    const [, createOpts] = createMultipartUploadMock.mock.calls[0] ?? [];
+    const completeOpts = completeMultipartUploadMock.mock.calls[0]?.[2];
+    expect(createOpts).toMatchObject({ allowOverwrite: false });
+    expect(completeOpts).toMatchObject({ allowOverwrite: false });
+    expect(createOpts).not.toHaveProperty("cacheControlMaxAge");
+  });
+
+  test("a resumable cacheControl without max-age throws before any provider call", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await expect(
+      files.upload("big.bin", new Uint8Array(FIVE_MIB + 10), {
+        cacheControl: "no-cache",
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(createMultipartUploadMock).not.toHaveBeenCalled();
   });
 
   test("resume re-attaches the token's parts and uploads only the rest", async () => {
