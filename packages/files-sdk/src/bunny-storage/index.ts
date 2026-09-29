@@ -71,8 +71,25 @@ const VALID_REGIONS = new Set<string>(
   Object.values(BunnyStorageSDK.regions.StorageRegion)
 );
 
+// A `.` or `..` path segment, including the `%2e` spellings the URL parser
+// treats the same way.
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
+
 const toBunnyPath = (key: string): string => {
   const trimmed = key.replace(/^\/+/u, "");
+  // The SDK appends this path to the zone URL's `pathname`, which resolves dot
+  // segments away: `x/.` would address the directory `x/` and `.` or `a/..`
+  // the zone root — both recursive-delete targets for `delete()` — rather
+  // than an object. No stored object can carry such a segment, so reject it.
+  if (trimmed.split("/").some((segment) => DOT_SEGMENT.test(segment))) {
+    throw new FilesError(
+      "Provider",
+      `bunnyStorage: key must not contain . or .. path segments: ${JSON.stringify(key)}`,
+      undefined,
+      // The same key fails the same way on every attempt: never retried.
+      { permanent: true }
+    );
+  }
   return `/${trimmed}`;
 };
 

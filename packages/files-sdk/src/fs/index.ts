@@ -186,14 +186,17 @@ const aliasesSidecarPath = (resolved: string): boolean => {
 // `../../etc/passwd` resolves outside `root`. We compare the resolved path
 // against `root` to reject those before any fs operation runs. Without
 // this check, `download("../../../etc/passwd")` would happily exfiltrate
-// from the host filesystem.
+// from the host filesystem. Every rejection here is `permanent`: the same key
+// fails the same way on every attempt, so `retries` must not re-send it.
 const resolveKeyPath = (root: string, key: string): string => {
   const resolved = path.resolve(root, key);
   const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(rootWithSep)) {
     throw new FilesError(
       "Provider",
-      `fs: key escapes adapter root: ${JSON.stringify(key)}`
+      `fs: key escapes adapter root: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
     );
   }
   // Disallow keys that map directly to the root (empty segment after
@@ -201,7 +204,9 @@ const resolveKeyPath = (root: string, key: string): string => {
   if (resolved === root) {
     throw new FilesError(
       "Provider",
-      "fs: key resolves to the adapter root directory"
+      "fs: key resolves to the adapter root directory",
+      undefined,
+      { permanent: true }
     );
   }
   // The adapter stores per-object metadata in a sidecar at
@@ -213,7 +218,9 @@ const resolveKeyPath = (root: string, key: string): string => {
   if (aliasesSidecarPath(resolved)) {
     throw new FilesError(
       "Provider",
-      `fs: keys ending in ${SIDECAR_SUFFIX}, ${RESUMABLE_SUFFIX}, or ${TEMP_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
+      `fs: keys ending in ${SIDECAR_SUFFIX}, ${RESUMABLE_SUFFIX}, or ${TEMP_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
     );
   }
   return resolved;
@@ -234,7 +241,9 @@ const realpathUnderRoot = async (
   if (realTarget !== realRoot && !realTarget.startsWith(rootWithSep)) {
     throw new FilesError(
       "Provider",
-      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`
+      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`,
+      undefined,
+      { permanent: true }
     );
   }
   return realTarget;
@@ -277,9 +286,10 @@ const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
 const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
   try {
     const raw = await fsp.readFile(sidecarPathOf(bodyPath), "utf-8");
-    // SAFETY: sidecars are only ever written by `writeSidecar` from a
-    // `Sidecar`; the three required fields are checked below so a foreign or
-    // truncated file reads as absent rather than as a half-typed record.
+    // SAFETY: sidecars are only ever written by `commitStaged` from a
+    // `Sidecar`; the three required fields are checked below so a foreign
+    // JSON object reads as absent rather than as a half-typed record (a file
+    // that isn't JSON at all surfaces as a parse error).
     const parsed = JSON.parse(raw) as Partial<Sidecar>;
     const { contentType, etag, lastModified } = parsed;
     if (isString(contentType) && isString(etag) && isNumber(lastModified)) {
@@ -292,13 +302,6 @@ const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
     }
     throw mapFsError(error);
   }
-};
-
-const writeSidecar = async (
-  bodyPath: string,
-  sidecar: Sidecar
-): Promise<void> => {
-  await fsp.writeFile(sidecarPathOf(bodyPath), JSON.stringify(sidecar));
 };
 
 const ensureDirFor = async (filePath: string): Promise<void> => {
@@ -508,15 +511,32 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         const realFromPath = await realpathUnderRoot(root, fromPath, from);
         const toPath = await writePathUnderRoot(root, toKeyPath, to);
         await ensureDirFor(toPath);
-        await fsp.copyFile(realFromPath, toPath);
-        // If the source had a sidecar, copy it (refreshing
-        // `lastModified`). If not, mirror that by removing any stale
-        // destination sidecar from a prior upload at the same key —
-        // synthesizing one would require re-reading the body to hash it.
         const sidecar = await readSidecar(fromPath);
-        await (sidecar
-          ? writeSidecar(toPath, { ...sidecar, lastModified: Date.now() })
-          : bestEffortRm(sidecarPathOf(toPath)));
+        // Copy into a staging file and rename it into place, like `upload()`.
+        // Writing to `toPath` directly would follow a symlink already sitting
+        // at the destination (or at its sidecar path) and overwrite whatever
+        // it points at — outside the root included; `rename` replaces the
+        // link itself.
+        const stagedBodyPath = tempPathFor(toPath);
+        try {
+          await fsp.copyFile(realFromPath, stagedBodyPath);
+          // If the source had a sidecar, copy it (refreshing
+          // `lastModified`). If not, mirror that by removing any stale
+          // destination sidecar from a prior upload at the same key —
+          // synthesizing one would require re-reading the body to hash it.
+          await (sidecar
+            ? commitStaged(toPath, stagedBodyPath, {
+                ...sidecar,
+                lastModified: Date.now(),
+              })
+            : withCommitLock(toPath, async () => {
+                await fsp.rename(stagedBodyPath, toPath);
+                await bestEffortRm(sidecarPathOf(toPath));
+              }));
+        } catch (error) {
+          await bestEffortRm(stagedBodyPath);
+          throw error;
+        }
       } catch (error) {
         throw mapFsError(error);
       }
@@ -810,21 +830,25 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           }
         },
         async uploadAt({ offset, data }): Promise<{ nextOffset: number }> {
-          // Re-check on every chunk: an adopted session skips `begin`, so this
-          // is the first write-side guard a resumed upload hits.
-          await writePathUnderRoot(root, tempPath, key);
-          // O_RDWR | O_CREAT: positional write, creating the partial if it's
-          // missing (e.g. resuming after it was cleaned up) without truncating
-          // an existing one.
-          const handle = await fsp.open(
-            tempPath,
-            // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
-            fsConstants.O_RDWR | fsConstants.O_CREAT
-          );
           try {
-            await handle.write(data, 0, data.byteLength, offset);
-          } finally {
-            await handle.close();
+            // Re-check on every chunk: an adopted session skips `begin`, so
+            // this is the first write-side guard a resumed upload hits.
+            await writePathUnderRoot(root, tempPath, key);
+            // O_RDWR | O_CREAT: positional write, creating the partial if it's
+            // missing (e.g. resuming after it was cleaned up) without
+            // truncating an existing one.
+            const handle = await fsp.open(
+              tempPath,
+              // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
+              fsConstants.O_RDWR | fsConstants.O_CREAT
+            );
+            try {
+              await handle.write(data, 0, data.byteLength, offset);
+            } finally {
+              await handle.close();
+            }
+          } catch (error) {
+            throw mapFsError(error);
           }
           return { nextOffset: offset + data.byteLength };
         },

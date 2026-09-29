@@ -535,6 +535,48 @@ describe("bunnyStorage adapter", () => {
     });
   });
 
+  test("keys with dot segments are rejected before any Storage API call", async () => {
+    // The SDK sets `url.pathname`, which resolves dot segments: `.` / `a/..`
+    // would DELETE the zone root and `x/.` the directory `x/`.
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("x/keep.txt", "keep");
+    uploadMock.mockClear();
+    const rejected = expect.objectContaining({
+      code: "Provider",
+      message: expect.stringContaining(
+        "must not contain . or .. path segments"
+      ),
+      // Deterministic: `retries` must not re-send it.
+      permanent: true,
+    });
+    for (const key of [".", "..", "a/..", "x/.", "%2e%2E", "a/.%2e/b"]) {
+      // eslint-disable-next-line no-await-in-loop -- each key's rejections are asserted in turn
+      await expect(files.delete(key)).rejects.toEqual(rejected);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.download(key)).rejects.toEqual(rejected);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.head(key)).rejects.toEqual(rejected);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.exists(key)).rejects.toEqual(rejected);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.upload(key, "x")).rejects.toEqual(rejected);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.copy("x/keep.txt", key)).rejects.toEqual(rejected);
+    }
+    expect(removeMock).not.toHaveBeenCalled();
+    expect(uploadMock).not.toHaveBeenCalled();
+    expect(backing.has("x/keep.txt")).toBe(true);
+    // Dots inside a segment are ordinary characters.
+    await files.upload("a/.hidden/..x", "ok");
+    expect(backing.has("a/.hidden/..x")).toBe(true);
+  });
+
   test("url requires publicBaseUrl and rejects content-disposition overrides", async () => {
     const privateFiles = new Files({
       adapter: bunnyStorage({

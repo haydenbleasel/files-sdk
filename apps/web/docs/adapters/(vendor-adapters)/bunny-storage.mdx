@@ -36,6 +36,10 @@ const files = new Files({
   name="BunnyStorageAdapterOptions"
 />
 
+## Limitations
+
+Keys with a `.` or `..` path segment (including the `%2e` spellings) are rejected before any Storage API call. The Storage API resolves dot segments, so such a key would address a directory or the zone root rather than an object - and `delete()` on either is recursive.
+
 ## Compatibility
 
 | Method | Status | Notes |

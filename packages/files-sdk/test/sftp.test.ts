@@ -662,6 +662,37 @@ describe("sftp edge cases (injected client)", () => {
     expect(got.size).toBe(8);
   });
 
+  test("a consumed stream download detaches from a long-lived signal", async () => {
+    // A constructor-level signal outlives every call; a listener left on it
+    // would pin each download's connection and stream for its lifetime.
+    const controller = new AbortController();
+    const added: unknown[] = [];
+    const removed: unknown[] = [];
+    const { signal } = controller;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((type: string, fn: unknown, opts?: unknown) => {
+      added.push(fn);
+      add(type, fn as EventListener, opts as AddEventListenerOptions);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((type: string, fn: unknown) => {
+      removed.push(fn);
+      remove(type, fn as EventListener);
+    }) as typeof signal.removeEventListener;
+    const files = new Files({
+      adapter: sftp({ client: makeFakeClient() }),
+      signal,
+    });
+    await files.upload("s.txt", "streamed");
+    const got = await files.download("s.txt", { as: "stream" });
+    expect(await got.text()).toBe("streamed");
+    await sleep(0);
+    expect(added.length).toBeGreaterThan(0);
+    for (const fn of added) {
+      expect(removed).toContain(fn);
+    }
+  });
+
   test("uploading a ReadableStream looks up the size via stat", async () => {
     const files = newFiles();
     const stream = new ReadableStream<Uint8Array>({

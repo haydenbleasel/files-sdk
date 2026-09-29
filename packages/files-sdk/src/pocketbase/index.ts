@@ -328,8 +328,11 @@ export const pocketbase = (
       ...(range && { headers: rangeRequestHeaders(range) }),
     });
     if (!res.ok) {
+      // Classify like the SDK calls (404 NotFound, 401/403 Unauthorized) so
+      // a refused file token isn't retried as a transient Provider error.
+      const { code } = mapPocketBaseError({ status: res.status });
       throw new FilesError(
-        res.status === 404 ? "NotFound" : "Provider",
+        code,
         `pocketbase: failed to download file "${filename}" — HTTP ${res.status}`,
         res
       );
@@ -377,6 +380,37 @@ export const pocketbase = (
     );
   };
 
+  // Write `blob` as the file for `key`: replace the file on the key's existing
+  // record, or create one. `keyField` is unique-indexed, so a second
+  // `create()` for a key fails validation rather than overwriting — both
+  // `upload()` and `copy()` need overwrite semantics.
+  const putRecord = async (
+    key: string,
+    blob: Blob,
+    filename: string,
+    signal?: AbortSignal
+  ): Promise<FileRecord> => {
+    let existing: FileRecord | undefined;
+    try {
+      existing = await records().getFirstListItem(
+        keyFilter(pb, keyField, key),
+        sendOpts(signal)
+      );
+    } catch (error) {
+      if (!(error instanceof ClientResponseError) || error.status !== 404) {
+        throw error;
+      }
+    }
+    const formData = new FormData();
+    if (existing) {
+      formData.append(fileField, blob, filename);
+      return records().update(existing.id, formData, sendOpts(signal));
+    }
+    formData.append(keyField, key);
+    formData.append(fileField, blob, filename);
+    return records().create(formData, sendOpts(signal));
+  };
+
   // One list page as StoredFiles. The server-side `~` filter is a superset
   // (see `prefixFilter`), so the exact, case-sensitive prefix match happens
   // here — a page can hold fewer than `limit` items after the narrowing.
@@ -402,15 +436,12 @@ export const pocketbase = (
         const source = await findRecord(from, operationOpts?.signal);
         const bytes = await downloadBytes(source, operationOpts?.signal);
         const filename = filenameOf(source);
-        const formData = new FormData();
-        formData.append(keyField, to);
         // SAFETY: `bytes` was just read from PocketBase into a fresh
         // `Uint8Array` over its own `ArrayBuffer`, so the view satisfies
         // `BlobPart`'s `ArrayBuffer`-backing requirement.
         const copy = new Blob([bytes as BlobPart], { type: OCTET_STREAM });
-        formData.append(fileField, copy, filename);
         await ensureAuth();
-        await records().create(formData, sendOpts(operationOpts?.signal));
+        await putRecord(to, copy, filename, operationOpts?.signal);
       } catch (error) {
         throw mapPocketBaseError(error);
       }
@@ -528,7 +559,7 @@ export const pocketbase = (
     // TTL is server-controlled, so `expiresIn` is ignored — see provider-gaps).
     signedUrl: { supported: true },
     supportsRange: true,
-    // No server-side copy — `copy()` downloads then re-uploads as a new record.
+    // No server-side copy — `copy()` downloads then re-uploads to the dest key.
     supportsServerSideCopy: false,
     async upload(
       key: string,
@@ -551,35 +582,7 @@ export const pocketbase = (
         // returned in the created record's file field.
         const filename = key.split("/").pop() || key;
 
-        let existing: FileRecord | undefined;
-        try {
-          existing = await records().getFirstListItem(
-            keyFilter(pb, keyField, key),
-            sendOpts(uploadOpts?.signal)
-          );
-        } catch (error) {
-          if (!(error instanceof ClientResponseError) || error.status !== 404) {
-            throw error;
-          }
-        }
-
-        const formData = new FormData();
-        let record: FileRecord;
-        if (existing) {
-          formData.append(fileField, blob, filename);
-          record = await records().update(
-            existing.id,
-            formData,
-            sendOpts(uploadOpts?.signal)
-          );
-        } else {
-          formData.append(keyField, key);
-          formData.append(fileField, blob, filename);
-          record = await records().create(
-            formData,
-            sendOpts(uploadOpts?.signal)
-          );
-        }
+        const record = await putRecord(key, blob, filename, uploadOpts?.signal);
 
         const lastModified = record.updated
           ? new Date(record.updated).getTime()

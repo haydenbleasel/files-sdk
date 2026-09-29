@@ -526,22 +526,22 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           const size = await client.size(remote);
           const lastModified = await tryLastMod(client, remote);
           const pass = new PassThrough();
+          const { signal } = downloadOpts;
+          const onAbort = (): void => {
+            pass.destroy();
+            release();
+          };
+          // Detach from the signal once the stream settles: it can be a
+          // long-lived (e.g. constructor-level) signal, and a listener left
+          // behind would pin this connection and stream for its lifetime.
           const cleanup = (): void => {
+            signal?.removeEventListener("abort", onAbort);
             release();
           };
           pass.once("end", cleanup);
           pass.once("error", cleanup);
           pass.once("close", cleanup);
-          if (downloadOpts.signal) {
-            downloadOpts.signal.addEventListener(
-              "abort",
-              () => {
-                pass.destroy();
-                release();
-              },
-              { once: true }
-            );
-          }
+          signal?.addEventListener("abort", onAbort, { once: true });
           // Kick off the transfer without awaiting; basic-ftp pipes the data
           // socket into `pass` and resolves when it completes. It rejects with
           // `FTPError` or a Node system error, both `Error` instances.

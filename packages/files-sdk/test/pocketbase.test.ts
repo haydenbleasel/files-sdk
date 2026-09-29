@@ -621,6 +621,36 @@ describe("pocketbase adapter", () => {
     expect(new TextDecoder().decode(copied.bytes)).toBe("hello");
   });
 
+  test("copy onto an existing key replaces its file, like upload", async () => {
+    const adapter = pocketbase({
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    await adapter.upload("b.txt", "old");
+    const target = backing.get("b.txt");
+    createMock.mockClear();
+    await adapter.copy("a.txt", "b.txt");
+    // The key field is unique-indexed: a second create() would be refused,
+    // so the destination's record is updated in place instead.
+    expect(createMock).not.toHaveBeenCalled();
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const copied = backing.get("b.txt");
+    expect(copied?.recordId).toBe(target?.recordId);
+    expect(new TextDecoder().decode(copied?.bytes)).toBe("hello");
+  });
+
+  test("copy onto itself rewrites the same record", async () => {
+    const adapter = pocketbase({
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    await adapter.copy("a.txt", "a.txt");
+    const entry = backing.get("a.txt");
+    expect(new TextDecoder().decode(entry?.bytes)).toBe("hello");
+  });
+
   test("list with no prefix returns all items sorted by key", async () => {
     const adapter = pocketbase({
       collection: "files",
@@ -905,6 +935,24 @@ describe("pocketbase adapter", () => {
       await expect(adapter.download("a.txt")).rejects.toMatchObject({
         code: "NotFound",
       });
+    });
+
+    test("download maps a refused file fetch (401/403) to Unauthorized", async () => {
+      const adapter = pocketbase({
+        collection: "files",
+        url: "http://pb.test",
+      });
+      await adapter.upload("a.txt", "hello");
+      for (const status of [401, 403]) {
+        fetchMock.mockImplementationOnce(() =>
+          Promise.resolve(new Response("denied", { status }))
+        );
+        // eslint-disable-next-line no-await-in-loop -- one status per iteration
+        await expect(adapter.download("a.txt")).rejects.toMatchObject({
+          code: "Unauthorized",
+          message: expect.stringContaining(`HTTP ${status}`),
+        });
+      }
     });
 
     test("download throws Provider when the record has no file in fileField", async () => {

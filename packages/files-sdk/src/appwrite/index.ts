@@ -96,13 +96,21 @@ export const mapAppwriteError = makeErrorMapper({
 // Appwrite custom file IDs: max 36 chars, must start with alphanumeric,
 // remaining chars are alphanumeric/`.`/`-`/`_`. Surfaced as a clear FilesError
 // before hitting the API so callers see what's wrong instead of an opaque 400.
+// Checked on every key-taking method, not just writes: node-appwrite
+// `encodeURIComponent`s the ID into the path but leaves `.` alone, so a key of
+// `..` or `.` would be resolved as a dot segment by `new URL()` and address
+// the bucket (`DELETE /storage/buckets/{bucketId}`) or its file listing
+// instead of a file.
 const APPWRITE_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$/u;
 
 const assertAppwriteKey = (key: string, label = "key"): void => {
   if (!APPWRITE_KEY_RE.test(key)) {
     throw new FilesError(
       "Provider",
-      `appwrite: ${label} "${key}" is not a valid Appwrite file ID — must be 1-36 chars, start with [a-zA-Z0-9], and use only [a-zA-Z0-9._-] (no slashes).`
+      `appwrite: ${label} "${key}" is not a valid Appwrite file ID — must be 1-36 chars, start with [a-zA-Z0-9], and use only [a-zA-Z0-9._-] (no slashes).`,
+      undefined,
+      // The same key fails the same way on every attempt: never retried.
+      { permanent: true }
     );
   }
 };
@@ -245,6 +253,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   return {
     bucket: opts.bucket,
     copy: async (from: string, to: string) => {
+      assertAppwriteKey(from, "copy source");
       assertAppwriteKey(to, "copy destination");
       try {
         // Use `to` as the InputFile filename rather than fetching the
@@ -262,6 +271,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       }
     },
     delete: async (key: string) => {
+      assertAppwriteKey(key);
       try {
         await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
       } catch (error) {
@@ -269,6 +279,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       }
     },
     download: async (key: string, _opts?: DownloadOptions) => {
+      assertAppwriteKey(key);
       try {
         const [stat, buffer] = await Promise.all([
           storage.getFile({ bucketId: opts.bucket, fileId: key }),
@@ -288,12 +299,13 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       }
     },
     exists(key: string) {
-      return existsByProbe(
-        () => storage.getFile({ bucketId: opts.bucket, fileId: key }),
-        mapAppwriteError
-      );
+      return existsByProbe(async () => {
+        assertAppwriteKey(key);
+        return await storage.getFile({ bucketId: opts.bucket, fileId: key });
+      }, mapAppwriteError);
     },
     head: async (key: string) => {
+      assertAppwriteKey(key);
       try {
         const stat = await storage.getFile({
           bucketId: opts.bucket,
@@ -446,6 +458,14 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           });
         },
         async discard() {
+          // Only delete a file this upload created: one exists once a chunk
+          // (or the 0-byte create) has landed. Before that, whatever sits at
+          // the key isn't ours — Appwrite refuses a chunked upload onto an
+          // existing file ID, so `control.abort()` after that refusal (or
+          // before the first chunk) must leave the existing file alone.
+          if (!finalFile && (session?.offset ?? 0) === 0) {
+            return;
+          }
           try {
             await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
           } catch {
@@ -506,9 +526,16 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           );
           if (!res.ok) {
             const text = await res.text();
-            throw new FilesError(
-              "Provider",
-              `appwrite: chunk upload failed (HTTP ${res.status}): ${text}`.trim()
+            // Classify by status like every SDK call (409 when the file ID
+            // already exists, 401/403, 404), so a definitive refusal isn't
+            // retried as a transient Provider error.
+            throw mapAppwriteError(
+              new AppwriteException(
+                `appwrite: chunk upload failed (HTTP ${res.status}): ${text}`.trim(),
+                res.status,
+                "",
+                text
+              )
             );
           }
           // Appwrite answers every chunk with the `File` model; keep only the
@@ -575,6 +602,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
             "appwrite: missing endpoint or projectId required for URL generation"
           )
         );
+      }
+      try {
+        assertAppwriteKey(key);
+      } catch (error) {
+        return Promise.reject(error);
       }
       const disposition = urlOpts?.responseContentDisposition;
       if (disposition && !BARE_ATTACHMENT.test(disposition)) {

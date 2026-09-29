@@ -404,22 +404,22 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         try {
           const stat = await client.stat(remote);
           const nodeStream = client.createReadStream(remote, readStreamOptions);
+          const { signal } = downloadOpts;
+          const onAbort = (): void => {
+            nodeStream.destroy();
+            void release();
+          };
+          // Detach from the signal once the stream settles: it can be a
+          // long-lived (e.g. constructor-level) signal, and a listener left
+          // behind would pin this connection and stream for its lifetime.
           const cleanup = (): void => {
+            signal?.removeEventListener("abort", onAbort);
             void release();
           };
           nodeStream.once("end", cleanup);
           nodeStream.once("error", cleanup);
           nodeStream.once("close", cleanup);
-          if (downloadOpts.signal) {
-            downloadOpts.signal.addEventListener(
-              "abort",
-              () => {
-                nodeStream.destroy();
-                void release();
-              },
-              { once: true }
-            );
-          }
+          signal?.addEventListener("abort", onAbort, { once: true });
           return createStoredFile(
             {
               key,

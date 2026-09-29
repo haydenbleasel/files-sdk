@@ -754,6 +754,43 @@ describe("appwrite adapter", () => {
     expect(createFileMock).not.toHaveBeenCalled();
   });
 
+  test("every key-taking method rejects invalid Appwrite keys before the API call", async () => {
+    // node-appwrite leaves `.` unencoded, so `..` / `.` would resolve as dot
+    // segments in `new URL()` and address the bucket itself (DELETE
+    // /storage/buckets/{bucketId}) instead of a file.
+    const files = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+        public: true,
+      }),
+    });
+    const invalid = expect.objectContaining({
+      code: "Provider",
+      message: expect.stringContaining("not a valid Appwrite file ID"),
+      // Deterministic: `retries` must not re-send it.
+      permanent: true,
+    });
+    for (const key of ["..", ".", "a/../b"]) {
+      // eslint-disable-next-line no-await-in-loop -- each key's rejections are asserted in turn
+      await expect(files.delete(key)).rejects.toEqual(invalid);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.download(key)).rejects.toEqual(invalid);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.head(key)).rejects.toEqual(invalid);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.exists(key)).rejects.toEqual(invalid);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.url(key)).rejects.toEqual(invalid);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      await expect(files.copy(key, "dest")).rejects.toEqual(invalid);
+    }
+    expect(deleteFileMock).not.toHaveBeenCalled();
+    expect(getFileMock).not.toHaveBeenCalled();
+    expect(getFileDownloadMock).not.toHaveBeenCalled();
+  });
+
   test("list > forwards cursor query when provided", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
@@ -1005,6 +1042,58 @@ describe("appwrite resumable uploads (chunked)", () => {
     await expect(
       files.upload("x", "data", { control: new UploadControl(), retries: 0 })
     ).rejects.toThrow(/chunk upload failed/u);
+  });
+
+  test("a refused chunk is classified by status and not retried", async () => {
+    let calls = 0;
+    installFetch(() => {
+      calls += 1;
+      return Response.json(
+        { code: 409, message: "exists", type: "storage_file_already_exists" },
+        { status: 409 }
+      );
+    });
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("x", "data", {
+        control: new UploadControl(),
+        retries: { backoff: () => 0, max: 3 },
+      })
+    ).rejects.toMatchObject({
+      code: "Conflict",
+      message: expect.stringContaining("chunk upload failed (HTTP 409)"),
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("abort after a refused first chunk leaves the existing file alone", async () => {
+    // Appwrite refuses a chunked upload onto an existing file ID; nothing of
+    // this upload landed, so discarding it must not delete that file.
+    installFetch(() => new Response("exists", { status: 409 }));
+    const files = new Files({ adapter: adapter() });
+    const control = new UploadControl();
+    await expect(
+      files.upload("existing", "data", { control, retries: 0 })
+    ).rejects.toMatchObject({ code: "Conflict" });
+    await control.abort();
+    expect(deleteFileMock).not.toHaveBeenCalled();
+  });
+
+  test("abort resumed from a token with uploaded chunks deletes the partial", async () => {
+    const adapterInstance = adapter();
+    const driver = adapterInstance.resumableUpload?.("doc", {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    driver.adopt({
+      contentType: "application/octet-stream",
+      fileId: "doc",
+      key: "doc",
+      offset: FIVE_MIB,
+      provider: "appwrite",
+    });
+    await driver.discard();
+    expect(deleteFileMock).toHaveBeenCalledTimes(1);
   });
 
   test("resumable requires an API key (not a keyless client)", async () => {

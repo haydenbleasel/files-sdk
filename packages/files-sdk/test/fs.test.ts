@@ -449,6 +449,73 @@ describe("fs adapter", () => {
       const got = await files.download("deep/nest/dest.txt");
       expect(await got.text()).toBe("ok");
     });
+
+    test("copy replaces a destination symlink instead of writing through it", async () => {
+      const root = await makeRoot();
+      const outside = await makeRoot();
+      const victim = path.join(outside, "victim.txt");
+      const victimMeta = path.join(outside, "victim.json");
+      await fsp.writeFile(victim, "untouched");
+      await fsp.writeFile(victimMeta, "{}");
+      try {
+        await fsp.symlink(victim, path.join(root, "link.txt"));
+        await fsp.symlink(victimMeta, path.join(root, "meta.txt.meta.json"));
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "EPERM" || error.code === "EACCES")
+        ) {
+          return;
+        }
+        throw error;
+      }
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("src.txt", "copied", { metadata: { v: "1" } });
+
+      // Body symlink at the destination key, then a sidecar symlink.
+      await files.copy("src.txt", "link.txt");
+      await files.copy("src.txt", "meta.txt");
+
+      expect(await fsp.readFile(victim, "utf-8")).toBe("untouched");
+      expect(await fsp.readFile(victimMeta, "utf-8")).toBe("{}");
+      const linkStat = await fsp.lstat(path.join(root, "link.txt"));
+      expect(linkStat.isSymbolicLink()).toBe(false);
+      const got = await files.download("link.txt");
+      expect(await got.text()).toBe("copied");
+      const meta = await files.head("meta.txt");
+      expect(meta.metadata).toEqual({ v: "1" });
+      const entries = await fsp.readdir(root);
+      expect(entries.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
+    });
+
+    test("copy without a source sidecar clears a stale destination sidecar", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await fsp.writeFile(path.join(root, "bare.txt"), "bare");
+      await files.upload("dst.txt", "old", { metadata: { stale: "1" } });
+      await files.copy("bare.txt", "dst.txt");
+      const got = await files.download("dst.txt");
+      expect(await got.text()).toBe("bare");
+      expect(got.metadata).toBeUndefined();
+      await expect(
+        fsp.stat(path.join(root, "dst.txt.meta.json"))
+      ).rejects.toThrow();
+    });
+
+    test("copy cleans up its staging file when the commit fails", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("src.txt", "data");
+      // A directory at the destination makes the rename fail.
+      await fsp.mkdir(path.join(root, "blocker"));
+      await expect(files.copy("src.txt", "blocker")).rejects.toBeInstanceOf(
+        FilesError
+      );
+      const entries = await fsp.readdir(root);
+      expect(entries.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
+    });
   });
 
   describe("move", () => {
@@ -800,6 +867,58 @@ describe("fs adapter", () => {
       await expect(
         fsp.readFile(path.join(root, "tenant-b", "pwn.txt"), "utf-8")
       ).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("validation failures are permanent, so retries don't re-send them", async () => {
+      const root = await makeRoot();
+      const outside = await makeRoot();
+      await fsp.writeFile(path.join(outside, "secret.txt"), "secret");
+      let symlinked = true;
+      try {
+        await fsp.symlink(
+          path.join(outside, "secret.txt"),
+          path.join(root, "link.txt")
+        );
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "EPERM" || error.code === "EACCES")
+        ) {
+          symlinked = false;
+        } else {
+          throw error;
+        }
+      }
+      const adapter = fsAdapter({ root });
+      let calls = 0;
+      const { download } = adapter;
+      adapter.download = (key, opts) => {
+        calls += 1;
+        return download(key, opts);
+      };
+      const files = new Files({ adapter });
+      const retries = { backoff: () => 0, max: 3 };
+      const keys = [
+        "../outside.txt",
+        "a/../..",
+        "x.meta.json",
+        ...(symlinked ? ["link.txt"] : []),
+      ];
+      for (const key of keys) {
+        calls = 0;
+        // eslint-disable-next-line no-await-in-loop -- each key's single attempt is asserted in turn
+        await expect(files.download(key, { retries })).rejects.toMatchObject({
+          code: "Provider",
+          permanent: true,
+        });
+        expect(calls).toBe(1);
+      }
+      // A key resolving to the root itself is permanent too.
+      await expect(adapter.head("sub/..")).rejects.toMatchObject({
+        permanent: true,
+      });
     });
 
     test("rejects deeply traversing keys", async () => {
@@ -1316,5 +1435,32 @@ describe("fs resumable uploads", () => {
     await expect(files.upload("x.fls-part", "data")).rejects.toThrow(
       /reserved/u
     );
+  });
+
+  test("uploadAt classifies filesystem errors like every other method", async () => {
+    const root = await makeRoot();
+    // An ancestor that is a regular file makes the partial's open() fail
+    // with ENOTDIR — which must surface as a mapped FilesError, not raw.
+    await fsp.writeFile(path.join(root, "sub"), "file, not a directory");
+    const adapter = fsAdapter({ root });
+    const key = "sub/x.bin";
+    const driver = adapter.resumableUpload?.(key, {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    driver.adopt({
+      contentType: "application/octet-stream",
+      key,
+      provider: "fs",
+      tempPath: path.join(root, "sub", "x.bin.fls-part"),
+    });
+    const failure = driver.uploadAt({
+      data: new Uint8Array([1, 2, 3]),
+      isLast: true,
+      offset: 0,
+      total: 3,
+    });
+    await expect(failure).rejects.toBeInstanceOf(FilesError);
+    await expect(failure).rejects.toMatchObject({ code: "NotFound" });
   });
 });
