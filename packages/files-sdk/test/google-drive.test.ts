@@ -238,6 +238,10 @@ mock.module("@googleapis/drive", () => ({
 
 class FakeAuthClient {
   creds: unknown = null;
+  readonly opts: unknown;
+  constructor(opts?: unknown) {
+    this.opts = opts;
+  }
   readonly token = "test-access-token";
   setCredentials(creds: unknown): void {
     this.creds = creds;
@@ -310,6 +314,26 @@ describe("google-drive adapter", () => {
     try {
       const adapter = googleDrive();
       expect(adapter.rootFolderId).toBe("root");
+    } finally {
+      restoreEnv("GOOGLE_DRIVE_CLIENT_EMAIL", prevEmail);
+      restoreEnv("GOOGLE_DRIVE_PRIVATE_KEY", prevKey);
+    }
+  });
+
+  test("env GOOGLE_DRIVE_PRIVATE_KEY has literal \\n escapes restored to newlines", () => {
+    const prevEmail = process.env.GOOGLE_DRIVE_CLIENT_EMAIL;
+    const prevKey = process.env.GOOGLE_DRIVE_PRIVATE_KEY;
+    process.env.GOOGLE_DRIVE_CLIENT_EMAIL = "env-svc@example.iam";
+    process.env.GOOGLE_DRIVE_PRIVATE_KEY =
+      "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n";
+    try {
+      googleDrive();
+      const factoryOpts = driveFactoryMock.mock.calls.at(-1)?.[0] as {
+        auth: FakeAuthClient;
+      };
+      expect((factoryOpts.auth.opts as { key: string }).key).toBe(
+        "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+      );
     } finally {
       restoreEnv("GOOGLE_DRIVE_CLIENT_EMAIL", prevEmail);
       restoreEnv("GOOGLE_DRIVE_PRIVATE_KEY", prevKey);
@@ -779,6 +803,72 @@ describe("google-drive adapter", () => {
     expect(body.appProperties.fsdkKey).toBe("a.txt");
   });
 
+  test("signedUploadUrl on an existing key clears the previous upload's appProperties", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "old", {
+      cacheControl: "max-age=60",
+      contentType: "text/html",
+      metadata: { owner: "u1" },
+    });
+    let body: { appProperties: Record<string, string | null> } | undefined;
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      body = JSON.parse(init?.body as string);
+      return Promise.resolve(
+        new Response(null, {
+          headers: {
+            Location:
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=upd",
+          },
+          status: 200,
+        })
+      );
+    }) as typeof fetch;
+    await files.signedUploadUrl("a.txt", { expiresIn: 3600 });
+    expect(body?.appProperties).toEqual({
+      fsdkCacheControl: null,
+      fsdkContentType: null,
+      fsdkKey: "a.txt",
+      owner: null,
+    });
+  });
+
+  test("keys and metadata that overflow Drive's 124-byte appProperty cap fail permanently up front", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    // `fsdkKey` is 7 bytes, leaving 117 for the key itself.
+    await files.upload("k".repeat(117), "ok");
+    const tooLong = "k".repeat(118);
+    const expected = {
+      code: "Provider",
+      message: expect.stringContaining("124-byte"),
+      permanent: true,
+    };
+    filesCreateMock.mockClear();
+    filesListMock.mockClear();
+    await expect(files.upload(tooLong, "x")).rejects.toMatchObject(expected);
+    // Multi-byte characters count by their UTF-8 length.
+    await expect(files.upload("é".repeat(59), "x")).rejects.toMatchObject(
+      expected
+    );
+    await expect(
+      files.upload("a.txt", "x", { metadata: { note: "n".repeat(121) } })
+    ).rejects.toMatchObject(expected);
+    await expect(files.copy("k".repeat(117), tooLong)).rejects.toMatchObject(
+      expected
+    );
+    await expect(
+      files.signedUploadUrl(tooLong, { expiresIn: 60 })
+    ).rejects.toMatchObject(expected);
+    await expect(
+      files.upload(tooLong, "x", { control: new UploadControl() })
+    ).rejects.toMatchObject(expected);
+    expect(filesCreateMock).not.toHaveBeenCalled();
+    expect(filesListMock).not.toHaveBeenCalled();
+    expect(filesCopyMock).not.toHaveBeenCalled();
+  });
+
   test("signedUploadUrl rejects maxSize because Drive sessions cannot enforce it", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await expect(
@@ -880,6 +970,54 @@ describe("google-drive adapter", () => {
       expect((err as FilesError).code).toBe(expectedCode);
     }
   );
+
+  test.each(["rateLimitExceeded", "userRateLimitExceeded"])(
+    "mapDriveError keeps a 403 %s retryable (Provider)",
+    async (reason) => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      await files.upload("a.txt", "hi");
+      filesGetMock.mockImplementationOnce(() => {
+        throw Object.assign(new Error("rate limited"), {
+          code: 403,
+          response: {
+            data: {
+              error: {
+                code: 403,
+                errors: [{ domain: "usageLimits", reason }],
+                message: "Rate Limit Exceeded",
+              },
+            },
+            status: 403,
+          },
+        });
+      });
+      const err = await files
+        .head("a.txt", { retries: 0 })
+        .catch((error: unknown) => error);
+      expect(err).toBeInstanceOf(FilesError);
+      expect((err as FilesError).code).toBe("Provider");
+      expect((err as FilesError).message).toBe("Rate Limit Exceeded");
+    }
+  );
+
+  test("mapDriveError still maps a 403 with a non-rate-limit reason to Unauthorized", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    filesGetMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error("forbidden"), {
+        code: 403,
+        response: {
+          data: {
+            error: {
+              errors: [{ reason: "insufficientFilePermissions" }, "junk"],
+            },
+          },
+        },
+      });
+    });
+    const err = await files.head("a.txt").catch((error: unknown) => error);
+    expect((err as FilesError).code).toBe("Unauthorized");
+  });
 
   test("mapDriveError prefers response.status over top-level code", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });

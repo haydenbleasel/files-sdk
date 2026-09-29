@@ -206,12 +206,11 @@ const UNAUTH_TAGS = new Set([
   "user_suspended",
   "route_access_denied",
   "access_denied",
-]);
-const CONFLICT_TAGS = new Set([
-  "conflict",
+  // A write the token isn't allowed to make — a permissions failure, not a
+  // naming conflict.
   "no_write_permission",
-  "shared_link_already_exists",
 ]);
+const CONFLICT_TAGS = new Set(["conflict", "shared_link_already_exists"]);
 
 const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Conflict: "Conflict",
@@ -1217,9 +1216,14 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         )
       );
     },
-    // `url()` returns a temporary link — time-limited, but capped at 4h
-    // (`MAX_TEMPORARY_LINK_DURATION`); `url()` throws above that.
-    signedUrl: { maxExpiresIn: MAX_TEMPORARY_LINK_DURATION, supported: true },
+    // By default `url()` returns a temporary link — time-limited, but capped
+    // at 4h (`MAX_TEMPORARY_LINK_DURATION`); `url()` throws above that. Under
+    // `publicBaseUrl` / `publicByDefault` it returns a permanent public link
+    // instead, which isn't signed and ignores `expiresIn`.
+    signedUrl:
+      publicBaseUrl || publicByDefault
+        ? { supported: false }
+        : { maxExpiresIn: MAX_TEMPORARY_LINK_DURATION, supported: true },
     supportsDelimiter: true,
     supportsRange: true,
     // `copy()` is a server-side `filesCopyV2`.
@@ -1280,15 +1284,17 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           "dropbox: `responseContentDisposition` is not supported. Dropbox temporary links and shared links have no Content-Disposition override."
         );
       }
+      if (publicBaseUrl) {
+        return joinPublicUrl(publicBaseUrl, key);
+      }
+      // Only temporary links have a lifetime to cap; the permanent-link
+      // modes above and below ignore `expiresIn`.
       const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
-      if (expiresIn > MAX_TEMPORARY_LINK_DURATION) {
+      if (!publicByDefault && expiresIn > MAX_TEMPORARY_LINK_DURATION) {
         throw new FilesError(
           "Provider",
           `dropbox: \`expiresIn\` of ${expiresIn}s exceeds the ${MAX_TEMPORARY_LINK_DURATION}s (4h) maximum for Dropbox temporary links. Use \`publicByDefault: true\` for a permanent shared link.`
         );
-      }
-      if (publicBaseUrl) {
-        return joinPublicUrl(publicBaseUrl, key);
       }
       try {
         // oxlint-disable-next-line react-doctor/async-defer-await -- both branches below need a fresh access token, so this must run before the publicByDefault guard, not after it

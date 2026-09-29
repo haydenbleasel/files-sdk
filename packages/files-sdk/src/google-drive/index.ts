@@ -26,7 +26,8 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
-import { isJsonObject } from "../internal/json.js";
+import { isJsonArray, isJsonObject } from "../internal/json.js";
+import type { JsonObject } from "../internal/json.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
 import { createOffsetHttpDriver } from "../internal/resumable-offset-http.js";
 import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
@@ -73,9 +74,9 @@ export interface GoogleDriveAdapterOptions {
    */
   driveId?: string;
   /**
-   * Logical "bucket root" — virtual keys live under this folder. Defaults
-   * to `"root"` (My Drive root) or, when `driveId` is set, the Shared
-   * Drive root id should be used here.
+   * Logical "bucket root" — virtual keys live under this folder. Falls back
+   * to `GOOGLE_DRIVE_ROOT_FOLDER_ID`, then to `driveId` (a Shared Drive's id
+   * is also its root folder's id), then to `"root"` (the My Drive root).
    */
   rootFolderId?: string;
   /**
@@ -132,12 +133,23 @@ const FILE_FIELDS =
 const NOT_FOUND_STATUS = new Set([404]);
 const UNAUTH_STATUS = new Set([401, 403]);
 const CONFLICT_STATUS = new Set([409, 412]);
+// Drive answers rate limiting with a 403, not a 429; Google's guidance for
+// these reasons is to retry with exponential backoff, so they stay
+// retryable `Provider` errors rather than `Unauthorized`.
+const RATE_LIMIT_REASONS = new Set([
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+]);
 
 const classifyDriveError = (
-  status: number | undefined
+  status: number | undefined,
+  reasons: readonly string[]
 ): ProviderFilesErrorCode => {
   if (NOT_FOUND_STATUS.has(status ?? 0)) {
     return "NotFound";
+  }
+  if (reasons.some((reason) => RATE_LIMIT_REASONS.has(reason))) {
+    return "Provider";
   }
   if (UNAUTH_STATUS.has(status ?? 0)) {
     return "Unauthorized";
@@ -153,6 +165,18 @@ const DEFAULT_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   NotFound: "Not found",
   Provider: "Drive error",
   Unauthorized: "Unauthorized",
+};
+
+// Drive's error body lists machine-readable `reason`s under `error.errors[]`
+// (e.g. `userRateLimitExceeded`).
+const driveErrorReasons = (data: JsonObject): string[] => {
+  const details =
+    isJsonObject(data.error) && isJsonArray(data.error.errors)
+      ? data.error.errors
+      : [];
+  return details.flatMap((detail) =>
+    isJsonObject(detail) && isString(detail.reason) ? [detail.reason] : []
+  );
 };
 
 // googleapis surfaces failures as gaxios errors: `code`/`status` carry the
@@ -173,9 +197,9 @@ export const mapDriveError = (cause: unknown): FilesError => {
   } else if ("status" in response && isNumber(response.status)) {
     ({ status } = response);
   }
-  const errorCode = classifyDriveError(status);
   const data =
     "data" in response && isJsonObject(response.data) ? response.data : {};
+  const errorCode = classifyDriveError(status, driveErrorReasons(data));
   const nestedMessage = isJsonObject(data.error)
     ? data.error.message
     : undefined;
@@ -210,6 +234,29 @@ const assertNoReservedMetadata = (
       throw new FilesError(
         "Provider",
         `google-drive: metadata key '${k}' is reserved (the '${RESERVED_METADATA_PREFIX}' prefix is used by the adapter for bookkeeping).`
+      );
+    }
+  }
+};
+
+// Drive caps each custom property at 124 bytes of UTF-8, key and value
+// together. An oversized one fails the whole request with a 400 that would
+// otherwise be retried as a transient Provider error, so reject it up front
+// with a permanent error that names the limit.
+const MAX_APP_PROPERTY_BYTES = 124;
+
+const utf8Length = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const assertAppPropertiesFit = (props: Record<string, string>): void => {
+  for (const [name, value] of Object.entries(props)) {
+    const size = utf8Length(name) + utf8Length(value);
+    if (size > MAX_APP_PROPERTY_BYTES) {
+      throw new FilesError(
+        "Provider",
+        `google-drive: appProperty '${name}' is ${size} bytes (UTF-8 key + value), over Drive's ${MAX_APP_PROPERTY_BYTES}-byte limit per property. Keys are stored in '${KEY_PROP}', so a key can be at most ${MAX_APP_PROPERTY_BYTES - utf8Length(KEY_PROP)} bytes; each metadata key + value (and the content type / cacheControl) must fit in ${MAX_APP_PROPERTY_BYTES} bytes.`,
+        undefined,
+        { permanent: true }
       );
     }
   }
@@ -455,7 +502,9 @@ const buildAuth = (opts: GoogleDriveAdapterOptions): AuthHandle | undefined => {
   if (envEmail && envKey) {
     return new JWT({
       email: envEmail,
-      key: envKey,
+      // Env files and CI secrets often carry the PEM's newlines as literal
+      // `\n` escapes; restore them so the key parses.
+      key: envKey.replaceAll("\\n", "\n"),
       scopes: [DRIVE_SCOPE],
       ...(subject && { subject }),
     });
@@ -614,6 +663,7 @@ export const googleDrive = (
 
   return {
     async copy(from, to, operationOpts) {
+      assertAppPropertiesFit({ [KEY_PROP]: to });
       try {
         const fromId = await resolveFileId(from, operationOpts?.signal);
         // Drive copies always create a new file; capture the id currently
@@ -893,6 +943,15 @@ export const googleDrive = (
           assertNoReservedMetadata(resumableOpts.metadata);
           ({ contentType } = meta);
           ({ total } = meta);
+          const nextProps = {
+            [KEY_PROP]: key,
+            [CONTENT_TYPE_PROP]: meta.contentType,
+            ...(resumableOpts.cacheControl && {
+              [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
+            }),
+            ...resumableOpts.metadata,
+          };
+          assertAppPropertiesFit(nextProps);
           if (!authForTokens) {
             throw new FilesError(
               "Provider",
@@ -912,14 +971,6 @@ export const googleDrive = (
           const fields = `&fields=${encodeURIComponent(
             "id,size,md5Checksum,mimeType,modifiedTime"
           )}`;
-          const nextProps = {
-            [KEY_PROP]: key,
-            [CONTENT_TYPE_PROP]: meta.contentType,
-            ...(resumableOpts.cacheControl && {
-              [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
-            }),
-            ...resumableOpts.metadata,
-          };
           const initBody = {
             appProperties: existing
               ? overwriteProps(nextProps, existing.appProperties)
@@ -1024,6 +1075,8 @@ export const googleDrive = (
           "google-drive: signedUploadUrl() requires `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
         );
       }
+      const nextProps = { [KEY_PROP]: key };
+      assertAppPropertiesFit(nextProps);
       const tokenResp = await authForTokens.getAccessToken();
       const token = isString(tokenResp) ? tokenResp : tokenResp?.token;
       if (!token) {
@@ -1038,9 +1091,15 @@ export const googleDrive = (
       if (signOpts.contentType) {
         headers["X-Upload-Content-Type"] = signOpts.contentType;
       }
-      const existingId = await lookupFileId(key, signOpts.signal);
+      const existing = await lookupFile(key, signOpts.signal);
+      const existingId = existing?.id;
+      // Drive merges appProperties on update, so an overwrite must clear the
+      // previous upload's content type / cacheControl / metadata — otherwise
+      // head() keeps reporting the old ones.
       const initBody = {
-        appProperties: { [KEY_PROP]: key },
+        appProperties: existing
+          ? overwriteProps(nextProps, existing.appProperties)
+          : nextProps,
         name: basename(key),
         ...(existingId === undefined && { parents: [rootFolderId] }),
       };
@@ -1106,6 +1165,7 @@ export const googleDrive = (
           }),
           ...options?.metadata,
         };
+        assertAppPropertiesFit(appProperties);
         // Drive has no unique-name constraint, so an unconditional create
         // would strand a duplicate per overwrite and wedge every later read
         // on that key with a Conflict. Look the key up fresh and update the

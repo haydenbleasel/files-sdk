@@ -49,6 +49,8 @@ const files = new Files({
 
 Two files with the same virtual key (created out-of-band) make resolution throw `Conflict` rather than picking one silently. User `metadata` keys starting with `fsdk` are reserved - the adapter uses that prefix on Drive's `appProperties` for bookkeeping.
 
+Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value together. The adapter stores every key in the `fsdkKey` property, so keys can be at most 117 bytes, and each `metadata` key + value (and the content type / `cacheControl`) must fit in 124 bytes. Writes that exceed it throw a non-retryable `Provider` error before any Drive call.
+
 ## Compatibility
 
 | Method | Status | Notes |

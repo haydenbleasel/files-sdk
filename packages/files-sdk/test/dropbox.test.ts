@@ -692,6 +692,38 @@ describe("dropbox adapter", () => {
     );
   });
 
+  test("permanent-link modes ignore expiresIn instead of capping it", async () => {
+    const shared = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await shared.upload("a.txt", "hi");
+    expect(await shared.url("a.txt", { expiresIn: 86_400 })).toContain("dl=1");
+    const cdn = new Files({
+      adapter: dropbox({
+        ...baseOpts,
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(await cdn.url("a.txt", { expiresIn: 86_400 })).toBe(
+      "https://cdn.example.com/a.txt"
+    );
+  });
+
+  test("signedUrl capability reflects the url() mode", () => {
+    expect(
+      new Files({ adapter: dropbox(baseOpts) }).capabilities.signedUrl
+    ).toEqual({ maxExpiresIn: 14_400, supported: true });
+    expect(
+      new Files({ adapter: dropbox({ ...baseOpts, publicByDefault: true }) })
+        .capabilities.signedUrl
+    ).toEqual({ supported: false });
+    expect(
+      new Files({
+        adapter: dropbox({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
+      }).capabilities.signedUrl
+    ).toEqual({ supported: false });
+  });
+
   test("signedUploadUrl throws", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await expect(
@@ -718,6 +750,7 @@ describe("dropbox adapter", () => {
     ["expired_access_token/", "Unauthorized"],
     ["missing_scope/required.scope/", "Unauthorized"],
     ["path/conflict/file/", "Conflict"],
+    ["path/no_write_permission/", "Unauthorized"],
     ["other/", "Provider"],
   ] as const)(
     "mapDropboxError classifies %s as %s",
