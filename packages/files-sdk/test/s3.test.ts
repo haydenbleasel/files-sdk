@@ -124,6 +124,14 @@ const requireNativeConditional = (
   };
 };
 
+// Swap the client's credential provider for one that fails, so the
+// presigner itself rejects (the SigV4 expiry cap is checked before it runs).
+const failPresigner = (adapter: S3Adapter): void => {
+  Object.assign(adapter.raw.config, {
+    credentials: () => Promise.reject(new Error("no credentials")),
+  });
+};
+
 describe("s3 adapter", () => {
   test("upload sends PutObjectCommand with bucket/key/contentType/metadata", async () => {
     s3Mock.on(PutObjectCommand).resolves({ ETag: '"abc"' });
@@ -1481,12 +1489,11 @@ describe("s3 adapter", () => {
       credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
       region: "us-east-1",
     });
-    try {
-      await adapter.url("k.txt", { expiresIn: 10_000_000 });
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-    }
+    failPresigner(adapter);
+    await expect(adapter.url("k.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "no credentials",
+    });
   });
 
   test("signedUploadUrl PUT path: presigner errors are mapped via mapS3Error", async () => {
@@ -1495,13 +1502,110 @@ describe("s3 adapter", () => {
       credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
       region: "us-east-1",
     });
-    // SigV4 caps expiresIn at 604800 seconds; anything larger throws.
+    failPresigner(adapter);
+    await expect(
+      adapter.signedUploadUrl("k.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({ code: "Provider", message: "no credentials" });
+  });
+
+  test("url and signedUploadUrl reject expiresIn past the SigV4 one-week cap with a clear message", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      defaultProviderMessage: "Wasabi error",
+      region: "us-east-1",
+    });
+    const eightDays = 8 * 24 * 60 * 60;
+    const urlError = await adapter.url("k.txt", { expiresIn: eightDays }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(urlError).toBeInstanceOf(FilesError);
+    expect((urlError as FilesError).code).toBe("Provider");
+    expect((urlError as FilesError).permanent).toBe(true);
+    expect((urlError as FilesError).message).toMatch(
+      /^Wasabi error: presigned URLs must expire within 604800 seconds/u
+    );
+    await expect(
+      adapter.signedUploadUrl("k.txt", { expiresIn: eightDays })
+    ).rejects.toThrow(/604800 seconds/u);
+    // Exactly one week is still allowed.
+    expect(await adapter.url("k.txt", { expiresIn: 604_800 })).toContain(
+      "X-Amz-Expires=604800"
+    );
+    // A public URL ignores expiresIn, so the cap doesn't apply to it.
+    const pub = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    expect(await pub.url("k.txt", { expiresIn: eightDays })).toBe(
+      "https://cdn.example.com/k.txt"
+    );
+  });
+
+  test("an explicit endpoint defaults checksums to WHEN_REQUIRED; AWS keeps the SDK default", async () => {
+    const saved = {
+      req: process.env.AWS_REQUEST_CHECKSUM_CALCULATION,
+      res: process.env.AWS_RESPONSE_CHECKSUM_VALIDATION,
+    };
+    delete process.env.AWS_REQUEST_CHECKSUM_CALCULATION;
+    delete process.env.AWS_RESPONSE_CHECKSUM_VALIDATION;
     try {
-      await adapter.signedUploadUrl("k.txt", { expiresIn: 10_000_000 });
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
+      // S3-compatible services (B2 and others) reject the
+      // x-amz-checksum-crc32 header newer SDKs send on every PutObject.
+      const compatible = s3({
+        bucket: "b",
+        endpoint: "https://s3.us-west-004.backblazeb2.com",
+        region: "us-west-004",
+      }).raw.config;
+      expect(await compatible.requestChecksumCalculation()).toBe(
+        "WHEN_REQUIRED"
+      );
+      expect(await compatible.responseChecksumValidation()).toBe(
+        "WHEN_REQUIRED"
+      );
+      const aws = s3({ bucket: "b", region: "us-east-1" }).raw.config;
+      expect(await aws.requestChecksumCalculation()).toBe("WHEN_SUPPORTED");
+      expect(await aws.responseChecksumValidation()).toBe("WHEN_SUPPORTED");
+      // The standard env vars still override the endpoint default.
+      process.env.AWS_REQUEST_CHECKSUM_CALCULATION = "WHEN_SUPPORTED";
+      process.env.AWS_RESPONSE_CHECKSUM_VALIDATION = "WHEN_SUPPORTED";
+      const overridden = s3({
+        bucket: "b",
+        endpoint: "https://s3.us-west-004.backblazeb2.com",
+        region: "us-west-004",
+      }).raw.config;
+      expect(await overridden.requestChecksumCalculation()).toBe(
+        "WHEN_SUPPORTED"
+      );
+      expect(await overridden.responseChecksumValidation()).toBe(
+        "WHEN_SUPPORTED"
+      );
+    } finally {
+      for (const [name, value] of [
+        ["AWS_REQUEST_CHECKSUM_CALCULATION", saved.req],
+        ["AWS_RESPONSE_CHECKSUM_VALIDATION", saved.res],
+      ] as const) {
+        if (value === undefined) {
+          // oxlint-disable-next-line no-dynamic-delete
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
     }
+  });
+
+  test("declares the SigV4 one-week ceiling as signedUrl.maxExpiresIn", () => {
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+    });
+    expect(files.capabilities.signedUrl).toEqual({
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
   });
 
   test("missing region throws at construction", () => {
@@ -1683,6 +1787,38 @@ describe("s3 resumable uploads", () => {
     };
     expect(completeInput.MultipartUpload?.Parts).toHaveLength(2);
     expect(control.session?.provider).toBe("s3");
+  });
+
+  test("begin() grows partSize so the body fits in S3's 10,000-part limit", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    const GIB = 1024 * 1024 * 1024;
+    const begin = async (total: number, partSize?: number) => {
+      const driver = adapter().resumableUpload?.("big.bin", {
+        ...(partSize !== undefined && { multipart: { partSize } }),
+      });
+      if (!driver) {
+        throw new Error("expected a resumable driver");
+      }
+      const session = await driver.begin({
+        contentType: "application/octet-stream",
+        total,
+      });
+      if (session.provider !== "s3") {
+        throw new Error("expected an s3 session");
+      }
+      // The token pins the same part size the runner slices by.
+      expect(session.partSize).toBe(driver.partSize);
+      return driver.partSize;
+    };
+    // Small bodies keep the 5 MiB default and an explicit larger partSize.
+    expect(await begin(FIVE_MIB * 3)).toBe(FIVE_MIB);
+    expect(await begin(FIVE_MIB * 3, 2 * FIVE_MIB)).toBe(2 * FIVE_MIB);
+    // 100 GiB at 5 MiB would need 20,480 parts; scale up to fit 10,000.
+    const size = await begin(100 * GIB);
+    expect(size).toBe(Math.ceil((100 * GIB) / 10_000));
+    expect(Math.ceil((100 * GIB) / size)).toBeLessThanOrEqual(10_000);
+    // Never past S3's 5 GiB per-part maximum.
+    expect(await begin(100_000 * GIB)).toBe(5 * GIB);
   });
 
   test("resume skips already-uploaded parts via ListParts", async () => {

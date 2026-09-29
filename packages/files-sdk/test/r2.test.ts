@@ -354,6 +354,18 @@ describe("r2 adapter — HTTP path", () => {
       ).rejects.toThrow(/maxSize.*not supported/u);
     });
 
+    test("signedUploadUrl with maxSize rejects asynchronously on a direct adapter call", async () => {
+      const adapter = makeAdapter();
+      let pending: Promise<unknown> | undefined;
+      expect(() => {
+        pending = adapter.signedUploadUrl?.("a.txt", {
+          expiresIn: 60,
+          maxSize: 1024,
+        });
+      }).not.toThrow();
+      await expect(pending).rejects.toThrow(/maxSize.*not supported/u);
+    });
+
     test("raw is undefined before any method runs and resolves to the inner S3Client after", async () => {
       const adapter = makeAdapter();
       // The inner s3 adapter is only built on first method call.
@@ -647,7 +659,7 @@ describe("r2 adapter — Workers binding path", () => {
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     bucket.head = (() =>
       Promise.reject(
-        Object.assign(new Error("auth"), { code: 10_004, name: "R2Error" })
+        Object.assign(new Error("auth"), { code: 10_003, name: "R2Error" })
       )) as never;
     try {
       await files.exists("a.txt");
@@ -664,7 +676,7 @@ describe("r2 adapter — Workers binding path", () => {
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     bucket.head = (() =>
       Promise.reject(
-        Object.assign(new Error("auth"), { code: 10_004, name: "R2Error" })
+        Object.assign(new Error("auth"), { code: 10_003, name: "R2Error" })
       )) as never;
     try {
       await files.head("a.txt");
@@ -755,6 +767,35 @@ describe("r2 adapter — Workers binding path", () => {
     const url = await files.url("a.txt", { expiresIn: 60 });
     expect(url).toContain("X-Amz-Signature=");
     expect(url).toContain("a.txt");
+  });
+
+  test("signedUrl capability: plain binding unsupported; hybrid and HTTP carry the SigV4 one-week cap", async () => {
+    const { bucket } = fakeBinding();
+    const cap = { maxExpiresIn: 604_800, supported: true };
+    expect(r2({ binding: bucket as never }).signedUrl).toEqual({
+      supported: false,
+    });
+    const hybrid = r2({
+      accessKeyId: "K",
+      accountId: "ACCT",
+      binding: bucket as never,
+      bucket: "uploads",
+      secretAccessKey: "S",
+    });
+    expect(hybrid.signedUrl).toEqual(cap);
+    await expect(
+      hybrid.url("a.txt", { expiresIn: 604_801 })
+    ).rejects.toMatchObject({ code: "Provider" });
+    expect(makeAdapter().signedUrl).toEqual(cap);
+    expect(
+      r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        bucket: "uploads",
+        client: "fetch",
+        secretAccessKey: "S",
+      }).signedUrl
+    ).toEqual(cap);
   });
 
   test("hybrid: endpoint override is honored by the signing fallback", async () => {
@@ -1083,31 +1124,74 @@ describe("r2 adapter — Workers binding path", () => {
     }
   });
 
-  test("mapR2Error classifies R2 binding error codes", async () => {
+  // Cloudflare's published table:
+  // https://developers.cloudflare.com/r2/api/error-codes/
+  test.each([
+    [10_002, "Unauthorized"],
+    [10_003, "Unauthorized"],
+    [10_018, "Unauthorized"],
+    [10_035, "Unauthorized"],
+    [10_006, "NotFound"],
+    [10_007, "NotFound"],
+    [10_024, "NotFound"],
+    [10_008, "Conflict"],
+    [10_031, "Conflict"],
+    [10_039, "Provider"],
+    [10_001, "Provider"],
+  ] as const)(
+    "mapR2Error classifies R2 binding error code %d as %s",
+    async (code, expected) => {
+      const { bucket } = fakeBinding();
+      const files = new Files({ adapter: r2({ binding: bucket as never }) });
+      bucket.delete = (() =>
+        Promise.reject(
+          Object.assign(new Error(`code ${code}`), { code, name: "R2Error" })
+        )) as never;
+      try {
+        await files.delete("a.txt");
+        throw new Error("should have thrown");
+      } catch (error) {
+        expect((error as FilesError).code).toBe(expected);
+        expect((error as FilesError).message).toBe(`code ${code}`);
+      }
+    }
+  );
+
+  test("exists() rejects with Unauthorized on bad credentials (10002) instead of reporting false", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
-    bucket.delete = (() =>
+    bucket.head = (() =>
       Promise.reject(
-        Object.assign(new Error("auth bad"), {
-          code: 10_004,
+        Object.assign(new Error("head: Unauthorized"), {
+          code: 10_002,
           name: "R2Error",
         })
       )) as never;
-    try {
-      await files.delete("a.txt");
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect((error as FilesError).code).toBe("Unauthorized");
-    }
+    await expect(files.exists("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
   });
 
-  test("mapR2Error: precondition code 10007 maps to Conflict", async () => {
+  test("mapR2Error: NoSuchKey code 10007 maps to NotFound, so exists() is false", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    bucket.head = (() =>
+      Promise.reject(
+        Object.assign(new Error("head: NoSuchKey"), {
+          code: 10_007,
+          name: "R2Error",
+        })
+      )) as never;
+    await expect(files.exists("a.txt")).resolves.toBe(false);
+  });
+
+  test("mapR2Error: precondition code 10031 maps to Conflict", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     bucket.put = (() =>
       Promise.reject(
         Object.assign(new Error("precondition failed"), {
-          code: 10_007,
+          code: 10_031,
           name: "R2Error",
         })
       )) as never;
@@ -1397,6 +1481,18 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     await expect(
       files.signedUploadUrl("up.bin", { expiresIn: 60, maxSize: 1024 })
     ).rejects.toThrow(/maxSize.*not supported.*R2/su);
+  });
+
+  test("signedUploadUrl with maxSize rejects asynchronously on a direct adapter call", async () => {
+    const { adapter } = makeFetchAdapter();
+    let pending: Promise<unknown> | undefined;
+    expect(() => {
+      pending = adapter.signedUploadUrl?.("up.bin", {
+        expiresIn: 60,
+        maxSize: 1024,
+      });
+    }).not.toThrow();
+    await expect(pending).rejects.toThrow(/maxSize.*not supported/u);
   });
 
   test("multipart uploads throw instead of silently buffering", async () => {

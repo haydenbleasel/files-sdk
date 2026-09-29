@@ -81,6 +81,13 @@ export type S3FetchAdapter = Adapter<AwsClient> & { readonly bucket: string };
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const METADATA_HEADER_PREFIX = "x-amz-meta-";
 
+/**
+ * SigV4 caps a presigned URL's `X-Amz-Expires` at one week. A longer value
+ * signs fine but every SigV4 service rejects the URL when it's used, so it
+ * fails here instead (the aws-sdk engine throws for the same input).
+ */
+export const SIGV4_MAX_EXPIRES_IN = 604_800;
+
 const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NoSuchKey",
   "NotFound",
@@ -390,6 +397,14 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       headers?: Record<string, string>;
     } = {}
   ): Promise<string> => {
+    if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
+      throw new FilesError(
+        "Provider",
+        `${providerLabel}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
+        undefined,
+        { permanent: true }
+      );
+    }
     const url = new URL(objectUrl(key));
     url.searchParams.set("X-Amz-Expires", String(expiresIn));
     for (const [name, value] of Object.entries(extras.query ?? {})) {
@@ -542,7 +557,8 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         url,
       } satisfies SignedUpload;
     },
-    signedUrl: { supported: true },
+    // SigV4 caps presigned lifetimes at one week; `presign()` throws above it.
+    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,

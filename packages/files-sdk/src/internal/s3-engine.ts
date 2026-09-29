@@ -8,11 +8,13 @@ import type {
 import type { S3Adapter, S3AdapterOptions } from "../s3/core.js";
 import { deleteManyWithFallback } from "./core.js";
 import { isFunction } from "./is.js";
+import { SIGV4_MAX_EXPIRES_IN } from "./s3-fetch.js";
 
 // Shared plumbing for the S3-compatible adapters that offer both HTTP engines
-// (`r2()`, `minio()`): which engine to pick when the caller didn't, and a
-// lazily-loaded `@aws-sdk/client-s3` adapter for the `"aws-sdk"` engine that
-// keeps the SDK out of Worker bundles running on the `"fetch"` engine.
+// (`r2()`, `minio()`, `rustfs()`): which engine to pick when the caller
+// didn't, and a lazily-loaded `@aws-sdk/client-s3` adapter for the `"aws-sdk"`
+// engine that keeps the SDK out of Worker bundles running on the `"fetch"`
+// engine.
 
 export type S3Engine = "aws-sdk" | "fetch";
 
@@ -228,9 +230,10 @@ export const lazyS3Adapter = (
     },
     // Upload/list/download all delegate to the inner S3 adapter, which honors
     // `metadata`, `cacheControl`, ListObjectsV2 `Delimiter`, and `Range` —
-    // so advertise the same capabilities the eager s3 adapter does. These
-    // must be sync, hence hardcoded rather than read off the lazy instance.
-    signedUrl: { supported: true },
+    // so advertise the same capabilities the eager s3 adapter does (including
+    // the SigV4 one-week presign ceiling). These must be sync, hence
+    // hardcoded rather than read off the lazy instance.
+    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,

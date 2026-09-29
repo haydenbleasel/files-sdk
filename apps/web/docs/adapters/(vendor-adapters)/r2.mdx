@@ -17,7 +17,7 @@ For the `"aws-sdk"` HTTP client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-po
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-Over the HTTP API with the `"aws-sdk"` client, `upload` reports true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress` when the optional `@aws-sdk/lib-storage` package is installed (it's loaded only when `onProgress` is used). Under the Workers `R2Bucket` binding and the fetch client the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
+Over the HTTP API with the `"aws-sdk"` client, `upload` also needs the optional `@aws-sdk/lib-storage` package to report true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress`, to use `multipart`, or to upload a `ReadableStream` body of unknown length. It's only loaded when `upload` uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length. Under the Workers `R2Bucket` binding and the fetch client the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
 
 ## Usage
 
@@ -88,9 +88,11 @@ For any other S3-compatible endpoint on this engine - AWS S3, MinIO, Tigris, ...
   name="R2BindingOptions"
 />
 
+The binding's `put()` needs an upload's length up front. Strings, bytes, `Blob`s, and `File`s always work. A `ReadableStream` works only when workerd knows its length: a `request.body` or `response.body` with a `Content-Length`, or the readable side of a [`FixedLengthStream`](https://developers.cloudflare.com/workers/runtime-apis/streams/transformstream/#fixedlengthstream). workerd rejects a stream of unknown length (one you built yourself, or a `TransformStream`'s output), so wrap it in a `FixedLengthStream` or buffer it first.
+
 ## Hybrid: binding + HTTP credentials
 
-Inside a Worker, you can pass _both_ a binding and HTTP credentials. Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through an S3-compatible SigV4 signer because a Worker binding has no signing primitive. Hybrid signing runs on [aws4fetch](https://github.com/mhart/aws4fetch) (Web Crypto only), so neither the binding path nor hybrid mode ever pulls `@aws-sdk/*` packages into the Worker bundle.
+Inside a Worker, you can pass _both_ a binding and HTTP credentials (`bucket`, `accountId` or `endpoint`, `accessKeyId`, and `secretAccessKey`). Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through an S3-compatible SigV4 signer because a Worker binding has no signing primitive. Hybrid signing runs on [aws4fetch](https://github.com/mhart/aws4fetch) (Web Crypto only), so neither the binding path nor hybrid mode ever pulls `@aws-sdk/*` packages into the Worker bundle.
 
 ```ts lineNumbers
 // Inside a Cloudflare Worker. The binding handles uploads/downloads
@@ -167,24 +169,26 @@ R2 does not advertise the SDK's provider-native [conditional operation](/docs/co
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ✅ |  |
+| `upload` | ⚠️ | A `ReadableStream` body needs a known length (a request/response body with `Content-Length`, or a `FixedLengthStream`); workerd rejects one of unknown length. Strings, bytes, and `Blob`s always work. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
 | `list` | ✅ |  |
+| `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
 | `copy` | ⚠️ | Read-then-write - Workers bindings have no native copy command, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected. |
-| `url` | ❌ | Throws unless `publicBaseUrl` is set on the adapter (an r2.dev subdomain or a custom domain). For a presigned URL from a Worker, switch to hybrid mode by also passing `accountId` + `accessKeyId` + `secretAccessKey`. |
+| `url` | ❌ | Throws unless `publicBaseUrl` is set on the adapter (an r2.dev subdomain or a custom domain). For a presigned URL from a Worker, switch to hybrid mode by also passing `bucket` + `accountId` (or `endpoint`) + `accessKeyId` + `secretAccessKey`. |
 | `signedUploadUrl` | ❌ | Workers bindings can't sign uploads - the secret access key is not available to the runtime. Use hybrid mode (binding + HTTP credentials) to issue presigned upload URLs. |
 
 ### Hybrid mode
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ✅ |  |
+| `upload` | ⚠️ | Goes through the binding, so a `ReadableStream` body needs a known length, as in binding mode. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
 | `list` | ✅ |  |
+| `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
 | `copy` | ⚠️ | Read-then-write - copy goes through the binding (no native copy command on Workers). |

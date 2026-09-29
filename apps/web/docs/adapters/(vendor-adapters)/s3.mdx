@@ -11,7 +11,7 @@ description: AWS S3 (and any S3-compatible bucket). Uses the standard AWS creden
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-To report true byte-level [upload progress](/docs/api/upload#progress-tracking) via `upload`'s `onProgress` option, also install `@aws-sdk/lib-storage` — it's optional and only loaded when `onProgress` is used.
+`@aws-sdk/lib-storage` is optional too. Install it to report true byte-level [upload progress](/docs/api/upload#progress-tracking) via `onProgress`, to use `multipart`, or to upload a `ReadableStream` body of unknown length. It's only loaded when `upload` uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length.
 
 On Cloudflare Workers and other edge runtimes without a `DOMParser`, `@aws-sdk/client-s3`'s XML parsing fails at runtime. Use [`s3Fetch()` from `files-sdk/s3-fetch`](/docs/adapters/s3-fetch) there instead — the same S3 protocol over a SigV4-signed `fetch`, with no `@aws-sdk/*` packages.
 
@@ -40,9 +40,23 @@ Conditional copy needs `@aws-sdk/client-s3` 3.919.0 or newer, where `CopyObject`
 ## Options
 
 <AutoTypeTable
-  path="../../packages/files-sdk/src/s3/index.ts"
+  path="../../packages/files-sdk/src/s3/core.ts"
   name="S3AdapterOptions"
 />
+
+`defaultProviderMessage` is internal: the S3-compatible wrappers set it so their errors read "Wasabi error" rather than "S3 error". You don't need to pass it.
+
+## Limits
+
+These come from S3 itself, so they apply to [`s3Fetch()`](/docs/adapters/s3-fetch) and every S3-compatible wrapper as well:
+
+- **Presigned URLs live at most 7 days.** SigV4 caps a presigned URL at 604800 seconds, so `url()` and `signedUploadUrl()` throw a `Provider` error for a longer `expiresIn` (or `defaultUrlExpiresIn`) instead of returning a URL the server would reject. [`capabilities.signedUrl.maxExpiresIn`](/docs/capabilities) reports the ceiling. A `publicBaseUrl` link has no expiry, so the cap doesn't apply to it.
+- **`copy()` and `move()` top out at 5 GB.** Both are a single server-side `CopyObject` request, which S3 limits to 5 GB source objects; a larger copy fails. For bigger objects, stream a `download()` into a `multipart` `upload()` (this adapter, not the fetch engine, which has no multipart) and then `delete()` the source.
+- **Resumable (`control`) uploads fit the 10,000-part limit.** An S3 multipart upload holds at most 10,000 parts, so for a large body the adapter raises the part size above `multipart.partSize` (up to S3's 5 GiB part maximum) until the body fits. The chosen size is pinned in the resume token.
+
+### S3-compatible endpoints and checksums
+
+Recent `@aws-sdk/client-s3` versions add an `x-amz-checksum-crc32` header to every `PutObject` and `UploadPart` (and a matching parameter to presigned PUT URLs), and some S3-compatible services reject it. When you pass an `endpoint`, the adapter sets `requestChecksumCalculation` and `responseChecksumValidation` to `"WHEN_REQUIRED"`, so checksums are only sent and checked where an operation requires one. `DeleteObjects` still carries one, because S3 requires it. Set `AWS_REQUEST_CHECKSUM_CALCULATION` / `AWS_RESPONSE_CHECKSUM_VALIDATION` to override. Canonical AWS (no `endpoint`) keeps the SDK default.
 
 ## Compatibility
 
@@ -55,7 +69,7 @@ Conditional copy needs `@aws-sdk/client-s3` 3.919.0 or newer, where `CopyObject`
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ✅ |  |
-| `url` | ✅ |  |
+| `copy` | ✅ | Server-side `CopyObject`, limited to 5 GB source objects (see [Limits](#limits)). |
+| `url` | ✅ | Presigned URLs are capped at 7 days (see [Limits](#limits)). |
 | `signedUploadUrl` | ✅ |  |
 | conditional operations | ✅ | Single-object native requests. Bulk, multipart, resumable, and custom-endpoint conditionals are unsupported. |

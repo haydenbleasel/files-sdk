@@ -11,6 +11,8 @@ description: Neon branchable object storage via the S3-compatible API. neon dev 
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
+`upload` also needs the optional `@aws-sdk/lib-storage` package when it uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length. It's only loaded then.
+
 ## Usage
 
 ```ts lineNumbers
@@ -28,7 +30,7 @@ const files = new Files({
 });
 ```
 
-Neon branchable object storage via its S3-compatible API. A thin wrapper around the S3 adapter - errors relabelled, path-style addressing on by default. Declare a bucket in your `neon.ts` policy (`preview.buckets`), then run `neon dev` (or `neon env pull`) to mint a branch credential and inject the standard `AWS_*` variables. Inside a deployed Neon Function the same variables are present, so the adapter works from env alone:
+Neon branchable object storage via its S3-compatible API. A thin wrapper around the S3 adapter - errors relabelled, path-style addressing always on. Declare a bucket in your `neon.ts` policy (`preview.buckets`), then run `neon dev` (or `neon env pull`) to mint a branch credential and inject the standard `AWS_*` variables. Inside a deployed Neon Function the same variables are present, so the adapter works from env alone:
 
 ```ts lineNumbers
 const files = new Files({ adapter: neon({ bucket: "images" }) });

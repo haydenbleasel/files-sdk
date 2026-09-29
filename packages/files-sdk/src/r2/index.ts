@@ -111,7 +111,17 @@ export interface R2HttpOptions {
 }
 
 export interface R2BindingOptions {
-  /** Workers `R2Bucket` binding. Reads and writes go through the binding. */
+  /**
+   * Workers `R2Bucket` binding. Reads and writes go through the binding.
+   *
+   * The binding's `put()` needs to know an upload's length up front. Strings,
+   * bytes, `Blob`s, and `File`s always work. A `ReadableStream` works only
+   * when workerd knows its length: a `request.body` / `response.body` with a
+   * `Content-Length`, or the readable side of a `FixedLengthStream`. workerd
+   * rejects a stream of unknown length (one you built yourself, or a
+   * `TransformStream`'s output), so wrap it in a `FixedLengthStream` or
+   * buffer it first.
+   */
   binding: R2Bucket;
   /**
    * R2 bucket name. Required for hybrid signing — it names the bucket in the
@@ -205,6 +215,9 @@ const normalizeForR2 = async (
       data: buf,
     };
   }
+  // Passed through as-is: the binding accepts a stream only when workerd
+  // knows its length (a request/response body or a FixedLengthStream) and
+  // rejects one of unknown length. Documented on `R2BindingOptions.binding`.
   return {
     contentType: contentTypeHint ?? DEFAULT_CONTENT_TYPE,
     data: body,
@@ -250,15 +263,27 @@ const r2ObjectToStoredFile = (
 };
 
 // R2 binding errors throw with `name` (string) and `code` (number) fields.
-// See https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
-// for the published code list. We classify the common ones; unknowns fall
-// through to "Provider" so callers can still distinguish failures from success.
+// See https://developers.cloudflare.com/r2/api/error-codes/ for the published
+// code list. We classify the common ones; unknowns fall through to "Provider"
+// so callers can still distinguish failures from success.
 /** The fields an R2 binding error carries (see the published code list). */
 interface R2BindingErrorFields {
   code?: number;
   message?: string;
   name?: string;
 }
+
+// 10006 NoSuchBucket, 10007 NoSuchKey, 10024 NoSuchUpload (all 404).
+const R2_NOT_FOUND_CODES: ReadonlySet<number> = new Set([
+  10_006, 10_007, 10_024,
+]);
+// 10002 Unauthorized (401); 10003 AccessDenied, 10018 ExpiredRequest,
+// 10035 SignatureDoesNotMatch (403).
+const R2_UNAUTHORIZED_CODES: ReadonlySet<number> = new Set([
+  10_002, 10_003, 10_018, 10_035,
+]);
+// 10031 PreconditionFailed (412), 10008 BucketNotEmpty (409).
+const R2_CONFLICT_CODES: ReadonlySet<number> = new Set([10_008, 10_031]);
 
 const mapR2Error = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
@@ -269,21 +294,24 @@ const mapR2Error = (cause: unknown): FilesError => {
   // to its own Error message.
   const e = cause as R2BindingErrorFields | null | undefined;
   const name = e?.name ?? "";
-  const code = e?.code;
+  const code = e?.code ?? 0;
   const message =
     e?.message ?? (cause instanceof Error ? cause.message : String(cause));
 
-  if (name.includes("NotFound") || name.includes("NoSuch") || code === 10_002) {
+  if (
+    name.includes("NotFound") ||
+    name.includes("NoSuch") ||
+    R2_NOT_FOUND_CODES.has(code)
+  ) {
     return new FilesError("NotFound", message, cause);
   }
-  if (name.includes("Precondition") || code === 10_007) {
+  if (name.includes("Precondition") || R2_CONFLICT_CODES.has(code)) {
     return new FilesError("Conflict", message, cause);
   }
   if (
     name.includes("Forbidden") ||
     name.includes("Unauthorized") ||
-    code === 10_004 ||
-    code === 10_006
+    R2_UNAUTHORIZED_CODES.has(code)
   ) {
     return new FilesError("Unauthorized", message, cause);
   }
@@ -499,9 +527,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       return await signer.signedUploadUrl(key, signOpts);
     },
     // A Workers binding can't sign on its own: `url()` signs only in hybrid
-    // mode (HTTP credentials also passed); a bare `publicBaseUrl` is a
-    // permanent public link, not a signed one.
-    signedUrl: { supported: Boolean(hybrid) },
+    // mode (HTTP credentials also passed), which inherits the SigV4 signer's
+    // one-week ceiling; a bare `publicBaseUrl` is a permanent public link,
+    // not a signed one.
+    signedUrl: hybrid?.signedUrl ?? { supported: false },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,
@@ -622,9 +651,11 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     });
     return {
       ...inner,
-      signedUploadUrl(key, signOpts) {
+      // `async` so the `maxSize` rejection is a rejected promise, matching
+      // binding mode and every other adapter method.
+      async signedUploadUrl(key, signOpts) {
         assertNoMaxSize(signOpts);
-        return inner.signedUploadUrl(key, signOpts);
+        return await inner.signedUploadUrl(key, signOpts);
       },
     };
   }
@@ -658,11 +689,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     get raw(): S3Client {
       return inner.raw;
     },
-    signedUploadUrl(key, signOpts) {
+    // `async` so the `maxSize` rejection is a rejected promise, matching
+    // binding mode and every other adapter method.
+    async signedUploadUrl(key, signOpts) {
       // Reject before loading the inner s3 adapter — `maxSize` is
       // unsupported on R2 regardless of whether the import has resolved.
       assertNoMaxSize(signOpts);
-      return inner.signedUploadUrl(key, signOpts);
+      return await inner.signedUploadUrl(key, signOpts);
     },
   };
 };

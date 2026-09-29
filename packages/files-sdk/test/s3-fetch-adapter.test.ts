@@ -92,6 +92,35 @@ describe("s3Fetch()", () => {
     expect(url).toContain("X-Amz-Security-Token=ENVTOKEN");
   });
 
+  test("explicit keys ignore AWS_SESSION_TOKEN from the environment", async () => {
+    // A Lambda / SSO shell exports AWS_SESSION_TOKEN for its own role; static
+    // R2 or MinIO keys passed explicitly must not be signed with it.
+    clearEnv();
+    process.env.AWS_SESSION_TOKEN = "ENVTOKEN";
+    const url = await s3Fetch(base).url("a.txt");
+    expect(url).toContain("X-Amz-Credential=K");
+    expect(url).not.toContain("X-Amz-Security-Token");
+  });
+
+  test("one explicit key is enough to skip the env session token", async () => {
+    clearEnv();
+    process.env.AWS_ACCESS_KEY_ID = "ENVKEY";
+    process.env.AWS_SESSION_TOKEN = "ENVTOKEN";
+    const url = await s3Fetch({
+      bucket: "uploads",
+      endpoint: base.endpoint,
+      secretAccessKey: "S",
+    }).url("a.txt");
+    expect(url).not.toContain("X-Amz-Security-Token");
+  });
+
+  test("an explicit sessionToken still applies alongside explicit keys", async () => {
+    clearEnv();
+    process.env.AWS_SESSION_TOKEN = "ENVTOKEN";
+    const url = await s3Fetch({ ...base, sessionToken: "MINE" }).url("a.txt");
+    expect(url).toContain("X-Amz-Security-Token=MINE");
+  });
+
   test("AWS_REGION wins over AWS_DEFAULT_REGION", async () => {
     clearEnv();
     process.env.AWS_REGION = "ap-southeast-2";

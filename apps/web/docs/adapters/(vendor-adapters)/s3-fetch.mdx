@@ -39,7 +39,7 @@ export default {
 };
 ```
 
-Credentials are static: pass `accessKeyId` + `secretAccessKey` (and `sessionToken` for temporary credentials), or set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` where a `process.env` exists. There is no AWS credential chain - no IAM role, shared profile, or SSO resolution - because that chain lives in the SDK this adapter avoids.
+Credentials are static: pass `accessKeyId` + `secretAccessKey` (and `sessionToken` for temporary credentials), or set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` where a `process.env` exists. `AWS_SESSION_TOKEN` is only read when both keys also come from the environment, so keys you pass explicitly never pick up a token that belongs to another identity (a Lambda role or SSO session, say). There is no AWS credential chain - no IAM role, shared profile, or SSO resolution - because that chain lives in the SDK this adapter avoids.
 
 ### Addressing
 
@@ -55,7 +55,7 @@ s3Fetch({
 });
 ```
 
-Get this wrong against such a service and the first request fails with a `NotFound` whose message names the wrong bucket: with no per-bucket DNS the server reads the key's first folder as the bucket name. The error message points at `forcePathStyle` when that happens. For MinIO specifically, prefer [`minio({ client: "fetch" })`](/docs/adapters/minio#lightweight-fetch-client) - the same engine with path style, region, and error labels already defaulted.
+Get this wrong against such a service and the first request fails with a `NotFound` whose message names the wrong bucket: with no per-bucket DNS the server reads the key's first folder as the bucket name. The error message points at `forcePathStyle` when that happens, but only on responses that carry an error body. A `HEAD` response has none, so `head()` rejects with a bare `NotFound` and `exists()` returns `false` for every key. If `exists()` reports everything missing on a new setup, check `forcePathStyle` first. For MinIO specifically, prefer [`minio({ client: "fetch" })`](/docs/adapters/minio#lightweight-fetch-client) - the same engine with path style, region, and error labels already defaulted.
 
 Only the endpoint's origin is used; a path component is dropped. Front the service with a hostname rather than a route prefix.
 
@@ -71,6 +71,8 @@ Same coverage and limits as the R2 fetch client: `upload`, `download` (including
 - Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
 - No provider-native [conditional operations](/docs/conditional-operations).
 - `files.raw` is the aws4fetch `AwsClient`, not an `S3Client`.
+
+S3's own [limits](/docs/adapters/s3#limits) apply here too: presigned URLs live at most 7 days (a longer `expiresIn` throws), and `copy()` is a single `CopyObject` request, capped at 5 GB.
 
 ## Options
 

@@ -63,7 +63,10 @@ describe("s3-fetch core — identity", () => {
     expect(adapter.supportsMetadata).toBe(true);
     expect(adapter.supportsCacheControl).toBe(true);
     expect(adapter.supportsServerSideCopy).toBe(true);
-    expect(adapter.signedUrl).toEqual({ supported: true });
+    expect(adapter.signedUrl).toEqual({
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
     expect(adapter.resumableUpload).toBeUndefined();
     expect(adapter.deleteMany).toBeUndefined();
     expect(adapter.reportsUploadProgress).toBeUndefined();
@@ -447,6 +450,37 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(upload.headers).toBeUndefined();
     expect(new URL(upload.url).searchParams.get("X-Amz-SignedHeaders")).toBe(
       "host"
+    );
+  });
+
+  test("url and signedUploadUrl reject expiresIn past the SigV4 one-week cap", async () => {
+    const adapter = makeAdapter({ providerLabel: "R2 error" });
+    const eightDays = 8 * 24 * 60 * 60;
+    const urlError = await expectCode(
+      adapter.url("a.txt", { expiresIn: eightDays }),
+      "Provider"
+    );
+    expect(urlError.message).toMatch(
+      /^R2 error: presigned URLs must expire within 604800 seconds/u
+    );
+    expect(urlError.permanent).toBe(true);
+    await expectCode(
+      adapter.signedUploadUrl("a.txt", { expiresIn: eightDays }),
+      "Provider"
+    );
+    // A too-long default fails the same way; exactly one week still signs.
+    await expectCode(
+      makeAdapter({ defaultUrlExpiresIn: eightDays }).url("a.txt"),
+      "Provider"
+    );
+    const week = new URL(await adapter.url("a.txt", { expiresIn: 604_800 }));
+    expect(week.searchParams.get("X-Amz-Expires")).toBe("604800");
+  });
+
+  test("a public url() ignores expiresIn, so the SigV4 cap doesn't apply", async () => {
+    const adapter = makeAdapter({ publicBaseUrl: "https://cdn.example.com" });
+    expect(await adapter.url("a.txt", { expiresIn: 10_000_000 })).toBe(
+      "https://cdn.example.com/a.txt"
     );
   });
 

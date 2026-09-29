@@ -49,10 +49,11 @@ import { createStoredFile } from "../internal/stored-file.js";
  * module only ever imports the SDK's *types* — the runtime values arrive
  * through this bundle, so nothing here puts `@aws-sdk/*` in the static import
  * graph. `files-sdk/s3` fills it from ordinary static imports (its consumers
- * install the SDK anyway); the r2 adapter's lazy aws-sdk engine fills it from
- * dynamic imports, because consumer bundlers resolve even dynamically-reached
- * chunks at build time and hard-error on a *static* import of an absent
- * optional peer (rolldown-vite's optional-peer-dep placeholder, #105).
+ * install the SDK anyway); the lazy aws-sdk engine behind r2, minio, and
+ * rustfs (`internal/s3-engine.ts`) fills it from dynamic imports, because
+ * consumer bundlers resolve even dynamically-reached chunks at build time and
+ * hard-error on a *static* import of an absent optional peer (rolldown-vite's
+ * optional-peer-dep placeholder, #105).
  */
 export interface S3Sdk {
   clientS3: Pick<
@@ -86,6 +87,14 @@ export interface S3AdapterOptions {
   /**
    * Override the S3 service endpoint. Use this to point at S3-compatible
    * services (DigitalOcean Spaces, Wasabi, Backblaze B2, LocalStack, etc.).
+   *
+   * With an explicit endpoint the client sends request checksums, and
+   * validates response checksums, only when the operation requires them
+   * (`requestChecksumCalculation` / `responseChecksumValidation` set to
+   * `"WHEN_REQUIRED"`), because several S3-compatible services reject the
+   * `x-amz-checksum-crc32` header newer SDKs add by default. Set
+   * `AWS_REQUEST_CHECKSUM_CALCULATION` / `AWS_RESPONSE_CHECKSUM_VALIDATION`
+   * to override.
    */
   endpoint?: string;
   /**
@@ -132,9 +141,9 @@ export interface S3AdapterOptions {
    * `url()` falls back to a presigned `GetObject` URL (see
    * {@link defaultUrlExpiresIn}).
    *
-   * The base is concatenated as-is. Trailing slashes are tolerated. Keys
-   * are embedded literally — caller is responsible for URL-encoding
-   * untrusted segments.
+   * A trailing slash on the base is tolerated. Each key segment is
+   * URL-encoded (the `/` separators are kept), so pass raw keys; a
+   * pre-encoded key would be double-encoded.
    */
   publicBaseUrl?: string;
   /**
@@ -145,8 +154,9 @@ export interface S3AdapterOptions {
   defaultUrlExpiresIn?: number;
   /**
    * Override the fallback message used when an unknown error has no
-   * `message` of its own. Internal — set by the r2-http adapter so its
-   * users see "R2 error" instead of "S3 error".
+   * `message` of its own, and the label on the adapter's own errors.
+   * Internal — set by the S3-compatible wrappers (r2, minio, wasabi, …) so
+   * their users see "R2 error" instead of "S3 error".
    * @internal
    */
   defaultProviderMessage?: string;
@@ -349,7 +359,8 @@ const assertConditionalUploadOptions = (
 };
 
 // `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
-// upload needs the multipart/progress path. Loaded lazily (the return type is
+// upload needs the multipart/progress path: `multipart`, `onProgress`, or a
+// `ReadableStream` body of unknown length. Loaded lazily (the return type is
 // inferred from the dynamic import) so it isn't required by callers who only do
 // plain single-request PutObject uploads; surfaces a clear error when missing.
 const loadLibStorage = async () => {
@@ -358,7 +369,7 @@ const loadLibStorage = async () => {
   } catch {
     throw new FilesError(
       "Provider",
-      "Multipart and progress uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options."
+      "Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options, or to upload a `ReadableStream` body of unknown length."
     );
   }
 };
@@ -443,10 +454,25 @@ const runLibStorageUpload = async (
 // clamp the requested part size up to that floor.
 const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
 
+// A multipart upload holds at most 10,000 parts, each at most 5 GiB.
+const S3_MAX_PARTS = 10_000;
+const S3_MAX_PART_SIZE = 5 * 1024 * 1024 * 1024;
+
 const resolveResumablePartSize = (multipart: MultipartInput): number => {
   const partSize = isObject(multipart) ? multipart.partSize : undefined;
   return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
 };
+
+/**
+ * Grow the part size so `total` bytes fit in S3's 10,000-part limit (at the
+ * 5 MiB default that is only ~48.8 GiB; past it S3 rejects part 10,001 after
+ * everything before it has uploaded). Capped at the 5 GiB part maximum.
+ */
+const fitPartSizeToTotal = (partSize: number, total: number): number =>
+  Math.min(
+    Math.max(partSize, Math.ceil(total / S3_MAX_PARTS)),
+    S3_MAX_PART_SIZE
+  );
 
 /**
  * Drive a pause-able / resumable upload over S3's native multipart API
@@ -497,6 +523,8 @@ const createS3ResumableDriver = (
       ({ partSize } = session);
     },
     async begin(meta): Promise<ResumableUploadSession> {
+      // Pinned in the token below, so a resume slices on the same boundaries.
+      partSize = fitPartSizeToTotal(partSize, meta.total);
       try {
         const result = await client.send(
           new CreateMultipartUploadCommand({
@@ -630,6 +658,24 @@ const createS3ResumableDriver = (
   };
 };
 
+/**
+ * SigV4 caps a presigned URL's lifetime at one week. The SDK's presigner
+ * rejects anything longer — with a bare string, not an Error — so check up
+ * front for a message that says what went wrong. Matches the fetch engine.
+ */
+const SIGV4_MAX_EXPIRES_IN = 604_800;
+
+const assertSigV4ExpiresIn = (label: string, expiresIn: number): void => {
+  if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
+    throw new FilesError(
+      "Provider",
+      `${label}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
+      undefined,
+      { permanent: true }
+    );
+  }
+};
+
 const emptyStream = (): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
     start(controller) {
@@ -708,10 +754,11 @@ const _defaultMapS3Error = buildMapS3Error();
 
 /**
  * Map an `@aws-sdk/client-s3` error (or any thrown value with the same
- * shape) to a {@link FilesError}. The optional `messages` argument
- * overrides the per-code fallback strings — used by the S3-compatible
- * wrappers (R2 HTTP, MinIO, DigitalOcean Spaces, Storj, Hetzner, Akamai)
- * so their unknown-error messages read with the right provider name.
+ * shape) to a {@link FilesError} — e.g. for errors from calls made on
+ * `files.raw`. The optional `messages` argument overrides the per-code
+ * fallback strings used when the error carries no message of its own. (The
+ * adapter itself, and the S3-compatible wrappers, relabel through
+ * `defaultProviderMessage` instead.)
  */
 export const mapS3Error = (
   cause: unknown,
@@ -772,6 +819,12 @@ export const createS3Adapter = (
     );
   }
 
+  // `@aws-sdk/client-s3` 3.729+ computes a CRC32 checksum for every
+  // PutObject / UploadPart (and puts `x-amz-checksum-crc32` on presigned PUT
+  // URLs) by default. Several S3-compatible services reject the header, so
+  // for an explicit `endpoint` fall back to the pre-3.729 behavior: checksums
+  // only where the operation requires one. The standard env vars still win.
+  const checksumsWhenRequired = Boolean(opts.endpoint);
   const config: S3ClientConfig = {
     region,
     ...(opts.endpoint && { endpoint: opts.endpoint }),
@@ -779,6 +832,14 @@ export const createS3Adapter = (
       forcePathStyle: opts.forcePathStyle,
     }),
     ...(opts.credentials && { credentials: opts.credentials }),
+    ...(checksumsWhenRequired &&
+      readEnv("AWS_REQUEST_CHECKSUM_CALCULATION") === undefined && {
+        requestChecksumCalculation: "WHEN_REQUIRED",
+      }),
+    ...(checksumsWhenRequired &&
+      readEnv("AWS_RESPONSE_CHECKSUM_VALIDATION") === undefined && {
+        responseChecksumValidation: "WHEN_REQUIRED",
+      }),
   };
 
   const client = new S3Client(config);
@@ -803,6 +864,7 @@ export const createS3Adapter = (
   const wrapErr = opts.defaultProviderMessage
     ? buildMapS3Error(opts.defaultProviderMessage)
     : mapS3Error;
+  const providerLabel = opts.defaultProviderMessage ?? "S3 error";
 
   const signGet = (
     key: string,
@@ -1300,6 +1362,7 @@ export const createS3Adapter = (
           });
           return { fields: post.fields, method: "POST", url: post.url };
         }
+        assertSigV4ExpiresIn(providerLabel, signOpts.expiresIn);
         const url = await getSignedUrl(
           client,
           new PutObjectCommand({
@@ -1320,11 +1383,10 @@ export const createS3Adapter = (
         throw wrapErr(error);
       }
     },
-    // `url()` SigV4-signs a GetObject request. AWS caps presigned-URL lifetime
-    // at 604800s, but that is a soft infra limit AWS rejects at request time —
-    // not enforced here, and S3-compatible providers (MinIO, Wasabi, …) differ
-    // — so no `maxExpiresIn`; the AWS limit lives in the provider-gaps page.
-    signedUrl: { supported: true },
+    // `url()` SigV4-signs a GetObject request. SigV4 caps a presigned URL's
+    // lifetime at 604800s (7 days) and the SDK's presigner enforces it in code
+    // for every endpoint, AWS or S3-compatible, so it's a hard ceiling.
+    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,
@@ -1399,10 +1461,12 @@ export const createS3Adapter = (
       if (strategy === "public" && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
       }
+      const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
+      assertSigV4ExpiresIn(providerLabel, expiresIn);
       try {
         return await signGet(
           key,
-          urlOpts?.expiresIn ?? defaultUrlExpiresIn,
+          expiresIn,
           urlOpts?.responseContentDisposition
         );
       } catch (error) {

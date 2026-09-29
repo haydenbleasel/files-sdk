@@ -42,7 +42,11 @@ export interface S3FetchAdapterOptions {
    * that env var isn't set.
    */
   secretAccessKey?: string;
-  /** Session token for temporary credentials. Falls back to `AWS_SESSION_TOKEN`. */
+  /**
+   * Session token for temporary credentials. Falls back to
+   * `AWS_SESSION_TOKEN`, but only when `accessKeyId` and `secretAccessKey`
+   * also come from the environment. Explicit keys never pick up an env token.
+   */
   sessionToken?: string;
   /**
    * Use path-style addressing (`https://endpoint/bucket/key`) instead of the
@@ -76,7 +80,14 @@ export const s3Fetch = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
   const accessKeyId = opts.accessKeyId ?? readEnv("AWS_ACCESS_KEY_ID");
   const secretAccessKey =
     opts.secretAccessKey ?? readEnv("AWS_SECRET_ACCESS_KEY");
-  const sessionToken = opts.sessionToken ?? readEnv("AWS_SESSION_TOKEN");
+  // `AWS_SESSION_TOKEN` belongs to the env key pair. Pairing it with keys
+  // passed explicitly (static R2 / MinIO keys on a Lambda or SSO shell, say)
+  // would sign with an unrelated token and every request would 403.
+  const keysFromEnv =
+    opts.accessKeyId === undefined && opts.secretAccessKey === undefined;
+  const sessionToken =
+    opts.sessionToken ??
+    (keysFromEnv ? readEnv("AWS_SESSION_TOKEN") : undefined);
   const region =
     opts.region ?? readEnv("AWS_REGION") ?? readEnv("AWS_DEFAULT_REGION");
 

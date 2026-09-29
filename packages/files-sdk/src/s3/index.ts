@@ -21,9 +21,9 @@ import { createS3Adapter } from "./core.js";
 
 // This entry is the *static* wiring of the SDK-parameterized engine in
 // core.ts: its consumers install the `@aws-sdk/*` peers anyway, so plain
-// named imports (tree-shakeable) are right here. The r2 adapter instead
-// fills the same `S3Sdk` bundle from dynamic imports — see `lazyS3` in
-// ../r2/index.ts and the rationale on `S3Sdk`.
+// named imports (tree-shakeable) are right here. The r2, minio, and rustfs
+// adapters instead fill the same `S3Sdk` bundle from dynamic imports — see
+// `lazyS3` in ../internal/s3-engine.ts and the rationale on `S3Sdk`.
 const sdk: S3Sdk = {
   clientS3: {
     AbortMultipartUploadCommand,
