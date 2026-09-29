@@ -7,7 +7,7 @@ description: Return a URL to fetch a key - a signed GetObject where the adapter 
 
 Returns a URL the caller can use to fetch `key`. Every adapter returns the most direct URL it can produce. Signing adapters (S3 and the S3-compatible catalog — R2 over HTTP plus every regional / budget / decentralised wrapper — alongside Google Cloud Storage, Azure with shared key, Supabase, UploadThing in `private` mode, Vercel Blob in `access: "private"` mode, and the R2 binding when HTTP credentials are also configured) sign a read URL - defaulting to a 1-hour expiry, override per-call via `{ expiresIn }` or per-adapter via `defaultUrlExpiresIn`. If the adapter is constructed with a `publicBaseUrl` (CDN, custom domain, `r2.dev`, Bunny Pull Zone) or UploadThing's `public-read` ACL, that wins and the URL is built without signing.
 
-Two configurations have no URL primitive and throw: an R2 Workers binding without either `publicBaseUrl` or HTTP credentials, and Bunny Storage without `publicBaseUrl` because the Storage API URL requires an `AccessKey` header.
+Adapters with no URL primitive throw unless you configure a public URL for them: an R2 Workers binding without either `publicBaseUrl` or HTTP credentials; Bunny Storage, FTP, SFTP, and WebDAV without `publicBaseUrl`; Google Drive, OneDrive, and SharePoint without `publicByDefault: true`; and Appwrite without `public: true`. Netlify Blobs has no URL primitive at all, so `url()` always throws there. [Provider gaps](/docs/provider-gaps#url-requires-explicit-public-mode-configuration) covers each one, and [`files.capabilities.signedUrl`](/docs/capabilities#signedurl) tells you up front whether the adapter can sign.
 
 ```ts lineNumbers
 // One call, every adapter. S3 and the S3-compatible catalog (R2 over HTTP

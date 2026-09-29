@@ -24,7 +24,7 @@ for (const slug of PROVIDER_NAMES) {
 
 The env spec models how providers actually authenticate, rather than flattening everything into a single "required" flag:
 
-- **`required`** - variables needed regardless of which credential mode is used (e.g. `SUPABASE_URL`, an Azure `container`).
+- **`required`** - variables needed regardless of which credential mode is used (e.g. `SUPABASE_URL`).
 - **`credentialModes`** - mutually exclusive ways to authenticate. You satisfy exactly **one** group. Azure, for instance, accepts a connection string **or** an account key **or** a SAS token **or** anonymous access.
 - **`optional`** - tuning variables that are safe to omit.
 - **`config`** - non-env configuration the adapter still needs as a constructor option (e.g. `bucket`, `region`, `endpoint`).
@@ -52,7 +52,7 @@ const ok = azure.env.credentialModes?.some((mode) =>
 
 ## Types
 
-The catalog is fully typed, and the shapes are exported from both `files-sdk/providers` and the package root so you can build against them. They nest top-down: a `Provider` holds a `ProviderEnvSpec` in its `env` field, that spec groups credentials into `EnvGroup`s, and each group lists individual `EnvVar`s.
+The catalog is fully typed, and the shapes are exported from `files-sdk/providers` so you can build against them (`Provider` and `ProviderSlug` are also re-exported from the package root). They nest top-down: a `Provider` holds a `ProviderEnvSpec` in its `env` field, that spec groups credentials into `EnvGroup`s, and each group lists individual `EnvVar`s.
 
 A **`Provider`** is one catalog entry - its display name, description, peer dependencies, import slug, and env spec.
 

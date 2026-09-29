@@ -14,15 +14,15 @@ description: A register of per-adapter quirks that don't fit the capability matr
 Some adapters return a working URL but don't honor the requested lifetime — the URL is either permanent or has a provider-fixed TTL.
 
 - **Vercel Blob** — public blobs return the permanent CDN URL; `expiresIn` is ignored because the URL is reachable by anyone already. Private blobs mint a Vercel Signed URL that honors `expiresIn`; Vercel caps the lifetime at 7 days server-side.
-- **Box** — `url()` returns a tokenized download URL, but Box controls its TTL server-side. `expiresIn` is accepted for API symmetry and ignored.
+- **Box** — `url()` returns a tokenized download URL, but Box controls its TTL server-side. `expiresIn` is accepted for API symmetry and ignored. With `publicBaseUrl` or `publicByDefault`, `url()` returns a permanent public link instead, and `signedUrl.supported` is `false`.
 - **PocketBase** — file-token URLs have a server-controlled TTL (short, ~minutes). `expiresIn` is ignored.
 - **Convex** — serving URLs do not expire while the file exists. `expiresIn` is ignored.
 
 ### `expiresIn` has a hard ceiling
 
-- **Dropbox** — temporary links cap at **4 hours** (14400s), enforced in code: `url()` throws above that. Use `publicByDefault: true` for a permanent shared link instead. This ceiling is surfaced as `capabilities.signedUrl.maxExpiresIn`.
-- **Azure** — user-delegation SAS (AAD credentials) cannot exceed **7 days** from `startsOn`; the adapter clamps the delegation key to that window. Account-key SAS has **no** such limit, so the cap is config-dependent and is _not_ surfaced as `maxExpiresIn` — it would be wrong in shared-key mode.
-- **S3 and S3-compatible providers** — SigV4 presigned URLs cap at **604800 seconds** (7 days). This is an AWS infra limit rejected at request time, not enforced by the SDK, so it's not surfaced as `maxExpiresIn`. S3-compatible providers (MinIO, Wasabi, and the other `s3()` wrappers) may enforce a different limit or none.
+- **Dropbox** — temporary links cap at **4 hours** (14400s), enforced in code: `url()` throws above that, and the ceiling is surfaced as `capabilities.signedUrl.maxExpiresIn`. Use `publicByDefault: true` (or `publicBaseUrl`) for a permanent public link instead; in those modes the cap doesn't apply, `expiresIn` is ignored, and `signedUrl.supported` is `false`.
+- **Azure** — user-delegation SAS (AAD credentials) cannot exceed **7 days**, the lifetime of the delegation key that signs it; `url()` throws above that, and the cap is surfaced as `maxExpiresIn` in user-delegation mode only. Account-key SAS has **no** such limit, so an account-key adapter leaves `maxExpiresIn` unset.
+- **S3 and S3-compatible providers** — SigV4 presigned URLs cap at **604800 seconds** (7 days). Both S3 engines (the AWS SDK client and the `fetch` engine) reject a longer `expiresIn` in `url()` and `signedUploadUrl()` before signing, with a non-retryable error, and surface the cap as `maxExpiresIn`. This covers every `s3()` wrapper and R2 over HTTP or in hybrid mode; a bare R2 binding can't sign at all. Some S3-compatible providers enforce a shorter limit server-side, which the SDK doesn't know about.
 
 ### `url()` requires explicit public-mode configuration
 
@@ -32,7 +32,7 @@ These adapters have no signing primitive; `url()` throws unless you opt into a p
 - **Google Drive** — requires `publicByDefault: true`; returns a permanent `uc?export=download` link.
 - **Appwrite** — requires `{ public: true }`; returns a permanent view URL. Appwrite SDKs can't mint signed read URLs with API keys.
 - **Bunny Storage** — requires `publicBaseUrl` (a Pull Zone / CDN host); the Storage API URL needs an `AccessKey` header and can't be handed out.
-- **FTP** / **SFTP** — require `publicBaseUrl` pointing at an HTTP server fronting the same tree; the protocols serve no HTTP.
+- **FTP** / **SFTP** / **WebDAV** — require `publicBaseUrl` pointing at an HTTP server fronting the same tree; FTP and SFTP serve no HTTP, and a WebDAV `GET` needs authentication the protocol can't sign.
 - **R2 (Workers binding)** — requires either `publicBaseUrl` or HTTP credentials (hybrid mode) for presigned URLs; a bare binding can't sign.
 - **Netlify Blobs** — has no public-URL primitive at all; `url()` always throws. Use `download()`.
 
@@ -41,17 +41,17 @@ These adapters have no signing primitive; `url()` throws unless you opt into a p
 `capabilities.serverSideCopy` is `true` when `copy()` is a provider-side operation with no body re-transfer. When it's `false`, `copy()` still works but routes the bytes through your process — which matters for large objects and serverless memory limits.
 
 - **UploadThing** — `copy()` **buffers the whole object** in memory (the upload API needs a `Blob`). A multi-GB copy will exhaust serverless memory; do it at the application layer instead.
-- **SFTP** — `copy()` buffers the whole object over a single connection. **FTP** streams instead but still round-trips the bytes through the client.
+- **FTP** / **SFTP** — `copy()` buffers the whole object in memory over a single connection before re-uploading it. Size large copies accordingly.
 - **Bun S3** — Bun's S3 client has no `CopyObject` helper, so `copy()` streams source→dest through the process rather than issuing a server-side copy.
 - **R2 (Workers binding)** — bindings have no server-side copy; `copy()` streams `get`→`put`. Source and destination are not atomic.
 - **Bunny Storage** / **Netlify Blobs** — no native copy; `copy()` reads the source and re-writes the body at the destination. Not atomic.
-- **PocketBase** / **Appwrite** — `copy()` downloads the source and creates a new record/file. Not atomic.
+- **PocketBase** / **Appwrite** — `copy()` downloads the source into memory and creates a new record/file. Not atomic.
 - **Cloudinary** — Cloudinary has no native copy; `copy()` re-uploads by URL, which produces a **new asset** with a new `asset_id` and `etag` — not a byte-identical reference. The source must be fetchable by Cloudinary.
 - **Convex** — `copy()` is **unsupported** and throws: storage ids are immutable and can't be assigned to a caller-chosen key. Download the source and upload it back, tracking the new id.
 
 ## `responseContentDisposition`
 
-The `url()` option that forces a download (and prevents stored-XSS on user-uploaded HTML/SVG) requires a signature to bind into. Adapters that can sign support it — **S3** and the S3-compatible wrappers, **Azure**, **GCS**, **Firebase Storage**, **Supabase**, and **R2** in HTTP / hybrid mode. The rest **throw** rather than silently dropping the security ask: Vercel Blob, Dropbox, Box, OneDrive / SharePoint, Google Drive, UploadThing, Cloudinary, Convex, Bunny Storage, PocketBase, FTP, and SFTP. For buckets with untrusted content, pick a provider that can sign.
+The `url()` option that forces a download (and prevents stored-XSS on user-uploaded HTML/SVG) requires a signature to bind into. Adapters that can sign support it — **S3** and the S3-compatible wrappers (on either client engine), **Bun S3**, **Azure**, **GCS**, **Firebase Storage**, **Supabase**, and **R2** in HTTP / hybrid mode. The rest **throw** rather than silently dropping the security ask: Vercel Blob, Dropbox, Box, OneDrive / SharePoint, Google Drive, UploadThing, Cloudinary, Convex, Bunny Storage, PocketBase, FTP, SFTP, WebDAV, the local `fs` adapter, and Netlify Blobs (whose `url()` always throws). **Appwrite** sits in between: a bare `"attachment"` works, because it maps to Appwrite's `/download` endpoint (which names the file after its stored name), but any other value, such as a custom filename or `inline`, throws. For buckets with untrusted content, pick a provider that can sign.
 
 ## Uncommitted uploads
 

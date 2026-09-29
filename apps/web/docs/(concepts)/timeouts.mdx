@@ -20,7 +20,7 @@ A per-call value always wins over the constructor default for that operation.
 
 ## Per attempt, not per call
 
-The timeout applies to **each attempt**, not to the call as a whole. Since a timeout isn't itself retryable, this only matters across retries triggered by _other_ (provider) failures: if attempt 1 fails with a retryable provider error, attempt 2 starts with a fresh timeout. A call that retries up to `n` times can therefore run for as long as `timeout × n` plus the [backoff](/docs/retries#backoff) waits in between. Budget for the whole call accordingly, or bound it end-to-end with a [`signal`](/docs/cancellations) you abort yourself.
+The timeout applies to **each attempt**, not to the call as a whole. Since a timeout isn't itself retryable, this only matters across retries triggered by _other_ (provider) failures: if attempt 1 fails with a retryable provider error, attempt 2 starts with a fresh timeout. A call that retries up to `n` times makes up to `n + 1` attempts, so it can run for as long as `timeout × (n + 1)` plus the [backoff](/docs/retries#backoff) waits in between. Budget for the whole call accordingly, or bound it end-to-end with a [`signal`](/docs/cancellations) you abort yourself.
 
 ## Interaction with adapter timeouts
 

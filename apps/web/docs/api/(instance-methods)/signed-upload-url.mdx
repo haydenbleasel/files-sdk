@@ -5,11 +5,11 @@ description: A presigned PUT-or-POST contract so a browser can upload straight t
 
 `files.signedUploadUrl(key, options)`
 
-Returns a discriminated PUT-or-POST contract so a client (typically a browser) can upload directly to the bucket without proxying bytes through your server. The flow is: your server calls `signedUploadUrl()`, returns the result to the browser, the browser uploads straight to the provider directly. Bandwidth and CPU stay off your server.
+Returns a discriminated PUT-or-POST contract so a client (typically a browser) can upload directly to the bucket without proxying bytes through your server. The flow is: your server calls `signedUploadUrl()`, returns the result to the browser, the browser uploads straight to the provider. Bandwidth and CPU stay off your server.
 
 Without `maxSize`, the adapter returns a presigned PUT URL - simpler, but with no server-side size cap. With `maxSize`, providers that support upload policies switch to a presigned POST form whose policy enforces the size at the bucket via `content-length-range`. In practice you should pass `maxSize` when the adapter supports it - without it, anyone with the URL can DoS your storage costs until `expiresIn` elapses.
 
-Bunny Storage, Appwrite, PocketBase, fs, and Convex throw here - Bunny Storage writes require the Storage API `AccessKey` header, Appwrite/PocketBase have no presigned upload primitive at all, fs has no signer/verifier-backed upload server, and Convex upload URLs cannot bind the caller's SDK key or constraints. The R2 Workers binding throws unless you've configured hybrid mode (binding + HTTP credentials). Azure, Supabase, R2, Google Drive, OneDrive, SharePoint, Cloudinary, and UploadThing have no `content-length-range` equivalent and **throw if you pass unsupported size limits**; omit those options for a presigned PUT/session URL and enforce upload caps at your application gateway instead. Azure also throws if you pass `contentType`, because SAS does not bind Content-Type into the signature. Vercel Blob mints a presigned `PUT` via Vercel Signed URLs that enforces `contentType` and `maxSize` at the CDN, but has no minimum-size constraint, so a positive `minSize` throws.
+Bunny Storage, Appwrite, PocketBase, Netlify Blobs, Box, Dropbox, FTP, SFTP, WebDAV, fs, and Convex throw here - Bunny Storage writes require the Storage API `AccessKey` header, Appwrite/PocketBase/Netlify Blobs have no presigned upload primitive at all, Box and Dropbox uploads need a request shape the PUT-or-POST contract can't express, FTP/SFTP/WebDAV have no presigned-upload concept, fs has no signer/verifier-backed upload server, and Convex upload URLs cannot bind the caller's SDK key or constraints. The R2 Workers binding throws unless you've configured hybrid mode (binding + HTTP credentials). Azure, Supabase, R2, Bun S3, the `fetch` S3 engine (`s3Fetch()` and `client: "fetch"`), Google Drive, OneDrive, SharePoint, Cloudinary, and UploadThing have no `content-length-range` equivalent and **throw if you pass unsupported size limits**; omit those options for a presigned PUT/session URL and enforce upload caps at your application gateway instead. Azure, Bun S3, and Cloudinary also throw if you pass `contentType`, because none of them binds Content-Type into the signature. Cloudinary and UploadThing also reject a positive `minSize`. Vercel Blob mints a presigned `PUT` via Vercel Signed URLs that enforces `contentType` and `maxSize` at the CDN, but has no minimum-size constraint, so a positive `minSize` throws.
 
 ```ts lineNumbers
 // On your server: hand back an upload contract that lets the browser
@@ -22,18 +22,21 @@ const upload = await files.signedUploadUrl("avatars/abc.png", {
 // → { method: "PUT", url, headers? }
 //   | { method: "POST", url, fields }
 
-// In the browser: PUT path (no maxSize) is a plain fetch.
-await fetch(upload.url, {
-  method: "PUT",
-  body: file,
-  headers: upload.headers,
-});
-
-// POST path (with maxSize) is multipart with the signed policy fields.
-const form = new FormData();
-for (const [k, v] of Object.entries(upload.fields)) form.append(k, v);
-form.append("file", file);
-await fetch(upload.url, { method: "POST", body: form });
+// In the browser: branch on `method` to narrow the contract.
+if (upload.method === "PUT") {
+  // PUT path (no maxSize) is a plain fetch.
+  await fetch(upload.url, {
+    method: "PUT",
+    body: file,
+    headers: upload.headers,
+  });
+} else {
+  // POST path (with maxSize) is multipart with the signed policy fields.
+  const form = new FormData();
+  for (const [k, v] of Object.entries(upload.fields)) form.append(k, v);
+  form.append("file", file);
+  await fetch(upload.url, { method: "POST", body: form });
+}
 ```
 
 ## Options

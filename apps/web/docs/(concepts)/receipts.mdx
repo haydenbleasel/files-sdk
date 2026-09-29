@@ -22,7 +22,7 @@ const files = new Files({
 
 await files.upload("reports/q3.pdf", pdf);
 // event.receipt -> { op: "upload", provider: "s3",
-//   key: "reports/q3.pdf", bytes: 48213, etag: "\"a1b2…\"",
+//   key: "reports/q3.pdf", bytes: 48213, etag: "a1b2…",
 //   durationMs: 31, ts: 1733788800123 }
 ```
 
@@ -68,4 +68,7 @@ The fingerprint is taken **before** any plugin runs. If you compose the instance
 
 ## The shape
 
-<AutoTypeTable path="../../packages/files-sdk/src/index.ts" name="Receipt" />
+<AutoTypeTable
+  path="../../packages/files-sdk/src/internal/receipts.ts"
+  name="Receipt"
+/>

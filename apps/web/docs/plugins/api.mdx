@@ -7,12 +7,37 @@ The types and helpers that make up the plugin system. See the [overview](/docs/p
 
 ## FilesPlugin
 
-The plugin object you pass to `plugins`. A `name` plus up to two optional capabilities - `wrap` and `extend`.
+The plugin object you pass to `plugins`. A `name` plus three optional hooks - `wrap` and `extend`, which the [overview](/docs/plugins) covers, and [`capabilities`](#capabilities), which narrows what the instance advertises.
 
 <AutoTypeTable
   path="../../packages/files-sdk/src/index.ts"
   name="FilesPlugin"
 />
+
+### capabilities
+
+```ts
+capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
+```
+
+Narrows what the instance reports through [`files.capabilities`](/docs/capabilities). The getter starts from the adapter's snapshot and folds every installed plugin's `capabilities` hook over it in `plugins` order, so each hook receives the snapshot as the earlier plugins left it. [`files.readonly()`](/docs/readonly) clones carry the plugins, so they report the same result.
+
+Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported` and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes), and [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported` and every `conditional` flag as `false`.
+
+```ts lineNumbers
+import { handlers, type FilesPlugin } from "files-sdk";
+
+const watermark: FilesPlugin = {
+  name: "watermark",
+  // A presigned URL would skip the watermark, so don't advertise one.
+  capabilities: (caps) => ({ ...caps, signedUrl: { supported: false } }),
+  wrap: handlers({
+    download: async (op, next) => addWatermark(await next(op)),
+  }),
+};
+```
+
+Return a new object rather than mutating the argument, and only narrow. The hook changes what is advertised, not what the adapter can do, so turning on a flag the core gates on doesn't make that option work.
 
 ## FilesOperation
 

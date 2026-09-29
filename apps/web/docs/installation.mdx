@@ -1,19 +1,19 @@
 ---
 title: Installation
-description: Install files-sdk and the optional peer dependencies for the adapter you're using - anything you don't import is never bundled. ESM only, Node 18+ and Bun.
+description: Install files-sdk and the optional peer dependencies for the adapter you're using - anything you don't import is never bundled. ESM only, Node 20+ and Bun.
 ---
 
-`files-sdk` itself is small - one runtime dependency (`commander`, for the CLI) behind a tree of subpath exports. Install the package, then add the peer dependencies for the adapter you're wiring up. Anything you don't import is never bundled.
+`files-sdk` itself is small - a handful of lightweight runtime dependencies (`aws4fetch`, `commander`, `fflate`, `mime`, `p-map`, `picomatch`, and `safe-regex2`, plus an optional `@modelcontextprotocol/sdk` for the MCP server) behind a tree of subpath exports. Install the package, then add the peer dependencies for the adapter you're wiring up. Anything you don't import is never bundled.
 
 ```package-install
 npm install files-sdk
 ```
 
-The package ships its own TypeScript types, so there's no `@types/files-sdk` to chase down. It's published as ESM only (`"type": "module"`) and targets modern runtimes - Node 18+ and Bun. From a CommonJS file, reach it with a dynamic `import()`.
+The package ships its own TypeScript types, so there's no `@types/files-sdk` to chase down. It's published as ESM only (`"type": "module"`) and targets modern runtimes - Node 20+ and Bun. From a CommonJS file, reach it with a dynamic `import()`.
 
 ## Adapter peer dependencies
 
-Adapters are subpath exports - `files-sdk/s3`, `files-sdk/r2`, `files-sdk/vercel-blob`, and so on - and each one's provider SDK is an optional peer dependency, loaded lazily on first use. The SDK you don't import is never bundled, so both install size and cold-start cost stay proportional to the providers you actually wire up.
+Adapters are subpath exports - `files-sdk/s3`, `files-sdk/r2`, `files-sdk/vercel-blob`, and so on - and each one's provider SDK is an optional peer dependency, loaded only when you import that adapter's subpath. The SDK you don't import is never bundled, so both install size and cold-start cost stay proportional to the providers you actually wire up.
 
 Install the peer deps for your adapter alongside the SDK. For S3 - and every S3-compatible store, since R2 over HTTP, MinIO, Backblaze, Wasabi, DigitalOcean Spaces, and the rest all wrap the same client:
 
@@ -21,7 +21,7 @@ Install the peer deps for your adapter alongside the SDK. For S3 - and every S3-
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-The shape is the same for every adapter, only the packages change: Google Cloud Storage adds `@google-cloud/storage` and `google-auth-library`; Azure adds `@azure/storage-blob`, `@azure/core-auth`, and `@azure/identity`; Vercel Blob needs only `@vercel/blob`. A few adapters need no extra packages at all - `files-sdk/fs` and `files-sdk/bun-s3` use primitives the runtime already provides.
+The shape is the same for every adapter, only the packages change: Google Cloud Storage adds `@google-cloud/storage`; Azure adds `@azure/storage-blob` (plus `@azure/identity` only if you build a `credential` with it); Vercel Blob needs only `@vercel/blob`. A few adapters need no extra packages at all - `files-sdk/fs`, `files-sdk/memory`, and `files-sdk/bun-s3` use primitives the runtime already provides, and `files-sdk/s3-fetch` signs requests with the bundled `aws4fetch`.
 
 The [per-adapter docs](/docs/adapters/s3) list the exact packages for each provider, and the [provider catalog](/docs/providers) exposes the same data programmatically (`peerDeps`) if you're generating install commands or building a config UI.
 

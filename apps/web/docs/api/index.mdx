@@ -1,20 +1,21 @@
 ---
 title: API reference
-description: The full Files SDK API - ten unified methods plus a key-bound handle, the shared per-operation options, and the StoredFile return type.
+description: The full Files SDK API - eleven unified methods plus a key-bound handle, the shared per-operation options, and the StoredFile return type.
 ---
 
-The surface is small: a `Files` instance with ten methods, plus `files.file(key)` for a key-bound handle. Each method takes one key (or an array, where bulk applies), accepts the shared `signal` / `timeout` / `retries` options, and throws a normalized `FilesError`. Each method has its own page; this page covers the pieces that cut across all of them.
+The surface is small: a `Files` instance with eleven methods, plus `files.file(key)` for a key-bound handle. Each method takes one key (or an array, where bulk applies), accepts the shared `signal` / `timeout` / `retries` options, and throws a normalized `FilesError`. Each method has its own page; this page covers the pieces that cut across all of them.
 
 ## Functions
 
 - [`upload`](/docs/api/upload) - write a body to a key, one or many.
-- [`download`](/docs/api/download) - read an object as a [`StoredFile`](/docs/api/stored-file) or a stream.
+- [`download`](/docs/api/download) - read an object as a buffered or streamed [`StoredFile`](/docs/api/stored-file).
 - [`head`](/docs/api/head) - fetch metadata without materializing the body.
 - [`exists`](/docs/api/exists) - check whether a key exists.
 - [`delete`](/docs/api/delete) - remove one object or many.
 - [`copy`](/docs/api/copy) - server-side copy with a read + write fallback.
 - [`move`](/docs/api/move) - rename a key, native where the provider supports it.
 - [`list`](/docs/api/list) - cursor-paginated listing, or `listAll` to walk every page.
+- [`search`](/docs/api/search) - glob/regex/substring key search over every page.
 - [`url`](/docs/api/url) - a direct or signed URL to fetch a key.
 - [`signedUploadUrl`](/docs/api/signed-upload-url) - a presigned PUT/POST contract for direct browser uploads.
 - [`file`](/docs/api/file) - a `FileHandle` bound to one key.
@@ -30,7 +31,7 @@ Pass `prefix` to the constructor and every key is resolved relative to it — pr
 
 ## Read-only instances
 
-Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create a view that still allows reads (`download`, `head`, `exists`, `list`, `listAll`, `url`) but rejects writes (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`) with `FilesError { code: "ReadOnly" }`. See [Read-only](/docs/readonly) for the full behavior.
+Pass `readonly: true` to `new Files(...)`, or call `files.readonly()`, to create a view that still allows reads (`download`, `head`, `exists`, `list`, `listAll`, `search`, `url`) but rejects writes (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`) with `FilesError { code: "ReadOnly" }`. See [Read-only](/docs/readonly) for the full behavior.
 
 ## Per-operation options
 

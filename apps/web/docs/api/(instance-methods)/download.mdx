@@ -1,19 +1,22 @@
 ---
 title: download
-description: Read an object - a Blob-backed StoredFile by default, or a ReadableStream for large objects - one key or many.
+description: Read an object - a buffered StoredFile by default, or a streamed one for large objects - one key or many.
 ---
 
 `files.download(key, options?)` · `files.download(keys)`
 
-Reads an object. Returns a [`StoredFile`](/docs/api/stored-file) by default (Blob-backed). Pass `{ as: "stream" }` to opt into a `ReadableStream` for large objects.
+Reads an object and returns a [`StoredFile`](/docs/api/stored-file). By default the body is buffered in memory (Blob-backed). Pass `{ as: "stream" }` for large objects: you still get a `StoredFile`, but its body streams from the provider instead of being buffered, so read it with `file.stream()`.
 
 ```ts lineNumbers
 const file = await files.download("avatars/abc.png");
 // → StoredFile (Blob-backed)
 
-const stream = await files.download("avatars/abc.png", { as: "stream" });
-// → ReadableStream
+const big = await files.download("backups/db.tar", { as: "stream" });
+// → StoredFile (stream-backed)
+const stream = big.stream(); // ReadableStream<Uint8Array>
 ```
+
+A stream-backed body can be consumed once. Call `stream()` for the bytes, or call `text()` / `arrayBuffer()` / `blob()` first if you need more than one format.
 
 ## Exact reads
 
@@ -54,7 +57,7 @@ const chunk = await files.download("video.mp4", {
 **Supported** almost everywhere — the SDK threads the range through whatever primitive each provider exposes:
 
 - **Native byte ranges** — AWS S3 and every S3-compatible adapter (Cloudflare R2 over HTTP, MinIO, RustFS, DigitalOcean Spaces, Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, Scaleway, OVHcloud, iDrive e2, Vultr, Filebase, Exoscale, Oracle Cloud, IBM COS, Tencent COS, Alibaba OSS, Yandex), Bun S3, Google Cloud Storage, Firebase Storage, Azure Blob, the **R2 Workers binding** (native `range` option), the local `fs` adapter, and the in-memory adapter.
-- **HTTP `Range` header** — UploadThing, Box, Vercel Blob (public), Cloudinary, PocketBase, Dropbox (via its temporary link), OneDrive, SharePoint, and Google Drive issue a `Range` request against the underlying URL/content endpoint.
+- **HTTP `Range` header** — UploadThing, Box, Vercel Blob (public), Cloudinary, PocketBase, Dropbox (via its temporary link), OneDrive, SharePoint, Google Drive, and WebDAV issue a `Range` request against the underlying URL/content endpoint.
 - **Native read offsets** — SFTP threads the range through ssh2 read-stream `start`/`end` byte offsets. FTP begins the transfer at the `REST` start offset and trims a bounded `end` client-side, so an open-ended `{ start }` range transfers only the bytes from the offset on (a bounded `end` still reads to EOF before trimming the tail).
 
 For the HTTP-header adapters the SDK verifies the response came back `206 Partial Content` and **throws if the host answered `200`** (i.e. ignored the range and sent the whole object), so a ranged read never silently transfers — and bills you for — the full file.

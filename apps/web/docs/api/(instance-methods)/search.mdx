@@ -87,7 +87,7 @@ const recent = await Array.fromAsync(
 
 ## Provider support
 
-`search` runs on **every adapter**, since it's built on [`listAll`](/docs/api/list#walking-every-page-with-listall) — there's no per-provider search capability and nothing to gate. The two `listAll` caveats carry over: on [Netlify Blobs](/docs/adapters/netlify-blobs) omit `limit` to walk everything, and the non-recursive [Box](/docs/adapters/box) / [OneDrive](/docs/adapters/onedrive) / [SharePoint](/docs/adapters/sharepoint) adapters only see the immediate children of the root folder. An unbounded search with no `prefix` walks the whole bucket by design.
+`search` runs on **every adapter**, since it's built on [`listAll`](/docs/api/list#walking-every-page-with-listall) — there's no per-provider search capability and nothing to gate. The `listAll` caveat carries over: the non-recursive [Box](/docs/adapters/box) / [OneDrive](/docs/adapters/onedrive) / [SharePoint](/docs/adapters/sharepoint) adapters only see the direct children of the folder the prefix points into (the root folder when there's none), so a `**` glob can't reach deeper subfolders there. An unbounded search with no `prefix` walks the whole bucket by design.
 
 ## Options
 

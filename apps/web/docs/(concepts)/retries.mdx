@@ -21,6 +21,7 @@ Only `Provider` failures — transient things like network blips, throttling, an
 
 - `NotFound`, `Unauthorized`, and `Conflict` are deterministic — the same call fails the same way.
 - Aborts and [timeouts](/docs/timeouts) are never retried; retrying a cancelled call would defeat the cancellation.
+- `Provider` failures flagged [`permanent`](/docs/api/errors#properties) are deterministic too (a host that ignores `Range`, an option the adapter can't honor), so they aren't retried either.
 - Uploads from a `ReadableStream` are never retried, because a consumed stream can't be safely replayed. Buffered bodies (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) retry normally.
 
 See [Errors](/docs/api/errors) for how codes are assigned.

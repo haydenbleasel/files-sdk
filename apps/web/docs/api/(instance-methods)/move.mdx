@@ -15,7 +15,7 @@ Both keys are validated, and on a client with a [prefix](/docs/prefixes) both `f
 
 ## How it moves
 
-Where the provider exposes a native rename that's atomic or avoids re-transferring the body, `move` uses it directly: the local filesystem ([`fs`](/docs/adapters/fs)) renames in place, [FTP](/docs/adapters/ftp) and [SFTP](/docs/adapters/sftp) issue a native rename (`RNFR`/`RNTO` and the SFTP `RENAME` op — no body round-trip), and Cloudinary uses its server-side `rename` (same `asset_id`, no re-upload). Everywhere else it falls back to [`copy`](/docs/api/copy) then [`delete`](/docs/api/delete): the source is copied to the destination and the original is removed.
+Where the provider exposes a native rename that's atomic or avoids re-transferring the body, `move` uses it directly: the local filesystem ([`fs`](/docs/adapters/fs)) renames in place, [FTP](/docs/adapters/ftp) and [SFTP](/docs/adapters/sftp) issue a native rename (`RNFR`/`RNTO` and the SFTP `RENAME` op — no body round-trip), [WebDAV](/docs/adapters/webdav) sends a native `MOVE`, the [in-memory](/docs/adapters/memory) adapter re-keys its entry, and Cloudinary uses its server-side `rename` (same `asset_id`, no re-upload). Everywhere else it falls back to [`copy`](/docs/api/copy) then [`delete`](/docs/api/delete): the source is copied to the destination and the original is removed.
 
 Object stores (S3, R2, GCS, Azure, …) have no atomic move primitive, so they always take the copy + delete path. Two consequences follow from the fallback:
 

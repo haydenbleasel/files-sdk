@@ -24,7 +24,9 @@ const files = new Files({
 const readOnlyFiles = files.readonly();
 ```
 
-The derived view reuses the same adapter, prefix, timeout, retries, and hooks. It does not clone storage state or create a second provider client.
+The derived view reuses the same adapter, prefix, timeout, retries, hooks, and plugins. It does not clone storage state or create a second provider client.
+
+Check `files.isReadOnly` to tell the two apart at runtime. It's `true` on an instance built with `readonly: true` or returned by `files.readonly()`, and `false` otherwise.
 
 ## What is still allowed
 
@@ -35,6 +37,7 @@ Read-only instances still support every read surface:
 - `exists`
 - `list`
 - `listAll`
+- `search`
 - `url`
 - `file(key)` for a key-scoped read handle
 

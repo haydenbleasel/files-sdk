@@ -40,7 +40,7 @@ The key does not exist (or the bucket / container does not exist on providers th
 
 - `download`, `head`, `copy` (source key), and `delete` on strict providers will throw this.
 - `exists` returns `false` instead of throwing. If you're seeing `NotFound` from `exists`, the underlying error wasn't actually a missing-key signal - check `cause`.
-- `delete` is idempotent on providers that treat it that way (S3, R2, Vercel Blob); strict providers (FS, some BaaS) throw `NotFound` for missing keys.
+- `delete` is idempotent on providers that treat it that way (S3, R2, Vercel Blob, FTP, Bunny Storage, the local `fs` adapter): a missing key is a no-op, but real failures still surface - FTP maps a refused delete of an existing file (550) to `Unauthorized`, and Bunny Storage reports auth and 5xx errors. Strict providers (some SaaS and BaaS backends) throw `NotFound` for missing keys.
 
 ### `Unauthorized`
 
@@ -59,7 +59,7 @@ A precondition failed - usually a conditional write losing a race, or an object 
 
 The call tried to write through a read-only `Files` instance created with `new Files({ readonly: true })` or `files.readonly()`.
 
-- Reads still work: `download`, `head`, `exists`, `list`, `listAll`, `url`.
+- Reads still work: `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`.
 - Writes are blocked uniformly: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, plus the equivalent `file(key)` helpers.
 - `files.raw` is not governed by this flag. If the mutation came through `raw`, the SDK's read-only guard will not see it.
 
@@ -71,12 +71,18 @@ The catch-all. Network errors, malformed responses, provider outages, and anythi
 
 The unified API only covers what every adapter can do; a handful of operations are surfaced but throw on adapters that can't honor them. These are the ones worth knowing.
 
-### `url()` throws on two configurations
+### `url()` throws without a URL primitive
 
-`url()` returns the most direct URL each adapter can produce - a signed `GetObject`, a SAS read URL, a CDN URL when `publicBaseUrl` is configured, etc. Two setups have no URL primitive and will throw:
+`url()` returns the most direct URL each adapter can produce - a signed `GetObject`, a SAS read URL, a CDN URL when `publicBaseUrl` is configured, etc. Adapters with no signing primitive throw unless you configure a public URL for them:
 
 - **R2 Workers binding with no `publicBaseUrl` and no HTTP credentials** - the binding API has no URL primitive. Either configure `publicBaseUrl` (custom domain or `r2.dev`) or pass HTTP credentials alongside the binding to enable signing.
 - **Bunny Storage without `publicBaseUrl`** - the Storage API requires an `AccessKey` header on every request, so there's nothing to hand to a browser. Configure your Pull Zone as `publicBaseUrl`.
+- **FTP, SFTP, and WebDAV without `publicBaseUrl`** - the protocols have no signing primitive. Point `publicBaseUrl` at an HTTP server fronting the same tree.
+- **Google Drive, OneDrive, and SharePoint without `publicByDefault: true`** - there's no signed-URL primitive, only permanent anonymous links.
+- **Appwrite without `public: true`** - Appwrite can't mint signed read URLs with an API key.
+- **Netlify Blobs**, always - it has no public-URL primitive. Use `download()`.
+
+[Provider gaps](/docs/provider-gaps#url-requires-explicit-public-mode-configuration) has the per-adapter details.
 
 `responseContentDisposition: "attachment"` forces signing even when `publicBaseUrl` is set - a permanent CDN URL has no signature to bind the override into, so the alternative would be silently dropping a security ask.
 
@@ -85,17 +91,25 @@ The unified API only covers what every adapter can do; a handful of operations a
 `signedUploadUrl()` returns a discriminated PUT-or-POST contract so a browser can upload directly to the bucket. These adapters throw:
 
 - **Bunny Storage** - writes require the `AccessKey` header.
-- **Appwrite** and **PocketBase** - no presigned upload primitive. Mint a short-lived auth token for the client instead.
+- **Appwrite**, **PocketBase**, and **Netlify Blobs** - no presigned upload primitive. For Appwrite and PocketBase, mint a short-lived auth token for the client instead.
+- **Box** and **Dropbox** - their upload endpoints need a request shape (Box's multipart `attributes` part, Dropbox's raw-body POST) that doesn't fit the PUT-or-POST contract.
+- **FTP**, **SFTP**, and **WebDAV** - the protocols have no presigned-upload concept.
 - **fs** - no built-in upload server, signer, or verifier. Upload through `files.upload()` or an application route that enforces controls server-side.
 - **Convex** - `generateUploadUrl()` cannot bind the caller's SDK key or upload constraints. Upload through a Convex action with `files.upload()` instead.
 - **R2 Workers binding without hybrid mode** - configure the binding _and_ HTTP credentials to enable signing.
+- **Bun S3 with `contentType`** - Bun's presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use `s3()` / `s3Fetch()`, which sign it.
 
-### `maxSize` is advisory on three
+For these, upload through `files.upload()` on the server, or put the [UI gateway](/docs/ui) in front - it proxies the bytes through your server when the adapter can't sign an upload.
 
-`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Some adapters can't honor that contract:
+### `maxSize` throws where it can't be enforced
 
-- **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent.
-- **Google Drive**, **OneDrive**, and **SharePoint** throw on `maxSize`/`minSize` for the same reason.
+`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Some adapters can't honor that contract, so they throw rather than hand back an uncapped URL:
+
+- **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent. Cloudinary and UploadThing also throw on a positive `minSize` (`minSize: 0` is fine), and Cloudinary throws on `contentType`, since it detects the format from the uploaded bytes.
+- **R2** throws on `maxSize` - it doesn't implement the S3 POST Object API.
+- **Bun S3** and the **`fetch` S3 engine** ([`s3Fetch()`](/docs/adapters/s3-fetch), and R2 / MinIO / RustFS with `client: "fetch"`) throw on `maxSize` - they mint presigned PUT URLs only, never POST policies.
+- **Google Drive**, **OneDrive**, and **SharePoint** throw on `maxSize`/`minSize` - their upload sessions enforce no size range.
+- **Vercel Blob** enforces `maxSize` at the CDN but has no minimum, so a positive `minSize` throws.
 
 For these, enforce upload caps at your application gateway, or set the bucket / route limit at the provider's dashboard.
 
@@ -103,11 +117,11 @@ For these, enforce upload caps at your application gateway, or set the bucket / 
 
 ### S3-compatible adapters are S3 wrappers
 
-R2 (HTTP), MinIO, RustFS, DigitalOcean Spaces, Backblaze B2, Wasabi, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive E2, Vultr, IBM COS, Oracle Cloud, and Exoscale all wrap the `s3()` adapter with provider-specific defaults (endpoint, path-style, region quirks). If you hit an obscure failure on one of them, reproduce against `s3()` with the same options - if it repros, it's an S3 wire issue; if it doesn't, the wrapper's defaults are the culprit.
+R2 (HTTP), MinIO, RustFS, DigitalOcean Spaces, Backblaze B2, Wasabi, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive E2, Vultr, IBM COS, Oracle Cloud, Exoscale, Alibaba OSS, Tencent COS, Yandex, Archil, and Neon all wrap the `s3()` adapter with provider-specific defaults (endpoint, path-style, region quirks). If you hit an obscure failure on one of them, reproduce against `s3()` with the same options - if it repros, it's an S3 wire issue; if it doesn't, the wrapper's defaults are the culprit. R2, MinIO, and RustFS can also run on the `fetch` engine (`client: "fetch"`, which R2 picks by default inside Cloudflare Workers); reproduce those against [`s3Fetch()`](/docs/adapters/s3-fetch) instead.
 
 ### `copy` falls back to read+write
 
-Server-side copy is used where the provider supports it; otherwise the adapter reads the source and writes the destination. For very large objects on adapters without server-side copy, this means bytes flow through your process - plan accordingly.
+Server-side copy is used where the provider supports it; otherwise the adapter reads the source and writes the destination. For very large objects on adapters without server-side copy, this means bytes flow through your process - and several of them buffer the whole object in memory - so plan accordingly. The [`copy` reference](/docs/api/copy#the-read--write-fallback) lists which adapters fall back and how.
 
 ### Lazy bodies in `head` and `list`
 

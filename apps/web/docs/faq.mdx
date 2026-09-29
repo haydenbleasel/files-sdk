@@ -5,11 +5,11 @@ description: Common questions about supported providers, bundling and peer depen
 
 ## Which providers are supported?
 
-40+, behind one API: AWS S3 and the whole S3-compatible long tail (R2, MinIO, RustFS, Backblaze, Wasabi, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive, Vultr, IBM COS, Oracle, Exoscale, DigitalOcean Spaces), Vercel Blob, Google Cloud Storage, Azure, Supabase, the consumer providers (Dropbox, Box, Google Drive, OneDrive, SharePoint), upload-focused services (UploadThing, Cloudinary), the BaaS stack (Appwrite, PocketBase, Firebase Storage), and a local `fs` adapter for tests. See the full list under [Adapters](/docs/adapters/s3).
+40+, behind one API: AWS S3 and the whole S3-compatible long tail (R2, MinIO, RustFS, Backblaze, Wasabi, DigitalOcean Spaces, Scaleway, OVH, Hetzner, Tigris, Storj, Filebase, Akamai, IDrive, Vultr, IBM COS, Oracle, Exoscale, Alibaba, Tencent, Yandex, Archil, Neon), Vercel Blob, Netlify Blobs, Google Cloud Storage, Azure, Supabase, the consumer providers (Dropbox, Box, Google Drive, OneDrive, SharePoint), upload and media services (UploadThing, Cloudinary, Bunny Storage), the BaaS stack (Appwrite, PocketBase, Firebase Storage, Convex), FTP, SFTP, and WebDAV servers, Bun's native S3 client, and local `fs` and in-memory adapters for tests. The [provider catalog](/docs/providers) lists every one, and each has its own page under [Adapters](/docs/adapters/s3).
 
 ## Do I have to install every provider's SDK?
 
-No. Adapters are subpath exports (`files-sdk/s3`, `files-sdk/r2`, ...) and each provider SDK is an optional peer dependency, loaded lazily on first use. Install only the one(s) you wire up - the SDK you don't import is never bundled. See [Installation](/docs/installation).
+No. Adapters are subpath exports (`files-sdk/s3`, `files-sdk/r2`, ...) and each provider SDK is an optional peer dependency, loaded only when you import that adapter's subpath. Install only the one(s) you wire up - the SDK you don't import is never bundled. See [Installation](/docs/installation).
 
 ## Why am I getting "Cannot find module '@aws-sdk/client-s3'"?
 
@@ -25,7 +25,7 @@ Every method normalizes to the same shape, but providers differ in what they off
 
 ## Can I use it in the browser?
 
-The core `Files` class and the `StoredFile` type are isomorphic, but most adapters wrap server-only SDKs. For browser uploads, mint a contract with [`signedUploadUrl()`](/docs/api/signed-upload-url) on the server and have the client `fetch` directly to the provider. See [Troubleshooting](/docs/troubleshooting) for the full pattern.
+The core `Files` class and the `StoredFile` type are isomorphic, but most adapters wrap server-only SDKs. For browser uploads, mint a contract with [`signedUploadUrl()`](/docs/api/signed-upload-url) on the server and have the client `fetch` directly to the provider - the [`signedUploadUrl` reference](/docs/api/signed-upload-url) walks through the full pattern, and the [UI](/docs/ui) gateway and `useFiles` bindings package it up for React, Vue, and Svelte.
 
 ## How are errors handled?
 
@@ -33,11 +33,11 @@ Every method throws a single `FilesError` with a normalized `code` - `NotFound`,
 
 ## Does `delete` throw on a missing key?
 
-Depends on the provider. S3, R2, and Vercel Blob treat delete as idempotent and resolve successfully; strict providers throw a `FilesError` with `code: "NotFound"`. If you need consistent behavior, gate on `await files.exists(key)` first. See [delete](/docs/api/delete).
+Depends on the provider. S3, R2, Vercel Blob, FTP, Bunny Storage, and the local `fs` adapter treat a missing key as a successful no-op (other failures, such as a permission error, still throw); strict providers throw a `FilesError` with `code: "NotFound"`. If you need consistent behavior, gate on `await files.exists(key)` first. See [delete](/docs/api/delete).
 
 ## Why is `contentType` `application/octet-stream`?
 
-When `upload` can't infer the type from the input (a raw `ArrayBuffer`, a `ReadableStream`, or a string with no extension hint), it defaults to `application/octet-stream`. Pass `contentType` explicitly to override it.
+When `upload` can't infer the type from the input (an `ArrayBuffer`, typed array, `ReadableStream`, or a `Blob` with no `type`), it defaults to `application/octet-stream`; strings default to `text/plain; charset=utf-8`. The key's extension isn't used. Pass `contentType` explicitly to override it, or add the [`contentType()`](/docs/plugins/content-type) plugin to detect it from the file's bytes.
 
 ## Why does the body come back empty from `head` / `list`?
 

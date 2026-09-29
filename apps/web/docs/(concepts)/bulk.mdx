@@ -55,7 +55,7 @@ if (result.errors) {
 
 ## Native bulk vs. fan-out
 
-`upload`, `download`, `head`, and `exists` have no provider batch primitive, so the SDK always fans out to per-key calls under the concurrency limit. `delete` is the exception: adapters with a native bulk primitive (S3 `DeleteObjects`, chunked into batches of 1000; Supabase; UploadThing) remove everything in a single request and ignore `concurrency`, while the rest fall back to bounded fan-out. When a native bulk provider only reports that the whole request failed, that error is mapped onto each affected key.
+`upload`, `download`, `head`, and `exists` have no provider batch primitive, so the SDK always fans out to per-key calls under the concurrency limit. `delete` is the exception: adapters with a native bulk primitive (S3 `DeleteObjects`, chunked into batches of 1000; Azure's Blob Batch API, chunked into batches of 256; Supabase; UploadThing) remove everything in a single request per batch and ignore `concurrency`, FTP and SFTP delete sequentially over one reused connection, and the rest fall back to bounded fan-out. When a native bulk provider only reports that the whole request failed, that error is mapped onto each affected key.
 
 ## Retries and hooks
 

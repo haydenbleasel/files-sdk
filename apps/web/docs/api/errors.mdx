@@ -25,6 +25,8 @@ try {
 - **`message`** — a human-readable summary, taken from the provider error where one is available.
 - **`cause`** — the original provider error, untouched. Reach into it for provider-specific detail: `@aws-sdk` errors, for instance, carry a request ID and HTTP status on `$metadata` and a typed `name` like `NoSuchKey`.
 - **`aborted`** — `true` when the failure came from a [cancellation](/docs/cancellations) or a [timeout](/docs/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
+- **`timedOut`** — `true` when the abort came from a configured [`timeout`](/docs/timeouts) rather than your own `signal`. A timeout sets `aborted` too, so check `timedOut` to tell "the backend hung" apart from "the caller cancelled".
+- **`permanent`** — `true` when a `Provider` failure is deterministic, so re-issuing the same request can only fail the same way (a host that ignores `Range`, an option the adapter can't honor). Such failures are not [retried](/docs/retries). Every rejection the SDK raises itself before provider I/O carries it: an unsupported `range`, `metadata`, `cacheControl`, `delimiter`, or `control` on an adapter that can't honor it, a malformed range or condition, and an invalid key.
 - **`applied`** — `true` when a [conditional](/docs/conditional-operations) mutation committed at the provider before the call rejected (an awaited plugin threw after `next()`, or a post-commit check failed). The object changed even though you got an error; `appliedEtag` carries the committed generation for uploads. Reconcile with an exact read instead of retrying the same predicate. Never set on a veto or a provider failure.
 
 ## Codes
@@ -35,7 +37,7 @@ try {
 - `"ReadOnly"` — the operation tried to mutate a read-only `Files` instance.
 - `"Provider"` — anything else, including network failures, throttling, timeouts, and aborts. Inspect `cause` for the underlying error.
 
-Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/docs/retries); the rest are deterministic and returned to you immediately.
+Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/docs/retries), and not when they're `aborted` or `permanent`; the rest are deterministic and returned to you immediately.
 
 ## Errors in bulk operations
 

@@ -23,7 +23,7 @@ const { uploaded, deleted } = await sync(from, to, {
 });
 ```
 
-Both arguments are full [`Files`](/docs/api) instances, so each leg honors its own instance's `prefix`, retries, timeouts, and [hooks](/docs/api/onaction). Changed objects are streamed download-to-upload, exactly like `transfer`, so the destination never sees a buffered copy of a large file. Only the body, content type, and user metadata travel with each object.
+Both arguments are full [`Files`](/docs/api) instances, so each leg honors its own instance's `prefix`, retries, timeouts, and [hooks](/docs/api/onaction). Changed objects are streamed download-to-upload, exactly like `transfer`, so the destination never sees a buffered copy of a large file. Only the body, content type, and user metadata travel with each object, and metadata is dropped when the destination has no metadata primitive (`to.capabilities.metadata` is `false`).
 
 Both sides are walked in full before any work begins — `sync` runs two listings up front (the destination walk drives both the comparison and the prune). That's the cost of a two-sided reconcile; if you only want a cheap one-shot copy, use `transfer` instead.
 
@@ -99,7 +99,7 @@ await sync(from, to, {
 
 ## Progress
 
-`onProgress` fires once per key as it settles — skips first, then uploads as each streams through, then prunes — carrying a running `done` count, the `total` (uploads + skips + prunes), the `key`, and a `status` of `"uploaded"`, `"skipped"`, or `"deleted"`. It does not fire under `dryRun`.
+`onProgress` fires once per key as it settles — skips and uploads interleaved in the order they finish, then prunes once every upload has settled — carrying a running `done` count, the `total` (uploads + skips + prunes), the `key`, and a `status` of `"uploaded"`, `"skipped"`, or `"deleted"`. It does not fire under `dryRun`. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already settled or the sync as a whole.
 
 ```ts lineNumbers
 await sync(from, to, {

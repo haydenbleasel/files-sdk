@@ -30,7 +30,7 @@ Both keys are validated, and on a client with a [prefix](/docs/prefixes) both `f
 
 ## The read + write fallback
 
-Adapters with no server-side copy primitive — UploadThing, Netlify Blobs, Cloudinary, and the R2 binding without HTTP credentials — emulate `copy` by downloading the source and re-uploading it to the destination. The source is streamed through rather than buffered, so even multi-GB copies stay within serverless memory limits, but two things differ from a native copy:
+Adapters with no server-side copy primitive — FTP, SFTP, Bun S3, Bunny Storage, Netlify Blobs, PocketBase, Appwrite, UploadThing, and the R2 Workers binding — emulate `copy` by downloading the source and re-uploading it to the destination. Bun S3, Bunny Storage, and the R2 binding stream the source straight through, so even multi-GB copies stay within serverless memory limits; the others buffer the whole object in memory first, so size large copies accordingly. Cloudinary has no native copy either: it re-uploads by URL, so Cloudinary fetches the source itself and creates a new asset (see [Provider gaps](/docs/provider-gaps#copy-semantics)). Two things differ from a native copy:
 
 - **It costs an egress download plus an ingest upload.** For large or frequent copies on these providers, consider doing the copy at the application layer with a storage strategy that copies server-side.
 - **It is not atomic.** Concurrent writes to `from` between the read and the write are not detected, so the destination may reflect an in-flight change to the source.

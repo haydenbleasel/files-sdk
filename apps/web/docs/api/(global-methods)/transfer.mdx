@@ -28,7 +28,7 @@ Both arguments are full [`Files`](/docs/api) instances, not raw adapters, so eac
 
 ## What travels
 
-The body, content type, and user metadata move with each object. Destination-assigned fields (`etag`, `lastModified`) are fresh on the other side, and `Cache-Control` is **not** carried — a [`StoredFile`](/docs/api/download) doesn't expose it. Metadata is dropped for adapters with no metadata primitive; a metadata key a destination adapter rejects outright (Bunny, Appwrite, PocketBase) surfaces as a per-key error rather than failing the whole run.
+The body, content type, and user metadata move with each object. Destination-assigned fields (`etag`, `lastModified`) are fresh on the other side, and `Cache-Control` is **not** carried — a [`StoredFile`](/docs/api/stored-file) doesn't expose it. Metadata is dropped when the destination has no metadata primitive (`to.capabilities.metadata` is `false`), so those keys still transfer instead of failing; any other rejection by the destination surfaces as a per-key error rather than failing the whole run.
 
 ## Result shape
 
@@ -67,7 +67,7 @@ await transfer(from, to, {
 
 ## Progress
 
-`onProgress` fires once per key as it settles, carrying a running `done` count, the `total`, the `key`, and whether it was `transferred` or `skipped`. The source is walked in full before any transfer begins, so `total` is the final denominator from the very first event.
+`onProgress` fires once per key as it settles, carrying a running `done` count, the `total`, the `key`, and whether it was `transferred` or `skipped`. The source is walked in full before any transfer begins, so `total` is the final denominator from the very first event. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already landed or the transfer as a whole.
 
 ```ts lineNumbers
 await transfer(from, to, {

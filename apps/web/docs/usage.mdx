@@ -1,6 +1,6 @@
 ---
 title: Usage
-description: Construct a Files instance with an adapter, then call the same ten methods on it - swap the adapter to switch backends.
+description: Construct a Files instance with an adapter, then call the same eleven methods on it - swap the adapter to switch backends.
 ---
 
 ## How it works
@@ -104,7 +104,7 @@ const files = new Files({
 const readOnlyFiles = files.readonly();
 ```
 
-Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
+Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, `search`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
 
 ## Working in bulk
 
