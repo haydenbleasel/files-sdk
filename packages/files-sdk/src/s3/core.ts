@@ -1,5 +1,6 @@
 import type * as ClientS3 from "@aws-sdk/client-s3";
 import type { PutObjectCommandInput, S3ClientConfig } from "@aws-sdk/client-s3";
+import type * as LibStorage from "@aws-sdk/lib-storage";
 import type * as PresignedPost from "@aws-sdk/s3-presigned-post";
 import type * as RequestPresigner from "@aws-sdk/s3-request-presigner";
 
@@ -81,7 +82,7 @@ export interface S3AdapterOptions {
   bucket: string;
   /**
    * AWS region the bucket lives in (e.g. `us-east-1`). Falls back to
-   * `AWS_REGION`; required if no env var is set.
+   * `AWS_REGION`, then `AWS_DEFAULT_REGION`; required if neither is set.
    */
   region?: string;
   /**
@@ -115,9 +116,10 @@ export interface S3AdapterOptions {
    *
    * A shared-config `endpoint_url` (profile- or service-level) is invisible
    * at construction, so it is caught at request time instead: a conditional
-   * request whose resolved hostname is not `amazonaws.com` fails closed
-   * before it is sent. AWS-hosted endpoints (VPC, FIPS, dual-stack, GovCloud)
-   * all resolve under that suffix and need no override.
+   * request whose resolved hostname is not `amazonaws.com` or
+   * `amazonaws.com.cn` (or a subdomain of either) fails closed before it is
+   * sent. AWS-hosted endpoints (VPC, FIPS, dual-stack, GovCloud, the China
+   * regions) all resolve under those suffixes and need no override.
    *
    * Set `true` to opt an S3-compatible endpoint that you have verified
    * honors `If-Match` / `If-None-Match` in — this skips both the constructor
@@ -360,16 +362,23 @@ const assertConditionalUploadOptions = (
 
 // `@aws-sdk/lib-storage` is an optional peer dependency, pulled in only when an
 // upload needs the multipart/progress path: `multipart`, `onProgress`, or a
-// `ReadableStream` body of unknown length. Loaded lazily (the return type is
-// inferred from the dynamic import) so it isn't required by callers who only do
-// plain single-request PutObject uploads; surfaces a clear error when missing.
-const loadLibStorage = async () => {
+// `ReadableStream` body of unknown length. Loaded lazily so it isn't required
+// by callers who only do plain single-request PutObject uploads; surfaces a
+// clear error when missing. `permanent`: a missing module fails every attempt
+// the same way, so `retries` must not re-issue the upload. Exported (with an
+// injectable importer) only so the missing-peer path is testable.
+export const loadLibStorage = async (
+  importLibStorage: () => Promise<typeof LibStorage> = () =>
+    import("@aws-sdk/lib-storage")
+): Promise<typeof LibStorage> => {
   try {
-    return await import("@aws-sdk/lib-storage");
-  } catch {
+    return await importLibStorage();
+  } catch (error) {
     throw new FilesError(
       "Provider",
-      "Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options, or to upload a `ReadableStream` body of unknown length."
+      "Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options, or to upload a `ReadableStream` body of unknown length.",
+      error,
+      { permanent: true }
     );
   }
 };
@@ -439,15 +448,19 @@ const runLibStorageUpload = async (
     await upload.abort();
     throw abortError(signal.reason);
   }
-  signal?.addEventListener(
-    "abort",
-    () => {
-      void upload.abort();
-    },
-    { once: true }
-  );
-  const result = await upload.done();
-  return stripEtag(result.ETag);
+  const onAbort = () => {
+    void upload.abort();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const result = await upload.done();
+    return stripEtag(result.ETag);
+  } finally {
+    // Detach once the upload settles: a long-lived signal (a `Files`-level
+    // default) would otherwise keep every finished Upload — and the body it
+    // holds — reachable until that signal aborts.
+    signal?.removeEventListener("abort", onAbort);
+  }
 };
 
 // Every multipart part except the last must be at least 5 MiB (S3 rule), so
@@ -866,6 +879,22 @@ export const createS3Adapter = (
     : mapS3Error;
   const providerLabel = opts.defaultProviderMessage ?? "S3 error";
 
+  // The lazy body behind `head()` / `list()` items: a GetObject issued when
+  // the caller first reads it, long after the method's own try/catch has
+  // returned — so it maps its own failures (a key deleted in between reads as
+  // NotFound, like the fetch engine's lazy body), rather than leaking a raw
+  // SDK exception out of `text()` / `arrayBuffer()`.
+  const fetchBytes = async (key: string): Promise<Uint8Array> => {
+    try {
+      const get = await client.send(
+        new GetObjectCommand({ Bucket: bucket, Key: key })
+      );
+      return (await get.Body?.transformToByteArray()) ?? new Uint8Array();
+    } catch (error) {
+      throw wrapErr(error);
+    }
+  };
+
   const signGet = (
     key: string,
     expiresIn: number,
@@ -1261,17 +1290,7 @@ export const createS3Adapter = (
             size: Number(result.ContentLength ?? 0),
             type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
           },
-          {
-            factory: async () => {
-              const get = await client.send(
-                new GetObjectCommand({ Bucket: bucket, Key: key })
-              );
-              return (
-                (await get.Body?.transformToByteArray()) ?? new Uint8Array()
-              );
-            },
-            kind: "lazy",
-          }
+          { factory: () => fetchBytes(key), kind: "lazy" }
         );
       } catch (error) {
         throw wrapErr(error);
@@ -1303,17 +1322,7 @@ export const createS3Adapter = (
               // `DEFAULT_CONTENT_TYPE`.
               type: inferTypeFromName(objKey),
             },
-            {
-              factory: async () => {
-                const get = await client.send(
-                  new GetObjectCommand({ Bucket: bucket, Key: objKey })
-                );
-                return (
-                  (await get.Body?.transformToByteArray()) ?? new Uint8Array()
-                );
-              },
-              kind: "lazy",
-            }
+            { factory: () => fetchBytes(objKey), kind: "lazy" }
           );
         });
         const prefixes = (result.CommonPrefixes ?? [])

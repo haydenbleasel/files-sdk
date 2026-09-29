@@ -11,6 +11,8 @@ description: DigitalOcean Spaces via the S3-compatible API. Endpoint derived fro
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
+`upload` also needs the optional `@aws-sdk/lib-storage` package when it uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length. It's only loaded then.
+
 ## Usage
 
 ```ts lineNumbers

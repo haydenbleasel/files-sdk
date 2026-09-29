@@ -25,7 +25,8 @@ const files = new Files({
     // endpoint defaults to AWS_ENDPOINT_URL_S3
     // region defaults to AWS_REGION (then NEON_STORAGE_REGION, then us-east-1)
     // accessKeyId / secretAccessKey resolve from the AWS credential chain
-    // (the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY Neon injects)
+    // (the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY Neon injects);
+    // pass both or neither - passing only one throws
   }),
 });
 ```

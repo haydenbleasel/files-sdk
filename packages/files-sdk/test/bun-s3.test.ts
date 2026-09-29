@@ -699,6 +699,22 @@ describe("bun-s3 adapter", () => {
     expect(await item?.text()).toBe("hi");
   });
 
+  test("list infers the content type from the key, like the rest of the S3 family", async () => {
+    const client = new FakeBunS3Client();
+    const adapter = bunS3({ client });
+    await adapter.upload("docs/report.csv", "a,b");
+    await adapter.upload("docs/photo.png", "x");
+    await adapter.upload("docs/blob", "y");
+    const { items } = await adapter.list({ prefix: "docs/" });
+    const types = Object.fromEntries(
+      items.map((item) => [item.key, item.type])
+    );
+    expect(types["docs/report.csv"]).toBe("text/csv; charset=utf-8");
+    expect(types["docs/photo.png"]).toBe("image/png");
+    // No extension to go on, so the generic fallback still applies.
+    expect(types["docs/blob"]).toBe("application/octet-stream");
+  });
+
   test("list maps provider errors", async () => {
     const client = new FakeBunS3Client();
     client.list = () =>

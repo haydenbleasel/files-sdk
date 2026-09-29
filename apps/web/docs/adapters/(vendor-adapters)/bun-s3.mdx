@@ -35,7 +35,6 @@ The main differences from `files-sdk/s3`:
 - `copy()` streams bytes through your process, because Bun doesn't expose a server-side `CopyObject` primitive.
 - `upload()` throws on `metadata` and `cacheControl`, because `Bun.S3Client.write()` has no equivalent options.
 - `signedUploadUrl()` throws on `maxSize`, because Bun exposes presigned URLs only, not S3 POST policy fields. It also throws on `contentType`: Bun's presigned PUT signs only the `host` header, so it can't enforce a Content-Type. (The [`useFiles` gateway](/docs/ui) falls back to proxying such uploads through your server.)
-- `list()` reports every item's `type` as `application/octet-stream`. Bun's list response carries no Content-Type, and this adapter doesn't guess one from the extension. Use `head()` for the stored value.
 - Pause/resume via `control` works within one process only, and there are no provider-native [conditional operations](/docs/conditional-operations).
 
 Reach for `files-sdk/s3` on the same bucket when you need any of those.
@@ -54,7 +53,7 @@ Reach for `files-sdk/s3` on the same bucket when you need any of those.
 | `upload` | ⚠️ | User `metadata` and `cacheControl` throw - `Bun.S3Client.write()` exposes neither field. Reach for `s3()` on the same bucket if you need them. Stream bodies are wrapped in a `Response` and handed to Bun's writer. Pause/resume via `control` is in-process only — Bun’s S3 client exposes no resumable upload id, so chunks are buffered and a token cannot resume in a new process. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Every item's `type` is `application/octet-stream` - Bun's list response carries no Content-Type. Use `head()` for the stored value. `delimiter` folding works. |
+| `list` | ⚠️ | Bun's list response carries no Content-Type, so `type` is inferred from the key's extension (`application/octet-stream` when unknown), like the rest of the S3 family. Use `head()` for the stored value. `delimiter` folding works. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |

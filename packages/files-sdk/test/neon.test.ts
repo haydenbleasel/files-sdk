@@ -76,6 +76,17 @@ describe("neon adapter", () => {
     expect(creds.secretAccessKey).toBe("ENV_SECRET");
   });
 
+  test("a lone accessKeyId or secretAccessKey throws instead of falling back to the chain", () => {
+    process.env.AWS_ACCESS_KEY_ID = "ENV_KEY";
+    process.env.AWS_SECRET_ACCESS_KEY = "ENV_SECRET";
+    expect(() =>
+      neon({ accessKeyId: "AKID", bucket: "images", endpoint: ENDPOINT })
+    ).toThrow(/together/u);
+    expect(() =>
+      neon({ bucket: "images", endpoint: ENDPOINT, secretAccessKey: "SECRET" })
+    ).toThrow(/together/u);
+  });
+
   test("falls back to NEON_STORAGE_REGION when AWS_REGION is unset", async () => {
     process.env.NEON_STORAGE_REGION = "eu-central-1";
     const adapter = neon({

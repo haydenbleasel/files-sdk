@@ -67,6 +67,15 @@ export const neon = (opts: NeonAdapterOptions): NeonAdapter => {
     readEnv("NEON_STORAGE_REGION") ??
     NEON_DEFAULT_REGION;
 
+  // Static keys go in as a pair or not at all. With only one, the key passed
+  // would be dropped and the credential chain silently used in its place.
+  if (Boolean(opts.accessKeyId) !== Boolean(opts.secretAccessKey)) {
+    throw new FilesError(
+      "Provider",
+      "neon adapter: pass `accessKeyId` and `secretAccessKey` together, or neither to use the AWS credential chain (the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY that `neon dev` / `neon env pull` inject)."
+    );
+  }
+
   const inner = s3({
     bucket: opts.bucket,
     ...(opts.accessKeyId &&

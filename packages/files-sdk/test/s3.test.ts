@@ -24,6 +24,7 @@ import type {
   AdapterUploadOptions,
   ResumableUploadSession,
 } from "../src/index.js";
+import { loadLibStorage } from "../src/s3/core.js";
 import { mapS3Error, s3 } from "../src/s3/index.js";
 import type { S3Adapter } from "../src/s3/index.js";
 
@@ -1227,6 +1228,36 @@ describe("s3 adapter", () => {
     expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
   });
 
+  test("a lazy head()/list() body maps GetObject failures to FilesError", async () => {
+    s3Mock
+      .on(HeadObjectCommand)
+      .resolves({ ContentLength: 5, ContentType: "text/plain", ETag: '"e"' });
+    s3Mock.on(ListObjectsV2Command).resolves({
+      Contents: [{ ETag: '"1"', Key: "k", Size: 5 }],
+      IsTruncated: false,
+    });
+    // The object is deleted between head()/list() and the body read.
+    s3Mock.on(GetObjectCommand).rejects(
+      Object.assign(new Error("The specified key does not exist."), {
+        $metadata: { httpStatusCode: 404 },
+        name: "NoSuchKey",
+      })
+    );
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    const info = await adapter.head("k");
+    await expect(info.text()).rejects.toMatchObject({
+      code: "NotFound",
+      name: "FilesError",
+    });
+    const {
+      items: [item],
+    } = await adapter.list();
+    await expect(item?.arrayBuffer()).rejects.toMatchObject({
+      code: "NotFound",
+      name: "FilesError",
+    });
+  });
+
   test("list items lazily fetch their body via GetObjectCommand", async () => {
     s3Mock.on(ListObjectsV2Command).resolves({
       Contents: [
@@ -1726,6 +1757,49 @@ describe("s3 adapter", () => {
     });
     expect(events.length).toBeGreaterThan(0);
     expect(FakeUpload.aborted).toBe(1);
+  });
+
+  test("a lib-storage upload detaches its abort listener once it settles", async () => {
+    // A long-lived signal (e.g. a Files-level default) must not keep every
+    // finished Upload, and the body it holds, reachable.
+    const { signal } = new AbortController();
+    const added: unknown[] = [];
+    const removed: unknown[] = [];
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((type: string, listener: EventListener) => {
+      added.push(listener);
+      add(type, listener);
+    }) as typeof signal.addEventListener;
+    signal.removeEventListener = ((type: string, listener: EventListener) => {
+      removed.push(listener);
+      remove(type, listener);
+    }) as typeof signal.removeEventListener;
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    await adapter.upload("big.bin", "hello", {
+      onProgress: () => {
+        // progress path engages lib-storage
+      },
+      signal,
+    });
+    expect(added).toHaveLength(1);
+    expect(removed).toEqual(added);
+    expect(FakeUpload.aborted).toBe(0);
+  });
+
+  test("a missing @aws-sdk/lib-storage fails permanently, so retries don't re-issue the upload", async () => {
+    const missing = Object.assign(
+      new Error("Cannot find package '@aws-sdk/lib-storage'"),
+      { code: "ERR_MODULE_NOT_FOUND" }
+    );
+    await expect(
+      loadLibStorage(() => Promise.reject(missing))
+    ).rejects.toMatchObject({
+      cause: missing,
+      code: "Provider",
+      message: expect.stringContaining("@aws-sdk/lib-storage"),
+      permanent: true,
+    });
   });
 
   test("a signal already aborted before Upload is built aborts instead of uploading", async () => {
