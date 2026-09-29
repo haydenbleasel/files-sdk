@@ -14,6 +14,7 @@ import type {
   BlockBlobParallelUploadOptions,
   ContainerListBlobFlatSegmentResponse,
   ContainerListBlobHierarchySegmentResponse,
+  HttpAuthorization,
   UserDelegationKey,
 } from "@azure/storage-blob";
 
@@ -57,7 +58,9 @@ export interface AzureAdapterOptions {
   /**
    * Full connection string (`DefaultEndpointsProtocol=...;AccountName=...;
    * AccountKey=...;EndpointSuffix=core.windows.net`). Highest precedence.
-   * Falls back to `AZURE_STORAGE_CONNECTION_STRING`.
+   * Falls back to `AZURE_STORAGE_CONNECTION_STRING`, but only when none of
+   * `connectionString`, `accountKey`, `credential`, or `sasToken` is passed:
+   * explicit auth options always beat ambient environment variables.
    *
    * The adapter parses out `AccountName` + `AccountKey` so `url()` and
    * `signedUploadUrl()` can mint new SAS without a separate credential.
@@ -72,13 +75,16 @@ export interface AzureAdapterOptions {
   /**
    * Shared-key (account key). Required to sign URLs with shared-key
    * credentials. Falls back to `AZURE_STORAGE_ACCOUNT_KEY`, then
-   * `AZURE_STORAGE_KEY`.
+   * `AZURE_STORAGE_KEY`, when no explicit auth option is passed.
    */
   accountKey?: string;
   /**
    * Microsoft Entra credential used for Azure AD / Managed Identity workloads.
    * When supplied without a shared key, reads/writes/listing use token-based
    * auth and `url()` / `signedUploadUrl()` mint User Delegation SAS URLs.
+   * A User Delegation SAS can live at most 7 days (the lifetime of the
+   * delegation key that signs it): a longer `expiresIn` throws, and
+   * `signedUrl.maxExpiresIn` reports the cap.
    *
    * The principal must be allowed to access blob data and call
    * `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action`
@@ -88,21 +94,25 @@ export interface AzureAdapterOptions {
   /**
    * Controls whether `credential`-backed adapters mint User Delegation SAS
    * URLs. Defaults to true when `credential` is supplied. Set false only when
-   * you want token-authenticated SDK operations but no signed URL support.
+   * you want token-authenticated SDK operations but no signed URL support;
+   * `copy()` then authorizes its source with the credential's bearer token.
    */
   useUserDelegationSas?: boolean;
   /**
    * Pre-issued SAS token (with or without leading `?`). When set without
    * `accountKey`, `url()` and `signedUploadUrl()` cannot mint new SAS — they
    * throw a Provider error. Reading/writing/listing still works as long as
-   * the SAS has the relevant permissions.
+   * the SAS has the relevant permissions. Falls back to
+   * `AZURE_STORAGE_SAS_TOKEN` when no explicit auth option is passed.
    */
   sasToken?: string;
   /**
    * Override the service endpoint host. Defaults to
    * `https://${accountName}.blob.core.windows.net`. Used for Azurite
    * (`http://127.0.0.1:10000/devstoreaccount1`) or sovereign clouds
-   * (`*.blob.core.usgovcloudapi.net`, `*.blob.core.chinacloudapi.cn`).
+   * (`*.blob.core.usgovcloudapi.net`, `*.blob.core.chinacloudapi.cn`). Also
+   * wins over a connection string's endpoint when that connection string
+   * carries an account key or SAS.
    */
   endpoint?: string;
   /**
@@ -132,9 +142,13 @@ const USER_DELEGATION_KEY_SLACK_MS = 5 * 60 * 1000;
 // requested for, so back-to-back url()/signedUploadUrl() calls share one key
 // instead of fetching one per URL.
 const USER_DELEGATION_KEY_TTL_MS = 60 * 60 * 1000;
-// Azure rejects user delegation keys whose lifetime exceeds 7 days from
-// `startsOn`; clamp our requested expiry so we never ask for an invalid key.
-const USER_DELEGATION_KEY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+// Azure rejects user delegation keys whose lifetime exceeds 7 days, and a
+// User Delegation SAS stops working once its key expires — so 7 days is also
+// the longest `expiresIn` a user-delegation `url()` can honor.
+const USER_DELEGATION_SAS_MAX_SECONDS = 7 * 24 * 60 * 60;
+const USER_DELEGATION_KEY_MAX_MS = USER_DELEGATION_SAS_MAX_SECONDS * 1000;
+// OAuth scope for Azure Storage data-plane tokens (the SDK's default audience).
+const STORAGE_OAUTH_SCOPE = "https://storage.azure.com/.default";
 
 const AZURE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "BlobNotFound",
@@ -399,7 +413,11 @@ interface ConnectionStringParts {
   accountName?: string;
   accountKey?: string;
   endpoint?: string;
+  sasToken?: string;
 }
+
+const trimSas = (sas: string): string =>
+  sas.startsWith("?") ? sas.slice(1) : sas;
 
 const parseConnectionString = (cs: string): ConnectionStringParts => {
   const parts: Record<string, string> = {};
@@ -418,11 +436,11 @@ const parseConnectionString = (cs: string): ConnectionStringParts => {
     ...(parts.AccountName && { accountName: parts.AccountName }),
     ...(parts.AccountKey && { accountKey: parts.AccountKey }),
     ...(parts.BlobEndpoint && { endpoint: parts.BlobEndpoint }),
+    ...(parts.SharedAccessSignature && {
+      sasToken: trimSas(parts.SharedAccessSignature),
+    }),
   };
 };
-
-const trimSas = (sas: string): string =>
-  sas.startsWith("?") ? sas.slice(1) : sas;
 
 const defaultEndpoint = (accountName: string): string =>
   `https://${accountName}.blob.core.windows.net`;
@@ -434,6 +452,7 @@ interface AzureClientBundle {
   accountName?: string;
   endpoint: string;
   sasToken?: string;
+  tokenCredential?: TokenCredential;
 }
 
 type AzureSasSigner =
@@ -444,22 +463,45 @@ type AzureSasSigner =
       cachedKey?: { key: UserDelegationKey; expiresOn: Date };
     };
 
+/**
+ * Build the service client for an explicit `endpoint` from a connection
+ * string's parsed credentials — `fromConnectionString` has no endpoint
+ * override, so an explicit `endpoint` would otherwise be ignored. Returns
+ * undefined when the connection string carries neither an account key nor a
+ * SAS (e.g. `UseDevelopmentStorage=true`), leaving it to the SDK's parser.
+ */
+const clientForExplicitEndpoint = (
+  endpoint: string,
+  sharedKey: StorageSharedKeyCredential | undefined,
+  sasToken: string | undefined
+): BlobServiceClient | undefined => {
+  if (sharedKey) {
+    return new BlobServiceClient(endpoint, sharedKey);
+  }
+  if (sasToken) {
+    return new BlobServiceClient(`${endpoint}?${sasToken}`);
+  }
+};
+
 const buildFromConnectionString = (
   connectionString: string,
   opts: AzureAdapterOptions
 ): AzureClientBundle => {
   const parsed = parseConnectionString(connectionString);
-  const client = BlobServiceClient.fromConnectionString(connectionString);
   const accountName = opts.accountName ?? parsed.accountName;
   const accountKey = opts.accountKey ?? parsed.accountKey;
-  const endpoint =
-    opts.endpoint ??
-    parsed.endpoint ??
-    (accountName ? defaultEndpoint(accountName) : client.url);
   const sharedKey =
     accountName && accountKey
       ? new StorageSharedKeyCredential(accountName, accountKey)
       : undefined;
+  const client =
+    (opts.endpoint &&
+      clientForExplicitEndpoint(opts.endpoint, sharedKey, parsed.sasToken)) ||
+    BlobServiceClient.fromConnectionString(connectionString);
+  const endpoint =
+    opts.endpoint ??
+    parsed.endpoint ??
+    (accountName ? defaultEndpoint(accountName) : client.url);
   return {
     client,
     endpoint,
@@ -471,6 +513,7 @@ const buildFromConnectionString = (
         kind: "sharedKey",
       } satisfies AzureSasSigner,
     }),
+    ...(parsed.sasToken && { sasToken: parsed.sasToken }),
   };
 };
 
@@ -479,28 +522,53 @@ const resolveAccountName = (opts: AzureAdapterOptions): string | undefined =>
   readEnv("AZURE_STORAGE_ACCOUNT_NAME") ??
   readEnv("AZURE_STORAGE_ACCOUNT");
 
-const resolveAccountKey = (opts: AzureAdapterOptions): string | undefined =>
-  opts.accountKey ??
-  readEnv("AZURE_STORAGE_ACCOUNT_KEY") ??
-  readEnv("AZURE_STORAGE_KEY");
+/**
+ * Read an auth env var — but only when the caller passed no explicit auth
+ * option. An `AZURE_STORAGE_CONNECTION_STRING` or `AZURE_STORAGE_ACCOUNT_KEY`
+ * left in the environment must never silently replace an explicit
+ * `credential` or `sasToken`.
+ */
+const readAuthEnv = (
+  opts: AzureAdapterOptions,
+  ...keys: string[]
+): string | undefined => {
+  const explicitAuth = [
+    opts.connectionString,
+    opts.accountKey,
+    opts.credential,
+    opts.sasToken,
+  ].some((value) => value !== undefined);
+  if (explicitAuth) {
+    return;
+  }
+  for (const key of keys) {
+    const value = readEnv(key);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+};
+
+const MISSING_CREDENTIALS_MESSAGE =
+  "azure adapter: missing credentials. Pass `connectionString`, or `accountName` together with one of `accountKey`, `credential` (a Microsoft Entra TokenCredential), or `sasToken` — or `accountName` alone for a public-read container. Env fallbacks: AZURE_STORAGE_CONNECTION_STRING, or AZURE_STORAGE_ACCOUNT_NAME (or AZURE_STORAGE_ACCOUNT) with AZURE_STORAGE_ACCOUNT_KEY (or AZURE_STORAGE_KEY) or AZURE_STORAGE_SAS_TOKEN.";
 
 const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
   const connectionString =
-    opts.connectionString ?? readEnv("AZURE_STORAGE_CONNECTION_STRING");
+    opts.connectionString ??
+    readAuthEnv(opts, "AZURE_STORAGE_CONNECTION_STRING");
   if (connectionString) {
     return buildFromConnectionString(connectionString, opts);
   }
 
   const accountName = resolveAccountName(opts);
   if (!accountName) {
-    throw new FilesError(
-      "Provider",
-      "azure adapter: missing credentials. Pass one of `connectionString`, `sasToken` + `accountName`, `accountKey` + `accountName`, or `accountName` (for public-read containers). Env fallbacks: AZURE_STORAGE_CONNECTION_STRING, AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY."
-    );
+    throw new FilesError("Provider", MISSING_CREDENTIALS_MESSAGE);
   }
 
   const endpoint = opts.endpoint ?? defaultEndpoint(accountName);
-  const accountKey = resolveAccountKey(opts);
+  const accountKey =
+    opts.accountKey ??
+    readAuthEnv(opts, "AZURE_STORAGE_ACCOUNT_KEY", "AZURE_STORAGE_KEY");
   if (accountKey) {
     const sharedKey = new StorageSharedKeyCredential(accountName, accountKey);
     return {
@@ -521,10 +589,12 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
       ...(opts.useUserDelegationSas !== false && {
         signer: { client, kind: "userDelegation" } satisfies AzureSasSigner,
       }),
+      tokenCredential: opts.credential,
     };
   }
 
-  const sasToken = opts.sasToken ?? readEnv("AZURE_STORAGE_SAS_TOKEN");
+  const sasToken =
+    opts.sasToken ?? readAuthEnv(opts, "AZURE_STORAGE_SAS_TOKEN");
   if (sasToken) {
     const trimmed = trimSas(sasToken);
     return {
@@ -558,30 +628,48 @@ const getUserDelegationKey = async (
   signer: Extract<AzureSasSigner, { kind: "userDelegation" }>,
   startsOn: Date,
   sasExpiresOn: Date
-): Promise<UserDelegationKey> => {
-  // The cached key must outlive every SAS it signs, with slack for clock skew.
-  const requiredUntil = sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS;
+): Promise<{ key: UserDelegationKey; expiresOn: Date }> => {
+  // Azure's 7-day cap on the key, measured from `startsOn` (already a minute
+  // in the past), so clock skew can't push a request over the limit.
+  const maxKeyExpiresOn = startsOn.getTime() + USER_DELEGATION_KEY_MAX_MS;
+  // The cached key must outlive every SAS it signs, with slack for clock skew
+  // — up to that cap, past which the caller clamps the SAS to the key instead.
+  const requiredUntil = Math.min(
+    sasExpiresOn.getTime() + USER_DELEGATION_KEY_SLACK_MS,
+    maxKeyExpiresOn
+  );
   if (
     !signer.cachedKey ||
-    signer.cachedKey.expiresOn.getTime() <= requiredUntil
+    signer.cachedKey.expiresOn.getTime() < requiredUntil
   ) {
     // Mint the key with a reuse window *beyond* what this SAS needs (capped at
     // Azure's 7-day max) so subsequent calls reuse it rather than refetching
     // one key per URL — the previous expiry tracked the SAS exactly, so the
     // common default-expiry path never hit the cache.
     const keyExpiresOn = new Date(
-      Math.min(
-        requiredUntil + USER_DELEGATION_KEY_TTL_MS,
-        startsOn.getTime() + USER_DELEGATION_KEY_MAX_MS
-      )
+      Math.min(requiredUntil + USER_DELEGATION_KEY_TTL_MS, maxKeyExpiresOn)
     );
     signer.cachedKey = {
       expiresOn: keyExpiresOn,
       key: await signer.client.getUserDelegationKey(startsOn, keyExpiresOn),
     };
   }
-  return signer.cachedKey.key;
+  return signer.cachedKey;
 };
+
+/**
+ * Clamp a buffered range read's byte count to what the blob actually holds.
+ * `downloadToBuffer` allocates exactly `count` bytes and throws when the blob
+ * runs out first, whereas the stream path's plain HTTP range is clamped
+ * server-side. A start at or past EOF keeps the requested count so Azure
+ * answers with its usual InvalidRange, as the stream path does.
+ */
+const clampRangeCount = (
+  offset: number,
+  count: number,
+  size: number | undefined
+): number =>
+  size !== undefined && offset < size ? Math.min(count, size - offset) : count;
 
 export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
   const { container, publicBaseUrl } = opts;
@@ -592,7 +680,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     );
   }
 
-  const { client, sasToken, signer } = buildClient(opts);
+  const { client, sasToken, signer, tokenCredential } = buildClient(opts);
   const containerClient = client.getContainerClient(container);
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
@@ -632,47 +720,89 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       return `${blobClient.url}?${sas.toString()}`;
     }
 
-    const userDelegationKey = await getUserDelegationKey(
+    if (expiresIn > USER_DELEGATION_SAS_MAX_SECONDS) {
+      throw new FilesError(
+        "Provider",
+        `azure: \`expiresIn\` of ${expiresIn}s exceeds the ${USER_DELEGATION_SAS_MAX_SECONDS}s (7-day) maximum for a User Delegation SAS, which cannot outlive the delegation key that signs it. Request a shorter expiry, or sign with an account key (\`accountKey\` or a connection string) for longer-lived URLs.`
+      );
+    }
+    const delegation = await getUserDelegationKey(
       resolvedSigner,
       startsOn,
       expiresOn
     );
     return blobClient.generateUserDelegationSasUrl(
-      sasOptions,
-      userDelegationKey
+      {
+        ...sasOptions,
+        // Only near the 7-day cap does the key end before the requested
+        // expiry (by at most the clock-skew margin); never sign past the key.
+        expiresOn: new Date(
+          Math.min(expiresOn.getTime(), delegation.expiresOn.getTime())
+        ),
+      },
+      delegation.key
     );
   };
 
-  const buildCopySource = (fromKey: string): Promise<string> => {
+  const buildCopySource = async (
+    fromKey: string,
+    signal: AbortSignal | undefined
+  ): Promise<{ url: string; sourceAuthorization?: HttpAuthorization }> => {
     const baseUrl = containerClient.getBlobClient(fromKey).url;
     if (signer) {
-      return buildSasUrl({
-        expiresIn: COPY_SOURCE_SAS_SECONDS,
-        key: fromKey,
-        permissions: "r",
-      });
+      return {
+        url: await buildSasUrl({
+          expiresIn: COPY_SOURCE_SAS_SECONDS,
+          key: fromKey,
+          permissions: "r",
+        }),
+      };
+    }
+    if (tokenCredential) {
+      // `useUserDelegationSas: false` leaves no SAS signer, and Copy Blob From
+      // URL does not authorize a private source with the destination request's
+      // token — so send the same Entra token as the source's bearer
+      // authorization (`x-ms-copy-source-authorization`).
+      const token = await tokenCredential.getToken(
+        STORAGE_OAUTH_SCOPE,
+        abortOpts(signal)
+      );
+      if (!token) {
+        throw new FilesError(
+          "Unauthorized",
+          "azure: `credential` returned no access token to authorize the copy source."
+        );
+      }
+      return {
+        sourceAuthorization: { scheme: "Bearer", value: token.token },
+        url: baseUrl,
+      };
     }
     if (sasToken) {
       // The service client was built with the SAS in its URL, and the SDK
       // carries that query through to every blob URL — appending it again
       // would produce `?sv=…?sv=…` and a CannotVerifyCopySource rejection.
-      return Promise.resolve(
-        baseUrl.includes("?") ? baseUrl : `${baseUrl}?${sasToken}`
-      );
+      return {
+        url: baseUrl.includes("?") ? baseUrl : `${baseUrl}?${sasToken}`,
+      };
     }
     // Anonymous mode — only succeeds against public containers. Let Azure
     // return the natural error if it doesn't.
-    return Promise.resolve(baseUrl);
+    return { url: baseUrl };
   };
 
   return {
     bucket: container,
     async copy(from, to, operationOpts) {
       try {
-        const sourceUrl = await buildCopySource(from);
-        await containerClient
-          .getBlobClient(to)
-          .syncCopyFromURL(sourceUrl, abortOpts(operationOpts?.signal));
+        const signal = operationOpts?.signal;
+        const source = await buildCopySource(from, signal);
+        await containerClient.getBlobClient(to).syncCopyFromURL(source.url, {
+          ...abortOpts(signal),
+          ...(source.sourceAuthorization && {
+            sourceAuthorization: source.sourceAuthorization,
+          }),
+        });
       } catch (error) {
         throw mapAzureError(error);
       }
@@ -817,15 +947,27 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         // Buffer path: fetch the metadata with a HEAD and the bytes via
         // downloadToBuffer (parallel range requests for large blobs). Opening
         // `download()` just for the headers would leave an unread GET body
-        // holding its socket until GC.
-        const [props, buf] = await Promise.all([
-          blobClient.getProperties(abortOpts(downloadOpts?.signal)),
-          blobClient.downloadToBuffer(
+        // holding its socket until GC. A bounded range waits for the HEAD so
+        // its count can be clamped to the blob's size (see clampRangeCount).
+        const propsPromise = blobClient.getProperties(
+          abortOpts(downloadOpts?.signal)
+        );
+        const readBytes = async (): Promise<Buffer> => {
+          if (count === undefined) {
+            return await blobClient.downloadToBuffer(
+              offset,
+              undefined,
+              abortOpts(downloadOpts?.signal)
+            );
+          }
+          const head = await propsPromise;
+          return await blobClient.downloadToBuffer(
             offset,
-            count,
+            clampRangeCount(offset, count, head.contentLength),
             abortOpts(downloadOpts?.signal)
-          ),
-        ]);
+          );
+        };
+        const [props, buf] = await Promise.all([propsPromise, readBytes()]);
         const bytes = bufferToUint8(buf);
         return createStoredFile(
           { ...toMeta(props), size: bytes.byteLength },
@@ -1017,11 +1159,16 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
-    // `url()` mints a SAS (or returns `publicBaseUrl` when set). Azure caps
-    // user-delegation SAS at 7 days, but account-key SAS has no such limit, so
-    // the cap is config-dependent — documented in the provider-gaps page rather
-    // than asserted as a `maxExpiresIn` that would be wrong in shared-key mode.
-    signedUrl: { supported: true },
+    // `url()` mints a SAS (or returns `publicBaseUrl` when set) — only when a
+    // signer exists; SAS-only and anonymous adapters throw. A User Delegation
+    // SAS is capped at 7 days (`url()` throws above it); account-key SAS has
+    // no such limit, so the cap is declared only in user-delegation mode.
+    signedUrl: {
+      supported: Boolean(signer),
+      ...(signer?.kind === "userDelegation" && {
+        maxExpiresIn: USER_DELEGATION_SAS_MAX_SECONDS,
+      }),
+    },
     supportsCacheControl: true,
     supportsDelimiter: true,
     supportsMetadata: true,
@@ -1092,16 +1239,18 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
-    url(key, urlOpts): Promise<string> {
+    async url(key, urlOpts): Promise<string> {
       const strategy = resolveUrlStrategy({
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
       });
       if (strategy === "public" && publicBaseUrl) {
-        return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
+        return joinPublicUrl(publicBaseUrl, key);
       }
       try {
-        return buildSasUrl({
+        // Awaited so a rejected signing call (e.g. a 403 fetching the user
+        // delegation key) is mapped here instead of escaping as a raw error.
+        return await buildSasUrl({
           contentDisposition: urlOpts?.responseContentDisposition,
           expiresIn: urlOpts?.expiresIn ?? defaultUrlExpiresIn,
           key,

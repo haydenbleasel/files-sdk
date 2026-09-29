@@ -58,14 +58,24 @@ export interface FirebaseStorageAdapterOptions {
   /**
    * Inline service-account credentials. Useful when you only have
    * `clientEmail` + `privateKey` available as separate env vars (e.g.
-   * Vercel/Netlify) and don't want to materialize a JSON file. When neither
-   * this nor `serviceAccountPath` is set, the SDK falls back to ADC.
-   * Falls back to `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`.
+   * Vercel/Netlify) and don't want to materialize a JSON file.
+   *
+   * Credential precedence: `app`, then `serviceAccountPath`, then this
+   * option, then `GOOGLE_APPLICATION_CREDENTIALS` (read through Application
+   * Default Credentials, so any ADC file type works: service account,
+   * workload identity federation, or `authorized_user`), then
+   * `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`, then ambient ADC
+   * (e.g. the metadata server). Explicit options always beat environment
+   * variables.
    */
   credentials?: { clientEmail: string; privateKey: string };
   /**
-   * Path to a service-account JSON file. When set, takes precedence over
-   * inline `credentials`. Falls back to `GOOGLE_APPLICATION_CREDENTIALS`.
+   * Path to a service-account JSON file (passed to `cert()`, so it must be a
+   * service-account key). Takes precedence over inline `credentials` and
+   * every environment variable. For other credential files (workload
+   * identity federation, `authorized_user`), set
+   * `GOOGLE_APPLICATION_CREDENTIALS` instead, which the adapter reads
+   * through Application Default Credentials.
    */
   serviceAccountPath?: string;
   /**
@@ -261,12 +271,18 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
     readEnv("GOOGLE_CLOUD_PROJECT") ??
     readEnv("GCLOUD_PROJECT");
 
-  const serviceAccountPath =
-    opts.serviceAccountPath ?? readEnv("GOOGLE_APPLICATION_CREDENTIALS");
-
+  // Explicit options beat every environment variable. Among the env vars,
+  // `GOOGLE_APPLICATION_CREDENTIALS` keeps its lead over the
+  // `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY` pair, but it goes
+  // through `applicationDefault()`, which reads the file itself and accepts
+  // every ADC type (`cert()` only takes a service-account key, so workload
+  // identity and `authorized_user` files used to crash).
   const inlineCredentials = (() => {
     if (opts.credentials) {
       return opts.credentials;
+    }
+    if (readEnv("GOOGLE_APPLICATION_CREDENTIALS")) {
+      return;
     }
     const clientEmail = readEnv("FIREBASE_CLIENT_EMAIL");
     const privateKey = readEnv("FIREBASE_PRIVATE_KEY");
@@ -293,8 +309,8 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
       {
         ...(projectId && { projectId }),
         credential: (() => {
-          if (serviceAccountPath) {
-            return cert(serviceAccountPath);
+          if (opts.serviceAccountPath) {
+            return cert(opts.serviceAccountPath);
           }
           if (inlineCredentials) {
             // Firebase normalizes \\n -> \n in env-sourced private keys,

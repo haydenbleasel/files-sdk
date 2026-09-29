@@ -22,11 +22,13 @@ import { firebaseStorage } from "files-sdk/firebase-storage";
 const files = new Files({
   adapter: firebaseStorage({
     bucket: "my-project.firebasestorage.app",
-    // Auto-loads credentials from FIREBASE_PROJECT_ID,
-    // FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY, or falls back to
-    // Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS,
-    // gcloud auth, GCE metadata). Or pass an existing firebase-admin App
-    // or @google-cloud/storage Bucket via `app`.
+    // Credentials, first match wins: `app` (an existing firebase-admin
+    // App or @google-cloud/storage Bucket), `serviceAccountPath`,
+    // `credentials`, GOOGLE_APPLICATION_CREDENTIALS (any ADC file:
+    // service account, workload identity, authorized_user),
+    // FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY, then ambient
+    // Application Default Credentials (gcloud auth, GCE metadata).
+    // The project comes from `projectId` or FIREBASE_PROJECT_ID.
   }),
 });
 ```
@@ -42,7 +44,7 @@ const files = new Files({
 
 ## Limitations
 
-Firebase's `?alt=media&token=...` download-token URL form is out of scope for v1 - `url()` always returns either a V4 signed read URL or your configured `publicBaseUrl`. Reach for `adapter.raw` (the underlying `@google-cloud/storage` `Bucket`) if you need to mint Firebase download tokens or use any GCS-side feature that isn't in the unified API. Stream uploads use single-request mode; multi-GB resumable uploads also need `raw`.
+Firebase's `?alt=media&token=...` download-token URL form is out of scope for v1 - `url()` always returns either a V4 signed read URL or your configured `publicBaseUrl`. Reach for `adapter.raw` (the underlying `@google-cloud/storage` `Bucket`) if you need to mint Firebase download tokens or use any GCS-side feature that isn't in the unified API. A stream upload without `onProgress` or `multipart` goes out as a single streaming request; pass `multipart` (or `onProgress`) for a chunked resumable upload, or `control` for a [pause-able upload](/docs/api/upload#pause-and-resume) whose session can be resumed later.
 
 ## Compatibility
 

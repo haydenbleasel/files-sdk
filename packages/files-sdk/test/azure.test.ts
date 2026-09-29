@@ -368,6 +368,50 @@ mock.module("@azure/storage-blob", () => ({
 
 const { azure, mapAzureError } = await import("../src/azure/index.js");
 
+const AZURE_ENV_KEYS = [
+  "AZURE_STORAGE_CONNECTION_STRING",
+  "AZURE_STORAGE_ACCOUNT_NAME",
+  "AZURE_STORAGE_ACCOUNT",
+  "AZURE_STORAGE_ACCOUNT_KEY",
+  "AZURE_STORAGE_KEY",
+  "AZURE_STORAGE_SAS_TOKEN",
+] as const;
+
+// Run `fn` with exactly `vars` set among the Azure env vars, then restore.
+const withAzureEnv = <T>(
+  vars: Partial<Record<(typeof AZURE_ENV_KEYS)[number], string>>,
+  fn: () => T
+): T => {
+  const saved = AZURE_ENV_KEYS.map((key) => [key, process.env[key]] as const);
+  for (const key of AZURE_ENV_KEYS) {
+    // oxlint-disable-next-line no-dynamic-delete
+    delete process.env[key];
+  }
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) {
+        // oxlint-disable-next-line no-dynamic-delete
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+};
+
+const fakeCredential = (token: string | null = "t") => ({
+  getToken: mock((_scope: string | string[], _opts?: unknown) =>
+    Promise.resolve(
+      token === null ? null : { expiresOnTimestamp: Date.now() + 60_000, token }
+    )
+  ),
+});
+
+const SEVEN_DAYS_S = 7 * 24 * 60 * 60;
+
 beforeEach(() => {
   uploadDataMock.mockClear();
   uploadStreamMock.mockClear();
@@ -451,6 +495,170 @@ describe("azure adapter", () => {
       expect(() => azure({ container: CONTAINER })).toThrow(
         /missing credentials/u
       );
+    });
+
+    test("the missing-credentials message lists every accepted option and env var", () => {
+      withAzureEnv({}, () => {
+        let message = "";
+        try {
+          azure({ container: CONTAINER });
+        } catch (error) {
+          ({ message } = error as Error);
+        }
+        for (const hint of [
+          "`connectionString`",
+          "`accountKey`",
+          "`credential`",
+          "`sasToken`",
+          "AZURE_STORAGE_CONNECTION_STRING",
+          "AZURE_STORAGE_ACCOUNT_NAME",
+          "AZURE_STORAGE_ACCOUNT_KEY",
+          "AZURE_STORAGE_SAS_TOKEN",
+        ]) {
+          expect(message).toContain(hint);
+        }
+      });
+    });
+
+    describe("env fallbacks never override explicit auth", () => {
+      test("an env connection string does not replace an explicit credential", () => {
+        withAzureEnv(
+          { AZURE_STORAGE_CONNECTION_STRING: CONNECTION_STRING },
+          () => {
+            const credential = fakeCredential();
+            azure({ accountName: ACCOUNT, container: CONTAINER, credential });
+            expect(BlobServiceClientStub.lastInit?.kind).toBe("ctor");
+            expect(BlobServiceClientStub.lastInit?.credential).toBe(credential);
+            expect(sharedKeyInstances).toHaveLength(0);
+          }
+        );
+      });
+
+      test("an env account key does not replace an explicit sasToken", () => {
+        withAzureEnv({ AZURE_STORAGE_ACCOUNT_KEY: "env-key" }, () => {
+          const adapter = azure({
+            accountName: ACCOUNT,
+            container: CONTAINER,
+            sasToken: "?sig=explicit",
+          });
+          expect(BlobServiceClientStub.lastInit?.arg).toBe(
+            `https://${ACCOUNT}.blob.core.windows.net?sig=explicit`
+          );
+          expect(sharedKeyInstances).toHaveLength(0);
+          expect(adapter.signedUrl?.supported).toBe(false);
+        });
+      });
+
+      test("an env account key does not replace an explicit credential", () => {
+        withAzureEnv({ AZURE_STORAGE_KEY: "env-key" }, () => {
+          const credential = fakeCredential();
+          azure({ accountName: ACCOUNT, container: CONTAINER, credential });
+          expect(BlobServiceClientStub.lastInit?.credential).toBe(credential);
+          expect(sharedKeyInstances).toHaveLength(0);
+        });
+      });
+
+      test("an env SAS token does not replace an explicit credential", () => {
+        withAzureEnv({ AZURE_STORAGE_SAS_TOKEN: "sig=env" }, () => {
+          const credential = fakeCredential();
+          azure({ accountName: ACCOUNT, container: CONTAINER, credential });
+          expect(BlobServiceClientStub.lastInit?.arg).toBe(
+            `https://${ACCOUNT}.blob.core.windows.net`
+          );
+        });
+      });
+
+      test("with no explicit auth, the env connection string is used", () => {
+        withAzureEnv(
+          { AZURE_STORAGE_CONNECTION_STRING: CONNECTION_STRING },
+          () => {
+            azure({ container: CONTAINER });
+            expect(BlobServiceClientStub.lastInit?.kind).toBe(
+              "fromConnectionString"
+            );
+            expect(sharedKeyInstances).toHaveLength(1);
+          }
+        );
+      });
+
+      test("with no explicit auth, env account name + key build a shared-key client", () => {
+        withAzureEnv(
+          {
+            AZURE_STORAGE_ACCOUNT: ACCOUNT,
+            AZURE_STORAGE_KEY: "env-key",
+          },
+          () => {
+            azure({ container: CONTAINER });
+            expect(sharedKeyInstances).toEqual([
+              { accountKey: "env-key", accountName: ACCOUNT },
+            ]);
+          }
+        );
+      });
+
+      test("with no explicit auth, the env SAS token is used", () => {
+        withAzureEnv(
+          {
+            AZURE_STORAGE_ACCOUNT_NAME: ACCOUNT,
+            AZURE_STORAGE_SAS_TOKEN: "?sig=env",
+          },
+          () => {
+            azure({ container: CONTAINER });
+            expect(BlobServiceClientStub.lastInit?.arg).toBe(
+              `https://${ACCOUNT}.blob.core.windows.net?sig=env`
+            );
+          }
+        );
+      });
+    });
+
+    describe("an explicit endpoint wins over the connection string's", () => {
+      const ENDPOINT = "http://127.0.0.1:10000/devstoreaccount1";
+
+      test("account-key connection string: builds against the explicit endpoint", () => {
+        azure({
+          connectionString: CONNECTION_STRING,
+          container: CONTAINER,
+          endpoint: ENDPOINT,
+        });
+        expect(BlobServiceClientStub.lastInit?.kind).toBe("ctor");
+        expect(BlobServiceClientStub.lastInit?.arg).toBe(ENDPOINT);
+        expect(BlobServiceClientStub.lastInit?.credential).toEqual({
+          accountKey: "a2V5",
+          accountName: ACCOUNT,
+        });
+      });
+
+      test("SAS connection string: carries the SAS onto the explicit endpoint", async () => {
+        const adapter = azure({
+          connectionString: `BlobEndpoint=https://${ACCOUNT}.blob.core.windows.net;SharedAccessSignature=?sig=cs-sas`,
+          container: CONTAINER,
+          endpoint: ENDPOINT,
+        });
+        expect(BlobServiceClientStub.lastInit?.arg).toBe(
+          `${ENDPOINT}?sig=cs-sas`
+        );
+        expect(sharedKeyInstances).toHaveLength(0);
+        getBlobClientMock.mockImplementationOnce((key: string) => ({
+          ...makeBlobClient(key),
+          url: `${BLOB_BASE}/${key}`,
+        }));
+        await adapter.copy("a.txt", "b.txt");
+        expect(syncCopyFromURLMock.mock.calls[0]?.[0]).toBe(
+          `${BLOB_BASE}/a.txt?sig=cs-sas`
+        );
+      });
+
+      test("a connection string without a key or SAS still goes through the SDK parser", () => {
+        azure({
+          connectionString: "UseDevelopmentStorage=true",
+          container: CONTAINER,
+          endpoint: ENDPOINT,
+        });
+        expect(BlobServiceClientStub.lastInit?.kind).toBe(
+          "fromConnectionString"
+        );
+      });
     });
 
     test("connectionString builds via fromConnectionString and recovers shared key", () => {
@@ -862,6 +1070,54 @@ describe("azure adapter", () => {
       expect(got.etag).toBeUndefined();
       expect(got.metadata).toBeUndefined();
     });
+
+    test("buffered: a range `end` past EOF is clamped to the blob size", async () => {
+      downloadToBufferMock.mockImplementationOnce(
+        (offset?: number, count?: number) => {
+          const full = Buffer.from("hello");
+          const start = offset ?? 0;
+          const end = count === undefined ? full.length : start + count;
+          // The real SDK allocates `count` bytes and throws when the blob
+          // runs out first.
+          if (end > full.length) {
+            return Promise.reject(
+              new RangeError("Stream drains before getting enough data")
+            );
+          }
+          return Promise.resolve(full.subarray(start, end));
+        }
+      );
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      const got = await files.download("a.txt", {
+        range: { end: 99, start: 2 },
+      });
+      expect(await got.text()).toBe("llo");
+      expect(got.size).toBe(3);
+      const call = downloadToBufferMock.mock.calls[0] as
+        | [number?, number?, ...unknown[]]
+        | undefined;
+      expect(call?.[1]).toBe(3);
+    });
+
+    test("buffered: a range starting past EOF keeps its count (Azure answers InvalidRange)", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      await adapter.download("a.txt", { range: { end: 19, start: 10 } });
+      const call = downloadToBufferMock.mock.calls[0] as
+        | [number?, number?, ...unknown[]]
+        | undefined;
+      expect(call?.[0]).toBe(10);
+      expect(call?.[1]).toBe(10);
+    });
   });
 
   describe("head", () => {
@@ -1083,6 +1339,45 @@ describe("azure adapter", () => {
       expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(1);
       expect(generateUserDelegationSasUrlMock).toHaveBeenCalledTimes(1);
       expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+    });
+
+    test("TokenCredential mode without user delegation SAS authorizes the source with a bearer token", async () => {
+      const credential = fakeCredential("entra-token");
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential,
+        useUserDelegationSas: false,
+      });
+      await adapter.copy("a.txt", "b.txt");
+      const [copyCall] = syncCopyFromURLMock.mock.calls as unknown as [
+        string,
+        { sourceAuthorization?: { scheme: string; value: string } },
+      ][];
+      expect(copyCall?.[0]).toBe(`${BLOB_BASE}/a.txt`);
+      expect(copyCall?.[1].sourceAuthorization).toEqual({
+        scheme: "Bearer",
+        value: "entra-token",
+      });
+      expect(credential.getToken.mock.calls[0]?.[0]).toBe(
+        "https://storage.azure.com/.default"
+      );
+      expect(getUserDelegationKeyMock).not.toHaveBeenCalled();
+    });
+
+    test("TokenCredential mode without user delegation SAS fails loud when no token is issued", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(null),
+        useUserDelegationSas: false,
+      });
+      const rejection = await adapter
+        .copy("a.txt", "b.txt")
+        .catch((error) => error);
+      expect(rejection).toBeInstanceOf(FilesError);
+      expect((rejection as FilesError).code).toBe("Unauthorized");
+      expect(syncCopyFromURLMock).not.toHaveBeenCalled();
     });
 
     test("anonymous mode (no key, no SAS) uses the bare blob URL as the copy source", async () => {
@@ -1431,6 +1726,120 @@ describe("azure adapter", () => {
       } catch (error) {
         expect(error).toBeInstanceOf(FilesError);
         expect((error as FilesError).message).toMatch(/User Delegation/u);
+      }
+    });
+
+    test("TokenCredential mode maps a user delegation key failure to a FilesError", async () => {
+      getUserDelegationKeyMock.mockImplementationOnce(() =>
+        Promise.reject(
+          Object.assign(new Error("This request is not authorized"), {
+            details: { errorCode: "AuthorizationPermissionMismatch" },
+            statusCode: 403,
+          })
+        )
+      );
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+      });
+      const rejection = await adapter.url("a.txt").catch((error) => error);
+      expect(rejection).toBeInstanceOf(FilesError);
+      expect((rejection as FilesError).code).toBe("Unauthorized");
+    });
+
+    test("TokenCredential mode throws for an expiresIn beyond the 7-day key cap", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+      });
+      const rejection = await adapter
+        .url("a.txt", { expiresIn: SEVEN_DAYS_S + 1 })
+        .catch((error) => error);
+      expect(rejection).toBeInstanceOf(FilesError);
+      expect((rejection as FilesError).message).toMatch(/7-day/u);
+      expect(getUserDelegationKeyMock).not.toHaveBeenCalled();
+      await expect(
+        adapter.signedUploadUrl("a.txt", { expiresIn: SEVEN_DAYS_S + 1 })
+      ).rejects.toThrow(/7-day/u);
+    });
+
+    test("TokenCredential mode never signs a SAS that outlives its delegation key", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+      });
+      const before = Date.now();
+      await adapter.url("a.txt", { expiresIn: SEVEN_DAYS_S });
+      const [keyCall] = getUserDelegationKeyMock.mock.calls;
+      const [signCall] = generateUserDelegationSasUrlMock.mock.calls;
+      if (!(keyCall && signCall)) {
+        throw new Error("expected a delegation key and a signed URL");
+      }
+      const [keyStartsOn, keyExpiresOn] = keyCall;
+      const [, sasOpts] = signCall;
+      // The key stays within Azure's 7-day limit…
+      expect(
+        keyExpiresOn.getTime() - keyStartsOn.getTime()
+      ).toBeLessThanOrEqual(SEVEN_DAYS_S * 1000);
+      // …and the SAS is clamped to it rather than outliving it.
+      expect(sasOpts.expiresOn.getTime()).toBe(keyExpiresOn.getTime());
+      expect(sasOpts.expiresOn.getTime()).toBeGreaterThan(
+        before + SEVEN_DAYS_S * 1000 - 5 * 60 * 1000
+      );
+    });
+
+    test("TokenCredential mode re-mints a key that can't cover a longer SAS", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+      });
+      await adapter.url("a.txt", { expiresIn: 60 });
+      await adapter.url("b.txt", { expiresIn: 2 * 24 * 60 * 60 });
+      expect(getUserDelegationKeyMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("signedUrl capability", () => {
+    test("shared-key mode signs with no expiry cap", () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      expect(adapter.signedUrl).toEqual({ supported: true });
+    });
+
+    test("user-delegation mode declares the 7-day cap", () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+      });
+      expect(adapter.signedUrl).toEqual({
+        maxExpiresIn: SEVEN_DAYS_S,
+        supported: true,
+      });
+    });
+
+    test("modes with no signer report unsupported", () => {
+      const sasOnly = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        sasToken: "?sig=abc",
+      });
+      const anonymous = azure({ accountName: ACCOUNT, container: CONTAINER });
+      const tokenNoSas = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: fakeCredential(),
+        useUserDelegationSas: false,
+      });
+      for (const adapter of [sasOnly, anonymous, tokenNoSas]) {
+        expect(adapter.signedUrl?.supported).toBe(false);
       }
     });
   });

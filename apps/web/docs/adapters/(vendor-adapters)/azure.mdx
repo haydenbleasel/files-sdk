@@ -18,16 +18,30 @@ Azure Blob Storage via the official `@azure/storage-blob` SDK. Five credential m
 ```ts lineNumbers
 import { Files } from "files-sdk";
 import { azure } from "files-sdk/azure";
-import { DefaultAzureCredential } from "@azure/identity";
 
 const files = new Files({
   adapter: azure({
     container: "uploads",
     // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
-    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY.
-    // Pass connectionString / accountKey / credential / sasToken to override.
-    // accountName: process.env.AZURE_STORAGE_ACCOUNT_NAME,
-    // credential: new DefaultAzureCredential(), // Azure AD / Managed Identity
+    // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY
+    // (or AZURE_STORAGE_SAS_TOKEN). Passing any of connectionString /
+    // accountKey / credential / sasToken turns the auth env vars off.
+  }),
+});
+```
+
+For Microsoft Entra ID (Azure AD / Managed Identity), install `@azure/identity` as well and pass a `credential`:
+
+```ts lineNumbers
+import { DefaultAzureCredential } from "@azure/identity";
+import { Files } from "files-sdk";
+import { azure } from "files-sdk/azure";
+
+const files = new Files({
+  adapter: azure({
+    accountName: "mystorageaccount",
+    container: "uploads",
+    credential: new DefaultAzureCredential(),
   }),
 });
 ```
@@ -41,7 +55,9 @@ const files = new Files({
 
 ## Limitations
 
-Azure AD / Managed Identity is supported via the `credential` option (install `@azure/identity`); it authenticates SDK calls and mints User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and `copy()`. The principal needs blob data access plus permission to call `generateUserDelegationKey`.
+Azure AD / Managed Identity is supported via the `credential` option (install `@azure/identity`); it authenticates SDK calls and mints User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and `copy()`. The principal needs blob data access plus permission to call `generateUserDelegationKey`. A User Delegation SAS can't outlive the 7-day delegation key that signs it, so an `expiresIn` above 7 days throws in this mode, and `files.capabilities.signedUrl.maxExpiresIn` reports the cap. With `useUserDelegationSas: false`, `url()` and `signedUploadUrl()` throw, and `copy()` authorizes its source with the credential's bearer token instead.
+
+Explicit auth options always win over environment variables: the `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_KEY`, and `AZURE_STORAGE_SAS_TOKEN` fallbacks are read only when you pass none of `connectionString`, `accountKey`, `credential`, or `sasToken`. An explicit `endpoint` also wins over the endpoint in a connection string.
 
 ## Compatibility
 
@@ -54,6 +70,6 @@ Azure AD / Managed Identity is supported via the `credential` option (install `@
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ⚠️ | Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key mode mints a 5-min read SAS. |
-| `url` | ⚠️ | Signs a SAS read URL. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). Pass `accountKey` + `accountName`, a connection string with an account key, `credential` + `accountName`, or set `publicBaseUrl` for a public container. |
+| `copy` | ⚠️ | Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key and User Delegation modes mint a 5-min read SAS; a `credential` with `useUserDelegationSas: false` sends its bearer token as the source authorization. |
+| `url` | ⚠️ | Signs a SAS read URL. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS, capped at 7 days (a longer `expiresIn` throws). Throws in SAS-only or anonymous mode (no signer available), where `signedUrl.supported` is `false`. Pass `accountKey` + `accountName`, a connection string with an account key, `credential` + `accountName`, or set `publicBaseUrl` for a public container. |
 | `signedUploadUrl` | ⚠️ | PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy, and `contentType` throws because Azure SAS does not bind Content-Type into the signature; enforce those checks at your application gateway instead. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). The returned headers include the required `x-ms-blob-type: BlockBlob`. |

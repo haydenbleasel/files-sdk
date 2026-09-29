@@ -337,6 +337,52 @@ describe("firebase-storage adapter", () => {
     expect(certMock).toHaveBeenCalledTimes(1);
   });
 
+  test("GOOGLE_APPLICATION_CREDENTIALS goes through applicationDefault(), not cert()", () => {
+    // cert() only accepts a service-account key; ADC also reads workload
+    // identity (external_account) and authorized_user files.
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/path/to/wif.json";
+    firebaseStorage({ bucket: "uploads.firebasestorage.app", projectId: "p" });
+    expect(applicationDefaultMock).toHaveBeenCalledTimes(1);
+    expect(certMock).not.toHaveBeenCalled();
+  });
+
+  test("explicit credentials beat GOOGLE_APPLICATION_CREDENTIALS", () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/path/to/other.json";
+    firebaseStorage({
+      bucket: "uploads.firebasestorage.app",
+      credentials: {
+        clientEmail: "sa@p.iam.gserviceaccount.com",
+        privateKey: "x",
+      },
+      projectId: "p",
+    });
+    expect(certMock).toHaveBeenCalledTimes(1);
+    expect(certMock.mock.calls[0]?.[0]).toMatchObject({
+      clientEmail: "sa@p.iam.gserviceaccount.com",
+    });
+    expect(applicationDefaultMock).not.toHaveBeenCalled();
+  });
+
+  test("explicit serviceAccountPath beats GOOGLE_APPLICATION_CREDENTIALS", () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/path/to/other.json";
+    firebaseStorage({
+      bucket: "uploads.firebasestorage.app",
+      projectId: "p",
+      serviceAccountPath: "/path/to/sa.json",
+    });
+    expect(certMock).toHaveBeenCalledWith("/path/to/sa.json");
+    expect(applicationDefaultMock).not.toHaveBeenCalled();
+  });
+
+  test("GOOGLE_APPLICATION_CREDENTIALS keeps its lead over the FIREBASE_* env pair", () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = "/path/to/sa.json";
+    process.env.FIREBASE_CLIENT_EMAIL = "sa@p.iam.gserviceaccount.com";
+    process.env.FIREBASE_PRIVATE_KEY = "x";
+    firebaseStorage({ bucket: "uploads.firebasestorage.app", projectId: "p" });
+    expect(applicationDefaultMock).toHaveBeenCalledTimes(1);
+    expect(certMock).not.toHaveBeenCalled();
+  });
+
   test("reuses an existing app under the same name (idempotent factory)", () => {
     firebaseStorage({ bucket: "uploads.firebasestorage.app", projectId: "p" });
     expect(initializeAppMock).toHaveBeenCalledTimes(1);
