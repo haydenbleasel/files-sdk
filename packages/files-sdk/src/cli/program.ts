@@ -208,7 +208,7 @@ const buildGlobal = (program: Command): void => {
     )
     .option(
       "--dry-run",
-      `${G.OUTPUT} print what would happen without making network calls`
+      `${G.OUTPUT} print what would happen without writing anything (sync still lists both providers to plan)`
     );
 };
 
@@ -370,7 +370,7 @@ export const buildProgram = (
   program
     .name("files")
     .description(
-      "agent-friendly CLI for files-sdk — uniform interface over 30+ object storage providers"
+      `agent-friendly CLI for files-sdk — uniform interface over ${PROVIDER_NAMES.length} object storage providers`
     )
     .version(VERSION)
     .showHelpAfterError();

@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Each CLI command maps to an SDK method - upload, download, head, exists, delete, copy, move, list, url, sign-upload, and transfer.
+description: Each CLI command maps to an SDK method - upload, download, head, exists, delete, copy, move, list, search, url, sign-upload, transfer, sync, and capabilities.
 ---
 
 Each command maps to a `Files` method. Same semantics, same `FilesError` codes, same `StoredFile` fields on the way out (emitted as flat JSON).
@@ -12,6 +12,7 @@ Each command maps to a `Files` method. Same semantics, same `FilesError` codes, 
 | `head` | [`head`](/docs/api/head) | Fetch metadata without the body |
 | `exists` | [`exists`](/docs/api/exists) | Test a key — prints `{ exists, key }`, sets exit code |
 | `list` | [`list`](/docs/api/list) | Page through keys under a prefix |
+| `search` | [`search`](/docs/api/search) | Find keys matching a glob, regex, substring, or exact pattern |
 | `copy` | [`copy`](/docs/api/copy) | Copy a key to a new key |
 | `move` | [`move`](/docs/api/move) | Move (rename) a key |
 | `delete` | [`delete`](/docs/api/delete) | Delete one or more keys |
@@ -27,7 +28,7 @@ All examples use `--provider s3 --bucket uploads`; swap in any [provider](/docs/
 
 ### upload
 
-Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. `--content-type` is otherwise inferred from the key.
+Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. Without `--content-type`, the content type is inferred from the key's extension (`application/octet-stream` when it has none).
 
 ```bash lineNumbers
 files --provider s3 --bucket uploads \
@@ -68,6 +69,8 @@ Test whether a key exists. It prints `{ exists, key }` and signals the result th
 files --provider s3 --bucket uploads exists reports/2026-q1.pdf   # exit 0 = exists, 1 = missing
 ```
 
+With several keys it prints `{ existing, missing }` instead and exits 0 only when every key exists. A hard failure (auth, transport) exits with its error's own [code](/docs/cli/output) rather than 1.
+
 ### list
 
 Return one page of keys under a prefix. `--prefix` filters this call (distinct from the instance-wide [`--key-prefix`](#global-flags)) and `--limit` caps the page.
@@ -89,6 +92,17 @@ files --provider s3 --bucket uploads list --prefix photos/ --delimiter / | jq '.
 # ["photos/2023/", "photos/2024/"]
 ```
 
+### search
+
+Find keys matching a pattern, walking every page. `<pattern>` is a glob by default (`*` within a path segment, `**` across `/`, `?` one character); `--match` switches to `regex`, `substring`, or `exact`, and `--regex` is shorthand for `--match regex`. The result is `{ items }` with no cursor.
+
+```bash lineNumbers
+files --provider s3 --bucket uploads search 'reports/**/*.pdf'
+files --provider s3 --bucket uploads search '\.(png|jpe?g)$' --regex --prefix photos/ --max-results 20
+```
+
+A glob's literal prefix (`reports/` above) bounds the walk automatically. Regex, substring, exact, and `--case-insensitive` searches walk everything under `--prefix`, so pass one on a large bucket. `--max-results` stops after that many matches; `--limit` sets the page size of the underlying walk, not the number of results.
+
 ### copy
 
 Copy a key to a new key, leaving the source in place.
@@ -99,7 +113,7 @@ files --provider s3 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1
 
 ### move
 
-Move (rename) a key — a copy followed by a delete of the source.
+Move (rename) a key — a native rename where the provider supports it, otherwise a copy followed by a delete of the source.
 
 ```bash lineNumbers
 files --provider s3 --bucket uploads move uploads/tmp-q1.pdf reports/2026-q1.pdf

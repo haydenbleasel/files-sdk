@@ -3,11 +3,11 @@ title: MCP server
 description: Boot a built-in read-only MCP server on stdio, with provider and credentials bound at startup so the agent passes only operation arguments, never secrets.
 ---
 
-`files ... mcp` boots a read-only [MCP server](https://modelcontextprotocol.io) on stdio. By default it exposes `download`, `head`, `exists`, `list`, `url`, and `capabilities`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
+`files ... mcp` boots a read-only [MCP server](https://modelcontextprotocol.io) on stdio. By default it exposes `download`, `head`, `exists`, `list`, `search`, `url`, and `capabilities`. The provider and credentials are bound at server startup; the agent only passes operation arguments, never secrets.
 
-Pass `--allow-writes` to also expose mutating tools: `upload`, `delete`, `copy`, `move`, `sign-upload`, `transfer`, and `sync`.
+Pass `--allow-writes` to also expose mutating tools: `upload`, `delete`, `copy`, `move`, and `sign-upload`. `transfer` and `sync` are registered only when the server is also started with `--to '<json>'`, a destination provider config chosen by the operator. The agent can't pick or change the destination: neither tool takes a `to` argument.
 
-The tools mirror the CLI surface: `download` accepts a byte `range`, `head`/`exists` take arrays of keys plus `concurrency`/`stopOnError`, `list` accepts `all` to walk every page or a `delimiter` to return one folder level (files in `items`, subfolders in `prefixes`), and `capabilities` takes no arguments and returns what the bound adapter can do so the agent can branch before calling. `download`, and with `--allow-writes` `upload`, `delete`, and `copy`, accept a `condition` in the SDK's [conditional-predicate](/docs/conditional-operations) shapes (single key only; fails closed where `capabilities.conditional` says the adapter has no native primitive). With `--allow-writes`, `upload` accepts `multipart`, `delete` takes arrays of keys plus `concurrency`/`stopOnError`, `transfer` takes a destination provider config (`to`) to copy objects across backends, and `sync` mirrors onto a destination provider with `prune`, `compare`, and `dryRun` (set `dryRun` to preview the reconciliation plan read-only).
+The tools mirror the CLI surface: `download` accepts a byte `range` and an optional `maxBytes` cap (see below), `head`/`exists` take arrays of keys plus `concurrency`/`stopOnError`, `list` accepts `all` to walk every page or a `delimiter` to return one folder level (files in `items`, subfolders in `prefixes`), `search` takes a `pattern` plus `match`, `prefix`, `limit`, `maxResults`, and `caseInsensitive` (see the [`search` command](/docs/cli/commands#search)), and `capabilities` takes no arguments and returns what the bound adapter can do so the agent can branch before calling. `download`, and with `--allow-writes` `upload`, `delete`, and `copy`, accept a `condition` in the SDK's [conditional-predicate](/docs/conditional-operations) shapes (single key only; fails closed where `capabilities.conditional` says the adapter has no native primitive). With `--allow-writes`, `upload` accepts `multipart`, `delete` takes arrays of keys plus `concurrency`/`stopOnError`, `transfer` copies objects to the `--to` destination (with `prefix`, `overwrite`, `limit`, `concurrency`, and `stopOnError`), and `sync` mirrors onto it with `prune`, `compare`, `destPrefix`, and `dryRun` (set `dryRun` to preview the reconciliation plan read-only).
 
 ```bash lineNumbers
 # Start the read-only MCP server on stdio
@@ -15,10 +15,14 @@ files --provider s3 --bucket uploads mcp
 
 # Opt into mutation tools
 files --provider s3 --bucket uploads mcp --allow-writes
+
+# Also expose transfer and sync, bound to an operator-chosen destination
+files --provider s3 --bucket uploads mcp --allow-writes \
+  --to '{"provider":"r2","bucket":"backup","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}'
 ```
 
 ```jsonc lineNumbers
-// Wire it into Claude Code (~/.claude.json or .claude/mcp.json)
+// Wire it into Claude Code (.mcp.json at the project root)
 {
   "mcpServers": {
     "files-sdk": {
@@ -33,4 +37,4 @@ files --provider s3 --bucket uploads mcp --allow-writes
 }
 ```
 
-Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and, when writes are enabled, uploads (`upload` with a `base64` body) survive intact.
+Binary payloads are roundtripped as base64 over MCP, so binary downloads (`download`) and, when writes are enabled, uploads (`upload` with a `base64` body) survive intact. Because the whole body travels in one tool response, `download` is capped at 10 MiB; an agent can lower the cap per call with `maxBytes` but can't raise it.

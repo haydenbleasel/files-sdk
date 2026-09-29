@@ -5,6 +5,7 @@ import path from "node:path";
 
 import * as realMcp from "../src/cli/mcp.js";
 import { buildProgram } from "../src/cli/program.js";
+import { PROVIDER_NAMES } from "../src/cli/registry.js";
 
 // The mcp subcommand pulls its module in via a dynamic import inside its action
 // handler — that's load-bearing because @modelcontextprotocol/sdk is optional
@@ -104,6 +105,14 @@ afterEach(async () => {
   await Promise.all(
     tmpDirs.splice(0).map((d) => fsp.rm(d, { force: true, recursive: true }))
   );
+});
+
+describe("cli/program help text", () => {
+  test("the description counts the registered providers", () => {
+    expect(buildProgram(loadStubMcp).description()).toContain(
+      `uniform interface over ${PROVIDER_NAMES.length} object storage providers`
+    );
+  });
 });
 
 describe("cli/program parseAsync (fs end-to-end)", () => {

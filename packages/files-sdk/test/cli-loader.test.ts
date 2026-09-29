@@ -70,6 +70,20 @@ describe("cli/loader pickProvider", () => {
     expect(caught).toBeInstanceOf(FilesError);
     expect((caught as FilesError).message).toContain("unknown provider");
   });
+
+  test("prototype names are unknown providers, not registry entries", async () => {
+    // `name in PROVIDERS` accepted these, and loadFiles then crashed with
+    // "entry.load is not a function" instead of the usual unknown-provider error.
+    for (const provider of ["toString", "constructor", "__proto__"]) {
+      expect(() => describeProvider({ provider })).toThrow(
+        `unknown provider "${provider}"`
+      );
+      // eslint-disable-next-line no-await-in-loop -- one provider name at a time
+      await expect(loadFiles({ provider })).rejects.toThrow(
+        `unknown provider "${provider}"`
+      );
+    }
+  });
 });
 
 describe("cli/loader loadFiles", () => {

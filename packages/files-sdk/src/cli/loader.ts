@@ -72,7 +72,8 @@ const pickProvider = (opts: GlobalCliOptions): string => {
       `--provider is required (or set FILES_SDK_PROVIDER). One of: ${PROVIDER_NAMES.join(", ")}`
     );
   }
-  if (!(name in PROVIDERS)) {
+  // Own keys only: `in` would also accept prototype names like `toString`.
+  if (!Object.hasOwn(PROVIDERS, name)) {
     throw new FilesError(
       "Provider",
       `unknown provider "${name}". One of: ${PROVIDER_NAMES.join(", ")}`

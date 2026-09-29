@@ -244,6 +244,10 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
     );
   }
   const { key } = opts;
+  // The body is always a stream here, which adapters store as
+  // application/octet-stream when no type is given. Infer from the key's
+  // extension (as --dir does per file) unless --content-type pins one.
+  const contentType = opts.contentType ?? inferTypeFromName(key);
 
   if (opts.dryRun) {
     return dryRun(
@@ -251,7 +255,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
       {
         cacheControl: opts.cacheControl,
         condition,
-        contentType: opts.contentType,
+        contentType,
         key,
         metadata: parseKeyValuePairs(opts.metadata),
         multipart,
@@ -275,7 +279,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
       : new Uint8Array(await new Response(streamed).arrayBuffer());
   const result = await files.upload(key, body, {
     cacheControl: opts.cacheControl,
-    contentType: opts.contentType,
+    contentType,
     metadata: parseKeyValuePairs(opts.metadata),
     ...(multipart !== undefined && { multipart }),
     ...(condition !== undefined && { condition }),
@@ -392,8 +396,9 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
     emit(storedFileToJson(file), opts);
   } else if (opts.verbose) {
     // body went to stdout; metadata goes to stderr so it doesn't pollute
-    // the byte stream. Honor --no-json: humans get key=value lines, JSON
-    // mode gets the same envelope it would on stdout.
+    // the byte stream. Both modes print the JSON envelope: JSON mode honors
+    // --pretty as it would on stdout, and --no-json always pretty-prints it
+    // (as emit() does for humans).
     const meta = storedFileToJson(file);
     if (opts.json) {
       const text = opts.pretty

@@ -139,6 +139,15 @@ describe("cli/commands dry-run", () => {
     });
   });
 
+  test("upload dry-run echoes the content type inferred from the key", async () => {
+    await runUpload({
+      ...baseOpts({ dryRun: true }),
+      file: "./local.bin",
+      key: "reports/q1.pdf",
+    });
+    expect(lastJson(cap.stdout).contentType).toBe("application/pdf");
+  });
+
   test("upload with --stdin reports source=<stdin>", async () => {
     await runUpload({
       ...baseOpts({ dryRun: true }),
@@ -325,6 +334,30 @@ describe("cli/commands real (fs adapter)", () => {
     const result = lastJson(cap.stdout);
     expect(result.key).toBe("docs/note.txt");
     expect(result.size).toBe("hello fs".length);
+  });
+
+  test("single-key upload infers the content type from the key", async () => {
+    // A single upload always streams its body, so without inference the
+    // object would be stored as application/octet-stream.
+    const local = path.join(root, "input.bin");
+    await uploadFile("data/report.json", '{"ok":true}', local);
+    cap.stdout.length = 0;
+    await runHead({ ...baseOpts(), keys: ["data/report.json"] });
+    expect(lastJson(cap.stdout).type).toBe("application/json");
+  });
+
+  test("single-key upload keeps an explicit --content-type", async () => {
+    const local = path.join(root, "input.bin");
+    await fsp.writeFile(local, "<p>hi</p>");
+    await runUpload({
+      ...baseOpts(),
+      contentType: "text/plain",
+      file: local,
+      key: "page.html",
+    });
+    cap.stdout.length = 0;
+    await runHead({ ...baseOpts(), keys: ["page.html"] });
+    expect(lastJson(cap.stdout).type).toBe("text/plain");
   });
 
   test("head returns metadata JSON for an existing key", async () => {
