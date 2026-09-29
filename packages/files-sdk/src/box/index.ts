@@ -140,6 +140,11 @@ const UNAUTH_CODES = new Set([
   "access_denied_insufficient_permissions",
   "access_denied_item_locked",
   "forbidden_by_policy",
+  // OAuth token-endpoint rejections (a revoked refresh token, a bad client
+  // secret or JWT key) arrive as a 400 carrying an RFC 6749 `error`.
+  "invalid_grant",
+  "invalid_client",
+  "unauthorized_client",
 ]);
 const CONFLICT_CODES = new Set([
   "item_name_in_use",
@@ -161,12 +166,28 @@ interface BoxApiErrorLike {
   responseInfo?: {
     statusCode?: number;
     code?: string;
-    body?: { code?: string } | undefined;
+    body?: { code?: unknown; error?: unknown } | undefined;
   };
 }
 
 const isBoxApiErrorLike = (err: unknown): err is BoxApiErrorLike =>
   isObject(err) && "responseInfo" in err && isObject(err.responseInfo);
+
+// The SDK's ESM build — what an `import` resolves to — declares `responseInfo`
+// as a class field, which resets it to `undefined` right after the base
+// constructor assigns it. A real BoxApiError then carries only its message,
+// which the SDK formats as `<status> <message>; Request ID: <id>`, so recover
+// the HTTP status from there.
+const strippedApiErrorStatus = (cause: unknown): number | undefined => {
+  if (
+    !(isObject(cause) && "name" in cause && cause.name === "BoxApiError") ||
+    !("message" in cause && isString(cause.message))
+  ) {
+    return;
+  }
+  const status = /^(?<status>[1-5]\d{2}) /u.exec(cause.message)?.groups?.status;
+  return status === undefined ? undefined : Number(status);
+};
 
 const classifyBox = (
   code: string | undefined,
@@ -199,7 +220,13 @@ export const mapBoxError = (cause: unknown): FilesError => {
   }
   if (isBoxApiErrorLike(cause)) {
     const status = cause.responseInfo?.statusCode;
-    const code = cause.responseInfo?.code ?? cause.responseInfo?.body?.code;
+    // The SDK stores the body's `code` JSON-encoded in `responseInfo.code`
+    // (`"\"not_found\""`), so read the raw one from the parsed body first; an
+    // OAuth token-endpoint failure has an `error` there instead.
+    const { body } = cause.responseInfo ?? {};
+    const code = [body?.code, body?.error, cause.responseInfo?.code].find(
+      isString
+    );
     const errorCode = classifyBox(code, status);
     // Use `||` (not `??`) so empty-string messages also fall back — an
     // empty message offers callers nothing useful.
@@ -213,9 +240,10 @@ export const mapBoxError = (cause: unknown): FilesError => {
     isObject(cause) && "message" in cause && isString(cause.message)
       ? cause.message
       : undefined;
+  const errorCode = classifyBox(undefined, strippedApiErrorStatus(cause));
   return new FilesError(
-    "Provider",
-    message || DEFAULT_MESSAGES.Provider,
+    errorCode,
+    message || DEFAULT_MESSAGES[errorCode],
     cause
   );
 };
@@ -688,19 +716,26 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     fileIdCache.delete(key);
   };
 
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures (a file deleted in between reads as
+  // NotFound) instead of leaking a raw SDK error out of `text()`.
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    await authHandle.ensureReady();
-    const fileId = await resolveFileId(key);
-    const url = await client.downloads.getDownloadFileUrl(fileId);
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new FilesError(
-        "Provider",
-        `box: download fetch failed (${res.status})`
-      );
+    try {
+      await authHandle.ensureReady();
+      const fileId = await resolveFileId(key);
+      const url = await client.downloads.getDownloadFileUrl(fileId);
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new FilesError(
+          "Provider",
+          `box: download fetch failed (${res.status})`
+        );
+      }
+      const ab = await res.arrayBuffer();
+      return new Uint8Array(ab);
+    } catch (error) {
+      throw mapBoxError(error);
     }
-    const ab = await res.arrayBuffer();
-    return new Uint8Array(ab);
   };
 
   const fetchSharedLinkUrl = async (fileId: string): Promise<string> => {

@@ -81,8 +81,10 @@ export interface GoogleDriveAdapterOptions {
   rootFolderId?: string;
   /**
    * When `true`, `upload()` also creates an `anyone with link, reader`
-   * permission and `url()` returns the Drive public download URL. When
-   * `false` (default), `url()` throws — Drive has no signed URL primitive.
+   * permission and `url()` returns the Drive public download URL, granting
+   * that permission first so keys written by `copy()`, a resumable upload,
+   * or a `signedUploadUrl()` upload are public too. When `false` (default),
+   * `url()` throws — Drive has no signed URL primitive.
    *
    * Security note: this is public-by-default for the entire adapter
    * lifetime. If you need a mix of public and private files, instantiate
@@ -140,13 +142,25 @@ const RATE_LIMIT_REASONS = new Set([
   "rateLimitExceeded",
   "userRateLimitExceeded",
 ]);
+// A rejected OAuth grant — a revoked refresh token, a bad or deleted
+// service-account key — comes back from Google's token endpoint as a 400
+// whose `error` is an RFC 6749 code string rather than Drive's error object.
+const OAUTH_REJECTED_ERRORS = new Set([
+  "invalid_grant",
+  "invalid_client",
+  "unauthorized_client",
+]);
 
 const classifyDriveError = (
   status: number | undefined,
-  reasons: readonly string[]
+  reasons: readonly string[],
+  oauthError: string | undefined
 ): ProviderFilesErrorCode => {
   if (NOT_FOUND_STATUS.has(status ?? 0)) {
     return "NotFound";
+  }
+  if (oauthError !== undefined && OAUTH_REJECTED_ERRORS.has(oauthError)) {
+    return "Unauthorized";
   }
   if (reasons.some((reason) => RATE_LIMIT_REASONS.has(reason))) {
     return "Provider";
@@ -199,7 +213,11 @@ export const mapDriveError = (cause: unknown): FilesError => {
   }
   const data =
     "data" in response && isJsonObject(response.data) ? response.data : {};
-  const errorCode = classifyDriveError(status, driveErrorReasons(data));
+  const errorCode = classifyDriveError(
+    status,
+    driveErrorReasons(data),
+    isString(data.error) ? data.error : undefined
+  );
   const nestedMessage = isJsonObject(data.error)
     ? data.error.message
     : undefined;
@@ -212,6 +230,26 @@ export const mapDriveError = (cause: unknown): FilesError => {
     ownMessage ??
     DEFAULT_MESSAGES[errorCode];
   return new FilesError(errorCode, message, cause);
+};
+
+// A failed resumable-session initiation is a raw `fetch`, not a gaxios call:
+// classify it the way `mapDriveError` classifies a gaxios failure — by status
+// and by the `reason`s in Drive's JSON error body — so a rate-limited 403 stays
+// retryable while a 401 or a vanished file id doesn't.
+const initiationError = async (res: Response): Promise<FilesError> => {
+  // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
+  const text = await res.text().catch(() => "");
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Not JSON — classify by status alone.
+  }
+  const { code } = mapDriveError({ response: { data, status: res.status } });
+  return new FilesError(
+    code,
+    `google-drive: resumable session initiation failed: ${res.status} ${res.statusText} ${text}`.trim()
+  );
 };
 
 // Drive's `q` syntax: backslash escapes single quote.
@@ -649,16 +687,40 @@ export const googleDrive = (
     return id;
   };
 
-  const lazyDownload = (fileId: string) => async (): Promise<Uint8Array> => {
-    const res = await driveClient.files.get(
-      { ...sharedDriveParams, alt: "media", fileId },
-      { responseType: "arraybuffer" }
+  // The adapter-wide `anyone, reader` grant behind `publicByDefault`. Drive
+  // keeps a single `anyone` permission per file (id `anyoneWithLink`), so a
+  // repeat grant updates it rather than adding another.
+  const grantPublicRead = async (
+    fileId: string,
+    signal: AbortSignal | undefined
+  ): Promise<void> => {
+    await driveClient.permissions.create(
+      {
+        ...sharedDriveParams,
+        fileId,
+        requestBody: { role: "reader", type: "anyone" },
+      },
+      signalOpts(signal)
     );
-    // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
-    // resolves `data` with the file's bytes, not the `Schema$File` the
-    // generated types declare; `toUint8` checks the shape at runtime.
-    const payload = res.data as DriveMediaPayload;
-    return toUint8(payload);
+  };
+
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures (a file deleted in between reads as
+  // NotFound) instead of leaking a raw SDK error out of `text()`.
+  const lazyDownload = (fileId: string) => async (): Promise<Uint8Array> => {
+    try {
+      const res = await driveClient.files.get(
+        { ...sharedDriveParams, alt: "media", fileId },
+        { responseType: "arraybuffer" }
+      );
+      // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
+      // resolves `data` with the file's bytes, not the `Schema$File` the
+      // generated types declare; `toUint8` checks the shape at runtime.
+      const payload = res.data as DriveMediaPayload;
+      return toUint8(payload);
+    } catch (error) {
+      throw mapDriveError(error);
+    }
   };
 
   return {
@@ -997,12 +1059,7 @@ export const googleDrive = (
             }
           );
           if (!res.ok) {
-            // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
-            const text = await res.text().catch(() => "");
-            throw new FilesError(
-              "Provider",
-              `google-drive: resumable session initiation failed: ${res.status} ${text}`.trim()
-            );
+            throw await initiationError(res);
           }
           const uri =
             res.headers.get("location") ?? res.headers.get("Location");
@@ -1120,13 +1177,7 @@ export const googleDrive = (
         throw mapDriveError(error);
       }
       if (!res.ok) {
-        // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
-        const text = await res.text().catch(() => "");
-        throw mapDriveError({
-          message:
-            `google-drive: resumable session initiation failed: ${res.status} ${res.statusText} ${text}`.trim(),
-          status: res.status,
-        });
+        throw await initiationError(res);
       }
       const sessionUrl =
         res.headers.get("location") ?? res.headers.get("Location");
@@ -1214,14 +1265,7 @@ export const googleDrive = (
           fileIdCache.set(key, fileId);
         }
         if (publicByDefault && fileId) {
-          await driveClient.permissions.create(
-            {
-              ...sharedDriveParams,
-              fileId,
-              requestBody: { role: "reader", type: "anyone" },
-            },
-            signalOpts(options?.signal)
-          );
+          await grantPublicRead(fileId, options?.signal);
         }
         return {
           contentType: normalized.contentType,
@@ -1251,6 +1295,11 @@ export const googleDrive = (
       }
       try {
         const fileId = await resolveFileId(key, urlOpts?.signal);
+        // upload() grants the permission as the bytes land, but a key written
+        // any other way — copy(), a resumable upload, a client upload through
+        // signedUploadUrl() — has none yet, so grant it before handing out a
+        // link that would otherwise ask for a Google sign-in.
+        await grantPublicRead(fileId, urlOpts?.signal);
         return `https://drive.google.com/uc?export=download&id=${fileId}`;
       } catch (error) {
         throw mapDriveError(error);

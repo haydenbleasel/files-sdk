@@ -32,13 +32,14 @@ export interface SharePointAdapterOptions {
   /**
    * Direct SharePoint site ID (`<host>,<id1>,<id2>` triple form from Graph).
    * Mutually exclusive with `siteUrl` / `hostname` / `sitePath`.
-   * Falls back to `SHAREPOINT_SITE_ID`.
+   * Falls back to `SHAREPOINT_SITE_ID` when none of those is passed.
    */
   siteId?: string;
   /**
    * SharePoint site URL (e.g. `https://contoso.sharepoint.com/sites/marketing`).
    * Resolved to a site ID on first call via Graph
-   * `/sites/{hostname}:{path}`. Falls back to `SHAREPOINT_SITE_URL`.
+   * `/sites/{hostname}:{path}`. Falls back to `SHAREPOINT_SITE_URL` when no
+   * `siteId` / `hostname` / `sitePath` is passed.
    */
   siteUrl?: string;
   /**
@@ -59,7 +60,8 @@ export interface SharePointAdapterOptions {
   documentLibrary?: string;
   /**
    * Explicit drive ID. Skips both site and library resolution entirely.
-   * Falls back to `SHAREPOINT_DRIVE_ID`.
+   * Falls back to `SHAREPOINT_DRIVE_ID` when no site option or
+   * `documentLibrary` is passed.
    */
   driveId?: string;
   /**
@@ -198,15 +200,28 @@ const buildResolverClient = (
   return Client.initWithMiddleware({ authProvider });
 };
 
+const isSet = (value: string | undefined): value is string =>
+  isString(value) && value.length > 0;
+
+// Whether an option picks the site. An explicit site selector wins outright:
+// the SHAREPOINT_SITE_ID / SHAREPOINT_SITE_URL env targets are only read when
+// no option names one, so they can't silently redirect an explicit `siteUrl`
+// or `hostname` (SHAREPOINT_HOSTNAME may still pair with an explicit
+// `sitePath`).
+const namesSite = (opts: SharePointAdapterOptions): boolean =>
+  [opts.siteId, opts.siteUrl, opts.hostname, opts.sitePath].some(isSet);
+
 const resolveSiteId = async (
   client: Client,
   opts: SharePointAdapterOptions
 ): Promise<string> => {
-  const explicit = opts.siteId ?? readEnv("SHAREPOINT_SITE_ID");
+  const readSiteEnv = (name: string): string | undefined =>
+    namesSite(opts) ? undefined : readEnv(name);
+  const explicit = opts.siteId ?? readSiteEnv("SHAREPOINT_SITE_ID");
   if (explicit) {
     return explicit;
   }
-  const url = opts.siteUrl ?? readEnv("SHAREPOINT_SITE_URL");
+  const url = opts.siteUrl ?? readSiteEnv("SHAREPOINT_SITE_URL");
   let hostname = opts.hostname ?? readEnv("SHAREPOINT_HOSTNAME");
   let { sitePath } = opts;
   if (url) {
@@ -291,7 +306,13 @@ export const sharepoint = (
     }
     resolved = (async (): Promise<OneDriveAdapter> => {
       try {
-        const explicitDriveId = opts.driveId ?? readEnv("SHAREPOINT_DRIVE_ID");
+        // SHAREPOINT_DRIVE_ID likewise only stands in when no option picks a
+        // site or library — it would otherwise skip resolving them.
+        const explicitDriveId =
+          opts.driveId ??
+          (namesSite(opts) || isSet(opts.documentLibrary)
+            ? undefined
+            : readEnv("SHAREPOINT_DRIVE_ID"));
         let driveId: string;
         if (explicitDriveId) {
           driveId = explicitDriveId;

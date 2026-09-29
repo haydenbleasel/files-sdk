@@ -162,6 +162,27 @@ describe("dropbox auth construction", () => {
     );
   });
 
+  test("refreshToken keeps a throttled or failing token endpoint retryable", async () => {
+    for (const status of [429, 503]) {
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          new Response("try later", { status })
+        )) as unknown as typeof fetch;
+      const adapter = dropbox({ appKey: "ak", refreshToken: "rt" });
+      // oxlint-disable-next-line no-await-in-loop -- one status per iteration, sequential by design
+      await expect(handleOf(adapter).getAccessToken()).rejects.toMatchObject({
+        code: "Provider",
+      });
+    }
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("invalid_grant", { status: 400 })
+      )) as unknown as typeof fetch;
+    await expect(
+      handleOf(dropbox({ appKey: "ak", refreshToken: "rt" })).getAccessToken()
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+  });
+
   test("refreshToken throws when the response is missing access_token", async () => {
     globalThis.fetch = (() =>
       Promise.resolve(

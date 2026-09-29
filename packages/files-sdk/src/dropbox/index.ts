@@ -63,8 +63,9 @@ export interface DropboxAdapterOptions {
    * `url()` when neither `publicByDefault` nor `publicBaseUrl` is set.
    * **Validated only**: `filesGetTemporaryLink` takes no expiry parameter, so
    * every link actually lives ~4 hours (14400s, the Dropbox fixed lifetime)
-   * regardless of what's requested — values above 14400 throw, values below
-   * are accepted but the link still outlives them. Don't rely on a short
+   * regardless of what's requested — a default above 14400 is capped to it
+   * (a per-call `expiresIn` above 14400 throws), and values below are
+   * accepted but the link still outlives them. Don't rely on a short
    * `expiresIn` as a security control with this adapter. Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
@@ -550,8 +551,10 @@ const createRefreshTokenAuth = (
     if (!res.ok) {
       // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
       const text = await res.text().catch(() => "");
+      // A throttled or failing token endpoint is transient, so it stays a
+      // retryable `Provider` error; any other refusal rejects the grant.
       throw new FilesError(
-        "Unauthorized",
+        res.status === 429 || res.status >= 500 ? "Provider" : "Unauthorized",
         `dropbox: refresh-token exchange failed (${res.status}): ${text || res.statusText}`
       );
     }
@@ -751,10 +754,17 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     return inner.startsWith(prefix) ? inner.slice(prefix.length) : inner;
   };
 
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures (a file deleted in between reads as
+  // NotFound) instead of leaking a raw SDK error out of `text()`.
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    await authHandle.ensureAccessToken();
-    const res = await client.filesDownload({ path: keyToPath(key) });
-    return downloadResultToBytes(res.result);
+    try {
+      await authHandle.ensureAccessToken();
+      const res = await client.filesDownload({ path: keyToPath(key) });
+      return await downloadResultToBytes(res.result);
+    } catch (error) {
+      throw mapDropboxError(error);
+    }
   };
 
   const createPublicSharedLink = async (key: string): Promise<string> => {
@@ -1134,20 +1144,28 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       }
     },
     async list(options): Promise<ListResult> {
-      // With a delimiter, list one folder level (recursive: false) rooted at
-      // the prefix and surface subfolders as common prefixes; otherwise walk
-      // the whole tree recursively as before.
+      // With a delimiter, list one folder level (recursive: false) and surface
+      // subfolders as common prefixes; otherwise walk the whole tree
+      // recursively as before. The folded listing reads the folder the prefix
+      // points into — the part up to its last "/" — and the whole prefix then
+      // filters that folder's children, so `photos/20` lists `photos` and keeps
+      // `photos/2024/`, and `photos` lists the root and yields `photos/`.
       const folded = options?.delimiter !== undefined;
       if (options?.delimiter) {
         assertSlashDelimiter("dropbox", options.delimiter);
       }
+      const prefix = options?.prefix ?? "";
       try {
         await authHandle.ensureAccessToken();
         const res = options?.cursor
           ? await client.filesListFolderContinue({ cursor: options.cursor })
           : await client.filesListFolder({
               limit: options?.limit,
-              path: keyToPath(folded ? (options?.prefix ?? "") : ""),
+              path: keyToPath(
+                folded
+                  ? prefix.slice(0, Math.max(prefix.lastIndexOf("/"), 0))
+                  : ""
+              ),
               recursive: !folded,
             });
         const { result } = res;
@@ -1159,7 +1177,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           const path =
             entry.path_display ?? entry.path_lower ?? `/${entry.name ?? ""}`;
           const key = pathToKey(path);
-          if (!key) {
+          if (!key || !key.startsWith(prefix)) {
             return;
           }
           if (entry[".tag"] === "folder") {
@@ -1169,9 +1187,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
             return;
           }
           if (entry[".tag"] !== "file") {
-            return;
-          }
-          if (options?.prefix && !key.startsWith(options.prefix)) {
             return;
           }
           items.push(

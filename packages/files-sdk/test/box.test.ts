@@ -5,6 +5,8 @@ import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { BoxClient } from "box-typescript-sdk-gen";
+import { BoxApiError } from "box-typescript-sdk-gen/box/errors";
+import { DataSanitizer } from "box-typescript-sdk-gen/internal/logging.generated";
 
 import { box, mapBoxError } from "../src/box/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
@@ -81,6 +83,16 @@ const apiError = (statusCode: number, code: string, message?: string) => {
   err.responseInfo = { code, statusCode };
   return err;
 };
+
+// A real BoxApiError, built with the fields the SDK's network client passes.
+const sdkApiError = (status: number) =>
+  new BoxApiError({
+    dataSanitizer: new DataSanitizer({}),
+    message: `${status} "Box says no"; Request ID: "r1"`,
+    requestInfo: { headers: {}, method: "GET", queryParams: {}, url: "u" },
+    responseInfo: { body: {}, headers: {}, statusCode: status },
+    timestamp: "0",
+  });
 
 // ===== Manager mocks =====
 
@@ -787,6 +799,20 @@ describe("box adapter", () => {
     expect(getDownloadFileUrlMock.mock.calls.length).toBeGreaterThan(
       beforeBody
     );
+  });
+
+  test("a head() body read maps a file deleted in between to NotFound", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    await files.upload("a.txt", "hi");
+    const f = await files.head("a.txt");
+    for (const [id, item] of store) {
+      if (item.type === "file" && item.name === "a.txt") {
+        store.delete(id);
+      }
+    }
+    const err = await f.text().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("NotFound");
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {
@@ -1597,6 +1623,57 @@ describe("box adapter", () => {
       responseInfo: { statusCode: 403 },
     });
     expect(err.code).toBe("Unauthorized");
+  });
+
+  test("mapBoxError classifies a real BoxApiError by the status in its message", () => {
+    // The SDK's ESM build declares `responseInfo` as a class field, which
+    // wipes the value the base constructor assigned — a real BoxApiError
+    // arrives with only its `<status> <message>; Request ID: <id>` message.
+    expect(sdkApiError(404).responseInfo).toBeUndefined();
+    expect(mapBoxError(sdkApiError(404)).code).toBe("NotFound");
+    expect(mapBoxError(sdkApiError(401)).code).toBe("Unauthorized");
+    expect(mapBoxError(sdkApiError(409)).code).toBe("Conflict");
+    expect(mapBoxError(sdkApiError(503)).code).toBe("Provider");
+    expect(mapBoxError(sdkApiError(404)).message).toBe(
+      '404 "Box says no"; Request ID: "r1"'
+    );
+    // Only a BoxApiError's message is read for a status.
+    expect(mapBoxError(new Error("404 lookalike")).code).toBe("Provider");
+    expect(
+      mapBoxError(
+        Object.assign(new Error("no status"), { name: "BoxApiError" })
+      ).code
+    ).toBe("Provider");
+  });
+
+  test("mapBoxError reads the raw code from the parsed body", () => {
+    // Where `responseInfo` survives (the CJS build), the SDK has stored the
+    // body's code JSON-encoded in `responseInfo.code`; the parsed body has
+    // the raw one. A 400 `item_name_invalid` is classified by its code alone.
+    const err = mapBoxError({
+      message: '400 "Item name invalid"; Request ID: "r1"',
+      responseInfo: {
+        body: { code: "item_name_invalid", type: "error" },
+        code: JSON.stringify("item_name_invalid"),
+        statusCode: 400,
+      },
+    });
+    expect(err.code).toBe("Conflict");
+  });
+
+  test("mapBoxError classifies a rejected OAuth grant as Unauthorized", () => {
+    // Box's token endpoint answers a revoked refresh token or a bad client
+    // secret with a 400 and an RFC 6749 `error`, not a Box `code`.
+    for (const error of ["invalid_grant", "invalid_client"]) {
+      const err = mapBoxError({
+        message: "400 undefined",
+        responseInfo: {
+          body: { error, error_description: "Invalid refresh token" },
+          statusCode: 400,
+        },
+      });
+      expect(err.code).toBe("Unauthorized");
+    }
   });
 
   test("mapBoxError passes existing FilesError through unchanged", () => {

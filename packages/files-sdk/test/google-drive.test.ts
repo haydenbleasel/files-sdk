@@ -512,6 +512,16 @@ describe("google-drive adapter", () => {
     expect(filesGetMock.mock.calls.length).toBeGreaterThan(before);
   });
 
+  test("a head() body read maps a file deleted in between to NotFound", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    const f = await files.head("a.txt");
+    store.delete("id-1");
+    const err = await f.text().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("NotFound");
+  });
+
   test("exists returns true for present keys and false for missing keys", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("a.txt", "hi");
@@ -727,6 +737,36 @@ describe("google-drive adapter", () => {
     await files.upload("a.txt", "hi");
     const url = await files.url("a.txt");
     expect(url).toBe("https://drive.google.com/uc?export=download&id=id-1");
+  });
+
+  test("url grants the public permission for keys upload() didn't write", async () => {
+    const files = new Files({
+      adapter: googleDrive({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    await files.copy("a.txt", "b.txt");
+    // A client upload through signedUploadUrl() lands without the adapter
+    // seeing it; model it as a file that appears in the folder directly.
+    store.set("id-ext", {
+      appProperties: { fsdkKey: "c.txt" },
+      id: "id-ext",
+      name: "c.txt",
+      parents: ["rootX"],
+    });
+    permissionsCreateMock.mockClear();
+
+    expect(await files.url("b.txt")).toBe(
+      "https://drive.google.com/uc?export=download&id=id-2"
+    );
+    expect(await files.url("c.txt")).toBe(
+      "https://drive.google.com/uc?export=download&id=id-ext"
+    );
+    const granted = permissionsCreateMock.mock.calls.map(
+      (call) =>
+        call[0] as { fileId: string; requestBody: Record<string, string> }
+    );
+    expect(granted.map((g) => g.fileId)).toEqual(["id-2", "id-ext"]);
+    expect(granted[0]?.requestBody).toEqual({ role: "reader", type: "anyone" });
   });
 
   test("signedUploadUrl POSTs resumable initiation and returns Location URL", async () => {
@@ -1017,6 +1057,68 @@ describe("google-drive adapter", () => {
     });
     const err = await files.head("a.txt").catch((error: unknown) => error);
     expect((err as FilesError).code).toBe("Unauthorized");
+  });
+
+  test("mapDriveError maps a rejected OAuth grant to Unauthorized", async () => {
+    // google-auth-library surfaces a revoked refresh token or a bad
+    // service-account key as the token endpoint's 400, whose `error` is an
+    // RFC 6749 code string rather than Drive's error object.
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    filesGetMock.mockImplementationOnce(() => {
+      throw Object.assign(new Error("invalid_grant"), {
+        response: {
+          data: {
+            error: "invalid_grant",
+            error_description: "Token has been expired or revoked.",
+          },
+          status: 400,
+        },
+        status: 400,
+      });
+    });
+    const err = await files
+      .head("a.txt", { retries: 0 })
+      .catch((error: unknown) => error);
+    expect((err as FilesError).code).toBe("Unauthorized");
+  });
+
+  test("a rate-limited session initiation stays retryable; a 401 doesn't", async () => {
+    const rateLimited = JSON.stringify({
+      error: {
+        code: 403,
+        errors: [{ domain: "usageLimits", reason: "userRateLimitExceeded" }],
+        message: "User Rate Limit Exceeded",
+      },
+    });
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(rateLimited, { status: 403 })
+      )) as unknown as typeof fetch;
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, retries: 0 })
+    ).rejects.toMatchObject({ code: "Provider" });
+    await expect(
+      files.upload("a.txt", "data", {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toMatchObject({ code: "Provider" });
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("{}", { status: 401 })
+      )) as unknown as typeof fetch;
+    await expect(
+      files.upload("a.txt", "data", {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: expect.stringContaining("resumable session initiation failed"),
+    });
   });
 
   test("mapDriveError prefers response.status over top-level code", async () => {

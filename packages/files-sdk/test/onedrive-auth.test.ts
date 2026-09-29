@@ -9,11 +9,11 @@ import {
   test,
 } from "bun:test";
 
-import { ClientSecretCredential } from "@azure/identity";
+import { AuthenticationError, ClientSecretCredential } from "@azure/identity";
 import type { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import { Client } from "@microsoft/microsoft-graph-client";
 
-import { onedrive } from "../src/onedrive/index.js";
+import { mapGraphError, onedrive } from "../src/onedrive/index.js";
 
 const restoreEnv = (key: string, value: string | undefined): void => {
   if (value === undefined) {
@@ -278,6 +278,77 @@ describe("onedrive auth construction", () => {
     await expect(capturedAuthProvider?.getAccessToken()).rejects.toThrow(
       /missing access_token/iu
     );
+  });
+
+  // Run one request through a real Graph client wired to the auth provider the
+  // adapter built, and map its failure the way every adapter method does.
+  const graphCallError = async () => {
+    const real = originalInitWithMiddleware({
+      ...(capturedAuthProvider && { authProvider: capturedAuthProvider }),
+    });
+    const error = await real
+      .api("/me/drive/root")
+      .get()
+      .catch((error_: unknown) => error_);
+    return mapGraphError(error);
+  };
+
+  test("a rejected refresh token surfaces as Unauthorized through the Graph client", async () => {
+    // The Graph client flattens an auth provider's error into a status-less
+    // GraphError keeping only its name, so the name has to carry the class.
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("invalid_grant", { status: 400 })
+      )) as unknown as typeof fetch;
+    onedrive({
+      oauth: { clientId: "c", clientSecret: "s", refreshToken: "r" },
+    });
+    const err = await graphCallError();
+    expect(err.code).toBe("Unauthorized");
+    expect(err.message).toMatch(/refresh-token exchange failed \(400\)/u);
+  });
+
+  test("a throttled or failing token endpoint stays a retryable Provider error", async () => {
+    for (const status of [429, 503]) {
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          new Response("try later", { status })
+        )) as unknown as typeof fetch;
+      onedrive({
+        oauth: { clientId: "c", clientSecret: "s", refreshToken: "r" },
+      });
+      // oxlint-disable-next-line no-await-in-loop -- one status per iteration, sequential by design
+      await expect(
+        capturedAuthProvider?.getAccessToken()
+      ).rejects.toMatchObject({ code: "Provider" });
+      // oxlint-disable-next-line no-await-in-loop -- one status per iteration, sequential by design
+      const err = await graphCallError();
+      expect(err.code).toBe("Provider");
+    }
+  });
+
+  test("a clientCredentials rejection from @azure/identity surfaces as Unauthorized", async () => {
+    const proto = ClientSecretCredential.prototype as unknown as {
+      getToken: () => unknown;
+    };
+    const stub = proto.getToken;
+    proto.getToken = () =>
+      Promise.reject(
+        new AuthenticationError(401, {
+          error: "invalid_client",
+          error_description: "AADSTS7000215: Invalid client secret provided.",
+        })
+      );
+    try {
+      onedrive({
+        clientCredentials: { clientId: "c", clientSecret: "s", tenantId: "t" },
+        driveId: "d1",
+      });
+      const err = await graphCallError();
+      expect(err.code).toBe("Unauthorized");
+    } finally {
+      proto.getToken = stub;
+    }
   });
 
   test("env-var fallback uses ONEDRIVE_ACCESS_TOKEN when no opts are passed", async () => {

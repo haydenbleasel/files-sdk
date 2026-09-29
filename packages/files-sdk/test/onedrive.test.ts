@@ -664,6 +664,30 @@ describe("onedrive adapter", () => {
     });
   });
 
+  test("a head() body read maps a file deleted in between to NotFound", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    const f = await files.head("a.txt");
+    store.delete("a.txt");
+    const err = await f.text().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("NotFound");
+  });
+
+  test("head and exists report a folder path as NotFound", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    store.set("photos", {
+      id: "fold-1",
+      isFolder: true,
+      name: "photos",
+      size: 4096,
+    });
+    await expect(files.exists("photos")).resolves.toBe(false);
+    await expect(files.head("photos")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
   test("list returns immediate-children files only and filters folders", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "x");
@@ -1019,12 +1043,8 @@ describe("onedrive adapter", () => {
 
   test("signedUploadUrl returns the createUploadSession uploadUrl as PUT", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
-    const out = await files.signedUploadUrl("a.txt", {
-      contentType: "text/plain",
-      expiresIn: 3600,
-    });
+    const out = await files.signedUploadUrl("a.txt", { expiresIn: 3600 });
     expect(out).toEqual({
-      headers: { "Content-Type": "text/plain" },
       method: "PUT",
       url: "https://sn3302.up.1drv.com/up/session/a.txt",
     });
@@ -1043,6 +1063,19 @@ describe("onedrive adapter", () => {
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 3600, maxSize: 1024 })
     ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    expect(dispatchPost).not.toHaveBeenCalled();
+  });
+
+  test("signedUploadUrl rejects contentType before creating a Graph session", async () => {
+    // Graph upload sessions don't bind a Content-Type, so a header would only
+    // be advisory — the contract says to fail loud instead.
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", {
+        contentType: "text/plain",
+        expiresIn: 3600,
+      })
+    ).rejects.toThrow(/contentType.*not supported/iu);
     expect(dispatchPost).not.toHaveBeenCalled();
   });
 

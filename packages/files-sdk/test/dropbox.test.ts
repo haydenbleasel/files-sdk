@@ -543,6 +543,16 @@ describe("dropbox adapter", () => {
     expect(filesDownloadMock).toHaveBeenCalledTimes(1);
   });
 
+  test("a head() body read maps a file deleted in between to NotFound", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("a.txt", "hi");
+    const f = await files.head("a.txt");
+    store.delete("a.txt");
+    const err = await f.text().catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("NotFound");
+  });
+
   test("exists returns true for present keys and false for missing keys", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("a.txt", "hi");
@@ -600,6 +610,32 @@ describe("dropbox adapter", () => {
     const r = await files.list({ delimiter: "/", prefix: "photos/" });
     expect(r.items.map((i) => i.key)).toEqual(["photos/cover.jpg"]);
     expect(r.prefixes?.toSorted()).toEqual(["photos/2023/", "photos/2024/"]);
+  });
+
+  test("a delimiter lists the folder a partial prefix points into", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("photos.txt", "x");
+    await files.upload("notes.txt", "x");
+    await files.upload("photos/cover.jpg", "x");
+    await files.upload("photos/2023/a.jpg", "x");
+    await files.upload("photos/2024/b.jpg", "x");
+
+    const partial = await files.list({ delimiter: "/", prefix: "photos/202" });
+    expect(partial.items).toEqual([]);
+    expect(partial.prefixes?.toSorted()).toEqual([
+      "photos/2023/",
+      "photos/2024/",
+    ]);
+    expect(filesListFolderMock.mock.calls.at(-1)?.[0]?.path).toBe("/photos");
+
+    const exact = await files.list({ delimiter: "/", prefix: "photos/2024" });
+    expect(exact.items).toEqual([]);
+    expect(exact.prefixes).toEqual(["photos/2024/"]);
+
+    const root = await files.list({ delimiter: "/", prefix: "photos" });
+    expect(root.items.map((i) => i.key)).toEqual(["photos.txt"]);
+    expect(root.prefixes).toEqual(["photos/"]);
+    expect(filesListFolderMock.mock.calls.at(-1)?.[0]?.path).toBe("");
   });
 
   test("a delimiter on a missing folder returns an empty page", async () => {

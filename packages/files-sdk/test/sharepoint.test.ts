@@ -264,6 +264,69 @@ describe("sharepoint adapter", () => {
     );
   });
 
+  test("resolution > an explicit site or library beats the env site and drive targets", async () => {
+    process.env.SHAREPOINT_DRIVE_ID = "env-drive";
+    process.env.SHAREPOINT_SITE_ID = "env-site";
+    process.env.SHAREPOINT_SITE_URL = "https://env.sharepoint.com/sites/env";
+    getHandler = (path) => {
+      const sites: Record<string, string> = {
+        "/sites/contoso.sharepoint.com": "host-site",
+        "/sites/contoso.sharepoint.com:/sites/marketing": "url-site",
+      };
+      if (sites[path]) {
+        return { id: sites[path] };
+      }
+      if (path.endsWith("/drive")) {
+        return { id: `${path.split("/")[2]}-drive` };
+      }
+      if (path.endsWith("/drives")) {
+        return { value: [{ id: "reports-drive", name: "Reports" }] };
+      }
+      return { value: [] };
+    };
+    const listedDrive = async (siteOpts: Record<string, string>) => {
+      lastCalls = [];
+      await sharepoint({ clientCredentials: CREDS, ...siteOpts }).list();
+      return lastCalls.at(-1)?.path;
+    };
+    expect(
+      await listedDrive({
+        siteUrl: "https://contoso.sharepoint.com/sites/marketing",
+      })
+    ).toBe("/drives/url-site-drive/root/children");
+    expect(await listedDrive({ hostname: "contoso.sharepoint.com" })).toBe(
+      "/drives/host-site-drive/root/children"
+    );
+    // A library picked in code still resolves against the env site.
+    expect(await listedDrive({ documentLibrary: "Reports" })).toBe(
+      "/drives/reports-drive/root/children"
+    );
+    expect(lastCalls.some((c) => c.path === "/sites/env-site/drives")).toBe(
+      true
+    );
+    // With no site or library option, the env drive stands in as before.
+    expect(await listedDrive({})).toBe("/drives/env-drive/root/children");
+  });
+
+  test("resolution > SHAREPOINT_HOSTNAME pairs with an explicit sitePath", async () => {
+    process.env.SHAREPOINT_HOSTNAME = "contoso.sharepoint.com";
+    process.env.SHAREPOINT_SITE_ID = "env-site";
+    getHandler = (path) => {
+      if (path === "/sites/contoso.sharepoint.com:/sites/hr") {
+        return { id: "hr-site" };
+      }
+      if (path === "/sites/hr-site/drive") {
+        return { id: "hr-drive" };
+      }
+      return { value: [] };
+    };
+    await sharepoint({
+      clientCredentials: CREDS,
+      sitePath: "/sites/hr",
+    }).list();
+    expect(lastCalls.at(-1)?.path).toBe("/drives/hr-drive/root/children");
+  });
+
   test("resolution > falls back to ONEDRIVE_* creds when SHAREPOINT_* absent", async () => {
     process.env.ONEDRIVE_TENANT_ID = "od-tenant";
     process.env.ONEDRIVE_CLIENT_ID = "od-client";

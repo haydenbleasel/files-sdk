@@ -33,7 +33,7 @@ const files = new Files({
     // Shared Drive root id, or a sub-folder id to scope the "bucket".
     rootFolderId: process.env.GOOGLE_DRIVE_ID!,
     // publicByDefault: true → grants anyone-with-link reader on upload
-    //                       and url() returns the Drive download URL.
+    //                       and in url(), which returns the Drive download URL.
   }),
 });
 ```
@@ -63,5 +63,5 @@ Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value toget
 | `head` | ✅ |  |
 | `exists` | ⚠️ | Drive has no native key field. The adapter resolves by parent folder + `fsdkKey` appProperty, so files written into the same folder out-of-band return `false` even if a file with that name exists. |
 | `copy` | ✅ |  |
-| `url` | ⚠️ | Throws by default - Drive has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` grants `anyone, reader` and `url()` returns the permanent Drive download URL (`expiresIn` ignored). `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override. |
-| `signedUploadUrl` | ⚠️ | Initiates a Drive resumable session via `POST /upload/drive/v3/files?uploadType=resumable` and returns the session URL as a one-shot PUT. `maxSize` and `minSize` throw because Drive sessions do not enforce a server-side `content-length-range` policy; enforce size limits at your application gateway instead. Throws when the adapter was constructed via the pre-built `client` escape hatch (no auth handle to mint access tokens). |
+| `url` | ⚠️ | Throws by default - Drive has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` grants `anyone, reader`, and `url()` grants it too (so keys written by `copy()`, a resumable upload, or a client `signedUploadUrl()` upload also get a working link) before returning the permanent Drive download URL (`expiresIn` ignored). `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override. |
+| `signedUploadUrl` | ⚠️ | Initiates a Drive resumable session via `POST /upload/drive/v3/files?uploadType=resumable` (or a `PATCH` against the existing file when the key is already taken, so the upload overwrites it in place) and returns the session URL as a one-shot PUT. `maxSize` and `minSize` throw because Drive sessions do not enforce a server-side `content-length-range` policy; enforce size limits at your application gateway instead. Throws when the adapter was constructed via the pre-built `client` escape hatch (no auth handle to mint access tokens). |

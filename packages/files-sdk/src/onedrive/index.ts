@@ -173,10 +173,20 @@ const resolveRangeSize = (
 };
 
 const NOT_FOUND_CODES = new Set(["itemNotFound"]);
+// The Graph client flattens whatever an auth provider throws into a
+// status-less GraphError (statusCode -1) that keeps only the error's `name`,
+// as `code`, and its message. @azure/identity credentials reject with these
+// names, and so does `RefreshTokenCredential` below, so they're all that marks
+// a credential failure (a bad client secret, a revoked refresh token).
+const AUTHENTICATION_ERROR_NAME = "AuthenticationError";
 const UNAUTH_CODES = new Set([
   "unauthenticated",
   "InvalidAuthenticationToken",
   "accessDenied",
+  AUTHENTICATION_ERROR_NAME,
+  "AuthenticationRequiredError",
+  "CredentialUnavailableError",
+  "AggregateAuthenticationError",
 ]);
 const CONFLICT_CODES = new Set(["nameAlreadyExists", "resourceModified"]);
 
@@ -519,6 +529,17 @@ interface OAuthTokenResponse {
   expires_in?: number;
 }
 
+// A key names a file. The item-path GET also resolves a folder, which has no
+// body to read, so report it the way a missing file is reported.
+const assertNotFolder = (key: string, item: DriveItem): void => {
+  if (item.folder) {
+    throw new FilesError(
+      "NotFound",
+      `onedrive: "${key}" is a folder, not a file`
+    );
+  }
+};
+
 const itemToStoredMeta = (item: DriveItem): StoredMeta => ({
   ...(item.eTag && { etag: item.eTag.replaceAll('"', "") }),
   ...(item.lastModifiedDateTime && {
@@ -527,6 +548,16 @@ const itemToStoredMeta = (item: DriveItem): StoredMeta => ({
   size: Number(item.size ?? 0),
   type: item.file?.mimeType ?? OCTET_STREAM,
 });
+
+// A refresh-token rejection from `RefreshTokenCredential`: `Unauthorized`, and
+// named like @azure/identity's own credential failures so it still classifies
+// as `Unauthorized` once the Graph client has flattened it (see
+// `UNAUTH_CODES`).
+const credentialRejected = (message: string): FilesError => {
+  const error = new FilesError("Unauthorized", message);
+  error.name = AUTHENTICATION_ERROR_NAME;
+  return error;
+};
 
 // Custom TokenCredential for the OAuth refresh-token flow. @azure/identity
 // has no native refresh-token credential — `OnBehalfOfCredential` and the
@@ -582,18 +613,20 @@ class RefreshTokenCredential implements TokenCredential {
     if (!res.ok) {
       // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
       const text = await res.text().catch(() => "");
-      throw new FilesError(
-        "Unauthorized",
-        `onedrive: refresh-token exchange failed (${res.status}): ${text || res.statusText}`
-      );
+      const message = `onedrive: refresh-token exchange failed (${res.status}): ${text || res.statusText}`;
+      // A throttled or failing token endpoint is transient, so it stays a
+      // retryable `Provider` error; any other refusal rejects the grant.
+      if (res.status === 429 || res.status >= 500) {
+        throw new FilesError("Provider", message);
+      }
+      throw credentialRejected(message);
     }
     // SAFETY: `Response#json()` is untyped; a 2xx from the v2.0 token
     // endpoint is an OAuth 2.0 token response (`access_token`, `expires_in`),
     // and `access_token` is checked below before use.
     const json = (await res.json()) as OAuthTokenResponse;
     if (!json.access_token) {
-      throw new FilesError(
-        "Unauthorized",
+      throw credentialRejected(
         "onedrive: refresh-token response missing access_token"
       );
     }
@@ -805,14 +838,21 @@ export const onedrive = (
     return `${basePath}/root:/${encodePathSegments(fullPath)}:`;
   };
 
+  // The lazy body behind head()/list() results runs after the operation has
+  // returned, so it maps its own failures (a file deleted in between reads as
+  // NotFound) instead of leaking a raw SDK error out of `text()`.
   const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    // The Graph client types every response as `any`; `toUint8` checks the
-    // payload shape at runtime before trusting it.
-    const data: GraphContentPayload = await client
-      .api(`${itemApiPath(key)}/content`)
-      .responseType(ResponseType.ARRAYBUFFER)
-      .get();
-    return toUint8(data);
+    try {
+      // The Graph client types every response as `any`; `toUint8` checks the
+      // payload shape at runtime before trusting it.
+      const data: GraphContentPayload = await client
+        .api(`${itemApiPath(key)}/content`)
+        .responseType(ResponseType.ARRAYBUFFER)
+        .get();
+      return toUint8(data);
+    } catch (error) {
+      throw mapGraphError(error);
+    }
   };
 
   const pollCopyMonitor = async (monitorUrl: string): Promise<void> => {
@@ -1238,16 +1278,19 @@ export const onedrive = (
       }
     },
     exists(key) {
-      return existsByProbe(
-        () => client.api(itemApiPath(key)).get(),
-        mapGraphError
-      );
+      return existsByProbe(async () => {
+        // SAFETY: the Graph client types every parsed response as `any`; a
+        // GET on the item path returns a `driveItem`.
+        const item = (await client.api(itemApiPath(key)).get()) as DriveItem;
+        assertNotFolder(key, item);
+      }, mapGraphError);
     },
     async head(key) {
       try {
         // SAFETY: the Graph client types every parsed response as `any`; a
         // GET on the item path returns a `driveItem`.
         const meta = (await client.api(itemApiPath(key)).get()) as DriveItem;
+        assertNotFolder(key, meta);
         const m = itemToStoredMeta(meta);
         return createStoredFile(
           { key, ...m },
@@ -1333,6 +1376,12 @@ export const onedrive = (
           "onedrive: `maxSize` and `minSize` are not supported for signed upload URLs. Graph upload sessions do not enforce a server-side content-length-range policy; enforce size limits at your application gateway / proxy before issuing the session URL."
         );
       }
+      if (signOpts.contentType !== undefined) {
+        throw new FilesError(
+          "Provider",
+          "onedrive: `contentType` is not supported for signed upload URLs. A Graph upload session doesn't bind a Content-Type (Graph infers the file's type from its name), so a Content-Type header would only be advisory; omit `contentType`, or validate it at your application gateway / proxy before issuing the session URL."
+        );
+      }
       try {
         // SAFETY: the Graph client types every parsed response as `any`;
         // `createUploadSession` returns an `uploadSession` resource whose
@@ -1354,13 +1403,7 @@ export const onedrive = (
         // client knows `n`; we don't, so no header is minted here), and one
         // request tops out below 60 MiB — larger files need the client to
         // PUT 320 KiB-multiple fragments against the same URL.
-        return {
-          method: "PUT",
-          url: uploadUrl,
-          ...(signOpts.contentType && {
-            headers: { "Content-Type": signOpts.contentType },
-          }),
-        };
+        return { method: "PUT", url: uploadUrl };
       } catch (error) {
         throw mapGraphError(error);
       }
