@@ -34,12 +34,7 @@
     "typescript": "^7",
     "wrangler": "^4.129.1"
   },
-  "ignoreScripts": [
-    "sharp",
-    "unrs-resolver"
-  ],
   "trustedDependencies": [
-    "sharp",
-    "unrs-resolver"
+    "sharp"
   ]
 }

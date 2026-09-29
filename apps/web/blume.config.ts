@@ -1,4 +1,46 @@
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import { defineConfig } from "blume";
+
+// Blume's <AutoTypeTable> lazily `import("typescript")`s the compiler API from
+// inside the prerender bundle. Vite externalizes that import as the bare
+// specifier, so at prerender time Node resolves it from dist/.prerender/ —
+// whose node_modules junction points at the hoisted root — and lands on the
+// repo's TypeScript 7 (tsgo), whose package entry has no compiler API. Every
+// table then rendered "Cannot read properties of undefined (reading
+// 'ESNext')". Pin the external to the TypeScript Blume itself depends on (its
+// nested copy), resolved from Blume's package so no version or path is
+// hard-coded here.
+const blumeRequire = createRequire(
+  createRequire(import.meta.url).resolve("blume/package.json")
+);
+const blumeRoot = path.dirname(blumeRequire.resolve("blume/package.json"));
+const blumeTypescript = blumeRequire.resolve("typescript");
+
+const blumeTypescriptExternal = {
+  hooks: {
+    "astro:config:setup": ({ updateConfig }) => {
+      updateConfig({
+        vite: {
+          plugins: [
+            {
+              enforce: "pre",
+              name: "files-sdk:blume-typescript",
+              resolveId: (source, importer) =>
+                source === "typescript" && importer?.startsWith(`${blumeRoot}/`)
+                  ? { external: true, id: blumeTypescript }
+                  : null,
+            },
+          ],
+        },
+      });
+    },
+  },
+  name: "files-sdk:blume-typescript",
+} satisfies NonNullable<
+  Parameters<typeof defineConfig>[0]["integrations"]
+>[number];
 
 export default defineConfig({
   content: {
@@ -26,9 +68,17 @@ export default defineConfig({
   description:
     "A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.",
 
-  // Preview only the example files; the glob skips the named-export component
-  // sources colocated alongside them (which have no default export).
-  examples: "registry/files-sdk/**/examples/*",
+  examples: {
+    // Preview frames are iframes that get none of the docs sheet, so the
+    // shadcn tokens (bg-primary, bg-popover, …), tw-animate-css and the
+    // data-open/data-closed variants the registry components use have to be
+    // injected into them too; theme.css is the one source for all three.
+    css: "theme.css",
+    // Preview only the example files; the glob skips the named-export
+    // component sources colocated alongside them (which have no default
+    // export).
+    source: "registry/files-sdk/**/examples/*",
+  },
 
   github: {
     branch: "main",
@@ -36,6 +86,8 @@ export default defineConfig({
     owner: "haydenbleasel",
     repo: "files-sdk",
   },
+
+  integrations: [blumeTypescriptExternal],
 
   logo: "/logo.svg",
 

@@ -73,10 +73,9 @@ export const getRegistryItem = async (
   const files = await Promise.all(
     item.files.map(async (file) => ({
       ...file,
-      // Scope the dynamic read to the static `registry/` subfolder. `file.path`
-      // is always `registry/...` (see registry.json), so re-expressing it with a
-      // literal `"registry"` segment lets Node File Trace bundle just that
-      // directory instead of conservatively tracing the whole project.
+      // `file.path` is always `registry/...` (see registry.json); read it from
+      // the app's `registry/` folder. This runs from scripts/build-registry.ts
+      // at build time, with the app root as the working directory.
       content: await readFile(
         path.join(
           process.cwd(),

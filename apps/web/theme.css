@@ -3,7 +3,42 @@
  * landing islands and registry components reference onto Blume's palette, and
  * adds the hero marquee keyframe. (Landing code blocks are themed by Blume's
  * `highlightCode` + `.prose`, so no manual Shiki swap is needed.)
+ *
+ * blume.config.ts also points `examples.css` here, so the `<Component>`
+ * preview iframes (which get none of the docs sheet) pick up the same tokens,
+ * animations, and variants the registry components need.
  */
+
+/* The enter/exit keyframes behind shadcn's `animate-in` / `fade-in-0` /
+   `zoom-in-95` utilities (dialog + dropdown open/close). */
+@import "tw-animate-css";
+
+/*
+ * shadcn's state variants, copied from the `shadcn/tailwind.css` the CLI adds
+ * to a project. Without them Tailwind's built-in `data-*` variant compiles
+ * `data-open:` to a bare `[data-open]` — but Radix marks open state with
+ * `data-state="open"`, so open/closed styles and animations never applied.
+ */
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
 
 @theme {
   /*

@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "files-sdk-web",
   "compatibility_date": "2026-09-01",
   // Production hostname, attached as a Workers custom domain (DNS record and
