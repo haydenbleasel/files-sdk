@@ -19,7 +19,10 @@ export interface FileListProps {
   files: UseFilesResult;
   /** Only show keys under this prefix (folder), e.g. `"docs/"`. */
   prefix?: string;
-  /** Endpoint for inline image thumbnails (the gateway download proxy). Default `"/api/files"`. */
+  /**
+   * Gateway endpoint for the image-thumbnail fallback (its download proxy),
+   * used when the adapter can't mint a signed URL. Default `"/api/files"`.
+   */
   endpoint?: string;
   /** Hide the delete action. */
   readOnly?: boolean;
@@ -112,9 +115,11 @@ const Thumbnail = ({
 };
 
 /**
- * Reactive list of stored files for a `useFiles()` instance — thumbnails, size
- * and type, with download and delete actions. Deletes go through the same
- * instance so ambient error state stays consistent.
+ * List of stored files for a `useFiles()` instance — thumbnails, size and type,
+ * with download and delete actions. It lists on mount, on Refresh, and drops a
+ * row after its own delete; changes made elsewhere show up on the next
+ * refresh. Downloads and deletes go through the same instance, and a failed
+ * one is shown above the list.
  */
 export const FileList = ({
   files,
@@ -128,6 +133,7 @@ export const FileList = ({
   const [items, setItems] = useState<StoredFile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [canSign, setCanSign] = useState<boolean>();
+  const [actionError, setActionError] = useState<string>();
 
   // Read `files` through a ref so the fetch effect depends only on `prefix`.
   // The hook returns a fresh object whenever its ambient store changes (e.g. on
@@ -177,24 +183,41 @@ export const FileList = ({
     };
   }, []);
 
+  // `useFiles` re-throws after mirroring to `files.error`, so each action
+  // catches its own failure and shows it here instead of leaving an unhandled
+  // rejection behind.
   const remove = useCallback(
     async (key: string) => {
-      await filesRef.current.delete(key);
-      setItems((prev) => prev.filter((item) => item.key !== key));
-      onChanged?.();
+      setActionError(undefined);
+      try {
+        await filesRef.current.delete(key);
+        setItems((prev) => prev.filter((item) => item.key !== key));
+        onChanged?.();
+      } catch (error) {
+        setActionError(
+          `Couldn't delete ${key}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     },
     [onChanged]
   );
 
   const download = useCallback(async (file: StoredFile) => {
-    const downloaded = await filesRef.current.download(file.key);
-    const blob = await downloaded.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.download = file.key.split("/").pop() ?? file.key;
-    anchor.href = url;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    setActionError(undefined);
+    try {
+      const downloaded = await filesRef.current.download(file.key);
+      const blob = await downloaded.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.download = file.key.split("/").pop() ?? file.key;
+      anchor.href = url;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setActionError(
+        `Couldn't download ${file.key}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }, []);
 
   if (isLoading && !items.length) {
@@ -227,7 +250,9 @@ export const FileList = ({
   return (
     <div className={cn("flex flex-col gap-2", className)}>
       <div className="flex items-center justify-between">
-        <p className="text-muted-foreground text-xs">{items.length} files</p>
+        <p className="text-muted-foreground text-xs">
+          {items.length} {items.length === 1 ? "file" : "files"}
+        </p>
         <Button
           onClick={() => {
             void refresh();
@@ -237,8 +262,14 @@ export const FileList = ({
           variant="ghost"
         >
           <RefreshCwIcon className={cn(isLoading && "animate-spin")} />
+          <span className="sr-only">Refresh</span>
         </Button>
       </div>
+      {actionError && (
+        <p className="text-destructive text-xs" role="alert">
+          {actionError}
+        </p>
+      )}
       <ul className="flex flex-col gap-2">
         {items.map((item) => (
           <li
@@ -275,6 +306,7 @@ export const FileList = ({
               variant="ghost"
             >
               <DownloadIcon />
+              <span className="sr-only">Download {item.key}</span>
             </Button>
             {!readOnly && (
               <Button
@@ -286,6 +318,7 @@ export const FileList = ({
                 variant="destructive"
               >
                 <Trash2Icon />
+                <span className="sr-only">Delete {item.key}</span>
               </Button>
             )}
           </li>

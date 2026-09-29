@@ -31,9 +31,10 @@ const formatBytes = (bytes: number): string => {
 
 /**
  * A version timeline for one key, backed by the `versioning()` plugin. Lists the
- * saved snapshots (newest first) and restores any of them through the same
- * `useFiles()` instance. Restoring snapshots the current bytes first, so it's
- * itself reversible.
+ * saved snapshots of earlier contents (newest first — the current file itself
+ * isn't one of them) and restores any of them through the same `useFiles()`
+ * instance. Restoring snapshots the current bytes first, so it's itself
+ * reversible.
  */
 export const VersionHistory = ({
   files,
@@ -107,47 +108,53 @@ export const VersionHistory = ({
   }
 
   return (
-    <ol className={cn("flex flex-col gap-2", className)}>
-      {versions.map((version, index) => (
-        <li
-          className="border-border flex items-center gap-3 rounded-lg border p-2"
-          key={version.versionId}
-        >
-          <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
-            <HistoryIcon className="size-4" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">
-              {new Date(version.lastModified).toLocaleString()}
-              {index === 0 && (
-                <span className="text-muted-foreground ml-2 text-xs">
-                  latest
-                </span>
-              )}
-            </p>
-            <p className="text-muted-foreground text-xs">
-              {formatBytes(version.size)}
-              {version.etag ? ` · ${version.etag.slice(0, 12)}` : ""}
-            </p>
-          </div>
-          <Button
-            disabled={restoring !== undefined}
-            onClick={() => {
-              void restore(version.versionId);
-            }}
-            size="sm"
-            type="button"
-            variant="outline"
+    <div className={cn("flex flex-col gap-2", className)}>
+      <p className="text-muted-foreground text-xs">
+        Earlier versions of {fileKey}, newest first. The current file isn't
+        listed; restoring a version saves it as a version first.
+      </p>
+      <ol className="flex flex-col gap-2">
+        {versions.map((version, index) => (
+          <li
+            className="border-border flex items-center gap-3 rounded-lg border p-2"
+            key={version.versionId}
           >
-            {restoring === version.versionId ? (
-              <Loader2Icon className="animate-spin" />
-            ) : (
-              <RotateCcwIcon />
-            )}
-            Restore
-          </Button>
-        </li>
-      ))}
-    </ol>
+            <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded">
+              <HistoryIcon className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {new Date(version.lastModified).toLocaleString()}
+                {index === 0 && (
+                  <span className="text-muted-foreground ml-2 text-xs">
+                    previous version
+                  </span>
+                )}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {formatBytes(version.size)}
+                {version.etag ? ` · ${version.etag.slice(0, 12)}` : ""}
+              </p>
+            </div>
+            <Button
+              disabled={restoring !== undefined}
+              onClick={() => {
+                void restore(version.versionId);
+              }}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {restoring === version.versionId ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <RotateCcwIcon />
+              )}
+              Restore
+            </Button>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 };

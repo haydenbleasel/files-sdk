@@ -1,9 +1,11 @@
 ---
 title: Multipart Uploader
-description: A multi-file queue uploader with bounded concurrency, live per-file progress and cancel — large files chunk into a multipart upload automatically.
+description: A multi-file queue uploader with bounded concurrency, live per-file progress and cancel — with a prefix, large files stream through your gateway into a multipart upload on S3-family storage.
 ---
 
-A heavier-duty uploader for many or large files. Queue files, upload them with bounded concurrency, watch each one's progress, and cancel everything in flight. Files large enough to warrant it are chunked into a [multipart upload](/docs/multipart) by the gateway transparently — the browser just streams the bytes.
+A heavier-duty uploader for many or large files. Queue files, upload them with bounded concurrency, watch each one's progress, and cancel everything in flight.
+
+How a file travels depends on `prefix`. With a prefix, each file gets an explicit key and streams through your [gateway](/docs/ui/server/gateway) into `files.upload(key, stream)`; the S3-family adapters (S3, R2, MinIO and the other S3-compatible providers, on their AWS SDK client rather than `client: "fetch"`) turn a large stream into a [multipart upload](/docs/multipart) automatically, while other adapters write it however their provider does. Without a prefix, the server mints each key and the browser uploads the file in a single request to a presigned URL, or through the gateway when the adapter can't sign — no multipart.
 
 <Component path="multipart-uploader/examples/multipart-basic" />
 
@@ -25,7 +27,7 @@ export function BulkUploader() {
 }
 ```
 
-Cancel calls `files.abort()`, aborting every in-flight request the hook started; the queue re-arms automatically on the next upload.
+Cancel calls `files.abort()`, aborting every in-flight request the hook started. Files that were mid-upload show as cancelled, files that hadn't started stay queued, and the next **Upload** retries both; the hook re-arms automatically. Removing a queued file mid-run takes it out of the run too.
 
 ## Props
 

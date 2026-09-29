@@ -22,7 +22,7 @@
       "name": "file-list",
       "type": "registry:component",
       "title": "File List",
-      "description": "Reactive list of stored files with thumbnails, download and delete.",
+      "description": "List of stored files with thumbnails, download and delete.",
       "dependencies": ["files-sdk", "lucide-react"],
       "registryDependencies": ["button"],
       "files": [
@@ -100,7 +100,7 @@
       "name": "file-search",
       "type": "registry:component",
       "title": "File Search",
-      "description": "Search box that streams matching keys with switchable match modes.",
+      "description": "Search box that lists matching keys with switchable match modes.",
       "dependencies": ["files-sdk", "lucide-react"],
       "registryDependencies": ["button", "input"],
       "files": [

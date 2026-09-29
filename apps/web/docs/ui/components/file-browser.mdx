@@ -3,7 +3,7 @@ title: File Browser
 description: A folder-aware browser that descends into common prefixes via list({ delimiter }), with a breadcrumb trail and cursor-based load more - driven by useFiles.
 ---
 
-Lists a folder with `list({ delimiter })`, so common prefixes surface as folders you can click into. A breadcrumb trail tracks where you are, and cursor-based "load more" pages through large folders. On adapters that can't delimit, everything simply appears as files at the root.
+Lists a folder with `list({ delimiter })`, so common prefixes surface as folders you can click into. A breadcrumb trail tracks where you are, and cursor-based "load more" pages through large folders. On adapters with no folder concept (`capabilities().delimiter` is `false`, e.g. UploadThing or Convex) it lists flat instead: every file under the current prefix, labelled with its path relative to it. A failed listing shows the error with a retry button rather than an empty folder.
 
 <Component path="file-browser/examples/file-browser-basic" />
 
@@ -31,7 +31,7 @@ export function Browser() {
 }
 ```
 
-Folders come straight from `list()`'s `prefixes`, which the gateway returns whenever the adapter [supports a delimiter](/docs/ui/server/gateway). The component owns its own navigation state; pass `onSelect` to react to file clicks (open a preview, generate a share link, etc.).
+Folders come straight from `list()`'s `prefixes`, which the gateway returns whenever the adapter [supports a delimiter](/docs/capabilities); the component reads `capabilities()` once on mount to decide which listing to use. The component owns its own navigation state; pass `onSelect` to react to file clicks (open a preview, generate a share link, etc.).
 
 Each file row also carries a [File Actions](/docs/ui/components/file-actions) menu — download, copy, rename, move and delete — unless you pass `readOnly`. Mutations re-list the current folder automatically; pass `onChanged` to refresh anything else (a [Trash Bin](/docs/ui/components/trash-bin), a usage meter) alongside it.
 

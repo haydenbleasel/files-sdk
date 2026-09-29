@@ -4,6 +4,7 @@ import type { UseFilesResult } from "files-sdk/react";
 import {
   CopyIcon,
   DownloadIcon,
+  FolderInputIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -60,7 +61,9 @@ const parentOf = (key: string): string => {
 /**
  * A `⋯` actions menu for a single key — download, copy, rename, move and delete,
  * all routed through the `useFiles()` instance you pass in. Copy/rename/move open
- * a small prompt for the destination; delete confirms first.
+ * a small prompt for the destination; delete confirms first. A failed action is
+ * shown in its dialog (download has none, so its failure surfaces through the
+ * hook's `files.error`).
  */
 export const FileActions = ({
   files,
@@ -72,26 +75,33 @@ export const FileActions = ({
   const [action, setAction] = useState<Action | null>(null);
   const [dest, setDest] = useState("");
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string>();
 
   const open = useCallback(
     (next: Action) => {
       const parent = parentOf(fileKey);
       // Rename edits just the basename; copy/move edit the whole key.
       setDest(next === "rename" ? fileKey.slice(parent.length) : fileKey);
+      setActionError(undefined);
       setAction(next);
     },
     [fileKey]
   );
 
   const download = useCallback(async () => {
-    const file = await files.download(fileKey);
-    const blob = await file.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.download = fileKey.split("/").pop() ?? fileKey;
-    anchor.href = url;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    try {
+      const file = await files.download(fileKey);
+      const blob = await file.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.download = fileKey.split("/").pop() ?? fileKey;
+      anchor.href = url;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // `useFiles` re-throws after mirroring the failure to `files.error`;
+      // catch here so a menu click never leaves an unhandled rejection.
+    }
   }, [files, fileKey]);
 
   const confirm = useCallback(async () => {
@@ -99,6 +109,7 @@ export const FileActions = ({
       return;
     }
     setBusy(true);
+    setActionError(undefined);
     try {
       if (action === "delete") {
         await files.delete(fileKey);
@@ -111,8 +122,10 @@ export const FileActions = ({
       }
       setAction(null);
       onChanged?.();
-    } catch {
-      // The hook mirrors the error to `files.error` for display.
+    } catch (error) {
+      // Keep the dialog open with the reason so the user can fix the
+      // destination or retry (the hook also mirrors it to `files.error`).
+      setActionError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -166,7 +179,7 @@ export const FileActions = ({
             Rename
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => open("move")}>
-            <CopyIcon />
+            <FolderInputIcon />
             Move
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -199,6 +212,12 @@ export const FileActions = ({
               placeholder={isRename ? "New name" : "Destination key"}
               value={dest}
             />
+          )}
+
+          {actionError && (
+            <p className="text-destructive text-sm" role="alert">
+              {actionError}
+            </p>
           )}
 
           <DialogFooter>

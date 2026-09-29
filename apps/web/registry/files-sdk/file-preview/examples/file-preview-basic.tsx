@@ -11,8 +11,9 @@ import { FilePreview } from "@/registry/files-sdk/file-preview/file-preview";
 const Example = () => {
   const files = demoFiles;
   const inputRef = useRef<HTMLInputElement>(null);
-  // Start on a seeded image so the preview is populated; uploading swaps it out.
-  const [key, setKey] = useState<string>("photos/sunset.jpg");
+  // Start on a text file the demo store seeds, so the preview is populated;
+  // uploading swaps it out.
+  const [key, setKey] = useState<string>("documents/meeting-notes.txt");
 
   const handleChange = async (event: ChangeEvent<HTMLInputElement>) => {
     // Capture the element now — React nulls `currentTarget` after the handler's

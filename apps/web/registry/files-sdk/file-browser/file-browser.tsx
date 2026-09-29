@@ -61,15 +61,28 @@ const folderName = (
   folderPrefix: string,
   parent: string,
   delimiter: string
-): string => folderPrefix.slice(parent.length).replace(delimiter, "");
+): string => {
+  const name = folderPrefix.slice(parent.length);
+  return name.endsWith(delimiter) ? name.slice(0, -delimiter.length) : name;
+};
+
+/**
+ * A file's key relative to the folder being shown. Keys under a delimited
+ * listing are direct children, so this is just the basename; in the flat view
+ * (adapters with no folder concept) it keeps the nested path under `parent`.
+ */
+const fileLabel = (key: string, parent: string): string =>
+  (key.startsWith(parent) && key.slice(parent.length)) || key;
 
 /**
  * A folder-aware browser for a `useFiles()` instance. Uses `list({ delimiter })`
  * so common prefixes surface as folders you can descend into, with a breadcrumb
  * trail and cursor-based "load more". Each file row carries a `FileActions` menu
- * (download, copy, rename, move, delete) unless `readOnly`. Falls back
- * gracefully on adapters that can't delimit — everything just appears as files
- * at the root.
+ * (download, copy, rename, move, delete) unless `readOnly`. On adapters whose
+ * `capabilities().delimiter` is `false` (they have no folder concept and reject
+ * a delimiter) it lists flat instead: every key under the current prefix, with
+ * its path relative to it. A failed listing is shown, not mistaken for an empty
+ * folder.
  */
 export const FileBrowser = ({
   files,
@@ -85,6 +98,10 @@ export const FileBrowser = ({
   const [items, setItems] = useState<StoredFile[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [isLoading, setIsLoading] = useState(true);
+  const [listError, setListError] = useState<string>();
+  // `undefined` until capabilities resolve; listing waits for it so the first
+  // request already knows whether it may pass a delimiter.
+  const [canDelimit, setCanDelimit] = useState<boolean>();
 
   // Read `files` through a ref so the fetch effect depends only on `prefix` —
   // the hook returns a fresh object whenever its ambient store changes, so
@@ -92,18 +109,53 @@ export const FileBrowser = ({
   // the moment a `list` errors). Same pattern as `file-list`.
   const filesRef = useRef(files);
   filesRef.current = files;
+  // Every load takes a ticket; only the newest may apply its result, so a slow
+  // response for a folder you've already left (or a stale "load more") can't
+  // overwrite the one you're looking at.
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolve = async () => {
+      // Capabilities unreachable (e.g. not authorized): try a delimited
+      // listing anyway — if the adapter rejects it, that error is shown.
+      let supported = true;
+      try {
+        const caps = await filesRef.current.capabilities();
+        supported = caps.delimiter;
+      } catch {
+        // Keep the default above.
+      }
+      if (!cancelled) {
+        setCanDelimit(supported);
+      }
+    };
+    void resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const load = useCallback(
     async (next?: string) => {
+      if (canDelimit === undefined) {
+        return;
+      }
+      requestRef.current += 1;
+      const request = requestRef.current;
       setIsLoading(true);
+      setListError(undefined);
       try {
         // The client drops `undefined` options from the request, so an absent
         // cursor and an explicit `undefined` are the same first-page call.
         const result = await filesRef.current.list({
           cursor: next || undefined,
-          delimiter,
+          delimiter: canDelimit ? delimiter : undefined,
           prefix: prefix || undefined,
         });
+        if (request !== requestRef.current) {
+          return;
+        }
         setFolders((prev) =>
           next
             ? [...new Set([...prev, ...(result.prefixes ?? [])])]
@@ -111,16 +163,27 @@ export const FileBrowser = ({
         );
         setItems((prev) => (next ? [...prev, ...result.items] : result.items));
         setCursor(result.cursor);
-      } catch {
-        // The hook mirrors the error to `files.error` for display; don't re-fetch.
+      } catch (error) {
+        if (request === requestRef.current) {
+          setListError(
+            error instanceof Error ? error.message : "Something went wrong."
+          );
+        }
       } finally {
-        setIsLoading(false);
+        if (request === requestRef.current) {
+          setIsLoading(false);
+        }
       }
     },
-    [prefix, delimiter]
+    [canDelimit, prefix, delimiter]
   );
 
+  // A new folder starts from a clean slate rather than showing the previous
+  // folder's rows under the new breadcrumb while it loads.
   useEffect(() => {
+    setFolders([]);
+    setItems([]);
+    setCursor(undefined);
     void load();
   }, [load]);
 
@@ -132,12 +195,17 @@ export const FileBrowser = ({
   }, [load, onChanged]);
 
   const crumbs = crumbsOf(prefix, delimiter);
-  const isEmpty = !(isLoading || folders.length || items.length);
+  const isEmpty = !(isLoading || listError || folders.length || items.length);
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
-      <nav className="flex flex-wrap items-center gap-0.5 text-sm">
+      <nav
+        aria-label="Folder path"
+        className="flex flex-wrap items-center gap-0.5 text-sm"
+      >
         <Button
+          aria-current={crumbs.length === 0 ? "page" : undefined}
+          aria-label="Root folder"
           onClick={() => setPrefix("")}
           size="icon-xs"
           type="button"
@@ -145,10 +213,14 @@ export const FileBrowser = ({
         >
           <HomeIcon />
         </Button>
-        {crumbs.map((crumb) => (
+        {crumbs.map((crumb, index) => (
           <Fragment key={crumb.prefix}>
-            <ChevronRightIcon className="text-muted-foreground size-3" />
+            <ChevronRightIcon
+              aria-hidden="true"
+              className="text-muted-foreground size-3"
+            />
             <Button
+              aria-current={index === crumbs.length - 1 ? "page" : undefined}
               onClick={() => setPrefix(crumb.prefix)}
               size="xs"
               type="button"
@@ -159,6 +231,12 @@ export const FileBrowser = ({
           </Fragment>
         ))}
       </nav>
+
+      {canDelimit === false && (
+        <p className="text-muted-foreground text-xs">
+          This storage has no folders, so every file under this path is listed.
+        </p>
+      )}
 
       <ul className="flex flex-col gap-1">
         {folders.map((folder) => (
@@ -194,7 +272,7 @@ export const FileBrowser = ({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">
-                  {folderName(item.key, prefix, delimiter) || item.key}
+                  {fileLabel(item.key, prefix)}
                 </span>
                 <span className="text-muted-foreground block text-xs">
                   {formatBytes(item.size)} · {item.type || "unknown"}
@@ -218,6 +296,25 @@ export const FileBrowser = ({
         </div>
       )}
 
+      {listError && !isLoading && (
+        <div
+          className="text-destructive flex flex-col items-center gap-2 p-6 text-center text-sm"
+          role="alert"
+        >
+          <span>Couldn't list this folder: {listError}</span>
+          <Button
+            onClick={() => {
+              void load();
+            }}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Try again
+          </Button>
+        </div>
+      )}
+
       {isEmpty && (
         <div className="text-muted-foreground flex flex-col items-center gap-1 p-8 text-center text-sm">
           <FolderIcon className="size-6" />
@@ -225,7 +322,7 @@ export const FileBrowser = ({
         </div>
       )}
 
-      {cursor && !isLoading && (
+      {cursor && !isLoading && !listError && (
         <Button
           onClick={() => {
             void load(cursor);

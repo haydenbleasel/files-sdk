@@ -3,14 +3,14 @@
 import type { SearchMatch, StoredFile } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon, SearchIcon } from "lucide-react";
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export interface FileSearchProps {
-  /** A `useFiles()` instance — matches are streamed through `search()`. */
+  /** A `useFiles()` instance — matches are found through `search()`. */
   files: UseFilesResult;
   /** Limit the search to keys under this prefix. */
   prefix?: string;
@@ -38,9 +38,11 @@ const formatBytes = (bytes: number): string => {
 };
 
 /**
- * A search box for a `useFiles()` instance. Streams `search()` results into a
- * list and lets you switch match mode (substring, glob, regex, exact) and toggle
- * case sensitivity. The previous search is aborted when a new one starts.
+ * A search box for a `useFiles()` instance. Runs `search()` and lists the
+ * matches, with a switchable match mode (substring, glob, regex, exact) and a
+ * case-sensitivity toggle. One search runs at a time (submit is disabled while
+ * it's in flight), a failed search — an invalid regex, a gateway error — is
+ * shown inline, and an in-flight search is aborted on unmount.
  */
 export const FileSearch = ({
   files,
@@ -56,12 +58,20 @@ export const FileSearch = ({
   const [results, setResults] = useState<StoredFile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searchError, setSearchError] = useState<string>();
 
   const filesRef = useRef(files);
   filesRef.current = files;
-  // A per-search controller so a new query cancels the in-flight generator.
+  // A per-search controller, aborted on unmount so an in-flight walk stops.
   const controllerRef = useRef<AbortController>(null);
   const caseId = useId();
+
+  useEffect(
+    () => () => {
+      controllerRef.current?.abort();
+    },
+    []
+  );
 
   const run = useCallback(
     async (event: React.FormEvent) => {
@@ -76,6 +86,7 @@ export const FileSearch = ({
       setIsSearching(true);
       setHasSearched(true);
       setResults([]);
+      setSearchError(undefined);
       try {
         const found: StoredFile[] = [];
         for await (const file of filesRef.current.search(query, {
@@ -90,8 +101,14 @@ export const FileSearch = ({
         if (!controller.signal.aborted) {
           setResults(found);
         }
-      } catch {
-        // The hook mirrors the error to `files.error`; an invalid regex lands here.
+      } catch (error) {
+        // Keep the error local so it renders here whether or not the hook also
+        // mirrors it to `files.error`; an invalid regex lands here too.
+        if (!controller.signal.aborted) {
+          setSearchError(
+            error instanceof Error ? error.message : "Search failed."
+          );
+        }
       } finally {
         if (!controller.signal.aborted) {
           setIsSearching(false);
@@ -148,7 +165,13 @@ export const FileSearch = ({
         </div>
       </form>
 
-      {hasSearched && !isSearching && (
+      {searchError && !isSearching && (
+        <p className="text-destructive text-xs" role="alert">
+          Search failed: {searchError}
+        </p>
+      )}
+
+      {hasSearched && !isSearching && !searchError && (
         <p className="text-muted-foreground text-xs">
           {results.length} {results.length === 1 ? "match" : "matches"}
         </p>

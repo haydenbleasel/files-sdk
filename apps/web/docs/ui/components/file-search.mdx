@@ -1,9 +1,9 @@
 ---
 title: File Search
-description: A search box that streams matching keys with substring, glob, regex and exact match modes plus a case-sensitivity toggle - driven by useFiles.
+description: A search box that lists matching keys with substring, glob, regex and exact match modes plus a case-sensitivity toggle - driven by useFiles.
 ---
 
-Streams [`search()`](/docs/api/search) results into a list. Switch between substring, glob, regex and exact matching, toggle case sensitivity, and the previous search is aborted the moment a new one starts.
+Runs [`search()`](/docs/api/search) and lists the matches. Switch between substring, glob, regex and exact matching and toggle case sensitivity; a failed search (an invalid regex, a gateway error) is shown inline, and a search still in flight is aborted when the component unmounts.
 
 <Component path="file-search/examples/file-search-basic" />
 

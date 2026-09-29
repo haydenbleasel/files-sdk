@@ -3,7 +3,7 @@ title: Upload Progress
 description: Per-file and aggregate progress bars for in-flight uploads, reading the ambient uploads and progress state a useFiles instance exposes.
 ---
 
-A drop-in progress view. It reads the ambient `uploads` and `progress` a [`useFiles`](/docs/ui/client/react) instance exposes, so it lights up for **any** upload that instance starts — wherever the call originates. Returns `null` when idle.
+A drop-in progress view. It reads the ambient `uploads` and `progress` a [`useFiles`](/docs/ui/client/react) instance exposes, so it lights up for **any** upload that instance starts — single or bulk, wherever the call originates. Returns `null` until there's something to show. (The preview below simulates that state, since the docs have no gateway.)
 
 <Component path="upload-progress/examples/upload-progress-basic" />
 
@@ -32,7 +32,7 @@ export function Uploader() {
 }
 ```
 
-Each row shows a file's name, percentage and status (uploading, success, error, aborted). When more than one file is in flight, an aggregate bar is shown on top.
+Each row shows a file's name and status: a percentage while it uploads, a check when it's done, the error message when it fails, or "Cancelled" after an abort. The hook keeps every file's row across upload calls, so finished rows stay until you call `files.reset()`, which clears them (in-flight rows stay). Once there's more than one row, an aggregate bar on top shows how many have finished and the overall byte progress.
 
 ## Props
 

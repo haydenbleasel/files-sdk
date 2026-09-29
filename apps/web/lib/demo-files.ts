@@ -65,6 +65,8 @@ interface SampleObject {
   type: string;
   /** Days before `NOW` the object was last modified. */
   age: number;
+  /** Body served by download(), so text previews have something to show. */
+  text?: string;
 }
 
 // Sample objects — non-image types so the previews render clean file-type
@@ -74,6 +76,15 @@ const SAMPLE: SampleObject[] = [
     age: 6,
     key: "documents/meeting-notes.txt",
     size: 4210,
+    text: [
+      "Weekly sync — storage migration",
+      "",
+      "- Move uploads from S3 to R2: swap the adapter, keep the Files calls.",
+      "- Thumbnails: signed URLs first, gateway proxy as the fallback.",
+      "- Turn on versioning() before the bulk re-encode.",
+      "",
+      "Next: dry-run the transfer() on staging and compare receipts.",
+    ].join("\n"),
     type: "text/plain",
   },
   {
@@ -103,21 +114,22 @@ const storedFile = (
   key: string,
   size = 0,
   type = "application/octet-stream",
-  lastModified = NOW
+  lastModified = NOW,
+  text = ""
 ): StoredFile => ({
-  arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
-  blob: () => Promise.resolve(new Blob([])),
+  arrayBuffer: () => new Blob([text]).arrayBuffer(),
+  blob: () => Promise.resolve(new Blob([text], { type })),
   key,
   lastModified,
   name: key.split("/").at(-1) ?? key,
   size,
-  stream: () => new ReadableStream<Uint8Array>(),
-  text: () => Promise.resolve(""),
+  stream: () => new Blob([text]).stream(),
+  text: () => Promise.resolve(text),
   type,
 });
 
 const sampleToStored = (s: SampleObject): StoredFile =>
-  storedFile(s.key, s.size, s.type, NOW - s.age * DAY);
+  storedFile(s.key, s.size, s.type, NOW - s.age * DAY, s.text);
 
 // Guess a plausible StoredFile for an arbitrary key (head/download of anything).
 const inferStored = (key: string): StoredFile => {
@@ -152,8 +164,10 @@ const list = (opts?: ListCallOptions): Promise<ListResult> => {
   return Promise.resolve({ items, prefixes: [...prefixes] });
 };
 
+// `versions()` returns only snapshots of earlier contents — the current file
+// is never one of them — so the newest entry is just the previous version.
 const VERSIONS: FileVersion[] = [
-  { lastModified: NOW - DAY, size: 4210, versionId: "v3-current" },
+  { lastModified: NOW - DAY, size: 4210, versionId: "v3" },
   { lastModified: NOW - 4 * DAY, size: 3980, versionId: "v2" },
   { lastModified: NOW - 11 * DAY, size: 2110, versionId: "v1-initial" },
 ];

@@ -1,9 +1,9 @@
 ---
 title: File List
-description: A reactive list of stored files with thumbnails, size and type, plus download and delete — driven by useFiles.
+description: A list of stored files with thumbnails, size and type, plus download and delete — driven by useFiles.
 ---
 
-Lists the objects under a prefix and keeps itself in sync as you mutate them. Images get an inline thumbnail through the gateway download proxy, so it works on every adapter — even ones that can't mint a public URL.
+Lists the objects under a prefix. It lists on mount and on Refresh, and drops a row after its own delete — changes made elsewhere show up on the next refresh. Images get an inline thumbnail from a signed URL when the adapter can mint one, falling back to the gateway download proxy otherwise, so thumbnails work on every adapter.
 
 <Component path="file-list/examples/file-list-basic" />
 
@@ -25,7 +25,7 @@ export function Browser() {
 }
 ```
 
-Delete and download both go through the same `files` instance you pass in, so ambient error state stays consistent. The component owns its own list state (a `files.list()` call on mount) — for shared, cached listing bring [`useList`](/docs/ui/client/react#reactive-reads) instead.
+Delete and download both go through the same `files` instance you pass in, so ambient error state stays consistent; a failed delete or download is also shown above the list. The component owns its own list state (a `files.list()` call on mount) — for shared, cached listing bring [`useList`](/docs/ui/client/react#reactive-reads) instead.
 
 ## Props
 

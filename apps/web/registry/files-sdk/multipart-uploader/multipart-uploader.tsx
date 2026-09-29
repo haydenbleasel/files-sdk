@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 
-type QueueStatus = "pending" | "uploading" | "success" | "error";
+type QueueStatus = "pending" | "uploading" | "success" | "error" | "cancelled";
 
 interface QueueItem {
   id: number;
@@ -23,7 +23,13 @@ interface QueueItem {
 export interface MultipartUploaderProps {
   /** A `useFiles()` instance — uploads through it. */
   files: UseFilesResult;
-  /** Key prefix (folder) for explicit keys, e.g. `"docs/"`. Empty = server mints keys. */
+  /**
+   * Key prefix (folder) for explicit keys, e.g. `"docs/"`. Files then stream
+   * through the gateway, so S3-family adapters write large ones as multipart
+   * uploads. Empty = the server mints keys and each file goes up in a single
+   * request to a presigned URL (or through the gateway when the adapter can't
+   * sign).
+   */
   prefix?: string;
   /** `accept` attribute for the file input. */
   accept?: string;
@@ -35,8 +41,11 @@ export interface MultipartUploaderProps {
 
 /**
  * Multi-file queue uploader. Files upload with bounded concurrency and live
- * per-file progress; large files are chunked into a multipart upload by the
- * gateway transparently. Cancel aborts everything in flight.
+ * per-file progress. With `prefix` set, each file streams through the gateway
+ * into `files.upload(key, stream)`, which the S3-family adapters split into a
+ * multipart upload once the file is large enough; without one, each file goes
+ * up in a single request. Cancel aborts everything in flight (those files show
+ * "Cancelled" and can be retried) and leaves files that hadn't started queued.
  */
 export const MultipartUploader = ({
   files,
@@ -50,6 +59,14 @@ export const MultipartUploader = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  // Each start() is a run; cancel() stops the current one. Workers check both
+  // before pulling the next file, so a cancelled run never starts another
+  // upload against the aborted hook.
+  const runRef = useRef(0);
+  const cancelledRef = useRef(false);
+  // Ids removed while a run is in progress — workers pull from a snapshot, so
+  // they skip these instead of uploading a file the user took off the list.
+  const removedRef = useRef(new Set<number>());
 
   const patch = useCallback((id: number, next: Partial<QueueItem>) => {
     setQueue((prev) =>
@@ -70,20 +87,31 @@ export const MultipartUploader = ({
   }, []);
 
   const start = useCallback(async () => {
-    const pending = queue.filter((item) => item.status === "pending");
+    const pending = queue.filter(
+      (item) => item.status === "pending" || item.status === "cancelled"
+    );
     if (!pending.length) {
       return;
     }
     // Re-arm the hook in case a previous run was cancelled (aborted) controller.
     files.reset();
+    // Anything removed before now is already out of this run's snapshot.
+    removedRef.current.clear();
+    runRef.current += 1;
+    const run = runRef.current;
+    cancelledRef.current = false;
+    const stopped = () => cancelledRef.current || run !== runRef.current;
     setIsUploading(true);
 
     let cursor = 0;
     const worker = async () => {
-      while (cursor < pending.length) {
+      while (!stopped() && cursor < pending.length) {
         const item = pending[cursor];
         cursor += 1;
-        patch(item.id, { error: undefined, status: "uploading" });
+        if (removedRef.current.has(item.id)) {
+          continue;
+        }
+        patch(item.id, { error: undefined, progress: 0, status: "uploading" });
         try {
           const onProgress = (p: { fraction: number }) =>
             patch(item.id, { progress: p.fraction });
@@ -98,10 +126,18 @@ export const MultipartUploader = ({
           patch(item.id, { key: result.key, progress: 1, status: "success" });
           onUploaded?.({ key: result.key, name: item.file.name });
         } catch (error) {
-          patch(item.id, {
-            error: error instanceof Error ? error.message : "Upload failed",
-            status: "error",
-          });
+          // An upload cut off by Cancel rejects too; keep it "cancelled" (and
+          // retryable) rather than reporting the abort as a failure.
+          patch(
+            item.id,
+            stopped()
+              ? { error: undefined, progress: 0, status: "cancelled" }
+              : {
+                  error:
+                    error instanceof Error ? error.message : "Upload failed",
+                  status: "error",
+                }
+          );
         }
       }
     };
@@ -109,26 +145,32 @@ export const MultipartUploader = ({
     await Promise.all(
       Array.from({ length: Math.min(concurrency, pending.length) }, worker)
     );
-    setIsUploading(false);
+    if (run === runRef.current) {
+      setIsUploading(false);
+    }
   }, [concurrency, files, onUploaded, patch, prefix, queue]);
 
   const cancel = useCallback(() => {
+    cancelledRef.current = true;
     files.abort();
     setIsUploading(false);
     setQueue((prev) =>
       prev.map((item) =>
         item.status === "uploading"
-          ? { ...item, error: "Cancelled", status: "error" }
+          ? { ...item, error: undefined, progress: 0, status: "cancelled" }
           : item
       )
     );
   }, [files]);
 
   const remove = useCallback((id: number) => {
+    removedRef.current.add(id);
     setQueue((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  const pendingCount = queue.filter((item) => item.status === "pending").length;
+  const pendingCount = queue.filter(
+    (item) => item.status === "pending" || item.status === "cancelled"
+  ).length;
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
@@ -153,7 +195,9 @@ export const MultipartUploader = ({
         <UploadIcon className="text-muted-foreground size-5" />
         <span className="text-sm font-medium">Add files</span>
         <span className="text-muted-foreground text-xs">
-          Large files upload in parts automatically.
+          {prefix
+            ? "Files stream through your server; S3-compatible storage writes large ones in parts."
+            : "Each file uploads in a single request."}
         </span>
       </Button>
 
@@ -170,6 +214,7 @@ export const MultipartUploader = ({
                   <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
                 ) : (
                   <Button
+                    aria-label={`Remove ${item.file.name}`}
                     className="text-muted-foreground"
                     onClick={() => remove(item.id)}
                     size="icon-xs"
@@ -185,6 +230,9 @@ export const MultipartUploader = ({
               )}
               {item.error && (
                 <p className="text-destructive text-xs">{item.error}</p>
+              )}
+              {item.status === "cancelled" && (
+                <p className="text-muted-foreground text-xs">Cancelled</p>
               )}
             </li>
           ))}
