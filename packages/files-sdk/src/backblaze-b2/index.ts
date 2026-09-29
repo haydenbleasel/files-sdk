@@ -10,7 +10,7 @@ export interface BackblazeB2AdapterOptions {
   bucket: string;
   /**
    * Backblaze B2 cluster code, e.g. `"us-west-000"`, `"us-west-001"`,
-   * `"us-west-002"`, `"us-east-004"`, `"us-east-005"`, `"eu-central-003"`.
+   * `"us-west-002"`, `"us-west-004"`, `"us-east-005"`, `"eu-central-003"`.
    * Drives the endpoint host (`https://s3.<region>.backblazeb2.com`); there's
    * no env-var fallback. Doubles as the SigV4 region. The cluster a bucket
    * lives in is shown in the B2 console; pick the wrong one and you'll see

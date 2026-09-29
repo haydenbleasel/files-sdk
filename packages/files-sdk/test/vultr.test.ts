@@ -11,14 +11,14 @@ describe("vultr adapter", () => {
     const adapter = vultr({
       accessKeyId: "AKID",
       bucket: "uploads",
-      region: "ewr",
+      region: "ewr1",
       secretAccessKey: "SECRET",
     });
     expect(adapter.name).toBe("vultr");
     const client = adapter.raw as S3Client;
-    expect(await client.config.region()).toBe("ewr");
+    expect(await client.config.region()).toBe("ewr1");
     const endpoint = await client.config.endpoint?.();
-    expect(endpoint?.hostname).toBe("ewr.vultrobjects.com");
+    expect(endpoint?.hostname).toBe("ewr1.vultrobjects.com");
     expect(endpoint?.protocol).toBe("https:");
     expect(await client.config.forcePathStyle).toBe(false);
   });
@@ -27,13 +27,13 @@ describe("vultr adapter", () => {
     const adapter = vultr({
       accessKeyId: "AKID",
       bucket: "uploads",
-      region: "ams",
+      region: "ams1",
       secretAccessKey: "SECRET",
     });
     const client = adapter.raw as S3Client;
-    expect(await client.config.region()).toBe("ams");
+    expect(await client.config.region()).toBe("ams1");
     const endpoint = await client.config.endpoint?.();
-    expect(endpoint?.hostname).toBe("ams.vultrobjects.com");
+    expect(endpoint?.hostname).toBe("ams1.vultrobjects.com");
   });
 
   test("explicit endpoint overrides the region-derived value", async () => {
@@ -41,7 +41,7 @@ describe("vultr adapter", () => {
       accessKeyId: "AKID",
       bucket: "uploads",
       endpoint: "https://custom.example.com:8443",
-      region: "ewr",
+      region: "ewr1",
       secretAccessKey: "SECRET",
     });
     const client = adapter.raw as S3Client;
@@ -55,7 +55,7 @@ describe("vultr adapter", () => {
       accessKeyId: "AKID",
       bucket: "uploads",
       forcePathStyle: true,
-      region: "ewr",
+      region: "ewr1",
       secretAccessKey: "SECRET",
     });
     const client = adapter.raw as S3Client;
@@ -79,7 +79,7 @@ describe("vultr adapter", () => {
     delete process.env.VULTR_ACCESS_KEY_ID;
     delete process.env.VULTR_SECRET_ACCESS_KEY;
     try {
-      expect(() => vultr({ bucket: "uploads", region: "ewr" })).toThrow(
+      expect(() => vultr({ bucket: "uploads", region: "ewr1" })).toThrow(
         /credentials/u
       );
     } finally {
@@ -100,7 +100,7 @@ describe("vultr adapter", () => {
     try {
       const adapter = vultr({
         bucket: "uploads",
-        region: "ewr",
+        region: "ewr1",
       });
       const client = adapter.raw as S3Client;
       const creds = await client.config.credentials();
@@ -124,14 +124,14 @@ describe("vultr adapter", () => {
     const adapter = vultr({
       accessKeyId: "AKID",
       bucket: "uploads",
-      region: "ewr",
+      region: "ewr1",
       secretAccessKey: "SECRET",
     });
     const url = await adapter.url("a.txt");
     expect(url).toContain("X-Amz-Signature=");
     expect(url).toContain("a.txt");
     expect(url).toContain("X-Amz-Expires=3600");
-    expect(url).toContain("ewr.vultrobjects.com");
+    expect(url).toContain("ewr1.vultrobjects.com");
   });
 
   test("url() returns the publicBaseUrl when configured", async () => {
@@ -139,7 +139,7 @@ describe("vultr adapter", () => {
       accessKeyId: "AKID",
       bucket: "uploads",
       publicBaseUrl: "https://cdn.example.com",
-      region: "ewr",
+      region: "ewr1",
       secretAccessKey: "SECRET",
     });
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
@@ -154,7 +154,7 @@ describe("vultr adapter", () => {
       adapter: vultr({
         accessKeyId: "AKID",
         bucket: "uploads",
-        region: "ewr",
+        region: "ewr1",
         secretAccessKey: "SECRET",
       }),
     });
@@ -171,7 +171,7 @@ describe("vultr adapter", () => {
       adapter: vultr({
         accessKeyId: "AKID",
         bucket: "uploads",
-        region: "ewr",
+        region: "ewr1",
         secretAccessKey: "SECRET",
       }),
     });

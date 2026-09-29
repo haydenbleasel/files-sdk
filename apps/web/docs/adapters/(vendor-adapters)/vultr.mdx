@@ -1,6 +1,6 @@
 ---
 title: Vultr Object Storage
-description: Vultr Object Storage via the S3-compatible API. Endpoint derived from the region code (ewr, sjc, ams, blr, ...).
+description: Vultr Object Storage via the S3-compatible API. Endpoint derived from the cluster code (ewr1, sjc1, ams1, blr1, ...).
 ---
 
 ## Installation
@@ -20,14 +20,14 @@ import { vultr } from "files-sdk/vultr";
 const files = new Files({
   adapter: vultr({
     bucket: "uploads",
-    region: "ewr", // or "sjc", "ams", "blr", "del", "sgp", "lux"
+    region: "ewr1", // or "sjc1", "ams1", "blr1", "del1", "sgp1"
     // accessKeyId / secretAccessKey auto-loaded from
     // VULTR_ACCESS_KEY_ID / VULTR_SECRET_ACCESS_KEY
   }),
 });
 ```
 
-Vultr Object Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`ewr`, `sjc`, `ams`, `blr`, `del`, `sgp`, `lux`), virtual-hosted-style addressing, errors relabelled. Auto-loads from `VULTR_ACCESS_KEY_ID` and `VULTR_SECRET_ACCESS_KEY`. Generate access keys in the Vultr customer portal under Object Storage -> your subscription -> Overview.
+Vultr Object Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the cluster code (`ewr1`, `sjc1`, `ams1`, `blr1`, `del1`, `sgp1`, giving hosts like `ewr1.vultrobjects.com`), virtual-hosted-style addressing, errors relabelled. Auto-loads from `VULTR_ACCESS_KEY_ID` and `VULTR_SECRET_ACCESS_KEY`. Generate access keys in the Vultr customer portal under Object Storage -> your subscription -> Overview.
 
 ## Options
 

@@ -9,11 +9,11 @@ export interface VultrAdapterOptions {
   /** Vultr bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
-   * Vultr Object Storage region code, e.g. `"ewr"` (New Jersey),
-   * `"sjc"` (Silicon Valley), `"ams"` (Amsterdam), `"blr"` (Bangalore),
-   * `"del"` (Delhi), `"sgp"` (Singapore), `"lux"` (Luxembourg). Drives the
-   * endpoint host (`https://<region>.vultrobjects.com`); there's no env-var
-   * fallback. Doubles as the SigV4 region.
+   * Vultr Object Storage cluster code, e.g. `"ewr1"` (New Jersey),
+   * `"sjc1"` (Silicon Valley), `"ams1"` (Amsterdam), `"blr1"` (Bangalore),
+   * `"del1"` (Delhi), `"sgp1"` (Singapore). Drives the endpoint host
+   * (`https://<region>.vultrobjects.com`, e.g. `ewr1.vultrobjects.com`);
+   * there's no env-var fallback. Doubles as the SigV4 region.
    */
   region: string;
   /**
@@ -63,7 +63,7 @@ export const vultr = (opts: VultrAdapterOptions): VultrAdapter => {
   if (!opts.region) {
     throw new FilesError(
       "Provider",
-      'vultr adapter: missing region. Pass `region` (e.g. "ewr").'
+      'vultr adapter: missing region. Pass `region` (e.g. "ewr1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {

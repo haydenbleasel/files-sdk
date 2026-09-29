@@ -1,6 +1,6 @@
 ---
 title: OVHcloud Object Storage
-description: OVHcloud Object Storage (High Performance S3) via the S3-compatible API. Endpoint derived from the region code.
+description: OVHcloud Object Storage via the S3-compatible API. Endpoint derived from the region code.
 ---
 
 ## Installation
@@ -20,14 +20,14 @@ import { ovhcloud } from "files-sdk/ovhcloud";
 const files = new Files({
   adapter: ovhcloud({
     bucket: "uploads",
-    region: "gra", // or "sbg", "de", "uk", "waw", "sgp", "syd"
+    region: "gra", // or "sbg", "de", "uk", "waw", "sgp", "ap-southeast-syd"
     // accessKeyId / secretAccessKey auto-loaded from
     // OVH_ACCESS_KEY_ID / OVH_SECRET_ACCESS_KEY
   }),
 });
 ```
 
-OVHcloud Object Storage (High Performance S3) via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`gra`, `sbg`, `bhs`, `de`, `uk`, `waw`, `sgp`, `syd`), virtual-hosted-style addressing, errors relabelled. For the Standard (Swift-backed) tier, pass `https://s3.<region>.cloud.ovh.net` as the explicit `endpoint`. Auto-loads from `OVH_ACCESS_KEY_ID` and `OVH_SECRET_ACCESS_KEY`. Generate S3 credentials in the OVHcloud Control Panel under Public Cloud -> Object Storage -> S3 users.
+OVHcloud Object Storage via its S3-compatible API. A thin wrapper around the S3 adapter - endpoint derived from the region code (`gra`, `rbx`, `sbg`, `bhs`, `de`, `uk`, `waw`, `eu-west-par`, `sgp`, `ap-southeast-syd`, ...), virtual-hosted-style addressing, errors relabelled. The default host is `https://s3.<region>.io.cloud.ovh.net`, OVHcloud's main S3 endpoint, which serves every storage class (Standard by default). To use the legacy `https://s3.<region>.perf.cloud.ovh.net` endpoint or the Swift-backed `https://s3.<region>.cloud.ovh.net` (some regions only), pass it as `endpoint`. Auto-loads from `OVH_ACCESS_KEY_ID` and `OVH_SECRET_ACCESS_KEY`. Generate S3 credentials in the OVHcloud Control Panel under Public Cloud -> Object Storage -> S3 users.
 
 ## Options
 

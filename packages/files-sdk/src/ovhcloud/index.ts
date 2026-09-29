@@ -10,20 +10,24 @@ export interface OvhcloudAdapterOptions {
   bucket: string;
   /**
    * OVHcloud Object Storage region code, e.g. `"gra"` (Gravelines),
-   * `"sbg"` (Strasbourg), `"bhs"` (Beauharnois), `"de"` (Frankfurt),
-   * `"uk"` (London), `"waw"` (Warsaw), `"sgp"` (Singapore),
-   * `"syd"` (Sydney). Drives the endpoint host
-   * (`https://s3.<region>.io.cloud.ovh.net`, the High Performance S3 API);
-   * there's no env-var fallback. Doubles as the SigV4 region.
+   * `"rbx"` (Roubaix), `"sbg"` (Strasbourg), `"de"` (Frankfurt),
+   * `"uk"` (London), `"waw"` (Warsaw), `"eu-west-par"` (Paris),
+   * `"bhs"` (Beauharnois), `"sgp"` (Singapore), `"ap-southeast-syd"`
+   * (Sydney). Drives the endpoint host
+   * (`https://s3.<region>.io.cloud.ovh.net`); there's no env-var fallback.
+   * Doubles as the SigV4 region.
    */
   region: string;
   /**
    * Override the OVHcloud endpoint. When unset, defaults to
-   * `https://s3.${region}.io.cloud.ovh.net` — OVHcloud's High Performance
-   * S3 endpoint. For the Standard tier (Swift-backed), pass
-   * `https://s3.${region}.cloud.ovh.net` explicitly. OVHcloud routes by
-   * Host header — the SDK prepends the bucket subdomain for virtual-hosted
-   * style.
+   * `https://s3.${region}.io.cloud.ovh.net`, OVHcloud's main S3 endpoint:
+   * it serves every storage class and stores new objects as Standard
+   * unless told otherwise. OVHcloud also keeps a legacy
+   * `https://s3.${region}.perf.cloud.ovh.net` endpoint (High Performance by
+   * default) and, in some regions, the Swift-backed
+   * `https://s3.${region}.cloud.ovh.net`; pass either here to use it.
+   * OVHcloud routes by Host header — the SDK prepends the bucket subdomain
+   * for virtual-hosted style.
    */
   endpoint?: string;
   /**
