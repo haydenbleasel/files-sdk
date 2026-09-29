@@ -29,5 +29,10 @@ export const createRouteHandler =
   async (ctx) => {
     // Cede Koa's response handling — the gateway writes the raw response itself.
     ctx.respond = false;
-    await handleNodeRequest(router, ctx.req, ctx.res);
+    // `koa-mount` strips its prefix from `ctx.req.url`; the gateway builds
+    // absolute URLs from the request (the proxy-upload target), so hand it
+    // the pre-mount `ctx.originalUrl` instead.
+    await handleNodeRequest(router, ctx.req, ctx.res, {
+      url: ctx.originalUrl,
+    });
   };

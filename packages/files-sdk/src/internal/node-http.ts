@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 
 import type { FilesApi } from "../api/index.js";
-import { isObject } from "./is.js";
+import { isFunction, isObject } from "./is.js";
 import { toNodeReadable, toWebStream } from "./node-stream";
 
 /** A Node request, optionally carrying Express's `originalUrl` (the pre-mount path). */
@@ -33,13 +33,21 @@ const requestProtocol = (req: IncomingMessage): string => {
     : "http";
 };
 
-/** Marshal a Node request into the Web `Request` the gateway consumes. */
+/**
+ * Marshal a Node request into the Web `Request` the gateway consumes.
+ *
+ * `body` overrides the request stream: pass it when the payload doesn't live on
+ * `req` as a readable stream (an in-process mock request carries it on a
+ * property instead); `null` sends no body. `url` overrides the request path
+ * (e.g. Koa's `ctx.originalUrl` under a mount).
+ */
 export const toWebRequest = (
   req: NodeLikeRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  overrides: { body?: BodyInit | null; url?: string } = {}
 ): Request => {
   const base = `${requestProtocol(req)}://${req.headers.host ?? "localhost"}`;
-  const url = new URL(req.originalUrl ?? req.url ?? "/", base);
+  const url = new URL(overrides.url ?? req.originalUrl ?? req.url ?? "/", base);
 
   // `rawHeaders` is a flat [k, v, k, v, …] list — appending each pair preserves
   // duplicates without the string|string[] branching of `req.headers`.
@@ -55,8 +63,8 @@ export const toWebRequest = (
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
   const init: RequestInit & { duplex?: "half" } = { headers, method, signal };
-  if (hasBody) {
-    init.body = toWebStream(req);
+  if (hasBody && overrides.body !== null) {
+    init.body = overrides.body ?? toWebStream(req);
     init.duplex = "half";
   }
   return new Request(url, init);
@@ -81,16 +89,39 @@ export const sendWebResponse = async (
 /**
  * An `AbortSignal` that fires when the client disconnects before the response
  * finishes — for bindings that return the `Response` to the framework to flush
- * (e.g. Nitro), so there is no `ServerResponse` here to guard `writableFinished`
- * on. The connection socket's `close` is the one disconnect event that fires
- * across Node and Bun; once the response is fully sent the socket closes too,
- * but aborting then is a harmless no-op for an already-settled request.
+ * (e.g. Nitro). The connection socket's `close` is the one disconnect event
+ * that fires across Node and Bun; `res`'s own `close` covers runtimes that
+ * report the disconnect there first. Both listeners come off once `res`
+ * finishes or closes, so a keep-alive socket serving many requests doesn't
+ * accumulate one per request. A socket without an event API (an in-process
+ * mock request) yields a signal that never aborts.
  */
 export const abortSignalForNodeRequest = (
-  req: IncomingMessage
+  req: IncomingMessage,
+  res: ServerResponse
 ): AbortSignal => {
   const controller = new AbortController();
-  req.socket?.once("close", () => controller.abort());
+  const { socket } = req;
+  if (!(isObject(socket) && isFunction(socket.once))) {
+    return controller.signal;
+  }
+  const listeners = {
+    abortUnlessFinished: (): void => {
+      if (!res.writableFinished) {
+        controller.abort();
+      }
+      listeners.detach();
+    },
+    detach: (): void => {
+      socket.removeListener("close", listeners.abortUnlessFinished);
+      res.removeListener("close", listeners.abortUnlessFinished);
+      res.removeListener("finish", listeners.detach);
+    },
+  };
+  const { abortUnlessFinished, detach } = listeners;
+  socket.once("close", abortUnlessFinished);
+  res.once("close", abortUnlessFinished);
+  res.once("finish", detach);
   return controller.signal;
 };
 
@@ -103,7 +134,8 @@ export const abortSignalForNodeRequest = (
 export const handleNodeRequest = async (
   router: FilesApi,
   req: NodeLikeRequest,
-  res: ServerResponse
+  res: ServerResponse,
+  overrides: { url?: string } = {}
 ): Promise<void> => {
   // Wire a client disconnect through to the upstream read: abort the signal the
   // proxy-download path threads into `files.download` when the client goes away
@@ -118,7 +150,9 @@ export const handleNodeRequest = async (
   };
   req.socket?.once("close", onClose);
   try {
-    const response = await router.handle(toWebRequest(req, controller.signal));
+    const response = await router.handle(
+      toWebRequest(req, controller.signal, overrides)
+    );
     await sendWebResponse(res, response);
   } catch {
     // `router.handle` never throws (it returns an error Response), so this is a

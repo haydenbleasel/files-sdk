@@ -23,8 +23,9 @@ const router = createFilesRouter({
 const app = new Koa();
 const files = createRouteHandler(router);
 
-// Gate the route before any body parser (see below). Pair with @koa/router if
-// you prefer: router.all("/api/files", (ctx) => files(ctx)).
+// Gate the route before any body parser (see below). Pair with @koa/router or
+// koa-mount if you prefer: router.all("/api/files", (ctx) => files(ctx)).
+// The gateway builds URLs from `ctx.originalUrl`, so a mount prefix is kept.
 app.use((ctx, next) => (ctx.path === "/api/files" ? files(ctx) : next()));
 
 app.listen(3000);

@@ -60,6 +60,32 @@ describe("files-sdk/koa", () => {
     expect(typeof body.capabilities.delimiter).toBe("boolean");
   });
 
+  test("forwards the pre-mount URL under a koa-mount-style prefix", async () => {
+    const router: FilesApi = {
+      handle: (req) => Promise.resolve(new Response(new URL(req.url).pathname)),
+    };
+    const app = new Koa();
+    const files = createRouteHandler(router);
+    // What koa-mount does: strip the mount prefix from `ctx.path` (and with
+    // it `ctx.req.url`), leaving `ctx.originalUrl` intact.
+    app.use((ctx, next) => {
+      if (!ctx.path.startsWith("/mounted")) {
+        return next();
+      }
+      ctx.path = ctx.path.slice("/mounted".length) || "/";
+      return ctx.path === "/api/files" ? files(ctx) : next();
+    });
+    const s = app.listen(0, "127.0.0.1");
+    server = s;
+    const ready = Promise.withResolvers<string>();
+    s.on("listening", () => {
+      const addr = s.address() as AddressInfo;
+      ready.resolve(`http://127.0.0.1:${addr.port}/mounted/api/files`);
+    });
+    const res = await fetch(`${await ready.promise}?op=download&key=a`);
+    expect(await res.text()).toBe("/mounted/api/files");
+  });
+
   test("streams a PUT request body through to the gateway", async () => {
     const router: FilesApi = {
       handle: async (req) => new Response(`${req.method}:${await req.text()}`),

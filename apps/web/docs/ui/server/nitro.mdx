@@ -24,7 +24,7 @@ export default defineEventHandler(createRouteHandler(router));
 ```
 
 :::note
-One handler serves every method — the gateway dispatches internally (GET = download, POST = the JSON verbs, PUT = upload). The binding targets Nitro v2 / h3 v1, where `event.node.req` is present on every preset (a node-compat shim on edge, which Nitro polyfills via [unenv](https://github.com/unjs/unenv)).
+One handler serves every method — the gateway dispatches internally (GET = download, POST = the JSON verbs, PUT = upload). The binding targets Nitro v2 / h3 v1, where `event.node.req` is present on every preset (a node-compat shim on edge, which Nitro polyfills via [unenv](https://github.com/unjs/unenv)). Requests Nitro serves in-process work too: the edge preset's `localFetch` and an SSR `$fetch` to your own API arrive as mock requests with no socket, and the binding reads their body from the event instead of the stream. When the event already carries a Web `Request` (h3's `toWebHandler`), that request is passed through unchanged.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.
