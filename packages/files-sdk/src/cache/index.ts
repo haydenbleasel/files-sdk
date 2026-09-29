@@ -183,15 +183,54 @@ const createMemoryStore = (max: number): CacheStore => {
   };
 };
 
-/** Pull the cacheable metadata off a {@link StoredFile}. */
+/**
+ * Pull the cacheable metadata off a {@link StoredFile}, with its own copy of
+ * the `metadata` object — the caller keeps the original, and mutating it must
+ * not reach the cached record.
+ */
 const metaOf = (file: StoredFile): StoredFileMeta => ({
   key: file.key,
   size: file.size,
   type: file.type,
   ...(file.lastModified !== undefined && { lastModified: file.lastModified }),
   ...(file.etag !== undefined && { etag: file.etag }),
-  ...(file.metadata !== undefined && { metadata: file.metadata }),
+  ...(file.metadata !== undefined && { metadata: { ...file.metadata } }),
 });
+
+/**
+ * A fresh copy of cached metadata for one hit. Every hit gets its own
+ * `metadata` object, so a caller mutating one read can't corrupt the next.
+ */
+const cloneMeta = (meta: StoredFileMeta): StoredFileMeta => ({
+  ...meta,
+  ...(meta.metadata !== undefined && { metadata: { ...meta.metadata } }),
+});
+
+/** Query parameters that carry a presigned URL's lifetime, in seconds. */
+const SIGNED_LIFETIME_PARAMS = ["X-Amz-Expires", "X-Goog-Expires"];
+const DIGITS = /^\d+$/u;
+
+/**
+ * The lifetime (ms) a presigned URL declares for itself — `X-Amz-Expires` (S3
+ * and every S3-compatible adapter) or `X-Goog-Expires` (GCS V4), both seconds
+ * from signing — or `undefined` when it carries neither. Lets the expiry cap
+ * follow what was actually signed when something inside the plugin (e.g.
+ * `signedUrlPolicy()`) shortened the requested `expiresIn`.
+ */
+const signedLifetimeMs = (url: string): number | undefined => {
+  let params: URLSearchParams;
+  try {
+    params = new URL(url).searchParams;
+  } catch {
+    return;
+  }
+  for (const name of SIGNED_LIFETIME_PARAMS) {
+    const raw = params.get(name);
+    if (raw !== null && DIGITS.test(raw)) {
+      return Number(raw) * 1000;
+    }
+  }
+};
 
 /** Stable signature for the url-affecting options, so variants cache apart. */
 const urlSignature = (options?: {
@@ -220,7 +259,12 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  *   `head` has), so nothing buffers.
  * - **`url`** caches the returned string per url-options signature, and **caps
  *   each entry at its own `expiresIn`** so a presigned URL is never handed out
- *   past its signature. Keep {@link CacheOptions.ttl} well below your URL expiry.
+ *   past its signature. A call without `expiresIn` is capped at
+ *   {@link CacheOptions.defaultUrlExpiresIn} (default `3600`, the SDK-wide
+ *   default) — lower it to match an adapter configured with a shorter
+ *   `defaultUrlExpiresIn`. When the URL states its own lifetime
+ *   (`X-Amz-Expires`, `X-Goog-Expires`) and it's shorter, that wins. Keep
+ *   {@link CacheOptions.ttl} well below your URL expiry.
  * - **`download`** is **off by default** — add `"download"` to
  *   {@link CacheOptions.operations}. Even then only **known-length bodies at or
  *   under {@link CacheOptions.maxBytes}** are buffered and cached; anything
@@ -240,12 +284,19 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  * and a populated entry reflects one logical, post-retry result. Place `cache()`
  * **first** (outermost) so it short-circuits before the rest of the pipeline
  * does any work; place it after a body-transforming plugin (`encryption()`,
- * `compression()`) only if you intend to cache the transformed bytes.
+ * `compression()`) only if you intend to cache the transformed bytes. The one
+ * plugin that belongs **before** it is `signedUrlPolicy()`: plugins run in
+ * array order, so a policy placed after `cache()` rewrites `url()` options the
+ * cache never sees — it would key and cap the entry by the caller's
+ * `expiresIn` rather than the shorter one actually signed (only S3-style and
+ * GCS URLs, which state their own lifetime, are caught regardless). Use
+ * `plugins: [signedUrlPolicy({ maxExpiresIn }), cache()]`.
  *
  * It uses `extend` (for `invalidateCache()` / `cacheStats()` / `resetCacheStats()`),
  * so reach for {@link createFiles} to surface those on the type.
  *
- * @param options optional `{ store, ttl, operations, maxBytes, maxEntries, clock }`.
+ * @param options optional `{ store, ttl, operations, maxBytes, maxEntries,
+ *   clock, defaultUrlExpiresIn }`.
  * @example
  * ```ts
  * import { createFiles } from "files-sdk";
@@ -312,7 +363,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     const entry = record?.head;
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
-      return createStoredFile(entry.meta, {
+      return createStoredFile(cloneMeta(entry.meta), {
         factory: () => downloadBytes(op.key),
         kind: "lazy",
       });
@@ -343,8 +394,13 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     const value = await next(op);
     // The signature-lifetime cap must apply even when the caller omits
     // `expiresIn` — the adapter still signs with a finite default — or a
-    // long/disabled `ttl` would keep serving the URL past its signature.
-    const capMs = (op.options?.expiresIn ?? defaultUrlExpiresIn) * 1000;
+    // long/disabled `ttl` would keep serving the URL past its signature. When
+    // the URL states its own lifetime, a shorter one (an inner plugin clamped
+    // the request) wins.
+    const capMs = Math.min(
+      (op.options?.expiresIn ?? defaultUrlExpiresIn) * 1000,
+      signedLifetimeMs(value) ?? Number.POSITIVE_INFINITY
+    );
     await putRecord(op.key, (prev) => ({
       ...prev,
       urls: {
@@ -365,8 +421,10 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     const entry = record?.downloads?.[signature];
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
-      return createStoredFile(entry.meta, {
-        data: entry.bytes,
+      // Hand out copies: `stream()` enqueues the buffer itself, so a consumer
+      // mutating a chunk would otherwise rewrite every later hit.
+      return createStoredFile(cloneMeta(entry.meta), {
+        data: new Uint8Array(entry.bytes),
         kind: "buffer",
       });
     }
@@ -379,14 +437,20 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
     const meta = metaOf(file);
+    // The cache keeps its own copy, so the caller's bytes stay theirs to
+    // mutate.
     await putRecord(op.key, (prev) => ({
       ...prev,
       downloads: {
         ...prev.downloads,
-        [signature]: { bytes, expiresAt: expiryFrom(now), meta },
+        [signature]: {
+          bytes: new Uint8Array(bytes),
+          expiresAt: expiryFrom(now),
+          meta,
+        },
       },
     }));
-    return createStoredFile(meta, { data: bytes, kind: "buffer" });
+    return createStoredFile(cloneMeta(meta), { data: bytes, kind: "buffer" });
   };
 
   /**

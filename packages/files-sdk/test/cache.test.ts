@@ -14,9 +14,12 @@ import type {
   Files,
   OperationOptions,
   PluginNext,
+  StoredFile,
   UploadOptions,
   UrlOptions,
 } from "../src/index.js";
+import { memory as memoryAdapter } from "../src/memory/index.js";
+import { signedUrlPolicy } from "../src/signed-url-policy/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 // Wrap an adapter and record the keys each read/write verb is called with.
@@ -189,6 +192,151 @@ describe("cache plugin — url", () => {
     await files.url("a.txt");
 
     expect(calls.url).toHaveLength(2);
+  });
+});
+
+describe("cache plugin — url signed lifetime", () => {
+  // An adapter whose URLs state their own lifetime the way S3/GCS presigned
+  // URLs do.
+  const selfDescribing = (param: string, base = "https://bucket.local/") => {
+    const inner = fakeAdapter();
+    return counting({
+      ...inner,
+      url: (key: string, opts?: UrlOptions) =>
+        Promise.resolve(`${base}${key}?${param}=${opts?.expiresIn ?? 3600}`),
+    });
+  };
+
+  test("caps an entry at the lifetime an inner signedUrlPolicy() applied", async () => {
+    let now = 1000;
+    const { adapter, calls } = selfDescribing("X-Amz-Expires");
+    // cache() outside the policy never sees the clamped expiresIn, but the
+    // URL itself says it was signed for 60s.
+    const files = createFiles({
+      adapter,
+      plugins: [
+        cache({ clock: () => now, ttl: 0 }),
+        signedUrlPolicy({ maxExpiresIn: 60 }),
+      ],
+    });
+    await files.upload("a.txt", "hello");
+
+    const first = await files.url("a.txt", { expiresIn: 3600 });
+    expect(first).toContain("X-Amz-Expires=60");
+    now += 59_000;
+    await files.url("a.txt", { expiresIn: 3600 });
+    expect(calls.url).toHaveLength(1);
+    now += 1001;
+    await files.url("a.txt", { expiresIn: 3600 });
+    expect(calls.url).toHaveLength(2);
+  });
+
+  test("reads a GCS V4 X-Goog-Expires lifetime too", async () => {
+    let now = 1000;
+    const { adapter, calls } = selfDescribing("X-Goog-Expires");
+    const files = withCache({ clock: () => now, ttl: 0 }, adapter);
+    await files.upload("a.txt", "hello");
+
+    await files.url("a.txt", { expiresIn: 5 });
+    now += 5001;
+    await files.url("a.txt", { expiresIn: 5 });
+    expect(calls.url).toHaveLength(2);
+  });
+
+  test("a longer stated lifetime never extends the requested cap", async () => {
+    let now = 1000;
+    const inner = fakeAdapter();
+    const { adapter, calls } = counting({
+      ...inner,
+      url: (key: string) =>
+        Promise.resolve(`https://bucket.local/${key}?X-Amz-Expires=99999`),
+    });
+    const files = withCache({ clock: () => now, ttl: 0 }, adapter);
+    await files.upload("a.txt", "hello");
+
+    await files.url("a.txt", { expiresIn: 10 });
+    now += 10_001;
+    await files.url("a.txt", { expiresIn: 10 });
+    expect(calls.url).toHaveLength(2);
+  });
+
+  test("ignores a malformed lifetime and a URL it can't parse", async () => {
+    let now = 1000;
+    const bad = selfDescribing("X-Amz-Expires", "not a url/");
+    const files = withCache({ clock: () => now, ttl: 0 }, bad.adapter);
+    await files.upload("a.txt", "hello");
+    await files.url("a.txt", { expiresIn: 10 });
+    now += 9000;
+    await files.url("a.txt", { expiresIn: 10 });
+    expect(bad.calls.url).toHaveLength(1);
+
+    const inner = fakeAdapter();
+    const odd = counting({
+      ...inner,
+      url: (key: string) =>
+        Promise.resolve(`https://bucket.local/${key}?X-Amz-Expires=soon`),
+    });
+    const other = withCache({ clock: () => now, ttl: 0 }, odd.adapter);
+    await other.upload("a.txt", "hello");
+    await other.url("a.txt", { expiresIn: 10 });
+    now += 9000;
+    await other.url("a.txt", { expiresIn: 10 });
+    expect(odd.calls.url).toHaveLength(1);
+  });
+});
+
+// Read the first chunk a download's stream() hands out — the very buffer a
+// consumer could mutate in place.
+const firstChunk = async (file: StoredFile): Promise<Uint8Array> => {
+  const reader = file.stream().getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+  return value ?? new Uint8Array(0);
+};
+
+describe("cache plugin — isolation between reads", () => {
+  test("mutating a streamed chunk from a hit can't corrupt later hits", async () => {
+    const files = withCache({ operations: ["download"] });
+    await files.upload("a.txt", "hello");
+    await files.download("a.txt");
+
+    const hit = await files.download("a.txt");
+    const chunk = await firstChunk(hit);
+    chunk[0] = "X".codePointAt(0) ?? 0;
+    expect(await bodyOf(files, "a.txt")).toBe("hello");
+  });
+
+  test("mutating the bytes of the populating read can't corrupt the cache", async () => {
+    const files = withCache({ operations: ["download"] });
+    await files.upload("a.txt", "hello");
+
+    const populating = await files.download("a.txt");
+    const chunk = await firstChunk(populating);
+    chunk[0] = "X".codePointAt(0) ?? 0;
+    expect(await bodyOf(files, "a.txt")).toBe("hello");
+  });
+
+  test("mutating metadata from a read can't corrupt later hits", async () => {
+    // The memory adapter hands out its own copies, so any leak is the cache's.
+    const files = withCache(
+      { operations: ["head", "download"] },
+      memoryAdapter()
+    );
+    await files.upload("a.txt", "hello", { metadata: { tag: "x" } });
+
+    const populating = await files.head("a.txt");
+    (populating.metadata ?? {}).tag = "miss";
+    const hit = await files.head("a.txt");
+    (hit.metadata ?? {}).tag = "hit";
+    const again = await files.head("a.txt");
+    expect(again.metadata).toEqual({ tag: "x" });
+
+    const downloaded = await files.download("a.txt");
+    (downloaded.metadata ?? {}).tag = "miss";
+    const cached = await files.download("a.txt");
+    (cached.metadata ?? {}).tag = "hit";
+    const reread = await files.download("a.txt");
+    expect(reread.metadata).toEqual({ tag: "x" });
   });
 });
 

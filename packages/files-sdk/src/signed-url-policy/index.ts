@@ -84,7 +84,10 @@ const clampToCap = (requested: number | undefined, cap: number): number =>
  *
  * Place it **first** (outermost) so it sees the caller's original `url()` /
  * `signedUploadUrl()` request before anything downstream, and so its options
- * reach the adapter that actually signs.
+ * reach the adapter that actually signs — in particular, keep it ahead of
+ * `cache()`, which must key and cap each cached URL by the expiry this policy
+ * applied rather than the one the caller asked for:
+ * `plugins: [signedUrlPolicy({ maxExpiresIn }), cache()]`.
  *
  * @param options `disposition`, `maxExpiresIn`, and/or `maxUploadSize` — any
  *   combination; `disposition` defaults to `"attachment"`.

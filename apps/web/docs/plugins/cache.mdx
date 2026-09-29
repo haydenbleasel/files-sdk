@@ -36,8 +36,8 @@ cache({ operations: ["head", "url", "download"] });
 ```
 
 - **`head`** caches the metadata only. A hit returns a [`StoredFile`](/docs/api/stored-file) whose body still **lazy-fetches on access** - exactly the contract an uncached `head` has - so nothing is buffered up front.
-- **`url`** caches the returned string, keyed per url-options signature (so a plain `url()` and a `url({ expiresIn })` cache apart). Each entry is **additionally capped at its own `expiresIn`**, so a presigned URL is never handed out past its signature.
-- **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/docs/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile`.
+- **`url`** caches the returned string, keyed per url-options signature (so a plain `url()` and a `url({ expiresIn })` cache apart). Each entry is **additionally capped at its own `expiresIn`**, so a presigned URL is never handed out past its signature. A `url()` without `expiresIn` is capped at `defaultUrlExpiresIn` (default `3600`, the SDK-wide default) - the adapter signs such calls with its own default, which the plugin can't see, so set this to match if you've configured a shorter `defaultUrlExpiresIn` on the adapter. When the URL states its own lifetime (`X-Amz-Expires` on S3 and S3-compatible adapters, `X-Goog-Expires` on GCS) and it's shorter, that wins.
+- **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/docs/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile` with its own copy of the bytes and metadata, so a caller mutating one read can't change the next.
 
 ```ts
 cache({
@@ -106,6 +106,21 @@ cache({ ttl: 30_000 });
 
 For `url`, keep `ttl` **comfortably below your signed-URL expiry**. The per-entry `expiresIn` cap guarantees you never serve a dead URL, but a short `ttl` keeps the URLs you hand out fresh with plenty of life left.
 
+```ts
+cache({
+  ttl: 30_000,
+  defaultUrlExpiresIn: 900, // the adapter signs url() calls without expiresIn for 15 minutes
+});
+```
+
+TTL and expiry run off `clock` (default `Date.now`, in ms). Inject a fake for deterministic expiry in tests:
+
+```ts
+let now = 0;
+const files = createFiles({ adapter, plugins: [cache({ clock: () => now })] });
+now += 61_000; // every default-ttl entry is now stale
+```
+
 ## Ordering
 
 Place `cache()` **first** (outermost) so a hit short-circuits before the rest of the pipeline does any work:
@@ -115,6 +130,14 @@ plugins: [cache(), encryption(key)];
 ```
 
 Put it **after** a body-transforming plugin only if you deliberately want to cache the transformed bytes (e.g. caching post-`compression()` output).
+
+The one plugin that belongs **in front of** it is [`signedUrlPolicy()`](/docs/plugins/signed-url-policy):
+
+```ts
+plugins: [signedUrlPolicy({ maxExpiresIn: 60 }), cache()];
+```
+
+Plugins run in array order, so a policy placed after `cache()` rewrites `url()` options the cache never sees. The cache would then key and cap each entry by the caller's `expiresIn` rather than the shorter one the policy actually signed, and could serve a 60-second URL for up to an hour. Only URLs that state their own lifetime (S3-style and GCS) are caught either way.
 
 ## Things to keep in mind
 

@@ -87,15 +87,15 @@ Enforcing a `maxSize` makes supporting adapters mint a presigned **POST** form (
 
 ## Ordering
 
-Put `signedUrlPolicy()` **first** (outermost) so it sees the caller's original `url()` / `signedUploadUrl()` request before anything downstream, and so the options it rewrites reach the adapter that actually signs.
+Put `signedUrlPolicy()` **first** (outermost) so it sees the caller's original `url()` / `signedUploadUrl()` request before anything downstream, and so the options it rewrites reach the adapter that actually signs - and [`cache()`](/docs/plugins/cache), which must key and cap each cached URL by the expiry the policy applied, not the one the caller asked for:
 
 ```ts
-plugins: [signedUrlPolicy({ maxExpiresIn: 900 }), encryption(key)];
+plugins: [signedUrlPolicy({ maxExpiresIn: 900 }), cache(), encryption(key)];
 ```
 
 ## Things to keep in mind
 
 - **It only guards the two URL-minting verbs.** `url()` and `signedUploadUrl()` are rewritten; reads, writes, `copy`, `move`, and `list` pass straight through untouched.
 - **It stores no metadata and transforms nothing on disk.** A bucket behind this policy is indistinguishable from one without it - safe to enable or remove at any time.
-- **It's a policy, not a scanner.** It enforces safe-by-default _headers and limits_; it doesn't inspect the bytes a signed upload will receive. Pair it with [`validation()`](/docs/plugins/validation) for direct uploads and [`contentType()`](/docs/plugins/content-type) if you don't trust client-declared types.
+- **It's a policy, not a scanner.** It enforces safe-by-default _headers and limits_; it doesn't inspect the bytes a signed upload will receive. Pair it with [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) for uploads that go through the instance; both refuse to mint `signedUploadUrl()` when they can't enforce it.
 - **It changes nothing on adapters without the matching primitive.** `expiresIn` is ignored by always-public adapters (e.g. Vercel Blob in public mode); on those the disposition override and size cap surface the same way a direct call would (returning unchanged, or throwing where the adapter has no primitive).
