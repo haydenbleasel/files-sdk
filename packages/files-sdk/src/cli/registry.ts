@@ -13,13 +13,21 @@ const ENDPOINT_FLAG = "--endpoint";
  * from flags or `--config-json`.
  */
 export interface ProviderRegistration {
-  /** Human-readable list of required flags or env vars, for `--help` and errors. */
+  /**
+   * The typed flags this provider can't construct without (e.g. `--bucket`,
+   * `--region`). Metadata only: nothing in the CLI renders or enforces it —
+   * each adapter validates its own options and names the missing one — but
+   * it documents the entry and tests pin it against the adapter's contract.
+   * Empty when configuration comes from `--config-json` or env vars instead.
+   */
   required: readonly string[];
   /**
-   * Optional one-line note surfaced in errors and `--help`. Use this for
-   * providers whose configuration doesn't fit the typed flag set — most
-   * commonly the OAuth-token providers, where the only path is
-   * `--config-json` (or the adapter's own env vars).
+   * Optional one-line hint appended to the adapter's error when `load()`
+   * throws (see `loadFiles`). Use this for providers whose configuration
+   * doesn't fit the typed flag set — most commonly the OAuth-token
+   * providers, where the only path is `--config-json` (or the adapter's own
+   * env vars). `--config-json` is merged shallowly, so nested auth shapes
+   * must be passed whole.
    */
   notes?: string;
   /** Construct the adapter from a flat opts object. */
@@ -151,7 +159,7 @@ export const PROVIDERS: ProviderRegistry = {
       const { akamai } = await import("../akamai/index.js");
       return construct(akamai, s3LikeOpts(opts), opts.extra);
     },
-    required: ["--bucket", ENDPOINT_FLAG],
+    required: ["--bucket", "--region"],
   },
   alibaba: {
     load: async (opts) => {
@@ -166,7 +174,7 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(appwrite, {}, opts.extra);
     },
     notes:
-      "configure via --config-json (endpoint, projectId, apiKey, bucketId) or APPWRITE_* env vars",
+      'configure via --config-json, e.g. {"bucket":"<bucketId>","projectId":"<id>","key":"<apiKey>","endpoint":"https://cloud.appwrite.io/v1"}; projectId, key, and endpoint fall back to APPWRITE_* env vars, bucket does not',
     required: [],
   },
   archil: {
@@ -223,7 +231,7 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(box, {}, opts.extra);
     },
     notes:
-      "OAuth-based — configure via --config-json (clientId, clientSecret, refreshToken, etc.) or BOX_* env vars",
+      'OAuth-based — configure via --config-json with one auth shape: {"oauth":{"clientId":"…","clientSecret":"…","refreshToken":"…"}}, {"ccg":{"clientId":"…","clientSecret":"…","enterpriseId":"…"}}, {"jwt":{"configFilePath":"…"}}, or {"developerToken":"…"} (plus optional "rootFolderId"); BOX_DEVELOPER_TOKEN is the only env fallback',
     required: [],
   },
   "bunny-storage": {
@@ -341,7 +349,7 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(googleDrive, {}, opts.extra);
     },
     notes:
-      "OAuth-based — configure via --config-json (clientId, clientSecret, refreshToken, folderId) or GOOGLE_* env vars",
+      'OAuth-based — configure via --config-json, e.g. {"oauth":{"clientId":"…","clientSecret":"…","refreshToken":"…"},"rootFolderId":"…"} or a service account via {"keyFilename":"…"}; GOOGLE_DRIVE_CLIENT_EMAIL + GOOGLE_DRIVE_PRIVATE_KEY or GOOGLE_DRIVE_KEY_FILE also work',
     required: [],
   },
   hetzner: {
@@ -356,7 +364,7 @@ export const PROVIDERS: ProviderRegistry = {
       const { ibmCos } = await import("../ibm-cos/index.js");
       return construct(ibmCos, s3LikeOpts(opts), opts.extra);
     },
-    required: ["--bucket", ENDPOINT_FLAG],
+    required: ["--bucket", "--region"],
   },
   "idrive-e2": {
     load: async (opts) => {
@@ -402,7 +410,7 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(onedrive, {}, opts.extra);
     },
     notes:
-      "OAuth-based — configure via --config-json (Microsoft Graph clientId, clientSecret, tenantId, etc.)",
+      'OAuth-based — configure via --config-json, e.g. {"clientCredentials":{"tenantId":"…","clientId":"…","clientSecret":"…"},"driveId":"…"} (app-only auth also needs driveId, siteId, or userId), {"oauth":{"clientId":"…","clientSecret":"…","refreshToken":"…"}}, or {"accessToken":"…"}; or ONEDRIVE_* env vars',
     required: [],
   },
   "oracle-cloud": {
@@ -410,7 +418,9 @@ export const PROVIDERS: ProviderRegistry = {
       const { oracleCloud } = await import("../oracle-cloud/index.js");
       return construct(oracleCloud, s3LikeOpts(opts), opts.extra);
     },
-    required: ["--bucket", "--region", ENDPOINT_FLAG],
+    notes:
+      'pass the tenancy\'s Object Storage namespace via --config-json \'{"namespace":"<namespace>"}\' (find it with `oci os ns get`); the endpoint is derived from namespace + --region',
+    required: ["--bucket", "--region"],
   },
   ovhcloud: {
     load: async (opts) => {
@@ -499,7 +509,7 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(sharepoint, {}, opts.extra);
     },
     notes:
-      "OAuth-based — configure via --config-json (Microsoft Graph clientId, clientSecret, tenantId, siteId, driveId)",
+      'OAuth-based — configure via --config-json, e.g. {"clientCredentials":{"tenantId":"…","clientId":"…","clientSecret":"…"},"siteUrl":"https://contoso.sharepoint.com/sites/marketing"} (or siteId / hostname / driveId, plus optional documentLibrary), {"oauth":{…}}, or {"accessToken":"…"}; or SHAREPOINT_* env vars (ONEDRIVE_* credentials as fallback)',
     required: [],
   },
   storj: {
@@ -518,6 +528,7 @@ export const PROVIDERS: ProviderRegistry = {
           bucket: opts.bucket,
           defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
           key: opts.serviceRoleKey,
+          publicBaseUrl: opts.publicBaseUrl,
           url: opts.url,
         },
         opts.extra

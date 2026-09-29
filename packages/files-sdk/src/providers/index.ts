@@ -5,9 +5,10 @@
  * pull into bundles, build tools, sync engines, or config UIs without dragging
  * in `@aws-sdk/client-s3` and friends.
  *
- * It is the single source of truth behind the docs catalog and the CLI's
- * provider list; a test (`test/providers.test.ts`) keeps the env declarations
- * here in sync with the `readEnv(...)` calls in each adapter.
+ * It is the single source of truth for the provider list: the CLI registry is
+ * checked against it, and the docs site derives its adapter count from it. A
+ * test (`test/providers.test.ts`) keeps the env declarations here in sync with
+ * the `readEnv(...)` calls in each adapter's folder, in both directions.
  *
  * @example List every provider and its required env vars.
  * ```typescript
@@ -186,7 +187,7 @@ export const PROVIDERS = {
       "Akamai Cloud Object Storage (formerly Linode) via the S3-compatible API. Endpoint derived from the region/cluster code.",
     env: s3Compatible("AKAMAI_ACCESS_KEY_ID", "AKAMAI_SECRET_ACCESS_KEY", [
       "bucket",
-      "endpoint",
+      "region",
     ]),
     name: "Akamai Cloud Object Storage",
     peerDeps: AWS_S3_PEERS,
@@ -446,6 +447,14 @@ export const PROVIDERS = {
           readBy: "sdk-chain",
           secret: true,
         },
+        {
+          aliases: ["S3_ENDPOINT"],
+          description:
+            "S3-compatible endpoint URL (resolved by Bun; or pass `endpoint`)",
+          key: "AWS_ENDPOINT",
+          readBy: "sdk-chain",
+          secret: false,
+        },
       ],
     },
     name: "Bun S3",
@@ -470,20 +479,18 @@ export const PROVIDERS = {
           ],
         },
       ],
-      optional: [
-        {
-          aliases: ["STORAGE_REGION"],
-          description: "Region code (ny, de, sg, ...)",
-          key: "BUNNY_STORAGE_REGION",
-          readBy: "files-sdk",
-          secret: false,
-        },
-      ],
       required: [
         {
           aliases: ["STORAGE_ZONE"],
           description: "Storage Zone name",
           key: "BUNNY_STORAGE_ZONE",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          aliases: ["STORAGE_REGION"],
+          description: "Storage Zone region code (de, ny, sg, ...)",
+          key: "BUNNY_STORAGE_REGION",
           readBy: "files-sdk",
           secret: false,
         },
@@ -636,7 +643,8 @@ export const PROVIDERS = {
           label: "Application Default Credentials",
           vars: [
             {
-              description: "Path to service-account JSON",
+              description:
+                "Path to an ADC credentials file (service account, workload identity, or authorized user); wins over FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY, loses to explicit `serviceAccountPath` / `credentials`",
               key: "GOOGLE_APPLICATION_CREDENTIALS",
               readBy: "files-sdk",
               secret: false,
@@ -661,6 +669,8 @@ export const PROVIDERS = {
           ],
         },
       ],
+      notes:
+        "Pass `bucket` or set FIREBASE_STORAGE_BUCKET; when neither is set the bucket defaults to `<projectId>.firebasestorage.app`, so one of the bucket or the project ID is needed.",
       optional: [
         {
           aliases: ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"],
@@ -669,10 +679,9 @@ export const PROVIDERS = {
           readBy: "files-sdk",
           secret: false,
         },
-      ],
-      required: [
         {
-          description: "Storage bucket name (or pass `bucket`)",
+          description:
+            "Storage bucket name (or pass `bucket`; defaults to `<projectId>.firebasestorage.app`)",
           key: "FIREBASE_STORAGE_BUCKET",
           readBy: "files-sdk",
           secret: false,
@@ -720,7 +729,7 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "Node-only (raw sockets). Plain FTP transmits credentials in cleartext — set FTP_SECURE=true for FTPS. Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` and `signedUploadUrl()` require `publicBaseUrl` — FTP serves no HTTP.",
+        "Node-only (raw sockets). Plain FTP transmits credentials in cleartext — set FTP_SECURE=true for FTPS. Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` requires `publicBaseUrl` (FTP serves no HTTP); `signedUploadUrl()` is unsupported.",
       optional: [
         {
           description: "Port (default 21)",
@@ -817,7 +826,7 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "Also supports OAuth client credentials (clientId / clientSecret / refreshToken) via constructor options.",
+        "Also supports 3-legged OAuth via the `oauth: { clientId, clientSecret, refreshToken }` constructor option (no env fallback).",
       optional: [
         {
           description: "User to impersonate (domain-wide delegation)",
@@ -860,7 +869,7 @@ export const PROVIDERS = {
     env: s3Compatible(
       "IBM_COS_ACCESS_KEY_ID",
       "IBM_COS_SECRET_ACCESS_KEY",
-      ["bucket", "endpoint"],
+      ["bucket", "region"],
       {
         notes: "Auth uses IBM Cloud HMAC credentials, not IAM API keys.",
       }
@@ -1066,13 +1075,14 @@ export const PROVIDERS = {
   },
   "oracle-cloud": {
     description:
-      "Oracle Cloud Infrastructure Object Storage via the S3 compatibility layer. Auth uses HMAC Customer Secret Keys, not regular API keys.",
+      "Oracle Cloud Infrastructure Object Storage via the S3 compatibility layer. Endpoint derived from the tenancy namespace and region; auth uses HMAC Customer Secret Keys, not regular API keys.",
     env: s3Compatible(
       "OCI_ACCESS_KEY_ID",
       "OCI_SECRET_ACCESS_KEY",
-      ["bucket", "region", "endpoint"],
+      ["bucket", "namespace", "region"],
       {
-        notes: "Auth uses HMAC Customer Secret Keys, not regular API keys.",
+        notes:
+          "Auth uses HMAC Customer Secret Keys, not regular API keys. The endpoint is derived from the tenancy's Object Storage namespace and the region.",
       }
     ),
     name: "Oracle Cloud Object Storage",
@@ -1081,7 +1091,7 @@ export const PROVIDERS = {
   },
   ovhcloud: {
     description:
-      "OVHcloud Object Storage (High Performance S3) via the S3-compatible API. Endpoint derived from the region code.",
+      "OVHcloud Object Storage via the S3-compatible API. Endpoint derived from the region code.",
     env: s3Compatible("OVH_ACCESS_KEY_ID", "OVH_SECRET_ACCESS_KEY", [
       "bucket",
       "region",
@@ -1094,6 +1104,7 @@ export const PROVIDERS = {
     description:
       "PocketBase via the official JS SDK. Maps the unified key/blob API onto a dedicated collection with a unique key field and a single-file body field.",
     env: {
+      config: ["collection"],
       credentialModes: [
         {
           label: "Auth token",
@@ -1224,13 +1235,35 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "Credentials are resolved by the AWS SDK default chain — files-sdk only reads the region. Any chain source works (env vars, IAM role, shared profile, SSO).",
+        "Credentials are resolved by the AWS SDK default chain — any chain source works (env vars, IAM role, shared profile, SSO). files-sdk itself reads the region and checks whether AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL and the AWS checksum variables are set: an endpoint redirect away from AWS makes conditional requests fail closed unless you pass `conditional: true`.",
       optional: [
         {
           description: "Session token for temporary credentials",
           key: "AWS_SESSION_TOKEN",
           readBy: "sdk-chain",
           secret: true,
+        },
+        {
+          aliases: ["AWS_ENDPOINT_URL"],
+          description:
+            "Endpoint override the AWS SDK honors (or pass `endpoint`); turns off native conditional requests unless `conditional: true`",
+          key: "AWS_ENDPOINT_URL_S3",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          description:
+            'Request checksum mode the AWS SDK honors ("WHEN_SUPPORTED" or "WHEN_REQUIRED"); with a custom `endpoint` the adapter defaults to "WHEN_REQUIRED" unless this is set',
+          key: "AWS_REQUEST_CHECKSUM_CALCULATION",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          description:
+            'Response checksum validation mode the AWS SDK honors ("WHEN_SUPPORTED" or "WHEN_REQUIRED"); with a custom `endpoint` the adapter defaults to "WHEN_REQUIRED" unless this is set',
+          key: "AWS_RESPONSE_CHECKSUM_VALIDATION",
+          readBy: "files-sdk",
+          secret: false,
         },
       ],
       required: [
@@ -1275,7 +1308,8 @@ export const PROVIDERS = {
         "Static credentials only — there is no AWS credential chain (IAM role, shared profile, SSO) on this engine. Pass `forcePathStyle: true` for MinIO and other services without per-bucket DNS.",
       optional: [
         {
-          description: "Session token for temporary credentials",
+          description:
+            "Session token for temporary credentials. Read only when the access key and secret also come from the environment; explicit keys never pick up an env token",
           key: "AWS_SESSION_TOKEN",
           readBy: "files-sdk",
           secret: true,
@@ -1343,7 +1377,7 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "Node-only (raw sockets). Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` and `signedUploadUrl()` require `publicBaseUrl` — SFTP serves no HTTP.",
+        "Node-only (raw sockets). Connect-per-operation; pass a pre-connected `client` for high throughput. `url()` requires `publicBaseUrl` (SFTP serves no HTTP); `signedUploadUrl()` is unsupported.",
       optional: [
         {
           description: "Passphrase for an encrypted private key",
@@ -1586,7 +1620,7 @@ export const PROVIDERS = {
   },
   vultr: {
     description:
-      "Vultr Object Storage via the S3-compatible API. Endpoint derived from the region code (ewr, sjc, ams, blr, ...).",
+      "Vultr Object Storage via the S3-compatible API. Endpoint derived from the region code (ewr1, sjc1, ams1, blr1, del1, sgp1, ...).",
     env: s3Compatible("VULTR_ACCESS_KEY_ID", "VULTR_SECRET_ACCESS_KEY", [
       "bucket",
       "region",
@@ -1632,11 +1666,11 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "HTTP-based (works in Node and edge/browser runtimes). COPY / MOVE run server-side. `url()` and `signedUploadUrl()` require `publicBaseUrl` — a WebDAV GET needs authentication and the protocol has no signing primitive.",
+        "HTTP-based, but the adapter imports `node:stream`, so it needs Node or Bun. COPY / MOVE run server-side. `url()` requires `publicBaseUrl` (a WebDAV GET needs authentication and the protocol has no signing primitive); `signedUploadUrl()` is unsupported.",
       optional: [
         {
           description:
-            'Auth strategy — "basic" (default), "digest", "token", or "none"',
+            'Auth strategy — "password" (alias "basic"), "digest", "token", "auto", or "none". Inferred from the credentials when unset (token auth for a `token` option, password auth for a username/password, otherwise none).',
           key: "WEBDAV_AUTH_TYPE",
           readBy: "files-sdk",
           secret: false,

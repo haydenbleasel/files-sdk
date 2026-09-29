@@ -36,10 +36,8 @@ const uploadthingToken = Buffer.from(
 // guard test below also asserts no keys are missing so adding a provider to
 // the registry forces a coverage update here.
 const cases: Record<string, Case> = {
-  akamai: {
-    expectedName: "akamai",
-    opts: { ...baseS3, endpoint: "https://akamai.test" },
-  },
+  // akamai derives its endpoint from the region; no --endpoint needed.
+  akamai: { expectedName: "akamai", opts: baseS3 },
   alibaba: { expectedName: "alibaba", opts: baseS3 },
   appwrite: {
     expectedName: "appwrite",
@@ -292,7 +290,7 @@ describe("cli/registry option merging", () => {
         accessKeyId: "AKIATEST",
         bucket: "vultr-bucket",
         provider: "vultr",
-        region: "ewr",
+        region: "ewr1",
         secretAccessKey: "secret",
       });
       expect(result.files.adapter.name).toBe("vultr");
@@ -380,6 +378,29 @@ describe("cli/registry option merging", () => {
     }
   });
 
+  test("--public-base-url reaches supabase", async () => {
+    // Regression: the supabase loader dropped the global --public-base-url
+    // flag even though the adapter (and the flag's help text) support it.
+    const result = await loadFiles({
+      bucket: "files",
+      provider: "supabase",
+      publicBaseUrl: "https://cdn.example.test",
+      serviceRoleKey: "service-role",
+      url: "https://project.supabase.co",
+    });
+    expect(await result.files.url("a/b.txt")).toBe(
+      "https://cdn.example.test/a/b.txt"
+    );
+  });
+
+  test("oracle-cloud without a namespace points at --config-json", async () => {
+    // There's no --namespace flag, so the loader's hint has to say where the
+    // required namespace goes.
+    await expect(
+      loadFiles({ ...baseS3, provider: "oracle-cloud" })
+    ).rejects.toThrow(/missing namespace[\s\S]*hint:[\s\S]*--config-json/u);
+  });
+
   test("OAuth provider errors get wrapped with the registry's notes hint", async () => {
     // Loader's error-wrap branch: when a provider with `notes` throws at
     // construction, the loader re-throws a FilesError that combines the
@@ -403,9 +424,9 @@ describe("cli/registry option merging", () => {
 
 describe("cli/registry metadata", () => {
   test("OAuth-only providers carry a `notes` hint", () => {
-    // The CLI surfaces `notes` in --help and the loader wraps adapter errors
-    // with it when load() fails. The OAuth-only providers all rely on it
-    // because their config doesn't fit the typed flag set.
+    // The loader appends `notes` to the adapter's error when load() fails.
+    // The OAuth-only providers all rely on it because their config doesn't
+    // fit the typed flag set.
     for (const name of [
       "appwrite",
       "box",
@@ -424,11 +445,16 @@ describe("cli/registry metadata", () => {
   });
 
   test("flag-driven providers list their required flags", () => {
-    // `required` is the list rendered into --help; verify a sample of
-    // S3-derived providers declare the flags their adapter actually needs.
+    // `required` is registry metadata (nothing renders it); verify a sample
+    // of S3-derived providers declare the flags their adapter actually needs.
     expect(PROVIDERS.s3?.required).toContain("--bucket");
     expect(PROVIDERS.minio?.required).toContain("--endpoint");
     expect(PROVIDERS.scaleway?.required).toContain("--region");
+    // akamai and ibm-cos derive the endpoint from the region; --endpoint is
+    // only an override.
+    for (const name of ["akamai", "ibm-cos", "oracle-cloud"]) {
+      expect(PROVIDERS[name]?.required).toEqual(["--bucket", "--region"]);
+    }
     // The b2 adapter has no env fallback for region, so it's required too.
     expect(PROVIDERS["backblaze-b2"]?.required).toEqual([
       "--bucket",

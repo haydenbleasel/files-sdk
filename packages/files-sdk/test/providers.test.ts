@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -107,26 +107,57 @@ describe("providers catalog", () => {
     }
   });
 
-  // The catalog declares each provider's env vars by hand; this guard reads the
-  // adapter source and asserts every `readEnv("X")` literal is represented in
-  // that provider's spec (as a key or alias). It catches an adapter gaining a
-  // new env var that the catalog forgets. The reverse is intentionally not
-  // checked: `sdk-chain` vars (AWS/GCS credential chains, etc.) are listed for
-  // completeness but never read via `readEnv`.
+  // The catalog declares each provider's env vars by hand; this guard reads
+  // every `.ts` file in the adapter's folder (so `s3/core.ts` counts for `s3`)
+  // and checks both directions: every `readEnv("X")` literal is declared in
+  // that provider's spec (as a key or alias), and every name the spec marks
+  // `readBy: "files-sdk"` still appears as a string literal in that source
+  // (a literal rather than a `readEnv` call, so reads routed through a local
+  // helper still count). It catches an adapter gaining a new env var the
+  // catalog forgets, and a catalog entry outliving the read. `sdk-chain` vars
+  // (AWS/GCS credential chains, etc.) are listed for completeness but never
+  // read by files-sdk, so the reverse check skips them.
+  const adapterSource = (slug: string): string => {
+    const dir = path.join(ROOT, "src", slug);
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => readFileSync(path.join(dir, name), "utf-8"))
+      .join("\n");
+  };
+
+  const readEnvKeys = (slug: string): Set<string> =>
+    new Set(
+      [
+        ...adapterSource(slug).matchAll(
+          /readEnv\(\s*["'](?<env>[^"']+)["']\s*\)/gu
+        ),
+      ].map((match) => match[1] as string)
+    );
+
   describe("each adapter's readEnv keys are declared in the catalog", () => {
     for (const slug of PROVIDER_NAMES) {
       test(slug, () => {
-        const source = readFileSync(
-          path.join(ROOT, "src", slug, "index.ts"),
-          "utf-8"
-        );
-        const readKeys = [
-          ...source.matchAll(/readEnv\(\s*["'](?<env>[^"']+)["']\s*\)/gu),
-        ].map((match) => match[1]);
         const declared = allEnvNames(listEnvVars(slug));
-        for (const key of readKeys) {
-          expect(declared.has(key as string)).toBe(true);
-        }
+        const undeclared = [...readEnvKeys(slug)].filter(
+          (key) => !declared.has(key)
+        );
+        expect(undeclared).toEqual([]);
+      });
+    }
+  });
+
+  describe("each files-sdk-read catalog var is read by its adapter", () => {
+    for (const slug of PROVIDER_NAMES) {
+      test(slug, () => {
+        const source = adapterSource(slug);
+        const unread = [
+          ...allEnvNames(
+            listEnvVars(slug).filter((envVar) => envVar.readBy === "files-sdk")
+          ),
+        ].filter(
+          (key) => !source.includes(`"${key}"`) && !source.includes(`'${key}'`)
+        );
+        expect(unread).toEqual([]);
       });
     }
   });
@@ -149,6 +180,36 @@ describe("getProvider", () => {
       "region",
     ]);
   });
+
+  test("region-derived S3 wrappers list the config their adapter requires", () => {
+    // akamai and ibm-cos derive the endpoint from `region`; oracle-cloud also
+    // needs the tenancy namespace. `endpoint` is only an override for them.
+    expect(getProvider("akamai")?.env.config).toEqual(["bucket", "region"]);
+    expect(getProvider("ibm-cos")?.env.config).toEqual(["bucket", "region"]);
+    expect(getProvider("oracle-cloud")?.env.config).toEqual([
+      "bucket",
+      "namespace",
+      "region",
+    ]);
+  });
+
+  test("pocketbase lists its required collection", () => {
+    expect(getProvider("pocketbase")?.env.config).toEqual(["collection"]);
+  });
+
+  test("bunny-storage requires a region; firebase-storage's bucket is optional", () => {
+    // bunnyStorage() throws without a region, and firebaseStorage() falls back
+    // to `<projectId>.firebasestorage.app` when no bucket is set.
+    const bunnyRequired = getProvider("bunny-storage")?.env.required?.map(
+      (envVar) => envVar.key
+    );
+    expect(bunnyRequired).toContain("BUNNY_STORAGE_REGION");
+    const firebase = getProvider("firebase-storage")?.env;
+    expect(firebase?.required).toBeUndefined();
+    expect(firebase?.optional?.map((envVar) => envVar.key)).toContain(
+      "FIREBASE_STORAGE_BUCKET"
+    );
+  });
 });
 
 describe("listEnvVars", () => {
@@ -157,12 +218,12 @@ describe("listEnvVars", () => {
   });
 
   test("flattens required, credential-mode, and optional vars together", () => {
-    // bunny-storage has one of each: a required zone, a credential-mode access
-    // key, and an optional region.
-    const keys = listEnvVars("bunny-storage").map((envVar) => envVar.key);
-    expect(keys).toContain("BUNNY_STORAGE_ZONE");
-    expect(keys).toContain("BUNNY_STORAGE_ACCESS_KEY");
-    expect(keys).toContain("BUNNY_STORAGE_REGION");
+    // appwrite has one of each: a required project ID, a credential-mode API
+    // key, and an optional endpoint.
+    const keys = listEnvVars("appwrite").map((envVar) => envVar.key);
+    expect(keys).toContain("APPWRITE_PROJECT_ID");
+    expect(keys).toContain("APPWRITE_API_KEY");
+    expect(keys).toContain("APPWRITE_ENDPOINT");
   });
 
   test("de-duplicates a var shared across credential modes", () => {
