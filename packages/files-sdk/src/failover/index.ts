@@ -27,10 +27,15 @@ import { FilesError } from "../internal/errors.js";
  *
  * The default ({@link defaultShouldFailover}) fails over **only** on `Provider`
  * errors — network failures, timeouts (`timedOut`), and 5xx, i.e. "the backend
- * is down" — and never on a caller-aborted request. A `NotFound` / `Unauthorized` / `Conflict` /
- * `ReadOnly` is a *definitive answer from a healthy backend*, so it's surfaced
- * rather than masked by probing a replica. Pass your own to widen this (e.g.
- * also fail over on `NotFound` to read through to a replica) or narrow it.
+ * is down" — and never on a caller-aborted request or a `permanent` error. A
+ * `NotFound` / `Unauthorized` / `Conflict` / `ReadOnly` is a *definitive answer
+ * from a healthy backend*, so it's surfaced rather than masked by probing a
+ * replica. A `permanent` error is deterministic — typically an SDK-side
+ * rejection before any provider I/O (an invalid key, or an option such as
+ * `metadata` / `range` / `delimiter` the backend doesn't support) — so it's
+ * surfaced too, rather than letting the request silently land on a secondary
+ * that happens to accept it. Pass your own to widen this (e.g. also fail over
+ * on `NotFound` to read through to a replica) or narrow it.
  */
 export type ShouldFailover = (error: FilesError) => boolean;
 
@@ -68,7 +73,8 @@ export interface FailoverOptions {
   /**
    * Decide whether a backend's error should trigger a fail over to the next one.
    * Defaults to {@link defaultShouldFailover} — fail over only on `Provider`
-   * errors (network / timeout / 5xx), never on an aborted request or a
+   * errors (network / timeout / 5xx), never on an aborted request, a
+   * `permanent` error (e.g. an option the backend doesn't support), or a
    * definitive answer (`NotFound`, `Unauthorized`, …). See {@link ShouldFailover}.
    */
   shouldFailover?: ShouldFailover;
@@ -152,10 +158,14 @@ const isReplayable = (body: Body): boolean => !(body instanceof ReadableStream);
  * timeout sets `aborted` too (the attempt was cancelled), but it's the
  * canonical "backend hung" signal this plugin exists for — so `timedOut`
  * overrides the abort exclusion, which is only meant for the caller's own
- * signal.
+ * signal. A `permanent` error (an SDK-side capability or key rejection, or a
+ * deterministic provider refusal) would fail the same way on a healthy
+ * primary, so it's surfaced instead of silently re-sent to a secondary.
  */
 const defaultShouldFailover: ShouldFailover = (error) =>
-  error.code === "Provider" && (!error.aborted || error.timedOut);
+  error.code === "Provider" &&
+  !error.permanent &&
+  (!error.aborted || error.timedOut);
 
 const normalizeSecondaries = (
   secondaries: Adapter | Adapter[] | undefined
@@ -180,6 +190,9 @@ const normalizeSecondaries = (
  * error is thrown. A definitive answer from a healthy backend (`NotFound`,
  * `Unauthorized`, an aborted request) is **not** failed over — it's surfaced
  * directly, so a genuine 404 stays a 404 instead of being masked by a replica.
+ * Neither is a `permanent` error such as an SDK-side capability rejection (say,
+ * `metadata` on a primary without metadata support), so a request the primary
+ * can't honor fails loudly instead of quietly landing on a secondary.
  *
  * This is the **availability** counterpart to `tiering()` (which *partitions*
  * data by key/size) — failover treats each secondary as a full replica of one
@@ -187,9 +200,8 @@ const normalizeSecondaries = (
  * - **reads** (`download` / `head` / `exists` / `url` / `list`) return the first
  *   reachable backend's answer; `list` is **not** merged (no composite cursor).
  * - **writes** (`upload` / `delete` / `copy` / `move`) land on the first
- *   reachable backend — it does **not** fan out to every backend (that's
- *   `replication()`); a write that fails over during a primary outage lands only
- *   on the secondary.
+ *   reachable backend — it does **not** fan out to every backend; a write that
+ *   fails over during a primary outage lands only on the secondary.
  * - **`signedUploadUrl`** signs against the first reachable backend.
  * - a **streaming** `upload` (a `ReadableStream` body) can't be replayed, so it
  *   runs against the primary **alone** and isn't failed over.
@@ -206,9 +218,10 @@ const normalizeSecondaries = (
  *
  * Consistency: failover buys availability, not convergence. An object written to
  * a secondary while the primary was down is invisible to reads once the primary
- * recovers (reads hit the primary first and it answers `NotFound`). Reconcile
- * with `sync` / `transfer`, keep the replica current with `replication()`, or
- * pass a `shouldFailover` that also fails over on `NotFound` to read through.
+ * recovers (reads hit the primary first and it answers `NotFound`). Keep the
+ * replica current with your provider's native replication, reconcile with
+ * `sync` / `transfer`, or pass a `shouldFailover` that also fails over on
+ * `NotFound` to read through.
  *
  * @param options `{ secondaries, shouldFailover?, onFailover? }` — see
  *   {@link FailoverOptions}.

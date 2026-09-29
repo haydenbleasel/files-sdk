@@ -2,13 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import { audit } from "../src/audit/index.js";
 import type { AuditOptions, AuditRecord } from "../src/audit/index.js";
-import { createFiles, Files, FilesError } from "../src/index.js";
+import { createFiles, Files, FilesError, handlers } from "../src/index.js";
 import type {
+  Adapter,
   ConditionalFilesOperation,
   FilesPlugin,
   PluginNext,
 } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
+import { fakeAdapter } from "./fake-adapter.js";
 
 const bytes = (data: string): Uint8Array => new TextEncoder().encode(data);
 
@@ -359,6 +361,89 @@ describe("audit", () => {
       from: "a.txt",
       status: "success",
       to: "copy.txt",
+    });
+  });
+  test("records a committed conditional mutation that an inner plugin then rejects as applied", async () => {
+    const base = fakeAdapter();
+    const adapter: Adapter = {
+      ...base,
+      conditional: {
+        create: async (key, body, options) => {
+          const result = await base.upload(key, body, options);
+          return { ...result, etag: "etag-1" };
+        },
+      },
+    };
+    // Inside audit: lets the native create commit, then throws on the way out.
+    const failsAfterCommit: FilesPlugin = {
+      name: "fails-after-commit",
+      wrap: handlers({
+        upload: async (op, next) => {
+          await next(op);
+          throw new Error("post-commit check failed");
+        },
+      }),
+    };
+    const records: AuditRecord[] = [];
+    const files = new Files({
+      adapter,
+      plugins: [
+        audit({
+          sink: (record) => {
+            records.push(record);
+          },
+        }),
+        failsAfterCommit,
+      ],
+    });
+
+    await expect(
+      files.upload("a.txt", "v", { condition: { type: "create" } })
+    ).rejects.toMatchObject({
+      applied: true,
+      appliedEtag: "etag-1",
+      message: "post-commit check failed",
+    });
+    expect(base.has("a.txt")).toBe(true);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      action: "upload",
+      condition: "create",
+      error: {
+        applied: true,
+        code: "Provider",
+        message: "post-commit check failed",
+      },
+      status: "error",
+    });
+  });
+
+  test("a pre-commit conditional failure is not recorded as applied", async () => {
+    const base = fakeAdapter();
+    const adapter: Adapter = {
+      ...base,
+      conditional: {
+        create: () =>
+          Promise.reject(new FilesError("Conflict", "already exists")),
+      },
+    };
+    const records: AuditRecord[] = [];
+    const files = new Files({
+      adapter,
+      plugins: [
+        audit({
+          sink: (record) => {
+            records.push(record);
+          },
+        }),
+      ],
+    });
+    await expect(
+      files.upload("a.txt", "v", { condition: { type: "create" } })
+    ).rejects.toMatchObject({ applied: false, code: "Conflict" });
+    expect(records[0]?.error).toEqual({
+      code: "Conflict",
+      message: "already exists",
     });
   });
 });

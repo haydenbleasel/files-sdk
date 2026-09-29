@@ -27,14 +27,13 @@ await files.download("report.pdf"); // primary, or the backup if it's down
 await files.upload("invoice.pdf", body); // lands on the first reachable backend
 ```
 
-## Failover vs replication vs tiering
+## Failover vs tiering
 
-These three Tier B plugins all take a second adapter, but they do different jobs:
+These two plugins both take a second adapter, but they do different jobs:
 
 | Plugin | What it does |
 | --- | --- |
 | `failover()` | Try the primary; fall back to a secondary **only when a backend is down**. |
-| `replication()` | Write **every** mutation to all backends (fan-out). |
 | [`tiering()`](/docs/plugins/tiering) | **Partition** objects across backends by key / size / age. |
 
 `failover()` treats each secondary as a **full replica** of one namespace, so it never splits or merges data across backends. It's the availability lever: keep serving against whatever backend is up.
@@ -59,13 +58,14 @@ Each operation walks the chain until one backend succeeds. If **every** backend 
 By default, the plugin fails over **only** on a `Provider` [error](/docs/api/errors) - a network failure, timeout, or 5xx, i.e. "the backend is down" - and **never** on an aborted request. A definitive answer from a _healthy_ backend is surfaced as-is, not masked by probing a replica:
 
 - a `NotFound` stays a `NotFound` - a genuine 404 isn't turned into a slow scan of every replica;
-- an `Unauthorized` / `Conflict` / `ReadOnly` is likewise a real answer, not a reason to try elsewhere.
+- an `Unauthorized` / `Conflict` / `ReadOnly` is likewise a real answer, not a reason to try elsewhere;
+- a `permanent` error is deterministic, so it isn't failed over either. That covers the SDK's own capability checks, which reject before any provider I/O: an invalid key, or an option the primary's adapter can't honor (`metadata`, `cacheControl`, `range`, `delimiter`, `control`). A request the primary can't serve fails loudly instead of quietly landing on a secondary that happens to accept it.
 
 This keeps reads honest: the primary is the source of truth, and the secondary only answers when the primary can't.
 
 ### Customising the predicate
 
-Pass `shouldFailover` to change the rule. It receives the error normalized to a [`FilesError`](/docs/api/errors) (so `code` and `aborted` are always set). For example, to **read through** to a replica on a miss - useful when the secondary is a live mirror that may be ahead of the primary:
+Pass `shouldFailover` to change the rule. It receives the error normalized to a [`FilesError`](/docs/api/errors) (so `code`, `aborted`, and `permanent` are always set). For example, to **read through** to a replica on a miss - useful when the secondary is a live mirror that may be ahead of the primary:
 
 ```ts
 failover({
@@ -82,7 +82,7 @@ Failing over on `NotFound` means a `delete` that only reached one backend can be
 ## What each verb does
 
 - **`download` / `head` / `url` / `exists`** read from the first reachable backend.
-- **`upload` / `delete` / `copy` / `move`** run against the first reachable backend. They are **not** fanned out to every backend - that's [`replication()`](#failover-vs-replication-vs-tiering).
+- **`upload` / `delete` / `copy` / `move`** run against the first reachable backend. They are **not** fanned out to every backend.
 - **`list`** returns the first reachable backend's page. It is **not** merged across backends (each secondary is a full replica, so there's nothing to interleave).
 - **`signedUploadUrl`** signs against the first reachable backend.
 
@@ -112,7 +112,7 @@ failover({
 
 Failover buys **availability**, not consistency. An object written to a secondary while the primary was down lives **only** on that secondary; once the primary recovers, a read hits it first and gets a `NotFound`. Failover doesn't reconcile that gap for you. To converge:
 
-- keep the secondary current with `replication()` (write-through to both), or
+- keep the secondary current with your provider's native replication, or
 - reconcile after an outage with [`sync`](/docs/api/sync) / [`transfer`](/docs/api/transfer), or
 - pass a `shouldFailover` that also fails over on `NotFound` so reads fall through to the replica.
 
@@ -129,6 +129,6 @@ Failover buys **availability**, not consistency. An object written to a secondar
 
 ## Things to keep in mind
 
-- **Secondaries are real stores.** A failed-over read pays the secondary's latency, and it must actually hold the object (keep it in sync with `replication()` / `sync`).
+- **Secondaries are real stores.** A failed-over read pays the secondary's latency, and it must actually hold the object (keep it in sync with your provider's native replication, or [`sync`](/docs/api/sync) / [`transfer`](/docs/api/transfer)).
 - **The primary is the source of truth.** With the default predicate, a healthy primary's `NotFound` is returned without consulting any replica.
 - **Streaming uploads don't fail over.** A `ReadableStream` can't be replayed; buffer it first if it must survive a primary outage.

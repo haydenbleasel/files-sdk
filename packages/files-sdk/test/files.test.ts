@@ -1,10 +1,18 @@
 import { describe, expect, mock, test } from "bun:test";
 
-import { createStoredFile, Files, FilesError } from "../src/index.js";
+import {
+  createStoredFile,
+  Files,
+  FilesError,
+  handlers,
+  UploadControl,
+} from "../src/index.js";
 import type {
   Adapter,
+  AdapterCapabilities,
   Body,
   DownloadOptions,
+  FilesPlugin,
   ListOptions,
   OperationOptions,
   UploadOptions,
@@ -2159,5 +2167,222 @@ describe("failed stream uploads release the caller's body", () => {
     expect(source.locked).toBe(false);
     await counted.cancel("early");
     expect(cancelledWith).toBe("early");
+  });
+});
+
+/** A plugin that turns off `rangeRead` and presigned URLs, logging each call. */
+const narrowing = (name: string, seen: string[]): FilesPlugin => ({
+  capabilities: (caps: AdapterCapabilities): AdapterCapabilities => {
+    seen.push(name);
+    return {
+      ...caps,
+      rangeRead: false,
+      signedUrl: { supported: false },
+    };
+  },
+  name,
+});
+
+describe("plugin capability hooks", () => {
+  test("folds every plugin's hook over the adapter snapshot, in order", () => {
+    const adapter: Adapter = {
+      ...fakeAdapter({ supportsRange: true }),
+      signedUrl: { maxExpiresIn: 60, supported: true },
+    };
+    const seen: string[] = [];
+    const tagging: FilesPlugin = {
+      capabilities: (caps) => {
+        seen.push("tagging");
+        // Sees the earlier plugin's narrowing, not the raw adapter flags.
+        expect(caps.rangeRead).toBe(false);
+        return { ...caps, delimiter: false };
+      },
+      name: "tagging",
+    };
+    const files = new Files({
+      adapter,
+      plugins: [narrowing("first", seen), { name: "no-hook" }, tagging],
+    });
+    const caps = files.capabilities;
+    expect(seen).toEqual(["first", "tagging"]);
+    expect(caps.rangeRead).toBe(false);
+    expect(caps.signedUrl).toEqual({ supported: false });
+    expect(caps.metadata).toBe(true);
+    // The adapter's own declaration is untouched.
+    expect(adapter.signedUrl).toEqual({ maxExpiresIn: 60, supported: true });
+    expect(new Files({ adapter }).capabilities.rangeRead).toBe(true);
+  });
+
+  test("a hook can't mutate the adapter's signedUrl declaration", () => {
+    const adapter: Adapter = {
+      ...fakeAdapter(),
+      signedUrl: { supported: true },
+    };
+    const mutating: FilesPlugin = {
+      capabilities: (caps) => {
+        caps.signedUrl.supported = false;
+        return caps;
+      },
+      name: "mutating",
+    };
+    const files = new Files({ adapter, plugins: [mutating] });
+    expect(files.capabilities.signedUrl.supported).toBe(false);
+    expect(adapter.signedUrl).toEqual({ supported: true });
+  });
+
+  test("read-only and prefixed instances keep the plugins' narrowing", () => {
+    const seen: string[] = [];
+    const files = new Files({
+      adapter: fakeAdapter({ supportsRange: true }),
+      plugins: [narrowing("narrow", seen)],
+      prefix: "users",
+    });
+    expect(files.capabilities.rangeRead).toBe(false);
+    expect(files.readonly().capabilities.rangeRead).toBe(false);
+    expect(files.readonly().capabilities.signedUrl.supported).toBe(false);
+  });
+});
+
+describe("isReadOnly", () => {
+  test("reports the read-only flag, including on readonly() clones", () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    expect(files.isReadOnly).toBe(false);
+    expect(files.readonly().isReadOnly).toBe(true);
+    expect(
+      new Files({ adapter: fakeAdapter(), readonly: true }).isReadOnly
+    ).toBe(true);
+  });
+});
+
+describe("SDK-side gates", () => {
+  test("capability and key rejections are permanent FilesErrors", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    const bare = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        supportsCacheControl: false,
+        supportsMetadata: false,
+      },
+    });
+    await files.upload("r.txt", "0123456789");
+    const permanent = { code: "Provider", permanent: true };
+    await expect(
+      files.download("r.txt", { range: { start: 0 } })
+    ).rejects.toMatchObject(permanent);
+    await expect(
+      new Files({ adapter: fakeAdapter({ supportsRange: true }) }).download(
+        "r.txt",
+        { range: { start: -1 } }
+      )
+    ).rejects.toMatchObject(permanent);
+    await expect(
+      new Files({ adapter: fakeAdapter({ supportsRange: true }) }).download(
+        "r.txt",
+        { range: { end: 0, start: 2 } }
+      )
+    ).rejects.toMatchObject(permanent);
+    await expect(
+      bare.upload("m.txt", "x", { metadata: { a: "1" } })
+    ).rejects.toMatchObject(permanent);
+    await expect(
+      bare.upload("c.txt", "x", { cacheControl: "no-store" })
+    ).rejects.toMatchObject(permanent);
+    await expect(files.list({ delimiter: "/" })).rejects.toMatchObject(
+      permanent
+    );
+    await expect(files.list({ delimiter: "" })).rejects.toMatchObject(
+      permanent
+    );
+    await expect(
+      files.upload("big.bin", "x", { control: new UploadControl() })
+    ).rejects.toMatchObject(permanent);
+    await expect(files.upload("", "x")).rejects.toMatchObject(permanent);
+    await expect(files.download("a\0b")).rejects.toMatchObject(permanent);
+    await expect(
+      new Files({ adapter: fakeAdapter(), prefix: "users" }).download("../x")
+    ).rejects.toMatchObject(permanent);
+    expect(
+      () =>
+        new Files({
+          adapter: fakeAdapter(),
+          prefix: 42 as unknown as string,
+        })
+    ).toThrow(expect.objectContaining(permanent));
+  });
+
+  test("a plugin-injected range is gated on bulk downloads too", async () => {
+    const adapter = fakeAdapter();
+    await adapter.upload("a", "hello world");
+    const firstFive: FilesPlugin = {
+      name: "first-five",
+      wrap: handlers({
+        download: (op, next) =>
+          next({
+            ...op,
+            options: { ...op.options, range: { end: 4, start: 0 } },
+          }),
+      }),
+    };
+    const files = new Files({ adapter, plugins: [firstFive] });
+    await expect(files.download("a")).rejects.toThrow(
+      /range downloads are not supported/u
+    );
+    const many = await files.download(["a"]);
+    expect(many.downloaded).toEqual([]);
+    expect(many.errors?.[0]?.error).toMatchObject({
+      message: "fake: range downloads are not supported by this adapter",
+      permanent: true,
+    });
+
+    const invalid: FilesPlugin = {
+      name: "invalid-range",
+      wrap: handlers({
+        download: (op, next) =>
+          next({ ...op, options: { ...op.options, range: { start: -5 } } }),
+      }),
+    };
+    const ranged = fakeAdapter({ supportsRange: true });
+    await ranged.upload("a", "hello world");
+    const bad = new Files({ adapter: ranged, plugins: [invalid] });
+    const result = await bad.download(["a"]);
+    expect(result.errors?.[0]?.error.message).toMatch(
+      /range\.start must be a non-negative integer/u
+    );
+  });
+
+  test("a plugin-injected range still works on bulk downloads when supported", async () => {
+    const adapter = fakeAdapter({ supportsRange: true });
+    await adapter.upload("a", "hello world");
+    const firstFive: FilesPlugin = {
+      name: "first-five",
+      wrap: handlers({
+        download: (op, next) =>
+          next({
+            ...op,
+            options: { ...op.options, range: { end: 4, start: 0 } },
+          }),
+      }),
+    };
+    const files = new Files({ adapter, plugins: [firstFive] });
+    const many = await files.download(["a"]);
+    expect(await many.downloaded[0]?.text()).toBe("hello");
+  });
+
+  test("a prefixed instance rejects a key of only slashes", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({ adapter, prefix: "users" });
+    await expect(files.upload("/", "oops")).rejects.toMatchObject({
+      message: "key must be a non-empty string",
+      permanent: true,
+    });
+    await expect(files.upload("//", "oops")).rejects.toThrow(/non-empty/u);
+    await expect(files.copy("a", "///")).rejects.toThrow(
+      /copy destination must be a non-empty string/u
+    );
+    expect(adapter.has("users/")).toBe(false);
+    // A leading slash on a real key is still just stripped.
+    const ok = await files.upload("/ok.txt", "fine");
+    expect(ok.key).toBe("ok.txt");
+    expect(adapter.has("users/ok.txt")).toBe(true);
   });
 });

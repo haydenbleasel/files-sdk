@@ -102,9 +102,16 @@ export type TieringApi = {
   /**
    * Move `key` to `target`, streaming the object across adapters and removing
    * the source copy. A no-op when it's already there. Throws `NotFound` when
-   * neither tier holds the key. This is the lever for age-based transitions:
-   * list, check `lastModified`, and `tier(key, "cold")` what's gone cold. Pair
-   * it with `fallback: true` so reads still find what you've moved.
+   * neither tier holds the key, and `ReadOnly` on a read-only instance. This is
+   * the lever for age-based transitions: list, check `lastModified`, and
+   * `tier(key, "cold")` what's gone cold. Pair it with `fallback: true` so
+   * reads still find what you've moved.
+   *
+   * The move runs directly against the two tiers' adapters, **not** through
+   * the instance: hooks and every other plugin (`audit()`, `cache()`,
+   * `usage()`, body transforms, …) don't see it. Body-transforming plugins are
+   * unaffected (the stored bytes move verbatim), but invalidate caches and
+   * record audits yourself if you need them.
    */
   tier: (key: string, target: Tier) => Promise<void>;
 };
@@ -457,17 +464,22 @@ const mergePrefixes = (pages: (TierPage | undefined)[]): string[] => {
  * - **`upload`** routes by `route({ key, size })` (`size` is the body's declared
  *   length when known). With `fallback`, it then evicts the key from the other
  *   tier so a re-upload that flips tiers leaves exactly one copy.
- * - **`download` / `head` / `url` / `exists`** consult the routed tier; with
+ * - **`download` / `head` / `exists`** consult the routed tier; with
  *   `fallback` they fall through to the other tier on a miss, so `size`-routed
  *   and hand-moved objects are still found.
+ * - **`url`** signs against the routed tier; with `fallback` it first locates
+ *   the key (an `exists` probe per tier, as needed) and signs against the tier
+ *   that holds it, since a presigned URL for the wrong tier is a dead link.
  * - **`delete`** removes the routed tier's copy; with `fallback`, both tiers'.
  * - **`copy` / `move`** locate the source, route the destination by key, and use
  *   a native same-tier op or stream the bytes across when the tiers differ.
- * - **`list`** merges a page from each tier (keys sorted within the page),
- *   paginating the two independently via a composite cursor.
+ * - **`list`** merges a page from each tier, paginating the two independently
+ *   via a composite cursor. Keys come back in global key order across pages; a
+ *   page may hold fewer than `limit` entries (or up to the sum of both tiers'
+ *   limits).
  * - **`signedUploadUrl`** signs against the tier `route({ key })` picks; the
- *   resulting direct upload bypasses the plugin, so it can't be size-routed or
- *   deduplicated.
+ *   resulting direct upload bypasses the plugin, so it can't be size-routed,
+ *   and with `fallback` the other tier's stale copy of the key isn't evicted.
  *
  * It's **body-transparent** — it never buffers or transforms bytes (a cross-tier
  * copy streams) — and adds two methods via `extend`: {@link TieringApi.tierOf}
@@ -687,7 +699,15 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
         return readThrough(hot, op.key, (r) => r.head(op.key, op.options));
       }
       case "url": {
-        return readThrough(hot, op.key, (r) => r.url(op.key, op.options));
+        if (!fallback) {
+          return pick(hot, route({ key: op.key })).url(op.key, op.options);
+        }
+        // A presigning adapter mints a URL without checking the object
+        // exists, so a read-through miss never happens here: sign against
+        // the tier that actually holds the key (the routed tier when neither
+        // does), or a size-routed / `tier()`-moved object gets a dead link.
+        const tier = (await locate(hot, op.key)) ?? route({ key: op.key });
+        return pick(hot, tier).url(op.key, op.options);
       }
       case "exists": {
         return existsAcross(hot, op.key, op.options);
@@ -760,6 +780,15 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
       );
       return {
         tier: async (key, target) => {
+          // `hot` / `cold` are internal instances that don't inherit the
+          // read-only flag, so refuse here — a read-only view must never move
+          // (and so delete) data.
+          if (files.isReadOnly) {
+            throw new FilesError(
+              "ReadOnly",
+              "Cannot call tier() on a read-only Files instance."
+            );
+          }
           const current = await locate(hot, key);
           if (current === undefined) {
             throw new FilesError(

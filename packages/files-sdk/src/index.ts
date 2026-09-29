@@ -111,9 +111,9 @@ export interface OperationOptions {
    */
   signal?: AbortSignal;
   /**
-   * Overall timeout in milliseconds, applied to each attempt. A timeout
-   * aborts the operation and is not retried. `0` or a negative value
-   * disables timeout handling.
+   * Timeout in milliseconds, applied to each attempt (not the call as a
+   * whole). A timeout aborts the operation and is not retried. `0` or a
+   * negative value disables timeout handling.
    */
   timeout?: number;
   /**
@@ -182,10 +182,10 @@ export interface UploadOptions extends OperationOptions {
    * this key.
    *
    * **Throws** a {@link FilesError} on adapters with no cache-control field
-   * (FTP, SFTP, Dropbox, Box, OneDrive, SharePoint, Cloudinary, Appwrite,
-   * PocketBase, Bunny Storage, Convex, UploadThing, Bun's S3) rather than
-   * silently dropping it — check {@link Adapter.supportsCacheControl} to branch
-   * at runtime.
+   * (FTP, SFTP, WebDAV, Dropbox, Box, OneDrive, SharePoint, Cloudinary,
+   * Appwrite, PocketBase, Bunny Storage, Convex, UploadThing, Bun's S3) rather
+   * than silently dropping it — check {@link Adapter.supportsCacheControl} to
+   * branch at runtime.
    */
   cacheControl?: string;
   /**
@@ -193,9 +193,10 @@ export interface UploadOptions extends OperationOptions {
    * `head()` and `list()` where the provider supports it.
    *
    * **Throws** a {@link FilesError} on adapters with no user-metadata primitive
-   * (Vercel Blob, UploadThing, FTP, SFTP, Dropbox, Box, OneDrive, SharePoint,
-   * Cloudinary, Appwrite, PocketBase, Bunny Storage, Convex, Bun's S3) rather
-   * than silently dropping it, mirroring the {@link DownloadOptions.range} gate.
+   * (Vercel Blob, UploadThing, FTP, SFTP, WebDAV, Dropbox, Box, OneDrive,
+   * SharePoint, Cloudinary, Appwrite, PocketBase, Bunny Storage, Convex, Bun's
+   * S3) rather than silently dropping it, mirroring the
+   * {@link DownloadOptions.range} gate.
    * An empty object is treated as "no metadata" and never throws. Check
    * {@link Adapter.supportsMetadata} to branch at runtime.
    */
@@ -241,9 +242,13 @@ export interface UploadOptions extends OperationOptions {
    *
    * Requires a body with a known length (`File`, `Blob`, `ArrayBuffer`, a typed
    * array, or `string`) — a `ReadableStream` can't be re-read to resume.
-   * Supported on S3 and the S3-compatible adapters, GCS, Firebase Storage,
-   * Azure Blob, OneDrive, and Dropbox; other adapters throw. Not available in
-   * the array (bulk) form of `upload`.
+   * Supported on S3 and the S3-compatible adapters (on the `aws-sdk`
+   * client), Bun's S3, GCS, Firebase Storage, Azure Blob, Google
+   * Drive, OneDrive, SharePoint, Dropbox, Box, Vercel Blob, Supabase,
+   * Appwrite, Cloudinary, FTP, SFTP, `fs`, and the in-memory adapter; others
+   * (including the `fetch` S3 client) throw. Check
+   * {@link AdapterCapabilities.multipart} to branch at runtime. Not available
+   * in the array (bulk) form of `upload`.
    */
   control?: UploadControl;
 }
@@ -304,19 +309,21 @@ export interface DownloadOptions extends OperationOptions {
    * returned {@link StoredFile} carries just the requested bytes, and its
    * `size` reflects the range length (not the full object).
    *
-   * **Supported** by the adapters with a native byte-range primitive: S3 and
-   * the S3-compatible adapters (R2 over HTTP, MinIO, DigitalOcean Spaces,
-   * Wasabi, Tigris, Backblaze B2, Storj, Hetzner, Akamai, and the rest of the
-   * `s3()` family), Bun's S3, Google Cloud Storage, Firebase Storage, Azure
-   * Blob, the local `fs` adapter, the in-memory adapter, and SFTP / FTP. SFTP
-   * uses native read-stream offsets; FTP begins the transfer at the REST start
-   * offset and trims a bounded `end` client-side (an open-ended range transfers
-   * only what's needed).
+   * **Supported** by most adapters: S3 and the S3-compatible adapters (R2,
+   * MinIO, DigitalOcean Spaces, Wasabi, Tigris, Backblaze B2, Storj, Hetzner,
+   * Akamai, and the rest of the `s3()` family), Bun's S3, Google Cloud
+   * Storage, Firebase Storage, Azure Blob, Google Drive, Dropbox, Box,
+   * OneDrive, SharePoint, Cloudinary, WebDAV, UploadThing, PocketBase, Vercel
+   * Blob (public mode), the local `fs` adapter, the in-memory adapter, and
+   * SFTP / FTP. SFTP uses native read-stream offsets; FTP begins the transfer
+   * at the REST start offset and trims a bounded `end` client-side (an
+   * open-ended range transfers only what's needed).
    *
    * **Throws** a {@link FilesError} on adapters with no range primitive
-   * (most SaaS/document providers) rather than silently downloading the whole
-   * object and slicing it — so the bandwidth saving is never quietly lost.
-   * Check {@link Adapter.supportsRange} to branch at runtime.
+   * (Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, Vercel Blob in
+   * private mode) rather than silently downloading the whole object and
+   * slicing it — so the bandwidth saving is never quietly lost. Check
+   * {@link Adapter.supportsRange} to branch at runtime.
    */
   range?: ByteRange;
 }
@@ -381,14 +388,15 @@ export interface ListOptions extends OperationOptions {
    * **Supported** by the object-store adapters with native common-prefix
    * listing (S3 and the whole `s3()` family, R2, Google Cloud Storage,
    * Firebase Storage, Azure Blob), the local `fs`, in-memory, FTP, SFTP,
-   * Google Drive, and Cloudinary adapters (any delimiter string), plus the
-   * folder-based providers (Vercel Blob, Netlify Blobs, Supabase, Dropbox,
+   * WebDAV, Google Drive, and Cloudinary adapters (any delimiter string), plus
+   * the folder-based providers (Vercel Blob, Netlify Blobs, Supabase, Dropbox,
    * Box, OneDrive, SharePoint) which only accept `"/"`.
    *
    * **Throws** a {@link FilesError} on adapters with no folder concept
-   * (UploadThing, Appwrite, PocketBase, Convex, Bun's S3) rather than silently
-   * returning a flat list. Check {@link Adapter.supportsDelimiter} to branch at
-   * runtime. Must be a non-empty string.
+   * (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage, Bun's S3) rather
+   * than silently returning a flat list. Check
+   * {@link Adapter.supportsDelimiter} to branch at runtime. Must be a
+   * non-empty string.
    */
   delimiter?: string;
 }
@@ -639,9 +647,10 @@ export interface SignUploadOptions extends OperationOptions {
    * **Strongly recommended when supported.** When omitted, the adapter falls
    * back to a presigned PUT URL with no server-side size limit — anyone with
    * the URL can upload an arbitrarily large file until `expiresIn` elapses.
-   * When set, supporting adapters use a presigned POST form (S3/R2) that
-   * enforces the size via a `content-length-range` policy. Adapters whose
-   * direct-upload primitive cannot enforce this fail closed.
+   * When set, supporting adapters use a presigned POST form (S3 and the
+   * S3-compatible adapters on the `aws-sdk` client) that enforces the size via
+   * a `content-length-range` policy. Adapters whose direct-upload primitive
+   * cannot enforce this (R2, the `fetch` S3 client, …) fail closed.
    */
   maxSize?: number;
   /**
@@ -677,19 +686,19 @@ export interface SignedUrlCapability {
    * {@link UrlOptions.expiresIn} exactly is a separate, per-provider detail —
    * some providers pin the lifetime server-side and ignore the request; see the
    * provider-gaps page. `false` when the adapter has no signing primitive: it
-   * returns only a permanent public URL and ignores `expiresIn` (Vercel Blob in
-   * public mode, Appwrite, Convex), or throws because it cannot mint a URL at all (the
-   * filesystem, FTP/SFTP, OneDrive / Google Drive outside their public-link
-   * mode). When `false`, prefer `download()`.
+   * returns only a permanent URL and ignores `expiresIn` (Vercel Blob in public
+   * mode, Appwrite, Convex, the filesystem's `file://` / `publicBaseUrl` URL),
+   * or throws because it cannot mint a URL at all (FTP/SFTP without a
+   * `publicBaseUrl`, OneDrive / Google Drive outside their public-link mode).
+   * When `false`, prefer `download()`.
    */
   supported: boolean;
   /**
-   * Hard upper bound on `expiresIn`, in seconds, when the provider enforces one
-   * in code (e.g. Azure clamps user-delegation SAS to 7 days; Dropbox temporary
-   * links are a fixed 4 hours). Omitted when there is no code-enforced cap —
-   * note this is distinct from soft infra limits the SDK passes through without
-   * checking (AWS SigV4's 604800-second ceiling is documented, not enforced
-   * here; see the provider-gaps page).
+   * Hard upper bound on `expiresIn`, in seconds, when the adapter enforces one
+   * in code: a longer `expiresIn` throws rather than being clamped (e.g. SigV4
+   * presigned URLs on the S3 family and an Azure user-delegation SAS are capped
+   * at 7 days; Dropbox temporary links at 4 hours). Omitted when there is no
+   * code-enforced cap.
    */
   maxExpiresIn?: number;
 }
@@ -924,12 +933,12 @@ export interface Adapter<Raw = unknown> {
    * - **Vercel Blob (private)** mints a Vercel Signed URL (presigned GET)
    *   scoped to the key, honoring `expiresIn`.
    *
-   * **Caller is responsible for URL-encoding.** Adapters do not escape
-   * special characters in keys when building URLs against a
-   * `publicBaseUrl` or Vercel Blob's fast path — the key is embedded
-   * literally. If `key` is derived from untrusted input, callers should
-   * validate or `encodeURIComponent`-style escape segments before
-   * passing it in.
+   * **Keys are passed raw.** The built-in adapters build URLs against a
+   * `publicBaseUrl` (or Vercel Blob's fast path) by `encodeURIComponent`-ing
+   * each `/`-separated key segment and neutralizing `.` / `..` segments so
+   * they can't resolve as path traversal; a custom adapter should do the
+   * same. A key that is already percent-encoded is encoded again (`%20`
+   * becomes `%2520`).
    */
   url: (key: string, opts?: UrlOptions) => Promise<string>;
   signedUploadUrl: (
@@ -1026,8 +1035,11 @@ export interface FilesErrorEvent {
 /**
  * Delivered to {@link FilesHooks.onRetry} each time the SDK schedules a retry
  * for a single-operation call. Not fired on the first attempt, for
- * non-retryable errors, or for stream uploads (which never retry); bulk calls
- * do not retry, so they never fire it either.
+ * non-retryable errors, or for stream uploads (which never retry). A bulk
+ * call's own per-item verb does not retry, so it never fires it — but a
+ * sub-operation a plugin re-routes an item to (e.g. `softDelete()` turning a
+ * bulk `delete` into a `move`) runs the full single-operation path, so it
+ * does retry and fires `onRetry`.
  */
 export interface FilesRetryEvent {
   type: FilesActionType;
@@ -1284,6 +1296,23 @@ export interface FilesPlugin<
   ) => Promise<OperationResult<O>>;
   /** Tier C: contribute namespaced surface. The only part that changes the type. */
   extend?: (files: Files) => Ext;
+  /**
+   * Narrow what the instance advertises through {@link Files.capabilities}.
+   * Receives the snapshot so far — the adapter-derived flags, already folded
+   * through every earlier plugin's hook in `plugins` order — and returns the
+   * snapshot to advertise. A body-transforming plugin uses it to turn off what
+   * it can't honor end to end: `signedUrl.supported` (a presigned URL would
+   * serve the stored, transformed bytes) and `rangeRead` (a byte range of the
+   * stored bytes isn't a range of the caller's), so gateways and callers that
+   * branch on capabilities pick the path that works instead of hitting a
+   * fail-closed throw.
+   *
+   * Return a new object rather than mutating the argument. Only narrow — the
+   * hook changes what is advertised, not what the adapter can do, so widening
+   * a flag the core gates on doesn't make that option work. Carried into
+   * {@link Files.readonly} clones with the rest of the plugin.
+   */
+  capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
 }
 
 /**
@@ -1340,12 +1369,26 @@ export type ExtensionsOf<P extends readonly FilesPlugin[]> =
 // don't try to be exhaustive (length, allowed characters, leading slashes)
 // — those rules differ across S3/R2/Vercel and we'd rather surface real
 // provider errors than enforce the strictest superset.
+//
+// Every rejection here (and in the other SDK-side gates) is `permanent`: the
+// identical call can only fail the same way, so it's neither retried nor —
+// under `failover()` — re-sent to another backend.
 const assertValidKey = (key: string, label = "key"): void => {
   if (!isString(key) || key.length === 0) {
-    throw new FilesError("Provider", `${label} must be a non-empty string`);
+    throw new FilesError(
+      "Provider",
+      `${label} must be a non-empty string`,
+      undefined,
+      { permanent: true }
+    );
   }
   if (key.includes("\0")) {
-    throw new FilesError("Provider", `${label} must not contain null bytes`);
+    throw new FilesError(
+      "Provider",
+      `${label} must not contain null bytes`,
+      undefined,
+      { permanent: true }
+    );
   }
 };
 
@@ -1611,7 +1654,9 @@ const assertNoRelativeSegments = (key: string, label = "key"): void => {
   if (key.split("/").some((segment) => segment === "." || segment === "..")) {
     throw new FilesError(
       "Provider",
-      `${label} must not contain . or .. path segments`
+      `${label} must not contain . or .. path segments`,
+      undefined,
+      { permanent: true }
     );
   }
 };
@@ -1626,7 +1671,9 @@ const normalizePrefix = (prefix: string | undefined): string => {
     return "";
   }
   if (!isString(prefix)) {
-    throw new FilesError("Provider", "prefix must be a string");
+    throw new FilesError("Provider", "prefix must be a string", undefined, {
+      permanent: true,
+    });
   }
   // The `(?<!\/)` before the trailing-slash run anchors each match to the
   // first slash of the run, so the engine can't re-attempt at every slash —
@@ -1950,9 +1997,33 @@ export class Files<A extends Adapter = Adapter> {
       }
     };
 
+    // Once the native call has committed, any rejection that follows — an
+    // awaited plugin throwing after `next()`, or a post-commit check failing
+    // below — describes an applied-but-unacknowledged mutation. Mark it so
+    // hooks, audit, and callers can tell it apart from a veto or a provider
+    // failure, and know to reconcile rather than retry the same predicate.
+    // Idempotent, so a rejection marked on its way through an inner layer
+    // keeps its identity (and its original `cause`) as it bubbles outward.
+    const applied = (cause: unknown): FilesError =>
+      cause instanceof FilesError && cause.applied
+        ? cause
+        : FilesError.applied(cause, nativeUploadEtag);
+    const markCommitted = async (
+      pending: Promise<AnyOperationResult>
+    ): Promise<AnyOperationResult> => {
+      try {
+        return await pending;
+      } catch (error) {
+        throw settlement.state === "success" ? applied(error) : error;
+      }
+    };
+
     // Every `next()` a plugin calls passes through exactly one predicate
     // check, on the candidate it hands over; the root itself was validated
-    // when it was snapshotted, so the outermost call needs none.
+    // when it was snapshotted, so the outermost call needs none. A rejection
+    // coming back out of `next()` after the commit is marked applied *before*
+    // the wrap sees it, so an outer observer (e.g. `audit()`) records the
+    // mutation as applied rather than as a plain failure.
     let chain: InternalNext = guardedBase;
     for (const wrap of this.#wraps.toReversed()) {
       const next = chain;
@@ -1961,7 +2032,7 @@ export class Files<A extends Adapter = Adapter> {
         try {
           return await wrap(nextOp, (candidate) => {
             assertSamePredicate(candidate);
-            return next(candidate);
+            return markCommitted(next(candidate));
           });
         } catch (error) {
           // An outer plugin may swallow an inner plugin's post-commit throw
@@ -1976,14 +2047,6 @@ export class Files<A extends Adapter = Adapter> {
         }
       };
     }
-
-    // Once the native call has committed, any rejection that follows — an
-    // awaited plugin throwing after `next()`, or a post-commit check failing
-    // below — describes an applied-but-unacknowledged mutation. Mark it so
-    // hooks, audit, and callers can tell it apart from a veto or a provider
-    // failure, and know to reconcile rather than retry the same predicate.
-    const applied = (cause: unknown): FilesError =>
-      FilesError.applied(cause, nativeUploadEtag);
 
     let result: AnyOperationResult;
     try {
@@ -2403,6 +2466,17 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   /**
+   * `true` on a read-only instance — one built with `readonly: true`, or
+   * returned by {@link Files.readonly} — whose write verbs throw `ReadOnly`.
+   * Plugins whose `extend` methods write through an internal {@link Files}
+   * (which doesn't inherit the flag) check it to refuse those writes the same
+   * way.
+   */
+  get isReadOnly(): boolean {
+    return this.#isReadOnly;
+  }
+
+  /**
    * The constructor-level `timeout` / `retries` / `signal` defaults, as a
    * fresh copy. Plugins that drive a second adapter through an internal
    * {@link Files} (`failover()` secondaries, the `tiering()` cold tier) spread
@@ -2425,9 +2499,23 @@ export class Files<A extends Adapter = Adapter> {
    * flags / optional methods the wrapper gates on, so they cannot drift from
    * runtime behavior; `serverSideCopy` and `signedUrl` come from what the
    * adapter declares, defaulting to the conservative value when it declares
-   * nothing.
+   * nothing. Each installed plugin's {@link FilesPlugin.capabilities} hook is
+   * then folded over that snapshot in `plugins` order, so a plugin that can't
+   * honor a capability end to end (e.g. a body transform and presigned URLs)
+   * narrows what is advertised.
    */
   get capabilities(): AdapterCapabilities {
+    let caps = this.#adapterCapabilities();
+    for (const plugin of this.#plugins ?? []) {
+      if (plugin.capabilities) {
+        caps = plugin.capabilities(caps);
+      }
+    }
+    return caps;
+  }
+
+  /** The adapter-derived half of {@link Files.capabilities}, before plugins. */
+  #adapterCapabilities(): AdapterCapabilities {
     const a = this.#adapter;
     const conditionalCopy = a.conditional?.copy;
     const nativeConditionalCopy =
@@ -2457,7 +2545,9 @@ export class Files<A extends Adapter = Adapter> {
       multipart: isFunction(a.resumableUpload),
       rangeRead: a.supportsRange === true,
       serverSideCopy: a.supportsServerSideCopy === true,
-      signedUrl: a.signedUrl ?? { supported: false },
+      // A copy, so a plugin hook can't reach through the snapshot and
+      // rewrite the adapter's own declaration.
+      signedUrl: a.signedUrl ? { ...a.signedUrl } : { supported: false },
       uploadProgress: a.reportsUploadProgress === true,
     };
   }
@@ -2800,7 +2890,9 @@ export class Files<A extends Adapter = Adapter> {
     if (!this.#adapter.resumableUpload) {
       throw new FilesError(
         "Provider",
-        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
+        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`,
+        undefined,
+        { permanent: true }
       );
     }
     const driver = this.#adapter.resumableUpload(path, {
@@ -2846,9 +2938,9 @@ export class Files<A extends Adapter = Adapter> {
           }),
         };
         // Route each item through the onion (so a transform/veto sees bulk
-        // uploads too). The item's own upload uses #runUpload as the base —
-        // no `ctx`, so bulk items retry the buffered body without firing
-        // `onRetry`, exactly as before.
+        // uploads too). The item's own upload uses #runUpload as the base
+        // with `retryable: false` and no `ctx`, so bulk items are retry-free
+        // and never fire `onRetry`, like every other bulk verb.
         return this.#dispatch(
           {
             body: item.body,
@@ -2955,19 +3047,25 @@ export class Files<A extends Adapter = Adapter> {
     if (!Number.isInteger(start) || start < 0) {
       throw new FilesError(
         "Provider",
-        "range.start must be a non-negative integer"
+        "range.start must be a non-negative integer",
+        undefined,
+        { permanent: true }
       );
     }
     if (end !== undefined && (!Number.isInteger(end) || end < start)) {
       throw new FilesError(
         "Provider",
-        "range.end must be an integer greater than or equal to range.start"
+        "range.end must be an integer greater than or equal to range.start",
+        undefined,
+        { permanent: true }
       );
     }
     if (!this.#adapter.supportsRange) {
       throw new FilesError(
         "Provider",
-        `${this.#adapter.name}: range downloads are not supported by this adapter`
+        `${this.#adapter.name}: range downloads are not supported by this adapter`,
+        undefined,
+        { permanent: true }
       );
     }
   }
@@ -2990,13 +3088,17 @@ export class Files<A extends Adapter = Adapter> {
     ) {
       throw new FilesError(
         "Provider",
-        `${this.#adapter.name}: \`metadata\` is not supported by this adapter`
+        `${this.#adapter.name}: \`metadata\` is not supported by this adapter`,
+        undefined,
+        { permanent: true }
       );
     }
     if (opts?.cacheControl && !this.#adapter.supportsCacheControl) {
       throw new FilesError(
         "Provider",
-        `${this.#adapter.name}: \`cacheControl\` is not supported by this adapter`
+        `${this.#adapter.name}: \`cacheControl\` is not supported by this adapter`,
+        undefined,
+        { permanent: true }
       );
     }
   }
@@ -3026,6 +3128,11 @@ export class Files<A extends Adapter = Adapter> {
             // via the non-retryable #run.
             if (op.kind !== "download") {
               return this.#perform(op);
+            }
+            // The bulk options carry no `range`, but a plugin can inject one;
+            // gate it exactly as the single-key path does.
+            if (op.options?.range) {
+              this.#assertRangeSupported(op.options.range);
             }
             return this.#storedFile(
               await this.#run(
@@ -3563,10 +3670,9 @@ export class Files<A extends Adapter = Adapter> {
    * mints a presigned GET; configurations with no URL primitive (R2
    * binding without `publicBaseUrl`/HTTP creds) throw.
    *
-   * **Caller is responsible for URL-encoding.** Adapters do not escape
-   * special characters in keys when building URLs against a
-   * `publicBaseUrl` or Vercel Blob's fast path. If `key` is derived
-   * from untrusted input, callers should validate or escape it.
+   * **Pass raw keys.** URLs built against a `publicBaseUrl` or Vercel Blob's
+   * fast path percent-encode each key segment (and neutralize `.` / `..`
+   * segments) for you, so a pre-encoded key is double-encoded.
    */
   url(key: string, opts?: UrlOptions): Promise<string> {
     const ctx: ActionContext = { key, type: "url" };
@@ -3664,6 +3770,9 @@ export class Files<A extends Adapter = Adapter> {
       return key;
     }
     const normalized = key.replace(/^\/+/u, "");
+    // A key of only slashes strips to nothing, which would address the
+    // prefix's own `prefix/` folder marker rather than an object under it.
+    assertValidKey(normalized, label);
     assertNoRelativeSegments(normalized, label);
     return `${this.#prefix}/${normalized}`;
   }
@@ -3692,12 +3801,19 @@ export class Files<A extends Adapter = Adapter> {
       return;
     }
     if (opts.delimiter === "") {
-      throw new FilesError("Provider", "delimiter must be a non-empty string");
+      throw new FilesError(
+        "Provider",
+        "delimiter must be a non-empty string",
+        undefined,
+        { permanent: true }
+      );
     }
     if (!this.#adapter.supportsDelimiter) {
       throw new FilesError(
         "Provider",
-        `${this.#adapter.name}: directory-style listing (delimiter) is not supported by this adapter`
+        `${this.#adapter.name}: directory-style listing (delimiter) is not supported by this adapter`,
+        undefined,
+        { permanent: true }
       );
     }
   }

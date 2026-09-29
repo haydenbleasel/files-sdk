@@ -59,11 +59,11 @@ tiering({
 ## What each verb does
 
 - **`upload`** routes by `route({ key, size })` and writes to that tier.
-- **`download` / `head` / `url` / `exists`** consult the routed tier.
+- **`download` / `head` / `url` / `exists`** consult the routed tier (with [`fallback`](#fallback), `url()` signs against whichever tier holds the key).
 - **`delete`** removes the routed tier's copy.
 - **`copy` / `move`** locate the source, route the destination by its key, and use a native same-tier op when both keys land in one tier - or **stream the bytes across** (preserving content type and metadata) when they differ. A `move` then deletes the source.
-- **`list`** merges a page from each tier into one result, keys sorted within the page (see [merged listing](#merged-listing)).
-- **`signedUploadUrl`** signs against the tier `route({ key })` picks. The resulting direct upload bypasses the plugin, so it can't be size-routed or deduplicated.
+- **`list`** merges a page from each tier into one result, in key order (see [merged listing](#merged-listing)).
+- **`signedUploadUrl`** signs against the tier `route({ key })` picks. The resulting direct upload bypasses the plugin, so it can't be size-routed, and with `fallback` the other tier's stale copy isn't evicted.
 
 ## fallback
 
@@ -72,10 +72,11 @@ By default routing is **deterministic**: every operation touches exactly the one
 Set `fallback: true` to treat an object's tier as **discoverable** rather than fixed:
 
 - a read that misses the routed tier retries the other tier;
+- `url()` first checks which tier holds the key and signs against that one - a presigning adapter mints a URL without checking the object exists, so it can't discover a miss by itself, and a URL for the wrong tier would be a dead link;
 - `delete` removes the key from **both** tiers;
 - an `upload` evicts the key from the other tier, so a re-upload that flips tiers leaves exactly one copy.
 
-Turn it on whenever the tier isn't a pure function of the key - `size`-based routing, or when you move objects between tiers with [`tier()`](#moving-objects-between-tiers). The cost is at most one extra round-trip on a cold read.
+Turn it on whenever the tier isn't a pure function of the key - `size`-based routing, or when you move objects between tiers with [`tier()`](#moving-objects-between-tiers). The cost is at most one extra round-trip on a cold read, and one or two `exists` probes on each `url()`.
 
 ## Moving objects between tiers
 
@@ -99,11 +100,13 @@ for await (const file of files.listAll()) {
 
 Because `tier()` moves objects to a tier `route` wouldn't pick from the key alone, pair it with `fallback: true` so reads still find what you've moved.
 
+`tier()` runs directly against the two tiers' adapters rather than through the instance, so [hooks](/docs/usage#hooks) and the other plugins on the instance (`audit()`, `cache()`, `usage()`, …) don't see the move. The stored bytes and metadata move verbatim, so body-transforming plugins keep working; invalidate caches or record audits yourself if you need them. On a [read-only](/docs/readonly) instance, `tier()` throws `ReadOnly` instead of moving anything (`tierOf()` still works).
+
 ## Merged listing
 
 [`list()`](/docs/api/list) returns objects from **both** tiers. It fetches a page from each, deduplicates (hot wins), sorts by key, and paginates the two tiers independently behind one composite cursor - so [`listAll()`](/docs/api/list) walks the whole namespace across both stores.
 
-Two things to know: a page can hold up to the sum of both tiers' page sizes (each tier's `limit` is applied per tier), and keys are sorted **within** a page but - because the tiers paginate independently - not globally across pages. For a single fully-ordered enumeration, list an adapter directly.
+Keys come back in global key order across pages. A page may hold fewer than `limit` entries - entries past what both tiers have covered are held back for the next page - or up to the sum of both tiers' limits (each tier's `limit` is applied per tier).
 
 ## Ordering and prefixes
 
@@ -119,5 +122,5 @@ Two things to know: a page can hold up to the sum of both tiers' page sizes (eac
 ## Things to keep in mind
 
 - **The cold tier is a real store.** Cold reads pay its latency; a hot→cold `tier()` or cross-tier `copy` transfers the bytes between adapters.
-- **Presigned uploads bypass routing.** A `signedUploadUrl()` upload lands directly in the routed tier and isn't size-routed or deduplicated.
+- **Presigned uploads bypass routing.** A `signedUploadUrl()` upload lands directly in the routed tier: it isn't size-routed, and with `fallback` the other tier's stale copy isn't evicted.
 - **Without `fallback`, routing must be stable per key.** If an object can live in a tier the key wouldn't route to (size-based routing, or a `tier()` move), enable `fallback` or reads will miss it.

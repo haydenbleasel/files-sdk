@@ -32,6 +32,7 @@ Each audited operation produces one [`AuditRecord`](#the-record):
 | Field | Always? | What it is |
 | --- | --- | --- |
 | `action` | yes | The verb (`upload`, `delete`, `copy`, `move`, `signedUploadUrl`, …). |
+| `condition` | — | The native [conditional](/docs/conditional-operations) primitive, when the call carried one: `create`, `replace`, `exact-read`, `match-delete`, or `conditional-copy`. The predicate's ETags are never recorded. |
 | `key` | — | Caller-facing key, for every verb except `copy` / `move` / `list`. |
 | `from`, `to` | — | Source / destination, for `copy` and `move`. |
 | `actor` | — | Who performed it, from the [`actor`](#options) resolver. |
@@ -40,7 +41,7 @@ Each audited operation produces one [`AuditRecord`](#the-record):
 | `status` | yes | `"success"` or `"error"`. |
 | `size` | — | Stored byte size, on a successful `upload`. |
 | `bulk` | — | `true` when the record is one item of a bulk (`[...]`) call. |
-| `error` | — | `{ code, message }`, on `status: "error"`. |
+| `error` | — | `{ code, message }`, on `status: "error"`, plus `applied: true` when a conditional mutation committed at the provider before an awaited plugin rejected the call - the object changed despite the error status. |
 
 Keys are always the caller-facing ones, never the internal [prefixed](/docs/prefixes) path.
 

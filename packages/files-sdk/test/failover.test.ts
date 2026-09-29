@@ -198,6 +198,65 @@ describe("failover — the primary is the source of truth", () => {
     });
     await expect(files.download("a.txt")).rejects.toThrow(/aborted/u);
   });
+
+  test("an SDK-side capability rejection is not failed over", async () => {
+    // The primary can't store metadata, so the core gate rejects before any
+    // provider I/O. That's a permanent answer, not an outage: the upload must
+    // fail loudly rather than silently land (with its metadata) on a replica.
+    const primary: Adapter = { ...fakeAdapter(), supportsMetadata: false };
+    const secondary = fakeAdapter();
+    const events: FailoverEvent[] = [];
+    const files = new Files({
+      adapter: primary,
+      plugins: [
+        failover({
+          onFailover: (event) => events.push(event),
+          secondaries: secondary,
+        }),
+      ],
+    });
+    await expect(
+      files.upload("a.txt", "x", { metadata: { user: "1" } })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "fake: `metadata` is not supported by this adapter",
+      permanent: true,
+    });
+    expect(secondary.has("a.txt")).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  test("an invalid-key or unsupported-range rejection is not failed over", async () => {
+    const secondary = await seeded({ "a.txt": "backup" });
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [failover({ secondaries: secondary })],
+    });
+    await expect(
+      files.download("a.txt", { range: { start: 0 } })
+    ).rejects.toMatchObject({ permanent: true });
+    await expect(files.download("a\0b")).rejects.toMatchObject({
+      permanent: true,
+    });
+  });
+
+  test("a permanent provider error is not failed over", async () => {
+    const refusing: Adapter = {
+      ...fakeAdapter(),
+      download: () =>
+        Promise.reject(
+          new FilesError("Provider", "host ignored Range", undefined, {
+            permanent: true,
+          })
+        ),
+    };
+    const secondary = await seeded({ "a.txt": "backup" });
+    const files = new Files({
+      adapter: refusing,
+      plugins: [failover({ secondaries: secondary })],
+    });
+    await expect(files.download("a.txt")).rejects.toThrow(/ignored Range/u);
+  });
 });
 
 describe("failover — the chain", () => {

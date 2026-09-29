@@ -69,6 +69,12 @@ const pagedAdapter = (config?: { supportsDelimiter?: boolean }): Adapter => {
   };
 };
 
+/** A fake that presigns like S3: `url()` never checks the object exists. */
+const presigning = (name: string, base: FakeAdapter): Adapter => ({
+  ...base,
+  url: (key) => Promise.resolve(`https://${name}.example/${key}`),
+});
+
 describe("tiering — construction", () => {
   test("requires a cold adapter", () => {
     expect(() =>
@@ -465,6 +471,34 @@ describe("tiering — size routing with fallback", () => {
     expect(await files.exists("big.txt")).toBe(true);
   });
 
+  test("url signs against the tier that holds the key, even for presigners", async () => {
+    // Presigning adapters mint a URL without checking the object exists, so
+    // a read-through never misses: without a locate, a cold object would get
+    // a dead hot-tier link.
+    const hot = fakeAdapter();
+    const cold = fakeAdapter();
+    const files = createFiles({
+      adapter: presigning("hot", hot),
+      plugins: [
+        tiering({
+          cold: presigning("cold", cold),
+          fallback: true,
+          route: sizeRoute,
+        }),
+      ],
+    });
+    // Size-routed cold on upload; a sizeless url() decision would guess hot.
+    await files.upload("big.txt", big);
+    expect(await files.url("big.txt")).toBe("https://cold.example/big.txt");
+    await files.upload("small.txt", "tiny");
+    expect(await files.url("small.txt")).toBe("https://hot.example/small.txt");
+    // Moved by tier(): now lives cold.
+    await files.tier("small.txt", "cold");
+    expect(await files.url("small.txt")).toBe("https://cold.example/small.txt");
+    // Held by neither tier: signs against the routed tier, as before.
+    expect(await files.url("ghost.txt")).toBe("https://hot.example/ghost.txt");
+  });
+
   test("a re-upload that flips tiers evicts the stale copy", async () => {
     const { files, hot, cold } = harness(sizeRoute, { fallback: true });
     // Small body → hot.
@@ -547,6 +581,20 @@ describe("tiering — tier() / tierOf()", () => {
     await files.upload("a.txt", "1");
     await files.tier("a.txt", "hot");
     expect(hot.has("a.txt")).toBe(true);
+  });
+
+  test("tier() refuses to move data on a read-only instance", async () => {
+    const { files, hot, cold } = harness(prefixRoute, { fallback: true });
+    await files.upload("a.txt", "1");
+    const view = files.readonly() as Harness["files"];
+    await expect(view.tier("a.txt", "cold")).rejects.toMatchObject({
+      code: "ReadOnly",
+      message: "Cannot call tier() on a read-only Files instance.",
+    });
+    expect(hot.has("a.txt")).toBe(true);
+    expect(cold.has("a.txt")).toBe(false);
+    // Reporting a tier is a read, so it still works on the view.
+    expect(await view.tierOf("a.txt")).toBe("hot");
   });
 
   test("tier() throws when nothing is stored", async () => {
