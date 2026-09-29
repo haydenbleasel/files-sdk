@@ -487,11 +487,51 @@ describe("bunnyStorage adapter", () => {
     await files.upload("a.txt", "hello");
     getMock.mockClear();
     await files.delete("a.txt");
+    // A successful remove needs no probe.
+    expect(getMock).not.toHaveBeenCalled();
+    // `remove` resolves false for the now-missing key; the probe's NotFound
+    // makes the second delete an idempotent no-op.
     await files.delete("a.txt");
     expect(removeMock).toHaveBeenCalledTimes(2);
-    expect(getMock).not.toHaveBeenCalled();
+    expect(getMock).toHaveBeenCalledTimes(1);
     await expect(files.download("a.txt")).rejects.toMatchObject({
       code: "NotFound",
+    });
+  });
+
+  test("delete surfaces a rejected delete of a file that still exists", async () => {
+    // The SDK's `remove` resolves `response.ok` (false) on 401/403/5xx
+    // instead of throwing; that must not read as a successful delete.
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "read-only",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("a.txt", "hello");
+    removeMock.mockImplementationOnce(() => Promise.resolve(false));
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("still exists"),
+    });
+    expect(backing.has("a.txt")).toBe(true);
+  });
+
+  test("delete surfaces the probe's error when remove fails", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "bad",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    removeMock.mockImplementationOnce(() => Promise.resolve(false));
+    getMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("Unauthorized access to storage zone: uploads"))
+    );
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
     });
   });
 

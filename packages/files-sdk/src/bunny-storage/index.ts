@@ -337,14 +337,35 @@ export const bunnyStorage = (
       }
     },
     async delete(key) {
-      // The Bunny SDK's `file.remove` returns `response.ok` and does not
-      // throw on 4xx — idempotency for missing keys comes for free. Only
-      // network-layer failures reach the catch.
+      const path = toBunnyPath(key);
+      let removed: boolean;
       try {
-        await BunnyStorageSDK.file.remove(client, toBunnyPath(key));
+        removed = await BunnyStorageSDK.file.remove(client, path);
       } catch (error) {
+        // Only network-layer failures throw from `file.remove`.
         throw mapBunnyStorageError(error);
       }
+      if (removed) {
+        return;
+      }
+      // `file.remove` resolves `response.ok` and never throws on an HTTP
+      // error, so `false` is either a missing key (404: idempotent success)
+      // or a real failure (401/403/5xx) the SDK doesn't tell apart. Probe the
+      // key: NotFound means there was nothing to delete; any other probe
+      // error surfaces; a file that is still there means the delete failed.
+      try {
+        await BunnyStorageSDK.file.get(client, path);
+      } catch (error) {
+        const mapped = mapBunnyStorageError(error);
+        if (mapped.code === "NotFound") {
+          return;
+        }
+        throw mapped;
+      }
+      throw new FilesError(
+        "Provider",
+        `bunnyStorage: the Storage API rejected the delete of "${key}" and the file still exists. Check that the access key has write access (a read-only password can't delete).`
+      );
     },
     async download(key, downloadOpts) {
       try {

@@ -112,8 +112,20 @@ const getListMock = mock(
     if (opts?.filter) {
       const parsed = parseFilter(opts.filter);
       if (parsed?.op === "~") {
-        const prefix = parsed.value.replace(/%$/u, "");
-        keys = keys.filter((k) => k.startsWith(prefix));
+        // SQLite LIKE, as PocketBase runs `~` when the value already holds a
+        // `%`: `%` / `_` are wildcards and ASCII matches case-insensitively.
+        const pattern = new RegExp(
+          `^${[...parsed.value]
+            .map((ch) => {
+              if (ch === "%") {
+                return ".*";
+              }
+              return ch === "_" ? "." : RegExp.escape(ch);
+            })
+            .join("")}$`,
+          "iu"
+        );
+        keys = keys.filter((k) => pattern.test(k));
       } else if (parsed?.op === "=") {
         keys = keys.filter((k) => k === parsed.value);
       }
@@ -303,8 +315,15 @@ class FakePocketBase {
     };
     this.files = { getToken: getTokenMock, getURL: getURLMock };
     this.filter = (template, params) => filterMock(template, params);
+    // Like the real SDK, a successful password auth saves the token into the
+    // client's auth store.
+    const authWithPassword = (async (email: string, password: string) => {
+      const result = await authWithPasswordMock(email, password);
+      this.authStore.save(result.token, result.record);
+      return result;
+    }) as typeof authWithPasswordMock;
     this.collection = (_name) => ({
-      authWithPassword: authWithPasswordMock,
+      authWithPassword,
       create: createMock,
       delete: deleteMock,
       getFirstListItem: getFirstListItemMock,
@@ -467,7 +486,25 @@ describe("pocketbase adapter", () => {
     const file = await adapter.download("a.txt");
     expect(await file.text()).toBe("hello");
     expect(file.size).toBe(5);
+    // The record has no content type; the file response's header does.
+    expect(file.type).toStartWith("text/plain");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("download falls back to octet-stream without a response content type", async () => {
+    const adapter = pocketbase({
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.bin", "hello");
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(new TextEncoder().encode("hello") as BodyInit, {
+          status: 200,
+        })
+      )) as unknown as typeof fetch;
+    const file = await adapter.download("a.bin");
+    expect(file.type).toBe("application/octet-stream");
   });
 
   test("download forwards a Range header and reports the slice length", async () => {
@@ -611,6 +648,25 @@ describe("pocketbase adapter", () => {
     ]);
   });
 
+  test("list treats LIKE wildcards in the prefix literally", async () => {
+    // PocketBase evaluates `~` as SQL LIKE: `_` matches any character and
+    // ASCII letters match case-insensitively, so the server returns a
+    // superset that the adapter narrows.
+    const adapter = pocketbase({
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("A_1.txt", "1");
+    await adapter.upload("Ab2.txt", "2");
+    await adapter.upload("a_3.txt", "3");
+    await adapter.upload("50%/x.txt", "4");
+    await adapter.upload("50off/y.txt", "5");
+    const underscored = await adapter.list({ prefix: "A_" });
+    expect(underscored.items.map((i) => i.key)).toEqual(["A_1.txt"]);
+    const percent = await adapter.list({ prefix: "50%/" });
+    expect(percent.items.map((i) => i.key)).toEqual(["50%/x.txt"]);
+  });
+
   test("list paginates via cursor when more pages exist", async () => {
     const adapter = pocketbase({
       collection: "files",
@@ -695,6 +751,38 @@ describe("pocketbase adapter", () => {
     await adapter.upload("b.txt", "world");
     expect(authWithPasswordMock).toHaveBeenCalledTimes(1);
     expect(authWithPasswordMock).toHaveBeenCalledWith("admin@test", "pw");
+  });
+
+  test("concurrent first calls share one admin login", async () => {
+    const adapter = pocketbase({
+      adminEmail: "admin@test",
+      adminPassword: "pw",
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await Promise.all([
+      adapter.upload("a.txt", "hello"),
+      adapter.upload("b.txt", "world"),
+    ]);
+    expect(authWithPasswordMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("admin auth re-runs once the superuser token expires", async () => {
+    // A memoized resolved promise would skip the login forever after the
+    // token expires, leaving every later call unauthenticated.
+    const adapter = pocketbase({
+      adminEmail: "admin@test",
+      adminPassword: "pw",
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    expect(adapter.raw.authStore.isValid).toBe(true);
+    // Expiry: the store now reports the token invalid.
+    adapter.raw.authStore.clear();
+    await adapter.upload("b.txt", "world");
+    expect(authWithPasswordMock).toHaveBeenCalledTimes(2);
+    expect(adapter.raw.authStore.isValid).toBe(true);
   });
 
   test("explicit authToken wins over admin email/password", async () => {

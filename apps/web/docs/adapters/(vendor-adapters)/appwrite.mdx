@@ -24,8 +24,9 @@ const files = new Files({
     // and APPWRITE_API_KEY. Or pass an existing node-appwrite
     // Client or Storage instance via `client`.
     //
-    // Note: Appwrite keys (IDs) must be alphanumeric/dashes
-    // and max 36 chars. Slashes (/) are not supported.
+    // Note: Appwrite keys (IDs) must start with a letter or digit,
+    // use only [a-zA-Z0-9._-], and be at most 36 chars.
+    // Slashes (/) are not supported.
   }),
 });
 ```
@@ -45,13 +46,13 @@ File IDs (keys) must start with an alphanumeric and use only `[a-zA-Z0-9._-]`, m
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ⚠️ | Stream bodies are buffered up-front - `InputFile.fromBuffer` has no streaming form, so streamed uploads can't avoid materializing the body in memory. User `metadata` and `cacheControl` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and has no override. |
+| `upload` | ⚠️ | Stream bodies are buffered up-front - `InputFile.fromBuffer` has no streaming form, so streamed uploads can't avoid materializing the body in memory. User `metadata` and `cacheControl` throw - Appwrite's `createFile` has no equivalent fields. `contentType` is silently ignored - Appwrite auto-detects mime from the payload and has no override. Uploading onto an existing key replaces the file by deleting it and creating it again (Appwrite can't update a file's content): not atomic, and file-level permissions on the old file aren't carried over. Resumable uploads (`control`) don't replace: Appwrite rejects a chunked upload onto an existing file ID, so delete the key first. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
 | `list` | ✅ |  |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ⚠️ | Read-then-write - Appwrite has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic. |
-| `url` | ⚠️ | Throws by default because Appwrite SDKs cannot mint presigned reading URLs with keys. Set `public: true` at construction to return the constructed Appwrite public CDN URL. `expiresIn` and `responseContentDisposition` are ignored. |
+| `copy` | ⚠️ | Read-then-write - Appwrite has no server-side copy primitive, so the source is downloaded and re-uploaded. Costs an egress + an ingest; not atomic. An existing destination is replaced the same way `upload` replaces one. |
+| `url` | ⚠️ | Throws by default because Appwrite SDKs cannot mint presigned reading URLs with keys. Set `public: true` at construction to return the constructed Appwrite public CDN URL. `expiresIn` is ignored. `responseContentDisposition: "attachment"` returns the `/download` URL (served as an attachment named after the stored file name); any other disposition, such as a custom filename or `inline`, throws - Appwrite has no per-request override. |
 | `signedUploadUrl` | ❌ | No presigned upload primitive in Appwrite. Use JWTs or client SDKs for direct uploads. |

@@ -202,6 +202,11 @@ const keyFilter = (
   key: string
 ): string => pb.filter(`${keyField} = {:k}`, { k: key });
 
+// A superset of the keys under `prefix`, not an exact match: PocketBase runs
+// `~` as SQL LIKE, so `_` / `%` in the prefix act as wildcards and ASCII
+// letters match case-insensitively. Escaping the wildcards depends on the
+// server's filter-parser version, so `list()` narrows the page client-side
+// with a case-sensitive `startsWith` instead.
 const prefixFilter = (
   pb: PocketBaseClient,
   keyField: string,
@@ -232,8 +237,9 @@ export const pocketbase = (
   const records = () => pb.collection<FileRecord>(collection);
 
   // Auth is async but the adapter factory is sync. Defer auth to the first
-  // call that needs it; subsequent calls reuse the same promise. We also
-  // re-auth if the auth store becomes invalid (token expired).
+  // call that needs it. Concurrent callers share the one in-flight attempt;
+  // the slot clears once it settles, so a token that later expires (the auth
+  // store reports it invalid) triggers a fresh login on the next call.
   let authPromise: Promise<void> | undefined;
   const doAuth = async (): Promise<void> => {
     const explicitToken = opts.authToken ?? readEnv("POCKETBASE_AUTH_TOKEN");
@@ -258,11 +264,12 @@ export const pocketbase = (
   const runAuthOnce = async (): Promise<void> => {
     try {
       await doAuth();
-    } catch (error) {
-      // Reset on failure so a transient auth error doesn't stick.
+    } finally {
+      // Clear on success too, not just failure: a resolved promise kept here
+      // would short-circuit every later login, leaving calls unauthenticated
+      // once the superuser token expires.
       // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined clears the memoized auth promise so the next call re-auths; null would be a cached value
       authPromise = undefined;
-      throw error;
     }
   };
   const ensureAuth = async (): Promise<void> => {
@@ -295,11 +302,11 @@ export const pocketbase = (
     return raw;
   };
 
-  const downloadBytes = async (
+  const downloadBody = async (
     record: FileRecord,
     signal?: AbortSignal,
     range?: ByteRange
-  ): Promise<Uint8Array> => {
+  ): Promise<{ bytes: Uint8Array; type: string }> => {
     const filename = filenameOf(record);
     // Pre-fetch a file token so private collections work. PocketBase's file
     // token endpoint requires auth; for fully-public collections an
@@ -330,7 +337,19 @@ export const pocketbase = (
     if (range) {
       assertRangeHonored(res.status, "pocketbase");
     }
-    return new Uint8Array(await res.arrayBuffer());
+    // The record carries no content type; the file server's response does.
+    return {
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      type: res.headers.get("content-type") || OCTET_STREAM,
+    };
+  };
+
+  const downloadBytes = async (
+    record: FileRecord,
+    signal?: AbortSignal
+  ): Promise<Uint8Array> => {
+    const { bytes } = await downloadBody(record, signal);
+    return bytes;
   };
 
   const recordToStored = (record: FileRecord, key: string): StoredFile => {
@@ -345,8 +364,9 @@ export const pocketbase = (
           Number.isFinite(lastModified) && { lastModified }),
         metadata: { filename, recordId: record.id },
         // PocketBase doesn't expose file size/type in the record JSON;
-        // surface 0/octet-stream as the documented unknown values. Callers
-        // that need exact size should call `.arrayBuffer()` or `.blob()`.
+        // surface 0/octet-stream as the documented unknown values. They stay
+        // that way — callers that need the exact size read the body
+        // (`.arrayBuffer()` / `.blob()`), or `download()` the key for both.
         size: 0,
         type: OCTET_STREAM,
       },
@@ -355,6 +375,24 @@ export const pocketbase = (
         kind: "lazy",
       }
     );
+  };
+
+  // One list page as StoredFiles. The server-side `~` filter is a superset
+  // (see `prefixFilter`), so the exact, case-sensitive prefix match happens
+  // here — a page can hold fewer than `limit` items after the narrowing.
+  const pageItems = (
+    pageRecords: FileRecord[],
+    prefix: string | undefined
+  ): StoredFile[] => {
+    const items: StoredFile[] = [];
+    for (const record of pageRecords) {
+      const recordKey = record[keyField];
+      const key = isString(recordKey) ? recordKey : record.id;
+      if (!prefix || key.startsWith(prefix)) {
+        items.push(recordToStored(record, key));
+      }
+    }
+    return items;
   };
 
   return {
@@ -394,7 +432,7 @@ export const pocketbase = (
     async download(key, downloadOpts) {
       try {
         const record = await findRecord(key, downloadOpts?.signal);
-        const bytes = await downloadBytes(
+        const { bytes, type } = await downloadBody(
           record,
           downloadOpts?.signal,
           downloadOpts?.range
@@ -410,7 +448,7 @@ export const pocketbase = (
               recordId: record.id,
             },
             size: bytes.byteLength,
-            type: OCTET_STREAM,
+            type,
             ...(updated !== undefined &&
               Number.isFinite(updated) && { lastModified: updated }),
           },
@@ -460,13 +498,7 @@ export const pocketbase = (
             ...(listOpts?.signal && { signal: listOpts.signal }),
           }
         );
-        const items = response.items.map((record) => {
-          const recordKey = record[keyField];
-          return recordToStored(
-            record,
-            isString(recordKey) ? recordKey : record.id
-          );
-        });
+        const items = pageItems(response.items, listOpts?.prefix);
         const nextCursor =
           response.page < response.totalPages
             ? String(response.page + 1)

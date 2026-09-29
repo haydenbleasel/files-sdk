@@ -213,6 +213,42 @@ describe("appwrite adapter", () => {
     );
   });
 
+  test("url > a bare attachment disposition uses the download endpoint", async () => {
+    const files = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+        public: true,
+      }),
+    });
+    const url = await files.url("file-123", {
+      responseContentDisposition: " Attachment ",
+    });
+    expect(url).toBe(
+      `${ENDPOINT}/storage/buckets/${BUCKET}/files/file-123/download?project=${PROJECT_ID}`
+    );
+  });
+
+  test("url > rejects a disposition Appwrite can't honor", async () => {
+    const files = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+        public: true,
+      }),
+    });
+    await expect(
+      files.url("file-123", {
+        responseContentDisposition: 'attachment; filename="report.pdf"',
+      })
+    ).rejects.toThrow(/responseContentDisposition/u);
+    await expect(
+      files.url("file-123", { responseContentDisposition: "inline" })
+    ).rejects.toThrow(/responseContentDisposition/u);
+  });
+
   test("signedUploadUrl > throws unsupported", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
@@ -283,9 +319,11 @@ describe("appwrite adapter", () => {
       adapter: appwrite({ bucket: BUCKET }),
     });
 
-    createFileMock.mockRejectedValueOnce(
-      new AppwriteException("Already exists", 409)
-    );
+    // An existing ID is replaced (delete + create); a 409 that survives the
+    // replace (a concurrent writer recreated it) surfaces as Conflict.
+    createFileMock
+      .mockRejectedValueOnce(new AppwriteException("Already exists", 409))
+      .mockRejectedValueOnce(new AppwriteException("Already exists", 409));
 
     try {
       await files.upload("file", "data");
@@ -293,6 +331,64 @@ describe("appwrite adapter", () => {
     } catch (error: unknown) {
       expect((error as FilesError).code).toBe("Conflict");
     }
+  });
+
+  test("upload > overwrites an existing file ID (delete + create)", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({ adapter: appwrite({ bucket: BUCKET }) });
+    createFileMock.mockRejectedValueOnce(
+      new AppwriteException("Already exists", 409)
+    );
+    const result = await files.upload("existing", "hello");
+    expect(result.size).toBe(5);
+    expect(deleteFileMock).toHaveBeenCalledWith({
+      bucketId: BUCKET,
+      fileId: "existing",
+    });
+    expect(createFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("upload > still creates when the existing file vanished before the delete", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({ adapter: appwrite({ bucket: BUCKET }) });
+    createFileMock.mockRejectedValueOnce(
+      new AppwriteException("Already exists", 409)
+    );
+    deleteFileMock.mockRejectedValueOnce(
+      new AppwriteException("Not found", 404)
+    );
+    const result = await files.upload("existing", "hello");
+    expect(result.size).toBe(5);
+    expect(createFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("upload > surfaces a failed delete of the existing file", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({ adapter: appwrite({ bucket: BUCKET }) });
+    createFileMock.mockRejectedValueOnce(
+      new AppwriteException("Already exists", 409)
+    );
+    deleteFileMock.mockRejectedValueOnce(
+      new AppwriteException("Forbidden", 403)
+    );
+    await expect(files.upload("existing", "hello")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    expect(createFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("upload > a different 409 is not treated as an existing file", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({ adapter: appwrite({ bucket: BUCKET }) });
+    createFileMock.mockRejectedValueOnce(
+      Object.assign(new AppwriteException("Other conflict", 409), {
+        type: "some_other_conflict",
+      })
+    );
+    await expect(files.upload("existing", "hello")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(deleteFileMock).not.toHaveBeenCalled();
   });
 
   test("error mapping > unknown status falls back to Provider", async () => {
@@ -549,6 +645,20 @@ describe("appwrite adapter", () => {
     expect(createFileMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ bucketId: BUCKET, fileId: "destination" })
     );
+  });
+
+  test("copy > overwrites an existing destination", async () => {
+    process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
+    const files = new Files({ adapter: appwrite({ bucket: BUCKET }) });
+    createFileMock.mockRejectedValueOnce(
+      new AppwriteException("Already exists", 409)
+    );
+    await files.copy("source", "destination");
+    expect(deleteFileMock).toHaveBeenCalledWith({
+      bucketId: BUCKET,
+      fileId: "destination",
+    });
+    expect(createFileMock).toHaveBeenCalledTimes(2);
   });
 
   test("copy > surfaces SDK errors", async () => {
@@ -850,6 +960,43 @@ describe("appwrite resumable uploads (chunked)", () => {
     await expect(promise).rejects.toMatchObject({ aborted: true });
     await aborting;
     expect(deleteFileMock).toHaveBeenCalled();
+  });
+
+  test("a 0-byte upload is created in one request, not an invalid chunk", async () => {
+    // The orchestrator sends an empty body as one empty chunk; a chunk POST
+    // would carry `Content-Range: bytes 0--1/0`.
+    let fetched = false;
+    installFetch(() => {
+      fetched = true;
+      return fileJson(0);
+    });
+    createFileMock.mockClear();
+    createFileMock.mockResolvedValueOnce({
+      $id: "empty",
+      mimeType: "application/x-empty",
+      sizeOriginal: 0,
+    });
+    const files = new Files({ adapter: adapter() });
+    const result = await files.upload("empty", new Uint8Array(), {
+      control: new UploadControl(),
+    });
+    expect(fetched).toBe(false);
+    expect(createFileMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ key: "empty", size: 0 });
+  });
+
+  test("a 0-byte upload maps the create error", async () => {
+    installFetch(() => fileJson(0));
+    createFileMock.mockRejectedValueOnce(
+      new AppwriteException("Unauthorized", 401)
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.upload("empty", new Uint8Array(), {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
   });
 
   test("a failed chunk throws", async () => {

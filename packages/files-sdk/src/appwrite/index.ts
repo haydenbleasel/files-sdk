@@ -55,8 +55,10 @@ export interface AppwriteAdapterOptions {
   key?: string;
   /**
    * Set to `true` if the bucket is configured as a public bucket.
-   * `url()` will then return a constructed permanent, unsigned URL.
-   * Otherwise, `url()` throws an error.
+   * `url()` will then return a constructed permanent, unsigned URL (the
+   * `/view` endpoint, or `/download` for `responseContentDisposition:
+   * "attachment"`; any other disposition throws). Otherwise, `url()` throws
+   * an error.
    */
   public?: boolean;
 }
@@ -134,6 +136,19 @@ const toInputFile = async (
   return InputFile.fromBuffer(Buffer.from(bytes), filename);
 };
 
+// Appwrite answers `createFile` onto a file ID that already exists with 409
+// `storage_file_already_exists`.
+const isFileExistsConflict = (cause: unknown): boolean =>
+  cause instanceof AppwriteException &&
+  cause.code === 409 &&
+  (!cause.type || cause.type === "storage_file_already_exists");
+
+// `url()` can honor only a bare `attachment`: Appwrite's `/download` endpoint
+// serves `Content-Disposition: attachment` (naming the file after its stored
+// name). There is no per-request override, so a custom filename or `inline`
+// can't be applied.
+const BARE_ATTACHMENT = /^\s*attachment\s*$/iu;
+
 const isStorageInstance = (candidate: unknown): candidate is Storage =>
   isObject(candidate) &&
   "createFile" in candidate &&
@@ -194,6 +209,34 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     storage = new Storage(client);
   }
 
+  // Upload semantics everywhere else overwrite, but Appwrite has no content
+  // update for a file ID: `createFile` onto an existing ID answers 409. Replace
+  // it by deleting the existing file and creating again. Not atomic — the key
+  // is briefly absent, and the new file starts from the bucket's permissions
+  // (file-level permissions on the old file aren't carried over). Conditional
+  // uploads never reach here: the adapter declares no `conditional` support.
+  const createOrReplace = async (
+    fileId: string,
+    file: InputFile
+  ): Promise<{ $id: string; mimeType: string; sizeOriginal: number }> => {
+    try {
+      return await storage.createFile({ bucketId: opts.bucket, file, fileId });
+    } catch (error) {
+      if (!isFileExistsConflict(error)) {
+        throw error;
+      }
+    }
+    try {
+      await storage.deleteFile({ bucketId: opts.bucket, fileId });
+    } catch (error) {
+      // Already gone (a concurrent delete) is fine — create below either way.
+      if (mapAppwriteError(error).code !== "NotFound") {
+        throw error;
+      }
+    }
+    return storage.createFile({ bucketId: opts.bucket, file, fileId });
+  };
+
   // `contentType` is silently dropped — Appwrite's createFile auto-detects
   // mime from the payload and has no override. `cacheControl` and
   // `metadata` throw at upload time (Appwrite has no equivalent fields),
@@ -213,11 +256,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           fileId: from,
         });
         const inputFile = InputFile.fromBuffer(Buffer.from(buffer), to);
-        await storage.createFile({
-          bucketId: opts.bucket,
-          file: inputFile,
-          fileId: to,
-        });
+        await createOrReplace(to, inputFile);
       } catch (error) {
         throw mapAppwriteError(error);
       }
@@ -423,8 +462,27 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         async uploadAt({ offset, data, total, signal }): Promise<{
           nextOffset: number;
         }> {
-          const cfg = requireConfig();
           const current = requireSession();
+          if (data.byteLength === 0) {
+            // A 0-byte body arrives as one empty chunk, which has no valid
+            // Content-Range (`bytes 0--1/0`): create it in a single request,
+            // exactly like `upload()`.
+            try {
+              const created = await createOrReplace(
+                current.fileId,
+                InputFile.fromBuffer(new Uint8Array(), key)
+              );
+              finalFile = {
+                $id: created.$id,
+                mimeType: created.mimeType,
+                sizeOriginal: created.sizeOriginal,
+              };
+            } catch (error) {
+              throw mapAppwriteError(error);
+            }
+            return { nextOffset: 0 };
+          }
+          const cfg = requireConfig();
           const form = new FormData();
           form.append("fileId", current.fileId);
           // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
@@ -490,11 +548,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       // arbitrary-metadata or cache-header field.
       try {
         const inputFile = await toInputFile(body, key);
-        const response = await storage.createFile({
-          bucketId: opts.bucket,
-          file: inputFile,
-          fileId: key,
-        });
+        const response = await createOrReplace(key, inputFile);
 
         return {
           contentType: response.mimeType,
@@ -505,7 +559,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         throw mapAppwriteError(error);
       }
     },
-    url: (key: string, _urlOpts?: UrlOptions) => {
+    url: (key: string, urlOpts?: UrlOptions) => {
       if (!opts.public) {
         return Promise.reject(
           new FilesError(
@@ -522,8 +576,18 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           )
         );
       }
+      const disposition = urlOpts?.responseContentDisposition;
+      if (disposition && !BARE_ATTACHMENT.test(disposition)) {
+        return Promise.reject(
+          new FilesError(
+            "Provider",
+            `appwrite: responseContentDisposition ${JSON.stringify(disposition)} is not supported. Appwrite URLs carry no per-request Content-Disposition override; only a bare "attachment" is honored (via the /download endpoint, which names the file after its stored name).`
+          )
+        );
+      }
+      const endpointName = disposition ? "download" : "view";
       return Promise.resolve(
-        `${endpoint}/storage/buckets/${opts.bucket}/files/${key}/view?project=${projectId}`
+        `${endpoint}/storage/buckets/${opts.bucket}/files/${key}/${endpointName}?project=${projectId}`
       );
     },
   };
