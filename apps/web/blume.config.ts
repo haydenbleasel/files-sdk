@@ -106,8 +106,20 @@ export default defineConfig({
     sidebar: {
       display: "group",
     },
+    // One tab per area, each scoping the sidebar to its own folder (the
+    // longest matching path wins). Docs is the root tab (`path: "/"`) rather
+    // than `/docs`: only the root tab hides the other tabs' sections from its
+    // sidebar, so the general pages (installation, usage, concepts, …) don't
+    // repeat every area as a sidebar group. `href` keeps it linking to /docs.
+    // Adapters and AI have no index page, so they land on S3 and the AI SDK.
     tabs: [
-      { label: "Docs", path: "/docs" },
+      { href: "/docs", label: "Docs", path: "/" },
+      { label: "API", path: "/docs/api" },
+      { href: "/docs/adapters/s3", label: "Adapters", path: "/docs/adapters" },
+      { label: "Plugins", path: "/docs/plugins" },
+      { label: "UI", path: "/docs/ui" },
+      { label: "CLI", path: "/docs/cli" },
+      { href: "/docs/ai/vercel", label: "AI", path: "/docs/ai" },
       { label: "Changelog", path: "/changelog" },
     ],
   },

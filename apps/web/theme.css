@@ -84,6 +84,16 @@
   --blume-accent-foreground: #0a0a0a;
 }
 
+/* The Docs tab is the root tab (`path: "/"` in blume.config.ts) so it can
+   scope the docs sidebar, which also makes it "current" on the homepage. The
+   homepage isn't a docs page, so keep its header and mobile drawer neutral. */
+html:has([data-home])
+  :is([data-blume-header] nav, [data-blume-nav-drawer])
+  a[aria-current="page"]:not(:hover) {
+  background-color: transparent;
+  color: var(--blume-muted-foreground);
+}
+
 ::selection {
   background-color: var(--color-highlighter);
   color: #0a0a0a;
