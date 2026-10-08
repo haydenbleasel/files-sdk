@@ -1,3 +1,9 @@
+// The base config for Blume's `cloudflare()` server build (see
+// blume.config.ts). `blume build` merges it into the Worker config it emits at
+// dist/server/wrangler.json (adding the Worker entry, the rate limiting
+// binding and the Markdown-negotiation wrapper) and writes the redirect
+// `wrangler deploy` follows to .wrangler/deploy/config.json. The assistant's
+// OPENAI_API_KEY is a Worker secret: `bunx wrangler secret put OPENAI_API_KEY`.
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "files-sdk-web",
@@ -7,7 +13,7 @@
   // zone Redirect Rules.
   "routes": [{ "pattern": "files-sdk.dev", "custom_domain": true }],
   "assets": {
-    "directory": "./dist",
+    "directory": "./dist/client",
     // Blume builds directory-style pages (/docs/usage/index.html) and links to
     // them without a trailing slash; the default auto-trailing-slash mode would
     // 307 every page to /docs/usage/. Drop it to keep the canonical URLs.

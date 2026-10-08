@@ -2,6 +2,9 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { defineConfig } from "blume";
+import { openai } from "blume/ai";
+import { cloudflare } from "blume/deploy";
+import { cloudflare as cloudflareRateLimit } from "blume/ratelimit";
 import { filesystem, githubReleases } from "blume/sources";
 
 // Blume's <AutoTypeTable> lazily `import("typescript")`s the compiler API from
@@ -43,7 +46,66 @@ const blumeTypescriptExternal = {
   Parameters<typeof defineConfig>[0]["integrations"]
 >[number];
 
+// Pages that lived at the site root before the docs moved under /docs.
+const OLD_ROOT_PAGES = [
+  "bulk",
+  "cancellations",
+  "capabilities",
+  "escape-hatch",
+  "faq",
+  "installation",
+  "multipart",
+  "prefixes",
+  "provider-gaps",
+  "providers",
+  "readonly",
+  "receipts",
+  "resumable",
+  "retries",
+  "timeouts",
+  "troubleshooting",
+  "usage",
+];
+
+const OLD_API_PAGES = [
+  "copy",
+  "delete",
+  "download",
+  "errors",
+  "exists",
+  "file",
+  "head",
+  "list",
+  "move",
+  "onaction",
+  "onerror",
+  "onprogress",
+  "onretry",
+  "search",
+  "signed-upload-url",
+  "stored-file",
+  "sync",
+  "transfer",
+  "upload",
+  "url",
+];
+
 export default defineConfig({
+  ai: {
+    // The in-page docs assistant, grounded in these docs and answering through
+    // OpenAI directly. Its `POST /api/ask` route reads OPENAI_API_KEY at
+    // request time: a Worker secret in production (`wrangler secret put
+    // OPENAI_API_KEY`), `.env.local` for `blume dev`.
+    assistant: {
+      enabled: true,
+      provider: openai({ model: "gpt-6-luna" }),
+      suggestions: [
+        { icon: "arrow-left-right", label: "How do I switch from S3 to R2?" },
+        { icon: "upload", label: "How do I upload files from the browser?" },
+        { icon: "lock", label: "How do I encrypt files at rest?" },
+      ],
+    },
+  },
   content: {
     sources: [
       // Local docs under docs/ → /docs/* (the marketing homepage owns "/").
@@ -58,13 +120,12 @@ export default defineConfig({
       }),
     ],
   },
-  deployment: {
-    // Static build served by Cloudflare Workers static assets (see
-    // wrangler.jsonc). Workers Builds doesn't expose a site URL the way Pages
-    // does, so the canonical origin is pinned here for the sitemap, OG images,
-    // and the registry install command.
-    site: "https://files-sdk.dev",
-  },
+  // A server build on Cloudflare Workers: the assistant's route can't run on a
+  // static build. Prerendered pages still ship as static assets alongside the
+  // Worker. Workers doesn't expose a site URL the way Pages does, so the
+  // canonical origin is pinned for the sitemap, OG images, and the registry
+  // install command.
+  deployment: cloudflare({ site: "https://files-sdk.dev" }),
   description:
     "A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.",
 
@@ -111,7 +172,8 @@ export default defineConfig({
     // than `/docs`: only the root tab hides the other tabs' sections from its
     // sidebar, so the general pages (installation, usage, concepts, …) don't
     // repeat every area as a sidebar group. `href` keeps it linking to /docs.
-    // Adapters and AI have no index page, so they land on S3 and the AI SDK.
+    // Adapters has no index page, so it lands on S3. The AI pages have no tab
+    // and sit in the Docs sidebar.
     tabs: [
       { href: "/docs", label: "Docs", path: "/" },
       { label: "API", path: "/docs/api" },
@@ -119,16 +181,49 @@ export default defineConfig({
       { label: "Plugins", path: "/docs/plugins" },
       { label: "UI", path: "/docs/ui" },
       { label: "CLI", path: "/docs/cli" },
-      { href: "/docs/ai/vercel", label: "AI", path: "/docs/ai" },
       { label: "Changelog", path: "/changelog" },
     ],
   },
 
-  // All redirects (old root URLs → /docs/*, the index-less tab targets, and
-  // /docs/overview → /docs) live in public/_redirects — one source of truth,
-  // and the only place wildcard rules (/adapters/*) can be expressed. Blume
-  // copies public/ into dist/ and leaves an existing _redirects untouched.
-  // The /r/* CORS headers live in public/_headers alongside it.
+  // Count assistant questions with Workers rate limiting (Blume declares the
+  // binding at build time): an in-memory count resets per Worker instance.
+  rateLimit: cloudflareRateLimit({ requests: 10, window: 60 }),
+
+  // Old root URLs → /docs/*, plus the index-less sidebar groups. These live
+  // here rather than in public/_redirects: on a server build the Worker
+  // answers every page request first, so Cloudflare never consults that file.
+  // The old /api/* pages are listed one by one because a /api/* pattern would
+  // also swallow the assistant's /api/ask route and Blume's /api/docs/* JSON.
+  // The /r/* CORS headers stay in public/_headers, which still applies.
+  redirects: [
+    ...["adapters", "ai", "cli", "plugins", "ui"].map((area) => ({
+      from: `/${area}/:path*`,
+      status: 301 as const,
+      to: `/docs/${area}/:path*`,
+    })),
+    { from: "/api", status: 301, to: "/docs/api" },
+    ...OLD_API_PAGES.map((page) => ({
+      from: `/api/${page}`,
+      status: 301 as const,
+      to: `/docs/api/${page}`,
+    })),
+    ...OLD_ROOT_PAGES.map((page) => ({
+      from: `/${page}`,
+      status: 301 as const,
+      to: `/docs/${page}`,
+    })),
+    { from: "/overview", status: 301, to: "/docs" },
+    { from: "/docs/overview", status: 301, to: "/docs" },
+    { from: "/docs/adapters", status: 302, to: "/docs/adapters/s3" },
+    { from: "/docs/ai", status: 302, to: "/docs/ai/vercel" },
+    { from: "/docs/ui/client", status: 302, to: "/docs/ui/client/react" },
+    {
+      from: "/docs/ui/components",
+      status: 302,
+      to: "/docs/ui/components/dropzone",
+    },
+    { from: "/docs/ui/server", status: 302, to: "/docs/ui/server/gateway" },
+  ],
 
   seo: {
     og: {

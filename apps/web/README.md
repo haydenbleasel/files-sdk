@@ -21,16 +21,20 @@ Open [http://localhost:4321](http://localhost:4321).
 ## Build
 
 ```bash
-bun run build      # bun scripts/build-registry.ts && blume build → dist/
-bun run preview    # serve the built dist/
+bun run build      # bun scripts/build-registry.ts && blume build → dist/client + dist/server
+bun run preview    # serve the built Worker locally
 ```
+
+While `bun run dev` is running, `blume build` refuses to touch its runtime; `bunx blume build --isolated` verifies into `.blume-verify/` instead, but skips the deploy artifacts (Worker name, rate limiting binding, Markdown-negotiation wrapper, `.wrangler/deploy/`), so deploy only from a real build.
 
 ## Deploy (Cloudflare Workers)
 
-Static output goes to `dist/` and is served as Workers static assets per `wrangler.jsonc`. Redirects live in `public/_redirects` and the `/r/*` CORS headers in `public/_headers`; Blume copies both into `dist/` untouched.
+The site is a Blume `cloudflare()` **server** build so the docs assistant's `POST /api/ask` route can run. Prerendered pages ship as static assets in `dist/client`; the Worker in `dist/server` answers every page request first (for `Accept: text/markdown` negotiation and the redirects, which live in `redirects` in `blume.config.ts` because Cloudflare never consults a `_redirects` file once the Worker runs first). `wrangler.jsonc` is the base config Blume merges into `dist/server/wrangler.json`; `wrangler deploy` follows `.wrangler/deploy/config.json` to it. The `/r/*` CORS headers live in `public/_headers`, which still applies.
+
+The assistant answers with OpenAI (`gpt-6-luna`) and needs `OPENAI_API_KEY`: in `.env.local` for `blume dev`, and as a Worker secret in production (`bunx wrangler secret put OPENAI_API_KEY`). Without it `/api/ask` answers `503`. Questions are rate limited with Workers rate limiting (10 per minute per reader, per location).
 
 ```bash
-bun run build      # dist/
+bun run build      # dist/ + .wrangler/deploy/
 bun run deploy     # wrangler deploy (needs CLOUDFLARE_API_TOKEN or `wrangler login`)
 ```
 
