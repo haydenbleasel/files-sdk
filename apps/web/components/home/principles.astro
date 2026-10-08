@@ -2,9 +2,9 @@
 import CodeBlock from "./code-block.astro";
 
 const SNIPPET = `import { Files, FilesError } from "files-sdk";
-import { vercelBlob } from "files-sdk/vercel-blob";
+import { r2 } from "files-sdk/r2";
 
-const files = new Files({ adapter: vercelBlob() });
+const files = new Files({ adapter: r2({ bucket: "uploads" }) });
 
 // Ask what the adapter can do before you call it.
 if (files.capabilities.rangeRead) {

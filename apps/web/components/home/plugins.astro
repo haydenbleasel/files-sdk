@@ -5,13 +5,13 @@ import { PLUGINS } from "@/lib/plugins";
 import CodeBlock from "./code-block.astro";
 
 const SNIPPET = `import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { compression } from "files-sdk/compression";
 import { encryption } from "files-sdk/encryption";
 import { validation } from "files-sdk/validation";
 
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [
     validation({ allowedTypes: ["image/*"] }),
     compression(),
@@ -26,7 +26,7 @@ const STEPS = [
   { adapter: false, name: "validation()", read: "skip", write: "check" },
   { adapter: false, name: "compression()", read: "decompress", write: "compress" },
   { adapter: false, name: "encryption()", read: "decrypt", write: "encrypt" },
-  { adapter: true, name: "s3()", read: "read", write: "write" },
+  { adapter: true, name: "r2()", read: "read", write: "write" },
 ];
 ---
 
