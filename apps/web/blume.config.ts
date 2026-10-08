@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 import { defineConfig } from "blume";
+import { filesystem, githubReleases } from "blume/sources";
 
 // Blume's <AutoTypeTable> lazily `import("typescript")`s the compiler API from
 // inside the prerender bundle. Vite externalizes that import as the bare
@@ -46,16 +47,15 @@ export default defineConfig({
   content: {
     sources: [
       // Local docs under docs/ → /docs/* (the marketing homepage owns "/").
-      { prefix: "docs", root: "docs", type: "filesystem" },
+      filesystem({ prefix: "docs", root: "docs" }),
       // Files SDK's GitHub releases become the changelog timeline at /changelog
       // (each release is a type:changelog entry). Set GITHUB_TOKEN in CI to
       // avoid rate limits; a failed fetch degrades to an empty changelog.
-      {
+      githubReleases({
         owner: "haydenbleasel",
         prefix: "changelog",
         repo: "files-sdk",
-        type: "github-releases",
-      },
+      }),
     ],
   },
   deployment: {
