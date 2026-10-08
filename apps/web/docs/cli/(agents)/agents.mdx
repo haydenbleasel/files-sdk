@@ -7,15 +7,15 @@ Three patterns, ordered by how much trust you're extending to the agent.
 
 ```bash lineNumbers
 # 1. Quick exploration — let an agent inspect a bucket without writing code
-files --provider s3 --bucket uploads list --prefix invoices/ --limit 20 | jq '.items[].key'
+files --provider r2 --bucket uploads list --prefix invoices/ --limit 20 | jq '.items[].key'
 
 # 2. Programmatic loop — feed JSON straight to the next step
 cursor=""
 while :; do
-  page=$(files --provider s3 --bucket uploads list --prefix logs/ --limit 100 \
+  page=$(files --provider r2 --bucket uploads list --prefix logs/ --limit 100 \
     ${cursor:+--cursor "$cursor"})
   echo "$page" | jq -r '.items[].key' | while read key; do
-    files --provider s3 --bucket uploads download "$key" --stdout | gunzip | grep ERROR
+    files --provider r2 --bucket uploads download "$key" --stdout | gunzip | grep ERROR
   done
   cursor=$(echo "$page" | jq -r '.cursor // empty')
   [ -z "$cursor" ] && break

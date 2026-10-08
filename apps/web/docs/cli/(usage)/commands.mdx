@@ -22,7 +22,7 @@ Each command maps to a `Files` method. Same semantics, same `FilesError` codes, 
 | `sync` | [`sync`](/docs/api/sync) | Mirror onto another provider (skip-unchanged, prune) |
 | `capabilities` | [`capabilities`](/docs/capabilities) | Print what the configured adapter can do, as JSON |
 
-All examples use `--provider s3 --bucket uploads`; swap in any [provider](/docs/providers) and its flags.
+Examples use `--provider r2 --bucket uploads`, with credentials read from `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`; swap in any [provider](/docs/providers) and its flags. A few use `--provider s3` instead, where R2 lacks the feature or the example spans two providers.
 
 ## Methods
 
@@ -31,10 +31,10 @@ All examples use `--provider s3 --bucket uploads`; swap in any [provider](/docs/
 Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. Without `--content-type`, the content type is inferred from the key's extension (`application/octet-stream` when it has none).
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads \
+files --provider r2 --bucket uploads \
   upload reports/2026-q1.pdf --file ./report.pdf --content-type application/pdf
 
-cat report.pdf | files --provider s3 --bucket uploads \
+cat report.pdf | files --provider r2 --bucket uploads \
   upload reports/2026-q1.pdf --stdin --content-type application/pdf
 ```
 
@@ -45,8 +45,8 @@ For large objects see [multipart](#byte-ranges-and-multipart); to push a whole l
 Read a key back. `--out` writes it to a file; `--stdout` streams the raw bytes so you can pipe them onward.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads download reports/2026-q1.pdf --out ./report.pdf
-files --provider s3 --bucket uploads download reports/2026-q1.pdf --stdout > report.pdf
+files --provider r2 --bucket uploads download reports/2026-q1.pdf --out ./report.pdf
+files --provider r2 --bucket uploads download reports/2026-q1.pdf --stdout > report.pdf
 ```
 
 To pull a slice instead of the whole object see [byte ranges](#byte-ranges-and-multipart); to fetch many keys at once see [directories](#directories).
@@ -56,7 +56,7 @@ To pull a slice instead of the whole object see [byte ranges](#byte-ranges-and-m
 Fetch an object's metadata — size, content type, etag, last-modified — without downloading the body.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads head reports/2026-q1.pdf
+files --provider r2 --bucket uploads head reports/2026-q1.pdf
 ```
 
 Pass several keys to inspect them in one call; see [many keys at once](#many-keys-at-once).
@@ -66,7 +66,7 @@ Pass several keys to inspect them in one call; see [many keys at once](#many-key
 Test whether a key exists. It prints `{ exists, key }` and signals the result through the exit code too, so it drops straight into a shell conditional.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads exists reports/2026-q1.pdf   # exit 0 = exists, 1 = missing
+files --provider r2 --bucket uploads exists reports/2026-q1.pdf   # exit 0 = exists, 1 = missing
 ```
 
 With several keys it prints `{ existing, missing }` instead and exits 0 only when every key exists. A hard failure (auth, transport) exits with its error's own [code](/docs/cli/output) rather than 1.
@@ -76,19 +76,19 @@ With several keys it prints `{ existing, missing }` instead and exits 0 only whe
 Return one page of keys under a prefix. `--prefix` filters this call (distinct from the instance-wide [`--key-prefix`](#global-flags)) and `--limit` caps the page.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads list --prefix reports/ --limit 50
+files --provider r2 --bucket uploads list --prefix reports/ --limit 50
 ```
 
 The result carries a `cursor` for the next page. Pass `--all` to follow the cursor to the end and return every item in one result — mind the memory cost on huge buckets:
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads list --prefix logs/ --all | jq '.items[].key'
+files --provider r2 --bucket uploads list --prefix logs/ --all | jq '.items[].key'
 ```
 
 Pass `--delimiter` to collapse keys into folders — the direct files come back in `items` and the subfolders in a `prefixes` array (full keys with the trailing delimiter). This is the building block for a file-browser view; it throws on adapters with no folder concept, and can't be combined with `--all`:
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads list --prefix photos/ --delimiter / | jq '.prefixes'
+files --provider r2 --bucket uploads list --prefix photos/ --delimiter / | jq '.prefixes'
 # ["photos/2023/", "photos/2024/"]
 ```
 
@@ -97,8 +97,8 @@ files --provider s3 --bucket uploads list --prefix photos/ --delimiter / | jq '.
 Find keys matching a pattern, walking every page. `<pattern>` is a glob by default (`*` within a path segment, `**` across `/`, `?` one character); `--match` switches to `regex`, `substring`, or `exact`, and `--regex` is shorthand for `--match regex`. The result is `{ items }` with no cursor.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads search 'reports/**/*.pdf'
-files --provider s3 --bucket uploads search '\.(png|jpe?g)$' --regex --prefix photos/ --max-results 20
+files --provider r2 --bucket uploads search 'reports/**/*.pdf'
+files --provider r2 --bucket uploads search '\.(png|jpe?g)$' --regex --prefix photos/ --max-results 20
 ```
 
 A glob's literal prefix (`reports/` above) bounds the walk automatically. Regex, substring, exact, and `--case-insensitive` searches walk everything under `--prefix`, so pass one on a large bucket. `--max-results` stops after that many matches; `--limit` sets the page size of the underlying walk, not the number of results.
@@ -108,7 +108,7 @@ A glob's literal prefix (`reports/` above) bounds the walk automatically. Regex,
 Copy a key to a new key, leaving the source in place.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1.pdf
+files --provider r2 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1.pdf
 ```
 
 ### move
@@ -116,7 +116,7 @@ files --provider s3 --bucket uploads copy reports/2026-q1.pdf reports/archive/q1
 Move (rename) a key — a native rename where the provider supports it, otherwise a copy followed by a delete of the source.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads move uploads/tmp-q1.pdf reports/2026-q1.pdf
+files --provider r2 --bucket uploads move uploads/tmp-q1.pdf reports/2026-q1.pdf
 ```
 
 ### delete
@@ -124,7 +124,7 @@ files --provider s3 --bucket uploads move uploads/tmp-q1.pdf reports/2026-q1.pdf
 Delete a key.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads delete reports/archive/q1.pdf
+files --provider r2 --bucket uploads delete reports/archive/q1.pdf
 ```
 
 Pass several keys to delete them in one fan-out; see [many keys at once](#many-keys-at-once). To delete only a specific generation see [conditional predicates](#conditional-predicates).
@@ -134,14 +134,19 @@ Pass several keys to delete them in one fan-out; see [many keys at once](#many-k
 Get a read URL for a key — presigned and short-lived on signing adapters, a public URL for CDN-backed providers. `--expires-in` sets the lifetime in seconds.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads url reports/2026-q1.pdf --expires-in 600
+files --provider r2 --bucket uploads url reports/2026-q1.pdf --expires-in 600
 ```
 
 ### sign-upload
 
-Mint a presigned upload for browser-direct uploads. `--expires-in` is required. On S3, `--max-size` switches from a presigned PUT URL (no size limit) to a POST policy that enforces the size server-side, so the client can't exceed it. Adapters that can't enforce `--max-size` fail closed.
+Mint a presigned upload for browser-direct uploads. `--expires-in` is required. On S3, `--max-size` switches from a presigned PUT URL (no size limit) to a POST policy that enforces the size server-side, so the client can't exceed it. Adapters that can't enforce `--max-size` fail closed. R2 is one of them: it has no POST policy, so it only mints PUT URLs.
 
 ```bash lineNumbers
+# R2: a presigned PUT, with no server-side size limit
+files --provider r2 --bucket uploads sign-upload uploads/avatar.png \
+  --expires-in 600 --content-type image/png
+
+# S3: --max-size switches to a size-capped POST policy
 files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
   --expires-in 600 --max-size 5242880 --content-type image/png
 ```
@@ -151,7 +156,7 @@ files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
 Print the configured adapter's [capability snapshot](/docs/capabilities) as JSON — range reads, native upload progress, list delimiters, metadata, cache-control, multipart, server-side copy, signed URLs, and conditional operations. Pure introspection; it makes no provider call.
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads capabilities
+files --provider r2 --bucket uploads capabilities
 ```
 
 ### transfer
@@ -171,15 +176,15 @@ files --provider s3 --bucket old --verbose \
 Mirror the source onto another provider: upload new or changed objects, skip the unchanged ones, and — with `--prune` — delete destination keys the source no longer has. `--compare` picks the change check (`etag`, the default, or `size` for cross-provider mirrors). Unlike every other command, `--dry-run` here lists both sides and prints the real reconciliation plan (`{ uploaded, skipped, deleted }`) without mutating anything — preview a `--prune` before you run it.
 
 ```bash lineNumbers
-# Back up an S3 prefix to R2 — only the delta moves, and the backup mirrors deletes
-files --provider s3 --bucket live --verbose \
+# Back up an R2 prefix to S3 — only the delta moves, and the backup mirrors deletes
+files --provider r2 --bucket live --verbose \
   sync \
-  --to '{"provider":"r2","bucket":"backup","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}' \
+  --to '{"provider":"s3","bucket":"backup","region":"us-east-1"}' \
   --prefix uploads/ --prune --compare size --concurrency 16
 
 # Preview what a pruning mirror would do, read-only
-files --provider s3 --bucket live \
-  sync --to '{"provider":"r2","bucket":"backup",...}' --prune --dry-run
+files --provider r2 --bucket live \
+  sync --to '{"provider":"s3","bucket":"backup",...}' --prune --dry-run
 ```
 
 ## Global flags
@@ -190,11 +195,11 @@ These apply to every command and mirror the `Files` constructor and `OperationOp
 # --key-prefix scopes every operation under a base path (the instance prefix,
 # distinct from `list --prefix`, which is a one-off filter). Listed/returned
 # keys come back relative to it.
-files --provider s3 --bucket uploads --key-prefix tenants/acme \
+files --provider r2 --bucket uploads --key-prefix tenants/acme \
   list                                  # lists under tenants/acme/
 
 # --timeout (per attempt, ms) and --retries (provider failures) apply to all commands
-files --provider s3 --bucket uploads --timeout 10000 --retries 3 \
+files --provider r2 --bucket uploads --timeout 10000 --retries 3 \
   head reports/2026-q1.pdf
 ```
 
@@ -203,9 +208,9 @@ files --provider s3 --bucket uploads --timeout 10000 --retries 3 \
 `head`, `exists`, and `delete` take multiple keys and return a structured result instead of throwing on partial failure. `--concurrency` and `--stop-on-error` tune the fan-out:
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads head a.txt b.txt c.txt
-files --provider s3 --bucket uploads delete a.txt b.txt --concurrency 16
-files --provider s3 --bucket uploads exists a.txt b.txt --stop-on-error
+files --provider r2 --bucket uploads head a.txt b.txt c.txt
+files --provider r2 --bucket uploads delete a.txt b.txt --concurrency 16
+files --provider r2 --bucket uploads exists a.txt b.txt --stop-on-error
 ```
 
 ## Byte ranges and multipart
@@ -213,17 +218,17 @@ files --provider s3 --bucket uploads exists a.txt b.txt --stop-on-error
 ```bash lineNumbers
 # Download a byte range (0-based, inclusive) — for video seeking or resuming.
 # Range downloads throw on adapters with no native range primitive.
-files --provider s3 --bucket uploads download big.mp4 --out head.mp4 --range 0-1048575
+files --provider r2 --bucket uploads download big.mp4 --out head.mp4 --range 0-1048575
 
 # Upload in parallel parts (robust for large objects). --part-size /
 # --multipart-concurrency tune it and imply --multipart.
-files --provider s3 --bucket uploads \
+files --provider r2 --bucket uploads \
   upload big.iso --file ./big.iso --multipart --part-size 16777216
 ```
 
 ## Conditional predicates
 
-Single-key `upload`, `download`, `delete`, and `copy` accept the SDK's [conditional predicates](/docs/conditional-operations) as flags. They fail closed on adapters without native support and have no bulk form.
+Single-key `upload`, `download`, `delete`, and `copy` accept the SDK's [conditional predicates](/docs/conditional-operations) as flags. They fail closed on adapters without native support and have no bulk form. These examples use `--provider s3`, since AWS S3 has native conditional support and R2 doesn't.
 
 ```bash lineNumbers
 # Create only: fail if the key already exists.
@@ -249,9 +254,9 @@ Upload a whole local tree, or download many keys into a directory. Each file is 
 
 ```bash lineNumbers
 # Upload every file under ./build, keyed by relative path (composes with --key-prefix)
-files --provider s3 --bucket site --key-prefix assets upload --dir ./build
+files --provider r2 --bucket site --key-prefix assets upload --dir ./build
 
 # Download many keys into a directory, recreating their key paths underneath it
-files --provider s3 --bucket uploads \
+files --provider r2 --bucket uploads \
   download docs/a.pdf docs/b.pdf logos/c.png --out-dir ./pulled
 ```

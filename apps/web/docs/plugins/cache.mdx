@@ -9,11 +9,11 @@ It writes **no object metadata** and has **no native dependencies**, so it works
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { cache } from "files-sdk/cache";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [cache()],
 });
 
@@ -89,7 +89,7 @@ Pass your own `store` to share the cache across instances or processes - e.g. a 
 
 ```ts lineNumbers
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [cache({ store: myRedisStore })],
 });
 ```

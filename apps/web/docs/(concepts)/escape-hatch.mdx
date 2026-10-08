@@ -22,6 +22,8 @@ await files.raw.send(
 );
 ```
 
+The examples on this page use `s3()` because its `raw` is a single type. `r2()` picks its client from the options you pass and the runtime it lands on, so its `raw` is typed as the union `S3Client | R2Bucket | AwsClient`: narrow or cast it to the client your configuration uses. In `"aws-sdk"` HTTP mode the `S3Client` loads lazily, so `raw` is `undefined` until the adapter has made its first call.
+
 `files.adapter` is the adapter itself, if you need its `name` or want to pass it around; `files.adapter.raw` is the same client as `files.raw`.
 
 ## What `raw` bypasses

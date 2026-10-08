@@ -7,11 +7,11 @@ description: Serve the Files gateway from Deno.serve. The gateway is a Web fetch
 
 ```ts title="main.ts" lineNumbers
 import { createFiles } from "npm:files-sdk";
-import { s3 } from "npm:files-sdk/s3";
+import { r2 } from "npm:files-sdk/r2";
 import { createFilesRouter } from "npm:files-sdk/api";
 
 const router = createFilesRouter({
-  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  files: createFiles({ adapter: r2({ bucket: "uploads" }) }),
   allowedOrigins: ["https://app.example.com"],
   authorize: async ({ req }) => {
     /* throw to deny, or return a per-user constraint — see /ui/server/authorization */
@@ -30,7 +30,7 @@ Deno.serve({ port: 3000 }, (req) => {
 ```
 
 :::note
-Deno is sandboxed — run with network and environment access: `deno run --allow-net --allow-env main.ts`. The adapter reads credentials (e.g. `AWS_ACCESS_KEY_ID`) and the gateway its `FILES_API_SECRET` from the environment, so `--allow-env` is required.
+Deno is sandboxed — run with network and environment access: `deno run --allow-net --allow-env main.ts`. The adapter reads credentials (e.g. `R2_ACCESS_KEY_ID`) and the gateway its `FILES_API_SECRET` from the environment, so `--allow-env` is required.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

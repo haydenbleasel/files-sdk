@@ -9,11 +9,11 @@ Unlike [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/pl
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { versioning } from "files-sdk/versioning";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [versioning({ limit: 10 })],
 });
 
@@ -120,7 +120,7 @@ Version history and a recycle bin are a common pair, and both plugins can sit on
 
 ```ts lineNumbers
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [versioning({ ignore: [".trash"] }), softDelete()],
 });
 

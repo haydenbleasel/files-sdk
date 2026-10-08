@@ -9,7 +9,7 @@ Receipts are **off by default**. An instance without the option behaves exactly 
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   receipts: true,
   hooks: {
     onAction(event) {
@@ -21,7 +21,7 @@ const files = new Files({
 });
 
 await files.upload("reports/q3.pdf", pdf);
-// event.receipt -> { op: "upload", provider: "s3",
+// event.receipt -> { op: "upload", provider: "r2-http",
 //   key: "reports/q3.pdf", bytes: 48213, etag: "a1b2…",
 //   durationMs: 31, ts: 1733788800123 }
 ```
@@ -44,7 +44,7 @@ The fingerprint is the one field with a real per-call cost, so it stays off unti
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   receipts: { sha256: true },
   hooks: {
     onAction(event) {

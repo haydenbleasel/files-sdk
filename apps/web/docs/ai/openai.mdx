@@ -18,11 +18,11 @@ openai zod
 ```tsx lineNumbers
 import OpenAI from "openai";
 import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createResponsesFileTools } from "files-sdk/openai";
 
 const client = new OpenAI();
-const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+const files = new Files({ adapter: r2({ bucket: "uploads" }) });
 const ft = createResponsesFileTools({ files });
 
 const input: any[] = [{ role: "user", content: "List my files." }];
@@ -63,10 +63,10 @@ while (true) {
 ```tsx lineNumbers
 import { Agent, run } from "@openai/agents";
 import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createAgentsFileTools } from "files-sdk/openai";
 
-const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+const files = new Files({ adapter: r2({ bucket: "uploads" }) });
 const tools = createAgentsFileTools({ files });
 
 const agent = new Agent({

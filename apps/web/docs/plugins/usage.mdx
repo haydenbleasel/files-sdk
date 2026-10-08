@@ -7,11 +7,11 @@ The built-in `usage()` plugin tallies every operation on a `Files` instance and 
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { usage } from "files-sdk/usage";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [usage()],
 });
 
@@ -50,7 +50,7 @@ Pass `group` to bucket usage by a label derived from each operation — a tenant
 
 ```ts lineNumbers
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [
     usage({
       group: (op) =>

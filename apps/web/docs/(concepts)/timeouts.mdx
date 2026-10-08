@@ -8,7 +8,7 @@ description: A per-attempt timeout that aborts the call when it fires — it end
 ```ts lineNumbers
 // Constructor default, overridden per call.
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   timeout: 10_000,
 });
 

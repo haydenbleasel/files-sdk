@@ -22,10 +22,10 @@ The `files-sdk/claude` subpath exposes a configured `Files` instance to the [Cla
 ```tsx lineNumbers
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createClaudeFileTools } from "files-sdk/claude";
 
-const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+const files = new Files({ adapter: r2({ bucket: "uploads" }) });
 const tools = createClaudeFileTools({ files });
 
 for await (const message of query({

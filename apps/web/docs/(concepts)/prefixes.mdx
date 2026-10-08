@@ -7,7 +7,7 @@ Pass `prefix` to the constructor and every key is resolved relative to it — re
 
 ```ts lineNumbers
 const users = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   prefix: "users",
 });
 

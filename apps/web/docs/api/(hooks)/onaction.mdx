@@ -7,7 +7,7 @@ A constructor [`hook`](/docs/usage#hooks) that runs once when a public call sett
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   hooks: {
     onAction(event) {
       logger.info("files", {

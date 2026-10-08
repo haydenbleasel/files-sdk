@@ -15,13 +15,13 @@ The package ships its own TypeScript types, so there's no `@types/files-sdk` to 
 
 Adapters are subpath exports - `files-sdk/s3`, `files-sdk/r2`, `files-sdk/vercel-blob`, and so on - and each one's provider SDK is an optional peer dependency, loaded only when you import that adapter's subpath. The SDK you don't import is never bundled, so both install size and cold-start cost stay proportional to the providers you actually wire up.
 
-Install the peer deps for your adapter alongside the SDK. For S3 - and every S3-compatible store, since R2 over HTTP, MinIO, Backblaze, Wasabi, DigitalOcean Spaces, and the rest all wrap the same client:
+Install the peer deps for your adapter alongside the SDK. For R2 over HTTP - and for S3 and every other S3-compatible store, since MinIO, Backblaze, Wasabi, DigitalOcean Spaces, and the rest all wrap the same client:
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
-Add `@aws-sdk/lib-storage` as well if you use `multipart` or `onProgress`, or upload a `ReadableStream` of unknown length, on an S3-family adapter using the AWS SDK client. Without it, those uploads throw a `FilesError` that names the missing package.
+Add `@aws-sdk/lib-storage` as well if you use `multipart` or `onProgress`, or upload a `ReadableStream` of unknown length, on an S3-family adapter using the AWS SDK client. Without it, those uploads throw a `FilesError` that names the missing package. R2 can skip the `@aws-sdk/*` packages entirely: its Workers binding and its `client: "fetch"` engine (the default inside Cloudflare Workers) need none of them.
 
 The shape is the same for every adapter, only the packages change: Google Cloud Storage adds `@google-cloud/storage`; Azure adds `@azure/storage-blob` (plus `@azure/identity` only if you build a `credential` with it); Vercel Blob needs only `@vercel/blob`. A few adapters need no extra packages at all - `files-sdk/fs`, `files-sdk/memory`, and `files-sdk/bun-s3` use primitives the runtime already provides, and `files-sdk/s3-fetch` signs requests with the bundled `aws4fetch`.
 

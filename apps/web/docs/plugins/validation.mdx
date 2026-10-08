@@ -9,11 +9,11 @@ Unlike [`compression()`](/docs/plugins/compression) and [`encryption()`](/docs/p
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { validation } from "files-sdk/validation";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [
     validation({
       maxSize: 10 * 1024 * 1024, // 10 MiB

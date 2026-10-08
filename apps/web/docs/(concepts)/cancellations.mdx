@@ -39,7 +39,7 @@ try {
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   signal: req.signal, // bind every operation to the request lifecycle
 });
 ```

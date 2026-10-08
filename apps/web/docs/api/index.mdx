@@ -39,7 +39,7 @@ Every single-key call (plus `list`, `listAll`, and `search`) accepts `signal`, `
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   timeout: 10_000, // default per-attempt timeout for every call
   retries: { max: 3, backoff: ({ attempt }) => attempt * 500 },
 });

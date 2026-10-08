@@ -9,11 +9,12 @@ It's **body-transparent**: it never buffers or transforms bytes, so streaming, [
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
+import { r2 } from "files-sdk/r2";
 import { s3 } from "files-sdk/s3";
 import { failover } from "files-sdk/failover";
 
 const files = new Files({
-  adapter: s3({ bucket: "primary", region: "us-east-1" }), // primary
+  adapter: r2({ bucket: "primary" }), // primary
   plugins: [
     failover({
       secondaries: s3({ bucket: "backup", region: "us-west-2" }),

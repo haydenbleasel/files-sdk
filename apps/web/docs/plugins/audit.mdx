@@ -7,11 +7,11 @@ The built-in `audit()` plugin writes a structured **who / what / when** record o
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { audit } from "files-sdk/audit";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [
     audit({
       actor: () => currentUser()?.id, // read from your request context

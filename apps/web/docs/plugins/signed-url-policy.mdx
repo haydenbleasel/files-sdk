@@ -82,7 +82,7 @@ await files.signedUploadUrl("a", { expiresIn: 60, maxSize: 4096 }); // left at 4
 ```
 
 :::warning
-Enforcing a `maxSize` makes supporting adapters mint a presigned **POST** form (with a `content-length-range` policy) instead of a PUT, and adapters whose direct-upload primitive can't bind a size limit **fail closed** - they throw rather than hand out an unbounded URL. A size policy therefore turns an unenforceable provider into a loud error instead of a silent hole, which is the point.
+Enforcing a `maxSize` makes supporting adapters (such as `s3()`, which the examples on this page use) mint a presigned **POST** form (with a `content-length-range` policy) instead of a PUT, and adapters whose direct-upload primitive can't bind a size limit **fail closed** - R2 among them - and throw rather than hand out an unbounded URL. A size policy therefore turns an unenforceable provider into a loud error instead of a silent hole, which is the point.
 :::
 
 ## Ordering

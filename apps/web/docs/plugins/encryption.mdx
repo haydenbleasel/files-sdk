@@ -9,13 +9,13 @@ It uses only the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/A
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { encryption, generateEncryptionKey } from "files-sdk/encryption";
 
 const key = await generateEncryptionKey();
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [encryption(key)],
 });
 
@@ -37,7 +37,7 @@ On `download` it unwraps the DEK with your master key, decrypts the body, and ha
 
 `head` and `list` report the same plaintext size without decrypting anything. Their body accessors (`text()`, `arrayBuffer()`, `stream()`, …) are lazy: reading one downloads the object back through the plugin, so it returns plaintext, never the stored ciphertext.
 
-One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters), a `list()` item can't be recognized as encrypted, so it reports the **stored** (ciphertext) size. Its body accessors still decrypt, and `head()` and `download()` report the plaintext size as usual.
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as encrypted, so it reports the **stored** (ciphertext) size. Its body accessors still decrypt, and `head()` and `download()` report the plaintext size as usual.
 
 A fresh per-object DEK means the same master key is never reused to encrypt two bodies directly, which sidesteps IV-reuse concerns at scale and leaves room for key rotation later (re-wrap the DEK without re-encrypting the body).
 

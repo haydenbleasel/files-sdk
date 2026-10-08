@@ -21,12 +21,12 @@ Construct a `Files` instance the same way you would anywhere else, then pass it 
 
 ```tsx lineNumbers
 import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createFileTools } from "files-sdk/ai-sdk";
 import { generateText } from "ai";
 
 const files = new Files({
-  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+  adapter: r2({ bucket: "uploads" }),
 });
 
 const result = await generateText({

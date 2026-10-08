@@ -7,7 +7,7 @@ A constructor [`hook`](/docs/usage#hooks) that runs each time the SDK schedules 
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   retries: 3,
   hooks: {
     onRetry(event) {

@@ -7,11 +7,11 @@ The built-in `contentType()` plugin sets an upload's `Content-Type` from what th
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { contentType } from "files-sdk/content-type";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [contentType({ onMismatch: "reject" })],
 });
 

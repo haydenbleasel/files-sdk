@@ -11,14 +11,14 @@ The tools mirror the CLI surface: `download` accepts a byte `range` and an optio
 
 ```bash lineNumbers
 # Start the read-only MCP server on stdio
-files --provider s3 --bucket uploads mcp
+files --provider r2 --bucket uploads mcp
 
 # Opt into mutation tools
-files --provider s3 --bucket uploads mcp --allow-writes
+files --provider r2 --bucket uploads mcp --allow-writes
 
 # Also expose transfer and sync, bound to an operator-chosen destination
-files --provider s3 --bucket uploads mcp --allow-writes \
-  --to '{"provider":"r2","bucket":"backup","accountId":"...","accessKeyId":"...","secretAccessKey":"..."}'
+files --provider r2 --bucket uploads mcp --allow-writes \
+  --to '{"provider":"s3","bucket":"backup","region":"us-east-1"}'
 ```
 
 ```jsonc lineNumbers
@@ -27,10 +27,11 @@ files --provider s3 --bucket uploads mcp --allow-writes \
   "mcpServers": {
     "files-sdk": {
       "command": "files",
-      "args": ["--provider", "s3", "--bucket", "uploads", "mcp"],
+      "args": ["--provider", "r2", "--bucket", "uploads", "mcp"],
       "env": {
-        "AWS_ACCESS_KEY_ID": "...",
-        "AWS_SECRET_ACCESS_KEY": "...",
+        "R2_ACCOUNT_ID": "...",
+        "R2_ACCESS_KEY_ID": "...",
+        "R2_SECRET_ACCESS_KEY": "...",
       },
     },
   },

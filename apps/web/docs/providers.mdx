@@ -38,8 +38,8 @@ Each variable is tagged with whether it is a `secret` and who reads it:
 import { getProvider, getSecretEnvVars } from "files-sdk/providers";
 
 // Every secret to inject for one provider:
-const secrets = getSecretEnvVars("s3").map((v) => v.key);
-// → ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+const secrets = getSecretEnvVars("r2").map((v) => v.key);
+// → ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]
 
 // Validate that one of Azure's credential modes is fully satisfied:
 const azure = getProvider("azure")!;

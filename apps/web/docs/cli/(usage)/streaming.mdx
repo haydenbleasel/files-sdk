@@ -16,9 +16,9 @@ files --provider r2 --bucket talks download 2026/q1/keynote.mp4 --stdout \
   | ffprobe -i - 2>&1
 
 # Plan before doing — useful as a sanity check inside an agent loop
-files --provider s3 --bucket uploads --dry-run delete reports/q1.pdf
-# → {"action":"delete","dryRun":true,"provider":"s3","keys":["reports/q1.pdf"]}
+files --provider r2 --bucket uploads --dry-run delete reports/q1.pdf
+# → {"action":"delete","dryRun":true,"provider":"r2","keys":["reports/q1.pdf"]}
 
 # Verbose adds stack traces to error output
-files --provider s3 --bucket uploads --verbose head missing.txt
+files --provider r2 --bucket uploads --verbose head missing.txt
 ```

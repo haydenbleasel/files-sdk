@@ -7,7 +7,7 @@ description: Automatic retries for transient provider failures, with a configura
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   retries: { max: 3, backoff: ({ attempt }) => attempt * 500 },
 });
 
@@ -35,7 +35,7 @@ For high-fanout callers, supply your own `backoff({ attempt, error })` to add ji
 ```ts lineNumbers
 // Exponential with full jitter, still capped at 30s.
 new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   retries: {
     max: 5,
     backoff: ({ attempt }) =>

@@ -9,14 +9,14 @@ It's **body-transparent**: it never buffers or transforms bytes - a cross-tier c
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { tiering } from "files-sdk/tiering";
 
 const files = createFiles({
-  adapter: s3({ bucket: "hot" }), // hot tier
+  adapter: r2({ bucket: "hot" }), // hot tier
   plugins: [
     tiering({
-      cold: s3({ bucket: "cold" }),
+      cold: r2({ bucket: "cold" }),
       // archives go cold; everything else stays hot
       route: ({ key }) => (key.startsWith("archive/") ? "cold" : "hot"),
     }),

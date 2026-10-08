@@ -7,7 +7,7 @@ When a caller should be able to inspect storage but never mutate it, lock the cl
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   readonly: true,
 });
 ```
@@ -16,7 +16,7 @@ Or derive a read-only view from an existing configured client:
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   prefix: "users",
   timeout: 10_000,
 });

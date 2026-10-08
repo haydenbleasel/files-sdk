@@ -7,10 +7,10 @@ A [`hook`](/docs/api/onaction) can only watch an operation go by. A **plugin** c
 
 ```ts lineNumbers
 import { createFiles, handlers } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [
     {
       name: "uppercase",
@@ -157,7 +157,7 @@ An extension key that collides with an existing `Files` method, a getter, or ano
 import { createFiles } from "files-sdk";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [usage()],
 });
 

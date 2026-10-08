@@ -46,8 +46,8 @@ The key does not exist (or the bucket / container does not exist on providers th
 
 Credentials are missing, expired, or insufficient for the operation.
 
-- Missing env vars (`AWS_ACCESS_KEY_ID`, `BLOB_READ_WRITE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, ...).
-- IAM policy doesn't grant the action (`s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, ...).
+- Missing env vars (`R2_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`, `BLOB_READ_WRITE_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, ...).
+- The R2 API token is read-only or scoped to other buckets, or an S3 IAM policy doesn't grant the action (`s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, ...).
 - Token expired (Dropbox, Box, Google Drive, OneDrive, SharePoint - OAuth tokens need refresh).
 - Bucket region mismatch on S3 - the request is signed for one region and rejected by another.
 
@@ -149,7 +149,8 @@ For `@aws-sdk` errors, `cause` carries `$metadata` (request ID, HTTP status, att
 When you need a feature outside the unified surface, `files.raw` is typed per adapter and gives you the native client:
 
 ```ts lineNumbers
-const s3 = files.raw; // typed as S3Client
+// With the s3() adapter, `files.raw` is typed as S3Client
+const s3 = files.raw;
 await s3.send(
   new PutObjectAclCommand({
     Bucket: "uploads",
@@ -159,16 +160,18 @@ await s3.send(
 );
 ```
 
+On `r2()`, `files.raw` is the `S3Client`, `R2Bucket`, or aws4fetch `AwsClient` its mode uses, so it's typed as their union - narrow it first. See the [escape hatch](/docs/escape-hatch).
+
 ### CLI: `--verbose` and `--dry-run`
 
 The CLI mirrors SDK semantics and is often the fastest way to confirm credentials and bucket layout:
 
 ```bash lineNumbers
-files --provider s3 --bucket uploads --verbose head missing.txt
+files --provider r2 --bucket uploads --verbose head missing.txt
 # adds stack traces to the error envelope
 
-files --provider s3 --bucket uploads --dry-run delete reports/q1.pdf
-# → {"action":"delete","dryRun":true,"provider":"s3","keys":["reports/q1.pdf"]}
+files --provider r2 --bucket uploads --dry-run delete reports/q1.pdf
+# → {"action":"delete","dryRun":true,"provider":"r2","keys":["reports/q1.pdf"]}
 ```
 
 Exit codes are stable: `0` ok, `1` `NotFound` (or `exists → false`), `2` `Provider`, `3` `Unauthorized`, `4` `Conflict`.

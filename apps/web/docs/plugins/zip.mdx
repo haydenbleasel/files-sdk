@@ -7,11 +7,11 @@ The built-in `zip()` plugin bundles stored objects into ZIP archives — and bac
 
 ```ts lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { zip } from "files-sdk/zip";
 
 const files = createFiles({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   plugins: [zip()],
 });
 

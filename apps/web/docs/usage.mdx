@@ -9,10 +9,11 @@ The shape is class + adapter injection. You construct a `Files` instance with an
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 
 const files = new Files({
-  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+  // Credentials load from R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+  adapter: r2({ bucket: "uploads" }),
 });
 
 await files.upload("avatars/abc.png", file, { contentType: "image/png" });
@@ -23,10 +24,12 @@ const url = await files.url("avatars/abc.png", { expiresIn: 60 });
 Swap the adapter to switch backends - everything below the constructor stays the same:
 
 ```ts lineNumbers
-import { r2 } from "files-sdk/r2";
+import { s3 } from "files-sdk/s3";
 import { vercelBlob } from "files-sdk/vercel-blob";
 
-const files = new Files({ adapter: r2({ accountId, bucket: "uploads" }) });
+const files = new Files({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
 // or
 const files = new Files({
   adapter: vercelBlob({ token: process.env.BLOB_READ_WRITE_TOKEN! }),
@@ -39,10 +42,10 @@ Reads return a `StoredFile` - a `File`-shaped value with `key`, `etag`, and `met
 
 ```ts lineNumbers
 import { Files, FilesError } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 
 const files = new Files({
-  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+  adapter: r2({ bucket: "uploads" }),
 });
 
 // Upload
@@ -58,11 +61,11 @@ const { items, cursor } = await files.list({ prefix: "reports/", limit: 50 });
 // Sign a short-lived read URL
 const url = await files.url("reports/q1.pdf", { expiresIn: 300 });
 
-// Hand back a browser-direct upload contract
+// Hand back a browser-direct upload contract (a presigned PUT on R2, which
+// has no POST policy: `maxSize` throws here, so cap sizes at your gateway)
 const upload = await files.signedUploadUrl("reports/q2.pdf", {
   expiresIn: 600,
   contentType: "application/pdf",
-  maxSize: 25_000_000,
 });
 
 // Handle normalized errors
@@ -97,7 +100,7 @@ Pass `readonly: true` to the constructor, or derive a locked view from an existi
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   readonly: true,
 });
 
@@ -126,7 +129,7 @@ The constructor takes more than an adapter. Set a `prefix` to namespace every ke
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   prefix: "users", // every key resolves under users/
   timeout: 10_000, // default per-attempt timeout
   retries: 3, // retry provider failures
@@ -141,7 +144,7 @@ Pass `hooks` to the constructor to observe operations as they run - one place to
 
 ```ts lineNumbers
 const files = new Files({
-  adapter: s3({ bucket: "uploads" }),
+  adapter: r2({ bucket: "uploads" }),
   hooks: {
     onAction(event) {
       logger.info("files", event.type, event.status, event.key ?? event.keys);

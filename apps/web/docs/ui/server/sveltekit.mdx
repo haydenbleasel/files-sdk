@@ -7,12 +7,12 @@ description: Mount the Files gateway in a SvelteKit +server.ts endpoint. createR
 
 ```ts title="src/routes/api/files/+server.ts" lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createFilesRouter } from "files-sdk/api";
 import { createRouteHandler } from "files-sdk/sveltekit";
 
 const router = createFilesRouter({
-  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  files: createFiles({ adapter: r2({ bucket: "uploads" }) }),
   allowedOrigins: ["https://app.example.com"],
   authorize: async ({ req }) => {
     /* throw to deny, or return a per-user constraint — see /ui/server/authorization */

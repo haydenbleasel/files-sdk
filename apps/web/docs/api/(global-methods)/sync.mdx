@@ -7,12 +7,12 @@ description: Mirror one Files instance onto another - skip unchanged keys, prune
 
 ```ts lineNumbers
 import { Files, sync } from "files-sdk";
-import { s3 } from "files-sdk/s3";
 import { r2 } from "files-sdk/r2";
+import { s3 } from "files-sdk/s3";
 
-const from = new Files({ adapter: s3({ bucket: "live" }) });
+const from = new Files({ adapter: r2({ bucket: "live" }) });
 const to = new Files({
-  adapter: r2({ bucket: "backup", accountId, accessKeyId, secretAccessKey }),
+  adapter: s3({ bucket: "backup", region: "us-east-1" }),
 });
 
 // Incremental, pruning mirror — re-running only moves the delta.

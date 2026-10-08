@@ -7,12 +7,12 @@ description: createFilesRouter exposes the whole Files API over one HTTP endpoin
 
 ```ts title="app/api/files/route.ts" lineNumbers
 import { createFiles } from "files-sdk";
-import { s3 } from "files-sdk/s3";
+import { r2 } from "files-sdk/r2";
 import { createFilesRouter } from "files-sdk/api";
 import { createRouteHandler } from "files-sdk/next";
 
 const router = createFilesRouter({
-  files: createFiles({ adapter: s3({ bucket: "uploads" }) }),
+  files: createFiles({ adapter: r2({ bucket: "uploads" }) }),
   authorize: async ({ req }) => {
     /* … */
   },
