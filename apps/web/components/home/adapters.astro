@@ -2,19 +2,15 @@
 import Icon from "blume/components/Icon.astro";
 
 import { ADAPTERS } from "@/lib/adapters";
-import { PROVIDER_FALLBACK_ICONS, PROVIDER_ICONS } from "@/lib/provider-icons";
 import { RECOMMENDED_PROVIDERS, SPONSORS_URL } from "@/lib/recommended";
+import ProviderMark from "../provider-mark.astro";
 
 // Every adapter in the SDK's provider catalog, alphabetically by display name.
 // Each slug is also its docs page (`/docs/adapters/<slug>`). Providers whose
 // company sponsors Files SDK get their own, larger list above the rest.
 const adapters = ADAPTERS.toSorted((a, b) =>
   a.name.localeCompare(b.name, "en", { sensitivity: "base" })
-).map((adapter) => ({
-  ...adapter,
-  fallbackIcon: PROVIDER_FALLBACK_ICONS.get(adapter.slug) ?? "cloud",
-  icon: PROVIDER_ICONS.get(adapter.slug),
-}));
+);
 const recommended = adapters.filter((adapter) =>
   RECOMMENDED_PROVIDERS.has(adapter.slug)
 );
@@ -39,7 +35,7 @@ const SLUG =
           {adapters.length} backends. One shape.
         </h2>
         <p
-          class="mt-6 max-w-[48ch] text-lg/8 text-pretty text-neutral-600 dark:text-neutral-400"
+          class="mt-6 max-w-[60ch] text-lg/8 text-pretty text-neutral-600 dark:text-neutral-400"
         >
           Each adapter is its own subpath export, and each provider's SDK is an
           optional peer. The ones you never import are never bundled.
@@ -47,9 +43,9 @@ const SLUG =
       </div>
       <a
         class="inline-flex items-center gap-1.5 text-base font-semibold text-neutral-950 hover:underline hover:underline-offset-4 dark:text-white"
-        href="/docs/providers"
+        href="/docs/adapters"
       >
-        Browse the provider catalog
+        Browse every adapter
         <Icon class="size-4 shrink-0" name="arrow-right" />
       </a>
     </div>
@@ -71,21 +67,7 @@ const SLUG =
             <li class="border-b border-neutral-950/10 dark:border-white/10">
               <a class:list={[ROW, INK, "py-5"]} href={`/docs/adapters/${adapter.slug}`}>
                 <span class="flex min-w-0 items-center gap-4">
-                  {adapter.icon ? (
-                    <svg
-                      aria-hidden="true"
-                      class="size-8 shrink-0 fill-current"
-                      viewBox={adapter.icon.viewBox}
-                    >
-                      <g transform={adapter.icon.transform}>
-                        {adapter.icon.paths.map((d, index) => (
-                          <path d={d} fill-opacity={adapter.icon?.tones?.[index]} />
-                        ))}
-                      </g>
-                    </svg>
-                  ) : (
-                    <Icon class="size-8 shrink-0" name={adapter.fallbackIcon} />
-                  )}
+                  <ProviderMark class="size-8" slug={adapter.slug} />
                   <span class="min-w-0 truncate font-display text-2xl font-semibold tracking-tight">
                     {adapter.name}
                   </span>
@@ -139,21 +121,7 @@ const SLUG =
             <li class="border-b border-neutral-950/10 dark:border-white/10">
               <a class:list={[ROW, INK, "py-3"]} href={`/docs/adapters/${adapter.slug}`}>
                 <span class="flex min-w-0 items-center gap-3">
-                  {adapter.icon ? (
-                    <svg
-                      aria-hidden="true"
-                      class="size-5 shrink-0 fill-current"
-                      viewBox={adapter.icon.viewBox}
-                    >
-                      <g transform={adapter.icon.transform}>
-                        {adapter.icon.paths.map((d, index) => (
-                          <path d={d} fill-opacity={adapter.icon?.tones?.[index]} />
-                        ))}
-                      </g>
-                    </svg>
-                  ) : (
-                    <Icon class="size-5 shrink-0" name={adapter.fallbackIcon} />
-                  )}
+                  <ProviderMark class="size-5" slug={adapter.slug} />
                   <span class="min-w-0 truncate text-base/6">{adapter.name}</span>
                 </span>
                 <span class:list={[SLUG, "max-xl:hidden"]}>{adapter.slug}</span>

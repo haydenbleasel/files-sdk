@@ -1,0 +1,104 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import ProviderMark from "@/components/provider-mark.astro";
+import { ADAPTERS } from "@/lib/adapters";
+import { RECOMMENDED_PROVIDERS, SPONSORS_URL } from "@/lib/recommended";
+
+interface Props {
+  /**
+   * `recommended`: the sponsor-backed adapters, larger, followed by a
+   * "Become a recommended adapter" link. `other`: every remaining adapter.
+   */
+  group: "other" | "recommended";
+}
+
+const { group } = Astro.props;
+
+// The same split as the homepage's adapter section: alphabetical by display
+// name, recommended providers (lib/recommended.ts) pulled out on their own.
+const adapters = ADAPTERS.toSorted((a, b) =>
+  a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+).filter(
+  (adapter) =>
+    RECOMMENDED_PROVIDERS.has(adapter.slug) === (group === "recommended")
+);
+const large = group === "recommended";
+
+// Colors sit on the inner spans: Blume's unlayered `.prose :where(a)` color
+// would win over a utility on the link itself.
+const ROW =
+  "group -mx-2 flex items-center justify-between gap-4 px-2 hover:bg-highlighter focus-visible:outline-2 focus-visible:outline-foreground";
+const LABEL = "text-foreground group-hover:text-neutral-950";
+const MUTED = "text-muted-foreground group-hover:text-neutral-950";
+const SLUG =
+  "shrink-0 font-mono text-[0.8125rem]/6 text-muted-foreground group-hover:text-neutral-700 max-sm:hidden";
+---
+
+<ul
+  class:list={[
+    "not-prose mt-4 mb-10 grid gap-x-6",
+    // Recommended adapters each get a full-width row; the rest pack two up.
+    !large && "sm:grid-cols-2",
+  ]}
+  role="list"
+>
+  {
+    adapters.map((adapter) => (
+      <li class="border-b border-border">
+        <a
+          class:list={[ROW, large ? "py-4" : "py-2.5"]}
+          data-adapter-row
+          href={`/docs/adapters/${adapter.slug}`}
+        >
+          <span
+            class:list={[
+              "flex min-w-0 items-center",
+              LABEL,
+              large ? "gap-3" : "gap-2.5",
+            ]}
+          >
+            <ProviderMark class={large ? "size-6" : "size-5"} slug={adapter.slug} />
+            <span
+              class:list={[
+                "min-w-0 truncate",
+                large
+                  ? "font-display text-base/6 font-semibold tracking-tight"
+                  : "text-base/6 sm:text-sm/6",
+              ]}
+            >
+              {adapter.name}
+            </span>
+          </span>
+          <span class={SLUG}>{adapter.slug}</span>
+        </a>
+      </li>
+    ))
+  }
+  {
+    large && (
+      <li class="border-b border-border">
+        <a
+          class:list={[ROW, "py-4"]}
+          data-adapter-row
+          href={SPONSORS_URL}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          <span class:list={["flex min-w-0 items-center gap-3", MUTED]}>
+            <span
+              aria-hidden="true"
+              class="flex size-6 shrink-0 items-center justify-center border border-dashed border-current"
+            >
+              <Icon class="size-3.5" name="plus" />
+            </span>
+            <span class="min-w-0 truncate font-display text-base/6 font-semibold tracking-tight">
+              Become a recommended adapter
+            </span>
+          </span>
+          <Icon class:list={["size-4 shrink-0", MUTED]} name="arrow-up-right" />
+        </a>
+      </li>
+    )
+  }
+</ul>

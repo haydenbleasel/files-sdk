@@ -1,0 +1,20 @@
+---
+title: Adapters
+description: Every storage backend Files SDK supports. Each adapter is its own subpath export behind the same API, with its provider's SDK as an optional peer.
+sidebar:
+  label: Overview
+---
+
+An adapter connects `Files` to one storage backend. Each is its own subpath export (`files-sdk/r2`, `files-sdk/gcs`, …) and runs the same methods, so switching providers means swapping the adapter and nothing else. Its provider's SDK is an optional peer dependency, so the adapters you never import are never bundled.
+
+Each adapter's page covers installation, the options it takes, and a compatibility table for anything the provider does differently. The [provider catalog](/docs/providers) has the same list as data, with the environment variables each adapter reads.
+
+## Recommended adapters
+
+These providers help maintain Files SDK by [sponsoring its development](https://github.com/sponsors/haydenbleasel).
+
+<AdapterList group="recommended" />
+
+## Other adapters
+
+<AdapterList group="other" />

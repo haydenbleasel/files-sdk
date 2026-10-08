@@ -150,7 +150,7 @@ export default defineConfig({
 
   integrations: [blumeTypescriptExternal],
 
-  // The dog-ear mark + outlined "files" wordmark, as per-mode images so the
+  // The dog-ear mark + outlined "Files SDK" wordmark, as per-mode images so the
   // lockup renders identically in the docs header and on custom pages (whose
   // PageLayout doesn't forward the `Logo` layout slot). `text: ""` drops the
   // title text beside it; the image alt carries the accessible name.
@@ -172,12 +172,11 @@ export default defineConfig({
     // than `/docs`: only the root tab hides the other tabs' sections from its
     // sidebar, so the general pages (installation, usage, concepts, …) don't
     // repeat every area as a sidebar group. `href` keeps it linking to /docs.
-    // Adapters has no index page, so it lands on S3. The AI pages have no tab
-    // and sit in the Docs sidebar.
+    // The AI pages have no tab and sit in the Docs sidebar.
     tabs: [
       { href: "/docs", label: "Docs", path: "/" },
       { label: "API", path: "/docs/api" },
-      { href: "/docs/adapters/s3", label: "Adapters", path: "/docs/adapters" },
+      { label: "Adapters", path: "/docs/adapters" },
       { label: "Plugins", path: "/docs/plugins" },
       { label: "UI", path: "/docs/ui" },
       { label: "CLI", path: "/docs/cli" },
@@ -214,7 +213,6 @@ export default defineConfig({
     })),
     { from: "/overview", status: 301, to: "/docs" },
     { from: "/docs/overview", status: 301, to: "/docs" },
-    { from: "/docs/adapters", status: 302, to: "/docs/adapters/s3" },
     { from: "/docs/ai", status: 302, to: "/docs/ai/vercel" },
     { from: "/docs/ui/client", status: 302, to: "/docs/ui/client/react" },
     {

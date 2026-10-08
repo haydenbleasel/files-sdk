@@ -1,0 +1,37 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import { PROVIDER_FALLBACK_ICONS, PROVIDER_ICONS } from "@/lib/provider-icons";
+
+interface Props {
+  /** Provider slug from the `files-sdk/providers` catalog. */
+  slug: string;
+  /** Sizing classes, e.g. `size-5`. */
+  class?: string;
+}
+
+const { class: className, slug } = Astro.props;
+
+// The provider's single-color brand mark in currentColor, or a Lucide glyph
+// for protocol/local adapters and providers without a clean mark.
+const icon = PROVIDER_ICONS.get(slug);
+const fallback = PROVIDER_FALLBACK_ICONS.get(slug) ?? "cloud";
+---
+
+{
+  icon ? (
+    <svg
+      aria-hidden="true"
+      class:list={["shrink-0 fill-current", className]}
+      viewBox={icon.viewBox}
+    >
+      <g transform={icon.transform}>
+        {icon.paths.map((d, index) => (
+          <path d={d} fill-opacity={icon.tones?.[index]} />
+        ))}
+      </g>
+    </svg>
+  ) : (
+    <Icon class:list={["shrink-0", className]} name={fallback} />
+  )
+}

@@ -188,6 +188,14 @@ html:has([data-home])
   margin: 0;
 }
 
+/* The docs adapter directory (overrides/adapter-list.astro) is `not-prose`,
+   but Blume's unlayered `.prose :where(a)` still underlines and bolds its rows,
+   and unlayered CSS beats Tailwind's utility layer. Reset it for those rows. */
+.prose .not-prose :where(a[data-adapter-row]) {
+  font-weight: inherit;
+  text-decoration: none;
+}
+
 /* Geist Mono ligatures shape across Shiki's per-token spans (collapsing glyphs
    like `=== 0`) and bleed past inline-code backgrounds; disable them on code
    and the .font-mono landing animations. */
