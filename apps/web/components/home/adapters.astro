@@ -1,0 +1,66 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import { ADAPTERS } from "@/lib/adapters";
+
+// Every adapter in the SDK's provider catalog, alphabetically by display name.
+// Each slug is also its docs page (`/docs/adapters/<slug>`).
+const adapters = ADAPTERS.toSorted((a, b) =>
+  a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+);
+---
+
+<section class="border-t border-neutral-950/5 dark:border-white/10">
+  <div class="mx-auto max-w-7xl px-6 py-24 sm:py-32 lg:px-8">
+    <div
+      class="flex flex-wrap items-end justify-between gap-x-8 gap-y-6"
+    >
+      <div>
+        <p
+          class="font-mono text-sm/6 tracking-wide text-neutral-600 uppercase dark:text-neutral-400"
+        >
+          Adapters
+        </p>
+        <h2
+          class="mt-4 max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
+        >
+          {adapters.length} backends. One shape.
+        </h2>
+        <p
+          class="mt-6 max-w-[48ch] text-lg/8 text-pretty text-neutral-600 dark:text-neutral-400"
+        >
+          Each adapter is its own subpath export, and each provider's SDK is an
+          optional peer. The ones you never import are never bundled.
+        </p>
+      </div>
+      <a
+        class="inline-flex items-center gap-1.5 text-base font-semibold text-neutral-950 hover:underline hover:underline-offset-4 dark:text-white"
+        href="/docs/providers"
+      >
+        Browse the provider catalog
+        <Icon class="size-4 shrink-0" name="arrow-right" />
+      </a>
+    </div>
+
+    <ul
+      class="mt-14 grid gap-x-8 sm:grid-cols-2 lg:grid-cols-3"
+      role="list"
+    >
+      {
+        adapters.map((adapter) => (
+          <li class="border-b border-neutral-950/10 dark:border-white/10">
+            <a
+              class="group -mx-2 flex items-baseline justify-between gap-4 px-2 py-3 text-neutral-950 hover:bg-highlighter hover:text-neutral-950 focus-visible:outline-2 focus-visible:outline-neutral-950 dark:text-white dark:focus-visible:outline-white"
+              href={`/docs/adapters/${adapter.slug}`}
+            >
+              <span class="min-w-0 truncate text-base/6">{adapter.name}</span>
+              <span class="shrink-0 font-mono text-[0.8125rem]/6 text-neutral-500 group-hover:text-neutral-700 max-xl:hidden">
+                {adapter.slug}
+              </span>
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>

@@ -4,29 +4,41 @@ import Icon from "blume/components/Icon.astro";
 import InstallCommand from "./install-command.astro";
 ---
 
-<section>
+<section class="border-t border-neutral-950/5 dark:border-white/10">
   <div
-    class="mx-auto flex max-w-6xl flex-col items-center px-6 py-24 text-center"
+    class="mx-auto flex max-w-7xl flex-col items-center px-6 py-24 text-center sm:py-32 lg:px-8"
   >
+    <svg
+      aria-hidden="true"
+      class="size-12 shrink-0"
+      fill="none"
+      viewBox="0 0 64 64"
+    >
+      <path class="fill-neutral-950 dark:fill-white" d="M0 0H40V24H64V64H0Z"
+      ></path>
+      <path
+        class="fill-neutral-950 dark:fill-highlighter"
+        d="M44 0L64 20H44Z"></path>
+    </svg>
     <h2
-      class="mx-auto max-w-[20ch] text-balance font-medium text-[2.5rem]/[1.05] tracking-tight text-foreground sm:text-6xl lg:text-7xl"
+      class="mx-auto mt-10 max-w-[20ch] font-display text-5xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-6xl lg:text-7xl dark:text-white"
     >
       Ship the storage layer once.
     </h2>
     <p
-      class="mx-auto mt-6 max-w-[48ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-lg"
+      class="mx-auto mt-6 max-w-[48ch] text-lg/8 text-pretty text-neutral-600 dark:text-neutral-400"
     >
-      Open source, MIT licensed, built around web standards. Drop in an adapter
-      and forget the difference.
+      Open source, MIT licensed, and built on web standards. Pick an adapter
+      today and change your mind whenever you like.
     </p>
     <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
       <InstallCommand />
       <a
-        class="inline-flex h-11 items-center gap-1.5 rounded-full px-5 font-medium text-foreground text-sm transition-colors hover:bg-muted"
-        href="/docs/api"
+        class="inline-flex h-12 items-center gap-2 border border-neutral-950/15 pr-4 pl-5 text-base font-semibold text-neutral-950 hover:border-neutral-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:border-white/15 dark:text-white dark:hover:border-white/30 dark:focus-visible:outline-white"
+        href="/docs"
       >
         Read the docs
-        <Icon class="size-4" name="arrow-right" />
+        <Icon class="size-4 shrink-0" name="arrow-right" />
       </a>
     </div>
   </div>

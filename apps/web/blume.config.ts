@@ -89,7 +89,18 @@ export default defineConfig({
 
   integrations: [blumeTypescriptExternal],
 
-  logo: "/logo.svg",
+  // The dog-ear mark + outlined "files" wordmark, as per-mode images so the
+  // lockup renders identically in the docs header and on custom pages (whose
+  // PageLayout doesn't forward the `Logo` layout slot). `text: ""` drops the
+  // title text beside it; the image alt carries the accessible name.
+  logo: {
+    image: {
+      alt: "Files SDK",
+      dark: "/logo-dark.svg",
+      light: "/logo-light.svg",
+    },
+    text: "",
+  },
 
   navigation: {
     sidebar: {
@@ -107,8 +118,23 @@ export default defineConfig({
   // copies public/ into dist/ and leaves an existing _redirects untouched.
   // The /r/* CORS headers live in public/_headers alongside it.
 
+  seo: {
+    og: {
+      // The dog-ear mark in place of the default initial tile on generated
+      // social cards (public/icon.svg is also the favicon).
+      logo: "/icon.svg",
+    },
+  },
+
   theme: {
-    accent: "blue",
+    // Monochrome chrome: ink on paper, paper on ink. The brand's highlighter
+    // lime is reserved for the dog-ear and highlights (see theme.css).
+    accent: { dark: "#fafafa", light: "#0a0a0a" },
+    fonts: {
+      body: { name: "Funnel Sans", weights: ["300..800"] },
+      display: { name: "Funnel Display", weights: ["300..800"] },
+      mono: "geist-mono",
+    },
   },
 
   title: "Files SDK",

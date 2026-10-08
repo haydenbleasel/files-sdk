@@ -6,23 +6,26 @@ interface Props {
   class?: string;
 }
 
-const { command = "npm install files-sdk", class: className } = Astro.props;
+const { command = "npm i files-sdk", class: className } = Astro.props;
 ---
 
 <button
   aria-label={`Copy install command: ${command}`}
   class:list={[
-    "group inline-flex h-11 items-center gap-3 rounded-full border border-border bg-card px-5 font-mono text-sm text-foreground transition-colors hover:bg-muted",
+    "inline-flex h-12 cursor-pointer items-center gap-3 border border-neutral-950/15 bg-transparent pr-4 pl-5 font-mono text-base text-neutral-950 hover:border-neutral-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 sm:text-[0.9375rem] dark:border-white/15 dark:text-white dark:hover:border-white/30 dark:focus-visible:outline-white",
     className,
   ]}
   data-command={command}
   data-install-command
   type="button"
 >
-  <span class="text-muted-foreground">$</span>
+  <span class="text-neutral-500 dark:text-neutral-400">$</span>
   <span>{command}</span>
-  <Icon class="copy-icon size-4 text-muted-foreground" name="copy" />
-  <Icon class="check-icon hidden size-4 text-emerald-500" name="check" />
+  <Icon
+    class="copy-icon size-4 shrink-0 text-neutral-500 dark:text-neutral-400"
+    name="copy"
+  />
+  <Icon class="check-icon hidden size-4 shrink-0" name="check" />
 </button>
 
 <script>

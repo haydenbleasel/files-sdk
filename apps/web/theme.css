@@ -1,8 +1,7 @@
 /*
  * Blume's last-cascade-layer overrides: maps the shadcn-flavored tokens the
- * landing islands and registry components reference onto Blume's palette, and
- * adds the hero marquee keyframe. (Landing code blocks are themed by Blume's
- * `highlightCode` + `.prose`, so no manual Shiki swap is needed.)
+ * registry components reference onto Blume's palette, and defines the brand
+ * (colors, selection, the `dog-ear` utility) the landing pages build on.
  *
  * blume.config.ts also points `examples.css` here, so the `<Component>`
  * preview iframes (which get none of the docs sheet) pick up the same tokens,
@@ -65,13 +64,97 @@
   --radius-4xl: 2rem;
 }
 
-/* Hero adapter marquee. */
-@keyframes marquee {
-  from {
-    transform: translateX(0);
+/*
+ * Brand. Ink on paper with one highlighter, and the dog-ear (a folded page
+ * corner) as the only graphic device. Each landing page owns a corner color:
+ * highlighter for home and the core SDK, coral for plugins, sky for UI, lilac
+ * for the CLI and MCP, sun for AI tools.
+ */
+@theme {
+  --color-highlighter: #d8ff3c;
+  --color-coral: #ff9f87;
+  --color-sky: #8fd8ff;
+  --color-lilac: #c8b5ff;
+  --color-sun: #ffd84d;
+}
+
+/* The config accent compiles a white accent-foreground for both modes, which
+   vanishes on the dark mode's paper-colored accent; flip it back to ink. */
+:root[data-theme="dark"] {
+  --blume-accent-foreground: #0a0a0a;
+}
+
+::selection {
+  background-color: var(--color-highlighter);
+  color: #0a0a0a;
+}
+
+/*
+ * Token colors for the landing pages' hand-set code (components/home/code-block).
+ * `code-tokens` follows the color mode, `code-tokens-inverse` is for code on an
+ * ink panel in either mode, and `code-tokens-highlight` keeps tokens legible
+ * on a highlighter-lime line in both modes.
+ */
+@utility code-tokens {
+  --tok-comment: var(--color-neutral-500);
+  --tok-keyword: #a1135e;
+  --tok-number: #8a4b00;
+  --tok-string: #2f6300;
+
+  @variant dark {
+    --tok-comment: var(--color-neutral-400);
+    --tok-keyword: #ff8cc6;
+    --tok-number: #ffc58a;
+    --tok-string: #c2f07a;
   }
-  to {
-    transform: translateX(-50%);
+}
+
+@utility code-tokens-inverse {
+  --tok-comment: var(--color-neutral-400);
+  --tok-keyword: #ff8cc6;
+  --tok-number: #ffc58a;
+  --tok-string: #c2f07a;
+}
+
+@utility code-tokens-highlight {
+  --tok-comment: var(--color-neutral-600);
+  --tok-keyword: #a1135e;
+  --tok-number: #8a4b00;
+  --tok-string: #2f6300;
+}
+
+/*
+ * The folded corner. Clips the top-right corner off the element and paints the
+ * fold's underside into the gap. Size it with `--fold` and color the flap with
+ * `--fold-color` (defaults to the current text color):
+ *
+ *   <div class="dog-ear [--fold:--spacing(3)] [--fold-color:var(--color-highlighter)]">
+ *
+ * clip-path also clips outlines, so keep focus rings on an unclipped parent.
+ */
+@utility dog-ear {
+  position: relative;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--fold, --spacing(7))) 0,
+    100% var(--fold, --spacing(7)),
+    100% 100%,
+    0 100%
+  );
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: var(--fold, --spacing(7));
+    height: var(--fold, --spacing(7));
+    background-image: linear-gradient(
+      to bottom left,
+      transparent 50%,
+      var(--fold-color, currentColor) 50%
+    );
+    pointer-events: none;
   }
 }
 

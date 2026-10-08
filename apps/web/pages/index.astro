@@ -2,18 +2,22 @@
 import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
-import Capabilities from "@/components/home/capabilities.astro";
-import Demo from "@/components/home/demo.astro";
+import Adapters from "@/components/home/adapters.astro";
 import FinalCta from "@/components/home/final-cta.astro";
 import Footer from "@/components/home/footer.astro";
-import GetStarted from "@/components/home/get-started.astro";
 import Hero from "@/components/home/hero.astro";
+import Plugins from "@/components/home/plugins.astro";
+import Principles from "@/components/home/principles.astro";
 import Sponsors from "@/components/home/sponsors.astro";
+import WaysIn from "@/components/home/ways-in.astro";
 import { ADAPTERS } from "@/lib/adapters";
+import { PLUGINS } from "@/lib/plugins";
 import { getLatestVersion } from "@/lib/version";
 
 const { config } = data;
 const latestVersion = getLatestVersion();
+const adapterCount = ADAPTERS.length;
+const pluginCount = PLUGINS.length;
 ---
 
 <PageLayout
@@ -31,8 +35,7 @@ const latestVersion = getLatestVersion();
   navigation={data.navigation}
   ogEnabled={config.og.enabled}
   page={{
-    description:
-      "Write once, store anywhere: a unified SDK for S3, R2, GCS, Azure, and 40+ object and blob stores — one small API, web-standards I/O, and a typed escape hatch.",
+    description: `Write once, store anywhere: one small, honest API for S3, R2, Vercel Blob, GCS, Azure, and ${adapterCount - 5} more object and blob stores, with web-standard I/O and a typed escape hatch.`,
     title: "Files SDK — Write once. Store anywhere.",
   }}
   searchEnabled={config.search.enabled}
@@ -41,11 +44,18 @@ const latestVersion = getLatestVersion();
   themeMode={config.theme.mode}
   ui={data.ui}
 >
-  <Hero adapterCount={ADAPTERS.length} latestVersion={latestVersion} />
-  <Demo />
-  <Capabilities />
-  <GetStarted />
-  <Sponsors />
-  <FinalCta />
+  <div class="isolate">
+    <Hero
+      adapterCount={adapterCount}
+      latestVersion={latestVersion}
+      pluginCount={pluginCount}
+    />
+    <Adapters />
+    <WaysIn adapterCount={adapterCount} pluginCount={pluginCount} />
+    <Plugins />
+    <Principles />
+    <Sponsors />
+    <FinalCta />
+  </div>
   <Footer slot="footer" />
 </PageLayout>

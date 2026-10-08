@@ -1,95 +1,225 @@
 ---
-import Icon from "blume/components/Icon.astro";
-
-import { ADAPTER_LOGOS } from "@/lib/adapter-logos";
+import CodeBlock from "./code-block.astro";
 import InstallCommand from "./install-command.astro";
 
 interface Props {
   adapterCount: number;
   latestVersion: string;
+  pluginCount: number;
 }
 
-const { adapterCount, latestVersion } = Astro.props;
-// The marquee loops by translating a doubled strip -50%; the second copy is
-// purely visual, so it's hidden from assistive tech (no duplicate alt text).
-const marquee = [
-  ...ADAPTER_LOGOS.map((logo) => ({ ...logo, duplicate: false })),
-  ...ADAPTER_LOGOS.map((logo) => ({ ...logo, duplicate: true })),
+const { adapterCount, latestVersion, pluginCount } = Astro.props;
+
+// The adapters the hero's code card can be switched between. The switcher is
+// CSS-only: each variant hides itself unless its radio is checked (`:has()` on
+// the `group/code` wrapper), so `hide` has to be a literal class string here
+// for Tailwind to see it.
+const ADAPTERS = [
+  {
+    call: 's3({ bucket: "uploads" })',
+    factory: "s3",
+    hide: "group-not-has-[#hero-adapter-s3:checked]/code:hidden",
+    label: "S3",
+    slug: "s3",
+  },
+  {
+    call: 'r2({ bucket: "uploads" })',
+    factory: "r2",
+    hide: "group-not-has-[#hero-adapter-r2:checked]/code:hidden",
+    label: "R2",
+    slug: "r2",
+  },
+  {
+    call: "vercelBlob()",
+    factory: "vercelBlob",
+    hide: "group-not-has-[#hero-adapter-vercel-blob:checked]/code:hidden",
+    label: "Vercel Blob",
+    slug: "vercel-blob",
+  },
+  {
+    call: 'gcs({ bucket: "uploads" })',
+    factory: "gcs",
+    hide: "group-not-has-[#hero-adapter-gcs:checked]/code:hidden",
+    label: "GCS",
+    slug: "gcs",
+  },
+  {
+    call: 'azure({ container: "uploads" })',
+    factory: "azure",
+    hide: "group-not-has-[#hero-adapter-azure:checked]/code:hidden",
+    label: "Azure",
+    slug: "azure",
+  },
+  {
+    call: 'supabase({ bucket: "uploads" })',
+    factory: "supabase",
+    hide: "group-not-has-[#hero-adapter-supabase:checked]/code:hidden",
+    label: "Supabase",
+    slug: "supabase",
+  },
+];
+const DEFAULT_ADAPTER = "r2";
+
+const snippet = (adapter: (typeof ADAPTERS)[number]) =>
+  `import { Files } from "files-sdk";
+import { ${adapter.factory} } from "files-sdk/${adapter.slug}";
+
+const files = new Files({
+  adapter: ${adapter.call},
+});
+
+await files.upload("avatar.png", file);
+const url = await files.url("avatar.png", { expiresIn: 600 });`;
+
+const STATS = [
+  { label: "Adapters", value: adapterCount },
+  { label: "Plugins", value: pluginCount },
+  { label: "Methods", value: 11 },
+  { label: "Error type", value: 1 },
 ];
 ---
 
-<section class="relative overflow-hidden">
-  <div
-    class="mx-auto flex max-w-5xl flex-col items-center px-6 pt-24 pb-20 text-center sm:pt-32 sm:pb-24 lg:pt-40 lg:pb-28"
-  >
+<section class="overflow-x-clip">
+  <div class="mx-auto max-w-7xl px-6 pt-14 pb-20 sm:pt-20 sm:pb-24 lg:px-8">
     <a
-      class="group inline-flex items-center gap-2 font-mono text-muted-foreground text-xs transition-colors hover:text-foreground"
+      class="inline-flex items-center gap-2.5 font-mono text-sm text-neutral-600 hover:text-neutral-950 dark:text-neutral-400 dark:hover:text-white"
       href="/changelog"
     >
-      <span class="inline-block size-1.5 rounded-full bg-emerald-500"></span>
-      Latest update — v{latestVersion} released
-      <Icon
-        class="size-3 transition-transform group-hover:translate-x-0.5"
-        name="arrow-right"
-      />
+      <svg
+        aria-hidden="true"
+        class="size-3.5 shrink-0"
+        fill="none"
+        viewBox="0 0 64 64"
+      >
+        <path class="fill-neutral-950 dark:fill-white" d="M0 0H40V24H64V64H0Z"
+        ></path>
+        <path
+          class="fill-neutral-950 dark:fill-highlighter"
+          d="M44 0L64 20H44Z"></path>
+      </svg>
+      v{latestVersion} · MIT licensed · Read the changelog
     </a>
 
     <h1
-      class="mt-8 max-w-[18ch] text-balance font-medium text-[2.5rem]/[1.05] tracking-tight text-foreground sm:text-7xl lg:text-8xl"
+      class="mt-8 max-w-[14ch] font-display text-6xl font-semibold tracking-tighter text-balance text-neutral-950 sm:text-7xl lg:text-8xl xl:text-9xl dark:text-white"
     >
-      Write once. Store anywhere.
+      Write once. Store <span
+        class="dog-ear -ml-[0.04em] inline-block bg-highlighter px-[0.12em] pb-[0.04em] text-neutral-950 [--fold-color:var(--color-neutral-950)] [--fold:0.28em] dark:[--fold-color:var(--color-white)]"
+        >anywhere.</span
+      >
     </h1>
 
-    <p
-      class="mt-7 max-w-[46ch] text-pretty text-base text-muted-foreground leading-relaxed sm:text-xl"
-    >
-      A unified SDK for S3, R2, GCS, Azure, and every other object or blob store.
-      One small API, web standards, and an escape hatch when you need the native
-      client.
-    </p>
+    <div class="mt-12 grid gap-x-8 gap-y-16 sm:mt-16 lg:grid-cols-12">
+      <div class="flex min-w-0 flex-col gap-8 lg:col-span-5">
+        <p
+          class="max-w-[40ch] text-xl/8 text-pretty text-neutral-600 dark:text-neutral-400"
+        >
+          One small, honest API for S3, R2, Vercel Blob, GCS, Azure and {
+            adapterCount - 5
+          } more storage backends. Web-standard I/O, one error type, and the native
+          client whenever you need it.
+        </p>
 
-    <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
-      <InstallCommand />
-      <a
-        class="inline-flex h-11 items-center gap-1.5 rounded-full px-5 font-medium text-foreground text-sm transition-colors hover:bg-muted"
-        href="/docs"
-      >
-        Read the docs
-        <Icon class="size-4" name="arrow-right" />
-      </a>
-    </div>
-  </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <a
+            class="group inline-flex focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:focus-visible:outline-white"
+            href="/docs"
+          >
+            <span
+              class="dog-ear inline-flex h-12 items-center bg-neutral-950 px-4 text-base font-semibold text-white [--fold-color:var(--color-highlighter)] [--fold:--spacing(3)] group-hover:bg-neutral-800 dark:bg-white dark:text-neutral-950 dark:group-hover:bg-neutral-200"
+            >
+              Get started
+            </span>
+          </a>
+          <InstallCommand />
+        </div>
 
-  <div class="relative mx-auto max-w-6xl px-6 pb-24 sm:pb-32">
-    <div
-      class="overflow-x-clip py-2 [-webkit-mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)] [mask-image:linear-gradient(to_right,transparent,#000_10%,#000_90%,transparent)]"
-    >
-      <div
-        class="flex w-max animate-[marquee_40s_linear_infinite] items-center gap-7 motion-reduce:animate-none sm:gap-10"
-      >
-        {
-          marquee.map((logo) => (
-            <img
-              alt={logo.duplicate ? "" : logo.alt}
-              aria-hidden={logo.duplicate ? "true" : undefined}
-              class="size-10 shrink-0 rounded transition-transform duration-200 hover:-translate-y-1 motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:size-14"
-              height="56"
-              loading="lazy"
-              src={logo.src}
-              width="56"
-            />
-          ))
-        }
+        <dl class="grid grid-cols-2 gap-x-8 gap-y-6 sm:grid-cols-4">
+          {
+            STATS.map((stat) => (
+              <div class="flex flex-col-reverse gap-1 border-t border-neutral-950/10 pt-4 dark:border-white/10">
+                <dt class="text-base/6 text-neutral-600 sm:text-sm/6 dark:text-neutral-400">
+                  {stat.label}
+                </dt>
+                <dd class="font-display text-4xl font-semibold tracking-tight text-neutral-950 tabular-nums dark:text-white">
+                  {stat.value}
+                </dd>
+              </div>
+            ))
+          }
+        </dl>
+      </div>
+
+      <div class="group/code min-w-0 lg:col-span-7">
+        <div class="relative pt-12 pl-5 sm:pl-9">
+          <div
+            aria-hidden="true"
+            class="dog-ear absolute top-0 right-5 bottom-12 left-0 sm:right-9 origin-bottom-left -rotate-4 border border-neutral-950/10 bg-neutral-100 [--fold-color:var(--color-neutral-300)] [--fold:--spacing(8)] dark:border-white/10 dark:bg-neutral-900 dark:[--fold-color:var(--color-neutral-700)]"
+          >
+            <span
+              class="absolute top-2.5 left-4 font-mono text-xs text-neutral-500"
+              >vercel-blob</span
+            >
+          </div>
+          <div
+            aria-hidden="true"
+            class="dog-ear absolute top-6 right-2.5 bottom-6 left-2.5 sm:right-4.5 sm:left-4.5 origin-bottom-left -rotate-2 border border-neutral-950/10 bg-neutral-50 [--fold-color:var(--color-neutral-300)] [--fold:--spacing(8)] dark:border-white/10 dark:bg-neutral-900 dark:[--fold-color:var(--color-neutral-700)]"
+          >
+            <span
+              class="absolute top-2.5 left-4 font-mono text-xs text-neutral-500"
+              >gcs</span
+            >
+          </div>
+
+          <div
+            class="dog-ear border border-neutral-950/15 bg-white [--fold-color:var(--color-neutral-950)] [--fold:--spacing(8)] dark:border-white/15 dark:bg-neutral-900 dark:[--fold-color:var(--color-white)]"
+          >
+            {
+              ADAPTERS.map((adapter) => (
+                <div class={adapter.hide}>
+                  <div class="flex items-center justify-between gap-3 border-b border-neutral-950/5 py-3.5 pr-14 pl-5 font-mono text-[0.8125rem]/5 text-neutral-500 dark:border-white/10 dark:text-neutral-400">
+                    <span>storage.ts</span>
+                    <span>adapter: {adapter.label}</span>
+                  </div>
+                  <CodeBlock code={snippet(adapter)} highlight={[2, 5]} />
+                </div>
+              ))
+            }
+          </div>
+        </div>
+
+        <div
+          aria-labelledby="hero-adapter-label"
+          class="mt-5 flex flex-wrap items-center gap-2 sm:pl-9"
+          role="radiogroup"
+        >
+          <p
+            class="mb-1 w-full text-base/6 text-neutral-600 sm:text-sm/6 dark:text-neutral-400"
+            id="hero-adapter-label"
+          >
+            Swap the adapter. Keep every call site.
+          </p>
+          {
+            ADAPTERS.map((adapter) => (
+              <label class="relative inline-flex h-9 cursor-pointer items-center border border-neutral-950/15 px-3 font-mono text-sm text-neutral-950 not-has-checked:hover:bg-neutral-950/5 has-checked:border-neutral-950 has-checked:bg-neutral-950 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-neutral-950 dark:border-white/15 dark:text-white dark:not-has-checked:hover:bg-white/5 dark:has-checked:border-white dark:has-checked:bg-white dark:has-checked:text-neutral-950 dark:has-focus-visible:outline-white">
+                <input
+                  checked={adapter.slug === DEFAULT_ADAPTER}
+                  class="sr-only"
+                  id={`hero-adapter-${adapter.slug}`}
+                  name="hero-adapter"
+                  type="radio"
+                  value={adapter.slug}
+                />
+                {adapter.label}
+                <span
+                  aria-hidden="true"
+                  class="absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                />
+              </label>
+            ))
+          }
+        </div>
       </div>
     </div>
-    <p class="mt-8 text-center font-mono text-muted-foreground text-xs">
-      and {adapterCount - ADAPTER_LOGOS.length} more —{" "}
-      <a
-        class="text-foreground underline-offset-4 hover:underline"
-        href="/docs/adapters"
-      >
-        see every adapter →
-      </a>
-    </p>
   </div>
 </section>

@@ -1,0 +1,159 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import registry from "@/registry.json";
+
+interface Props {
+  adapterCount: number;
+  pluginCount: number;
+}
+
+const { adapterCount, pluginCount } = Astro.props;
+
+const METHODS = [
+  "upload",
+  "download",
+  "head",
+  "exists",
+  "delete",
+  "copy",
+  "move",
+  "list",
+  "search",
+  "url",
+  "signedUploadUrl",
+];
+
+// One card per product area. Each area's corner color is the one its own
+// landing page uses (see the brand notes in theme.css), so `fold` has to be a
+// literal class string for Tailwind to see it.
+const AREAS = [
+  {
+    description: `Eleven methods that behave the same on all ${adapterCount} adapters, with bulk calls, multipart, byte ranges, retries, timeouts and conditional writes.`,
+    eyebrow: "files-sdk",
+    fold: "[--fold-color:var(--color-highlighter)]",
+    href: "/docs/api",
+    title: "Core SDK",
+  },
+  {
+    description: `${pluginCount} ordered layers for encryption, versioning, soft delete, caching, tiering, failover and more.`,
+    eyebrow: "files-sdk/encryption",
+    fold: "[--fold-color:var(--color-coral)]",
+    href: "/docs/plugins",
+    title: "Plugins",
+  },
+  {
+    description: `useFiles for React, Vue and Svelte over a deny-by-default gateway, plus ${registry.items.length} shadcn components.`,
+    eyebrow: "files-sdk/react",
+    fold: "[--fold-color:var(--color-sky)]",
+    href: "/docs/ui",
+    title: "UI",
+  },
+  {
+    description:
+      "One files binary with JSON output, stdin and stdout streaming, and a built-in MCP server.",
+    eyebrow: "files --provider r2 list",
+    fold: "[--fold-color:var(--color-lilac)]",
+    href: "/docs/cli",
+    title: "CLI and MCP",
+  },
+  {
+    description:
+      "Hand a bucket to the AI SDK, OpenAI or Claude as ready-made tools, with writes gated behind approval.",
+    eyebrow: "files-sdk/ai-sdk",
+    fold: "[--fold-color:var(--color-sun)]",
+    href: "/docs/ai/vercel",
+    title: "AI tools",
+  },
+];
+const [core, ...rest] = AREAS;
+---
+
+<section class="border-t border-neutral-950/5 dark:border-white/10">
+  <div class="mx-auto max-w-7xl px-6 py-24 sm:py-32 lg:px-8">
+    <p
+      class="font-mono text-sm/6 tracking-wide text-neutral-600 uppercase dark:text-neutral-400"
+    >
+      One API, five ways in
+    </p>
+    <h2
+      class="mt-4 max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
+    >
+      The same verbs on the server, in the browser, in the terminal, and in
+      your agents.
+    </h2>
+
+    <div class="mt-14 grid gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-2">
+      <a
+        class="group flex focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 sm:col-span-2 lg:col-span-1 lg:row-span-2 dark:focus-visible:outline-white"
+        href={core.href}
+      >
+        <div
+          class:list={[
+            "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 group-hover:border-neutral-950/35 sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
+            core.fold,
+          ]}
+        >
+          <p class="font-mono text-sm/6 text-neutral-600 dark:text-neutral-400">
+            {core.eyebrow}
+          </p>
+          <h3
+            class="mt-10 font-display text-3xl font-semibold tracking-tight text-neutral-950 dark:text-white"
+          >
+            {core.title}
+          </h3>
+          <p
+            class="mt-3 max-w-[48ch] text-base/7 text-pretty text-neutral-600 dark:text-neutral-400"
+          >
+            {core.description}
+          </p>
+          <ul class="mt-auto flex flex-wrap gap-2 pt-10" role="list">
+            {
+              METHODS.map((method) => (
+                <li class="bg-neutral-100 px-2 py-1 font-mono text-sm text-neutral-950 dark:bg-white/5 dark:text-white">
+                  {method}
+                </li>
+              ))
+            }
+          </ul>
+          <span
+            class="inline-flex items-center gap-1.5 pt-8 text-base font-semibold text-neutral-950 sm:text-sm dark:text-white"
+          >
+            Read the API reference
+            <Icon class="size-4 shrink-0" name="arrow-right" />
+          </span>
+        </div>
+      </a>
+
+      {
+        rest.map((area) => (
+          <a
+            class="group flex focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:focus-visible:outline-white"
+            href={area.href}
+          >
+            <div
+              class:list={[
+                "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 group-hover:border-neutral-950/35 sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
+                area.fold,
+              ]}
+            >
+              <p class="font-mono text-sm/6 text-neutral-600 dark:text-neutral-400">
+                {area.eyebrow}
+              </p>
+              <h3 class="mt-10 font-display text-2xl font-semibold tracking-tight text-neutral-950 dark:text-white">
+                {area.title}
+              </h3>
+              <p class="mt-3 max-w-[48ch] text-base/7 text-pretty text-neutral-600 dark:text-neutral-400">
+                {area.description}
+              </p>
+              <span class="mt-auto inline-flex items-center gap-1.5 pt-8 text-base font-semibold text-neutral-950 sm:text-sm dark:text-white">
+                Explore {area.title}
+                <Icon class="size-4 shrink-0" name="arrow-right" />
+              </span>
+            </div>
+          </a>
+        ))
+      }
+    </div>
+  </div>
+</section>

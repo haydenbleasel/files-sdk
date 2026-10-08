@@ -1,0 +1,61 @@
+---
+import { tokenize } from "@/lib/code";
+import type { TokenKind } from "@/lib/code";
+
+interface Props {
+  code: string;
+  /** 1-based line numbers to mark with the highlighter. */
+  highlight?: number[];
+  /** Use the always-dark token palette, for code on an ink panel. */
+  inverse?: boolean;
+  class?: string;
+}
+
+const { code, highlight = [], inverse = false, class: className } = Astro.props;
+
+const TOKEN_CLASS: Record<TokenKind, string | undefined> = {
+  comment: "text-(--tok-comment)",
+  keyword: "text-(--tok-keyword)",
+  number: "text-(--tok-number)",
+  plain: undefined,
+  string: "text-(--tok-string)",
+};
+const LINE_CLASS = "block px-5 whitespace-pre";
+const HIGHLIGHT_CLASS = "code-tokens-highlight bg-highlighter text-neutral-950";
+
+const escape = (text: string): string =>
+  text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
+// Built as a string rather than template markup: each line is
+// `whitespace-pre`, so any whitespace a formatter added between template tags
+// would render as stray indentation inside the code.
+const html = tokenize(code)
+  .map((line, index) => {
+    const lineClass = highlight.includes(index + 1)
+      ? `${LINE_CLASS} ${HIGHLIGHT_CLASS}`
+      : LINE_CLASS;
+    const body =
+      line.length === 0
+        ? " "
+        : line
+            .map((token) => {
+              const tokenClass = TOKEN_CLASS[token.kind];
+              return tokenClass
+                ? `<span class="${tokenClass}">${escape(token.text)}</span>`
+                : escape(token.text);
+            })
+            .join("");
+    return `<span class="${lineClass}">${body}</span>`;
+  })
+  .join("");
+---
+
+<div
+  class:list={[
+    "overflow-x-auto py-4 font-mono text-sm/7",
+    inverse ? "code-tokens-inverse" : "code-tokens",
+    className,
+  ]}
+>
+  <code class="block min-w-max" set:html={html} />
+</div>

@@ -2,86 +2,104 @@
 // Evaluated at build time (static output), so it tracks the latest deploy.
 const year = new Date().getFullYear();
 
-const PROJECT_LINKS = [
-  { href: "/docs", label: "Docs" },
-  { href: "/docs/adapters", label: "Adapters" },
-  { href: "/docs/api", label: "API" },
-  { href: "/docs/cli", label: "CLI" },
-];
-const RESOURCE_LINKS = [
-  { href: "https://github.com/haydenbleasel/files-sdk", label: "GitHub" },
-  { href: "https://www.npmjs.com/package/files-sdk", label: "npm" },
+const COLUMNS = [
   {
-    href: "https://github.com/haydenbleasel/files-sdk/issues",
-    label: "Issues",
+    links: [
+      { href: "/docs", label: "Docs" },
+      { href: "/docs/providers", label: "Adapters" },
+      { href: "/docs/plugins", label: "Plugins" },
+      { href: "/docs/ui", label: "UI" },
+      { href: "/docs/cli", label: "CLI and MCP" },
+      { href: "/docs/ai/vercel", label: "AI tools" },
+    ],
+    title: "Product",
+  },
+  {
+    links: [
+      { href: "/changelog", label: "Changelog" },
+      { href: "/docs/faq", label: "FAQ" },
+      { href: "/docs/troubleshooting", label: "Troubleshooting" },
+    ],
+    title: "Learn",
+  },
+  {
+    links: [
+      { href: "https://github.com/haydenbleasel/files-sdk", label: "GitHub" },
+      { href: "https://www.npmjs.com/package/files-sdk", label: "npm" },
+      {
+        href: "https://github.com/haydenbleasel/files-sdk/issues",
+        label: "Issues",
+      },
+      {
+        href: "https://github.com/sponsors/haydenbleasel",
+        label: "Sponsor",
+      },
+    ],
+    title: "Community",
   },
 ];
+
+const isExternal = (href: string) => href.startsWith("https://");
 ---
 
-<footer class="border-border border-dotted border-t">
-  <div class="mx-auto max-w-6xl px-6 py-14 sm:py-16">
-    <div class="flex flex-col gap-10 sm:flex-row sm:justify-between sm:gap-16">
-      <div class="flex max-w-[40ch] flex-col gap-2">
-        <p class="font-semibold text-base text-foreground">Files SDK</p>
+<footer class="border-t border-neutral-950/5 dark:border-white/10">
+  <div class="mx-auto max-w-7xl px-6 py-16 sm:py-20 lg:px-8">
+    <div class="grid gap-x-8 gap-y-12 lg:grid-cols-12">
+      <div class="flex flex-col gap-4 lg:col-span-5">
+        <a aria-label="Homepage" class="self-start" href="/">
+          <img
+            alt="Files SDK"
+            class="h-6 w-auto dark:hidden"
+            height="68"
+            src="/logo-light.svg"
+            width="448"
+          />
+          <img
+            alt="Files SDK"
+            class="h-6 w-auto not-dark:hidden"
+            height="68"
+            src="/logo-dark.svg"
+            width="448"
+          />
+        </a>
         <p
-          class="text-pretty text-base text-muted-foreground leading-relaxed sm:text-sm"
+          class="max-w-[40ch] text-base/7 text-pretty text-neutral-600 sm:text-sm/6 dark:text-neutral-400"
         >
-          A unified storage SDK for object and blob backends. Open source, MIT
-          licensed.
+          A unified storage SDK for object and blob backends. Write once, store
+          anywhere.
         </p>
       </div>
-      <div class="grid grid-cols-2 gap-x-12 gap-y-8 sm:gap-x-16">
-        <div class="flex flex-col gap-3">
-          <p
-            class="font-mono text-muted-foreground text-xs uppercase tracking-wide"
-          >
-            Project
-          </p>
-          <ul class="flex flex-col gap-2">
-            {
-              PROJECT_LINKS.map((l) => (
-                <li>
-                  <a
-                    class="font-normal text-base text-muted-foreground transition-colors hover:text-foreground sm:text-sm"
-                    href={l.href}
-                  >
-                    {l.label}
-                  </a>
-                </li>
-              ))
-            }
-          </ul>
-        </div>
-        <div class="flex flex-col gap-3">
-          <p
-            class="font-mono text-muted-foreground text-xs uppercase tracking-wide"
-          >
-            Resources
-          </p>
-          <ul class="flex flex-col gap-2">
-            {
-              RESOURCE_LINKS.map((l) => (
-                <li>
-                  <a
-                    class="font-normal text-base text-muted-foreground transition-colors hover:text-foreground sm:text-sm"
-                    href={l.href}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {l.label}
-                  </a>
-                </li>
-              ))
-            }
-          </ul>
-        </div>
+      <div class="grid grid-cols-2 gap-x-8 gap-y-10 sm:grid-cols-3 lg:col-span-7">
+        {
+          COLUMNS.map((column) => (
+            <div>
+              <p class="font-mono text-sm/6 tracking-wide text-neutral-600 uppercase dark:text-neutral-400">
+                {column.title}
+              </p>
+              <ul class="mt-4 flex flex-col gap-3" role="list">
+                {column.links.map((link) => (
+                  <li>
+                    <a
+                      class="text-base/6 font-normal text-neutral-950 hover:underline hover:underline-offset-4 sm:text-sm/6 dark:text-white"
+                      href={link.href}
+                      rel={isExternal(link.href) ? "noreferrer" : undefined}
+                      target={isExternal(link.href) ? "_blank" : undefined}
+                    >
+                      {link.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
       </div>
     </div>
     <div
-      class="mt-12 flex flex-col gap-3 border-border border-dotted border-t pt-6 sm:flex-row sm:items-center sm:justify-between"
+      class="mt-16 flex flex-col gap-2 border-t border-neutral-950/5 pt-8 text-base/6 text-neutral-600 sm:flex-row sm:items-center sm:justify-between sm:text-sm/6 dark:border-white/10 dark:text-neutral-400"
     >
-      <p class="text-muted-foreground text-xs">&copy; {year} Hayden Bleasel</p>
-      <p class="font-mono text-muted-foreground text-xs">MIT License</p>
+      <p>&copy; {year} Hayden Bleasel</p>
+      <p class="font-mono">MIT License</p>
     </div>
   </div>
 </footer>

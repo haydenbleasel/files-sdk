@@ -1,0 +1,99 @@
+---
+import CodeBlock from "./code-block.astro";
+
+const SNIPPET = `import { Files, FilesError } from "files-sdk";
+import { vercelBlob } from "files-sdk/vercel-blob";
+
+const files = new Files({ adapter: vercelBlob() });
+
+// Ask what the adapter can do before you call it.
+if (files.capabilities.rangeRead) {
+  await files.download("clip.mp4", { range: { start: 0, end: 1023 } });
+}
+
+try {
+  await files.head("missing.txt");
+} catch (error) {
+  if (error instanceof FilesError && error.code === "NotFound") {
+    // The same code on every adapter. The original is on error.cause.
+  }
+}
+
+files.raw; // the native client, typed for this adapter`;
+
+const PRINCIPLES = [
+  {
+    description:
+      "Not the lowest common denominator: the core is what every adapter does cleanly, and the rest is one files.raw away.",
+    title: "A common subset",
+  },
+  {
+    description:
+      "If an adapter can't honor an option, the call throws before any request is made. Nothing degrades silently.",
+    title: "Fail loud",
+  },
+  {
+    description:
+      "Bodies are Blob, File, ReadableStream, bytes or strings. No provider types leak into your code.",
+    title: "Web-standard I/O",
+  },
+  {
+    description:
+      "Every failure is a FilesError with a small set of codes, and the original error is kept on cause.",
+    title: "One error type",
+  },
+];
+---
+
+<section
+  class="bg-neutral-950 dark:border-t dark:border-white/10 dark:bg-transparent"
+>
+  <div class="mx-auto max-w-7xl px-6 py-24 sm:py-32 lg:px-8">
+    <div class="grid gap-x-8 gap-y-16 lg:grid-cols-12">
+      <div class="min-w-0 lg:col-span-5">
+        <p
+          class="font-mono text-sm/6 tracking-wide text-neutral-400 uppercase"
+        >
+          Principles
+        </p>
+        <h2
+          class="mt-4 max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-white sm:text-5xl"
+        >
+          An API that tells you the truth.
+        </h2>
+        <p class="mt-6 max-w-[48ch] text-lg/8 text-pretty text-neutral-400">
+          Files SDK only promises what every backend can keep, and it says so
+          up front when one can't.
+        </p>
+
+        <dl class="mt-12 grid gap-x-8 gap-y-8 sm:grid-cols-2">
+          {
+            PRINCIPLES.map((principle) => (
+              <div class="border-t border-white/15 pt-4">
+                <dt class="font-display text-lg/7 font-semibold text-white">
+                  {principle.title}
+                </dt>
+                <dd class="mt-2 text-base/7 text-pretty text-neutral-400 sm:text-sm/6">
+                  {principle.description}
+                </dd>
+              </div>
+            ))
+          }
+        </dl>
+      </div>
+
+      <div class="min-w-0 lg:col-span-7">
+        <div
+          class="dog-ear border border-white/15 bg-white/5 text-white [--fold-color:var(--color-highlighter)] [--fold:--spacing(8)]"
+        >
+          <div
+            class="border-b border-white/10 py-3.5 pr-14 pl-5 font-mono text-[0.8125rem]/5 text-neutral-400"
+          >
+            honest.ts
+          </div>
+          <CodeBlock code={SNIPPET} highlight={[7, 14, 19]} inverse />
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
