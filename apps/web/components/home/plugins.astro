@@ -19,24 +19,14 @@ const files = new Files({
   ],
 });`;
 
-// Outermost first, as in `plugins`. A write runs inward through each layer to
-// the adapter; a read unwinds back out in reverse.
-const LAYERS = [
-  {
-    fill: "bg-coral/15 dark:bg-coral/10",
-    name: "validation()",
-    role: "Rejects bad writes",
-  },
-  {
-    fill: "bg-coral/25 dark:bg-coral/15",
-    name: "compression()",
-    role: "Shrinks bodies at rest",
-  },
-  {
-    fill: "bg-coral/40 dark:bg-coral/20",
-    name: "encryption(key)",
-    role: "Seals bodies at rest",
-  },
+// One column per layer, in `plugins` order with the adapter last. A write
+// passes through left to right; a read unwinds right to left. validation()
+// only guards writes, so reads skip it.
+const STEPS = [
+  { adapter: false, name: "validation()", read: "skip", write: "check" },
+  { adapter: false, name: "compression()", read: "decompress", write: "compress" },
+  { adapter: false, name: "encryption()", read: "decrypt", write: "encrypt" },
+  { adapter: true, name: "s3()", read: "read", write: "write" },
 ];
 ---
 
@@ -44,13 +34,8 @@ const LAYERS = [
   <div class="mx-auto max-w-7xl px-6 py-24 sm:py-32 lg:px-8">
     <div class="grid gap-x-8 gap-y-16 lg:grid-cols-12">
       <div class="min-w-0 lg:sticky lg:top-24 lg:col-span-5 lg:self-start">
-        <p
-          class="font-mono text-sm/6 tracking-wide text-neutral-600 uppercase dark:text-neutral-400"
-        >
-          Plugins
-        </p>
         <h2
-          class="mt-4 max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
+          class="max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
         >
           Layer on what your storage is missing.
         </h2>
@@ -58,8 +43,8 @@ const LAYERS = [
           class="mt-6 max-w-[48ch] text-lg/8 text-pretty text-neutral-600 dark:text-neutral-400"
         >
           Plugins wrap every operation in an ordered pipeline to transform it,
-          veto it, or watch it go by. Writes run inward, and reads unwind in
-          reverse on their own.
+          veto it, or watch it go by. Writes pass through them in order, and
+          reads unwind in reverse on their own.
         </p>
         <a
           class="mt-8 inline-flex items-center gap-1.5 text-base font-semibold text-neutral-950 hover:underline hover:underline-offset-4 dark:text-white"
@@ -68,50 +53,6 @@ const LAYERS = [
           How plugins compose
           <Icon class="size-4 shrink-0" name="arrow-right" />
         </a>
-
-        <figure class="mt-12">
-          <div
-            class:list={[
-              "dog-ear border border-neutral-950/15 p-4 [--fold-color:var(--color-coral)] [--fold:--spacing(5)] sm:p-5 dark:border-white/15",
-              LAYERS[0].fill,
-            ]}
-          >
-            <p class="font-mono text-sm/6 text-neutral-950 dark:text-white">
-              {LAYERS[0].name}{" "}<span class="text-neutral-600 dark:text-neutral-400">· {LAYERS[0].role}</span>
-            </p>
-            <div
-              class:list={[
-                "dog-ear mt-4 border border-neutral-950/15 p-4 [--fold-color:var(--color-coral)] [--fold:--spacing(5)] sm:p-5 dark:border-white/15",
-                LAYERS[1].fill,
-              ]}
-            >
-              <p class="font-mono text-sm/6 text-neutral-950 dark:text-white">
-                {LAYERS[1].name}{" "}<span class="text-neutral-600 dark:text-neutral-400">· {LAYERS[1].role}</span>
-              </p>
-              <div
-                class:list={[
-                  "dog-ear mt-4 border border-neutral-950/15 p-4 [--fold-color:var(--color-coral)] [--fold:--spacing(5)] sm:p-5 dark:border-white/15",
-                  LAYERS[2].fill,
-                ]}
-              >
-                <p class="font-mono text-sm/6 text-neutral-950 dark:text-white">
-                  {LAYERS[2].name}{" "}<span class="text-neutral-600 dark:text-neutral-400">· {LAYERS[2].role}</span>
-                </p>
-                <p
-                  class="mt-4 bg-neutral-950 px-4 py-3 font-mono text-sm/6 text-white dark:bg-white dark:text-neutral-950"
-                >
-                  s3() · the real call
-                </p>
-              </div>
-            </div>
-          </div>
-          <figcaption
-            class="mt-5 flex flex-col gap-1 font-mono text-sm/6 text-neutral-600 dark:text-neutral-400"
-          >
-            <span>upload: validate → compress → encrypt → store</span>
-            <span>download: fetch → decrypt → decompress → validate</span>
-          </figcaption>
-        </figure>
       </div>
 
       <div class="min-w-0 lg:col-span-7">
@@ -125,6 +66,82 @@ const LAYERS = [
           </div>
           <CodeBlock code={SNIPPET} highlight={[9, 10, 11, 12, 13]} />
         </div>
+
+        <figure class="mt-8">
+          <div class="-mx-6 overflow-x-auto px-6 sm:mx-0 sm:px-0">
+            <div
+              class="grid min-w-[36rem] grid-cols-[auto_repeat(4,minmax(0,1fr))] items-center gap-x-2 gap-y-3 font-mono text-[0.8125rem]/5"
+            >
+              <span
+                class="pr-3 text-xs tracking-wide text-neutral-500 uppercase dark:text-neutral-400"
+                >Upload</span
+              >
+              {
+                STEPS.map((step, index) => (
+                  <span class="flex items-center gap-2 px-3 text-neutral-700 dark:text-neutral-300">
+                    {step.write}
+                    {index < STEPS.length - 1 && (
+                      <Icon
+                        class="ml-auto size-4 shrink-0 text-neutral-400 dark:text-neutral-500"
+                        name="arrow-right"
+                      />
+                    )}
+                  </span>
+                ))
+              }
+
+              <span aria-hidden="true"></span>
+              {
+                STEPS.map((step) =>
+                  step.adapter ? (
+                    <span class="border border-neutral-950 bg-neutral-950 px-3 py-2.5 text-white dark:border-white dark:bg-white dark:text-neutral-950">
+                      {step.name}
+                    </span>
+                  ) : (
+                    <span class="dog-ear border border-neutral-950/15 bg-white px-3 py-2.5 text-neutral-950 [--fold-color:var(--color-coral)] [--fold:--spacing(2.5)] dark:border-white/15 dark:bg-neutral-900 dark:text-white">
+                      {step.name}
+                    </span>
+                  )
+                )
+              }
+
+              <span
+                class="pr-3 text-xs tracking-wide text-neutral-500 uppercase dark:text-neutral-400"
+                >Download</span
+              >
+              {
+                STEPS.map((step, index) => (
+                  <span
+                    class:list={[
+                      "flex items-center gap-2 px-3",
+                      index === 0
+                        ? "text-neutral-500 dark:text-neutral-500"
+                        : "text-neutral-700 dark:text-neutral-300",
+                    ]}
+                  >
+                    {index > 0 && (
+                      <Icon
+                        class="size-4 shrink-0 text-neutral-400 dark:text-neutral-500"
+                        name="arrow-left"
+                      />
+                    )}
+                    {step.read}
+                  </span>
+                ))
+              }
+            </div>
+          </div>
+          <figcaption
+            class="mt-5 max-w-[56ch] text-base/7 text-pretty text-neutral-600 sm:text-sm/6 dark:text-neutral-400"
+          >
+            The array order is the pipeline order. Writes run through it left to
+            right, and reads unwind it right to left, so you never hand-manage
+            the symmetry. <code
+              class="font-mono text-[0.9em] text-neutral-950 dark:text-white"
+              >validation()</code
+            > only guards writes, so reads skip it.
+          </figcaption>
+        </figure>
 
         <dl class="mt-16 grid gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
           {

@@ -2,12 +2,17 @@
 import Icon from "blume/components/Icon.astro";
 
 import { ADAPTERS } from "@/lib/adapters";
+import { PROVIDER_FALLBACK_ICONS, PROVIDER_ICONS } from "@/lib/provider-icons";
 
 // Every adapter in the SDK's provider catalog, alphabetically by display name.
 // Each slug is also its docs page (`/docs/adapters/<slug>`).
 const adapters = ADAPTERS.toSorted((a, b) =>
   a.name.localeCompare(b.name, "en", { sensitivity: "base" })
-);
+).map((adapter) => ({
+  ...adapter,
+  fallbackIcon: PROVIDER_FALLBACK_ICONS.get(adapter.slug) ?? "cloud",
+  icon: PROVIDER_ICONS.get(adapter.slug),
+}));
 ---
 
 <section class="border-t border-neutral-950/5 dark:border-white/10">
@@ -16,13 +21,8 @@ const adapters = ADAPTERS.toSorted((a, b) =>
       class="flex flex-wrap items-end justify-between gap-x-8 gap-y-6"
     >
       <div>
-        <p
-          class="font-mono text-sm/6 tracking-wide text-neutral-600 uppercase dark:text-neutral-400"
-        >
-          Adapters
-        </p>
         <h2
-          class="mt-4 max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
+          class="max-w-[30ch] font-display text-4xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-5xl dark:text-white"
         >
           {adapters.length} backends. One shape.
         </h2>
@@ -50,10 +50,27 @@ const adapters = ADAPTERS.toSorted((a, b) =>
         adapters.map((adapter) => (
           <li class="border-b border-neutral-950/10 dark:border-white/10">
             <a
-              class="group -mx-2 flex items-baseline justify-between gap-4 px-2 py-3 text-neutral-950 hover:bg-highlighter hover:text-neutral-950 focus-visible:outline-2 focus-visible:outline-neutral-950 dark:text-white dark:focus-visible:outline-white"
+              class="group -mx-2 flex items-center justify-between gap-4 px-2 py-3 text-neutral-950 hover:bg-highlighter hover:text-neutral-950 focus-visible:outline-2 focus-visible:outline-neutral-950 dark:text-white dark:focus-visible:outline-white"
               href={`/docs/adapters/${adapter.slug}`}
             >
-              <span class="min-w-0 truncate text-base/6">{adapter.name}</span>
+              <span class="flex min-w-0 items-center gap-3">
+                {adapter.icon ? (
+                  <svg
+                    aria-hidden="true"
+                    class="size-5 shrink-0 fill-current"
+                    viewBox={adapter.icon.viewBox}
+                  >
+                    <g transform={adapter.icon.transform}>
+                      {adapter.icon.paths.map((d, index) => (
+                        <path d={d} fill-opacity={adapter.icon?.tones?.[index]} />
+                      ))}
+                    </g>
+                  </svg>
+                ) : (
+                  <Icon class="size-5 shrink-0" name={adapter.fallbackIcon} />
+                )}
+                <span class="min-w-0 truncate text-base/6">{adapter.name}</span>
+              </span>
               <span class="shrink-0 font-mono text-[0.8125rem]/6 text-neutral-500 group-hover:text-neutral-700 max-xl:hidden">
                 {adapter.slug}
               </span>
