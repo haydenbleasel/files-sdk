@@ -104,7 +104,7 @@ export default defineConfig({
 
   navigation: {
     sidebar: {
-      display: "group",
+      display: "flat",
     },
     // One tab per area, each scoping the sidebar to its own folder (the
     // longest matching path wins). Docs is the root tab (`path: "/"`) rather
