@@ -11,6 +11,7 @@ import type {
   Adapter,
   ConditionalFilesOperation,
   DownloadOptions,
+  FileEvent,
   Files,
   OperationOptions,
   PluginNext,
@@ -18,6 +19,7 @@ import type {
   UploadOptions,
   UrlOptions,
 } from "../src/index.js";
+import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { memory as memoryAdapter } from "../src/memory/index.js";
 import { signedUrlPolicy } from "../src/signed-url-policy/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -576,7 +578,7 @@ describe("cache plugin — invalidation", () => {
     };
     const files = createFiles({
       adapter: conditional,
-      plugins: [cache({ store })],
+      plugins: [cache({ namespace: "test", store })],
     });
     await expect(files.upload("doc.txt", "v1")).rejects.toThrow(
       /connection reset/u
@@ -591,9 +593,9 @@ describe("cache plugin — invalidation", () => {
       })
     ).rejects.toMatchObject({ code: "Conflict" });
     // The invalidation was attempted, but its failure stayed out of the way.
-    expect(deletes.filter((key) => key === "doc.txt").length).toBeGreaterThan(
-      1
-    );
+    expect(
+      deletes.filter((key) => key === "test//doc.txt").length
+    ).toBeGreaterThan(1);
   });
 
   test("a plain failed write leaves the cache alone and costs no store round-trip", async () => {
@@ -618,7 +620,10 @@ describe("cache plugin — invalidation", () => {
       },
     };
     const { adapter, calls } = counting(flaky);
-    const files = createFiles({ adapter, plugins: [cache({ store })] });
+    const files = createFiles({
+      adapter,
+      plugins: [cache({ namespace: "test", store })],
+    });
     await files.upload("a.txt", "hello");
     await files.head("a.txt");
     deletes.length = 0;
@@ -805,7 +810,7 @@ describe("cache plugin — custom store", () => {
       },
     };
     const { adapter, calls } = counting();
-    const files = withCache({ store }, adapter);
+    const files = withCache({ namespace: "test", store }, adapter);
     await files.upload("a.txt", "hello");
 
     await files.head("a.txt");
@@ -817,5 +822,202 @@ describe("cache plugin — custom store", () => {
     expect(seen.gets).toBeGreaterThan(0);
     expect(seen.deleted).toBeGreaterThan(0);
     expect(seen.cleared).toBe(true);
+  });
+});
+
+/** A Map-backed custom store, exposing the map to inspect its keys. */
+const mapStore = (): CacheStore & { map: Map<string, CacheRecord> } => {
+  const map = new Map<string, CacheRecord>();
+  return {
+    clear: () => map.clear(),
+    delete: (key) => {
+      map.delete(key);
+    },
+    get: (key) => map.get(key),
+    map,
+    set: (key, record) => {
+      map.set(key, record);
+    },
+  };
+};
+
+const ALL_READS = ["head", "url", "download"] as const;
+
+describe("cache plugin — scoping", () => {
+  test("a custom store needs a namespace", () => {
+    const store = mapStore();
+    expect(() => cache({ store })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
+    expect(() => cache({ namespace: "", store })).toThrow(
+      /needs a `namespace`/u
+    );
+    expect(() => cache({ namespace: 1 as unknown as string, store })).toThrow(
+      /must be a string/u
+    );
+    // Without a custom store, a namespace is optional.
+    expect(cache().name).toBe("cache");
+  });
+
+  test("tenants that differ by prefix never read each other's entries through a shared store", async () => {
+    const adapter = memoryAdapter();
+    const store = mapStore();
+    const tenant = (prefix: string) =>
+      createFiles({
+        adapter,
+        plugins: [
+          cache({ namespace: "uploads", operations: ALL_READS, store }),
+        ],
+        prefix,
+      });
+    const a = tenant("tenants/a");
+    const b = tenant("tenants/b");
+    await a.upload("secret.txt", "A's secret");
+    expect(await bodyOf(a, "secret.txt")).toBe("A's secret");
+    await a.head("secret.txt");
+    await a.url("secret.txt");
+
+    await expect(b.download("secret.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await expect(b.head("secret.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    // Every entry is scoped by the namespace and the (encoded) prefix.
+    expect([...store.map.keys()]).toEqual(["uploads/tenants%2Fa/secret.txt"]);
+  });
+
+  test("instances sharing a store, namespace, and prefix share entries", async () => {
+    const { adapter, calls } = counting();
+    const store = mapStore();
+    const make = () =>
+      createFiles({
+        adapter,
+        plugins: [cache({ namespace: "uploads", store })],
+        prefix: "p",
+      });
+    const first = make();
+    const second = make();
+    await first.upload("a.txt", "hello");
+    await first.head("a.txt");
+    await second.head("a.txt");
+    expect(calls.head).toEqual(["p/a.txt"]);
+    // A write through either instance invalidates for both.
+    await second.upload("a.txt", "changed");
+    expect(await sizeOf(first, "a.txt")).toBe(7);
+    // And so does a manual invalidation, by the same scoped key.
+    await first.invalidateCache("a.txt");
+    await second.head("a.txt");
+    expect(calls.head).toEqual(["p/a.txt", "p/a.txt", "p/a.txt"]);
+  });
+
+  test("different namespaces keep two buckets with the same keys apart", async () => {
+    const store = mapStore();
+    const bucket = (namespace: string) =>
+      createFiles({
+        adapter: fakeAdapter(),
+        plugins: [cache({ namespace, operations: ALL_READS, store })],
+      });
+    const one = bucket("one");
+    const two = bucket("two");
+    await one.upload("a.txt", "from one");
+    await two.upload("a.txt", "from bucket two");
+    expect(await bodyOf(one, "a.txt")).toBe("from one");
+    expect(await bodyOf(two, "a.txt")).toBe("from bucket two");
+    expect(await sizeOf(one, "a.txt")).toBe(8);
+  });
+
+  test("one cache() refuses to serve a second instance with another prefix or adapter", () => {
+    const adapter = fakeAdapter();
+    const plugin = cache();
+    createFiles({ adapter, plugins: [plugin], prefix: "a" });
+    expect(() =>
+      createFiles({ adapter, plugins: [plugin], prefix: "b" })
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
+    expect(() =>
+      createFiles({ adapter: fakeAdapter(), plugins: [plugin], prefix: "a" })
+    ).toThrow(/different adapter or prefix/u);
+    // The same scope again is fine (a rebuilt instance over the same adapter).
+    expect(() =>
+      createFiles({ adapter, plugins: [plugin], prefix: "a" })
+    ).not.toThrow();
+  });
+
+  test("a read-only view shares the instance's cache", async () => {
+    const { adapter, calls } = counting();
+    const files = withCache({}, adapter);
+    await files.upload("a.txt", "hello");
+    await files.head("a.txt");
+    await files.readonly().head("a.txt");
+    expect(calls.head).toEqual(["a.txt"]);
+  });
+});
+
+/** A provider event for `key`, as `files-sdk/events` hands it to the core. */
+const providerEvent = (key: string): FileEvent => ({
+  etag: "e",
+  id: key,
+  key,
+  provider: "fake",
+  raw: null,
+  size: 5,
+  source: "provider",
+  time: 0,
+  type: "created",
+});
+
+describe("cache plugin — provider events", () => {
+  test("a provider event drops the key's cached reads and passes through unchanged", async () => {
+    const { adapter, calls } = counting();
+    const files = createFiles({
+      adapter,
+      plugins: [cache({ operations: ["head", "download"], ttl: 0 })],
+      prefix: "p",
+    });
+    await files.upload("a.txt", "v1");
+    await files.head("a.txt");
+    await files.download("a.txt");
+    await files.head("a.txt");
+    expect(calls.head).toEqual(["p/a.txt"]);
+
+    // Out-of-band write the plugin never saw, reported by the provider.
+    await adapter.upload("p/a.txt", "version two");
+    const folded = files[FOLD_PROVIDER_EVENT](providerEvent("p/a.txt"));
+    expect(folded).toEqual({ ...providerEvent("p/a.txt"), key: "a.txt" });
+
+    expect(await sizeOf(files, "a.txt")).toBe(11);
+    expect(await bodyOf(files, "a.txt")).toBe("version two");
+    expect(calls.head).toEqual(["p/a.txt", "p/a.txt"]);
+    expect(countKey(calls.download, "p/a.txt")).toBe(2);
+  });
+
+  test("a store failure while dropping never breaks event delivery", async () => {
+    const failures: string[] = [];
+    const rejecting: CacheStore = {
+      ...mapStore(),
+      delete: (key) => {
+        failures.push(key);
+        return Promise.reject(new Error("redis: connection reset"));
+      },
+    };
+    const throwing: CacheStore = {
+      ...mapStore(),
+      delete: (key) => {
+        failures.push(key);
+        throw new Error("store exploded");
+      },
+    };
+    for (const store of [rejecting, throwing]) {
+      const files = createFiles({
+        adapter: fakeAdapter(),
+        plugins: [cache({ namespace: "ns", store })],
+      });
+      expect(files[FOLD_PROVIDER_EVENT](providerEvent("a.txt"))).toEqual(
+        providerEvent("a.txt")
+      );
+    }
+    // Let the rejected delete settle: it must not surface as unhandled.
+    await Promise.resolve();
+    expect(failures).toEqual(["ns//a.txt", "ns//a.txt"]);
   });
 });

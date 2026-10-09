@@ -18,6 +18,7 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
+import { intersectCapabilities } from "../internal/capabilities.js";
 import { FilesError } from "../internal/errors.js";
 
 /**
@@ -210,6 +211,13 @@ const normalizeSecondaries = (
  * It's **body-transparent** — never buffers or transforms bytes — and adds no
  * surface (`wrap` only), so it works with plain `new Files({ plugins })`.
  *
+ * `files.capabilities` reports what **every** backend can do (the primary's
+ * flags intersected with each secondary's), and the core gates on that up
+ * front: an option one secondary can't honor — `range`, `metadata`,
+ * `cacheControl`, a `delimiter` — is refused on every call, rather than
+ * working while the primary is healthy and throwing only once an outage fails
+ * the call over. Provider events (`capabilities.events`) stay the primary's.
+ *
  * Placement and prefixes:
  * - Place it **last** (innermost) so body-transforming plugins (`encryption()`,
  *   `compression()`) wrap it and apply to **every** backend.
@@ -256,6 +264,9 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
   }
   const shouldFailover = options.shouldFailover ?? defaultShouldFailover;
   const { onFailover } = options;
+  // Each secondary's own capability snapshot, read through a plain Files over
+  // it (capabilities don't depend on the instance defaults `extend` adds).
+  const secondaryProbes = secondaries.map((adapter) => new Files({ adapter }));
   // Built in `extend`, which is the only hook that sees the outer instance:
   // each secondary's internal Files inherits its `timeout` / `retries` /
   // `signal` defaults, so a hung replica is cut off the same way a hung
@@ -386,26 +397,34 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
-    // Advertise what the wrap refuses: every conditional primitive is vetoed
-    // (retrying on another backend can't preserve one native
+    // Advertise only what every backend can do — an operation may land on any
+    // of them — so an option a secondary lacks is refused up front instead of
+    // only once a failover reaches it. Every conditional primitive is vetoed
+    // too (retrying on another backend can't preserve one native
     // compare-and-set), so callers branching on `files.capabilities` don't
     // plan one.
-    capabilities: (caps) => ({
-      ...caps,
-      conditional: {
-        ...caps.conditional,
-        copy: {
-          atomicSourceDestination: false,
-          destinationCreate: false,
-          destinationReplace: false,
-          sourceEtag: false,
+    capabilities: (caps) => {
+      let shared = caps;
+      for (const probe of secondaryProbes) {
+        shared = intersectCapabilities(shared, probe.capabilities);
+      }
+      return {
+        ...shared,
+        conditional: {
+          ...caps.conditional,
+          copy: {
+            atomicSourceDestination: false,
+            destinationCreate: false,
+            destinationReplace: false,
+            sourceEtag: false,
+          },
+          create: false,
+          delete: false,
+          exactRead: false,
+          replace: false,
         },
-        create: false,
-        delete: false,
-        exactRead: false,
-        replace: false,
-      },
-    }),
+      };
+    },
     extend: (files) => {
       const { defaults } = files;
       secondaryRunners = secondaries.map((adapter) =>

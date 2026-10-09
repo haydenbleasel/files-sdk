@@ -3,14 +3,17 @@ import { describe, expect, test } from "bun:test";
 import { createFilesRouter } from "../src/api/index.js";
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
+import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
 import { failover } from "../src/failover/index.js";
 import { createFiles, FilesError, sync, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
+  FileEvent,
   Files,
   PluginNext,
 } from "../src/index.js";
+import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
@@ -672,5 +675,63 @@ describe("dedup plugin — refusals are permanent", () => {
       expect((failure as FilesError).permanent).toBe(true);
       expect((failure as FilesError).message).toMatch(/^dedup: /u);
     }
+  });
+});
+
+/** A provider event as `files-sdk/events` hands it to the core. */
+const providerEvent = (
+  key: string,
+  extra: Partial<FileEvent> = {}
+): FileEvent => ({
+  etag: '"stored"',
+  id: key,
+  key,
+  provider: "memory",
+  raw: null,
+  size: 0,
+  source: "provider",
+  time: 0,
+  type: "created",
+  ...extra,
+});
+
+const fold = (files: Files, event: FileEvent) =>
+  files[FOLD_PROVIDER_EVENT](event);
+
+describe("dedup plugin — provider events", () => {
+  test("drops blob-store events", () => {
+    const files = withDedup({ prefix: "blobs" });
+    expect(fold(files, providerEvent("blobs/abc", { size: 5 }))).toBeNull();
+    expect(fold(files, providerEvent("blobs"))).toBeNull();
+  });
+
+  test("clears the size and ETag of a possible pointer", () => {
+    const files = withDedup();
+    const { etag: _etag, size: _size, ...bare } = providerEvent("a.png");
+    // An empty object is what a pointer looks like.
+    expect(fold(files, providerEvent("a.png"))).toEqual(bare);
+    // So is one whose delivery carries no size (most delete notifications).
+    expect(
+      fold(files, providerEvent("a.png", { size: undefined, type: "deleted" }))
+    ).toEqual({ ...bare, type: "deleted" });
+  });
+
+  test("keeps the size and ETag of a non-empty object it didn't write", () => {
+    const files = withDedup();
+    const plain = providerEvent("legacy.bin", { size: 42 });
+    expect(fold(files, plain)).toEqual(plain);
+  });
+
+  test("an inner body transform's cleared size still clears the pointer ETag", async () => {
+    // Under encryption() a pointer is stored non-empty (the GCM tag), but
+    // encryption() clears the stored size first, so dedup() can't mistake it
+    // for a plain object.
+    const files = createFiles({
+      adapter: memory(),
+      plugins: [dedup(), encryption(await generateEncryptionKey())],
+    });
+    const folded = fold(files, providerEvent("a.png", { size: 28 }));
+    expect(folded?.size).toBeUndefined();
+    expect(folded?.etag).toBeUndefined();
   });
 });

@@ -340,6 +340,20 @@ export const mapDropboxError = (cause: unknown): FilesError => {
   return new FilesError(code, message ?? DEFAULT_MESSAGES[code], cause);
 };
 
+// `filesCopyV2` has no overwrite mode: a destination that already holds a file
+// fails with `to/conflict/file` (a folder there is `to/conflict/folder`, a file
+// in the way of a parent `to/conflict/file_ancestor`).
+const isFileConflictAtDestination = (cause: unknown): boolean => {
+  if (!(cause instanceof DropboxResponseError)) {
+    return false;
+  }
+  const tags = collectErrorTags(cause.error);
+  return tags.some(
+    (tag, i) =>
+      tag === "to" && tags[i + 1] === "conflict" && tags[i + 2] === "file"
+  );
+};
+
 // View a Uint8Array as a Node Buffer without copying — the Dropbox session
 // helpers take `Buffer` contents.
 const toBuffer = (data: Uint8Array): Buffer =>
@@ -765,6 +779,37 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     return parts.length === 0 ? "" : `/${parts.join("/")}`;
   };
 
+  // `keyToPath` for a key that must name one file. An empty key (or `"/"`)
+  // maps to the adapter root and a trailing `/` names a folder, and Dropbox's
+  // delete/copy act on a whole folder tree — so refuse both shapes up front.
+  const objectPath = (key: string): string => {
+    if (!trimSlashes(key) || key.endsWith("/")) {
+      throw new FilesError(
+        "Invalid",
+        `dropbox: key must name a file, not the root or a folder: ${JSON.stringify(key)}`
+      );
+    }
+    return keyToPath(key);
+  };
+
+  // Whether `path` currently holds a file (not a folder, not a deleted entry,
+  // not nothing). The object verbs check this before Dropbox calls that would
+  // otherwise act on an entire folder.
+  const isFileAt = async (
+    path: string,
+    signal: AbortSignal | undefined
+  ): Promise<boolean> => {
+    try {
+      const res = await client.filesGetMetadata({ path }, req(signal));
+      return res.result[".tag"] === "file";
+    } catch (error) {
+      if (mapDropboxError(error).code === "NotFound") {
+        return false;
+      }
+      throw error;
+    }
+  };
+
   const pathToKey = (path: string): string => {
     const inner = trimSlashes(path);
     if (!rootFolderPath) {
@@ -784,7 +829,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     try {
       const res = await client.sharingCreateSharedLinkWithSettings(
         {
-          path: keyToPath(key),
+          path: objectPath(key),
           settings: { requested_visibility: { ".tag": "public" } },
         },
         req(signal)
@@ -969,19 +1014,18 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     key: string,
     resumableOpts: ResumableDriverOptions
   ): OffsetResumableDriver => {
-    const path = keyToPath(key);
+    const path = objectPath(key);
     const chunkBytes = resolveChunkBytes(resumableOpts.multipart);
     let session:
       | Extract<ResumableUploadSession, { provider: "dropbox" }>
       | undefined;
     let finalItem: files.FileMetadata | undefined;
     let contentType = OCTET_STREAM;
+    // Calling the driver out of order is a caller bug, not a provider
+    // failure — it fails the same way on every attempt.
     const requireSession = () => {
       if (!session) {
-        throw new FilesError(
-          "Provider",
-          "dropbox: upload session not started."
-        );
+        throw new FilesError("Invalid", "dropbox: upload session not started.");
       }
       return session;
     };
@@ -1024,8 +1068,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       complete(): Promise<UploadResult> {
         if (!finalItem) {
           throw new FilesError(
-            "Provider",
-            "dropbox: upload session did not finalize."
+            "Invalid",
+            "dropbox: upload session did not finalize (complete() before the last chunk)."
           );
         }
         const meta = fileMetaFromDropbox(finalItem);
@@ -1104,23 +1148,51 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       },
     },
     async copy(from, to, copyOpts) {
+      const signal = copyOpts?.signal;
       try {
+        const arg = { from_path: objectPath(from), to_path: objectPath(to) };
         await authHandle.ensureAccessToken();
-        await client.filesCopyV2(
-          { from_path: keyToPath(from), to_path: keyToPath(to) },
-          req(copyOpts?.signal)
-        );
+        // `filesCopyV2` on a folder copies its whole tree; a folder is not an
+        // object here (`head` reports it as NotFound), so neither is its copy.
+        if (!(await isFileAt(arg.from_path, signal))) {
+          throw new FilesError(
+            "NotFound",
+            `dropbox: no file at ${JSON.stringify(from)}`
+          );
+        }
+        try {
+          await client.filesCopyV2(arg, req(signal));
+        } catch (error) {
+          // Dropbox paths are case-insensitive: the same file under another
+          // casing must keep the conflict, or replacing it deletes the source.
+          const sameFile =
+            arg.from_path.toLowerCase() === arg.to_path.toLowerCase();
+          if (sameFile || !isFileConflictAtDestination(error)) {
+            throw error;
+          }
+          // No overwrite mode: replace the existing file like every other
+          // adapter's copy does — delete it (Dropbox keeps it restorable from
+          // version history), then copy again. A folder at the destination
+          // stays a Conflict.
+          await client.filesDeleteV2({ path: arg.to_path }, req(signal));
+          await client.filesCopyV2(arg, req(signal));
+        }
       } catch (error) {
         throw mapDropboxError(error);
       }
     },
     async delete(key, deleteOpts) {
+      const signal = deleteOpts?.signal;
       try {
+        const path = objectPath(key);
         await authHandle.ensureAccessToken();
-        await client.filesDeleteV2(
-          { path: keyToPath(key) },
-          req(deleteOpts?.signal)
-        );
+        // `filesDeleteV2` on a folder deletes everything under it. A folder is
+        // not an object, so deleting its key is the same no-op as a missing
+        // key.
+        if (!(await isFileAt(path, signal))) {
+          return;
+        }
+        await client.filesDeleteV2({ path }, req(signal));
       } catch (error) {
         const mapped = mapDropboxError(error);
         // Idempotent: missing item is not an error.
@@ -1140,7 +1212,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         // and exposes a ReadableStream body.
         if (downloadOpts?.as === "stream" || range) {
           const tmp = await client.filesGetTemporaryLink(
-            { path: keyToPath(key) },
+            { path: objectPath(key) },
             req(downloadOpts?.signal)
           );
           const tmpResult = tmp.result;
@@ -1183,7 +1255,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           );
         }
         const res = await client.filesDownload(
-          { path: keyToPath(key) },
+          { path: objectPath(key) },
           req(downloadOpts?.signal)
         );
         const { result } = res;
@@ -1201,7 +1273,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       return existsByProbe(async () => {
         await authHandle.ensureAccessToken();
         const res = await client.filesGetMetadata(
-          { path: keyToPath(key) },
+          { path: objectPath(key) },
           req(existsOpts?.signal)
         );
         const item = res.result;
@@ -1218,7 +1290,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       try {
         await authHandle.ensureAccessToken();
         const res = await client.filesGetMetadata(
-          { path: keyToPath(key) },
+          { path: objectPath(key) },
           req(headOpts?.signal)
         );
         const item = res.result;
@@ -1327,8 +1399,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       // (this adapter advertises neither) — Dropbox files have no native
       // arbitrary-metadata or cache-header field.
       try {
+        const path = objectPath(key);
         await authHandle.ensureAccessToken();
-        const path = keyToPath(key);
         const chunkBytes = resolveChunkBytes(options?.multipart);
         // Stream bodies upload chunk-by-chunk so a multi-GB file never has to
         // be held in memory all at once. Buffered bodies are already resident,
@@ -1408,7 +1480,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           return await createPublicSharedLink(key, urlOpts?.signal);
         }
         const res = await client.filesGetTemporaryLink(
-          { path: keyToPath(key) },
+          { path: objectPath(key) },
           req(urlOpts?.signal)
         );
         return res.result.link;

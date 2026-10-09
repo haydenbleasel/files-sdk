@@ -523,9 +523,11 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       };
     },
     signedUploadUrl(key, signOpts): Promise<SignedUpload> {
-      // No real upload endpoint exists; the URL is an inert placeholder, so
-      // the key need not exist yet (this is an upload target). `expires`
-      // round-trips the requested TTL for callers asserting it flows through.
+      // Not advertised (`capabilities.signedUpload` is unsupported), so the
+      // gateway never presigns against memory. Called directly, it returns an
+      // inert placeholder that reflects what it was given — gateway and client
+      // tests use it to observe the sign-upload plumbing. Nothing can upload
+      // to it. The key need not exist yet (this is an upload target).
       return Promise.resolve({
         headers: {
           ...(signOpts.contentType && { "Content-Type": signOpts.contentType }),
@@ -557,25 +559,25 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
     },
     url(key, urlOpts): Promise<string> {
       return defer(() => {
-        // Surface a typo'd key the way a fetch against the URL would 404.
-        getOrThrow(key);
-        // Opaque, non-fetchable URL — there's no server backing the store.
-        // Query params reflect the options a caller passed so URL-building
-        // logic stays testable; the default call returns a clean
-        // `memory://${key}`.
-        const params = new URLSearchParams();
+        // No signer (`capabilities.signedUrl` is unsupported), so a memory://
+        // URL can't expire. The Files wrapper refuses `expiresIn` before
+        // reaching here; this covers direct adapter calls the same way.
         if (urlOpts?.expiresIn !== undefined) {
-          params.set("expires", String(urlOpts.expiresIn));
-        }
-        if (urlOpts?.responseContentDisposition) {
-          params.set(
-            "response-content-disposition",
-            urlOpts.responseContentDisposition
+          throw new FilesError(
+            "Unsupported",
+            "memory: `expiresIn` is not supported. memory:// URLs have no signer, so they can't expire."
           );
         }
-        const query = params.toString();
-        const queryPart = query ? `?${query}` : "";
-        return `memory://${key}${queryPart}`;
+        // Surface a typo'd key the way a fetch against the URL would 404.
+        getOrThrow(key);
+        // Opaque, non-fetchable URL — there's no server backing the store. A
+        // `responseContentDisposition` is reflected as a query param (nothing
+        // enforces it) so gateway tests can observe the disposition a route
+        // forces; the default call returns a clean `memory://${key}`.
+        const disposition = urlOpts?.responseContentDisposition;
+        return disposition
+          ? `memory://${key}?${new URLSearchParams({ "response-content-disposition": disposition }).toString()}`
+          : `memory://${key}`;
       });
     },
   };

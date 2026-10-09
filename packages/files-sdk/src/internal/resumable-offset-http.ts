@@ -50,6 +50,31 @@ export const statusError = (
   return new FilesError("Provider", text);
 };
 
+/**
+ * Check the answer to a session-cancel `DELETE`. The session is gone — the
+ * cancel succeeded — on any 2xx, on 404/410 (already completed, expired, or
+ * discarded), and on GCS's documented `499 Client Closed Request`, its success
+ * reply to cancelling a resumable upload. Anything else means the provider
+ * refused or failed the cancel and the session may still be live, so it
+ * throws through {@link statusError}: a 401/403 is `Unauthorized`, a 5xx a
+ * retryable `Provider` error. Shared with the hand-rolled offset drivers that
+ * cancel their own session URL.
+ */
+export const assertSessionDiscarded = (
+  res: Response,
+  message: string
+): void => {
+  if (
+    res.ok ||
+    res.status === 404 ||
+    res.status === 410 ||
+    res.status === 499
+  ) {
+    return;
+  }
+  throw statusError(res.status, message);
+};
+
 export const createOffsetHttpDriver = (params: {
   partSize: number;
   /** Open the provider session; return the token plus the URL to PUT chunks to. */
@@ -96,7 +121,8 @@ export const createOffsetHttpDriver = (params: {
         return;
       }
       try {
-        await fetch(uri, { method: "DELETE" });
+        const res = await fetch(uri, { method: "DELETE" });
+        assertSessionDiscarded(res, "resumable session cancel failed");
       } catch (error) {
         throw wrapErr(error);
       }

@@ -64,6 +64,17 @@ export interface SearchCallOptions extends CallOptions {
   caseInsensitive?: boolean;
 }
 
+/**
+ * What a client `search()` generator returns once it finishes — read it with
+ * the iterator's final `next()` (a `for await` loop drops it). `truncated` is
+ * `true` when the gateway stopped before the end of the walk: at
+ * `maxResults`, at its own `maxSearchResults` cap, or at its `maxSearchScan`
+ * budget of keys read. More keys may match; narrow the `prefix` or pattern.
+ */
+export interface SearchSummary {
+  truncated: boolean;
+}
+
 export interface SignUploadCallOptions extends CallOptions {
   expiresIn: number;
   contentType?: string;
@@ -235,10 +246,14 @@ export interface FilesClient<TData = unknown> {
   ) => Promise<SignedUpload>;
   list: (opts?: ListCallOptions) => Promise<ListResult>;
   listAll: (opts?: ListCallOptions) => AsyncGenerator<FileInfo, void>;
+  /**
+   * Matches from one bounded gateway walk. The generator's return value
+   * ({@link SearchSummary}) says whether the gateway stopped early.
+   */
   search: (
     pattern: string | RegExp,
     opts?: SearchCallOptions
-  ) => AsyncGenerator<FileInfo, void>;
+  ) => AsyncGenerator<FileInfo, SearchSummary>;
   capabilities: (opts?: CallOptions) => Promise<AdapterCapabilities>;
 
   // Plugin verbs — resolve only when the server gateway exposes the matching

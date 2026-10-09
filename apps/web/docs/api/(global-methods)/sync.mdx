@@ -95,7 +95,7 @@ await sync(from, to, {
 });
 ```
 
-`concurrency` bounds how many objects stream at once. Under `stopOnError` the run is sequential and a failed upload **skips the prune phase**, so the destination is never trimmed against a half-applied source. `signal` is forwarded to every `list` / `download` / `upload` (the bulk `delete` carries no signal).
+`concurrency` bounds how many objects stream at once. Under `stopOnError` the run is sequential and a failed upload **skips the prune phase**, so the destination is never trimmed against a half-applied source. `signal` is forwarded to every `list` / `download` / `upload`. The bulk `delete` carries no signal, so with a `signal` the prune deletes in batches of 100 and checks it before each batch: once it's aborted, nothing more is deleted, and the keys left unpruned come back in `errors` as aborted (and report `"failed"` to `onProgress`).
 
 ## Progress
 

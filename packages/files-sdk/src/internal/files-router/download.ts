@@ -5,9 +5,10 @@
 // the upstream fetch.
 
 import type { ByteRange, Files, UrlOptions } from "../../index.js";
-import { isDispositionUnsupported } from "../errors.js";
+import { FilesError, isDispositionUnsupported } from "../errors.js";
 import type { ResultModel } from "../router-core/web.js";
 import type { Scope } from "./authorize.js";
+import type { WireError } from "./protocol.js";
 
 export interface DownloadConfig {
   files: Files;
@@ -132,11 +133,62 @@ const honouredRange = (
     ? request.range
     : null;
 
-const rangeNotSatisfiable = (size: number): ResultModel => ({
-  headers: { "content-range": `bytes */${size}` },
-  kind: "empty",
-  status: 416,
-});
+// A 416 still carries the gateway's error envelope, so the client reports it
+// as the bad request it is (`Invalid`) rather than a generic failure.
+const rangeNotSatisfiable = (size: number): ResultModel => {
+  const body: WireError = {
+    error: {
+      code: "Validation",
+      message: `range not satisfiable for a ${size}-byte object`,
+      reason: "range",
+    },
+  };
+  return {
+    body,
+    headers: {
+      "cache-control": "private, no-store",
+      "content-range": `bytes */${size}`,
+    },
+    kind: "json",
+    status: 416,
+  };
+};
+
+/**
+ * Content types a browser renders without running anything from the response
+ * itself: raster images, audio, video, and PDF (whose viewer is sandboxed by
+ * the browser, and which a CSP `sandbox` would block from rendering in an
+ * `<object>`/`<iframe>` preview). Everything else — HTML, SVG, XML, unknown
+ * types — is served under {@link SANDBOX_POLICY}.
+ */
+const isPassiveMedia = (contentType: string): boolean => {
+  const type = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  return (
+    type === "application/pdf" ||
+    type.startsWith("video/") ||
+    type.startsWith("audio/") ||
+    (type.startsWith("image/") && !type.startsWith("image/svg"))
+  );
+};
+
+/**
+ * The proxy serves storage content from the app's own origin, so a stored
+ * `text/html` or SVG opened inline (an `authorize` `disposition: "inline"`, or
+ * `forceDownloadDisposition: false`) would run its script as the app. Under
+ * this policy the document gets an opaque origin, loads nothing, and runs no
+ * script; inline styles still apply, so it previews legibly. It has no effect
+ * where the body is embedded as an image or media element.
+ */
+const SANDBOX_POLICY = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
+
+/**
+ * Whether a refusal from `url()` means "redirecting can't honor this", not a
+ * failure: the proxy can still serve it, so `auto` mode falls back to it.
+ */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
+const isRedirectRefusal = (error: unknown): boolean =>
+  isDispositionUnsupported(error) ||
+  (error instanceof FilesError && error.code === "Unsupported");
 
 /**
  * `bytes=0-`: the open-ended range from the first byte, which the whole body
@@ -224,8 +276,18 @@ const redirectTarget = async (
     return undefined;
   }
   if (canLinkPublic) {
-    const url = await cfg.files.url(storageKey, { signal });
-    return { kind: "redirect", location: url, status: 302 };
+    try {
+      const url = await cfg.files.url(storageKey, { signal });
+      return { kind: "redirect", location: url, status: 302 };
+    } catch (error) {
+      // A plugin (or the adapter) can still refuse the bare link — a
+      // `signedUrlPolicy()` that insists on a disposition the public URL
+      // can't carry, say. The proxy sets everything itself.
+      if (cfg.downloadMode === "auto" && isRedirectRefusal(error)) {
+        return undefined;
+      }
+      throw error;
+    }
   }
   let expiresIn = cfg.defaultExpiresIn;
   if (scope.maxExpiresIn !== undefined) {
@@ -244,7 +306,7 @@ const redirectTarget = async (
     );
     return { kind: "redirect", location: url, status: 302 };
   } catch (error) {
-    if (cfg.downloadMode === "auto" && isDispositionUnsupported(error)) {
+    if (cfg.downloadMode === "auto" && isRedirectRefusal(error)) {
       return undefined;
     }
     throw error;
@@ -307,13 +369,21 @@ export const handleDownload = async (
     ...(range && { range }),
   });
 
+  const contentType = file.contentType || "application/octet-stream";
   const headers = {
     "accept-ranges": caps.rangeRead ? "bytes" : "none",
+    // Download URLs are tenant-relative (`?op=download&key=avatar.jpg` is the
+    // same URL for every user under their own `keyPrefix`), so no shared cache
+    // may store one user's bytes and serve them to the next.
+    "cache-control": "private, no-store",
     "content-length": String(length),
-    "content-type": file.contentType || "application/octet-stream",
+    "content-type": contentType,
     // The body is storage content served from the app's origin: never let the
     // browser sniff it into something executable (HTML/script).
     "x-content-type-options": "nosniff",
+    ...(!isPassiveMedia(contentType) && {
+      "content-security-policy": SANDBOX_POLICY,
+    }),
     "x-files-meta": encodeMeta({
       etag: meta.etag,
       key: unscopedKey,

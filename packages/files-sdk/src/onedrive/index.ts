@@ -44,6 +44,7 @@ import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
 import { toWebStream } from "../internal/node-stream";
+import { assertSessionDiscarded } from "../internal/resumable-offset-http.js";
 import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -516,7 +517,8 @@ interface CreateLinkResponse {
 interface CopyMonitorStatus {
   status?: string;
   percentageComplete?: number;
-  error?: { message?: string };
+  error?: { code?: string; message?: string };
+  errorCode?: string;
 }
 
 interface OAuthTokenResponse {
@@ -805,6 +807,15 @@ export const onedrive = (
   }
 
   const itemApiPath = (key: string): string => {
+    // An empty key (or "/") maps to the adapter root and a trailing "/" names
+    // a folder; Graph DELETE and copy act on a whole folder tree, so neither
+    // shape reaches an object verb.
+    if (!trimSlashes(key) || key.endsWith("/")) {
+      throw new FilesError(
+        "Invalid",
+        `onedrive: key must name a file, not the root or a folder: ${JSON.stringify(key)}`
+      );
+    }
     assertNoRelativeSegments(key, "key");
     const fullPath = rootFolderPath
       ? `${rootFolderPath}/${trimSlashes(key)}`
@@ -833,6 +844,27 @@ export const onedrive = (
     return `${basePath}/root:/${encodePathSegments(fullPath)}:`;
   };
 
+  // The driveItem at `key`, or `undefined` when nothing is there.
+  const findItem = async (key: string): Promise<DriveItem | undefined> => {
+    try {
+      // SAFETY: the Graph client types every parsed response as `any`; a GET
+      // on the item path returns a `driveItem`.
+      return (await client.api(itemApiPath(key)).get()) as DriveItem;
+    } catch (error) {
+      if (mapGraphError(error).code === "NotFound") {
+        return undefined;
+      }
+      throw error;
+    }
+  };
+
+  // Address an item by id where Graph gave one, so a mutation hits exactly the
+  // item that was inspected — never a folder that has since landed on the path.
+  const itemByIdPath = (key: string, item: DriveItem): string =>
+    item.id
+      ? `${basePath}/items/${encodeURIComponent(item.id)}`
+      : itemApiPath(key);
+
   const pollCopyMonitor = async (monitorUrl: string): Promise<void> => {
     const start = Date.now();
     while (true) {
@@ -855,15 +887,21 @@ export const onedrive = (
         return;
       }
       if (json.status === "failed") {
+        // Classify the job's own error code like a synchronous Graph error
+        // (`nameAlreadyExists` → Conflict, `itemNotFound` → NotFound, …).
         throw new FilesError(
-          "Provider",
+          classifyGraphError(undefined, json.error?.code ?? json.errorCode),
           json.error?.message ?? "onedrive: copy operation failed"
         );
       }
       if (Date.now() - start > copyTimeoutMs) {
+        // Permanent: Graph accepted the copy and may still finish it, so a
+        // retry would start a second copy job rather than resume this one.
         throw new FilesError(
           "Provider",
-          `onedrive: copy operation timed out after ${copyTimeoutMs}ms`
+          `onedrive: copy operation did not finish within ${copyTimeoutMs}ms; it may still complete server-side, so check the destination before retrying`,
+          undefined,
+          { permanent: true }
         );
       }
       // eslint-disable-next-line no-await-in-loop -- backoff between sequential status polls
@@ -951,10 +989,12 @@ export const onedrive = (
     let uploadUrl: string | undefined;
     let contentType: string | undefined;
     let finalItem: DriveItem | undefined;
+    // Calling the driver out of order is a caller bug, not a provider
+    // failure — it fails the same way on every attempt.
     const requireUrl = (): string => {
       if (!uploadUrl) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "onedrive: upload session not started."
         );
       }
@@ -1032,7 +1072,12 @@ export const onedrive = (
           return;
         }
         try {
-          await fetch(uploadUrl, { method: "DELETE" });
+          // A refused cancel (401/403, 5xx) leaves the session live, so it
+          // throws; 2xx or an already-gone 404/410 is success.
+          assertSessionDiscarded(
+            await fetch(uploadUrl, { method: "DELETE" }),
+            "onedrive: upload session cancel failed"
+          );
         } catch (error) {
           throw mapGraphError(error);
         }
@@ -1151,6 +1196,33 @@ export const onedrive = (
     },
     async copy(from, to) {
       try {
+        const [source, destination] = await Promise.all([
+          findItem(from),
+          findItem(to),
+        ]);
+        // Graph copies a folder's whole tree; a folder is not an object here
+        // (`head` reports it as NotFound), so neither is its copy.
+        if (!source || source.folder) {
+          throw new FilesError(
+            "NotFound",
+            `onedrive: no file at ${JSON.stringify(from)}`
+          );
+        }
+        // `replace` onto a folder would swap the whole folder for one file.
+        if (destination?.folder) {
+          throw new FilesError(
+            "Conflict",
+            `onedrive: ${JSON.stringify(to)} is a folder; refusing to replace it with a file`
+          );
+        }
+        // Graph paths are case-insensitive: replacing "the destination" here
+        // would replace the source itself.
+        if (destination?.id !== undefined && destination.id === source.id) {
+          throw new FilesError(
+            "Conflict",
+            `onedrive: ${JSON.stringify(from)} and ${JSON.stringify(to)} are the same item`
+          );
+        }
         // Resolve destination parent folder. For nested keys we copy to the
         // root and let `requestBody.parentReference.path` handle the rest.
         const destDir = (() => {
@@ -1170,43 +1242,73 @@ export const onedrive = (
         const parentRef = fullDestDir
           ? { path: `/drive/root:/${encodePathSegments(fullDestDir)}` }
           : { path: "/drive/root:" };
-        // SAFETY: with `ResponseType.RAW` the Graph client resolves with the
-        // underlying fetch `Response` itself instead of a parsed body.
-        const res = (await client
-          .api(`${itemApiPath(from)}/copy`)
-          .responseType(ResponseType.RAW)
-          .post({
-            name: basename(to),
-            parentReference: parentRef,
-          })) as Response;
-        // `ResponseType.RAW` hands back the fetch Response as-is — the Graph
-        // client only turns non-2xx responses into GraphErrors for the parsed
-        // response types — so classify the failure here (404 → NotFound,
-        // 409 → Conflict, …) instead of surfacing a generic provider error.
-        if (!res.ok) {
-          const errorBody = await readGraphErrorBody(res);
-          const code = classifyGraphError(res.status, errorBody?.error?.code);
-          throw new FilesError(
-            code,
-            errorBody?.error?.message ?? `onedrive: copy returned ${res.status}`
-          );
+        const runCopy = async (): Promise<void> => {
+          // SAFETY: with `ResponseType.RAW` the Graph client resolves with the
+          // underlying fetch `Response` itself instead of a parsed body.
+          const res = (await client
+            .api(`${itemApiPath(from)}/copy`)
+            // Overwrite an existing destination file, like every other
+            // adapter's copy (Graph's default is to fail on a name clash).
+            .query({ "@microsoft.graph.conflictBehavior": "replace" })
+            .responseType(ResponseType.RAW)
+            .post({
+              name: basename(to),
+              parentReference: parentRef,
+            })) as Response;
+          // `ResponseType.RAW` hands back the fetch Response as-is — the Graph
+          // client only turns non-2xx responses into GraphErrors for the
+          // parsed response types — so classify the failure here (404 →
+          // NotFound, 409 → Conflict, …) instead of a generic provider error.
+          if (!res.ok) {
+            const errorBody = await readGraphErrorBody(res);
+            const code = classifyGraphError(res.status, errorBody?.error?.code);
+            throw new FilesError(
+              code,
+              errorBody?.error?.message ??
+                `onedrive: copy returned ${res.status}`
+            );
+          }
+          // Graph returns 202 + Location header pointing to a monitor URL.
+          // Some configurations return 200 with the new item directly — treat
+          // a 2xx without one as success.
+          const monitorUrl =
+            res.headers.get("location") ?? res.headers.get("Location");
+          if (!monitorUrl) {
+            return;
+          }
+          await pollCopyMonitor(monitorUrl);
+        };
+        try {
+          await runCopy();
+        } catch (error) {
+          // OneDrive personal ignores `conflictBehavior` on copy, so a file
+          // at the destination still fails it with a name clash there.
+          // Replace it the way the business service does: delete it (to the
+          // recycle bin, by id — never by a path that could be the source's
+          // other casing), then copy again.
+          if (
+            destination?.id === undefined ||
+            mapGraphError(error).code !== "Conflict"
+          ) {
+            throw error;
+          }
+          await client.api(itemByIdPath(to, destination)).delete();
+          await runCopy();
         }
-        // Graph returns 202 + Location header pointing to a monitor URL. Some
-        // configurations return 200 with the new item directly — treat a 2xx
-        // without one as success.
-        const monitorUrl =
-          res.headers.get("location") ?? res.headers.get("Location");
-        if (!monitorUrl) {
-          return;
-        }
-        await pollCopyMonitor(monitorUrl);
       } catch (error) {
         throw mapGraphError(error);
       }
     },
     async delete(key) {
       try {
-        await client.api(itemApiPath(key)).delete();
+        const item = await findItem(key);
+        // Graph DELETE on a folder removes everything under it. A folder is
+        // not an object (`head` reports it as NotFound), so deleting its key
+        // is the same no-op as deleting a missing one.
+        if (!item || item.folder) {
+          return;
+        }
+        await client.api(itemByIdPath(key, item)).delete();
       } catch (error) {
         const mapped = mapGraphError(error);
         // Idempotent: missing item is not an error.

@@ -5,6 +5,9 @@ import { Files, FilesError, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   Body,
+  FilesActionEvent,
+  FilesErrorEvent,
+  FilesRetryEvent,
   OffsetResumableDriver,
   PartMeta,
   PartsResumableDriver,
@@ -1111,5 +1114,80 @@ describe("files.abortUpload", () => {
       files.readonly().abortUpload("big.bin", partsToken("big.bin"))
     ).rejects.toMatchObject({ code: "ReadOnly" });
     expect(server.drivers).toHaveLength(0);
+  });
+
+  test("reports through onAction, onError, and onRetry with the caller's key", async () => {
+    const server = newServer();
+    server.partSessions.set("upload-persisted", new Map());
+    const events: FilesActionEvent[] = [];
+    const errors: FilesErrorEvent[] = [];
+    const retries: FilesRetryEvent[] = [];
+    const wrapped: string[] = [];
+    let failures = 1;
+    const files = new Files({
+      adapter: {
+        ...makeFiles(server, "parts").adapter,
+        resumableUpload: (key: string, opts: ResumableDriverOptions) => {
+          const driver = createPartsDriver(server, key, opts);
+          return {
+            ...driver,
+            discard: () => {
+              if (failures > 0) {
+                failures -= 1;
+                return Promise.reject(new FilesError("Provider", "blip"));
+              }
+              return driver.discard();
+            },
+          };
+        },
+      },
+      hooks: {
+        onAction: (event) => events.push(event),
+        onError: (event) => errors.push(event),
+        onRetry: (event) => retries.push(event),
+      },
+      plugins: [
+        {
+          name: "recording",
+          wrap: (op, next) => {
+            wrapped.push(op.kind);
+            return next(op);
+          },
+        },
+      ],
+      prefix: "tenant",
+      retries: { backoff: () => 0, max: 1 },
+    });
+
+    await files.abortUpload("big.bin", partsToken("tenant/big.bin"));
+    expect(server.partSessions.has("upload-persisted")).toBe(false);
+    expect(retries).toMatchObject([
+      { attempt: 1, key: "big.bin", type: "abortUpload" },
+    ]);
+    expect(events).toMatchObject([
+      { key: "big.bin", status: "success", type: "abortUpload" },
+    ]);
+    // No receipt-style payload and no plugin hop: it isn't a FilesOperation.
+    expect(events[0]?.result).toBeUndefined();
+    expect(wrapped).toEqual([]);
+
+    // A refusal (here a missing token) fires onError too.
+    events.length = 0;
+    await expect(
+      files.abortUpload("other.bin", null as unknown as ResumableUploadSession)
+    ).rejects.toMatchObject({ code: "Invalid" });
+    await expect(
+      files.readonly().abortUpload("big.bin", partsToken("tenant/big.bin"))
+    ).rejects.toMatchObject({ code: "ReadOnly" });
+    expect(
+      errors.map((event) => [event.type, event.key, event.error.code])
+    ).toEqual([
+      ["abortUpload", "other.bin", "Invalid"],
+      ["abortUpload", "big.bin", "ReadOnly"],
+    ]);
+    expect(events).toMatchObject([
+      { key: "other.bin", status: "error", type: "abortUpload" },
+      { key: "big.bin", status: "error", type: "abortUpload" },
+    ]);
   });
 });

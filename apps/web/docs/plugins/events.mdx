@@ -1,6 +1,6 @@
 ---
 title: events
-description: Normalize provider bucket notifications (S3, MinIO, R2, GCS, Azure) into one FileEvent and route them to handlers by type and key glob.
+description: Normalize provider bucket notifications (S3, MinIO, R2, GCS, Azure, B2, Tigris, Supabase, Cloudinary, Appwrite, Box, Storj) into one FileEvent and route them to handlers by type and key glob.
 ---
 
 The built-in `events()` plugin adds `files.events`: one place to react when a file is created or deleted, whether the write came through the SDK, a [gateway](/docs/ui/server/upload-lifecycle) upload, or straight to the bucket. The [Events docs](/docs/events) cover the concepts and per-provider setup; this page is the reference.
@@ -40,12 +40,12 @@ events({
 
 | Option | Default |  |
 | --- | --- | --- |
-| `format` | `files.capabilities.events` | The notification format to read. Each adapter declares the one its provider sends: `s3()` and `s3Fetch()` against AWS, `minio`, `rustfs` and `wasabi` read `"s3"`; `r2` reads `"r2"`; `gcs` and `firebase-storage` read `"gcs"`; `azure` reads `"azure"`; `backblaze-b2` reads `"b2"`; `tigris`, `supabase`, `cloudinary`, `appwrite`, `box` and `memory` read their own. Set it for a provider that sends one of these formats under an adapter that doesn't declare it (a custom `s3()` endpoint, `bun-s3`). |
-| `bucket` | All buckets | Keep only provider events for this bucket (container, on Azure), so several buckets can share a queue or endpoint. |
-| `sdk` | `false` | Also raise events for successful `upload` / `delete` / `copy` / `move` calls through this instance, with `source: "sdk"`. Delivered after the call settles and not awaited. |
+| `format` | `files.capabilities.events` | The notification format to read. Each adapter declares the one its provider sends: `s3()` and `s3Fetch()` against AWS (no `endpoint`, or one under `amazonaws.com`), `minio`, `rustfs`, `wasabi` and `storj` read `"s3"`; `r2` reads `"r2"`; `gcs` and `firebase-storage` read `"gcs"`; `azure` reads `"azure"`; `backblaze-b2` reads `"b2"`; `tigris`, `supabase`, `cloudinary`, `appwrite`, `box` and `memory` read their own. Every other adapter declares none. Set it for a provider that sends one of these formats under an adapter that doesn't declare it (a non-AWS `s3()` endpoint, `bun-s3`). |
+| `bucket` | The adapter's bucket | Keep only provider events for this bucket (container, on Azure), so a queue, topic, or endpoint that also carries other buckets' events (an EventBridge rule, an Azure system topic, a Supabase or Appwrite project webhook) delivers only yours. Defaults to the adapter's own bucket when it exposes one, and filters only events that name a bucket. `false` accepts every bucket. |
+| `sdk` | `false` | Also raise events for successful `upload` / `delete` / `copy` / `move` calls through this instance, with `source: "sdk"`. Delivered after the call settles and not awaited. With `sdk: true`, list `events()` first in `plugins`: construction throws `Invalid` if a plugin before it maps keys or sizes (`versioning`, `softDelete`, `dedup`, `encryption`, `compression`, `tiering`, …), since the `sdk` source would report its internal keys and stored sizes. |
 | `dedupe` | None | Skip event ids this store has seen. See [Delivery](/docs/events/delivery#dedupe-on-eventid). |
 | `dedupeTtl` | 24 hours | How long a handled id is remembered, in ms. |
-| `onError` | `console.error` | Called for every handler that throws, whatever the source. |
+| `onError` | `console.error` | Called for every handler that throws, whatever the source. Unexpected webhook failures go to `webhook({ onError })` instead. |
 
 ## files.events
 
@@ -56,7 +56,7 @@ on(type: "created" | "deleted" | "*", handler): () => void;
 on(type: "created" | "deleted" | "*", pattern: string, handler): () => void;
 ```
 
-Runs `handler` for events of `type` whose key matches `pattern`, a glob matched against the caller-facing key (`**` when omitted; the same glob syntax as [`search()`](/docs/api/search)). Handlers run one at a time, in registration order. Returns a function that removes the handler.
+Runs `handler` for events of `type` whose key matches `pattern`, a glob matched against the caller-facing key (`**` when omitted; the same glob syntax as [`search()`](/docs/api/search)). Handlers run one at a time, in registration order. Returns a function that removes the handler. When the instance has a notification format, `on()` runs the same startup check as `webhook()`, so a plugin that can't map provider events throws here rather than on the first delivery.
 
 ### dispatch
 
@@ -77,10 +77,18 @@ parse(input: unknown): Promise<FileEvent[]>;
 ### webhook
 
 ```ts
-webhook(opts: { verify: false | { token: string } | { google: GoogleOidcOptions } }): { handle(req: Request): Promise<Response> };
+webhook(opts: {
+  verify:
+    | false
+    | { token: string }
+    | { google: GoogleOidcOptions }
+    | { secret: string; secondarySecret?: string; url?: string; now?: () => number }
+    | { sns: SnsVerifyOptions };
+  onError?: (cause: unknown, req: Request) => void;
+}): { handle(req: Request): Promise<Response> };
 ```
 
-An HTTP endpoint for providers that push, mountable with any gateway binding. See [Webhooks](/docs/events/webhooks) for verification, handshakes and status codes.
+An HTTP endpoint for providers that push, mountable with any gateway binding. `onError` receives failures the response doesn't spell out (answered with a generic `500`), and defaults to `console.error`; a handler's error still goes to `events({ onError })`. See [Webhooks](/docs/events/webhooks) for verification, handshakes and status codes.
 
 ### emit
 

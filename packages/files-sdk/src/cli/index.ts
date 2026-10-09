@@ -14,9 +14,7 @@ process.stdout.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EPIPE") {
     process.exit(0);
   }
-  process.stderr.write(
-    `error (Provider): stdout write failed: ${err.message}\n`
-  );
+  process.stderr.write(`error: stdout write failed: ${err.message}\n`);
   process.exit(2);
 });
 

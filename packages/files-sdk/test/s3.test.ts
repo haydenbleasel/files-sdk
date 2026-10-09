@@ -2263,3 +2263,262 @@ describe("s3 resumable uploads", () => {
     ).rejects.toThrow(/does not match/u);
   });
 });
+
+const checksumParams = (url: string): string[] =>
+  [...new URL(url).searchParams.keys()].filter((name) => {
+    const lower = name.toLowerCase();
+    return (
+      lower.startsWith("x-amz-checksum-") ||
+      lower === "x-amz-sdk-checksum-algorithm"
+    );
+  });
+
+const assignEnv = (values: Record<string, string | undefined>): void => {
+  for (const [name, value] of Object.entries(values)) {
+    if (value === undefined) {
+      Reflect.deleteProperty(process.env, name);
+    } else {
+      process.env[name] = value;
+    }
+  }
+};
+
+const withEnv = (
+  vars: Record<string, string | undefined>,
+  run: () => void
+): void => {
+  const saved = Object.fromEntries(
+    Object.keys(vars).map((name) => [name, process.env[name]])
+  );
+  assignEnv(vars);
+  try {
+    run();
+  } finally {
+    assignEnv(saved);
+  }
+};
+
+describe("s3 presigned uploads", () => {
+  const creds = { accessKeyId: "AKID", secretAccessKey: "SECRET" };
+
+  test("a presigned PUT on canonical AWS carries no precomputed checksum", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: creds,
+      region: "us-east-1",
+    });
+    // The SDK default is WHEN_SUPPORTED on AWS, which would sign the empty
+    // presign body's CRC32 (AAAAAA==) into the URL and fail every real PUT.
+    for (const signOpts of [
+      { expiresIn: 60 },
+      { contentType: "image/png", expiresIn: 60 },
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- two sequential cases
+      const out = await adapter.signedUploadUrl("k.txt", signOpts);
+      expect(out.method).toBe("PUT");
+      expect(checksumParams(out.url)).toEqual([]);
+    }
+    // Only the one presign command is touched: the shared client keeps the
+    // SDK's checksum behavior for ordinary uploads.
+    expect(
+      adapter.raw.middlewareStack
+        .identify()
+        .some((entry) => entry.includes("filesSdkPresignWithoutChecksum"))
+    ).toBe(false);
+  });
+
+  test("a presigned PUT drops the checksum even when the env opts back into WHEN_SUPPORTED", async () => {
+    const saved = process.env.AWS_REQUEST_CHECKSUM_CALCULATION;
+    process.env.AWS_REQUEST_CHECKSUM_CALCULATION = "WHEN_SUPPORTED";
+    try {
+      const adapter = s3({
+        bucket: "b",
+        credentials: creds,
+        endpoint: "https://storage.example.test",
+        region: "us-east-1",
+      });
+      const out = await adapter.signedUploadUrl("k.txt", { expiresIn: 60 });
+      expect(checksumParams(out.url)).toEqual([]);
+    } finally {
+      if (saved === undefined) {
+        delete process.env.AWS_REQUEST_CHECKSUM_CALCULATION;
+      } else {
+        process.env.AWS_REQUEST_CHECKSUM_CALCULATION = saved;
+      }
+    }
+  });
+
+  test("a positive minSize without maxSize fails closed; minSize 0 still presigns a PUT", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: creds,
+      defaultProviderMessage: "Wasabi error",
+      region: "us-east-1",
+    });
+    const rejection = await adapter
+      .signedUploadUrl("k.txt", { expiresIn: 60, minSize: 10 })
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(rejection).toBeInstanceOf(FilesError);
+    expect((rejection as FilesError).code).toBe("Unsupported");
+    expect((rejection as FilesError).message).toMatch(
+      /^Wasabi error: `minSize` is enforced only by the presigned POST policy/u
+    );
+    const put = await adapter.signedUploadUrl("k.txt", {
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(put.method).toBe("PUT");
+    // With maxSize the floor rides on the POST policy as before.
+    const post = await adapter.signedUploadUrl("k.txt", {
+      expiresIn: 60,
+      maxSize: 100,
+      minSize: 10,
+    });
+    expect(post.method).toBe("POST");
+  });
+
+  test("a presigned POST rejects expiresIn past the SigV4 one-week cap", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: creds,
+      region: "us-east-1",
+    });
+    const rejection = await adapter
+      .signedUploadUrl("k.txt", { expiresIn: 30 * 86_400, maxSize: 100 })
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(rejection).toBeInstanceOf(FilesError);
+    expect((rejection as FilesError).code).toBe("Invalid");
+    expect((rejection as FilesError).message).toMatch(/604800 seconds/u);
+    // Exactly one week still signs.
+    const post = await adapter.signedUploadUrl("k.txt", {
+      expiresIn: 604_800,
+      maxSize: 100,
+    });
+    expect(post.method).toBe("POST");
+  });
+});
+
+describe("s3 endpoint classification", () => {
+  test("an explicit amazonaws.com endpoint is AWS: S3 events and the conditional primitives", () => {
+    withEnv(
+      { AWS_ENDPOINT_URL: undefined, AWS_ENDPOINT_URL_S3: undefined },
+      () => {
+        for (const endpoint of [
+          "https://s3.us-east-1.amazonaws.com",
+          "https://bucket.vpce-abc.s3.us-east-1.vpce.amazonaws.com",
+          "https://s3.cn-north-1.amazonaws.com.cn",
+        ]) {
+          const files = new Files({
+            adapter: s3({ bucket: "b", endpoint, region: "us-east-1" }),
+          });
+          expect(files.capabilities.events).toEqual({ format: "s3" });
+          expect(files.capabilities.conditional.create).toBe(true);
+        }
+      }
+    );
+  });
+
+  test("an AWS_ENDPOINT_URL* redirect to AWS stays AWS; anything else is S3-compatible", () => {
+    withEnv(
+      {
+        AWS_ENDPOINT_URL: undefined,
+        AWS_ENDPOINT_URL_S3: "https://s3.eu-west-1.amazonaws.com",
+      },
+      () => {
+        const adapter = s3({ bucket: "b", region: "eu-west-1" });
+        expect(adapter.capabilities?.events).toEqual({ format: "s3" });
+        expect(adapter.conditional).toBeDefined();
+      }
+    );
+    withEnv(
+      { AWS_ENDPOINT_URL: undefined, AWS_ENDPOINT_URL_S3: undefined },
+      () => {
+        for (const endpoint of [
+          "https://storage.example.test",
+          // A lookalike suffix is not AWS.
+          "https://s3.notamazonaws.com",
+          // Unparseable: fail closed.
+          "s3.amazonaws.com",
+        ]) {
+          const adapter = s3({ bucket: "b", endpoint, region: "us-east-1" });
+          expect(adapter.capabilities?.events).toBe(false);
+          expect(adapter.conditional).toBeUndefined();
+        }
+      }
+    );
+  });
+});
+
+describe("s3 local refusals are Invalid, not retried Provider errors", () => {
+  test("non-Latin-1 metadata is refused before any request", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+      retries: 2,
+    });
+    const rejection = await files
+      .upload("k.txt", "hi", { metadata: { title: "日本" } })
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect(rejection).toBeInstanceOf(FilesError);
+    expect((rejection as FilesError).code).toBe("Invalid");
+    expect((rejection as FilesError).message).toMatch(
+      /metadata key "title" can't be sent as an HTTP header/u
+    );
+    // Latin-1 and ASCII values still go out.
+    s3Mock.on(PutObjectCommand).resolves({ ETag: '"e"' });
+    await files.upload("k.txt", "hi", { metadata: { title: "café" } });
+    expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
+  });
+
+  test("control characters and invalid key names are refused too", async () => {
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    await expect(
+      adapter.upload("k.txt", "hi", { metadata: { note: "a\r\nb" } })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    await expect(
+      adapter.upload("k.txt", "hi", { metadata: { "bad key": "v" } })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/can't be sent as an HTTP header name/u),
+    });
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("conditional uploads and resumable sessions check metadata first", async () => {
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    const conditional = requireNativeConditional(adapter);
+    await expect(
+      conditional.create("k.txt", "hi", { metadata: { title: "日本" } })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    const driver = adapter.resumableUpload?.("big.bin", {
+      metadata: { title: "日本" },
+    });
+    await expect(
+      driver?.begin({ contentType: "application/octet-stream", total: 10 })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("driving a resumable driver before begin() or adopt() is Invalid", async () => {
+    const driver = rbAdapter().resumableUpload?.("big.bin", {});
+    if (!driver || driver.mode !== "parts") {
+      throw new Error("expected a parts-mode resumable driver");
+    }
+    await expect(driver.probe()).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/has no session/u),
+    });
+    await expect(
+      driver.uploadPart({ data: new Uint8Array(1), partNumber: 1 })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(s3Mock.calls()).toHaveLength(0);
+  });
+});

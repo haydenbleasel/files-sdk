@@ -10,7 +10,14 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { Delivery, EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, pubsubText, toSize, toTime } from "./types.js";
+import {
+  bareEtag,
+  malformed,
+  pubsubText,
+  stampOf,
+  toSize,
+  toTime,
+} from "./types.js";
 
 const CE_PREFIX = "google.cloud.storage.object.v1.";
 
@@ -39,9 +46,16 @@ interface ObjectChange {
   name: string;
   generation: string | undefined;
   time: number;
+  /** The provider's own timestamp, exactly as sent, for the id. */
+  sentAt: JsonValue | undefined;
+  /**
+   * What identifies the change when it has no generation or timestamp: the
+   * Pub/Sub attributes or the object resource, never the message (whose id
+   * differs between duplicate deliveries of one change).
+   */
+  identity: JsonValue;
   resource: JsonObject | undefined;
   raw: JsonValue;
-  id?: string;
 }
 
 const toEvent = (change: ObjectChange): RawEvent => {
@@ -50,9 +64,7 @@ const toEvent = (change: ObjectChange): RawEvent => {
   const etag = bareEtag(resource?.etag);
   const contentType = resource?.contentType;
   return {
-    id:
-      change.id ??
-      `${change.kind}:${change.bucket ?? ""}/${change.name}#${change.generation ?? change.time}`,
+    id: `${change.kind}:${change.bucket ?? ""}/${change.name}#${change.generation ?? stampOf(change.identity, change.sentAt)}`,
     key: change.name,
     raw: change.raw,
     time: change.time,
@@ -104,10 +116,12 @@ const fromPubSub = (
     toEvent({
       bucket: isString(bucketId) ? bucketId : undefined,
       generation: isString(objectGeneration) ? objectGeneration : undefined,
+      identity: attributes,
       kind: eventType,
       name: objectId,
       raw: message,
       resource: decodeData(message.data),
+      sentAt: attributes.eventTime,
       time: toTime(attributes.eventTime, Date.now()),
       type,
     }),
@@ -161,10 +175,12 @@ const fromCloudEvent = (
       generation: isString(resource?.generation)
         ? resource.generation
         : undefined,
+      identity: resource ?? { source: attrs.source, subject: attrs.subject },
       kind: attrs.type.slice(CE_PREFIX.length),
       name,
       raw,
       resource,
+      sentAt: attrs.time,
       time: toTime(attrs.time, Date.now()),
       type,
     }),

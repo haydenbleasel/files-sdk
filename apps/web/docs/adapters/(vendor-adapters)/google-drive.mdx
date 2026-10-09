@@ -49,13 +49,13 @@ const files = new Files({
 
 Two files with the same virtual key (created out-of-band) make resolution throw `Conflict` rather than picking one silently. User `metadata` keys starting with `fsdk` are reserved - the adapter uses that prefix on Drive's `appProperties` for bookkeeping.
 
-Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value together. The adapter stores every key in the `fsdkKey` property, so keys can be at most 117 bytes, and each `metadata` key + value (and the content type / `cacheControl`) must fit in 124 bytes. Writes that exceed it throw a non-retryable `Provider` error before any Drive call.
+Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value together. The adapter stores every key in the `fsdkKey` property, so keys can be at most 117 bytes, and each `metadata` key + value (and the content type) must fit in 124 bytes. Writes that exceed it throw an `Invalid` error before any Drive call.
 
 ## Compatibility
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ✅ |  |
+| `upload` | ⚠️ | `cacheControl` throws `Unsupported` (`capabilities.cacheControl` is `false`): Drive never serves a stored Cache-Control. Pause/resume via `control` needs an auth handle to mint access tokens, so with a pre-built `client`, `capabilities.resumable` is `false`. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
 | `list` | ⚠️ | Drive has no native key field. The adapter scopes by parent folder and filters client-side to files carrying its `fsdkKey` appProperty - files written into the same folder out-of-band are excluded. `prefix` is filtered page-local and can under-return when the prefix isn't satisfied within a single page. |
@@ -63,5 +63,5 @@ Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value toget
 | `head` | ✅ |  |
 | `exists` | ⚠️ | Drive has no native key field. The adapter resolves by parent folder + `fsdkKey` appProperty, so files written into the same folder out-of-band return `false` even if a file with that name exists. |
 | `copy` | ✅ |  |
-| `url` | ⚠️ | Throws by default - Drive has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` grants `anyone, reader`, and `url()` grants it too (so keys written by `copy()`, a resumable upload, or a client `signedUploadUrl()` upload also get a working link) before returning the permanent Drive download URL (`expiresIn` ignored). `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override. |
-| `signedUploadUrl` | ⚠️ | Initiates a Drive resumable session via `POST /upload/drive/v3/files?uploadType=resumable` (or a `PATCH` against the existing file when the key is already taken, so the upload overwrites it in place) and returns the session URL as a one-shot PUT. `maxSize` and `minSize` throw because Drive sessions do not enforce a server-side `content-length-range` policy; enforce size limits at your application gateway instead. Throws when the adapter was constructed via the pre-built `client` escape hatch (no auth handle to mint access tokens). |
+| `url` | ⚠️ | Throws by default - Drive has no signed URL primitive. With `publicByDefault: true` at construction, `upload()` grants `anyone, reader`, and `url()` grants it too (so keys written by `copy()`, a resumable upload, or a client `signedUploadUrl()` upload also get a working link) before returning the permanent Drive download URL. `url(key)` returns the permanent link; an explicit `expiresIn` throws `Unsupported`. `responseContentDisposition` always throws - Drive's download URL has no Content-Disposition override. |
+| `signedUploadUrl` | ⚠️ | Initiates a Drive resumable session via `POST /upload/drive/v3/files?uploadType=resumable` (or a `PATCH` against the existing file when the key is already taken, so the upload overwrites it in place) and returns the session URL as a one-shot PUT. `maxSize` and `minSize` throw because Drive sessions do not enforce a server-side `content-length-range` policy; enforce size limits at your application gateway instead. `contentType` is bound into the session (`signedUpload.contentType` is `true`). Throws when the adapter was constructed via the pre-built `client` escape hatch (no auth handle to mint access tokens). |

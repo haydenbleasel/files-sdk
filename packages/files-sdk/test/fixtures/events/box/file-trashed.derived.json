@@ -28,42 +28,21 @@
     "description": "",
     "size": 26458,
     "path_collection": {
-      "total_count": 4,
+      "total_count": 1,
       "entries": [
         {
           "type": "folder",
-          "id": "0",
+          "id": "1",
           "sequence_id": null,
           "etag": null,
-          "name": "All Files"
-        },
-        {
-          "type": "folder",
-          "id": "2614853901",
-          "sequence_id": "4",
-          "etag": "4",
-          "name": "Testing"
-        },
-        {
-          "type": "folder",
-          "id": "8290186265",
-          "sequence_id": "0",
-          "etag": "0",
-          "name": "Webhooks Base"
-        },
-        {
-          "type": "folder",
-          "id": "8290188973",
-          "sequence_id": "0",
-          "etag": "0",
-          "name": "Webhooks"
+          "name": "Trash"
         }
       ]
     },
     "created_at": "2016-07-11T10:10:32-07:00",
     "modified_at": "2016-07-11T10:10:32-07:00",
-    "trashed_at": null,
-    "purged_at": null,
+    "trashed_at": "2016-07-11T10:10:32-07:00",
+    "purged_at": "2016-08-10T10:10:32-07:00",
     "content_created_at": "2016-06-08T11:14:04-07:00",
     "content_modified_at": "2016-06-08T11:14:04-07:00",
     "created_by": {
@@ -92,7 +71,7 @@
       "etag": "0",
       "name": "Webhooks"
     },
-    "item_status": "active"
+    "item_status": "trashed"
   },
   "additional_info": []
 }

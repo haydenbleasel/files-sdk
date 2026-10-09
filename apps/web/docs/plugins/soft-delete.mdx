@@ -63,6 +63,12 @@ const items = await files.trashed();
 
 The `trashKey` is a real, downloadable object, so you can preview a trashed file without restoring it: `await files.download(items[0].trashKey)`.
 
+Pass `prefix` to list only trashed objects whose original key starts with it. The walk itself is bounded to that prefix, so a per-tenant view never reads anyone else's trash:
+
+```ts
+await files.trashed({ prefix: "users/42/" });
+```
+
 ## Purging
 
 Soft deletes never reclaim storage on their own - that's the point. `purge()` is the only thing that actually removes bytes. Pass a `key` to empty one item, or omit it to empty the **entire** trash:
@@ -78,7 +84,7 @@ A whole-trash `purge()` removes everything it can and then **throws** if any tra
 
 ## Choosing the prefix
 
-Trashed objects live under `.trash` by default. Override it with `prefix`, and keep your own data out of it:
+Trashed objects live under `.trash` by default. Override it with `prefix`, and keep your own data out of it. Behind the [gateway](/docs/ui/server/authorization), this prefix is reserved: a client key or `list`/`search` prefix inside it gets `403`, so a browser allowed to `delete` but not `purge` can't hard-delete a trashed copy, and reaches the trash only through `trashed()`, `restoreTrashed()`, and `purge()`:
 
 ```ts
 softDelete({ prefix: ".bin" });

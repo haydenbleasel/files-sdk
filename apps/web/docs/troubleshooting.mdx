@@ -23,6 +23,10 @@ try {
         /* retry */ break;
       case "ReadOnly":
         /* use a writable Files instance */ break;
+      case "Invalid":
+        /* fix the call: bad key, option, or config */ break;
+      case "Unsupported":
+        /* check files.capabilities, or take another path */ break;
       case "Provider":
         console.error(err.cause);
         break;
@@ -60,7 +64,7 @@ A precondition failed - usually a conditional write losing a race, or an object 
 The call tried to write through a read-only `Files` instance created with `new Files({ readonly: true })` or `files.readonly()`.
 
 - Reads still work: `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`.
-- Writes are blocked uniformly: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, plus the equivalent `file(key)` helpers.
+- Writes are blocked uniformly: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, `abortUpload`, plus the equivalent `file(key)` helpers.
 - `files.raw` is not governed by this flag. If the mutation came through `raw`, the SDK's read-only guard will not see it.
 
 ### `Invalid`
@@ -109,13 +113,15 @@ The unified API only covers what every adapter can do; a handful of operations a
 
 For these, upload through `files.upload()` on the server, or put the [UI gateway](/docs/ui) in front - it proxies the bytes through your server when the adapter can't sign an upload.
 
-### `maxSize` throws where it can't be enforced
+### `maxSize` and `minSize` throw where they can't be enforced
 
-`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`. Some adapters can't honor that contract, so they throw rather than hand back an uncapped URL:
+`maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`, and a positive `minSize` rides on the same policy. Some adapters can't honor that contract, so they throw `Unsupported` rather than hand back an uncapped URL (`minSize: 0` asks for nothing and is always fine):
 
 - **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent. Cloudinary and UploadThing also throw on a positive `minSize` (`minSize: 0` is fine), and Cloudinary throws on `contentType`, since it detects the format from the uploaded bytes.
-- **R2** throws on `maxSize` - it doesn't implement the S3 POST Object API.
-- **Bun S3** and the **`fetch` S3 engine** ([`s3Fetch()`](/docs/adapters/s3-fetch), and R2 / MinIO / RustFS with `client: "fetch"`) throw on `maxSize` - they mint presigned PUT URLs only, never POST policies.
+- **R2** throws on `maxSize` and a positive `minSize` - it doesn't implement the S3 POST Object API.
+- **Backblaze B2** throws on `maxSize` and a positive `minSize` - its [S3-compatible API](https://www.backblaze.com/docs/cloud-storage-s3-compatible-api) doesn't support presigned POST uploads. Plain presigned PUT URLs still work.
+- **Bun S3** and the **`fetch` S3 engine** ([`s3Fetch()`](/docs/adapters/s3-fetch), and R2 / MinIO / RustFS with `client: "fetch"`) throw on `maxSize` and a positive `minSize` - they mint presigned PUT URLs only, never POST policies.
+- **`s3()`** and its S3-compatible wrappers throw on a positive `minSize` without `maxSize` - a presigned PUT has no size condition. Add `maxSize` and the call is accepted, because that routes to the POST policy, which enforces both.
 - **Google Drive**, **OneDrive**, and **SharePoint** throw on `maxSize`/`minSize` - their upload sessions enforce no size range.
 - **Vercel Blob** enforces `maxSize` at the CDN but has no minimum, so a positive `minSize` throws.
 

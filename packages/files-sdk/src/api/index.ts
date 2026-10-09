@@ -14,13 +14,17 @@ import type { Authorize } from "../internal/files-router/authorize.js";
 import type { HandlerContext } from "../internal/files-router/handler.js";
 import { dispatch } from "../internal/files-router/handler.js";
 import type { FilesOperation } from "../internal/files-router/protocol.js";
+import { reservedKeyPrefixes } from "../internal/files-router/reserved.js";
 import type {
   CompletionStore,
   OnUploadComplete,
   UploadData,
 } from "../internal/files-router/upload-complete.js";
 import { isFunction } from "../internal/is.js";
-import { toErrorResult } from "../internal/router-core/envelope.js";
+import {
+  isWireSafeError,
+  toErrorResult,
+} from "../internal/router-core/envelope.js";
 import type { AllowedOrigins } from "../internal/router-core/origin.js";
 import {
   DEFAULT_MAX_JSON_BODY_SIZE,
@@ -72,11 +76,29 @@ export interface CreateFilesRouterOptions<TData = unknown, TContext = unknown> {
   onRejected?: "delete" | "keep";
   /**
    * Makes keyless completions single-use: a replayed `complete` gets the
-   * recorded result instead of firing `onUploadComplete` again. Upload tokens
-   * are stateless, so without a store a client can re-`complete` an upload
-   * until its token expires — dedupe on `uploadId` in the hook either way.
+   * recorded result instead of firing `onUploadComplete` again, and the proxy
+   * PUT refuses (409) further bytes for an upload that already completed.
+   * Upload tokens are stateless, so without a store a client can re-`complete`
+   * an upload, and re-PUT through the proxy, until its token expires — dedupe
+   * on `uploadId` in the hook either way.
    */
   completions?: CompletionStore;
+  /**
+   * Seconds after an upload token expires during which `complete` still
+   * redeems it. The token's expiry bounds when the bytes may start landing; a
+   * large body can finish after it, and the client only completes once it has.
+   * Default 3600.
+   */
+  completeGracePeriod?: number;
+  /**
+   * Called with every failure the client only hears about as a generic 500 —
+   * anything thrown that isn't a `FilesError` or `RouterError`, from your
+   * `authorize`/`onUploadComplete` hooks or the gateway itself — so its
+   * message (a connection string, a SQL error) never crosses the wire but
+   * still reaches your logs. Default: `console.error`.
+   */
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- public hook contract: it receives whatever was thrown, by design
+  onError?: (error: unknown, req: Request) => void;
   /** Declarative allow-list: operations permitted without a hook. A hard gate that runs before `authorize`. */
   operations?: readonly FilesOperation[];
   /** CSRF/origin allowlist for state-changing actions. Defaults to same-origin when omitted. */
@@ -94,6 +116,12 @@ export interface CreateFilesRouterOptions<TData = unknown, TContext = unknown> {
   maxListLimit?: number;
   /** Cap on `search` results returned in one page. Default 1000. */
   maxSearchResults?: number;
+  /**
+   * Most keys one `search` request reads, matching or not, before it stops
+   * and answers `truncated: true` — so a pattern that matches nothing can't
+   * walk the whole bucket in one request. Default 10000.
+   */
+  maxSearchScan?: number;
   /** Reject uploads larger than this (bytes) — bound into the presigned policy + verified on complete. */
   maxUploadSize?: number;
   /** Cap on the `keys[]`/`files[]`/`completions[]` of one bulk request; larger ones get 413 (reason `count`). Default 1000. */
@@ -179,6 +207,7 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
     // through untouched (`Scope.context`), so erasing it to `unknown` here and
     // handing it to the hook unchanged preserves the caller's pairing.
     authorize: opts.authorize as Authorize | undefined,
+    completeGracePeriod: opts.completeGracePeriod ?? 3600,
     completions: opts.completions,
     defaultExpiresIn: opts.defaultExpiresIn ?? 300,
     downloadMode: opts.downloadMode ?? "auto",
@@ -187,6 +216,7 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
     maxConcurrency: opts.maxConcurrency ?? 16,
     maxListLimit: opts.maxListLimit ?? 1000,
     maxSearchResults: opts.maxSearchResults ?? 1000,
+    maxSearchScan: opts.maxSearchScan ?? 10_000,
     maxUploadSize: opts.maxUploadSize,
     now: opts.now ?? Date.now,
     onRejected: opts.onRejected ?? "delete",
@@ -204,10 +234,29 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
       maxWildcards: opts.maxSearchWildcards ?? 4,
     },
     secret,
-  } satisfies Omit<HandlerContext, "files" | "req" | "proxyUrl">;
+  } satisfies Omit<
+    HandlerContext,
+    "files" | "req" | "proxyUrl" | "redactions" | "reportError" | "reserved"
+  >;
   const maxJsonBodySize = opts.maxJsonBodySize ?? DEFAULT_MAX_JSON_BODY_SIZE;
+  const onError =
+    opts.onError ??
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- receives whatever was thrown
+    ((error: unknown) => {
+      // oxlint-disable-next-line no-console -- the default sink for errors the client only sees as a generic 500; replace it with `onError`.
+      console.error("files-sdk/api: unexpected error", error);
+    });
 
   const handle = async (req: Request): Promise<Response> => {
+    const redactions = new Map<string, string>();
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- takes any thrown value
+    const reportError = (error: unknown): void => {
+      try {
+        onError(error, req);
+      } catch {
+        // a throwing logger must not turn into a second failure
+      }
+    };
     try {
       const parsed = await parseRequest(req, maxJsonBodySize);
       const files = isFunction(opts.files) ? await opts.files(req) : opts.files;
@@ -221,10 +270,21 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
         url.searchParams.set("token", token);
         return url.toString();
       };
-      const ctx: HandlerContext = { ...base, files, proxyUrl, req };
+      const ctx: HandlerContext = {
+        ...base,
+        files,
+        proxyUrl,
+        redactions,
+        reportError,
+        req,
+        reserved: reservedKeyPrefixes(files),
+      };
       return buildResponse(await dispatch(ctx, parsed));
     } catch (error) {
-      const { body, status } = toErrorResult(error);
+      if (!isWireSafeError(error)) {
+        reportError(error);
+      }
+      const { body, status } = toErrorResult(error, redactions);
       return buildResponse({ body, kind: "json", status });
     }
   };

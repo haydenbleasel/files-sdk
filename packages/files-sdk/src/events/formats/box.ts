@@ -4,6 +4,12 @@
 // raw body ‖ BOX-DELIVERY-TIMESTAMP)) in BOX-SIGNATURE-PRIMARY (primary key)
 // or BOX-SIGNATURE-SECONDARY (secondary key), at most ten minutes old.
 //
+// A trashed file's `path_collection` is the Trash folder alone (Box's
+// Trashed File resource); only its immediate `parent` records where it was.
+// So a `FILE.TRASHED` / `FILE.DELETED` event has a key only when its path
+// still runs through the root folder, or when the file sat directly in it;
+// a delete deeper down can't be placed and is dropped.
+//
 // Box can't attach a v2 webhook to the root folder `0`, so watch a real
 // folder (and point the adapter's `rootFolderId` at it).
 
@@ -18,7 +24,7 @@ import {
   utf8,
 } from "../crypto.js";
 import type { EventParser, ParseContext, RawEvent } from "./types.js";
-import { malformed, toSize, toTime, unauthorized } from "./types.js";
+import { malformed, stampOf, toSize, toTime, unauthorized } from "./types.js";
 
 const MAX_AGE_MS = 10 * 60 * 1000;
 const ROOT = "0";
@@ -48,8 +54,19 @@ const rootOf = ({ adapter }: ParseContext): string =>
     ? adapter.rootFolderId
     : ROOT;
 
-/** The file's key under `root`, or `undefined` when it lives elsewhere. */
-const keyOf = (source: JsonObject, root: string): string | undefined => {
+/**
+ * The file's key under `root`, or `undefined` when it lives elsewhere — or,
+ * for a trashed file, when it wasn't directly in `root` (the Trash folder
+ * replaces its path, so only its `parent` is known).
+ */
+const keyOf = (
+  source: JsonObject,
+  root: string,
+  type: "created" | "deleted"
+): string | undefined => {
+  if (!isString(source.name)) {
+    return undefined;
+  }
   const collection = source.path_collection;
   const entries =
     isJsonObject(collection) && isJsonArray(collection.entries)
@@ -58,8 +75,11 @@ const keyOf = (source: JsonObject, root: string): string | undefined => {
   const at = entries.findIndex(
     (entry) => isJsonObject(entry) && entry.id === root
   );
-  if (at === -1 || !isString(source.name)) {
-    return undefined;
+  if (at === -1) {
+    const { parent } = source;
+    return type === "deleted" && isJsonObject(parent) && parent.id === root
+      ? source.name
+      : undefined;
   }
   const folders = entries
     .slice(at + 1)
@@ -76,11 +96,10 @@ const fromBody = (body: JsonObject, context: ParseContext): RawEvent[] => {
   if (!type || source.type !== "file") {
     return [];
   }
-  const key = keyOf(source, rootOf(context));
+  const key = keyOf(source, rootOf(context), type);
   if (key === undefined) {
     return [];
   }
-  const time = toTime(body.created_at, Date.now());
   const size = toSize(source.size);
   const version = isJsonObject(source.file_version)
     ? source.file_version.id
@@ -89,10 +108,10 @@ const fromBody = (body: JsonObject, context: ParseContext): RawEvent[] => {
     {
       id: isString(body.id)
         ? body.id
-        : `${trigger}:${String(source.id)}@${time}`,
+        : `${trigger}:${String(source.id)}@${stampOf(body, body.created_at)}`,
       key,
       raw: body,
-      time,
+      time: toTime(body.created_at, Date.now()),
       type,
       ...(type === "created" && size !== undefined && { size }),
       ...(isString(source.etag) && { etag: source.etag }),

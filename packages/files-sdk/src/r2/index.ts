@@ -333,20 +333,27 @@ const mapR2Error = (cause: unknown): FilesError => {
 // through `createPresignedPost`, which yields a multipart/form-data POST
 // that R2 rejects with `501 Not Implemented`. Reject it up front with the
 // same honest-API stance Azure and Supabase take rather than hand back a
-// URL that fails at upload time. See
+// URL that fails at upload time. A positive `minSize` needs the same policy,
+// so it fails closed too (`0` asks for nothing). See
 // https://developers.cloudflare.com/r2/api/s3/api/ (no `POST Object`).
-const assertNoMaxSize = (signOpts: SignUploadOptions): void => {
+const assertNoSizeLimits = (signOpts: SignUploadOptions): void => {
   if (signOpts.maxSize !== undefined) {
     throw new FilesError(
       "Unsupported",
       "r2: `maxSize` is not supported. Cloudflare R2 does not implement the S3 POST Object API, so it has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway before issuing the URL, or omit `maxSize` and accept the unbounded presigned PUT."
     );
   }
+  if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+    throw new FilesError(
+      "Unsupported",
+      "r2: `minSize` is not supported. Cloudflare R2 does not implement the S3 POST Object API, so a presigned PUT has no server-enforced minimum size. Reject small uploads at your application gateway, or omit `minSize`."
+    );
+  }
 };
 
 /**
  * The signed-upload declaration of the engine (or hybrid signer) underneath,
- * with `maxSize` forced off: every mode runs {@link assertNoMaxSize} first, so
+ * with `maxSize` forced off: every mode runs {@link assertNoSizeLimits} first, so
  * R2 never enforces one whatever that engine could do on another endpoint.
  */
 const withoutMaxSize = (
@@ -542,7 +549,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       // getSigner() first: a binding without HTTP creds can't sign at all,
       // which is the more fundamental thing to fix than `maxSize`.
       const signer = getSigner();
-      assertNoMaxSize(signOpts);
+      assertNoSizeLimits(signOpts);
       return await signer.signedUploadUrl(key, signOpts);
     },
     async upload(key, body, options) {
@@ -674,7 +681,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       // `async` so the `maxSize` rejection is a rejected promise, matching
       // binding mode and every other adapter method.
       async signedUploadUrl(key, signOpts) {
-        assertNoMaxSize(signOpts);
+        assertNoSizeLimits(signOpts);
         return await inner.signedUploadUrl(key, signOpts);
       },
     };
@@ -722,7 +729,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     async signedUploadUrl(key, signOpts) {
       // Reject before loading the inner s3 adapter — `maxSize` is
       // unsupported on R2 regardless of whether the import has resolved.
-      assertNoMaxSize(signOpts);
+      assertNoSizeLimits(signOpts);
       return await inner.signedUploadUrl(key, signOpts);
     },
   };

@@ -242,6 +242,95 @@ describe("signedUrlPolicy — signedUploadUrl()", () => {
   });
 });
 
+/** A recorder whose adapter declares `capabilities` instead of the default. */
+const declaring = (
+  capabilities: NonNullable<Adapter["capabilities"]>
+): Recorder => {
+  const rec = recorder();
+  rec.adapter = { ...rec.adapter, capabilities };
+  return rec;
+};
+
+describe("signedUrlPolicy — capabilities", () => {
+  test("a forced disposition makes url() sign, so the permanent link is off", () => {
+    const rec = declaring({
+      publicUrl: true,
+      signedUrl: { disposition: true, supported: true },
+    });
+    const { files } = withPolicy({}, rec);
+    expect(new Files({ adapter: rec.adapter }).capabilities.publicUrl).toBe(
+      true
+    );
+    expect(files.capabilities.publicUrl).toBe(false);
+    expect(files.capabilities.signedUrl).toEqual({
+      disposition: true,
+      expiry: "exact",
+      supported: true,
+    });
+  });
+
+  test("no url() is advertised where the disposition can't be bound", async () => {
+    // Signs, but can't bind a disposition (Vercel Blob private).
+    const signer = withPolicy(
+      {},
+      declaring({ signedUrl: { disposition: false, supported: true } })
+    ).files;
+    expect(signer.capabilities.signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
+    await expect(signer.url("a", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+      message:
+        'an expiring url() (`expiresIn`) is not supported by the "signed-url-policy" plugin',
+    });
+    // Permanent links only (Vercel Blob public).
+    const permanent = withPolicy({}, declaring({ publicUrl: true })).files;
+    expect(permanent.capabilities.publicUrl).toBe(false);
+    expect(permanent.capabilities.signedUrl.supported).toBe(false);
+  });
+
+  test("an expiry cap turns the permanent link off only where url() signs", () => {
+    const signing = withPolicy(
+      { disposition: false, maxExpiresIn: 900 },
+      declaring({ publicUrl: true, signedUrl: { supported: true } })
+    ).files;
+    expect(signing.capabilities.publicUrl).toBe(false);
+    const permanent = withPolicy(
+      { disposition: false, maxExpiresIn: 900 },
+      declaring({ publicUrl: true })
+    ).files;
+    expect(permanent.capabilities.publicUrl).toBe(true);
+    const uncapped = withPolicy(
+      { disposition: false },
+      declaring({ publicUrl: true, signedUrl: { supported: true } })
+    ).files;
+    expect(uncapped.capabilities.publicUrl).toBe(true);
+  });
+
+  test("an upload-size cap turns off direct uploads that can't enforce maxSize", () => {
+    const unbounded = declaring({
+      signedUpload: { contentType: true, maxSize: false, supported: true },
+    });
+    expect(
+      withPolicy({ maxUploadSize: 1024 }, unbounded).files.capabilities
+        .signedUpload
+    ).toEqual({ contentType: false, maxSize: false, supported: false });
+    expect(
+      withPolicy({ maxExpiresIn: 900 }, unbounded).files.capabilities
+        .signedUpload.supported
+    ).toBe(true);
+    const bounded = declaring({
+      signedUpload: { maxSize: true, supported: true },
+    });
+    expect(
+      withPolicy({ maxUploadSize: 1024 }, bounded).files.capabilities
+        .signedUpload
+    ).toEqual({ contentType: false, maxSize: true, supported: true });
+  });
+});
+
 describe("signedUrlPolicy — pass-through", () => {
   test("does not disturb other verbs", async () => {
     const { files } = withPolicy({ maxExpiresIn: 900, maxUploadSize: 1024 });

@@ -9,7 +9,7 @@ import { isNumber, isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonObject } from "../../internal/json.js";
 import type { Delivery, EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, toTime } from "./types.js";
+import { bareEtag, malformed, stampOf, toTime } from "./types.js";
 
 const SUBJECT =
   /^\/?blobServices\/default\/containers\/(?<container>[^/]+)\/blobs\/(?<name>.+)$/u;
@@ -69,9 +69,9 @@ const fromEvent = (event: JsonObject): RawEvent[] => {
   }
   const data = isJsonObject(event.data) ? event.data : {};
   const blob = fromSubject(event.subject);
-  const time = parseTime(event.eventTime ?? event.time);
+  const sentAt = event.eventTime ?? event.time;
+  const time = parseTime(sentAt);
   const id = isString(event.id) ? event.id : undefined;
-  const sequencer = isString(data.sequencer) ? data.sequencer : undefined;
   const base = (
     type: "created" | "deleted",
     where: { container: string; name: string },
@@ -80,7 +80,7 @@ const fromEvent = (event: JsonObject): RawEvent[] => {
     bucket: where.container,
     id: id
       ? `${id}${suffix}`
-      : `${type}:${where.container}/${where.name}@${sequencer ?? time}`,
+      : `${type}:${where.container}/${where.name}@${stampOf(event, isString(data.sequencer) ? data.sequencer : sentAt)}`,
     key: where.name,
     raw: event,
     time,

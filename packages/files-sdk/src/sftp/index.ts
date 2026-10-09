@@ -60,7 +60,7 @@ export interface SftpAdapterOptions {
   passphrase?: string;
   /**
    * Remote base directory. Virtual keys resolve under it; keys that escape it
-   * (e.g. `../etc/passwd`) throw `Provider`. An absolute root (`/uploads`)
+   * (e.g. `../etc/passwd`) throw `Invalid`. An absolute root (`/uploads`)
    * yields absolute paths; the default (`"."`) keeps paths relative to the
    * connection's login directory — the common chroot/home case.
    */

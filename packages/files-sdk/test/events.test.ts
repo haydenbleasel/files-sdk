@@ -33,6 +33,9 @@ const s3Record = (key: string, eventName = "ObjectCreated:Put") => ({
   s3: { object: { key, sequencer: `${key}-seq`, size: 4 } },
 });
 
+const archiveRoute = ({ key }: { key: string }) =>
+  key.startsWith("archive/") ? ("cold" as const) : ("hot" as const);
+
 afterEach(() => {
   mock.restore();
 });
@@ -373,6 +376,122 @@ describe("the sdk source", () => {
   });
 });
 
+describe("events({ sdk: true }) and plugin order", () => {
+  test("listed after a plugin that maps storage events, the instance refuses to build", () => {
+    const key = crypto.getRandomValues(new Uint8Array(32));
+    const mappers: FilesPlugin[] = [
+      versioning(),
+      softDelete(),
+      dedup(),
+      encryption(key),
+      compression(),
+      tiering({ cold: memory(), route: archiveRoute }),
+      tiering({ cold: memory(), fallback: true, route: archiveRoute }),
+    ];
+    for (const outer of mappers) {
+      expect(() =>
+        createFiles({
+          adapter: memory(),
+          plugins: [outer, events({ sdk: true })],
+        })
+      ).toThrow("list events() first in `plugins`");
+      // First is fine, and so is the same order without the sdk source.
+      expect(() =>
+        createFiles({
+          adapter: memory(),
+          plugins: [events({ sdk: true }), outer],
+        })
+      ).not.toThrow();
+      expect(() =>
+        createFiles({ adapter: memory(), plugins: [outer, events()] })
+      ).not.toThrow();
+    }
+  });
+
+  test("a plugin with no event hook, or one that passes events through untouched, is fine outside", () => {
+    const passthrough: FilesPlugin = { event: (event) => event, name: "noop" };
+    const plain: FilesPlugin = { name: "plain" };
+    const dropper: FilesPlugin = { event: () => null, name: "dropper" };
+    const inspector: FilesPlugin = {
+      event: (event) => ("size" in event ? { ...event } : event),
+      name: "inspector",
+    };
+    expect(() =>
+      createFiles({
+        adapter: memory(),
+        plugins: [inspector, events({ sdk: true })],
+      })
+    ).toThrow("list events() first");
+    const prefix = "tenant";
+    for (const outer of [passthrough, plain]) {
+      expect(() =>
+        createFiles({
+          adapter: memory(),
+          plugins: [outer, events({ sdk: true })],
+          prefix,
+        })
+      ).not.toThrow();
+    }
+    expect(() =>
+      createFiles({
+        adapter: memory(),
+        plugins: [dropper, events({ sdk: true })],
+      })
+    ).toThrow("list events() first");
+    // An inner plugin that drops the probe hides the outside: nothing found.
+    expect(() =>
+      createFiles({
+        adapter: memory(),
+        plugins: [versioning(), events({ sdk: true }), dropper],
+      })
+    ).not.toThrow();
+  });
+
+  test("first in plugins, writes are reported with the caller's keys", async () => {
+    const files = createFiles({
+      adapter: memory(),
+      plugins: [events({ sdk: true }), versioning()],
+    });
+    const { handler, seen } = collect();
+    files.events.on("*", handler);
+    await files.upload("a.txt", "1");
+    await files.upload("a.txt", "2");
+    await files.events.settled();
+    expect(keyed(seen).filter((k) => k.startsWith("sdk:"))).toEqual([
+      "sdk:created:a.txt",
+      "sdk:created:a.txt",
+    ]);
+  });
+});
+
+describe("on() and plugins that refuse provider events", () => {
+  test("with a format, on() fails loudly; without one, gateway and sdk events still flow", async () => {
+    const forced = createFiles({
+      adapter: memory(),
+      plugins: [
+        events({ format: "memory" }),
+        tiering({ cold: memory(), fallback: true, route: archiveRoute }),
+      ],
+    });
+    expect(() => forced.events.on("*", () => {})).toThrow("fallback: true");
+    // tiering({ fallback: true }) declares no format: on() works, and the
+    // memory adapter's own (unmappable) changes aren't subscribed to.
+    const files = createFiles({
+      adapter: memory(),
+      plugins: [
+        events({ sdk: true }),
+        tiering({ cold: memory(), fallback: true, route: archiveRoute }),
+      ],
+    });
+    expect(files.events.format).toBeUndefined();
+    const { handler, seen } = collect();
+    files.events.on("*", handler);
+    await files.upload("a.txt", "1");
+    await files.events.settled();
+    expect(keyed(seen)).toEqual(["sdk:created:a.txt"]);
+  });
+});
+
 describe("installation", () => {
   test("a readonly() clone shares the handlers; another instance is refused", () => {
     const plugin = events();
@@ -431,9 +550,6 @@ const provider = (key: string, extra: Partial<FileEvent> = {}): FileEvent => ({
 const fold = (plugins: FilesPlugin[], event: FileEvent, prefix?: string) =>
   new Files({ adapter: memory(), plugins, prefix })[FOLD_PROVIDER_EVENT](event);
 
-const archiveRoute = ({ key }: { key: string }) =>
-  key.startsWith("archive/") ? ("cold" as const) : ("hot" as const);
-
 describe("plugin event hooks", () => {
   test("encryption and compression clear the stored size", () => {
     const key = crypto.getRandomValues(new Uint8Array(32));
@@ -448,10 +564,15 @@ describe("plugin event hooks", () => {
 
   test("dedup drops blobs and clears pointer size/etag", () => {
     expect(fold([dedup()], provider(".dedup/abc"))).toBeNull();
-    const pointer = fold([dedup({ prefix: "blobs" })], provider("a.png"));
+    const pointer = fold(
+      [dedup({ prefix: "blobs" })],
+      provider("a.png", { size: 0 })
+    );
     expect(pointer?.size).toBeUndefined();
     expect(pointer?.etag).toBeUndefined();
     expect(fold([dedup({ prefix: "blobs" })], provider("blobs/x"))).toBeNull();
+    // A non-empty object is one dedup didn't write: it keeps its own size.
+    expect(fold([dedup()], provider("legacy.bin"))?.size).toBe(10);
   });
 
   test("versioning and softDelete drop their own prefixes", () => {

@@ -581,10 +581,52 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const { client, authHandle } = resolveAuth(opts);
 
   // Per-instance caches for path → ID lookups. Box file/folder IDs are
-  // stable; on a 404 the resolver drops the entry so subsequent calls
-  // re-walk and pick up out-of-band moves.
+  // stable, but another process can delete and re-create a path under a new
+  // ID; `withFreshIds` evicts and re-walks when a cached ID turns out dead.
   const folderIdCache = new Map<string, string>();
   const fileIdCache = new Map<string, string>();
+
+  // Drop the cached folder IDs of `parents`' whole ancestor chain. Returns
+  // whether anything was cached.
+  const evictFolders = (parents: readonly string[]): boolean => {
+    let evicted = false;
+    for (let depth = 1; depth <= parents.length; depth += 1) {
+      evicted =
+        folderIdCache.delete(folderCacheKey(parents.slice(0, depth))) ||
+        evicted;
+    }
+    return evicted;
+  };
+
+  // Drop every cached ID `key` resolves through: its file and its folders.
+  const evictKey = (key: string): boolean => {
+    const fileEvicted = fileIdCache.delete(key);
+    return evictFolders(splitKey(key).parents) || fileEvicted;
+  };
+
+  // Run `fn`, and when a Box call answers NotFound after `fn` resolved IDs
+  // through the cache, run it once more against fresh lookups. A NotFound the
+  // resolver raised itself (no Box `cause`: it listed a live folder and the
+  // name wasn't there) is authoritative and isn't retried, so a plain miss
+  // costs nothing extra.
+  const withFreshIds = async <T>(
+    evict: () => boolean,
+    fn: () => Promise<T>
+  ): Promise<T> => {
+    try {
+      return await fn();
+    } catch (error) {
+      const mapped = mapBoxError(error);
+      if (
+        mapped.code !== "NotFound" ||
+        mapped.cause === undefined ||
+        !evict()
+      ) {
+        throw mapped;
+      }
+      return await fn();
+    }
+  };
 
   // Folder listings page by marker, not offset: Box rejects an `offset`
   // above 10000 with a 400, so offset paging can't reach the rest of a
@@ -833,9 +875,18 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       await authHandle.ensureReady();
       const normalized = await normalizeBody(body, options?.contentType);
       const { parents, leaf } = splitKey(key);
-      const folderId = await resolveFolderId(parents, { create: true });
-      const fileId = await resolveExistingFileForUpload(key, folderId, leaf);
-      const item = await performUpload(fileId, folderId, leaf, normalized.data);
+      const item = await withFreshIds(
+        () => evictKey(key),
+        async () => {
+          const folderId = await resolveFolderId(parents, { create: true });
+          const fileId = await resolveExistingFileForUpload(
+            key,
+            folderId,
+            leaf
+          );
+          return await performUpload(fileId, folderId, leaf, normalized.data);
+        }
+      );
 
       if (item.id) {
         fileIdCache.set(key, item.id);
@@ -893,13 +944,36 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     async copy(from, to) {
       try {
         await authHandle.ensureReady();
-        const sourceId = await resolveFileId(from);
         const { parents, leaf } = splitKey(to);
-        const destFolderId = await resolveFolderId(parents, { create: true });
-        const created = await client.files.copyFile(sourceId, {
-          name: leaf,
-          parent: { id: destFolderId },
-        });
+        const created = await withFreshIds(
+          // Evict both chains (no short-circuit): either could be stale.
+          () => [evictKey(to), evictKey(from)].includes(true),
+          async () => {
+            const sourceId = await resolveFileId(from);
+            const destFolderId = await resolveFolderId(parents, {
+              create: true,
+            });
+            const copyArgs = { name: leaf, parent: { id: destFolderId } };
+            try {
+              return await client.files.copyFile(sourceId, copyArgs);
+            } catch (error) {
+              if (mapBoxError(error).code !== "Conflict") {
+                throw error;
+              }
+              // Box's copy has no overwrite mode: a file already at the
+              // destination fails it with a name conflict. Replace it like
+              // every other adapter's copy does — move it to the trash, then
+              // copy again. A folder (or the source itself) there stays a
+              // Conflict.
+              const existing = await findChildByName(destFolderId, leaf);
+              if (existing?.type !== "file" || existing.id === sourceId) {
+                throw error;
+              }
+              await client.files.deleteFileById(existing.id);
+              return await client.files.copyFile(sourceId, copyArgs);
+            }
+          }
+        );
         if (created.id) {
           fileIdCache.set(to, created.id);
         }
@@ -910,43 +984,46 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     async delete(key) {
       try {
         await authHandle.ensureReady();
-        let fileId: string;
-        try {
-          fileId = await resolveFileId(key);
-        } catch (error) {
-          const mapped = mapBoxError(error);
-          if (mapped.code === "NotFound") {
-            return;
+        // A dead cached ID (the key was re-created elsewhere) 404s the
+        // DELETE; re-resolve so the live file is the one removed.
+        await withFreshIds(
+          () => evictKey(key),
+          async () => {
+            await client.files.deleteFileById(await resolveFileId(key));
           }
-          throw mapped;
-        }
-        try {
-          await client.files.deleteFileById(fileId);
-        } catch (error) {
-          const mapped = mapBoxError(error);
-          if (mapped.code === "NotFound") {
-            dropFileFromCache(key);
-            return;
-          }
-          throw mapped;
-        }
+        );
         dropFileFromCache(key);
       } catch (error) {
-        throw mapBoxError(error);
+        const mapped = mapBoxError(error);
+        // Idempotent: a missing file (or a folder, which `resolveFileId`
+        // never returns) is not an error.
+        if (mapped.code === "NotFound") {
+          dropFileFromCache(key);
+          return;
+        }
+        throw mapped;
       }
     },
     async download(key, downloadOpts) {
       try {
         await authHandle.ensureReady();
-        const fileId = await resolveFileId(key);
-        const file = await client.files.getFileById(fileId);
+        const { file, url } = await withFreshIds(
+          () => evictKey(key),
+          async () => {
+            const fileId = await resolveFileId(key);
+            const found = await client.files.getFileById(fileId);
+            // Both buffered and streaming reads go through the same
+            // standard-HTTP download URL, so a single fetch (with the Range
+            // header when asked) serves both.
+            return {
+              file: found,
+              url: await client.downloads.getDownloadFileUrl(fileId),
+            };
+          }
+        );
         const meta = fileMetaFromBox(file);
         const range = downloadOpts?.range;
 
-        // Both buffered and streaming reads go through the same standard-HTTP
-        // download URL, so a single fetch (with the Range header when asked)
-        // serves both.
-        const url = await client.downloads.getDownloadFileUrl(fileId);
         const res = await fetch(url, {
           ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
           ...(range && { headers: rangeRequestHeaders(range) }),
@@ -998,17 +1075,22 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     exists(key) {
       return existsByProbe(async () => {
         await authHandle.ensureReady();
-        const fileId = await resolveFileId(key);
-        await client.files.getFileById(fileId, {
-          queryParams: { fields: ["id"] },
-        });
+        await withFreshIds(
+          () => evictKey(key),
+          async () =>
+            await client.files.getFileById(await resolveFileId(key), {
+              queryParams: { fields: ["id"] },
+            })
+        );
       }, mapBoxError);
     },
     async head(key) {
       try {
         await authHandle.ensureReady();
-        const fileId = await resolveFileId(key);
-        const file = await client.files.getFileById(fileId);
+        const file = await withFreshIds(
+          () => evictKey(key),
+          async () => await client.files.getFileById(await resolveFileId(key))
+        );
         const meta = fileMetaFromBox(file);
         return { key, ...meta };
       } catch (error) {
@@ -1033,28 +1115,39 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         const slash = prefix.lastIndexOf("/");
         const namePrefix = prefix.slice(slash + 1);
         const keyBase = slash === -1 ? "" : prefix.slice(0, slash + 1);
-        let folderId: string;
+        const parents = keyBase.split("/").filter((part) => part.length > 0);
+        let page: Awaited<ReturnType<typeof client.folders.getFolderItems>>;
         try {
-          folderId = await resolveFolderId(
-            keyBase.split("/").filter((part) => part.length > 0),
-            { create: false }
+          page = await withFreshIds(
+            () => evictFolders(parents),
+            async () =>
+              await client.folders.getFolderItems(
+                await resolveFolderId(parents, { create: false }),
+                {
+                  queryParams: {
+                    fields: [
+                      "id",
+                      "name",
+                      "size",
+                      "modified_at",
+                      "etag",
+                      "type",
+                    ],
+                    limit: options?.limit ?? 1000,
+                    usemarker: true,
+                    ...(options?.cursor && { marker: options.cursor }),
+                  },
+                }
+              )
           );
         } catch (error) {
           const mapped = mapBoxError(error);
           // A prefix into a folder that doesn't exist lists nothing.
-          if (mapped.code === "NotFound") {
+          if (mapped.code === "NotFound" && parents.length > 0) {
             return { items: [] };
           }
           throw mapped;
         }
-        const page = await client.folders.getFolderItems(folderId, {
-          queryParams: {
-            fields: ["id", "name", "size", "modified_at", "etag", "type"],
-            limit: options?.limit ?? 1000,
-            usemarker: true,
-            ...(options?.cursor && { marker: options.cursor }),
-          },
-        });
         const entries = page.entries ?? [];
         const items: FileInfo[] = [];
         const prefixes: string[] = [];
@@ -1204,17 +1297,22 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       }
       try {
         await authHandle.ensureReady();
-        const fileId = await resolveFileId(key);
-        if (permanent && publicByDefault) {
-          return await ensureSharedLink(fileId);
-        }
         const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
         // The SDK's `getDownloadFileUrl` doesn't take an expiry — Box
         // controls the URL's TTL server-side. The expiresIn parameter is
         // accepted for API symmetry but the actual lifetime is whatever
         // Box returns.
         void expiresIn;
-        return await client.downloads.getDownloadFileUrl(fileId);
+        return await withFreshIds(
+          () => evictKey(key),
+          async () => {
+            const fileId = await resolveFileId(key);
+            if (permanent && publicByDefault) {
+              return await ensureSharedLink(fileId);
+            }
+            return await client.downloads.getDownloadFileUrl(fileId);
+          }
+        );
       } catch (error) {
         throw mapBoxError(error);
       }

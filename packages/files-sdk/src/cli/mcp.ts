@@ -9,6 +9,7 @@ import { sync, transfer } from "../index.js";
 import type { BulkOptions } from "../index.js";
 import { rangedSize } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { inferTypeFromName } from "../internal/mime.js";
 import { fileInfoToJson, filesErrorReplacer } from "./io.js";
 import { loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
@@ -297,7 +298,9 @@ export const buildMcpServer = async (
           const body = encodeUploadBody(text, base64);
           const result = await files.upload(key, body, {
             cacheControl,
-            contentType,
+            // Match the CLI: a key's extension names the type when none is
+            // given, instead of storing application/octet-stream.
+            contentType: contentType ?? inferTypeFromName(key),
             metadata,
             ...(multipart !== undefined && { multipart }),
             ...(condition !== undefined && { condition }),
@@ -507,7 +510,7 @@ export const buildMcpServer = async (
     "capabilities",
     {
       description:
-        "Report what the configured adapter can do — range reads, native upload progress, list delimiters, user metadata, cache-control, multipart/resumable uploads, server-side copy, signed URLs (`supported` plus any `maxExpiresIn` cap), and native conditional predicates (`conditional.create` / `replace` / `exactRead` / `delete` / `copy.*`, honored by the `condition` input on upload, download, delete, and copy). Pure introspection; makes no provider call. Branch on this instead of catching an unsupported-operation error.",
+        'Report what the configured adapter can do — `rangeRead`, native `uploadProgress`, list `delimiter` (`"any"`, `"slash"` for `/` only, or false), user `metadata`, `cacheControl`, `resumable` uploads, `serverSideCopy`, `publicUrl` (whether a plain `url` is a permanent link), `signedUrl` (`supported`, `expiry`, `disposition`, any `maxExpiresIn` cap — without `supported`, `url` with `expiresIn` fails with Unsupported), `signedUpload` (whether `sign-upload` can bind `maxSize` / `contentType`), storage `events`, and native conditional predicates (`conditional.create` / `replace` / `exactRead` / `delete` / `copy.*`, honored by the `condition` input on upload, download, delete, and copy). Pure introspection; makes no provider call. Branch on this instead of catching an Unsupported error.',
       inputSchema: {},
       title: "Adapter capabilities",
     },
@@ -631,7 +634,14 @@ export const buildMcpServer = async (
       description:
         "Return a URL for `key` — presigned on signing adapters, public on CDN-backed ones.",
       inputSchema: {
-        expiresIn: z.number().int().positive().optional(),
+        expiresIn: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Seconds until a signed URL expires. Only works when `capabilities.signedUrl.supported` is true; otherwise it fails with Unsupported, so omit it to get the permanent link."
+          ),
         key: z.string(),
         responseContentDisposition: z.string().optional(),
       },

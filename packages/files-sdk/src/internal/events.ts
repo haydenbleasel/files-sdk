@@ -58,7 +58,8 @@ export interface FileEvent {
    * The idempotency key. Delivery is at-least-once on every provider, so a
    * handler sees the same event again on a redelivery; this id stays the same.
    * The provider's event id where it has one, else derived from the key and the
-   * provider's per-write sequencer, version, or ETag.
+   * provider's per-write sequencer, or its version, event time and ETag, else a
+   * stable hash of the raw record. Never derived from the local clock.
    */
   id: string;
   /** The provider's original record, untouched. */

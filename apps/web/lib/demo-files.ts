@@ -309,6 +309,7 @@ export const demoFiles: UseFilesResult = {
     for (const s of SAMPLE.slice(0, 5)) {
       yield sampleToInfo(s);
     }
+    return { truncated: false };
   },
   signedUploadUrl: (key: string) => {
     log("signedUploadUrl", key);

@@ -5,8 +5,9 @@ import * as os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { createFilesRouter } from "../src/api/index.js";
 import { fs as fsAdapter, mapFsError } from "../src/fs/index.js";
-import { Files, FilesError, UploadControl } from "../src/index.js";
+import { Files, FilesError, UploadControl, createFiles } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
 
@@ -91,7 +92,7 @@ describe("fs adapter", () => {
         expect(caps.resumable).toBe(true);
         expect(caps.serverSideCopy).toBe(true);
         // No signer: signedUploadUrl() always throws, and url() is a permanent
-        // file:// or static-server URL.
+        // file:// or static-server URL — only the latter is a public link.
         expect(caps.signedUpload).toEqual({
           contentType: false,
           maxSize: false,
@@ -102,7 +103,7 @@ describe("fs adapter", () => {
           expiry: "none",
           supported: false,
         });
-        expect(caps.publicUrl).toBe(true);
+        expect(caps.publicUrl).toBe(urlBaseUrl !== undefined);
         expect(caps.uploadProgress).toBe(false);
       }
     });
@@ -421,6 +422,24 @@ describe("fs adapter", () => {
       await expect(files.exists("exists.txt")).resolves.toBe(true);
       await expect(files.exists("missing.txt")).resolves.toBe(false);
     });
+
+    test("a directory is not an object: head/exists/download report NotFound", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("a/b.txt", "hi");
+      await expect(files.head("a")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      await expect(files.exists("a")).resolves.toBe(false);
+      await expect(files.download("a")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      await expect(files.download("a", { as: "stream" })).rejects.toMatchObject(
+        { code: "NotFound" }
+      );
+      // The file under it is untouched and still reachable.
+      await expect(files.exists("a/b.txt")).resolves.toBe(true);
+    });
   });
 
   describe("delete", () => {
@@ -437,16 +456,48 @@ describe("fs adapter", () => {
       ).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    test("surfaces non-ENOENT rm errors as FilesError", async () => {
+    test("deleting a directory's key is a no-op, never a recursive removal", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
-      // Place a directory at the body path. `fsp.rm` without `recursive`
-      // refuses to remove a directory — the adapter should surface the
-      // ERR_FS_EISDIR as a Provider error rather than swallow it.
-      await fsp.mkdir(path.join(root, "thedir"));
-      await expect(files.delete("thedir")).rejects.toMatchObject({
-        code: "Provider",
+      await files.upload("thedir/keep.txt", "x");
+      await expect(files.delete("thedir")).resolves.toBeUndefined();
+      await expect(files.delete("thedir/")).resolves.toBeUndefined();
+      const kept = await files.download("thedir/keep.txt");
+      expect(await kept.text()).toBe("x");
+    });
+
+    test("deleting a key under a file is a no-op", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("plain.txt", "x");
+      await expect(files.delete("plain.txt/child")).resolves.toBeUndefined();
+      await expect(files.exists("plain.txt")).resolves.toBe(true);
+    });
+
+    test("a root that is a plain file fails loudly instead of looking empty", async () => {
+      const dir = await makeRoot();
+      const root = path.join(dir, "not-a-dir");
+      await fsp.writeFile(root, "x");
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await expect(files.delete("k.txt")).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringContaining("not a directory"),
       });
+    });
+
+    test("surfaces non-ENOENT stat errors as FilesError", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      const lstat = spyOn(fsp, "lstat").mockRejectedValueOnce(
+        Object.assign(new Error("io"), { code: "EIO" })
+      );
+      try {
+        await expect(files.delete("d.txt")).rejects.toMatchObject({
+          code: "Provider",
+        });
+      } finally {
+        lstat.mockRestore();
+      }
     });
 
     test("is idempotent on missing keys", async () => {
@@ -538,15 +589,26 @@ describe("fs adapter", () => {
       ).rejects.toThrow();
     });
 
+    test("copy refuses a directory source as NotFound", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("dir/a.txt", "data");
+      await expect(files.copy("dir", "dst")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      await expect(files.exists("dst")).resolves.toBe(false);
+    });
+
     test("copy cleans up its staging file when the commit fails", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
       await files.upload("src.txt", "data");
-      // A directory at the destination makes the rename fail.
+      // A directory at the destination makes the rename fail — the same way
+      // every time, so it's a Conflict, not a retryable Provider error.
       await fsp.mkdir(path.join(root, "blocker"));
-      await expect(files.copy("src.txt", "blocker")).rejects.toBeInstanceOf(
-        FilesError
-      );
+      await expect(files.copy("src.txt", "blocker")).rejects.toMatchObject({
+        code: "Conflict",
+      });
       const entries = await fsp.readdir(root);
       expect(entries.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
     });
@@ -575,6 +637,28 @@ describe("fs adapter", () => {
       await expect(files.move("nope", "dst")).rejects.toMatchObject({
         code: "NotFound",
       });
+    });
+
+    test("refuses a directory source as NotFound instead of moving the tree", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("dir/a.txt", "data");
+      await expect(files.move("dir", "elsewhere")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      await expect(files.exists("dir/a.txt")).resolves.toBe(true);
+      await expect(files.exists("elsewhere/a.txt")).resolves.toBe(false);
+    });
+
+    test("moving onto a directory is a Conflict", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("src.txt", "data");
+      await files.upload("dir/a.txt", "data");
+      await expect(files.move("src.txt", "dir")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      await expect(files.exists("src.txt")).resolves.toBe(true);
     });
 
     test("creates intermediate directories at destination", async () => {
@@ -1067,6 +1151,52 @@ describe("fs adapter", () => {
   });
 
   describe("url", () => {
+    test("a gateway proxies an inline download instead of redirecting to file://", async () => {
+      const root = await makeRoot();
+      const files = createFiles({ adapter: fsAdapter({ root }) });
+      await files.upload("docs/a.pdf", "hello");
+      for (const extra of [
+        { authorize: () => ({ disposition: "inline" as const }) },
+        { authorize: () => {}, forceDownloadDisposition: false },
+      ]) {
+        const router = createFilesRouter({
+          files,
+          operations: ["download"],
+          secret: "s",
+          ...extra,
+        });
+        // oxlint-disable-next-line no-await-in-loop -- two configs checked in turn
+        const res = await router.handle(
+          new Request("https://app.test/api/files?op=download&key=docs/a.pdf")
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("location")).toBeNull();
+        // oxlint-disable-next-line no-await-in-loop -- body of the response above
+        expect(await res.text()).toBe("hello");
+      }
+    });
+
+    test("a gateway redirects to the urlBaseUrl link when one is configured", async () => {
+      const root = await makeRoot();
+      const files = createFiles({
+        adapter: fsAdapter({ root, urlBaseUrl: "https://static.example.com" }),
+      });
+      await files.upload("docs/a.pdf", "hello");
+      const router = createFilesRouter({
+        authorize: () => ({ disposition: "inline" as const }),
+        files,
+        operations: ["download"],
+        secret: "s",
+      });
+      const res = await router.handle(
+        new Request("https://app.test/api/files?op=download&key=docs/a.pdf")
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(
+        "https://static.example.com/docs/a.pdf"
+      );
+    });
+
     test("returns a file:// URL by default", async () => {
       const root = await makeRoot();
       const adapter = fsAdapter({ root });
@@ -1201,6 +1331,13 @@ describe("fs adapter", () => {
       expect(mapFsError(err).code).toBe("Conflict");
     });
 
+    test("classifies a directory in a file's place as Conflict, not retryable Provider", () => {
+      for (const code of ["EISDIR", "ENOTEMPTY", "ERR_FS_EISDIR"]) {
+        const mapped = mapFsError(Object.assign(new Error(code), { code }));
+        expect(mapped.code).toBe("Conflict");
+      }
+    });
+
     test("classifies unknown codes as Provider", () => {
       const err = Object.assign(new Error("???"), { code: "EWHATEVER" });
       expect(mapFsError(err).code).toBe("Provider");
@@ -1259,9 +1396,9 @@ describe("fs adapter", () => {
       // Pre-create a directory at the destination — rename(file → dir) fails
       // with EISDIR/EPERM, and the temp file should still get cleaned up.
       await fsp.mkdir(path.join(root, "blocker"));
-      await expect(files.upload("blocker", "x")).rejects.toBeInstanceOf(
-        FilesError
-      );
+      await expect(files.upload("blocker", "x")).rejects.toMatchObject({
+        code: "Conflict",
+      });
       const remaining = await fsp.readdir(root);
       // No staging leftovers — bestEffortRm should have removed both the
       // body and the sidecar staging files.

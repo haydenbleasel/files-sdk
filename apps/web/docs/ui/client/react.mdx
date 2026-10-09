@@ -23,7 +23,7 @@ await files.url("img.png"); // → string (for <img src>)
 await files.capabilities(); // → AdapterCapabilities
 
 // Writes
-await files.upload(file); // → { key, size, type, etag }
+await files.upload(file); // → { key, size, contentType, etag?, data? }
 await files.delete("old.txt");
 await files.copy("a.txt", "b.txt");
 await files.move("a.txt", "c.txt");
@@ -34,6 +34,20 @@ for await (const f of files.listAll()) {
 }
 for await (const f of files.search("docs/*.pdf")) {
   /* glob/regex */
+}
+```
+
+`search()` returns the matches from one bounded gateway walk: the gateway reads at most `maxSearchScan` keys per request. The generator's return value, a `SearchSummary` (`{ truncated }`), says whether it stopped early; a `for await` loop drops it, so drive the iterator by hand when you need it:
+
+```ts lineNumbers
+const it = files.search("**/*.pdf");
+let step = await it.next();
+while (!step.done) {
+  /* step.value is a FileInfo */
+  step = await it.next();
+}
+if (step.value.truncated) {
+  /* narrow the pattern or prefix */
 }
 ```
 
@@ -96,13 +110,13 @@ const chunk = await files.download("video.mp4", {
 const src = await files.url("avatar.png");
 ```
 
-The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/docs/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `type`, `etag`, `metadata`.
+The returned `StoredFile` is the same lazy, `File`-shaped value the [SDK returns](/docs/api/stored-file) — `blob()`/`text()`/`arrayBuffer()`/`stream()` plus `key`, `size`, `contentType`, `etag`, `metadata`.
 
-A ranged `download` must come back as `206 Partial Content`. If the gateway (or the storage it redirects to) ignores the range and sends the whole object, the call rejects rather than handing you the full body as if it were the slice.
+A ranged `download` must come back as `206 Partial Content`. If the gateway (or the storage it redirects to) ignores the range and sends the whole object, the call rejects rather than handing you the full body as if it were the slice. A `416` (a range the object can't satisfy, or a range on an adapter without range reads) rejects with an `Invalid` error.
 
 ## Errors & cancellation
 
-A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"`), rebuilt from the wire envelope. The last error from any verb is also mirrored to `files.error` for render-time display. That includes errors thrown while you iterate `listAll()` or `search()`:
+A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Invalid" | "Unsupported" | "Provider"`), rebuilt from the wire envelope. The last error from any verb is also mirrored to `files.error` for render-time display. That includes errors thrown while you iterate `listAll()` or `search()`:
 
 ```tsx lineNumbers
 try {

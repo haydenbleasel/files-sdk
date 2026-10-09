@@ -15,7 +15,18 @@ import type {
 const BASE64_CHUNK_SIZE = 0x80_00;
 
 const base64ToBytes = (input: string): Uint8Array => {
-  const binary = atob(input);
+  let binary: string;
+  try {
+    binary = atob(input);
+  } catch (error) {
+    // Bad input from the model, not a backend failure: `Invalid` comes back
+    // to the model as a tool error it can fix instead of escaping execute().
+    throw new FilesError(
+      "Invalid",
+      'content is not valid base64; pass encoding: "text" for plain text',
+      error
+    );
+  }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
     // atob() yields one code point per byte (0-255), so the nullish coalesce
@@ -34,9 +45,10 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
+// A refusal, not a backend failure, so never `Provider` (which retries).
 const tooLarge = (key: string, size: number | string, limit: number) =>
   new FilesError(
-    "Provider",
+    "Invalid",
     `File "${key}" is ${size} bytes which exceeds the maxBytes limit of ${limit}. Pass a larger maxBytes or use getFileUrl to delegate to the client.`
   );
 
@@ -103,7 +115,7 @@ export const executors = {
     const limit = maxBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
     if (limit > MAX_DOWNLOAD_BYTES) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `maxBytes must be less than or equal to ${MAX_DOWNLOAD_BYTES}. Use getFileUrl to delegate larger downloads to the client.`
       );
     }

@@ -6,8 +6,20 @@ import { DropboxResponseError } from "dropbox";
 
 import { dropbox } from "../src/dropbox/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { ResumableUploadSession } from "../src/index.js";
+import type {
+  OffsetResumableDriver,
+  ResumableUploadSession,
+} from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
+
+// Read helpers (an `await` result is never dereferenced inline).
+const sizeOf = async (
+  files: { head: (key: string) => Promise<{ size: number }> },
+  key: string
+): Promise<number> => {
+  const info = await files.head(key);
+  return info.size;
+};
 
 interface FakeFile {
   id: string;
@@ -127,9 +139,27 @@ const filesDownloadMock = mock((arg: { path: string }) => {
   return Promise.resolve(wrapResult(meta));
 });
 
+// A key that prefixes stored files is a folder in this fake.
+const isFolderKey = (key: string): boolean =>
+  key === "" || [...store.keys()].some((k) => k.startsWith(`${key}/`));
+
+const conflictError = (leaf: "file" | "folder") =>
+  responseError(409, {
+    error: {
+      ".tag": "to",
+      to: { ".tag": "conflict", conflict: { ".tag": leaf } },
+    },
+    error_summary: `to/conflict/${leaf}/`,
+  });
+
 const filesGetMetadataMock = mock((arg: { path: string }) => {
   const key = keyFromPath(arg.path);
   const it = store.get(key);
+  if (!it && isFolderKey(key)) {
+    return Promise.resolve(
+      wrapResult({ ".tag": "folder", id: `folder-${key}`, name: key })
+    );
+  }
   if (!it) {
     return Promise.reject(
       responseError(409, {
@@ -144,6 +174,15 @@ const filesGetMetadataMock = mock((arg: { path: string }) => {
 const filesDeleteV2Mock = mock((arg: { path: string }) => {
   const key = keyFromPath(arg.path);
   const it = store.get(key);
+  if (!it && isFolderKey(key)) {
+    // Like Dropbox: deleting a folder removes everything under it.
+    for (const k of store.keys()) {
+      if (key === "" || k.startsWith(`${key}/`)) {
+        store.delete(k);
+      }
+    }
+    return Promise.resolve(wrapResult({ metadata: { ".tag": "folder" } }));
+  }
   if (!it) {
     return Promise.reject(
       responseError(409, {
@@ -172,6 +211,12 @@ const filesCopyV2Mock = mock((arg: { from_path: string; to_path: string }) => {
         error_summary: "from_lookup/not_found/",
       })
     );
+  }
+  if (store.has(toKey)) {
+    return Promise.reject(conflictError("file"));
+  }
+  if (isFolderKey(toKey)) {
+    return Promise.reject(conflictError("folder"));
   }
   const copy = makeFile(toKey, src.bytes);
   store.set(toKey, copy);
@@ -587,6 +632,126 @@ describe("dropbox adapter", () => {
     const head = await files.head("to.txt");
     expect(head.key).toBe("to.txt");
     expect(head.size).toBe(2);
+  });
+
+  test("delete of a folder's key is a no-op, never a recursive delete", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("photos/a.jpg", "a");
+    await files.delete("photos");
+    expect(filesDeleteV2Mock).not.toHaveBeenCalled();
+    await expect(files.exists("photos/a.jpg")).resolves.toBe(true);
+  });
+
+  test("delete surfaces a non-NotFound metadata error", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    filesGetMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(401, {
+          error: { ".tag": "invalid_access_token" },
+          error_summary: "invalid_access_token/",
+        })
+      )
+    );
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    expect(filesDeleteV2Mock).not.toHaveBeenCalled();
+  });
+
+  test.each(["", "/", "photos/"])(
+    "object verbs refuse the root/folder-shaped key %p as Invalid",
+    async (key) => {
+      for (const rootFolderPath of [undefined, "app-root"]) {
+        const files = new Files({
+          adapter: dropbox({
+            ...baseOpts,
+            ...(rootFolderPath && { rootFolderPath }),
+          }),
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.delete(key)).rejects.toMatchObject({
+          code: "Invalid",
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.copy("a.txt", key)).rejects.toMatchObject({
+          code: "Invalid",
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.upload(key, "x")).rejects.toMatchObject({
+          code: "Invalid",
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.head(key)).rejects.toMatchObject({
+          code: "Invalid",
+        });
+      }
+      expect(filesDeleteV2Mock).not.toHaveBeenCalled();
+      expect(filesCopyV2Mock).not.toHaveBeenCalled();
+      expect(filesUploadMock).not.toHaveBeenCalled();
+      expect(filesGetMetadataMock).not.toHaveBeenCalled();
+    }
+  );
+
+  test("copy onto an existing file replaces it, like every other adapter", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("from.txt", "new");
+    await files.upload("to.txt", "older");
+    await files.copy("from.txt", "to.txt");
+    expect(await sizeOf(files, "to.txt")).toBe(3);
+    expect(filesDeleteV2Mock.mock.calls.map(([arg]) => arg.path)).toEqual([
+      "/to.txt",
+    ]);
+    // move falls back to copy + delete, so it overwrites too.
+    await files.upload("third.txt", "third!");
+    await files.move("third.txt", "to.txt");
+    expect(await sizeOf(files, "to.txt")).toBe(6);
+    await expect(files.exists("third.txt")).resolves.toBe(false);
+  });
+
+  test("copy onto a folder stays a Conflict and deletes nothing", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("from.txt", "new");
+    await files.upload("photos/a.jpg", "a");
+    await expect(files.copy("from.txt", "photos")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(filesDeleteV2Mock).not.toHaveBeenCalled();
+    await expect(files.exists("photos/a.jpg")).resolves.toBe(true);
+  });
+
+  test("copy onto the same file under another casing never deletes it", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("a.txt", "a");
+    filesCopyV2Mock.mockImplementationOnce(() =>
+      Promise.reject(conflictError("file"))
+    );
+    await expect(files.copy("a.txt", "A.txt")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(filesDeleteV2Mock).not.toHaveBeenCalled();
+  });
+
+  test("copy refuses a folder source as NotFound", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("photos/a.jpg", "a");
+    await expect(files.copy("photos", "backup")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(filesCopyV2Mock).not.toHaveBeenCalled();
+  });
+
+  test("copy rethrows a non-Dropbox copy failure", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("a.txt", "a");
+    filesCopyV2Mock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error("socket hang up"), { status: 503 })
+      )
+    );
+    await expect(
+      files.copy("a.txt", "b.txt", { retries: 0 })
+    ).rejects.toMatchObject({ code: "Provider" });
+    expect(filesDeleteV2Mock).not.toHaveBeenCalled();
   });
 
   test("list returns all files (recursive) and filters folders", async () => {
@@ -1086,6 +1251,7 @@ describe("dropbox adapter", () => {
 
   test("delete throws non-NotFound errors instead of swallowing them", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("x.txt", "x");
     filesDeleteV2Mock.mockImplementationOnce(() =>
       Promise.reject(
         responseError(409, {
@@ -1101,6 +1267,7 @@ describe("dropbox adapter", () => {
 
   test("copy maps SDK errors to FilesError", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("a.txt", "a");
     filesCopyV2Mock.mockImplementationOnce(() =>
       Promise.reject(
         responseError(401, {
@@ -1733,6 +1900,25 @@ describe("dropbox resumable uploads", () => {
         retries: 0,
       })
     ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("driving the session out of order is Invalid, not a retryable Provider", async () => {
+    const driver = adapter().resumableUpload?.(
+      "doc.bin",
+      {}
+    ) as OffsetResumableDriver;
+    await expect(
+      Promise.resolve().then(() => driver.probe())
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/not started/u),
+    });
+    await expect(
+      Promise.resolve().then(() => driver.complete([]))
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/did not finalize/u),
+    });
   });
 
   test("resuming a non-dropbox token throws", async () => {

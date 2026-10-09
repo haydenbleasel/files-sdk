@@ -3,7 +3,7 @@ title: Amazon S3
 description: Send S3 bucket notifications to SQS, Lambda, SNS or EventBridge, and hand them to files.events.dispatch() or a webhook.
 ---
 
-S3 publishes notifications to SQS, SNS, Lambda or EventBridge. All of them are read by the `s3` format, which `s3()` and `s3Fetch()` declare when they talk to AWS. With a custom `endpoint`, and on `bun-s3` (whose endpoint can come from the environment), nothing is assumed: pass `events({ format: "s3" })` if that service sends S3 notifications.
+S3 publishes notifications to SQS, SNS, Lambda or EventBridge. All of them are read by the `s3` format, which `s3()` and `s3Fetch()` declare when they talk to AWS (no `endpoint`, or one under `amazonaws.com`). With a non-AWS `endpoint`, and on `bun-s3` (whose endpoint can come from the environment), nothing is assumed: pass `events({ format: "s3" })` if that service sends S3 notifications.
 
 ## SQS (recommended)
 
@@ -86,6 +86,10 @@ aws lambda add-permission --function-name my-fn \
 
 The handler is `(event) => files.events.dispatch(event)`.
 
+## SNS → Lambda
+
+A Lambda subscribed to the SNS topic gets `{ Records: [{ EventSource: "aws:sns", Sns }] }`, with the S3 notification inside each `Sns.Message`. `dispatch(event)` unwraps it the same way, so the handler is the same one-liner. Lambda has already authenticated the invocation, so there's no signature to check.
+
 ## EventBridge
 
 Turn EventBridge on for the bucket. The call **replaces** the bucket's whole notification configuration, so read it first with `get-bucket-notification-configuration` and merge in any existing queue or Lambda entries:
@@ -129,7 +133,7 @@ const webhook = files.events.webhook({
 });
 ```
 
-The signing certificate is fetched from the message's `SigningCertURL`, which must be an `sns.<region>.amazonaws.com` host, and cached. With `confirm: false` (the default), the confirmation URL is logged for you to visit. Raw message delivery strips the signature, so it's refused; leave it off. SQS is simpler and more durable than SNS over HTTPS when you have the choice.
+`topicArn` is required (one ARN, or an array): SNS signs messages for any topic, including one an attacker owns, so every message, `SubscriptionConfirmation` included, must come from yours. The signed `Timestamp` must be no older than `maxAge` (default one hour, the longest SNS retries for) and no more than five minutes ahead of the clock, so a captured message can't be replayed later. The signing certificate is fetched from the message's `SigningCertURL`, which must be an `sns.<region>.amazonaws.com` host, and cached; if the fetch fails, the webhook answers `502` so SNS redelivers. With `confirm: false` (the default), the confirmation URL is logged for you to visit. Raw message delivery strips the signature, so it's refused; leave it off. SQS is simpler and more durable than SNS over HTTPS when you have the choice.
 
 ## Wasabi
 

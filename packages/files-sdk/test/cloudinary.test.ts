@@ -532,6 +532,8 @@ describe("cloudinary adapter", () => {
   test("url > mints signed URL for type=private with expiresIn", async () => {
     const files = new Files({
       adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
         cloudName: CLOUD_NAME,
         type: "private",
       }),
@@ -541,6 +543,10 @@ describe("cloudinary adapter", () => {
       "test-file",
       "txt",
       expect.objectContaining({
+        // The adapter's own credentials sign the URL, whatever the global
+        // `config()` holds.
+        api_key: API_KEY,
+        api_secret: API_SECRET,
         resource_type: "raw",
         type: "private",
       })
@@ -677,7 +683,12 @@ describe("cloudinary adapter", () => {
     });
     for (const type of ["private", "authenticated"] as const) {
       const { capabilities } = new Files({
-        adapter: cloudinary({ cloudName: CLOUD_NAME, type }),
+        adapter: cloudinary({
+          apiKey: API_KEY,
+          apiSecret: API_SECRET,
+          cloudName: CLOUD_NAME,
+          type,
+        }),
       });
       expect(capabilities.signedUrl).toEqual({
         disposition: false,
@@ -685,6 +696,66 @@ describe("cloudinary adapter", () => {
         supported: true,
       });
       expect(capabilities.publicUrl).toBe(false);
+    }
+  });
+
+  test("capabilities > signedUrl needs an API key + secret to sign with", async () => {
+    // Without credentials `private_download_url` throws "Must supply
+    // api_secret" on every call, so the capability is off and url() /
+    // download() refuse up front instead of failing with a retried Provider.
+    const files = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        cloudName: CLOUD_NAME,
+        type: "private",
+      }),
+      retries: 2,
+    });
+    expect(files.capabilities.signedUrl.supported).toBe(false);
+    await expect(files.url("test-file")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/need both apiKey and apiSecret/u),
+    });
+    await expect(files.download("test-file")).rejects.toMatchObject({
+      code: "Unsupported",
+    });
+    expect(resourceMock).not.toHaveBeenCalled();
+    expect(privateDownloadUrlMock).not.toHaveBeenCalled();
+  });
+
+  test("capabilities > a pre-built client configured with credentials can sign", async () => {
+    const client = (config: unknown) => ({
+      api: { resource: resourceMock },
+      config: () => config,
+      utils: { private_download_url: privateDownloadUrlMock },
+    });
+    const configured = new Files({
+      adapter: cloudinary({
+        client: client({ api_key: API_KEY, api_secret: API_SECRET }) as never,
+        cloudName: CLOUD_NAME,
+        type: "authenticated",
+      }),
+    });
+    expect(configured.capabilities.signedUrl.supported).toBe(true);
+    expect(await configured.url("test-file")).toContain("signed=1");
+    // The client's own config signs: no adapter credentials are passed.
+    expect(privateDownloadUrlMock.mock.calls.at(-1)?.[2]).not.toHaveProperty(
+      "api_secret"
+    );
+    for (const config of [
+      { api_key: API_KEY },
+      { api_key: API_KEY, api_secret: "" },
+      null,
+    ]) {
+      expect(
+        new Files({
+          adapter: cloudinary({
+            client: client(config) as never,
+            cloudName: CLOUD_NAME,
+            type: "authenticated",
+          }),
+        }).capabilities.signedUrl.supported
+      ).toBe(false);
     }
   });
 
@@ -975,6 +1046,26 @@ describe("cloudinary adapter", () => {
     });
   });
 
+  test("download > CDN statuses map to the standard buckets", async () => {
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+      retries: 0,
+    });
+    for (const [status, code] of [
+      [401, "Unauthorized"],
+      [403, "Unauthorized"],
+      [404, "NotFound"],
+      [409, "Conflict"],
+      [412, "Conflict"],
+    ] as const) {
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response("", { status, statusText: "x" }))
+      ) as unknown as typeof globalThis.fetch;
+      // oxlint-disable-next-line no-await-in-loop -- each status is checked in turn.
+      await expect(files.download("k")).rejects.toMatchObject({ code });
+    }
+  });
+
   test("download > raw 500 from CDN surfaces as Provider", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("server error", { status: 500 }))
@@ -988,7 +1079,7 @@ describe("cloudinary adapter", () => {
     });
   });
 
-  test("url > type=private without format on resource throws Provider", async () => {
+  test("url > type=private without format on resource throws Unsupported", async () => {
     resourceMock.mockResolvedValueOnce({
       bytes: 0,
       created_at: "2024-01-01T00:00:00Z",
@@ -999,12 +1090,14 @@ describe("cloudinary adapter", () => {
     } as never);
     const files = new Files({
       adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
         cloudName: CLOUD_NAME,
         type: "private",
       }),
     });
     await expect(files.url("raw-no-ext")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("no format"),
     });
   });
@@ -1012,6 +1105,8 @@ describe("cloudinary adapter", () => {
   test("url > type=authenticated uses signedUrlExpiresIn default when no per-call expiry", async () => {
     const files = new Files({
       adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
         cloudName: CLOUD_NAME,
         signedUrlExpiresIn: 120,
         type: "authenticated",
@@ -1042,7 +1137,12 @@ describe("cloudinary adapter", () => {
       return Promise.resolve(new Response("hello", { status: 200 }));
     }) as unknown as typeof globalThis.fetch;
     const files = new Files({
-      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "private" }),
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+        type: "private",
+      }),
     });
     const file = await files.download("test-file");
     expect(await file.text()).toBe("hello");
@@ -1067,10 +1167,15 @@ describe("cloudinary adapter", () => {
       Promise.resolve(new Response("x", { status: 200 }))
     ) as unknown as typeof globalThis.fetch;
     const files = new Files({
-      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "authenticated" }),
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+        type: "authenticated",
+      }),
     });
     await expect(files.download("raw-no-ext")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("no format"),
       permanent: true,
     });
@@ -1280,13 +1385,26 @@ describe("cloudinary resumable uploads (chunked)", () => {
   });
 
   test("resumable requires apiKey + apiSecret", async () => {
-    const files = new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME }) });
-    await expect(
-      files.upload("x", "data", { control: new UploadControl() })
-    ).rejects.toMatchObject({
-      code: "Unsupported",
-      message: expect.stringMatching(/require both apiKey and apiSecret/u),
-    });
+    // Chunks are signed with the secret, so without both the driver isn't
+    // attached and `capabilities.resumable` reports false.
+    for (const adapter of [
+      cloudinary({ cloudName: CLOUD_NAME }),
+      cloudinary({ apiKey: API_KEY, cloudName: CLOUD_NAME }),
+    ]) {
+      expect(adapter.resumableUpload).toBeUndefined();
+      const files = new Files({ adapter });
+      expect(files.capabilities.resumable).toBe(false);
+      // oxlint-disable-next-line no-await-in-loop -- each adapter is checked in turn.
+      await expect(
+        files.upload("x", "data", { control: new UploadControl() })
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/resumable uploads are not supported/u),
+      });
+    }
+    expect(new Files({ adapter: withCreds() }).capabilities.resumable).toBe(
+      true
+    );
   });
 
   test("metadata and cacheControl are rejected", async () => {

@@ -118,7 +118,7 @@
     "resumable": true,
     "serverSideCopy": true,
     "signedUpload": {
-      "maxSize": true
+      "maxSize": false
     },
     "signedUrl": {
       "expiry": "exact",
@@ -386,7 +386,7 @@
     "uploadProgress": true
   },
   "google-drive": {
-    "cacheControl": true,
+    "cacheControl": false,
     "conditional": {
       "create": false,
       "delete": false,

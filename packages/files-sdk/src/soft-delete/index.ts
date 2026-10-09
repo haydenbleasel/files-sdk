@@ -10,6 +10,7 @@ import type {
   PluginNext,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { reserveKeyPrefix } from "../internal/files-router/reserved.js";
 
 /**
  * A trashed object, as returned by {@link SoftDeleteApi.trashed}. Pass its
@@ -34,6 +35,16 @@ export interface TrashedFile {
   etag?: string;
 }
 
+/** Options for {@link SoftDeleteApi.trashed}. */
+export interface TrashedOptions {
+  /**
+   * Only list trashed objects whose original key starts with this prefix —
+   * the walk itself is bounded to it, so a per-tenant view (`"users/42/"`)
+   * never reads anyone else's trash.
+   */
+  prefix?: string;
+}
+
 /**
  * The methods {@link softDelete} grafts onto a {@link Files} instance. A `type`
  * rather than an `interface` so it satisfies the `Record<string, unknown>`
@@ -43,11 +54,12 @@ export interface TrashedFile {
 // oxlint-disable-next-line typescript/consistent-type-definitions -- must be a type alias for the Record<string, unknown> constraint above.
 export type SoftDeleteApi = {
   /**
-   * List everything currently in the trash, each entry carrying the original
-   * `key` you'd pass to {@link SoftDeleteApi.restoreTrashed}. Returns an empty array
-   * when the trash is empty.
+   * List everything currently in the trash — or, with `prefix`, only what was
+   * deleted from under it — each entry carrying the original `key` you'd pass
+   * to {@link SoftDeleteApi.restoreTrashed}. Returns an empty array when
+   * nothing matches.
    */
-  trashed: () => Promise<TrashedFile[]>;
+  trashed: (options?: TrashedOptions) => Promise<TrashedFile[]>;
   /**
    * Bring a soft-deleted object back to its original key, removing it from the
    * trash. Resolves to the restored key's {@link FileInfo} (via `head`). Throws
@@ -192,9 +204,14 @@ export const softDelete = (
     };
   };
 
-  const listTrashed = async (files: Files): Promise<TrashedFile[]> => {
+  const listTrashed = async (
+    files: Files,
+    keyPrefix = ""
+  ): Promise<TrashedFile[]> => {
     const out: TrashedFile[] = [];
-    for await (const item of files.listAll({ prefix: `${trashDir}/` })) {
+    for await (const item of files.listAll({
+      prefix: `${trashDir}/${keyPrefix}`,
+    })) {
       out.push({
         key: item.key.slice(trashDir.length + 1),
         size: item.size,
@@ -317,11 +334,17 @@ export const softDelete = (
     // `created` in the trash, and a restore the other way round; the trash
     // side is internal.
     event: (event) => (isTrashKey(event.key) ? null : event),
-    extend: (files) => ({
-      purge: (key) => purge(files, key),
-      restoreTrashed: (key) => restore(files, key),
-      trashed: () => listTrashed(files),
-    }),
+    extend: (files) => {
+      // The trash is plugin-private: `files-sdk/api` refuses client keys
+      // inside it, so a gateway that allows `delete` but not `purge` can't
+      // hard-delete a trashed object through the core verb.
+      reserveKeyPrefix(files, "soft-delete", trashDir);
+      return {
+        purge: (key) => purge(files, key),
+        restoreTrashed: (key) => restore(files, key),
+        trashed: (opts) => listTrashed(files, opts?.prefix),
+      };
+    },
     name: "soft-delete",
     wrap,
   };

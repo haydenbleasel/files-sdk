@@ -30,8 +30,12 @@ export interface ParsedRequest {
 }
 
 export type ResultModel =
-  | { kind: "json"; status: number; body: unknown }
-  | { kind: "empty"; status: number; headers?: Record<string, string> }
+  | {
+      kind: "json";
+      status: number;
+      body: unknown;
+      headers?: Record<string, string>;
+    }
   | { kind: "redirect"; status: number; location: string }
   | {
       kind: "stream";
@@ -131,10 +135,7 @@ export const parseRequest = async (
 export const buildResponse = (model: ResultModel): Response => {
   switch (model.kind) {
     case "json": {
-      return Response.json(model.body, { status: model.status });
-    }
-    case "empty": {
-      return new Response(null, {
+      return Response.json(model.body, {
         headers: model.headers,
         status: model.status,
       });

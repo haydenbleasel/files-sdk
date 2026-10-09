@@ -27,4 +27,4 @@ What happened to the file is in the `X-Appwrite-Webhook-Events` header, not the 
 
 ## What maps to what
 
-`…files.<id>.create` becomes `created` and `…files.<id>.delete` becomes `deleted`; updates (renames, permissions) are skipped. The key is the file's `$id`, which is the key `files-sdk/appwrite` writes under. Pass `events({ bucket: "<bucket id>" })` when one webhook covers several buckets.
+`…files.<id>.create` becomes `created` and `…files.<id>.delete` becomes `deleted`; updates (renames, permissions) are skipped. The key is the file's `$id`, which is the key `files-sdk/appwrite` writes under. A project webhook can cover several buckets, so `events()` keeps only the adapter's own bucket by default; pass `events({ bucket: "<bucket id>" })` to pick another, or `bucket: false` for all of them.

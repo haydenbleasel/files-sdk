@@ -25,6 +25,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
+import { statusError } from "../internal/resumable-offset-http.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
@@ -654,9 +655,12 @@ export const vercelBlob = (
           rangeRequestHeaders(range)
         );
         if (!res.ok) {
-          throw new FilesError(
-            res.status === 404 ? "NotFound" : "Provider",
-            `vercel-blob download failed: ${res.status} ${res.statusText}`
+          // Standard status buckets: 404 → NotFound, 401/403 → Unauthorized,
+          // 409/412 → Conflict, anything else → Provider.
+          throw statusError(
+            res.status,
+            `vercel-blob: download failed for ${key}`,
+            res.statusText || undefined
           );
         }
         if (range) {

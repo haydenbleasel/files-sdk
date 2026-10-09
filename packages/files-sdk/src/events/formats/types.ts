@@ -8,6 +8,8 @@ import { FilesError } from "../../internal/errors.js";
 import type { EventFormat, FileEvent } from "../../internal/events.js";
 import { isNumber, isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
+import { isJsonArray, isJsonObject } from "../../internal/json.js";
+import { stableHash } from "../crypto.js";
 
 export type { EventFormat } from "../../internal/events.js";
 
@@ -127,6 +129,43 @@ export const toSize = (value: JsonValue | undefined): number | undefined => {
     return Number(value);
   }
   return undefined;
+};
+
+// The record as canonical JSON (object keys sorted), so a redelivery hashes the
+// same whatever order its keys arrive in.
+const canonical = (value: JsonValue | undefined): string => {
+  if (value === undefined) {
+    return "null";
+  }
+  if (isJsonArray(value)) {
+    return `[${value.map(canonical).join(",")}]`;
+  }
+  if (isJsonObject(value)) {
+    const fields = Object.keys(value)
+      .toSorted()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`);
+    return `{${fields.join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+/**
+ * The part of an event id that tells one change to a key from another, for a
+ * record with no id of its own: the `stamps` it carries (a sequencer, a
+ * version, its own timestamp, an ETag — exactly as sent), joined, else a hash
+ * of the whole record. Never the clock, which would give every redelivery a
+ * new id and defeat `dedupe`.
+ */
+export const stampOf = (
+  record: JsonValue,
+  ...stamps: (JsonValue | undefined)[]
+): string => {
+  const parts = stamps.flatMap((stamp) =>
+    (isString(stamp) && stamp !== "") || isNumber(stamp) ? [String(stamp)] : []
+  );
+  return parts.length > 0
+    ? parts.join("#")
+    : `h:${stableHash(canonical(record))}`;
 };
 
 /** An ETag without its surrounding quotes (the SDK reports them bare). */

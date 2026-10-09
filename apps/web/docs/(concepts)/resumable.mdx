@@ -68,7 +68,7 @@ const token = JSON.parse(await readFile("upload.json", "utf8"));
 await files.abortUpload("backups/db.tar", token);
 ```
 
-It does what `abort()` does mid-upload. The key and token must match (the same logical key the upload targeted, on an instance with the same adapter and prefix), or it throws before discarding anything. A session that's already gone, because the upload completed or was discarded, isn't an error. Like other writes, it throws `ReadOnly` on a [read-only](/docs/readonly) instance, and it throws `Unsupported` on an adapter without resumable uploads.
+It does what `abort()` does mid-upload. The key and token must match (the same logical key the upload targeted, on an instance with the same adapter and prefix), or it throws before discarding anything. A session that's already gone, because the upload completed or was discarded, isn't an error, but a cancel the provider refuses rejects: on GCS, Firebase Storage, Google Drive, OneDrive, SharePoint, and Supabase, any response other than a 2xx, 404, 410, or 499 fails the call instead of resolving. Like other writes, it throws `ReadOnly` on a [read-only](/docs/readonly) instance, and it throws `Unsupported` on an adapter without resumable uploads. It reports through the [hooks](/docs/api/onaction) as `type: "abortUpload"`, but plugin `wrap`s don't see it.
 
 ## What each adapter does
 

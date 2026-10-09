@@ -4,7 +4,10 @@
 // handshakes (CloudEvents `OPTIONS`, SNS subscriptions, Event Grid
 // validation) → decode → normalize → handlers. Status codes tell the provider
 // what to do next: `401` (bad credential) and `400` (malformed delivery)
-// won't improve on retry; `500` (a handler threw) asks for redelivery.
+// won't improve on retry; `502` (a certificate or key fetch failed) and `500`
+// (a handler threw) ask for redelivery. A response names what went wrong only
+// when the SDK wrote the message; anything else (a handler's error, which may
+// carry your data) gets a generic one, and goes to `onError`.
 
 import { FilesError } from "../internal/errors.js";
 import type { FileEvent } from "../internal/events.js";
@@ -44,7 +47,8 @@ export interface EventsWebhookOptions {
    *   with authentication, Eventarc).
    * - `{ secret }` — the provider's own signature (B2, Cloudinary, Appwrite,
    *   Box).
-   * - `{ sns }` — Amazon SNS message signatures (S3 → SNS → HTTPS).
+   * - `{ sns }` — Amazon SNS message signatures (S3 → SNS → HTTPS), pinned
+   *   to your topic.
    * - `false` — something in front of this endpoint already authenticates.
    */
   verify:
@@ -53,6 +57,13 @@ export interface EventsWebhookOptions {
     | { google: GoogleOidcOptions }
     | ({ secret: string } & SignatureVerifyOptions)
     | { sns: SnsVerifyOptions };
+  /**
+   * Called with a failure the response doesn't spell out: an unexpected error
+   * while authenticating or parsing a delivery (answered with a generic
+   * `500`). A handler's error goes to `events({ onError })` instead. Defaults
+   * to `console.error`.
+   */
+  onError?: (cause: unknown, req: Request) => void;
 }
 
 /** A webhook endpoint: mount it with any gateway binding's `createRouteHandler`. */
@@ -69,6 +80,8 @@ export interface WebhookDeps {
     deliveries: readonly Delivery[]
   ) => FileEvent[];
   emit: (events: readonly FileEvent[]) => Promise<void>;
+  /** Whether `emit` rejected because handlers threw (they were already reported), not for another reason. */
+  isHandlerFailure: (cause: unknown) => boolean;
 }
 
 /** Checks a delivery; may answer it outright (an SNS subscription message). */
@@ -79,6 +92,14 @@ type Authenticate = (
 
 const errorResponse = (status: number, message: string): Response =>
   Response.json({ error: { message } }, { status });
+
+const defaultOnError = (cause: unknown, req: Request): void => {
+  // oxlint-disable-next-line no-console -- the default for a failure the response can't describe; override with `onError`.
+  console.error(
+    `files-sdk/events: webhook delivery to ${new URL(req.url).pathname} failed`,
+    cause
+  );
+};
 
 const misconfigured = (message: string): FilesError =>
   new FilesError("Invalid", `files.events.webhook(): ${message}`);
@@ -145,9 +166,6 @@ const authenticator = (
   };
 };
 
-const messageOf = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
-
 export const createWebhook = (
   opts: EventsWebhookOptions | undefined,
   deps: WebhookDeps
@@ -159,6 +177,38 @@ export const createWebhook = (
   }
   const { parser } = deps;
   const authenticate = authenticator(opts.verify, parser);
+  const onError = opts.onError ?? defaultOnError;
+
+  // An unexpected failure: reported, and answered without its message.
+  const unexpected = (cause: unknown, req: Request): Response => {
+    try {
+      onError(cause, req);
+    } catch {
+      // a throwing reporter can't change the answer
+    }
+    return errorResponse(500, "files-sdk/events: the delivery failed");
+  };
+
+  // Authentication failed: a bad credential (`401`), an upstream fetch for a
+  // certificate, key or `SubscribeURL` that should be retried (`502`), or
+  // something unexpected.
+  const authFailure = (cause: unknown, req: Request): Response => {
+    if (cause instanceof FilesError && cause.code === "Unauthorized") {
+      return errorResponse(401, cause.message);
+    }
+    if (cause instanceof FilesError && cause.code === "Provider") {
+      return errorResponse(502, cause.message);
+    }
+    return unexpected(cause, req);
+  };
+
+  // Reading the delivery failed: one the format can't read, or one a plugin
+  // refuses, won't do better on a retry (`400`).
+  const parseFailure = (cause: unknown, req: Request): Response =>
+    cause instanceof FilesError &&
+    (cause.code === "Invalid" || cause.code === "Unsupported")
+      ? errorResponse(400, cause.message)
+      : unexpected(cause, req);
 
   const handle = async (req: Request): Promise<Response> => {
     if (req.method === "HEAD") {
@@ -175,9 +225,7 @@ export const createWebhook = (
         return answered;
       }
     } catch (error) {
-      return error instanceof FilesError && error.code === "Unauthorized"
-        ? errorResponse(401, error.message)
-        : errorResponse(500, messageOf(error));
+      return authFailure(error, req);
     }
     if (req.method === "OPTIONS") {
       return (
@@ -194,12 +242,16 @@ export const createWebhook = (
       }
       events = deps.normalize(parser, deliveries);
     } catch (error) {
-      return errorResponse(400, messageOf(error));
+      return parseFailure(error, req);
     }
     try {
       await deps.emit(events);
     } catch (error) {
-      return errorResponse(500, messageOf(error));
+      // Each handler's error already went to `events({ onError })`; it may
+      // carry your data, so the provider only learns that one failed.
+      return deps.isHandlerFailure(error)
+        ? errorResponse(500, "files-sdk/events: a handler failed")
+        : unexpected(error, req);
     }
     return Response.json({ received: events.length });
   };

@@ -5,7 +5,7 @@ import * as presignedPost from "@aws-sdk/s3-presigned-post";
 import * as requestPresigner from "@aws-sdk/s3-request-presigner";
 
 import { FilesError } from "../src/internal/errors.js";
-import { loadS3Sdk } from "../src/internal/s3-engine.js";
+import { lazyS3Adapter, loadS3Sdk } from "../src/internal/s3-engine.js";
 import type { S3Sdk } from "../src/s3/core.js";
 
 // `loadS3Sdk` backs the lazy "aws-sdk" engine of r2(), minio(), and rustfs().
@@ -77,5 +77,20 @@ describe("loadS3Sdk", () => {
       // SAFETY (test): `requestPresigner` is deliberately empty.
       loadS3Sdk("minio", () => Promise.resolve(partial as unknown as S3Sdk))
     ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
+  });
+});
+
+describe("lazyS3Adapter", () => {
+  test("exposes its bucket synchronously, for the events bucket filter", () => {
+    const adapter = lazyS3Adapter(
+      {
+        bucket: "uploads",
+        credentials: { accessKeyId: "k", secretAccessKey: "s" },
+        endpoint: "http://127.0.0.1:9000",
+        region: "us-east-1",
+      },
+      "minio"
+    );
+    expect(adapter.bucket).toBe("uploads");
   });
 });

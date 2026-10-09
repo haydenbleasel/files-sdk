@@ -160,7 +160,7 @@ export const lazyS3Adapter = (
   config: S3AdapterOptions,
   name: string,
   events: EventCapability | false = false
-): Adapter<S3Client> => {
+): Adapter<S3Client> & { readonly bucket: string } => {
   const getInner = lazyS3(config, name);
 
   let cachedRaw: S3Client | undefined;
@@ -171,6 +171,9 @@ export const lazyS3Adapter = (
   };
 
   return {
+    // Exposed like the eager s3 adapter's, so `files-sdk/events` can filter
+    // other buckets' notifications by default.
+    bucket: config.bucket,
     // Upload/list/download all delegate to the inner S3 adapter, which honors
     // `metadata`, `cacheControl`, ListObjectsV2 `Delimiter`, and `Range` —
     // so advertise the same capabilities the eager s3 adapter does (including

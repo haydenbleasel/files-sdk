@@ -63,7 +63,7 @@ export interface FtpAdapterOptions {
   secureOptions?: TLSConnectionOptions;
   /**
    * Remote base directory. Virtual keys resolve under it; keys that escape it
-   * (e.g. `../etc/passwd`) throw `Provider`. Defaults to `"."` (the login
+   * (e.g. `../etc/passwd`) throw `Invalid`. Defaults to `"."` (the login
    * directory). An absolute root (`/uploads`) yields absolute paths.
    */
   root?: string;

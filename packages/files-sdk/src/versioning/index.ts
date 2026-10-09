@@ -10,6 +10,7 @@ import type {
   PluginNext,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { reserveKeyPrefix } from "../internal/files-router/reserved.js";
 
 /**
  * A saved snapshot of a key, as returned by {@link VersioningApi.versions}.
@@ -72,9 +73,11 @@ export interface VersioningOptions {
    */
   prefix?: string;
   /**
-   * Cap the number of versions kept per key. After each snapshot the oldest
-   * versions beyond this many are pruned. Omit to keep every version (history
-   * grows unbounded). Must be a positive integer.
+   * Cap the number of versions kept per key. After each write that took a
+   * snapshot lands, the oldest versions beyond this many are pruned (a write
+   * that fails prunes nothing, so history may briefly exceed the cap until the
+   * next successful write). Omit to keep every version (history grows
+   * unbounded). Must be a positive integer.
    */
   limit?: number;
   /**
@@ -451,8 +454,14 @@ export const versioning = (
     switch (op.kind) {
       case "upload":
       case "delete": {
-        await enforceLimit(op.key, next, await snapshot(op.key, next));
-        return next(op);
+        const taken = await snapshot(op.key, next);
+        const result = await next(op);
+        // Prune only once the write has landed: a failed write leaves the
+        // live object in place, so evicting history for it would lose a
+        // version for nothing (with a `limit`, repeated failures would push
+        // out every real version in favour of copies of the current bytes).
+        await enforceLimit(op.key, next, taken);
+        return result;
       }
       case "copy":
       case "move": {
@@ -502,10 +511,16 @@ export const versioning = (
     }),
     // Provider events: snapshots under the version store are internal.
     event: (event) => (under(event.key, versionDir) ? null : event),
-    extend: (files) => ({
-      restoreVersion: (key, requested) => restore(files, key, requested),
-      versions: (key) => listVersions(files, key),
-    }),
+    extend: (files) => {
+      // The snapshot store is plugin-private: `files-sdk/api` refuses client
+      // keys inside it, so history is reachable only through `versions()` /
+      // `restoreVersion()`.
+      reserveKeyPrefix(files, "versioning", versionDir);
+      return {
+        restoreVersion: (key, requested) => restore(files, key, requested),
+        versions: (key) => listVersions(files, key),
+      };
+    },
     name: "versioning",
     wrap,
   };

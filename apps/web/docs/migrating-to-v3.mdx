@@ -3,7 +3,7 @@ title: Migrating to v3
 description: What changed in files-sdk 3.0 - body-less head and list results, two new error codes, one bulk result shape, expiring URLs that never silently stay permanent, a capabilities object for adapters, and Node 22.
 ---
 
-v3 tidies the API that grew from v0 to v2. Most of it surfaces as type errors when you upgrade. Two changes don't show up in the types, so read those first: [error codes](#error-codes) and [`url({ expiresIn })`](#expiring-urls).
+v3 tidies the API that grew from v0 to v2. Most of it surfaces as type errors when you upgrade. Three changes don't show up in the types, so read those first: [error codes](#error-codes), [`url({ expiresIn })`](#expiring-urls), and, if you wrote your own adapter, its [capabilities object](#custom-adapters).
 
 ```package-install
 npm install files-sdk@3
@@ -38,8 +38,9 @@ The [gateway](/docs/ui/server/gateway) answers `Invalid` with a `422` (wire code
 
 `url(key, { expiresIn })` now always returns a link that expires, or throws:
 
-- On an adapter that can sign, it signs, **even with a `publicBaseUrl`**. In v2 the S3 family, GCS, Azure, Firebase, Supabase, and R2 returned the permanent CDN link and ignored `expiresIn`. A plain `url(key)` still returns the CDN link.
+- On an adapter that can sign, it signs, **even with a `publicBaseUrl`**. In v2 the S3 family, Bun's S3, GCS, Azure, Firebase, Supabase, and R2 returned the permanent CDN link and ignored `expiresIn`. A plain `url(key)` still returns the CDN link.
 - On an adapter that only has permanent links (Vercel Blob public, UploadThing `public-read`, Convex, Appwrite, the filesystem, OneDrive / Google Drive in public-link mode), it throws `Unsupported`. Drop `expiresIn` to get the permanent link. Box and Dropbox in public-link mode return their tokenized (provider-timed) link instead.
+- [`memory()`](/docs/adapters/memory) can't sign either, so tests that pass `expiresIn` against it now get `Unsupported`. Drop `expiresIn` in those tests, or assert on `files.capabilities.signedUrl.supported`.
 
 [`files.capabilities`](/docs/capabilities) has two new fields to branch on: `publicUrl` (a plain `url(key)` is a permanent link) and `signedUrl.disposition` (a `responseContentDisposition` is bound into the signature). The gateway now proxies a download it can't sign with the forced `attachment`, which fixes default downloads on Vercel Blob and UploadThing in private mode, PocketBase, and Cloudinary private delivery.
 
@@ -63,7 +64,7 @@ await (await files.download(key)).text(); // explicit
 - `download()` still returns a `StoredFile`, which is now a `FileInfo` plus `name` / `type` and the body accessors.
 - `upload()` resolves to a `FileInfo` (`UploadResult` is an alias).
 - So do `restoreVersion()`, `restoreTrashed()`, and the browser client's `upload()`.
-- The gateway wire, `useFiles`, the registry components, and the CLI / MCP / AI tool output use `contentType` too.
+- The gateway wire, `useFiles` results, the registry components, and the CLI / MCP / AI tool output use `contentType` too, and drop `name`. See [Gateway and browser client](#gateway-and-browser-client).
 
 ## Bulk results
 
@@ -81,6 +82,19 @@ const { results: deleted } = await files.delete(keys);
 
 `exists([…])` keeps `{ existing, missing, errors? }`. `DeleteManyOptions` is now `BulkOptions`, and `DeleteManyError` is replaced by `BulkError`. A bulk `delete` with `stopOnError: true` now always deletes one key at a time and skips the native batch, so it gives the same result with or without plugins.
 
+## Gateway and browser client
+
+Deploy the server and client together: the wire format changed, so a v2 client can't read a v3 gateway's responses, or the other way round.
+
+- File records on the wire carry `contentType` instead of `type`, and no `name`.
+- A bulk `head` answers with `results` instead of `files`, and a bulk `delete` with `results` instead of `deleted`.
+- The `url` operation answers a client-requested `expiresIn`, or an `authorize` `maxExpiresIn`, with a `422` on an adapter that can't sign (Vercel Blob public, UploadThing `public-read`, Convex, Appwrite), where v2 returned the permanent link.
+- Presigning uploads follows `capabilities.signedUpload` instead of `signedUrl`. The gateway presigns only when the adapter can bind `maxUploadSize` and the file's content type, and proxies the upload otherwise.
+- Re-add the [registry components](/docs/ui#prebuilt-components) you installed (`npx shadcn@latest add <url> --overwrite`). Copies installed from v2 still read `file.type` and `caps.multipart`.
+- `useFiles` `uploads[]` entries keep the browser file's `name` and `type`. The upload result is a `FileInfo` with `contentType`.
+- Keys and `list`/`search` prefixes inside `versioning()`'s or `softDelete()`'s storage (`.versions`, `.trash`) now get `403` unless they sit under an `authorize` `keyPrefix`. Use the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) instead.
+- Anything thrown from `authorize`, `onUploadComplete`, or the `completions` store that isn't a `FilesError` (or `UploadRejectedError`) now answers a generic `500` ("internal server error") instead of carrying its message. The original goes to the new [`onError`](/docs/ui/server/gateway#options) option, which defaults to `console.error`.
+
 ## Capabilities
 
 `files.capabilities` reads the same way, with a few field changes:
@@ -92,7 +106,9 @@ const { results: deleted } = await files.delete(keys);
 
 An option the adapter can't honor, or that a plugin turns off, is now refused before any plugin runs.
 
-**Custom adapters** declare their capabilities as one object instead of separate flags:
+## Custom adapters
+
+Custom adapters declare their capabilities as one object instead of separate flags:
 
 ```ts lineNumbers
 const myAdapter: Adapter = {
@@ -109,12 +125,29 @@ const myAdapter: Adapter = {
 };
 ```
 
+Rename the old flags: `supportsRange` → `rangeRead`, `supportsDelimiter: true` → `delimiter: "any"` (or `"slash"`), `supportsMetadata` → `metadata`, `supportsCacheControl` → `cacheControl`, `supportsServerSideCopy` → `serverSideCopy`, `reportsUploadProgress` → `uploadProgress`, top-level `signedUrl` → `capabilities.signedUrl`.
+
+TypeScript flags the old fields only on an object literal typed as `Adapter`. Built any other way, they're ignored without an error, and anything you leave out of `capabilities` is off:
+
+- Without `signedUrl.supported`, `url(key, { expiresIn })` throws `Unsupported` before your `url()` runs.
+- Without `signedUpload`, the gateway proxies every upload.
+- Without `signedUrl.disposition` or `publicUrl`, it proxies downloads.
+
 Their other changes:
 
 - `head` and `list` return `FileInfo`.
 - `deleteMany` returns `{ results, errors? }`.
 - `createStoredFile()` takes a `FileInfo`, with `contentType` instead of `type` (`StoredFileMeta` is removed).
 - Throw `Invalid` / `Unsupported` for bad calls and refusals.
+
+## Custom plugins
+
+- The [`capabilities(caps)`](/docs/plugins/api#capabilities) hook sees the v3 snapshot: `resumable` (was `multipart`), the `delimiter` enum, and the new `signedUpload`, `publicUrl`, and `events`.
+- A plugin that transforms bodies must also turn off `signedUpload.supported`: the gateway presigns uploads from it, and a direct upload would skip the transform.
+- Refuse a call with `Invalid` or `Unsupported`, not `Provider`. The gateway falls back to its proxy only for those two, so a `Provider` refusal from `signedUploadUrl` fails the upload instead.
+- An unsupported `range`, `metadata`, `cacheControl`, `control`, or `delimiter`, and an expiring `url()` on an instance that can't sign, are refused before any `wrap` runs, so a `wrap` no longer sees those calls.
+- `wrap` results for `head` and `upload` are `FileInfo`, and so are `list` items. Bulk calls still reach `wrap` one key at a time; an `extend` method that calls the array forms gets `{ results, errors? }` back.
+- A new optional [`event`](/docs/plugins/api#event) hook maps [storage events](/docs/events) into what your plugin's callers see.
 
 ## New in v3: upload lifecycle and storage events
 
@@ -128,3 +161,8 @@ Nothing to migrate, but two additions replace code many apps wrote by hand:
 - **Node 22 or later** (Node 20 is end-of-life).
 - **The filesystem adapter's `defaultUrlExpiresIn`** option is removed; it was ignored.
 - **`new Files({ prefix: "" })`** (or `"/"`) now means no prefix instead of throwing.
+- **`s3()` presigned PUTs now sign `Content-Type`.** Send the returned `headers` unchanged, or the upload gets a 403.
+- **`signedUploadUrl({ minSize })` without `maxSize` throws `Unsupported`** on `s3()`, `s3Fetch()`, R2, and Bun S3, instead of silently dropping the floor. On `s3()`, pass `maxSize` too to get a POST policy that enforces both.
+- **[Google Drive](/docs/adapters/google-drive) `upload({ cacheControl })` throws `Unsupported`.** Drive never served a stored Cache-Control, and `capabilities.cacheControl` is now `false`.
+- **`TransferProgress` / `SyncProgress` `status`** gains `"failed"`, so an exhaustive `switch` needs the new case.
+- **[`cache()`](/docs/plugins/cache) with a custom `store` needs a `namespace`** naming the bucket it caches (`cache({ store, namespace: "uploads-prod" })`), or it throws `Invalid`. Store keys now include the namespace and the instance `prefix`, so a persistent store's v2 entries are no longer read (clear them, or let them expire). Reusing one `cache()` on an instance with a different adapter or `prefix` throws `Invalid` too; create one per instance.

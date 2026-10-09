@@ -330,7 +330,9 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
     // A provider event reports the stored object's size, not the caller's
-    // (the transformed body); the stored ETag and type still describe it.
+    // (the transformed body); the stored ETag and type still describe it. The
+    // event carries no object metadata, so an object this plugin didn't write
+    // (a mixed bucket) can't be told apart: its size is cleared too.
     event: ({ size: _stored, ...event }) => event,
     name: "encryption",
     wrap: handlers({

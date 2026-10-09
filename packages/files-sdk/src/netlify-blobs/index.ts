@@ -208,6 +208,11 @@ interface NetlifyErrorClass {
   message: string;
 }
 
+const NETLIFY_CONFIG_ERRORS: ReadonlySet<string> = new Set([
+  "InvalidBlobsRegionError",
+  "MissingBlobsEnvironmentError",
+]);
+
 const classifyNetlifyError = (cause: unknown): NetlifyErrorClass => {
   const name =
     isObject(cause) && "name" in cause && isString(cause.name)
@@ -217,8 +222,11 @@ const classifyNetlifyError = (cause: unknown): NetlifyErrorClass => {
     isObject(cause) && "message" in cause && isString(cause.message)
       ? cause.message
       : "Netlify Blobs error";
-  if (name === "MissingBlobsEnvironmentError") {
-    return { code: "Provider", message };
+  // Configuration errors the SDK raises while building the store (missing
+  // site ID / token / deploy ID, an unknown region): the call can never
+  // succeed as configured, so they're `Invalid`, not a retryable `Provider`.
+  if (name && NETLIFY_CONFIG_ERRORS.has(name)) {
+    return { code: "Invalid", message };
   }
   const status = statusOf(cause, message);
   if (status === 404) {
@@ -375,8 +383,9 @@ const buildStoreOptions = (
     readEnv("NETLIFY_API_TOKEN") ??
     readEnv("NETLIFY_BLOBS_TOKEN");
   // Both must be set together for explicit auth; if one is missing we let
-  // the SDK pick up its ambient context (NETLIFY_BLOBS_CONTEXT etc.) and
-  // surface its own MissingBlobsEnvironmentError on first call.
+  // the SDK pick up its ambient context (NETLIFY_BLOBS_CONTEXT etc.), and
+  // without one it throws MissingBlobsEnvironmentError while building the
+  // store, which surfaces from the adapter factory as `Invalid`.
   return {
     name: opts.name,
     ...(opts.consistency && { consistency: opts.consistency }),

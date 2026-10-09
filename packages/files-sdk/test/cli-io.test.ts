@@ -177,6 +177,16 @@ describe("cli/io fail", () => {
     expect(payload.error).toEqual({ code: "Provider", message: "boom" });
   });
 
+  test("a local file error (missing --file) is Invalid, exits 2", () => {
+    const enoent = Object.assign(new Error("ENOENT: no such file"), {
+      code: "ENOENT",
+      path: "/nope/missing.txt",
+    });
+    expect(() => fail(enoent, out)).toThrow("__exit:2");
+    const payload = JSON.parse(cap.stderr.join(""));
+    expect(payload.error.code).toBe("Invalid");
+  });
+
   test("non-Error thrown value is stringified", () => {
     expect(() => fail("scalar", out)).toThrow("__exit:5");
     const payload = JSON.parse(cap.stderr.join(""));

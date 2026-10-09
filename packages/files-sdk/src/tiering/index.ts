@@ -18,6 +18,7 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
+import { intersectCapabilities } from "../internal/capabilities.js";
 import { FilesError } from "../internal/errors.js";
 import { isFunction, isObject, isString } from "../internal/is.js";
 import type { JsonValue } from "../internal/json.js";
@@ -491,6 +492,15 @@ const mergePrefixes = (pages: (TierPage | undefined)[]): string[] => {
  * and {@link TieringApi.tier}. Use {@link createFiles} to surface them on the
  * type.
  *
+ * `files.capabilities` reports what **both** tiers can do (the hot adapter's
+ * flags intersected with the cold one's), and the core gates on that up front:
+ * an option the cold tier can't honor — `range`, `metadata`, `cacheControl`,
+ * a `delimiter` (a listing merges both tiers) — is refused on every call, not
+ * only on cold-routed keys. `serverSideCopy` reads `false`, since a cross-tier
+ * copy streams through the process. `events` is the hot tier's format, or
+ * `false` with {@link TieringOptions.fallback} (provider events can't be
+ * mapped once objects move between tiers).
+ *
  * Placement and prefixes:
  * - Place it **last** (innermost) so body-transforming plugins
  *   (`encryption()`, `compression()`) wrap it and apply to **both** tiers.
@@ -531,6 +541,9 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   }
   const { route } = options;
   const fallback = options.fallback ?? false;
+  // The cold adapter's own capability snapshot, read through a plain Files
+  // over it (capabilities don't depend on the instance defaults).
+  const coldProbe = new Files({ adapter: options.cold });
   const coldFor = (defaults: OperationOptions): TierRunner =>
     runnerFor(new Files({ adapter: options.cold, ...defaults }));
   // Rebuilt in `extend` (the only hook that sees the outer instance) so the
@@ -766,11 +779,16 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
-    // Advertise what the wrap refuses: every conditional primitive is vetoed
-    // (cross-tier routing can't preserve one native compare-and-set), so
-    // callers branching on `files.capabilities` don't plan one.
+    // Advertise only what both tiers can do — any key may route to either,
+    // and `list` merges both — so an option the cold tier lacks is refused up
+    // front, not only on cold-routed keys. A cross-tier copy streams, so
+    // copies aren't reliably server-side. Provider events come from the hot
+    // tier and can't be mapped under `fallback` (see `event` below). Every
+    // conditional primitive is vetoed (cross-tier routing can't preserve one
+    // native compare-and-set), so callers branching on `files.capabilities`
+    // don't plan one.
     capabilities: (caps) => ({
-      ...caps,
+      ...intersectCapabilities(caps, coldProbe.capabilities),
       conditional: {
         ...caps.conditional,
         copy: {
@@ -784,6 +802,8 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
         exactRead: false,
         replace: false,
       },
+      events: fallback ? false : caps.events,
+      serverSideCopy: false,
     }),
     // Provider events come from the hot tier's bucket. With deterministic
     // routing they're accurate for the keys routed there (any other key in

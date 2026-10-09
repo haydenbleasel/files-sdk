@@ -31,7 +31,7 @@ const onUpload = async (event: Event) => {
 
 ## The verbs
 
-Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities`, plus the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) when the gateway exposes them — including the bulk array forms. They are plain methods (no `.value`):
+Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `delete`, `copy`, `move`, `signedUploadUrl`, `capabilities`, plus the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) when the gateway exposes them (a missing one rejects with `Unsupported`) — including the bulk array forms. `search()`'s generator returns a `SearchSummary` (`{ truncated }`) saying whether the gateway's bounded walk stopped early, and a `416` rejects with `Invalid`. They are plain methods (no `.value`):
 
 ```ts lineNumbers
 const { key } = await files.upload(file); // keyless → server mints the key

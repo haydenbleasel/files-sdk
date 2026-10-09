@@ -71,7 +71,7 @@ export interface WebdavAdapterOptions {
   headers?: Record<string, string>;
   /**
    * Remote base directory. Virtual keys resolve under it; keys that escape it
-   * (e.g. `../secret`) throw `Provider`. Defaults to `"/"` (the collection the
+   * (e.g. `../secret`) throw `Invalid`. Defaults to `"/"` (the collection the
    * `baseUrl` points at).
    */
   root?: string;
@@ -297,6 +297,58 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     }
   };
 
+  // What sits at a remote path. WebDAV DELETE, COPY, and MOVE on a collection
+  // act on everything under it (and COPY/MOVE with `Overwrite: T` onto a
+  // collection replace it wholesale), so the object verbs look first: a
+  // collection is not an object, exactly as `head`/`exists` report it.
+  const statKind = async (
+    remote: string,
+    signal: AbortSignal | undefined
+  ): Promise<"directory" | "file" | "missing"> => {
+    try {
+      // SAFETY: without `details: true`, `stat` resolves to the bare FileStat.
+      const stat = (await client.stat(remote, {
+        ...(signal && { signal }),
+      })) as FileStat;
+      return stat.type === "directory" ? "directory" : "file";
+    } catch (error) {
+      if (mapWebdavError(error).code === "NotFound") {
+        return "missing";
+      }
+      throw error;
+    }
+  };
+
+  // Guard a COPY/MOVE: the source must be a file (a collection would carry
+  // its whole tree) and the destination must not be a collection (Overwrite
+  // would replace everything under it with one file).
+  const assertFileTransfer = async (
+    from: string,
+    fromRemote: string,
+    to: string,
+    toRemote: string,
+    signal: AbortSignal | undefined
+  ): Promise<void> => {
+    const [source, destination] = await Promise.all([
+      statKind(fromRemote, signal),
+      statKind(toRemote, signal),
+    ]);
+    if (source !== "file") {
+      throw new FilesError(
+        "NotFound",
+        source === "directory"
+          ? `webdav: ${from} is a collection, not a file`
+          : `webdav: ${from} not found`
+      );
+    }
+    if (destination === "directory") {
+      throw new FilesError(
+        "Conflict",
+        `webdav: ${to} is a collection; refusing to replace it with a file`
+      );
+    }
+  };
+
   const adapter: WebdavAdapter = {
     capabilities: {
       delimiter: "any",
@@ -315,6 +367,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
       try {
+        await assertFileTransfer(from, fromRemote, to, toRemote, opts2?.signal);
         // Native server-side COPY — no body round-trip through this process.
         await ensureParentDir(toRemote, opts2?.signal);
         await client.copyFile(fromRemote, toRemote, {
@@ -327,6 +380,11 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     async delete(key, opts2) {
       const remote = keyToRemote(key);
       try {
+        // A collection is not an object, so deleting its key is the same
+        // no-op as deleting a missing one — never a recursive DELETE.
+        if ((await statKind(remote, opts2?.signal)) !== "file") {
+          return;
+        }
         await client.deleteFile(remote, {
           ...(opts2?.signal && { signal: opts2.signal }),
         });
@@ -537,6 +595,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
       try {
+        await assertFileTransfer(from, fromRemote, to, toRemote, opts2?.signal);
         // Native server-side MOVE — no body round-trip.
         await ensureParentDir(toRemote, opts2?.signal);
         await client.moveFile(fromRemote, toRemote, {

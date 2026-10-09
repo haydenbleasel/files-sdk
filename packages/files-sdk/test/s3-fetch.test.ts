@@ -549,6 +549,59 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(error.message).toMatch(/^R2 error: `maxSize` requires/u);
     expect(error.permanent).toBe(true);
   });
+
+  test("signedUploadUrl fails closed on a positive minSize; minSize 0 still presigns", async () => {
+    const adapter = makeAdapter({ providerLabel: "R2 error" });
+    const error = await expectCode(
+      adapter.signedUploadUrl("a.bin", { expiresIn: 60, minSize: 1 }),
+      "Unsupported"
+    );
+    expect(error.message).toMatch(/^R2 error: `minSize` requires/u);
+    const put = await adapter.signedUploadUrl("a.bin", {
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(put.method).toBe("PUT");
+  });
+});
+
+describe("s3-fetch core — metadata that can't be a header is Invalid", () => {
+  test("non-Latin-1 values and invalid key names are refused before any request", async () => {
+    const { adapter, fake } = withFake();
+    const files = new Files({ adapter, retries: 2 });
+    const error = await expectCode(
+      files.upload("a.txt", "hi", { metadata: { title: "日本" } }),
+      "Invalid"
+    );
+    expect(error.message).toMatch(
+      /metadata key "title" can't be sent as an HTTP header/u
+    );
+    await expectCode(
+      adapter.upload("a.txt", "hi", { metadata: { "bad key": "v" } }),
+      "Invalid"
+    );
+    expect(fake.requests).toHaveLength(0);
+    // Latin-1 still goes out as-is.
+    await adapter.upload("a.txt", "hi", { metadata: { title: "café" } });
+    expect(fake.requests).toHaveLength(1);
+  });
+});
+
+describe("s3-fetch core — AWS endpoint classification", () => {
+  test("AWS hosts declare S3 events; lookalikes and other hosts don't", () => {
+    for (const endpoint of [
+      "https://s3.us-east-1.amazonaws.com",
+      "https://S3.CN-NORTH-1.AMAZONAWS.COM.CN",
+    ]) {
+      expect(makeAdapter({ endpoint }).capabilities?.events).toEqual({
+        format: "s3",
+      });
+    }
+    expect(
+      makeAdapter({ endpoint: "https://s3.notamazonaws.com" }).capabilities
+        ?.events
+    ).toBe(false);
+  });
 });
 
 describe("s3-fetch core — error handling", () => {

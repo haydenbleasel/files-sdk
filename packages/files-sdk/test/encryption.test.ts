@@ -14,9 +14,11 @@ import {
 import type {
   Adapter,
   ConditionalFilesOperation,
+  FileEvent,
   FilesOperation,
   PluginNext,
 } from "../src/index.js";
+import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
@@ -592,7 +594,9 @@ describe("encryption plugin — backstop refusals", () => {
 
 describe("encryption plugin — refusals are permanent", () => {
   test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
-    const secondary = fakeAdapter();
+    // Range-capable like the primary: failover() advertises only what every
+    // backend can do, and this checks the plugin's own refusal.
+    const secondary = fakeAdapter({ supportsRange: true });
     await new Files({ adapter: secondary }).upload("a.txt", "replica");
     const files = new Files({
       // Range-capable, so the range refusal is the plugin's, not the adapter's.
@@ -650,5 +654,28 @@ describe("encryption plugin — refusals are permanent", () => {
       .upload("c.txt", "x")
       .catch((error: unknown) => error);
     expect((badKey as FilesError).permanent).toBe(true);
+  });
+});
+
+/** A provider event as `files-sdk/events` hands it to the core. */
+const providerEvent = (key: string): FileEvent => ({
+  etag: '"stored"',
+  id: key,
+  key,
+  provider: "fake",
+  raw: null,
+  size: 99,
+  source: "provider",
+  time: 0,
+  type: "created",
+});
+
+describe("encryption plugin — provider events", () => {
+  test("clears the stored (ciphertext) size on every event, keeping the ETag", async () => {
+    // The event carries no metadata, so an object encryption() didn't write
+    // can't be told apart: its size is cleared as well.
+    const { size: _size, ...rest } = providerEvent("a.txt");
+    const files = await encrypted();
+    expect(files[FOLD_PROVIDER_EVENT](providerEvent("a.txt"))).toEqual(rest);
   });
 });

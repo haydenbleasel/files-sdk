@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- namespace import of node:fs/promises; many members (readdir/stat/rename/mkdir/...) are used.
 import * as fsp from "node:fs/promises";
 import path from "node:path";
@@ -33,7 +33,7 @@ export interface FsAdapterOptions {
   /**
    * Absolute or relative directory the adapter manages. Created on first
    * upload if it doesn't exist. All operations are scoped to this root —
-   * keys that resolve outside it (e.g. `../etc/passwd`) throw `Provider`.
+   * keys that resolve outside it (e.g. `../etc/passwd`) throw `Invalid`.
    */
   root: string;
   /**
@@ -76,6 +76,17 @@ const errorCode = (cause: unknown): string | undefined => {
   return undefined;
 };
 
+// A directory sitting where a write needs a file (an `upload`/`copy`/`move` to
+// a key that is a folder) fails the same way on every attempt, so it maps to
+// `Conflict` (permanent) rather than a retryable `Provider`. Reads never get
+// here for a directory: `statFile` reports it as `NotFound` first.
+const CONFLICT_CODES = new Set([
+  "EEXIST",
+  "EISDIR",
+  "ENOTEMPTY",
+  "ERR_FS_EISDIR",
+]);
+
 const classifyFsError = (code: string | undefined): ProviderFilesErrorCode => {
   if (code === "ENOENT" || code === "ENOTDIR") {
     return "NotFound";
@@ -83,7 +94,7 @@ const classifyFsError = (code: string | undefined): ProviderFilesErrorCode => {
   if (code === "EACCES" || code === "EPERM") {
     return "Unauthorized";
   }
-  if (code === "EEXIST") {
+  if (code !== undefined && CONFLICT_CODES.has(code)) {
     return "Conflict";
   }
   return "Provider";
@@ -269,6 +280,55 @@ const writePathUnderRoot = async (
 };
 
 const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
+
+// `stat` that only accepts a regular file. A directory (or socket, FIFO, …) at
+// a key's path is not an object — `list()` never yields one — so `head`,
+// `exists`, `download`, `copy`, and `move` report it as `NotFound`, like a
+// prefix with no object on a cloud store, instead of describing the folder or
+// failing later with a retryable `EISDIR`.
+const statFile = async (target: string, key: string): Promise<Stats> => {
+  const stat = await fsp.stat(target);
+  if (!stat.isFile()) {
+    throw new FilesError(
+      "NotFound",
+      `fs: no file at key (the path is a directory or other non-file): ${JSON.stringify(key)}`
+    );
+  }
+  return stat;
+};
+
+// Whether `delete()` has anything to remove at `bodyPath`. A directory is not
+// an object, and a path under a file (`ENOTDIR`) can't hold one, so both are
+// the same no-op as a missing key — unless the file in the way is the adapter
+// root itself, a misconfiguration that fails loudly rather than looking empty.
+// `lstat`, so a symlink at the key is unlinked rather than followed; a plain
+// miss still clears an orphan sidecar.
+const hasDeletableBody = async (
+  root: string,
+  bodyPath: string
+): Promise<boolean> => {
+  try {
+    const stat = await fsp.lstat(bodyPath);
+    return !stat.isDirectory();
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT") {
+      return true;
+    }
+    if (code !== "ENOTDIR") {
+      throw error;
+    }
+    const rootStat = await fsp.stat(root);
+    if (!rootStat.isDirectory()) {
+      throw new FilesError(
+        "Invalid",
+        `fs: adapter root is not a directory: ${JSON.stringify(root)}`,
+        error
+      );
+    }
+    return false;
+  }
+};
 
 const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
   try {
@@ -481,9 +541,10 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
-      // `url(key)` always returns a permanent link: the `urlBaseUrl` one when
-      // configured, else a `file://` URL.
-      publicUrl: true,
+      // Only a `urlBaseUrl` link is a public URL. Without one, `url(key)`
+      // returns a `file://` path on this machine, which no browser or
+      // gateway redirect can serve (and which leaks the server path).
+      publicUrl: Boolean(urlBaseUrl),
       rangeRead: true,
       // `copy()` is a local `fs.copyFile` — no body round-trip.
       serverSideCopy: true,
@@ -496,6 +557,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       const toKeyPath = resolveKeyPath(root, to);
       try {
         const realFromPath = await realpathUnderRoot(root, fromPath, from);
+        await statFile(realFromPath, from);
         const toPath = await writePathUnderRoot(root, toKeyPath, to);
         await ensureDirFor(toPath);
         const sidecar = await readSidecar(fromPath);
@@ -535,6 +597,12 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           resolveKeyPath(root, key),
           key
         );
+        // A directory at the key is not an object (`head` reports it as
+        // `NotFound`), so deleting it is the same no-op as deleting a missing
+        // key — never a recursive removal of everything under it.
+        if (!(await hasDeletableBody(root, bodyPath))) {
+          return;
+        }
         // `force: true` makes both unlinks idempotent — matches the
         // silent-on-missing behavior of S3/Azure.
         await fsp.rm(bodyPath, { force: true });
@@ -547,7 +615,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       const bodyPath = resolveKeyPath(root, key);
       try {
         const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
-        const stat = await fsp.stat(realBodyPath);
+        const stat = await statFile(realBodyPath, key);
         const sidecar = await readSidecar(bodyPath);
         const baseMeta = {
           contentType: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
@@ -604,12 +672,10 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       }
     },
     exists(key) {
-      // stat resolves for both files and directories, matching head()'s
-      // permissive behavior. Tighten both together if file-only semantics
-      // are ever needed.
+      // File-only, like head(): a directory at the key reads as absent.
       const bodyPath = resolveKeyPath(root, key);
       return existsByProbe(
-        async () => fsp.stat(await realpathUnderRoot(root, bodyPath, key)),
+        async () => statFile(await realpathUnderRoot(root, bodyPath, key), key),
         mapFsError
       );
     },
@@ -617,7 +683,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       const bodyPath = resolveKeyPath(root, key);
       try {
         const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
-        const stat = await fsp.stat(realBodyPath);
+        const stat = await statFile(realBodyPath, key);
         const sidecar = await readSidecar(bodyPath);
         return infoFromSidecar(key, sidecar, stat.size, stat.mtimeMs);
       } catch (error) {
@@ -680,6 +746,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           writePathUnderRoot(root, resolveKeyPath(root, from), from),
           writePathUnderRoot(root, resolveKeyPath(root, to), to),
         ]);
+        // Only a file moves: `rename` on a directory would carry the whole
+        // tree under it, which no other adapter's `move(key)` does.
+        await statFile(fromPath, from);
         await ensureDirFor(toPath);
         // Atomic per-file rename — no byte round-trip, unlike copy()+delete().
         await fsp.rename(fromPath, toPath);

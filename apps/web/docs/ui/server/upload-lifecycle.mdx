@@ -95,9 +95,9 @@ createFilesRouter({
 
 - **`UploadRejectedError`** gives the client a `422` (`Validation`, reason `rejected`) carrying your message.
 - **A `FilesError`** keeps its code (`Conflict` → `409`, …).
-- **Anything else** is reported the way a failing `authorize` is.
+- **Anything else** (from the hook, from `authorize`, or from the `completions` store) gets a generic `500` ("internal server error"), so its message (a SQL error, a connection string) never reaches the browser. The original goes to the router's [`onError(error, req)`](/docs/ui/server/gateway#options), which defaults to `console.error`.
 
-Set `onRejected: "keep"` to leave rejected objects in place instead, for example to quarantine them for review. The same policy applies when the object fails the complete-time `maxUploadSize` check.
+Set `onRejected: "keep"` to leave rejected objects in place instead, for example to quarantine them for review. The same policy applies when the object fails the complete-time `maxUploadSize` check, which answers `Validation` with reason `size`.
 
 For a keyless upload, the error comes back per file in the `complete` response, so one rejected file doesn't fail the others in a batch. For a keyed upload, it's the response error.
 
@@ -107,9 +107,9 @@ A keyed `upload(key, body)` overwrites before the hook runs. Rejecting it delete
 
 ## Retries and replays
 
-Upload tokens are stateless, so a client can call `complete` again with the same token until it expires (`defaultExpiresIn`, 5 minutes by default), and the hook fires again. `uploadId` is a hash of the token, the same on every replay, so make the hook idempotent on it: an upsert keyed on `uploadId`, or a unique column.
+Upload tokens are stateless, so a client can call `complete` again with the same token, and the hook fires again. `complete` accepts a token until it expires (`defaultExpiresIn`, 5 minutes by default) plus `completeGracePeriod` (default 3600 seconds), since a large body can finish landing after the token's expiry and the client only completes once it has. `uploadId` is a hash of the token, the same on every replay, so make the hook idempotent on it: an upsert keyed on `uploadId`, or a unique column.
 
-To make completions single-use, pass a `completions` store. A replayed `complete` then gets the first result back and the hook doesn't fire again:
+To make completions single-use, pass a `completions` store. A replayed `complete` then gets the first result back and the hook doesn't fire again, and once `complete` has accepted an upload, the proxy `PUT` refuses further bytes for it with `409`:
 
 ```ts lineNumbers
 createFilesRouter({
@@ -128,7 +128,9 @@ createFilesRouter({
 });
 ```
 
-`ttl` is in milliseconds and lasts until the token expires, after which the token itself is refused. A get-then-set store still lets two `complete` calls racing each other both through, so keep the hook idempotent on `uploadId` regardless.
+`ttl` is in milliseconds and lasts until the token expires plus `completeGracePeriod`, after which the token itself is refused. A get-then-set store still lets two `complete` calls racing each other both through, so keep the hook idempotent on `uploadId` regardless.
+
+Without a store, a proxy upload's token stays writable until it expires, even after `complete`. A presigned direct-to-storage target stays writable until it expires regardless of `complete`, since the provider never hears about it; keep `defaultExpiresIn` short.
 
 ## On the client
 

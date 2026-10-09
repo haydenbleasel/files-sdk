@@ -11,6 +11,7 @@ import type {
   FileInfo,
   ListResult,
   OffsetResumableDriver,
+  ResumableDriverOptions,
   ResumableUploadSession,
   SignedUpload,
   UploadResult,
@@ -126,7 +127,6 @@ const resumableUpdateUrl = (fileId: string): string =>
 // clean (see assertNoReservedMetadata).
 const KEY_PROP = "fsdkKey";
 const CONTENT_TYPE_PROP = "fsdkContentType";
-const CACHE_CONTROL_PROP = "fsdkCacheControl";
 const RESERVED_METADATA_PREFIX = "fsdk";
 
 const FILE_FIELDS =
@@ -292,7 +292,7 @@ const assertAppPropertiesFit = (props: Record<string, string>): void => {
     if (size > MAX_APP_PROPERTY_BYTES) {
       throw new FilesError(
         "Invalid",
-        `google-drive: appProperty '${name}' is ${size} bytes (UTF-8 key + value), over Drive's ${MAX_APP_PROPERTY_BYTES}-byte limit per property. Keys are stored in '${KEY_PROP}', so a key can be at most ${MAX_APP_PROPERTY_BYTES - utf8Length(KEY_PROP)} bytes; each metadata key + value (and the content type / cacheControl) must fit in ${MAX_APP_PROPERTY_BYTES} bytes.`
+        `google-drive: appProperty '${name}' is ${size} bytes (UTF-8 key + value), over Drive's ${MAX_APP_PROPERTY_BYTES}-byte limit per property. Keys are stored in '${KEY_PROP}', so a key can be at most ${MAX_APP_PROPERTY_BYTES - utf8Length(KEY_PROP)} bytes; each metadata key + value (and the content type) must fit in ${MAX_APP_PROPERTY_BYTES} bytes.`
       );
     }
   }
@@ -696,9 +696,133 @@ export const googleDrive = (
     );
   };
 
+  // A resumable session is opened with a bearer token minted from the auth
+  // handle, which an adapter built from a pre-built `client` doesn't have — so
+  // `resumableUpload` is only attached when it can work, and
+  // `capabilities.resumable` (derived from it) follows.
+  const resumableUploadWith =
+    (tokens: AuthHandle) =>
+    (
+      key: string,
+      resumableOpts: ResumableDriverOptions
+    ): OffsetResumableDriver => {
+      let contentType = OCTET_STREAM;
+      let total = 0;
+      return createOffsetHttpDriver({
+        async open(meta) {
+          assertNoReservedMetadata(resumableOpts.metadata);
+          ({ contentType } = meta);
+          ({ total } = meta);
+          const nextProps = {
+            [KEY_PROP]: key,
+            [CONTENT_TYPE_PROP]: meta.contentType,
+            ...resumableOpts.metadata,
+          };
+          assertAppPropertiesFit(nextProps);
+          const tokenResp = await tokens.getAccessToken();
+          const token = isString(tokenResp) ? tokenResp : tokenResp?.token;
+          if (!token) {
+            throw new FilesError(
+              "Provider",
+              "google-drive: failed to mint access token for resumable upload session"
+            );
+          }
+          const existing = await lookupFile(key);
+          const existingId = existing?.id;
+          const fields = `&fields=${encodeURIComponent(
+            "id,size,md5Checksum,mimeType,modifiedTime"
+          )}`;
+          const initBody = {
+            appProperties: existing
+              ? overwriteProps(nextProps, existing.appProperties)
+              : nextProps,
+            mimeType: meta.contentType,
+            name: basename(key),
+          };
+          const res = await fetch(
+            existingId === undefined
+              ? `${RESUMABLE_INITIATE_URL}${fields}`
+              : `${resumableUpdateUrl(existingId)}${fields}`,
+            {
+              body: JSON.stringify(
+                existingId === undefined
+                  ? { ...initBody, parents: [rootFolderId] }
+                  : initBody
+              ),
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Type": meta.contentType,
+              },
+              method: existingId === undefined ? "POST" : "PATCH",
+            }
+          );
+          if (!res.ok) {
+            throw await initiationError(res);
+          }
+          const uri =
+            res.headers.get("location") ?? res.headers.get("Location");
+          if (!uri) {
+            throw new FilesError(
+              "Provider",
+              "google-drive: resumable session response missing Location header"
+            );
+          }
+          const trustedUri = trustedHttpsSessionUrl(
+            uri,
+            "google-drive resumable session URL",
+            ["googleapis.com"]
+          );
+          return {
+            session: { key, provider: PROVIDER, uri: trustedUri },
+            uri: trustedUri,
+          };
+        },
+        async parseResult(res) {
+          // SAFETY: `Response#json()` is untyped; Drive's resumable finalize
+          // response is a `files` resource restricted to the `fields` requested
+          // at initiation, and every field is read optional-guarded.
+          const data = (await res.json()) as ResumableUploadResult;
+          return {
+            contentType: data.mimeType ?? contentType,
+            ...(data.md5Checksum && { etag: data.md5Checksum }),
+            key,
+            ...(data.modifiedTime && {
+              lastModified: new Date(data.modifiedTime).getTime(),
+            }),
+            size: Number(data.size ?? total),
+          };
+        },
+        partSize:
+          resumableChunkSize(resumableOpts.multipart) ?? 8 * 1024 * 1024,
+        resume(session: ResumableUploadSession): string {
+          if (session.provider !== PROVIDER) {
+            throw new FilesError(
+              "Invalid",
+              `Cannot resume a ${session.provider} session on a google-drive adapter.`
+            );
+          }
+          if (session.key !== key) {
+            throw new FilesError(
+              "Invalid",
+              "Resume token does not match this upload's key."
+            );
+          }
+          return trustedHttpsSessionUrl(
+            session.uri,
+            "google-drive resumable session URL",
+            ["googleapis.com"]
+          );
+        },
+        wrapErr: mapDriveError,
+      });
+    };
+
   return {
     capabilities: {
-      cacheControl: true,
+      // Not declared: Drive serves no Cache-Control from file metadata, so a
+      // stored value would be dropped silently. The wrapper refuses
+      // `cacheControl` before any Drive call instead.
       delimiter: "any",
       metadata: true,
       // Under `publicByDefault`, `url(key)` returns a permanent
@@ -708,11 +832,12 @@ export const googleDrive = (
       // `copy()` is a server-side `files.copy`.
       serverSideCopy: true,
       // `signedUploadUrl()` mints a Drive resumable upload session, which
-      // enforces no size limit (`maxSize` throws). It needs an auth handle to
-      // mint the session's access token, so it refuses on an adapter built
-      // from a pre-built `client`.
+      // enforces no size limit (`maxSize` throws). A `contentType` is bound at
+      // initiation (`X-Upload-Content-Type` sets the file's MIME type). It
+      // needs an auth handle to mint the session's access token, so it
+      // refuses on an adapter built from a pre-built `client`.
       signedUpload: {
-        contentType: false,
+        contentType: true,
         maxSize: false,
         supported: authForTokens !== undefined,
       },
@@ -982,127 +1107,9 @@ export const googleDrive = (
     },
     name: PROVIDER,
     raw: driveClient,
-    resumableUpload(key, resumableOpts): OffsetResumableDriver {
-      let contentType = OCTET_STREAM;
-      let total = 0;
-      return createOffsetHttpDriver({
-        async open(meta) {
-          assertNoReservedMetadata(resumableOpts.metadata);
-          ({ contentType } = meta);
-          ({ total } = meta);
-          const nextProps = {
-            [KEY_PROP]: key,
-            [CONTENT_TYPE_PROP]: meta.contentType,
-            ...(resumableOpts.cacheControl && {
-              [CACHE_CONTROL_PROP]: resumableOpts.cacheControl,
-            }),
-            ...resumableOpts.metadata,
-          };
-          assertAppPropertiesFit(nextProps);
-          if (!authForTokens) {
-            throw new FilesError(
-              "Unsupported",
-              "google-drive: resumable uploads require `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
-            );
-          }
-          const tokenResp = await authForTokens.getAccessToken();
-          const token = isString(tokenResp) ? tokenResp : tokenResp?.token;
-          if (!token) {
-            throw new FilesError(
-              "Provider",
-              "google-drive: failed to mint access token for resumable upload session"
-            );
-          }
-          const existing = await lookupFile(key);
-          const existingId = existing?.id;
-          const fields = `&fields=${encodeURIComponent(
-            "id,size,md5Checksum,mimeType,modifiedTime"
-          )}`;
-          const initBody = {
-            appProperties: existing
-              ? overwriteProps(nextProps, existing.appProperties)
-              : nextProps,
-            mimeType: meta.contentType,
-            name: basename(key),
-          };
-          const res = await fetch(
-            existingId === undefined
-              ? `${RESUMABLE_INITIATE_URL}${fields}`
-              : `${resumableUpdateUrl(existingId)}${fields}`,
-            {
-              body: JSON.stringify(
-                existingId === undefined
-                  ? { ...initBody, parents: [rootFolderId] }
-                  : initBody
-              ),
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json; charset=UTF-8",
-                "X-Upload-Content-Type": meta.contentType,
-              },
-              method: existingId === undefined ? "POST" : "PATCH",
-            }
-          );
-          if (!res.ok) {
-            throw await initiationError(res);
-          }
-          const uri =
-            res.headers.get("location") ?? res.headers.get("Location");
-          if (!uri) {
-            throw new FilesError(
-              "Provider",
-              "google-drive: resumable session response missing Location header"
-            );
-          }
-          const trustedUri = trustedHttpsSessionUrl(
-            uri,
-            "google-drive resumable session URL",
-            ["googleapis.com"]
-          );
-          return {
-            session: { key, provider: PROVIDER, uri: trustedUri },
-            uri: trustedUri,
-          };
-        },
-        async parseResult(res) {
-          // SAFETY: `Response#json()` is untyped; Drive's resumable finalize
-          // response is a `files` resource restricted to the `fields` requested
-          // at initiation, and every field is read optional-guarded.
-          const data = (await res.json()) as ResumableUploadResult;
-          return {
-            contentType: data.mimeType ?? contentType,
-            ...(data.md5Checksum && { etag: data.md5Checksum }),
-            key,
-            ...(data.modifiedTime && {
-              lastModified: new Date(data.modifiedTime).getTime(),
-            }),
-            size: Number(data.size ?? total),
-          };
-        },
-        partSize:
-          resumableChunkSize(resumableOpts.multipart) ?? 8 * 1024 * 1024,
-        resume(session: ResumableUploadSession): string {
-          if (session.provider !== PROVIDER) {
-            throw new FilesError(
-              "Invalid",
-              `Cannot resume a ${session.provider} session on a google-drive adapter.`
-            );
-          }
-          if (session.key !== key) {
-            throw new FilesError(
-              "Invalid",
-              "Resume token does not match this upload's key."
-            );
-          }
-          return trustedHttpsSessionUrl(
-            session.uri,
-            "google-drive resumable session URL",
-            ["googleapis.com"]
-          );
-        },
-        wrapErr: mapDriveError,
-      });
-    },
+    ...(authForTokens !== undefined && {
+      resumableUpload: resumableUploadWith(authForTokens),
+    }),
     rootFolderId,
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       if (signOpts.maxSize !== undefined || signOpts.minSize !== undefined) {
@@ -1136,8 +1143,8 @@ export const googleDrive = (
       const existing = await lookupFile(key, signOpts.signal);
       const existingId = existing?.id;
       // Drive merges appProperties on update, so an overwrite must clear the
-      // previous upload's content type / cacheControl / metadata — otherwise
-      // head() keeps reporting the old ones.
+      // previous upload's content type / metadata (and any legacy
+      // `fsdkCacheControl`) — otherwise head() keeps reporting the old ones.
       const initBody = {
         appProperties: existing
           ? overwriteProps(nextProps, existing.appProperties)
@@ -1187,9 +1194,6 @@ export const googleDrive = (
         const appProperties = {
           [KEY_PROP]: key,
           [CONTENT_TYPE_PROP]: normalized.contentType,
-          ...(options?.cacheControl && {
-            [CACHE_CONTROL_PROP]: options.cacheControl,
-          }),
           ...options?.metadata,
         };
         assertAppPropertiesFit(appProperties);

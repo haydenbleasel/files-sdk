@@ -74,6 +74,31 @@ describe("upload edge paths", () => {
     });
   });
 
+  test("the gateway proxy's error envelope keeps its code", async () => {
+    const transport: Transport = () =>
+      Promise.resolve({
+        status: 409,
+        text: JSON.stringify({
+          error: { code: "Conflict", message: "upload was already completed" },
+        }),
+      });
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: presignFetch([
+        {
+          id: "t",
+          key: "k",
+          target: { method: "PUT", url: `${ENDPOINT}?op=proxy&token=t` },
+        },
+      ]),
+      transport,
+    });
+    await expect(client.upload(new Blob(["x"]))).rejects.toMatchObject({
+      code: "Conflict",
+      message: "upload was already completed",
+    });
+  });
+
   test("empty presign result throws", async () => {
     const client = createFilesClient({
       endpoint: ENDPOINT,
@@ -466,6 +491,23 @@ describe("download edge paths", () => {
       await expect(client.download("missing.txt")).rejects.toMatchObject({
         code,
         message: `storage responded ${status}`,
+      });
+    }
+    // A bare 416 — an older gateway, or the storage host — is the caller's
+    // bad range, not a backend failure.
+    for (const redirected of [false, true]) {
+      const res = new Response(null, { status: 416 });
+      Object.defineProperty(res, "redirected", { value: redirected });
+      const client = createFilesClient({
+        endpoint: ENDPOINT,
+        fetchImpl: fetchReturning(() => res),
+      });
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      await expect(
+        client.download("k", { range: { end: 9, start: 5 } })
+      ).rejects.toMatchObject({
+        code: "Invalid",
+        message: "range not satisfiable",
       });
     }
     // A non-envelope failure from the gateway itself stays generic.

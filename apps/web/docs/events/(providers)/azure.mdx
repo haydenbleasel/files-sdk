@@ -43,4 +43,4 @@ Keep the trailing slash in `--subject-begins-with`, so other containers whose na
 | `BlobRenamed` (Data Lake / SFTP) | `deleted` for the source and `created` for the destination |
 | Tier changes, directories, policy runs | skipped |
 
-The key is the blob name from the event's `subject`; the container becomes the event's bucket, so `events({ bucket: "my-container" })` filters a shared endpoint.
+The key is the blob name from the event's `subject`; the container becomes the event's bucket, and `events()` keeps only the adapter's own container by default, so a system topic shared by several containers delivers only yours. Pass `events({ bucket: "my-container" })` to pick another, or `bucket: false` for all of them.

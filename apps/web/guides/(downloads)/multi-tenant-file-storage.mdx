@@ -268,7 +268,7 @@ A [constructor `prefix`](/docs/prefixes) matches on a path boundary, so `orgs/ac
 
 - **Bucket credentials reach every tenant.** The R2 token or AWS keys in your server environment can read and write all of `orgs/`. A leaked key, or any server route that calls `files` directly, skips `authorize` completely.
 - **Signed URLs are bearer tokens.** The URL behind a `download` redirect or a `url` call works for anyone who has it until it expires. The gateway can't revoke it.
-- **Upload tokens are bearer tokens too.** The token `presign` returns is bound to the minted key and the endpoint, not to the session. The proxy `PUT` that redeems it doesn't run `authorize`, so anyone holding the token can write that one key until it expires. Replaying one tenant's token from another tenant's session wrote into the first tenant's prefix. The token is signed, not encrypted, so whoever holds it can also read the storage key inside it.
+- **Upload tokens are bearer tokens too.** The token `presign` returns is bound to the minted key and the endpoint, not to the session. The proxy `PUT` that redeems it doesn't run `authorize`, so anyone holding the token can write that one key until it expires (or, with a [`completions` store](/docs/ui/server/upload-lifecycle#retries-and-replays), until `complete` accepts the upload, after which the proxy `PUT` answers `409`). Replaying one tenant's token from another tenant's session wrote into the first tenant's prefix. The token is signed, not encrypted, so whoever holds it can also read the storage key inside it.
 
 Short lifetimes limit the last two, and provider-side permissions limit the first.
 
@@ -343,7 +343,7 @@ export async function deleteTenantFiles(orgId: string) {
 The bulk [`delete`](/docs/api/delete) doesn't throw when individual keys fail; it reports them in `errors`, so check that and run it again. Two places can still hold the tenant's data afterwards:
 
 - **Bucket versioning.** On a versioned S3 bucket, `DeleteObject` without a version ID [inserts a delete marker](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html) and keeps the old versions. Remove those versions or expire them with a lifecycle rule.
-- **The `versioning()` and `softDelete()` plugins.** They keep their copies outside the tenant prefix by default, under `.versions/orgs/<id>/…` and `.trash/orgs/<id>/…`. Delete those prefixes too.
+- **The `versioning()` and `softDelete()` plugins.** They keep their copies outside the tenant prefix by default, under `.versions/orgs/<id>/…` and `.trash/orgs/<id>/…`. Delete those prefixes too, from server code: the gateway reserves both and answers `403` to any client key or listing inside them.
 
 ## When a shared bucket isn't enough
 

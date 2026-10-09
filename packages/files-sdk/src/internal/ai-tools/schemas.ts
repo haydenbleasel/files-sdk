@@ -57,7 +57,7 @@ const getFileUrlInput = z.object({
     .positive()
     .optional()
     .describe(
-      "Override the adapter default URL expiry in seconds. Ignored by permanent-CDN adapters."
+      "Request a signed URL that expires after this many seconds. Only works when the adapter can sign (capabilities.signedUrl.supported); on adapters with only permanent links it fails with Unsupported, so omit it there to get the permanent URL."
     ),
   key: z.string().describe("The object key to build a URL for"),
   responseContentDisposition: z

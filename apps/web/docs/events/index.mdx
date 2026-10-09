@@ -42,8 +42,8 @@ interface FileEvent {
   key: string; // caller-facing: URL-decoded, the instance prefix stripped
   size?: number;
   etag?: string;
-  versionId?: string; // S3 version id, GCS generation
-  contentType?: string; // only when the delivery carries it (GCS, Azure, MinIO)
+  versionId?: string; // S3 version id, GCS generation, B2 / Box / Cloudinary version
+  contentType?: string; // only when the delivery carries it (GCS, Azure, MinIO, Supabase, Cloudinary, Appwrite)
   time: number; // ms since the epoch
   source: "provider" | "gateway" | "sdk";
   provider: string; // the adapter's name
@@ -68,7 +68,8 @@ All three reach the same `on()` handlers.
 
 | Format | Adapters | Delivery | Setup |
 | --- | --- | --- | --- |
-| `s3` | `s3`, `s3-fetch` (against AWS) | Lambda, SQS, SNS → SQS, EventBridge | [Amazon S3](/docs/events/s3) |
+| `s3` | `s3`, `s3-fetch` (against AWS) | Lambda, SQS, SNS → SQS, SNS → Lambda, EventBridge | [Amazon S3](/docs/events/s3) |
+| `s3` | `s3` | SNS over HTTPS (signature-verified) | [Amazon S3](/docs/events/s3#sns-over-https) |
 | `s3` | `minio` | Webhook | [MinIO](/docs/events/minio) |
 | `s3` | `rustfs` | Webhook (or Kafka, NATS, …) | [MinIO](/docs/events/minio#rustfs) |
 | `s3` | `wasabi` | Your own AWS SNS topic | [Amazon S3](/docs/events/s3#wasabi) |
@@ -76,7 +77,6 @@ All three reach the same `on()` handlers.
 | `r2` | `r2` | Queue (Worker consumer or HTTP pull) | [Cloudflare R2](/docs/events/r2) |
 | `gcs` | `gcs`, `firebase-storage` | Pub/Sub (pull or push), Eventarc | [Google Cloud Storage](/docs/events/gcs) |
 | `azure` | `azure` | Event Grid webhook (either schema) | [Azure Blob Storage](/docs/events/azure) |
-| `s3` | `s3` | SNS over HTTPS (signature-verified) | [Amazon S3](/docs/events/s3#sns-over-https) |
 | `b2` | `backblaze-b2` | Signed webhook | [Backblaze B2](/docs/events/b2) |
 | `tigris` | `tigris` | Webhook | [Tigris](/docs/events/tigris) |
 | `supabase` | `supabase` | Database Webhook on `storage.objects` | [Supabase](/docs/events/supabase) |

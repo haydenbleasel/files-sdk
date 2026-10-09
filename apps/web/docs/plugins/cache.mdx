@@ -57,16 +57,20 @@ Caching is only safe because writes evict. Every mutation **through the instance
 | `copy(from, to)` | `to` (destination)  |
 | `move(from, to)` | `from` **and** `to` |
 
-Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/docs/prefixes) path - so it lines up with the keys reads are cached under.
+Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/docs/prefixes) path - so it lines up with the keys reads are cached under. In the store, each key is scoped by the [`namespace`](#the-store) and the instance `prefix` (`<namespace>/<prefix>/<key>`), so instances sharing one store only see each other's entries when they share both.
+
+A provider [storage event](/docs/events) invalidates too: with [`events()`](/docs/plugins/events) wired to the bucket's notifications on the same instance, an upload through a presigned URL or a change made outside the SDK drops that key's record as the event arrives.
 
 ### Writes the cache can't see
 
-A change the plugin never observes won't invalidate: an upload made through a [presigned URL](/docs/api/signed-upload-url), or a mutation straight against the provider. Treat the cache as **eventually-consistent** and evict by hand when that happens:
+Without storage events, a change the plugin never observes won't invalidate: an upload made through a [presigned URL](/docs/api/signed-upload-url), or a mutation straight against the provider. Treat the cache as **eventually-consistent** and evict by hand when that happens:
 
 ```ts lineNumbers
 await files.invalidateCache("a.png"); // drop one key
 await files.invalidateCache(); // drop everything
 ```
+
+`invalidateCache()` with no key calls the store's `clear()`, so on a shared `store` it drops every namespace's entries, not only this instance's.
 
 ## Stats
 
@@ -85,14 +89,16 @@ By default the cache is a **bounded in-memory LRU** keyed by object key, holding
 Worst-case memory is roughly `maxEntries * maxBytes` once `download` caching is on. The default set (`head` + `url`) stores only small metadata, so the entry count is the only thing to size.
 :::
 
-Pass your own `store` to share the cache across instances or processes - e.g. a Redis-backed `CacheStore` that serializes each record:
+Pass your own `store` to share the cache across instances or processes - e.g. a Redis-backed `CacheStore` that serializes each record. A custom store needs a `namespace` naming the bucket it caches, and `cache()` throws `Invalid` without one: the plugin can't tell which bucket an adapter points at, so it can't keep two buckets' entries apart on its own.
 
 ```ts lineNumbers
 const files = createFiles({
   adapter: r2({ bucket: "uploads" }),
-  plugins: [cache({ store: myRedisStore })],
+  plugins: [cache({ store: myRedisStore, namespace: "uploads-prod" })],
 });
 ```
+
+Every `cache()` that shares a store **and** a namespace (and the same `prefix`) serves the others' cached bytes, URLs, and metadata. Give each bucket its own namespace, and reuse one only across instances or processes that address the same bucket.
 
 A `CacheStore` is four methods - `get`, `set`, `delete`, `clear` - each of which may be sync or async. A distributed store has an inherent read-modify-write race when two different verbs for the same key are first cached at the exact same instant; it's harmless - it just costs a re-fetch next time.
 
@@ -141,7 +147,8 @@ Plugins run in array order, so a policy placed after `cache()` rewrites `url()` 
 
 ## Things to keep in mind
 
-- **A cache is eventually-consistent.** Out-of-band writes (presigned uploads, direct provider changes) won't invalidate - call `invalidateCache()`, and keep the `ttl` honest.
+- **A cache is eventually-consistent.** Out-of-band writes (presigned uploads, direct provider changes) only invalidate when [storage events](/docs/events) reach the instance - otherwise call `invalidateCache()`, and keep the `ttl` honest.
 - **`download` caching buffers bodies.** It's gated to small, known-length objects for exactly this reason; large and unknown-length downloads always stream through untouched.
 - **Bound your memory.** With `download` enabled, size `maxEntries` and `maxBytes` together - the product is your ceiling.
-- **It's per-instance by default.** The in-memory store lives with the `Files` instance. Reach for a shared `store` to cache across processes.
+- **It's per-instance by default.** The in-memory store lives with the `Files` instance. Reach for a shared `store` (with a `namespace`) to cache across processes.
+- **One `cache()` per instance.** Installing the same `cache()` on an instance with a different adapter or `prefix` throws `Invalid` at construction. Read-only views from [`files.readonly()`](/docs/readonly) still share it. To share entries between instances, give each its own `cache()` with the same `store` and `namespace`.

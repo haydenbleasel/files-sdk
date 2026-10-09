@@ -120,6 +120,20 @@ const expiresAt = (seconds: number): number => Date.now() + seconds * 1000;
 // `@google-cloud/storage` throws above that in code on every signing call.
 const V4_MAX_EXPIRES_IN = 604_800;
 
+/**
+ * Reject an expiry past V4's 7-day ceiling up front. The SDK's own refusal is
+ * a plain `Error`, which would map to a retryable `Provider` — retrying a
+ * request that can never be signed. Matches the S3 adapters' SigV4 check.
+ */
+const assertV4ExpiresIn = (expiresIn: number): void => {
+  if (expiresIn > V4_MAX_EXPIRES_IN) {
+    throw new FilesError(
+      "Invalid",
+      `firebase-storage: signed URLs must expire within ${V4_MAX_EXPIRES_IN} seconds (7 days), the V4 signing limit; got expiresIn ${expiresIn}.`
+    );
+  }
+};
+
 export const mapFirebaseStorageError = makeErrorMapper({
   codes: {
     conflict: new Set(),
@@ -502,6 +516,7 @@ export const firebaseStorage = (
       });
     },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+      assertV4ExpiresIn(signOpts.expiresIn);
       try {
         const file = bucket.file(key);
         if (signOpts.maxSize !== undefined) {
@@ -596,10 +611,12 @@ export const firebaseStorage = (
       if (strategy === "public" && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
       }
+      const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
+      assertV4ExpiresIn(expiresIn);
       try {
         const [signed] = await bucket.file(key).getSignedUrl({
           action: "read",
-          expires: expiresAt(urlOpts?.expiresIn ?? defaultUrlExpiresIn),
+          expires: expiresAt(expiresIn),
           version: "v4",
           ...(urlOpts?.responseContentDisposition && {
             responseDisposition: urlOpts.responseContentDisposition,

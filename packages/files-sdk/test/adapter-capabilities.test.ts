@@ -47,9 +47,9 @@ const PROVIDER_OPTS = new Map<string, ProviderOpts>([
     "appwrite",
     {
       extra: {
-        apiKey: "key",
-        bucketId: "bucket",
+        bucket: "bucket",
         endpoint: "https://cloud.appwrite.io/v1",
+        key: "key",
         projectId: "project",
       },
     },

@@ -78,6 +78,8 @@ export interface WireFilesError {
   message: string;
   aborted: boolean;
   timedOut: boolean;
+  /** Why the gateway refused it, when it did — e.g. `size` or `rejected` on a `complete` entry. */
+  reason?: WireErrorReason;
 }
 
 /** One per-key failure from a bulk op, mirroring `BulkError`. */
@@ -204,6 +206,10 @@ export interface ListResponse {
 }
 export interface SearchResponse {
   matches: WireFileInfo[];
+  /**
+   * More matches may exist: the walk stopped at the result cap or at the
+   * gateway's scan budget (`maxSearchScan`) before reaching the end.
+   */
   truncated: boolean;
 }
 export interface CapabilitiesResponse {

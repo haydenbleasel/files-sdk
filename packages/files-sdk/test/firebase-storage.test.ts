@@ -779,6 +779,40 @@ describe("firebase-storage adapter", () => {
     });
   });
 
+  test("an expiry past V4's 7-day ceiling throws Invalid before signing", async () => {
+    // The SDK's own refusal is a plain Error (a retryable Provider), so the
+    // adapter checks first — for url(), both signedUploadUrl() shapes, and a
+    // too-long `defaultUrlExpiresIn`.
+    const files = new Files({
+      adapter: firebaseStorage({ projectId: "p" }),
+      retries: 2,
+    });
+    const tooLong = 604_801;
+    for (const call of [
+      () => files.url("a.txt", { expiresIn: tooLong }),
+      () => files.signedUploadUrl("a.txt", { expiresIn: tooLong }),
+      () => files.signedUploadUrl("a.txt", { expiresIn: tooLong, maxSize: 10 }),
+      () =>
+        new Files({
+          adapter: firebaseStorage({
+            defaultUrlExpiresIn: tooLong,
+            projectId: "p",
+          }),
+        }).url("a.txt"),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- each refusal is checked in turn.
+      await expect(call()).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/within 604800 seconds \(7 days\)/u),
+      });
+    }
+    expect(getSignedUrlMock).not.toHaveBeenCalled();
+    expect(generateSignedPostPolicyV4Mock).not.toHaveBeenCalled();
+    // Exactly 7 days is still signed.
+    await files.url("a.txt", { expiresIn: 604_800 });
+    expect(getSignedUrlMock).toHaveBeenCalledTimes(1);
+  });
+
   test("capabilities declare the rest of the storage surface", () => {
     const files = new Files({ adapter: firebaseStorage({ projectId: "p" }) });
     expect(files.capabilities).toMatchObject({

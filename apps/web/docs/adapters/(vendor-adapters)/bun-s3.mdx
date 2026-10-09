@@ -40,7 +40,7 @@ The main differences from `files-sdk/s3`:
 
 - `copy()` streams bytes through your process, because Bun doesn't expose a server-side `CopyObject` primitive.
 - `upload()` throws on `metadata` and `cacheControl`, because `Bun.S3Client.write()` has no equivalent options.
-- `signedUploadUrl()` throws on `maxSize`, because Bun exposes presigned URLs only, not S3 POST policy fields. It also throws on `contentType`: Bun's presigned PUT signs only the `host` header, so it can't enforce a Content-Type. (The [`useFiles` gateway](/docs/ui) falls back to proxying such uploads through your server.)
+- `signedUploadUrl()` throws on `maxSize` and a positive `minSize`, because Bun exposes presigned URLs only, not S3 POST policy fields. It also throws on `contentType`: Bun's presigned PUT signs only the `host` header, so it can't enforce a Content-Type. (The [`useFiles` gateway](/docs/ui) falls back to proxying such uploads through your server.)
 - Pause/resume via `control` works within one process only, and there are no provider-native [conditional operations](/docs/conditional-operations).
 
 Reach for `files-sdk/s3` on the same bucket when you need any of those.
@@ -224,7 +224,7 @@ const upload = await files.signedUploadUrl("avatars/abc.png", {
 await fetch(upload.url, { method: "PUT", body: file });
 ```
 
-`maxSize` and `contentType` both throw here (see the differences above), so enforce size and type limits in your own endpoint before you issue the URL, or use `files-sdk/s3` for a POST policy. A browser upload to another origin also needs a CORS rule on the bucket that allows `PUT` from your site.
+`maxSize`, a positive `minSize`, and `contentType` all throw here (see the differences above), so enforce size and type limits in your own endpoint before you issue the URL, or use `files-sdk/s3` for a POST policy. A browser upload to another origin also needs a CORS rule on the bucket that allows `PUT` from your site.
 
 ## Use the Bun.S3Client directly
 
@@ -235,7 +235,7 @@ await fetch(upload.url, { method: "PUT", body: file });
 Bun's S3 errors are normalized to [`FilesError`](/docs/api/errors), with the original error in `cause`:
 
 - `NotFound` - `NoSuchKey`, `NotFound`, or HTTP 404. `exists()` returns `false` instead of throwing.
-- `Unauthorized` - `AccessDenied`, `ERR_S3_MISSING_CREDENTIALS`, `ERR_S3_INVALID_SIGNATURE`, `ERR_S3_INVALID_SESSION_TOKEN`, or HTTP 401/403.
+- `Unauthorized` - `AccessDenied`, `ERR_S3_MISSING_CREDENTIALS`, `ERR_S3_INVALID_SIGNATURE`, `ERR_S3_INVALID_SESSION_TOKEN`, or HTTP 401/403. That includes a 401/403 on the HEAD behind `head()`, `exists()`, `download()`, and `copy()`: Bun reports a failed HEAD without a status, so the adapter re-sends it as a presigned HEAD to read the status, and the call isn't retried as a `Provider` error.
 - `Conflict` - `PreconditionFailed`, or HTTP 409/412.
 - `Provider` - everything else. The message is Bun's own, or `Bun S3 error` when it has none.
 
@@ -278,5 +278,5 @@ Pick `files-sdk/bun-s3` for a Bun app that only needs the core operations and sh
 | `exists` | ✅ |  |
 | `copy` | ⚠️ | Client-side stream copy - `Bun.S3Client` doesn't expose a server-side `CopyObject`, so the source is streamed through this process and re-uploaded. Doubled bandwidth, not atomic, and drops Content-Disposition/cache headers/user metadata/ACL (only Content-Type is preserved). Reach for `s3()` on the same bucket for server-side copy. |
 | `url` | ✅ | Presigned URLs are capped at 7 days (the SigV4 limit); a longer `expiresIn` throws. |
-| `signedUploadUrl` | ⚠️ | PUT URL only - Bun exposes presigned URLs, not S3 POST policy fields, so `maxSize` throws (no `content-length-range` policy). `contentType` throws too, because Bun signs only the `host` header and can't bind a Content-Type. Enforce upload caps and types at your application gateway instead. |
+| `signedUploadUrl` | ⚠️ | PUT URL only - Bun exposes presigned URLs, not S3 POST policy fields, so `maxSize` and a positive `minSize` throw (no `content-length-range` policy). `contentType` throws too, because Bun signs only the `host` header and can't bind a Content-Type. Enforce upload caps and types at your application gateway instead. |
 | conditional operations | ❌ | Not advertised; conditional calls fail before any request. |

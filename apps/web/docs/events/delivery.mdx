@@ -1,20 +1,22 @@
 ---
 title: Delivery and idempotency
-description: Every provider delivers at least once and out of order. Write handlers that can run twice, keyed on event.id.
+description: Providers deliver at least once (Supabase at most once) and out of order. Write handlers that can run twice, keyed on event.id.
 ---
 
-Every provider files-sdk reads delivers notifications **at least once**, and none of them promise order:
+Every provider files-sdk reads, except Supabase, delivers notifications **at least once**, and none of them promise order:
 
 - S3 can send the same notification twice, and SQS redelivers a message nobody deleted.
 - GCS can publish one change as several Pub/Sub messages with different message ids.
 - Event Grid, MinIO and Pub/Sub push retry anything that doesn't get a 2xx back in time.
 - Two events for the same key can arrive in either order.
 
+Supabase's Database Webhooks are the exception: they're sent once, with no retries, so a missed delivery is lost rather than repeated. Reconcile against [`list()`](/docs/api/list) when that matters.
+
 So a handler will sometimes see an event it has already handled, and sometimes see a `deleted` before the `created` it follows. Write handlers that are safe to run again.
 
 ## Dedupe on `event.id`
 
-`id` is the same every time a given change is delivered, however it arrives. Where the provider has a per-event id (EventBridge, Event Grid), it's that. Otherwise it's built from the key and the provider's per-write marker: the S3 `sequencer`, the GCS generation and event type, or the R2 ETag and event time.
+`id` is the same every time a given change is delivered, however it arrives. Where the provider has a per-event id (EventBridge, Event Grid, B2's `eventId`, Box's webhook event `id`, Cloudinary's `request_id`, Appwrite's delivery id), it's that. Otherwise it's built from the event type, the key, and the provider's per-write marker: the S3 `sequencer`, the GCS generation, or the Supabase row version; failing that, the version, event time, and ETag the record carries; and failing those, a stable hash of the record itself. It never uses the clock, so a redelivery always gets the same id.
 
 The simplest idempotent handler is an upsert keyed on it:
 
@@ -69,8 +71,8 @@ Handlers run one at a time, in the order they were registered. Await anything th
 
 - **Keys are caller-facing.** URL-encoded S3 keys are decoded, and the instance `prefix` is stripped, so `event.key` is what you'd pass to `files.download()`.
 - **Events outside the instance `prefix` are dropped,** so a multi-tenant bucket shared by several instances doesn't leak one tenant's keys to another.
-- **Other buckets' events can be dropped too.** Several buckets can share one queue or endpoint; pass `events({ bucket: "uploads" })` to keep only one of them. Events whose delivery doesn't name a bucket always pass.
-- **Plugins translate what they store.** [`dedup()`](/docs/plugins/dedup) drops its blobs, [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) drop their internal prefixes, and [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear the stored size. See the plugin [`event` hook](/docs/plugins/api#event).
+- **Other buckets' events are dropped by default.** Several buckets can share one queue or endpoint (an EventBridge rule, an Azure system topic, a Supabase or Appwrite project webhook), so `events()` keeps only events for the adapter's own bucket when the adapter has one. Pass `events({ bucket: "uploads" })` to pick another, or `bucket: false` to accept every bucket. Events whose delivery doesn't name a bucket always pass.
+- **Plugins translate what they store.** [`dedup()`](/docs/plugins/dedup) drops its blobs (and clears `size` / `etag` only on empty or unsized objects, which may be its pointers), [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) drop their internal prefixes, and [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear `size` on every provider event, since an event carries no metadata to tell their objects apart. See the plugin [`event` hook](/docs/plugins/api#event).
 
 ## Versioned buckets
 

@@ -7,7 +7,7 @@ The types and helpers that make up the plugin system. See the [overview](/docs/p
 
 ## FilesPlugin
 
-The plugin object you pass to `plugins`. A `name` plus three optional hooks - `wrap` and `extend`, which the [overview](/docs/plugins) covers, and [`capabilities`](#capabilities), which narrows what the instance advertises.
+The plugin object you pass to `plugins`. A `name` plus four optional hooks - `wrap` and `extend`, which the [overview](/docs/plugins) covers, [`capabilities`](#capabilities), which narrows what the instance advertises, and [`event`](#event), which maps storage events for its callers.
 
 <AutoTypeTable
   path="../../packages/files-sdk/src/index.ts"
@@ -22,7 +22,7 @@ capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
 
 Narrows what the instance reports through [`files.capabilities`](/docs/capabilities). The getter starts from the adapter's snapshot and folds every installed plugin's `capabilities` hook over it in `plugins` order, so each hook receives the snapshot as the earlier plugins left it. [`files.readonly()`](/docs/readonly) clones carry the plugins, so they report the same result.
 
-Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy, and presign vs. proxy, from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes, and a direct upload would skip the transform) along with `resumable` (they refuse resumable uploads), [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported`, `signedUpload.supported`, and every `conditional` flag as `false`, and [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) report `signedUpload.supported` as `false`. The plugins that veto [conditional operations](/docs/conditional-operations) clear exactly the flags they refuse: [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) every `conditional` flag, [`versioning()`](/docs/plugins/versioning) all but `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) `conditional.delete`.
+Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy, and presign vs. proxy, from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes, and a direct upload would skip the transform) along with `resumable` (they refuse resumable uploads), [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported`, `signedUpload.supported`, and every `conditional` flag as `false`, and [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) report `signedUpload.supported` as `false`. The plugins that veto [conditional operations](/docs/conditional-operations) clear exactly the flags they refuse: [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) every `conditional` flag, [`versioning()`](/docs/plugins/versioning) all but `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) `conditional.delete`. `tiering()` and `failover()` also report the intersection of their backends' capabilities, and [`signedUrlPolicy()`](/docs/plugins/signed-url-policy#capabilities-under-the-policy) turns off what its forced options rule out.
 
 ```ts lineNumbers
 import { handlers, type FilesPlugin } from "files-sdk";
@@ -42,7 +42,7 @@ const watermark: FilesPlugin = {
 
 Return a new object rather than mutating the argument, and only narrow. The hook changes what is advertised, not what the adapter can do, so turning on a flag the core gates on doesn't make that option work.
 
-The core also gates on the narrowed snapshot. A `range`, `metadata`, `cacheControl`, `control`, or `delimiter` that a plugin turns off is refused before any plugin's `wrap` runs, with an error naming the plugin, so an outer plugin never does I/O for a call that's about to be rejected.
+The core also gates on the narrowed snapshot. A `range`, `metadata`, `cacheControl`, `control`, or `delimiter` that a plugin turns off, and an `expiresIn` on `url()` once `signedUrl.supported` is off, is refused before any plugin's `wrap` runs, with an error naming the plugin, so an outer plugin never does I/O for a call that's about to be rejected. That holds for a plugin that declares only `capabilities`, with no `wrap`, too.
 
 ### event
 
@@ -54,8 +54,8 @@ Maps a provider storage event from [`files-sdk/events`](/docs/events) into what 
 
 A provider event describes what landed in the bucket, so a plugin that stores keys or bytes its callers never addressed has to translate it. The hook receives the event with the instance `prefix` already stripped, and hooks fold innermost first: `plugins` order reversed, the way stored bytes travel back out. The bundled plugins use it like this:
 
-- [`dedup()`](/docs/plugins/dedup) drops its content-addressed blobs and clears a pointer's size and ETag.
-- [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear `size`, which is the stored size, not the caller's.
+- [`dedup()`](/docs/plugins/dedup) drops its content-addressed blobs. It keeps `size` and `etag` on events for non-empty objects and clears them only on empty or unsized ones, which may be its pointers.
+- [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear `size` on every provider event: a storage event carries no metadata, so the plugin can't tell its own objects (whose stored size isn't the caller's) from plain ones.
 - [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) drop events under their own prefixes, so a soft delete reads as one `deleted`.
 - [`tiering()`](/docs/plugins/tiering) keeps events for keys routed to the hot tier. With `fallback: true` it throws, since a hot-tier delete may be a move to cold.
 

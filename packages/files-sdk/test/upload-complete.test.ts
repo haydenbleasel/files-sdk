@@ -14,6 +14,10 @@ import type { Adapter } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 import { uploadIdFor } from "../src/internal/files-router/upload-complete.js";
+import {
+  RouterError,
+  toErrorResult,
+} from "../src/internal/router-core/envelope.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
@@ -35,6 +39,7 @@ interface CompleteBody {
       message: string;
       aborted?: boolean;
       timedOut?: boolean;
+      reason?: string;
     };
   }[];
 }
@@ -239,6 +244,7 @@ describe("onUploadComplete — rejection", () => {
           aborted: false,
           code: "Validation",
           message: "not an image",
+          reason: "rejected",
           timedOut: false,
         },
         key: upload.key,
@@ -247,19 +253,25 @@ describe("onUploadComplete — rejection", () => {
     expect(await files.exists(`users/u1/${upload.key}`)).toBe(false);
   });
 
-  test("a FilesError keeps its code; any other throw reports Provider", async () => {
+  test("a FilesError keeps its code; any other throw is a generic Provider error, reported to onError", async () => {
+    const dbDown = new Error("db down: postgres://admin:hunter2@10.0.0.5");
     const thrown: unknown[] = [
       new FilesError("Conflict", "already recorded"),
-      new Error("db down"),
+      dbDown,
     ];
+    const reported: unknown[] = [];
     const { r } = setup({
+      onError: (error, req) => {
+        expect(req).toBeInstanceOf(Request);
+        reported.push(error);
+      },
       onUploadComplete: () => {
         throw thrown.shift();
       },
     });
     for (const [code, message] of [
       ["Conflict", "already recorded"],
-      ["Provider", "db down"],
+      ["Provider", "internal server error"],
     ]) {
       // oxlint-disable-next-line no-await-in-loop -- one upload per case, in order
       const upload = await presign(r);
@@ -269,6 +281,8 @@ describe("onUploadComplete — rejection", () => {
       const body = await complete(r, upload);
       expect(body.errors?.[0]?.error).toMatchObject({ code, message });
     }
+    // the raw message (credentials and all) stays on the server
+    expect(reported).toEqual([dbDown]);
   });
 
   test("keyed: rejection deletes the stored body and fails the request", async () => {
@@ -309,7 +323,8 @@ describe("onUploadComplete — rejection", () => {
     const adapter = memory();
     const flaky: Adapter = {
       ...adapter,
-      delete: () => Promise.reject(new Error("delete failed")),
+      delete: (key) =>
+        Promise.reject(new FilesError("Provider", `delete failed: ${key}`)),
     };
     const { r } = setup({
       adapter: flaky,
@@ -320,9 +335,10 @@ describe("onUploadComplete — rejection", () => {
     const upload = await presign(r);
     await proxyPut(r, upload);
     const body = await complete(r, upload);
-    // The rejection stays the error; the failed cleanup is reported with it.
+    // The rejection stays the error; the failed cleanup is reported with it,
+    // naming the caller's key rather than the scoped storage key.
     expect(body.errors?.[0]?.error.message).toBe(
-      "nope (removing it failed: delete failed)"
+      `nope (removing it failed: delete failed: ${upload.key})`
     );
   });
 });
@@ -398,8 +414,51 @@ describe("completion replay", () => {
     expect(calls).toHaveLength(1);
     expect(b).toEqual(a);
     expect(a.files[0]?.data).toEqual({ row: 1 });
-    // remembered until the token expires (presigned at NOW for 60s)
-    expect(ttls).toEqual([60_000]);
+    // remembered for as long as `complete` would redeem the token: presigned
+    // at NOW for 60s, plus the default hour of grace
+    expect(ttls).toEqual([60_000 + 3_600_000]);
+  });
+
+  test("the proxy refuses more bytes once complete has accepted the upload", async () => {
+    const store = new Map<string, CompletionRecord>();
+    const { files, r } = setup({
+      completions: {
+        get: (id) => store.get(id),
+        set: (id, record) => {
+          store.set(id, record);
+        },
+      },
+      onUploadComplete: async ({ files: f, storageKey }) => {
+        const text = await (await f.download(storageKey)).text();
+        if (text.includes("EVIL")) {
+          throw new UploadRejectedError("evil content");
+        }
+        return { ok: true };
+      },
+    });
+    const upload = await presign(r);
+    expect((await proxyPut(r, upload, "clean")).status).toBe(200);
+    const accepted = await complete(r, upload);
+    expect(accepted.files).toHaveLength(1);
+
+    const replaced = await proxyPut(r, upload, "EVIL!");
+    expect(replaced.status).toBe(409);
+    expect(
+      ((await replaced.json()) as { error: { code: string } }).error.code
+    ).toBe("Conflict");
+    // The approved bytes stand, and a replayed complete still tells the truth.
+    expect(await (await files.download(`users/u1/${upload.key}`)).text()).toBe(
+      "clean"
+    );
+    expect(await complete(r, upload)).toEqual(accepted);
+  });
+
+  test("without a completions store the proxy token stays writable until it expires", async () => {
+    const { r } = setup({ onUploadComplete: () => "ok" });
+    const upload = await presign(r);
+    await proxyPut(r, upload);
+    await complete(r, upload);
+    expect((await proxyPut(r, upload, "again")).status).toBe(200);
   });
 
   test("a rejected upload isn't recorded", async () => {
@@ -422,20 +481,28 @@ describe("completion replay", () => {
   });
 
   test("a store failure is reported for that completion", async () => {
+    const kvDown = new Error("kv down");
+    const reported: unknown[] = [];
     const { r } = setup({
       completions: {
-        get: () => Promise.reject(new Error("kv down")),
+        get: () => Promise.reject(kvDown),
         set: () => {},
+      },
+      onError: (error) => {
+        reported.push(error);
       },
       onUploadComplete: () => "x",
     });
     const upload = await presign(r);
-    await proxyPut(r, upload);
+    // The proxy can't tell whether the upload already completed, so it
+    // refuses rather than risk replacing approved bytes.
+    expect((await proxyPut(r, upload)).status).toBe(500);
     const body = await complete(r, upload);
     expect(body.files).toEqual([]);
+    expect(reported).toEqual([kvDown, kvDown]);
     expect(body.errors?.[0]?.error).toMatchObject({
       code: "Provider",
-      message: "kv down",
+      message: "internal server error",
     });
   });
 
@@ -536,5 +603,78 @@ describe("client data round-trip", () => {
     });
     await router.handle(put("op=upload&key=a.txt", "x"));
     expect(seen).toEqual(["u9", undefined]);
+  });
+});
+
+describe("RouterError across bundle copies", () => {
+  test("an UploadRejectedError from another copy of the gateway still maps to 422", () => {
+    // What `files-sdk/nestjs` sees: its own bundled RouterError class, and an
+    // UploadRejectedError built from the `files-sdk/api` copy. Simulate the
+    // foreign copy with a class that only shares the registry brand.
+    class ForeignRouterError extends Error {
+      readonly code = "Validation";
+      readonly reason = "rejected";
+      constructor(message: string) {
+        super(message);
+        this.name = "ForeignRouterError";
+      }
+    }
+    Object.defineProperty(
+      ForeignRouterError.prototype,
+      Symbol.for("files-sdk.RouterError"),
+      { value: true }
+    );
+    const foreign = new ForeignRouterError("only PNG images are allowed");
+    expect(foreign instanceof RouterError).toBe(true);
+    expect(toErrorResult(foreign)).toEqual({
+      body: {
+        error: {
+          code: "Validation",
+          message: "only PNG images are allowed",
+          reason: "rejected",
+        },
+      },
+      status: 422,
+    });
+  });
+
+  test("subclass checks still follow the prototype chain", () => {
+    const rejected = new UploadRejectedError("no");
+    expect(rejected instanceof RouterError).toBe(true);
+    expect(rejected instanceof UploadRejectedError).toBe(true);
+    expect(
+      new RouterError("Forbidden", "nope") instanceof UploadRejectedError
+    ).toBe(false);
+    expect(new Error("x") instanceof RouterError).toBe(false);
+    const primitive: unknown = "x";
+    expect(primitive instanceof RouterError).toBe(false);
+  });
+
+  test("a keyed upload rejected through the node bindings' copy is a 422, not a 500", async () => {
+    class ForeignRejectionError extends Error {
+      readonly code = "Validation";
+      readonly reason = "rejected";
+      constructor(message: string) {
+        super(message);
+        this.name = "ForeignRejectionError";
+      }
+    }
+    Object.defineProperty(
+      ForeignRejectionError.prototype,
+      Symbol.for("files-sdk.RouterError"),
+      { value: true }
+    );
+    const { r } = setup({
+      onUploadComplete: () => {
+        throw new ForeignRejectionError("only PNG images are allowed");
+      },
+    });
+    const res = await r.handle(put("op=upload&key=a.txt", "x"));
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: unknown }).error).toEqual({
+      code: "Validation",
+      message: "only PNG images are allowed",
+      reason: "rejected",
+    });
   });
 });

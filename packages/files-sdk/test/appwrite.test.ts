@@ -1211,22 +1211,29 @@ describe("appwrite resumable uploads (chunked)", () => {
     expect(deleteFileMock).toHaveBeenCalledTimes(1);
   });
 
-  test("resumable requires an API key (not a keyless client)", async () => {
+  test("resumable requires an API key (not a keyless or pre-built client)", async () => {
+    // The chunked path is raw HTTP authenticated with the key, so without one
+    // (no key configured, or a pre-built client that keeps it private) no
+    // driver is attached and `capabilities.resumable` reports false.
     delete process.env.APPWRITE_API_KEY;
     delete process.env.APPWRITE_KEY;
-    const files = new Files({
-      adapter: appwrite({
-        bucket: BUCKET,
-        endpoint: ENDPOINT,
-        projectId: PROJECT_ID,
-      }),
-    });
-    await expect(
-      files.upload("x", "data", { control: new UploadControl() })
-    ).rejects.toMatchObject({
-      code: "Unsupported",
-      message: expect.stringMatching(/require an API key/u),
-    });
+    for (const adapterInstance of [
+      appwrite({ bucket: BUCKET, endpoint: ENDPOINT, projectId: PROJECT_ID }),
+      appwrite({ bucket: BUCKET, client: new Storage(new Client()) }),
+      appwrite({ bucket: BUCKET, client: new Client() }),
+    ]) {
+      expect(adapterInstance.resumableUpload).toBeUndefined();
+      const files = new Files({ adapter: adapterInstance });
+      expect(files.capabilities.resumable).toBe(false);
+      // oxlint-disable-next-line no-await-in-loop -- each adapter is checked in turn.
+      await expect(
+        files.upload("x", "data", { control: new UploadControl() })
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/resumable uploads are not supported/u),
+      });
+    }
+    expect(new Files({ adapter: adapter() }).capabilities.resumable).toBe(true);
   });
 
   test("metadata and cacheControl are rejected", async () => {

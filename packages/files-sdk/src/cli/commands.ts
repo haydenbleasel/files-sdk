@@ -721,31 +721,70 @@ export const runCapabilities = async (opts: CommonRunOpts): Promise<void> => {
 export interface EventsParseCmdOpts extends CommonRunOpts {
   /** The delivery to parse; stdin when omitted. */
   file?: string;
-  /** Read this format without configuring a provider. */
+  /** Read this format, overriding (or standing in for) the provider's. */
   format?: EventFormat;
+  /**
+   * Delivery headers as `name: value`, for formats that read them (Appwrite
+   * puts the event type in `X-Appwrite-Webhook-Events`).
+   */
+  header?: string[];
 }
+
+const parseHeaders = (raw: readonly string[]): Headers => {
+  const headers = new Headers();
+  for (const line of raw) {
+    const colon = line.indexOf(":");
+    if (colon <= 0) {
+      throw new FilesError(
+        "Invalid",
+        `--header must be "name: value", got: ${line}`
+      );
+    }
+    headers.append(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+  }
+  return headers;
+};
 
 /**
  * Print the `FileEvent`s a notification delivery normalizes to — for
- * debugging a payload before wiring up `files-sdk/events`. With `--format`,
- * no provider is needed; otherwise the configured provider picks the format
- * (and its `--key-prefix` maps keys, as on the instance).
+ * debugging a payload before wiring up `files-sdk/events`. A configured
+ * provider supplies the adapter (its bucket, its `--key-prefix` key mapping,
+ * the config some parsers read) and, unless `--format` overrides it, the
+ * format. With only `--format`, no provider is needed.
  */
 export const runEventsParse = async (
   opts: EventsParseCmdOpts
 ): Promise<void> => {
-  const input =
+  if (opts.file === undefined && process.stdin.isTTY) {
+    throw new FilesError(
+      "Invalid",
+      "events parse: pass the delivery as a file or pipe it on stdin"
+    );
+  }
+  const body =
     opts.file === undefined
       ? await readText(process.stdin)
       : await readFile(opts.file, "utf-8");
   const { prefix } = opts.global;
-  const loaded = opts.format ? undefined : await loadFiles(opts.global);
+  const hasProvider =
+    opts.global.provider !== undefined ||
+    process.env.FILES_SDK_PROVIDER !== undefined;
+  const loaded =
+    hasProvider || !opts.format ? await loadFiles(opts.global) : undefined;
   const adapter = loaded ? loaded.files.adapter : memory();
   const files = createFiles({
     adapter,
     plugins: [events(opts.format ? { format: opts.format } : {})],
     ...(prefix !== undefined && { prefix }),
   });
+  const input =
+    opts.header && opts.header.length > 0
+      ? new Request("http://localhost/", {
+          body,
+          headers: parseHeaders(opts.header),
+          method: "POST",
+        })
+      : body;
   emit(await files.events.parse(input), opts);
 };
 

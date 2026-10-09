@@ -29,9 +29,9 @@ await (await files.download("notes.txt")).text(); // the original 10k string
 
 `head` and `list` report the same original size without decompressing anything. They return metadata only; `download` is what reads the body back through the plugin, so the bytes you get are the original bytes, never the stored compressed ones.
 
-One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as compressed, so it reports the **stored** (compressed) size. `download()` still decompresss it, and `head()` and `download()` report the original size as usual.
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as compressed, so it reports the **stored** (compressed) size. `download()` still decompresses it, and `head()` and `download()` report the original size as usual.
 
-Because the algorithm is stored per object, reads always decompress with the right one. Changing the `format` option later never breaks objects written under the old format.
+Because the algorithm is stored per object, reads always decompress with the right one. Changing the `format` option later never breaks objects written under the old format. An object whose marker names an algorithm this version can't decode (a newer writer's, or a hand-edited one) fails `download()` with `Unsupported`, which is never retried.
 
 ## Choosing a format
 
@@ -71,6 +71,7 @@ The plugin **buffers the entire body in memory** to compare the compressed and o
 - **It narrows [`files.capabilities`](/docs/capabilities).** `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` (as well as `resumable`, above) read `false` while the plugin is installed, whatever the adapter can do, and a `range` or `control` is refused before any plugin runs. The [gateway](/docs/ui/server/gateway) branches on them, so with the default `downloadMode: "auto"` it streams downloads through the instance (decompressing on the way) instead of redirecting to a signed URL the plugin refuses, and it proxies uploads through the instance instead of presigning them. A `Range` request gets the non-range treatment: `416` by default (except `bytes=0-`, which gets the full body), or the full body with `onUnsupportedRange: "ignore"`.
 - **`copy` and `move` just work.** They operate on the stored bytes server-side, and the algorithm marker rides along in the object's metadata, so the copy still decompresses.
 - **Mixed buckets are safe.** On read, objects without this plugin's marker (pre-existing data, or anything written elsewhere) pass straight through unchanged, so you can enable it on a bucket that already holds plain objects.
+- **[Storage events](/docs/events) carry no `size`.** With [`events()`](/docs/plugins/events), every provider event has its `size` cleared: an event carries no metadata, so the plugin can't tell a compressed object (whose stored size isn't the caller's) from a plain one.
 - **It needs metadata support.** The algorithm and original size are stored as object metadata, so the adapter must [support metadata](/docs/api/upload) - an `upload` to one that doesn't throws before any bytes move.
 
 ## What it stores in metadata

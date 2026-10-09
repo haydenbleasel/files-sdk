@@ -58,7 +58,7 @@ The fetch client covers `upload`, `download` (including [ranges](/docs/api/downl
 - `ReadableStream` bodies are buffered in memory before a single PUT (a lone PUT needs a `Content-Length`, and single-request uploads cap at 5&nbsp;GB).
 - `multipart` and resumable (`control`) uploads throw instead of engaging the S3 multipart API.
 - Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests. On Workers each call is a subrequest, so chunk large bulk deletes to stay under the per-invocation subrequest cap.
-- `signedUploadUrl()` returns a presigned PUT; `maxSize` throws because enforcing it needs a presigned POST policy this engine doesn't implement.
+- `signedUploadUrl()` returns a presigned PUT; `maxSize` and a positive `minSize` throw because enforcing either needs a presigned POST policy this engine doesn't implement.
 - Keys containing `.` or `..` path segments are rejected - URL normalization would silently sign a request for a different key.
 - Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
 - `files.raw` is the aws4fetch `AwsClient`, not an `S3Client`.
@@ -89,7 +89,7 @@ Inside Cloudflare Workers the fetch client is the default. The `"aws-sdk"` clien
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
-| `signedUploadUrl` | ✅ |  |
+| `signedUploadUrl` | ✅ | A positive `minSize` needs `maxSize`, which selects the presigned POST policy that enforces both; on its own it throws `Unsupported`. |
 
 ### `client: "fetch"`
 
@@ -104,4 +104,4 @@ Inside Cloudflare Workers the fetch client is the default. The `"aws-sdk"` clien
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
-| `signedUploadUrl` | ⚠️ | PUT URL only - `maxSize` throws (no presigned POST policy). |
+| `signedUploadUrl` | ⚠️ | PUT URL only - `maxSize` and a positive `minSize` throw (no presigned POST policy). |

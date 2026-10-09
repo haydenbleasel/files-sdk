@@ -30,6 +30,6 @@ Database Webhooks aren't signed, so the header is the only check.
 | Other `UPDATE`s (`last_accessed_at`, `user_metadata`) | skipped |
 | `DELETE` | `deleted` |
 
-Every bucket in the project shares the table, so pass `events({ bucket: "avatars" })` to keep one bucket's changes. Changes to other tables, if the webhook covers them, are skipped.
+Every bucket in the project shares the table, so `events()` keeps only changes to the adapter's own bucket by default. Pass `events({ bucket: "avatars" })` to pick another, or `bucket: false` for every bucket. Changes to other tables, if the webhook covers them, are skipped.
 
 Database Webhooks are sent once, with a short timeout and no retries, so a missed delivery isn't redelivered. Reconcile against [`list()`](/docs/api/list) when that matters.

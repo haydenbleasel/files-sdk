@@ -6,15 +6,17 @@
 
 /**
  * Delegate to `source`, passing any error thrown while it is iterated to
- * `record` before rethrowing it. Early `break`/`return` still closes `source`.
+ * `record` before rethrowing it, and resolving to `source`'s own return value.
+ * Early `break`/`return` still closes `source`.
  */
-export const rememberIteration = <T>(
-  source: AsyncGenerator<T, void>,
+export const rememberIteration = <T, R>(
+  source: AsyncGenerator<T, R>,
   record: (cause: unknown) => void
-): AsyncGenerator<T, void> =>
+): AsyncGenerator<T, R> =>
   (async function* iterate() {
     try {
-      yield* source;
+      // The source's return value (`search`'s `{ truncated }`) passes through.
+      return yield* source;
     } catch (error) {
       record(error);
       throw error;

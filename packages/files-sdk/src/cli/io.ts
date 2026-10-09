@@ -104,8 +104,26 @@ interface ErrorPayload {
   error: ErrorEnvelope;
 }
 
+// A local file problem (a missing `--file`, an `--out` into a directory that
+// doesn't exist) arrives as a Node system error naming the path. The command
+// is wrong, not the backend, so it must not exit with the retryable Provider
+// code.
+const isLocalPathError = (cause: unknown): boolean =>
+  cause instanceof Error &&
+  "path" in cause &&
+  isString(cause.path) &&
+  "code" in cause &&
+  isString(cause.code);
+
+const errorCode = (cause: unknown): string => {
+  if (cause instanceof FilesError) {
+    return cause.code;
+  }
+  return isLocalPathError(cause) ? "Invalid" : "Provider";
+};
+
 export const fail = (cause: unknown, out: OutputOpts): never => {
-  const code = cause instanceof FilesError ? cause.code : "Provider";
+  const code = errorCode(cause);
   const message = cause instanceof Error ? cause.message : String(cause);
   const error: ErrorEnvelope = { code, message };
   if (out.verbose && cause instanceof Error && cause.stack) {

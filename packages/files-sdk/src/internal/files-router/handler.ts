@@ -6,13 +6,14 @@
 // type it touches is `Request` — forwarded opaquely to `authorize` — so the
 // dispatch itself stays framework-free and is driven by constructing requests.
 
-import type { FileInfo, Files, SearchMatch } from "../../index.js";
+import type { BulkOptions, FileInfo, Files, SearchMatch } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
 import { FilesError, isDispositionUnsupported } from "../errors.js";
 import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
 import { isJsonArray, isJsonObject } from "../json.js";
+import { abortError } from "../retry.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
@@ -29,7 +30,12 @@ import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
 import { runAuthorize } from "./authorize.js";
 import type { DownloadConfig } from "./download.js";
 import { handleDownload, urlWithDisposition } from "./download.js";
-import { assertSafePrefix, scopeKey, unscopeKey } from "./keys.js";
+import {
+  assertSafePrefix,
+  outsideScope,
+  scopeKey,
+  unscopeKey,
+} from "./keys.js";
 import type {
   ClientFileInfo,
   FilesOperation,
@@ -38,6 +44,7 @@ import type {
   WireFileVersion,
   WireTrashedFile,
 } from "./protocol.js";
+import { isReservedKey } from "./reserved.js";
 import { bulkErrorToWire, fileInfoToWire } from "./serialize.js";
 import type {
   CompletionStore,
@@ -55,6 +62,16 @@ import {
 
 export interface HandlerContext {
   files: Files;
+  /**
+   * Key prefixes the plugins on `files` keep private (`versioning()`'s store,
+   * `softDelete()`'s trash). No client key or list prefix may fall inside one.
+   */
+  reserved: readonly string[];
+  /**
+   * Storage key → client key for every key this request resolved, so an error
+   * message naming the storage key can be rewritten before it goes out.
+   */
+  redactions: Map<string, string>;
   authorize?: Authorize;
   operations?: ReadonlySet<FilesOperation>;
   allowedOrigins?: AllowedOrigins;
@@ -64,6 +81,13 @@ export interface HandlerContext {
   forceDisposition: boolean;
   maxListLimit: number;
   maxSearchResults: number;
+  /** Most keys one `search` request walks before it stops with `truncated`. */
+  maxSearchScan: number;
+  /** Seconds after an upload token expires that `complete` still redeems it. */
+  completeGracePeriod: number;
+  /** Receives every failure whose message the client doesn't get to see. */
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- takes any thrown value
+  reportError: (error: unknown) => void;
   maxUploadSize?: number;
   /** Cap on `keys[]` / `files[]` / `completions[]` in one request. */
   maxBatchSize: number;
@@ -227,6 +251,7 @@ const uploadCfg = (
 ): UploadConfig => ({
   boundPath: parsed.path,
   boundQuery: boundQuery(parsed.query),
+  completeGraceMs: ctx.completeGracePeriod * 1000,
   defaultExpiresIn: ctx.defaultExpiresIn,
   files: ctx.files,
   lifecycle: {
@@ -236,9 +261,12 @@ const uploadCfg = (
     onUploadComplete: ctx.onUploadComplete,
     req: ctx.req,
   },
+  maxConcurrency: ctx.maxConcurrency,
   maxUploadSize: ctx.maxUploadSize,
   now: ctx.now,
   proxyUrl: ctx.proxyUrl,
+  reportError: ctx.reportError,
+  reserved: ctx.reserved,
   secret: ctx.secret,
   signal: parsed.signal,
 });
@@ -251,13 +279,14 @@ const downloadCfg = (ctx: HandlerContext): DownloadConfig => ({
   onUnsupportedRange: ctx.onUnsupportedRange,
 });
 
-// Under an authorize `keyPrefix` scope the pattern is matched against the
-// caller-facing key (the prefix stripped), so `*.png` / `^a` / exact `a.png`
+// The keys a `search` walks. The pattern is matched against the caller-facing
+// key (authorize's `keyPrefix` stripped), so `*.png` / `^a` / exact `a.png`
 // find `users/1/a.png` for a client scoped to `users/1/` — mirroring how `list`
-// returns unscoped keys. Without a scope prefix `files.search()` already
-// matches the caller-facing key, so it is used as-is (keeping its glob-head
-// prefix push-down).
-const searchScoped = (
+// returns unscoped keys. Like `files.search()`, a case-sensitive glob's literal
+// head bounds the walk when the client didn't pass its own prefix. The walk is
+// driven here rather than through `files.search()` so the handler can count
+// every key it reads against `maxSearchScan`, matches or not.
+const searchWalk = (
   ctx: HandlerContext,
   scope: Scope,
   q: {
@@ -268,42 +297,21 @@ const searchScoped = (
     searchPrefix: string;
     limit: number | undefined;
     signal: AbortSignal | undefined;
-    unscope: (key: string) => string;
   }
 ): AsyncIterable<FileInfo> => {
-  const paging = {
-    ...(q.limit && { limit: q.limit }),
-    signal: q.signal,
-  };
-  if (!scope.prefix) {
-    return ctx.files.search(q.pattern, {
-      ...paging,
-      caseInsensitive: q.caseInsensitive,
-      match: q.match,
-      ...(q.searchPrefix && { prefix: q.searchPrefix }),
-    });
-  }
-  const matches = buildSearchMatcher(q.pattern, q.match, q.caseInsensitive);
-  // Same push-down as `files.search()`: a case-sensitive glob's literal head
-  // bounds the walk when the client didn't pass its own prefix.
   const globHead =
     isString(q.pattern) && q.match === "glob" && !q.caseInsensitive
       ? globPrefix(q.pattern)
-      : undefined;
+      : "";
   const walkPrefix =
-    q.clientPrefix || globHead === undefined
+    q.clientPrefix || globHead === ""
       ? q.searchPrefix
       : scope.prefix + globHead;
-  const walk = ctx.files.listAll({ ...paging, prefix: walkPrefix });
-  return {
-    async *[Symbol.asyncIterator]() {
-      for await (const file of walk) {
-        if (matches(q.unscope(file.key))) {
-          yield file;
-        }
-      }
-    },
-  };
+  return ctx.files.listAll({
+    ...(q.limit && { limit: q.limit }),
+    signal: q.signal,
+    ...(walkPrefix && { prefix: walkPrefix }),
+  });
 };
 
 // Compile a client-supplied search regex, refusing (422) one that doesn't
@@ -334,6 +342,60 @@ const authorizeOp = (
   partial: Omit<AuthorizeContext, "req">
 ): Promise<Scope> =>
   runAuthorize(ctx.authorize, ctx.operations, { req: ctx.req, ...partial });
+
+/**
+ * Resolve a client key to its storage key under `scope` (422 when unsafe, 403
+ * inside a plugin's reserved storage), remembering the pair so an error
+ * message naming the storage key reaches the client as its own key.
+ */
+const scoped = (ctx: HandlerContext, scope: Scope, key: string): string => {
+  const storageKey = scopeKey(scope.prefix, key, ctx.reserved);
+  ctx.redactions.set(storageKey, key);
+  return storageKey;
+};
+
+/** {@link scoped} for a `list`/`search` prefix (`""` lists the whole scope). */
+const scopedPrefix = (
+  ctx: HandlerContext,
+  scope: Scope,
+  clientPrefix: string
+): string => {
+  assertSafePrefix(clientPrefix);
+  const storagePrefix = scope.prefix + clientPrefix;
+  // Listing inside a reserved prefix is exactly how the plugins read their
+  // own storage — they stop hiding it there — so a client never may.
+  if (isReservedKey(storagePrefix, ctx.reserved)) {
+    throw outsideScope();
+  }
+  if (storagePrefix !== "") {
+    ctx.redactions.set(storagePrefix, clientPrefix);
+  }
+  return storagePrefix;
+};
+
+/** Refuse a single key `authorize`'s `filterKeys` hides from this caller. */
+const assertVisible = (scope: Scope, key: string): void => {
+  if (scope.filterKeys && !scope.filterKeys(key)) {
+    throw outsideScope();
+  }
+};
+
+// The bulk verbs' options. Stops before any storage call when the client is
+// already gone, and hands the request signal on so the fan-out can stop too.
+const bulkOptions = (
+  ctx: HandlerContext,
+  body: JsonObject,
+  signal: AbortSignal
+): BulkOptions & { signal: AbortSignal } => {
+  if (signal.aborted) {
+    throw abortError(signal.reason);
+  }
+  return {
+    concurrency: bulkConcurrency(ctx, body),
+    signal,
+    stopOnError: optBool(body, "stopOnError"),
+  };
+};
 
 // Clamp to the `authorize` scope and to the adapter's hard cap for this kind
 // of URL — `signedUrl` for downloads, `signedUpload` for direct uploads.
@@ -369,6 +431,13 @@ const clampUploadMaxSize = (
 const filtered = (scope: Scope, keys: string[]): string[] =>
   scope.filterKeys ? keys.filter(scope.filterKeys) : keys;
 
+// A bulk op's keys: `filterKeys` applied, then each one scoped.
+const scopedBatch = (
+  ctx: HandlerContext,
+  scope: Scope,
+  keys: string[]
+): string[] => filtered(scope, keys).map((k) => scoped(ctx, scope, k));
+
 // --- plugin verbs (versioning / softDelete) ---
 
 /**
@@ -389,7 +458,9 @@ interface PluginMethods {
     }[]
   >;
   restoreVersion?: (key: string, versionId?: string) => Promise<FileInfo>;
-  trashed?: () => Promise<
+  trashed?: (opts?: {
+    prefix?: string;
+  }) => Promise<
     { key: string; size: number; lastModified?: number; etag?: string }[]
   >;
   restoreTrashed?: (key: string) => Promise<FileInfo>;
@@ -403,10 +474,12 @@ interface PluginMethods {
 const pluginMethods = (ctx: HandlerContext): PluginMethods =>
   ctx.files as Files & PluginMethods;
 
+// The request is well-formed; this gateway's `Files` just lacks the plugin.
 const notConfigured = (plugin: string): never => {
   throw new RouterError(
-    "Validation",
-    `${plugin} plugin is not configured on this gateway`
+    "Unsupported",
+    `${plugin} plugin is not configured on this gateway`,
+    "capability"
   );
 };
 
@@ -434,6 +507,28 @@ const toWireTrashed = (t: {
   ...(t.etag !== undefined && { etag: t.etag }),
 });
 
+/**
+ * The trash entries a caller may see: under its `keyPrefix` (the listing is
+ * bounded to it, so one tenant's view never reads another's trash) and not
+ * hidden by `filterKeys`, keys unscoped.
+ */
+const visibleTrash = async (
+  trashed: NonNullable<PluginMethods["trashed"]>,
+  scope: Scope
+): Promise<{ storageKey: string; entry: WireTrashedFile }[]> => {
+  const all = await trashed(scope.prefix ? { prefix: scope.prefix } : {});
+  return all.flatMap((t) => {
+    // Still checked: a plugin that ignores `prefix` returns the whole trash.
+    if (!t.key.startsWith(scope.prefix)) {
+      return [];
+    }
+    const entry = toWireTrashed({ ...t, key: unscopeKey(scope.prefix, t.key) });
+    return scope.filterKeys && !scope.filterKeys(entry.key)
+      ? []
+      : [{ entry, storageKey: t.key }];
+  });
+};
+
 // --- JSON op dispatch ---
 
 // oxlint-disable-next-line complexity -- a flat per-op dispatch table; each arm is a thin call
@@ -454,9 +549,7 @@ const dispatchJson = async (
         operation: "head",
         params: {},
       });
-      const file = await ctx.files.head(scopeKey(scope.prefix, key), {
-        signal,
-      });
+      const file = await ctx.files.head(scoped(ctx, scope, key), { signal });
       return json({ file: fileInfoToWire(file, unscoper(scope)) });
     }
     case "head-many": {
@@ -468,11 +561,8 @@ const dispatchJson = async (
       });
       const unscope = unscoper(scope);
       const result = await ctx.files.head(
-        filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
-        {
-          concurrency: bulkConcurrency(ctx, body),
-          stopOnError: optBool(body, "stopOnError"),
-        }
+        scopedBatch(ctx, scope, keys),
+        bulkOptions(ctx, body, signal)
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
@@ -487,7 +577,7 @@ const dispatchJson = async (
         operation: "exists",
         params: {},
       });
-      const exists = await ctx.files.exists(scopeKey(scope.prefix, key), {
+      const exists = await ctx.files.exists(scoped(ctx, scope, key), {
         signal,
       });
       return json({ exists });
@@ -501,11 +591,8 @@ const dispatchJson = async (
       });
       const unscope = unscoper(scope);
       const result = await ctx.files.exists(
-        filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
-        {
-          concurrency: bulkConcurrency(ctx, body),
-          stopOnError: optBool(body, "stopOnError"),
-        }
+        scopedBatch(ctx, scope, keys),
+        bulkOptions(ctx, body, signal)
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
@@ -522,7 +609,7 @@ const dispatchJson = async (
         operation: "delete",
         params: {},
       });
-      await ctx.files.delete(scopeKey(scope.prefix, key), { signal });
+      await ctx.files.delete(scoped(ctx, scope, key), { signal });
       return json({ ok: true });
     }
     case "delete-many": {
@@ -535,11 +622,8 @@ const dispatchJson = async (
       });
       const unscope = unscoper(scope);
       const result = await ctx.files.delete(
-        filtered(scope, keys).map((k) => scopeKey(scope.prefix, k)),
-        {
-          concurrency: bulkConcurrency(ctx, body),
-          stopOnError: optBool(body, "stopOnError"),
-        }
+        scopedBatch(ctx, scope, keys),
+        bulkOptions(ctx, body, signal)
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
@@ -558,8 +642,8 @@ const dispatchJson = async (
         params: {},
         to,
       });
-      const storageFrom = scopeKey(scope.prefix, from);
-      const storageTo = scopeKey(scope.prefix, to);
+      const storageFrom = scoped(ctx, scope, from);
+      const storageTo = scoped(ctx, scope, to);
       await (op === "copy"
         ? ctx.files.copy(storageFrom, storageTo, { signal })
         : ctx.files.move(storageFrom, storageTo, { signal }));
@@ -590,7 +674,7 @@ const dispatchJson = async (
       try {
         const url = await urlWithDisposition(
           ctx.files,
-          scopeKey(scope.prefix, key),
+          scoped(ctx, scope, key),
           {
             ...(sign && {
               expiresIn: clampExpiry(
@@ -615,9 +699,7 @@ const dispatchJson = async (
     }
     case "list": {
       const scope = await authorizeOp(ctx, { operation: "list", params: {} });
-      const clientPrefix = optStr(body, "prefix") ?? "";
-      assertSafePrefix(clientPrefix);
-      const listPrefix = scope.prefix + clientPrefix;
+      const listPrefix = scopedPrefix(ctx, scope, optStr(body, "prefix") ?? "");
       const limit = Math.min(
         optNum(body, "limit") ?? ctx.maxListLimit,
         scope.maxResults ?? ctx.maxListLimit,
@@ -642,8 +724,7 @@ const dispatchJson = async (
     case "search": {
       const scope = await authorizeOp(ctx, { operation: "search", params: {} });
       const clientPrefix = optStr(body, "prefix") ?? "";
-      assertSafePrefix(clientPrefix);
-      const searchPrefix = scope.prefix + clientPrefix;
+      const searchPrefix = scopedPrefix(ctx, scope, clientPrefix);
       const match = optStr(body, "match") ?? "glob";
       if (!isSearchMatch(match)) {
         return fail(
@@ -686,9 +767,15 @@ const dispatchJson = async (
         ctx.maxSearchResults
       );
       const unscope = unscoper(scope);
+      const isMatch = buildSearchMatcher(pattern, match, caseInsensitive);
       const matches: WireFileInfo[] = [];
+      // Every key read counts against the scan budget, matching or not, so a
+      // pattern that matches nothing can't walk the whole bucket in one
+      // request: it stops with `truncated` instead. Either cap only reports
+      // `truncated` once a further key proves the walk wasn't finished.
+      let scanned = 0;
       let truncated = false;
-      for await (const file of searchScoped(ctx, scope, {
+      for await (const file of searchWalk(ctx, scope, {
         caseInsensitive,
         clientPrefix,
         limit: pageLimit,
@@ -696,8 +783,20 @@ const dispatchJson = async (
         pattern,
         searchPrefix,
         signal,
-        unscope,
       })) {
+        if (scanned >= ctx.maxSearchScan) {
+          truncated = true;
+          break;
+        }
+        scanned += 1;
+        // A glob head can push the walk into plugin storage (`.versions/**`),
+        // which the plugins only hide from listings outside it.
+        if (
+          isReservedKey(file.key, ctx.reserved) ||
+          !isMatch(unscope(file.key))
+        ) {
+          continue;
+        }
         if (matches.length >= cap) {
           truncated = true;
           break;
@@ -729,26 +828,32 @@ const dispatchJson = async (
         },
       });
       const contentType = optStr(body, "contentType");
-      const signed = await ctx.files.signedUploadUrl(
-        scopeKey(scope.prefix, key),
-        {
-          expiresIn: clampExpiry(ctx, expiresIn, scope, "signedUpload"),
-          signal,
-          ...(contentType && { contentType }),
-          ...(maxSize !== undefined && { maxSize }),
-          ...(minSize !== undefined && { minSize }),
-        }
-      );
+      const signed = await ctx.files.signedUploadUrl(scoped(ctx, scope, key), {
+        expiresIn: clampExpiry(ctx, expiresIn, scope, "signedUpload"),
+        signal,
+        ...(contentType && { contentType }),
+        ...(maxSize !== undefined && { maxSize }),
+        ...(minSize !== undefined && { minSize }),
+      });
       return json({ signed });
     }
     case "presign": {
       requireOrigin(ctx, parsed);
       const files = fileInfos(ctx, body);
-      const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
+      const expiresIn = optNum(body, "expiresIn");
+      // What the client declared — advisory (the proxy PUT and `complete`
+      // enforce the real size), but enough for a per-user quota or type gate.
+      const scope = await authorizeOp(ctx, {
+        operation: "upload",
+        params: {
+          files: files.map((file) => ({ ...file })),
+          ...(expiresIn !== undefined && { expiresIn }),
+        },
+      });
       return handlePresign(
         uploadCfg(ctx, parsed),
         files,
-        optNum(body, "expiresIn"),
+        expiresIn,
         scope,
         unscoper(scope)
       );
@@ -775,7 +880,8 @@ const dispatchJson = async (
       if (!isFunction(plugin.versions)) {
         return notConfigured("versioning");
       }
-      const versions = await plugin.versions(scopeKey(scope.prefix, key));
+      assertVisible(scope, key);
+      const versions = await plugin.versions(scoped(ctx, scope, key));
       return json({ versions: versions.map(toWireVersion) });
     }
     case "restore-version": {
@@ -791,8 +897,9 @@ const dispatchJson = async (
       if (!isFunction(plugin.restoreVersion)) {
         return notConfigured("versioning");
       }
+      assertVisible(scope, key);
       const file = await plugin.restoreVersion(
-        scopeKey(scope.prefix, key),
+        scoped(ctx, scope, key),
         versionId
       );
       return json({ file: fileInfoToWire(file, unscoper(scope)) });
@@ -806,18 +913,8 @@ const dispatchJson = async (
       if (!isFunction(plugin.trashed)) {
         return notConfigured("softDelete");
       }
-      const unscope = unscoper(scope);
-      // `trashed()` returns the whole trash; under a key-prefix scope, expose
-      // only the caller's own keys (and honor a bulk `filterKeys`).
-      const all = await plugin.trashed();
-      const visible = all.flatMap((t) => {
-        if (!t.key.startsWith(scope.prefix)) {
-          return [];
-        }
-        const wire = toWireTrashed({ ...t, key: unscope(t.key) });
-        return scope.filterKeys && !scope.filterKeys(wire.key) ? [] : [wire];
-      });
-      return json({ trashed: visible });
+      const visible = await visibleTrash(plugin.trashed, scope);
+      return json({ trashed: visible.map((t) => t.entry) });
     }
     case "restore-trashed": {
       requireOrigin(ctx, parsed);
@@ -831,7 +928,8 @@ const dispatchJson = async (
       if (!isFunction(plugin.restoreTrashed)) {
         return notConfigured("softDelete");
       }
-      const file = await plugin.restoreTrashed(scopeKey(scope.prefix, key));
+      assertVisible(scope, key);
+      const file = await plugin.restoreTrashed(scoped(ctx, scope, key));
       return json({ file: fileInfoToWire(file, unscoper(scope)) });
     }
     case "purge": {
@@ -847,14 +945,8 @@ const dispatchJson = async (
         return notConfigured("softDelete");
       }
       if (key !== undefined) {
-        if (scope.filterKeys && !scope.filterKeys(key)) {
-          throw new RouterError(
-            "Forbidden",
-            "key is outside authorized scope",
-            "forbidden"
-          );
-        }
-        await plugin.purge(scopeKey(scope.prefix, key));
+        assertVisible(scope, key);
+        await plugin.purge(scoped(ctx, scope, key));
       } else if (scope.prefix || scope.filterKeys) {
         // Empty-trash under a scope must never purge another tenant's keys (or
         // ones `filterKeys` hides), and a bare `purge()` empties everything —
@@ -862,17 +954,10 @@ const dispatchJson = async (
         if (!isFunction(plugin.trashed)) {
           return notConfigured("softDelete");
         }
-        const entries = await plugin.trashed();
-        const mine = entries.filter((t) => {
-          if (!t.key.startsWith(scope.prefix)) {
-            return false;
-          }
-          const unscoped = unscoper(scope)(t.key);
-          return !scope.filterKeys || scope.filterKeys(unscoped);
-        });
+        const mine = await visibleTrash(plugin.trashed, scope);
         for (const t of mine) {
           // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- purge scoped trash entries sequentially; stops on the first failure
-          await plugin.purge(t.key);
+          await plugin.purge(t.storageKey);
         }
       } else {
         await plugin.purge();
@@ -901,7 +986,7 @@ export const dispatch = async (
     });
     return handleDownload(
       downloadCfg(ctx),
-      scopeKey(scope.prefix, key),
+      scoped(ctx, scope, key),
       key,
       { ifRange: parsed.ifRangeHeader, range: parsed.rangeHeader },
       scope,
@@ -918,11 +1003,17 @@ export const dispatch = async (
     const scope = await authorizeOp(ctx, {
       key,
       operation: "upload",
-      params: {},
+      // What the client declared; the body is still held to `maxUploadSize`.
+      params: {
+        ...(parsed.contentType && { contentType: parsed.contentType }),
+        ...(parsed.contentLength !== undefined && {
+          size: parsed.contentLength,
+        }),
+      },
     });
     return handleExplicitUpload(
       uploadCfg(ctx, parsed, scope),
-      scopeKey(scope.prefix, key),
+      scoped(ctx, scope, key),
       key,
       parsed.bodyStream,
       parsed.contentType,

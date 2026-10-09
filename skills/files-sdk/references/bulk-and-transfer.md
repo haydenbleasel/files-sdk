@@ -80,7 +80,7 @@ const { items, prefixes } = await files.list({
 // prefixes → subfolders:       [ "photos/2023/", "photos/2024/" ]   (full keys, trailing delimiter)
 ```
 
-`ListResult.prefixes` is omitted when no delimiter is set or none are found; when the instance has a `prefix`, prefixes are scoped/stripped like item keys. **Supported** by object stores and folder-based providers (the latter only accept `"/"`); **throws** a `FilesError` on flat stores (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) — check `files.capabilities.delimiter` (or `adapter.supportsDelimiter`). A cursor is valid only for the exact `prefix` **and** `delimiter` it was produced with — hold both constant across a paginated sequence.
+`ListResult.prefixes` is omitted when no delimiter is set or none are found; when the instance has a `prefix`, prefixes are scoped/stripped like item keys. **Supported** by object stores and folder-based providers (the latter only accept `"/"`); **throws** a `FilesError` on flat stores (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) — check `files.capabilities.delimiter`. A cursor is valid only for the exact `prefix` **and** `delimiter` it was produced with — hold both constant across a paginated sequence.
 
 ## `transfer` — cross-provider migration
 
@@ -129,4 +129,4 @@ const { uploaded, skipped, deleted, errors } = await sync(from, to, {
 });
 ```
 
-`destPrefix` scopes the destination walk (compare + prune) when `transformKey` re-homes keys; it defaults to `prefix`. ETags only match across providers that compute them the same way — use `compare: "size"` (or a function) between different backends. Like `transfer`, it doesn't throw on partial failure. Also the CLI `sync` command and, with `mcp --allow-writes --to '<json>'`, an MCP `sync` tool.
+`destPrefix` scopes the destination walk (compare + prune) when `transformKey` re-homes keys; it defaults to `prefix`. ETags only match across providers that compute them the same way — use `compare: "size"` (or a function) between different backends. Like `transfer`, it doesn't throw on partial failure. With a `signal`, the prune deletes in batches of 100 and stops before the next batch once aborted; the unpruned keys come back in `errors` as aborted. Also the CLI `sync` command and, with `mcp --allow-writes --to '<json>'`, an MCP `sync` tool.

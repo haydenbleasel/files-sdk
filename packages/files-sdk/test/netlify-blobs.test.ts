@@ -1015,7 +1015,7 @@ describe("netlify-blobs adapter", () => {
     });
   });
 
-  test("error: MissingBlobsEnvironmentError is wrapped as Provider", async () => {
+  test("error: MissingBlobsEnvironmentError is a non-retryable Invalid", async () => {
     getMetadataMock.mockImplementationOnce(() =>
       Promise.reject(
         Object.assign(
@@ -1026,14 +1026,46 @@ describe("netlify-blobs adapter", () => {
         )
       )
     );
-    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    const files = new Files({
+      adapter: netlifyBlobs({ name: "s" }),
+      retries: 2,
+    });
     try {
       await files.head("a.txt");
       throw new Error("should have thrown");
     } catch (error) {
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Invalid");
       expect((error as FilesError).message).toMatch(/Netlify Blobs/u);
     }
+    expect(getMetadataMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("missing site/token at construction throws Invalid from the factory", () => {
+    // `getStore()` resolves credentials eagerly and throws this when neither
+    // explicit options nor a Netlify runtime context supply them.
+    getStoreMock.mockImplementationOnce(() => {
+      throw Object.assign(
+        new Error(
+          "The environment has not been configured to use Netlify Blobs. To use it manually, supply the following properties when creating a store: siteID, token"
+        ),
+        { name: "MissingBlobsEnvironmentError" }
+      );
+    });
+    expect(() => netlifyBlobs({ name: "s" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
+  });
+
+  test("an unsupported region at construction throws Invalid", () => {
+    getStoreMock.mockImplementationOnce(() => {
+      throw Object.assign(
+        new Error("mars-1 is not a supported Netlify Blobs region."),
+        { name: "InvalidBlobsRegionError" }
+      );
+    });
+    expect(() => netlifyBlobs({ name: "s" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("download exposes stored size 0 fallback for blobs written outside the SDK", async () => {

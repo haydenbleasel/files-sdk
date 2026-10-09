@@ -15,7 +15,7 @@ const files = new Files({
 await files.upload("avatars/abc.png", file, { retries: 0 }); // opt one call out
 ```
 
-- **Only `Provider` failures** retry — network blips, throttling, 5xx. `NotFound`/`Unauthorized`/`Conflict` are deterministic and returned immediately. Aborts and timeouts are never retried, and neither is a `Provider` error with `permanent: true` (a deterministic SDK-side rejection, such as an option the adapter can't honor or a fail-closed plugin). **`ReadableStream` uploads are never retried** (a consumed stream can't be replayed) — buffered bodies retry normally.
+- **Only `Provider` failures** retry — network blips, throttling, 5xx. `NotFound`/`Unauthorized`/`Conflict` and the SDK's own `Invalid`/`Unsupported`/`ReadOnly` are never retried; neither is a `Provider` error with `permanent: true`. Aborts and timeouts are never retried either. **`ReadableStream` uploads are never retried** (a consumed stream can't be replayed) — buffered bodies retry normally.
 - **Default backoff** is exponential — `100 * 2 ** (attempt - 1)` ms (100, 200, 400, …), capped at 30s, no jitter. `attempt` is `1` for the first retry. A caller-supplied `backoff` is used verbatim — no cap — so add your own ceiling/jitter.
 - **Bulk forms don't retry** — they surface per-key failures in `errors[]` so you re-drive only what failed.
 
@@ -72,7 +72,7 @@ stored.key; // "123/avatar.png" — prefix stripped
 const { items } = await users.list(); // scoped to users/, keys relative
 ```
 
-Leading/trailing slashes are normalized (`"/users/"`, `"users/"`, `"users"` all equivalent); a leading slash on a key is ignored, so prefix+key always join with exactly one separator. `list` matches on a path boundary — `prefix: "users"` lists `users/` but never the sibling `users-archive/`; the per-call `list({ prefix })` filter and cursor pagination compose with it. The prefix never leaks: results (`key`/`name`) come back relative, hook payloads report the keys you passed, and the bulk forms strip it identically.
+Leading/trailing slashes are normalized (`"/users/"`, `"users/"`, `"users"` all equivalent); a leading slash on a key is ignored, so prefix+key always join with exactly one separator. `list` matches on a path boundary — `prefix: "users"` lists `users/` but never the sibling `users-archive/`; the per-call `list({ prefix })` filter and cursor pagination compose with it. The prefix never leaks: results (`key`) come back relative, hook payloads report the keys you passed, and the bulk forms strip it identically.
 
 ## Read-only views
 
@@ -90,7 +90,7 @@ const view = base.readonly(); // reuses adapter/prefix/timeout/retries/hooks —
 view.isReadOnly; // true (base.isReadOnly is false)
 ```
 
-Still allowed: `download`, `head`, `exists`, `list`, `listAll`, `url`, `file(key)` (for reads). **Blocked** with `FilesError { code: "ReadOnly" }`: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the `file(key)` write helpers (`upload`/`delete`/`copyTo`/`copyFrom`/`moveTo`/`moveFrom`/`signedUploadUrl`). It does **not** lock down `files.raw` — code writing through the escape hatch bypasses the guard by design. (Distinct from the AI-tools `readOnly` option, which _removes_ the write tools from an agent's toolset.)
+Still allowed: `download`, `head`, `exists`, `list`, `listAll`, `search`, `url`, `file(key)` (for reads). **Blocked** with `FilesError { code: "ReadOnly" }`: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, `abortUpload`, and the `file(key)` write helpers (`upload`/`delete`/`copyTo`/`copyFrom`/`moveTo`/`moveFrom`/`signedUploadUrl`). It does **not** lock down `files.raw` — code writing through the escape hatch bypasses the guard by design. (Distinct from the AI-tools `readOnly` option, which _removes_ the write tools from an agent's toolset.)
 
 ## Hooks
 
@@ -121,4 +121,4 @@ const files = new Files({
 - **`onError`** — fires when a public call _rejects_, just before the matching `onAction({ status: "error" })`. Partial failures in a bulk `errors[]` are not rejections and don't fire it.
 - **`onRetry`** — fires for each scheduled retry of a single-key call (`attempt`, `maxRetries`, `delayMs`, `error`). Not on the first attempt, for non-retryable errors, for stream uploads, or for bulk calls.
 
-Keys in every payload are the ones the caller passed — the `prefix` is never leaked.
+`type` is the method name: `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`, `url`, `signedUploadUrl`, or `abortUpload` (`abortUpload()` fires all three hooks, but plugin `wrap`s don't see it). Keys in every payload are the ones the caller passed — the `prefix` is never leaked.

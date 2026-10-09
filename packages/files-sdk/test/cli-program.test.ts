@@ -491,8 +491,9 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
   });
 
   test("intArg rejects non-numeric values from commander", async () => {
-    // intArg() throws TypeError; commander wraps it as InvalidArgumentError and
-    // routes through its parse-error path (process.exit(1) by default).
+    // intArg() throws InvalidArgumentError, so commander reports a usage error
+    // and exits 2 (a plain throw would escape it and exit 5, as a Provider
+    // failure).
     await expect(
       run(
         "--provider",
@@ -504,7 +505,9 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         "--limit",
         "not-a-number"
       )
-    ).rejects.toThrow(/expected an integer/u);
+    ).rejects.toThrow("__exit:2");
+    expect(cap.exits).toEqual([2]);
+    expect(cap.stderr.join("")).toContain("expected an integer");
   });
 
   test("intArg rejects trailing garbage instead of truncating it", async () => {
@@ -520,7 +523,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         "--limit",
         "5MB"
       )
-    ).rejects.toThrow(/expected an integer/u);
+    ).rejects.toThrow("__exit:2");
     await expect(
       run(
         "--provider",
@@ -532,7 +535,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         "--limit",
         "1.9"
       )
-    ).rejects.toThrow(/expected an integer/u);
+    ).rejects.toThrow("__exit:2");
   });
 
   test("mcp action invokes startMcpServer on the injected mcp module", async () => {

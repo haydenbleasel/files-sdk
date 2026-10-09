@@ -91,9 +91,9 @@ async function uploadFromBrowser(file: File) {
 
 ## Confirming the upload server-side
 
-The client knows the upload returned 2xx, but a hostile client can lie. If you use the `files-sdk/api` gateway with `useFiles`, don't build this yourself: its `onUploadComplete` hook already runs server-side once per verified upload, after it `head`s the object and checks `maxUploadSize`, and deletes the object if the hook throws. See `docs/ui/server/upload-lifecycle.mdx`.
+The client knows the upload returned 2xx, but a hostile client can lie. If you use the `files-sdk/api` gateway with `useFiles`, don't build this yourself: its `onUploadComplete` hook already runs server-side once per verified upload, after it `head`s the object and checks `maxUploadSize`, and deletes the object if the hook throws (`UploadRejectedError` → 422 with your message; a `FilesError` keeps its code; anything else → a generic 500, with the original sent to the router's `onError`). `authorize` sees what the client declared as `params` (presign: `{ files: [{ name, size, type }], expiresIn? }`; keyed PUT: `{ contentType?, size? }`) for quota or type gates. With a `completions` store, completions are single-use and the proxy PUT answers 409 once `complete` has accepted the upload; `complete` accepts a token up to `completeGracePeriod` (default 3600 s) after it expires. A presigned direct-to-storage target stays writable until it expires either way. See `docs/ui/server/upload-lifecycle.mdx`.
 
-With a hand-rolled `signedUploadUrl` flow, if the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `type`/`size`.
+With a hand-rolled `signedUploadUrl` flow, if the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `contentType`/`size`.
 
 ```ts
 const meta = await files.head(key);

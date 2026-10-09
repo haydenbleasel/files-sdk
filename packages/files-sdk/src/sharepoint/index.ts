@@ -422,9 +422,11 @@ export const sharepoint = (
       discard: () => withDriver((inner) => inner.discard()),
       mode: "offset",
       get partSize(): number {
+        // Reading it before begin()/probe() is a caller bug, not a provider
+        // failure.
         if (!resolvedDriver) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "sharepoint: upload session not started."
           );
         }

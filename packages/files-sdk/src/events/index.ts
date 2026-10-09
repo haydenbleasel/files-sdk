@@ -1,9 +1,9 @@
 // `files-sdk/events` — one place to react when a file is created or deleted,
-// however it got there. Normalizes each provider's bucket notifications (S3
-// and MinIO, R2, GCS, Azure, the memory adapter) into one `FileEvent`, routes
-// them to handlers by type and key glob, and serves them as a webhook endpoint
-// any gateway binding can mount. Gateway upload completions and (opt-in)
-// writes made through the instance feed the same handlers.
+// however it got there. Normalizes each provider's bucket notifications (see
+// `EVENT_FORMATS`) into one `FileEvent`, routes them to handlers by type and
+// key glob, and serves them as a webhook endpoint any gateway binding can
+// mount. Gateway upload completions and (opt-in) writes made through the
+// instance feed the same handlers.
 //
 // Delivery is at-least-once and can be out of order on every provider:
 // handlers must be idempotent, keyed on `event.id`.
@@ -65,25 +65,35 @@ export interface EventDedupeStore {
 export interface EventsOptions {
   /**
    * The notification format `parse()` / `dispatch()` / `webhook()` read.
-   * Defaults from the adapter: `s3`, `s3-fetch`, `bun-s3` and `minio` read
-   * `"s3"`, `r2` reads `"r2"`, `gcs` and `firebase-storage` read `"gcs"`,
-   * `azure` reads `"azure"`, `memory` reads `"memory"`. Set it for a provider
-   * that sends one of these formats under another adapter (an S3-compatible
-   * service whose notifications are S3-shaped).
+   * Defaults to the one the adapter declares (`files.capabilities.events`):
+   * `"s3"` for `s3` and `s3-fetch` on AWS, `minio`, `rustfs`, `storj` and
+   * `wasabi`; `"r2"` for every `r2` engine; `"gcs"` for `gcs` and
+   * `firebase-storage`; `"azure"`, `"b2"` (`backblaze-b2`), `"tigris"`,
+   * `"supabase"`, `"cloudinary"`, `"appwrite"`, `"box"` and `"memory"` for
+   * their own adapters. Other adapters (`bun-s3`, `s3` on a custom endpoint,
+   * unverified S3-compatible services) declare none; set it when you know the
+   * provider sends one of {@link EVENT_FORMATS}.
    */
   format?: EventFormat;
   /**
-   * Only accept provider events for this bucket (container, for Azure), so
-   * one webhook endpoint can be shared by several buckets. Events for other
-   * buckets are dropped; events whose delivery doesn't name a bucket pass.
+   * Only accept provider events for this bucket (container, for Azure).
+   * Defaults to the adapter's own bucket when it exposes one
+   * (`adapter.bucket`), so a queue, topic or webhook that also carries other
+   * buckets' events (an EventBridge rule, an Azure system topic, a Supabase or
+   * Appwrite project webhook) can't feed them in under the same keys. Events
+   * whose delivery doesn't name a bucket pass. `false` accepts every bucket.
    */
-  bucket?: string;
+  bucket?: string | false;
   /**
    * Also raise events for successful `upload` / `delete` / `copy` / `move`
    * calls made through this instance (`source: "sdk"`). Off by default: on a
    * provider with notifications each write then arrives twice. Useful where a
    * provider has none. Delivered after the call settles and not awaited; a
-   * failing handler goes to `onError`.
+   * failing handler goes to `onError`. `events()` must then come before any
+   * plugin that maps storage events (`versioning`, `softDelete`, `dedup`,
+   * `encryption`, `compression`, `tiering`) in `plugins`, or the instance
+   * refuses to build: behind one, it would see that plugin's internal keys
+   * and stored sizes.
    */
   sdk?: boolean;
   /** Skip events whose `id` this store has seen. See {@link EventDedupeStore}. */
@@ -110,7 +120,9 @@ export interface FilesEvents {
   /**
    * Handle events of `type` whose key matches `pattern` (a glob, `**` when
    * omitted; matched against the caller-facing key). Handlers run in
-   * registration order. Returns a function that removes the handler.
+   * registration order. Returns a function that removes the handler. When the
+   * instance reads a notification format, throws if a plugin refuses provider
+   * events (as `webhook()` does), rather than dropping every one later.
    */
   on: {
     (type: EventTypeFilter, handler: EventHandler): () => void;
@@ -141,8 +153,10 @@ export interface FilesEvents {
    * `{ handle }` shape as the gateway, so every gateway binding mounts it
    * (`createRouteHandler(files.events.webhook({ verify }))`). Answers the
    * provider handshakes, authenticates, then dispatches: `401` on a bad
-   * credential, `400` on a malformed delivery, `500` when a handler throws (the
-   * provider redelivers), `200` otherwise.
+   * credential, `400` on a malformed delivery, `502` when fetching a signing
+   * certificate or key fails and `500` when a handler throws (the provider
+   * redelivers either), `200` otherwise. A handler's error message never
+   * reaches the response; it goes to `onError`.
    */
   webhook: (opts: EventsWebhookOptions) => WebhookHandler;
   /**
@@ -164,6 +178,9 @@ interface Registration {
   matches: (key: string) => boolean;
   handler: EventHandler;
 }
+
+/** The errors `emit()` rejects with because handlers threw (each one already reported to `onError`). */
+const handlerFailures = new WeakSet<object>();
 
 const decode = (text: string): JsonValue => {
   try {
@@ -209,7 +226,7 @@ const toDeliveries = async (input: unknown): Promise<Delivery[]> => {
 const handlerFailure = (failures: readonly unknown[]): FilesError => {
   const [first] = failures;
   const message = first instanceof Error ? first.message : String(first);
-  return new FilesError(
+  const error = new FilesError(
     "Provider",
     failures.length === 1
       ? `files-sdk/events: a handler failed: ${message}`
@@ -218,6 +235,8 @@ const handlerFailure = (failures: readonly unknown[]): FilesError => {
       ? first
       : new AggregateError(failures, "files-sdk/events: handlers failed")
   );
+  handlerFailures.add(error);
+  return error;
 };
 
 const defaultOnError = (cause: unknown, event: FileEvent): void => {
@@ -275,6 +294,27 @@ const sdkEvents = (
     }
   }
 };
+
+/** The bucket the adapter is bound to, when it exposes one (`adapter.bucket`). */
+const bucketOf = (adapter: Files["adapter"]): string | undefined =>
+  "bucket" in adapter && isString(adapter.bucket) && adapter.bucket !== ""
+    ? adapter.bucket
+    : undefined;
+
+/**
+ * A provider event to fold through the instance at startup, so a plugin that
+ * refuses provider events (`tiering({ fallback: true })`) fails then, not on
+ * the first delivery.
+ */
+const probeOf = (files: Files): FileEvent => ({
+  id: "files-sdk/events:probe",
+  key: files.prefix ? `${files.prefix}/probe` : "probe",
+  provider: files.adapter.name,
+  raw: null,
+  source: "provider",
+  time: 0,
+  type: "created",
+});
 
 /** The memory adapter's change feed, when `adapter` is one. */
 const memoryFeed = (
@@ -400,14 +440,29 @@ export const events = (
 
   const parserOf = (files: Files): EventParser => {
     const format = formatOf(files);
-    if (!format) {
+    if (format) {
+      return parserFor(format);
+    }
+    const { name } = files.adapter;
+    // The adapter declares a format, but a plugin's `capabilities` hook
+    // turned it off: passing `format` would only hit that plugin's refusal.
+    if (files.adapter.capabilities?.events) {
       throw new FilesError(
         "Unsupported",
-        `files-sdk/events: the ${files.adapter.name} adapter has no notification format; pass events({ format }) if its provider sends S3, R2, GCS or Azure notifications`
+        `files-sdk/events: the ${name} adapter has no notification format on this instance: a plugin turned provider events off (tiering with \`fallback: true\` does, since it can't map them); react to gateway uploads or events({ sdk: true }) instead`
       );
     }
-    return parserFor(format);
+    throw new FilesError(
+      "Unsupported",
+      `files-sdk/events: the ${name} adapter has no notification format; pass a \`format\` (${EVENT_FORMATS.join(", ")}) if its provider sends one of them`
+    );
   };
+
+  // The bucket provider events must be for: the option, else the adapter's.
+  const bucketFilter = (files: Files): string | undefined =>
+    options.bucket === false
+      ? undefined
+      : (options.bucket ?? bucketOf(files.adapter));
 
   // Provider deliveries → caller-facing events: stamp the source, drop other
   // buckets, then map onto the instance (prefix, plugin `event` hooks).
@@ -415,16 +470,13 @@ export const events = (
     files: Files,
     parser: EventParser,
     deliveries: readonly Delivery[]
-  ): FileEvent[] =>
-    deliveries.flatMap((delivery) =>
+  ): FileEvent[] => {
+    const only = bucketFilter(files);
+    return deliveries.flatMap((delivery) =>
       parser
         .parse(delivery, { adapter: files.adapter })
         .flatMap(({ bucket, ...raw }) => {
-          if (
-            options.bucket !== undefined &&
-            bucket !== undefined &&
-            bucket !== options.bucket
-          ) {
+          if (only !== undefined && bucket !== undefined && bucket !== only) {
             return [];
           }
           const folded = files[FOLD_PROVIDER_EVENT]({
@@ -435,6 +487,12 @@ export const events = (
           return folded ? [folded] : [];
         })
     );
+  };
+
+  // Fold the startup probe: throws when a plugin refuses provider events.
+  const probe = (files: Files): void => {
+    files[FOLD_PROVIDER_EVENT](probeOf(files));
+  };
 
   const settled = async (): Promise<void> => {
     while (inflight.size > 0) {
@@ -460,7 +518,10 @@ export const events = (
 
     // The memory adapter pushes its changes; listen once a handler exists.
     const subscribeMemory = (): void => {
-      const feed = subscribed ? undefined : memoryFeed(files.adapter);
+      const feed =
+        subscribed || formatOf(files) === undefined
+          ? undefined
+          : memoryFeed(files.adapter);
       if (!feed) {
         return;
       }
@@ -486,6 +547,13 @@ export const events = (
           "files.events.on(): expected a handler function"
         );
       }
+      // Where provider events can arrive, a plugin that refuses them fails
+      // here, not silently on every delivery. (An instance with no format —
+      // `tiering({ fallback: true })` declares none — still gets gateway and
+      // `sdk` events.)
+      if (formatOf(files) !== undefined) {
+        probe(files);
+      }
       const registration: Registration = {
         handler,
         matches: globMatcher(pattern, false),
@@ -503,21 +571,12 @@ export const events = (
 
     const webhook = (opts: EventsWebhookOptions): WebhookHandler => {
       const parser = parserOf(files);
-      // Fold a probe event now, so a plugin that refuses provider events
-      // (`tiering({ fallback: true })`) fails at startup, not on the first
-      // delivery.
-      files[FOLD_PROVIDER_EVENT]({
-        id: "probe",
-        key: files.prefix ? `${files.prefix}/probe` : "probe",
-        provider: files.adapter.name,
-        raw: null,
-        source: "provider",
-        time: 0,
-        type: "created",
-      });
+      probe(files);
       return createWebhook(opts, {
         decode: (body, headers) => flatten(decode(body), headers),
         emit,
+        isHandlerFailure: (error) =>
+          error instanceof Error && handlerFailures.has(error),
         normalize: (format, deliveries) => normalize(files, format, deliveries),
         parser,
       });
@@ -538,6 +597,59 @@ export const events = (
 
   let owner: { files: Files; namespace: FilesEvents } | undefined;
 
+  // While set, this plugin's `event` hook hands the event it receives to the
+  // tap (for the plugin-order check below); otherwise the hook is a no-op.
+  let tap: ((event: FileEvent) => FileEvent) | undefined;
+
+  /**
+   * Whether a plugin listed before this one (outside it, so it sees ops after
+   * that plugin rewrote them) maps storage events — the sign it changes keys
+   * or sizes on the way in. Folds a probe and watches it leave this plugin's
+   * hook: an outer hook that reads it, replaces it, drops it, or throws is
+   * one. (An inner hook that drops or refuses the probe first hides the
+   * outside; then nothing is found.)
+   */
+  const outerMapsEvents = (files: Files): boolean => {
+    let handed: FileEvent | undefined;
+    let touched = false;
+    const touch = (): void => {
+      touched = true;
+    };
+    tap = (event) => {
+      handed = new Proxy(
+        { ...event },
+        {
+          get: (target, property, receiver) => {
+            touch();
+            // oxlint-disable-next-line anti-slop/no-reflect-get -- a transparent Proxy trap forwards the read unchanged; it parses no input
+            return Reflect.get(target, property, receiver);
+          },
+          getOwnPropertyDescriptor: (target, property) => {
+            touch();
+            return Reflect.getOwnPropertyDescriptor(target, property);
+          },
+          has: (target, property) => {
+            touch();
+            return Reflect.has(target, property);
+          },
+          ownKeys: (target) => {
+            touch();
+            return Reflect.ownKeys(target);
+          },
+        }
+      );
+      return handed;
+    };
+    try {
+      const out = files[FOLD_PROVIDER_EVENT](probeOf(files));
+      return handed !== undefined && (touched || out !== handed);
+    } catch {
+      return handed !== undefined;
+    } finally {
+      tap = undefined;
+    }
+  };
+
   // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
   // re-narrows the result per call; this wrap resolves with exactly the value
   // `next` produced for the op it was handed.
@@ -553,6 +665,8 @@ export const events = (
   }) as FilesPlugin["wrap"];
 
   return {
+    // A pass-through, but for the plugin-order check's tap.
+    event: (event) => (tap ? tap(event) : event),
     extend: (files) => {
       // `files.readonly()` re-runs `extend` on a clone of the same instance;
       // it shares this plugin's handlers. A second, unrelated instance would
@@ -561,6 +675,12 @@ export const events = (
         throw new FilesError(
           "Invalid",
           "events(): this plugin is already installed on another Files instance; create one events() per instance"
+        );
+      }
+      if (options.sdk && outerMapsEvents(files)) {
+        throw new FilesError(
+          "Invalid",
+          "events({ sdk: true }): a plugin listed before events() maps storage keys or sizes (versioning, softDelete, dedup, encryption, compression, tiering…), so the sdk source would report its internal keys and stored sizes; list events() first in `plugins`"
         );
       }
       owner ??= { files, namespace: namespaceFor(files) };

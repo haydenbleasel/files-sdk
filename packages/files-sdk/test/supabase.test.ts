@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
+import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
@@ -580,7 +581,9 @@ describe("supabase adapter", () => {
       await expect(adapter.download("missing.txt")).rejects.toMatchObject({
         code: "NotFound",
       });
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // exists + head (the info endpoint), then download's body and info
+      // requests, which run concurrently.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
     test("exists rethrows a non-NotFound error rather than reporting false", async () => {
@@ -1181,25 +1184,50 @@ describe("supabase adapter", () => {
   });
 
   describe("metadata helpers", () => {
-    test("stream download tolerates info() returning an error", async () => {
-      // safeInfo's `if (error || !data) return undefined` branch — the
-      // stream path falls back to size 0 + octet-stream when info errors.
+    test("stream download tolerates a NotFound from info()", async () => {
+      // The body is in hand, so a NotFound info lookup (object deleted in
+      // between, or a deployment without the info endpoint) degrades to
+      // size 0 + octet-stream.
       infoMock.mockImplementationOnce(() =>
-        Promise.resolve(fail(500, "ServerError", "boom"))
+        Promise.resolve(fail(404, "NotFound", "gone"))
       );
       const got = await makeAdapter().download("a.txt", { as: "stream" });
       expect(got.size).toBe(0);
       expect(got.type).toBe("application/octet-stream");
+      expect(got.metadata).toBeUndefined();
     });
 
-    test("stream download tolerates info() throwing", async () => {
-      // safeInfo's catch swallows thrown errors (older Supabase deployments
-      // don't expose info()). The stream path should still resolve.
+    test("stream download fails when info() fails with anything but NotFound", async () => {
+      // Returning the body without its metadata would hand the encryption
+      // plugin ciphertext it can't recognise, so the failure surfaces.
+      infoMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(500, "ServerError", "boom"))
+      );
+      await expect(
+        makeAdapter().download("a.txt", { as: "stream" })
+      ).rejects.toMatchObject({ code: "Provider", message: "boom" });
+    });
+
+    test("buffer download fails when info() throws", async () => {
       infoMock.mockImplementationOnce(() =>
         Promise.reject(new Error("info not supported"))
       );
-      const got = await makeAdapter().download("a.txt", { as: "stream" });
-      expect(got.size).toBe(0);
+      await expect(makeAdapter().download("a.txt")).rejects.toMatchObject({
+        code: "Provider",
+        message: "info not supported",
+      });
+    });
+
+    test("the download's own error wins over a failing info()", async () => {
+      downloadResolveMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(404, "NotFound", "not here"))
+      );
+      infoMock.mockImplementationOnce(() =>
+        Promise.resolve(fail(500, "ServerError", "boom"))
+      );
+      await expect(makeAdapter().download("a.txt")).rejects.toMatchObject({
+        code: "NotFound",
+      });
     });
 
     test("stream download maps an asStream() error response to FilesError", async () => {
@@ -1263,7 +1291,7 @@ describe("supabase adapter", () => {
         Promise.resolve(ok(new Blob(["hi"], { type: "" })))
       );
       infoMock.mockImplementationOnce(() =>
-        Promise.resolve(fail(500, "ServerError", "boom"))
+        Promise.resolve(fail(400, "404", "Object not found", "NoSuchKey"))
       );
       const got = await makeAdapter().download("a.txt");
       expect(got.type).toBe("application/octet-stream");
@@ -1692,19 +1720,76 @@ describe("supabase resumable uploads (TUS)", () => {
   test("the client escape hatch can't do resumable (no url/key)", async () => {
     installFetch(() => new Response(null, { status: 201 }));
     // A pre-built client lets construction succeed, but there's no URL/key to
-    // reach the TUS endpoint with — so resumable must reject.
-    const files = new Files({
-      adapter: supabase({
-        bucket: BUCKET,
-        client: new StorageClientStub(STORAGE_URL, {}) as never,
-      }),
+    // reach the TUS endpoint with — so no resumable driver is attached and
+    // `capabilities.resumable` says so.
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new StorageClientStub(STORAGE_URL, {}) as never,
     });
+    expect(adapter.resumableUpload).toBeUndefined();
+    const files = new Files({ adapter });
+    expect(files.capabilities.resumable).toBe(false);
     await expect(
       files.upload("x", "data", { control: new UploadControl() })
     ).rejects.toMatchObject({
       code: "Unsupported",
-      message: expect.stringMatching(/require `url` \+ `key`/u),
+      message: expect.stringMatching(/resumable uploads are not supported/u),
     });
+  });
+
+  test("url + key credentials attach the resumable driver", () => {
+    expect(new Files({ adapter: makeAdapter() }).capabilities.resumable).toBe(
+      true
+    );
+  });
+
+  test("abortUpload cancels the TUS session and checks the DELETE status", async () => {
+    const token: ResumableUploadSession = {
+      contentType: "application/octet-stream",
+      key: "file",
+      provider: "supabase",
+      uri: SESSION,
+    };
+    const deletes: string[] = [];
+    let status = 204;
+    installFetch((url, init) => {
+      deletes.push(`${init.method} ${url}`);
+      return new Response(null, { status });
+    });
+    const files = new Files({ adapter: makeAdapter(), retries: 0 });
+    await files.abortUpload("file", token);
+    expect(deletes).toEqual([`DELETE ${SESSION}`]);
+    // Already completed or expired: the session is gone either way.
+    status = 404;
+    await expect(files.abortUpload("file", token)).resolves.toBeUndefined();
+    // A refused or failed cancel leaves the session live, so it rejects.
+    status = 403;
+    await expect(files.abortUpload("file", token)).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: expect.stringMatching(/upload session cancel failed/u),
+    });
+    status = 500;
+    await expect(files.abortUpload("file", token)).rejects.toMatchObject({
+      code: "Provider",
+    });
+  });
+
+  test("abortUpload maps a transport failure on the cancel", async () => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = (() =>
+      Promise.reject(new TypeError("offline"))) as unknown as typeof fetch;
+    const files = new Files({ adapter: makeAdapter(), retries: 0 });
+    await expect(
+      files.abortUpload("file", {
+        contentType: "application/octet-stream",
+        key: "file",
+        provider: "supabase",
+        uri: SESSION,
+      })
+    ).rejects.toMatchObject({ code: "Provider", message: "offline" });
   });
 
   test("a session response missing Location throws", async () => {
@@ -1795,5 +1880,244 @@ describe("supabase resumable uploads (TUS)", () => {
     await expect(
       files.upload("x", "data", { control: UploadControl.from(token) })
     ).rejects.toThrow(/Cannot resume a gcs/u);
+  });
+});
+
+describe("supabase object info (real storage-js client)", () => {
+  interface StoredObject {
+    bytes: Uint8Array<ArrayBuffer>;
+    metadata?: Record<string, unknown>;
+    type: string;
+  }
+
+  // A minimal Supabase Storage server behind storage-js's injectable fetch:
+  // uploads keep the `x-metadata` user metadata, `/object/info` answers with
+  // the server's snake_case body, and downloads serve the stored bytes.
+  const fakeServer = () => {
+    const objects = new Map<string, StoredObject>();
+    const requests: { init: RequestInit; url: string }[] = [];
+    const fetchMock = mock(async (input: string, init: RequestInit = {}) => {
+      requests.push({ init, url: input });
+      const url = new URL(input);
+      const method = (init.method ?? "GET").toUpperCase();
+      const path = url.pathname.replace("/storage/v1", "");
+      const headers = new Headers(init.headers);
+      const upload = /^\/object\/uploads\/(?<key>.+)$/u.exec(path);
+      if (method === "POST" && upload?.groups?.key) {
+        const meta = headers.get("x-metadata");
+        objects.set(decodeURIComponent(upload.groups.key), {
+          bytes: new Uint8Array(await new Response(init.body).arrayBuffer()),
+          type: headers.get("content-type") ?? "",
+          ...(meta && { metadata: JSON.parse(atob(meta)) }),
+        });
+        return Response.json({ Id: "1", Key: `uploads/${upload.groups.key}` });
+      }
+      const info = /^\/object\/info\/uploads\/(?<key>.+)$/u.exec(path);
+      if (info?.groups?.key) {
+        const found = objects.get(decodeURIComponent(info.groups.key));
+        if (!found) {
+          return Response.json(
+            {
+              error: "not_found",
+              message: "Object not found",
+              statusCode: "404",
+            },
+            { status: 400 }
+          );
+        }
+        return Response.json({
+          bucket_id: BUCKET,
+          cache_control: "max-age=3600",
+          content_type: found.type,
+          etag: '"etag-raw"',
+          last_modified: STABLE_LAST_MODIFIED,
+          metadata: found.metadata ?? null,
+          size: found.bytes.byteLength,
+        });
+      }
+      const download = /^\/object\/uploads\/(?<key>.+)$/u.exec(path);
+      const found =
+        download?.groups?.key &&
+        objects.get(decodeURIComponent(download.groups.key));
+      if (found) {
+        return new Response(found.bytes, {
+          headers: { "content-type": found.type },
+        });
+      }
+      return Response.json(
+        { error: "not_found", message: "Object not found", statusCode: "404" },
+        { status: 400 }
+      );
+    });
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { Authorization: `Bearer ${KEY}`, apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    return { adapter, fetchMock, objects, requests };
+  };
+
+  const META = { fsenc_dek_iv: "abc", user_id: "42", "x-trace": "t" };
+
+  test("user metadata keys round-trip unchanged through head and both download modes", async () => {
+    const { adapter } = fakeServer();
+    const files = new Files({ adapter });
+    await files.upload("a.txt", "hi", { metadata: META });
+    const head = await files.head("a.txt");
+    expect(head.metadata).toEqual(META);
+    expect(head.etag).toBe("etag-raw");
+    expect(head.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
+    expect(head.size).toBe(2);
+    const buffered = await files.download("a.txt");
+    expect(buffered.metadata).toEqual(META);
+    expect(buffered.etag).toBe("etag-raw");
+    expect(buffered.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
+    expect(await buffered.text()).toBe("hi");
+    const streamed = await files.download("a.txt", { as: "stream" });
+    expect(streamed.metadata).toEqual(META);
+    expect(streamed.size).toBe(2);
+    expect(await drainStream(streamed.stream())).toBe(2);
+  });
+
+  test("the encryption plugin round-trips through a real client", async () => {
+    const { adapter, objects } = fakeServer();
+    const files = new Files({
+      adapter,
+      plugins: [encryption(await generateEncryptionKey())],
+    });
+    await files.upload("s.txt", "top secret");
+    expect(new TextDecoder().decode(objects.get("s.txt")?.bytes)).not.toBe(
+      "top secret"
+    );
+    const decrypted = await files.download("s.txt");
+    expect(await decrypted.text()).toBe("top secret");
+  });
+
+  test("the info request uses the client's headers, encodes the key, and forwards the signal", async () => {
+    const { adapter, objects, requests } = fakeServer();
+    objects.set("dir/a b?.txt", { bytes: new Uint8Array(1), type: "x/y" });
+    const { signal } = new AbortController();
+    await adapter.head("dir/a b?.txt", { signal });
+    const [request] = requests;
+    expect(request?.url).toBe(
+      `${STORAGE_URL}/object/info/${BUCKET}/dir/a%20b%3F.txt`
+    );
+    expect(new Headers(request?.init.headers).get("apikey")).toBe(KEY);
+    expect(request?.init.signal).toBe(signal);
+  });
+
+  test("head maps a non-JSON error body by its HTTP status", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response("denied", { status: 403 }))
+    );
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(adapter.head("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
+  test("head maps a 5xx body to a retryable Provider error", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        Response.json(
+          { error: "internal", message: "boom", statusCode: "500" },
+          { status: 500 }
+        )
+      )
+    );
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(adapter.head("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "boom",
+    });
+  });
+
+  test("head maps a transport failure to Provider", async () => {
+    const fetchMock = mock(() => Promise.reject(new TypeError("offline")));
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(adapter.head("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "offline",
+    });
+  });
+
+  test("a non-object info body yields defaults, and updated_at stands in for last_modified", async () => {
+    let body: unknown = null;
+    const fetchMock = mock(() => Promise.resolve(Response.json(body)));
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    expect(await adapter.head("a.txt")).toEqual({
+      contentType: "application/octet-stream",
+      key: "a.txt",
+      size: 0,
+    });
+    body = { metadata: [], updated_at: 1_700_000_000_000 };
+    const head = await adapter.head("a.txt");
+    expect(head.lastModified).toBe(1_700_000_000_000);
+    expect(head.metadata).toBeUndefined();
+  });
+
+  test("a duck-typed bucket client with request internals uses the raw info endpoint", async () => {
+    const fetchMock = mock((_url: string, _init?: RequestInit) =>
+      Promise.resolve(
+        Response.json({ content_type: "a/b", metadata: { k_v: "1" } })
+      )
+    );
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: {
+        from: () => ({
+          ...bucketRef,
+          fetch: fetchMock,
+          headers: { apikey: KEY, ignored: 1 },
+          url: STORAGE_URL,
+        }),
+      } as never,
+    });
+    const head = await adapter.head("a.txt");
+    expect(head.metadata).toEqual({ k_v: "1" });
+    expect(infoMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toEqual({ apikey: KEY });
+  });
+
+  test("a bucket client whose internals have the wrong shape falls back to info()", async () => {
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: {
+        from: () => ({ ...bucketRef, fetch: "nope", headers: {}, url: 1 }),
+      } as never,
+    });
+    await adapter.head("a.txt");
+    expect(infoMock).toHaveBeenCalledTimes(1);
   });
 });

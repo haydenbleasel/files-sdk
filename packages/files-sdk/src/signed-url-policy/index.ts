@@ -52,7 +52,9 @@ export interface SignedUrlPolicyOptions {
    * Adapters whose direct-upload primitive can't enforce a size limit already
    * **fail closed** (they throw rather than mint an unbounded URL), so a policy
    * that injects `maxSize` turns those into a hard error instead of a silent
-   * gap — exactly what you want. Omit to leave upload size unconstrained.
+   * gap — exactly what you want. `files.capabilities.signedUpload.supported`
+   * reads `false` there to match, so the `files-sdk/api` gateway proxies
+   * uploads instead of presigning. Omit to leave upload size unconstrained.
    */
   maxUploadSize?: number;
 }
@@ -88,6 +90,17 @@ const clampToCap = (requested: number | undefined, cap: number): number =>
  * behind this policy is indistinguishable from one without it — safe to enable
  * or remove at any time. With no options set it still applies the headline
  * default: `url()` forces `attachment`.
+ *
+ * `files.capabilities` reports what's left under the policy, so callers and the
+ * `files-sdk/api` gateway pick a path that works instead of hitting a throw:
+ * - a forced disposition can't ride on a permanent link, so `publicUrl` reads
+ *   `false`; on an instance that signs but can't bind a disposition (Vercel
+ *   Blob private) every `url()` throws, so `signedUrl.supported` reads `false`
+ *   as well. A `maxExpiresIn` on a signing instance pins plain `url()` calls
+ *   to an expiry, so `publicUrl` reads `false` there too.
+ * - a `maxUploadSize` on an instance that can't enforce `maxSize` (R2, Azure,
+ *   Supabase, the `fetch` S3 client, Bun S3, …) makes every
+ *   `signedUploadUrl()` throw, so `signedUpload.supported` reads `false`.
  *
  * Place it **first** (outermost) so it sees the caller's original `url()` /
  * `signedUploadUrl()` request before anything downstream, and so its options
@@ -130,6 +143,31 @@ export const signedUrlPolicy = (
   let instance: Files | undefined;
 
   return {
+    // Advertise what's left once the policy rewrites every request, so a
+    // gateway or caller branching on capabilities never plans a URL or a
+    // direct upload the policy guarantees will throw.
+    capabilities: (caps) => {
+      let { publicUrl, signedUpload, signedUrl } = caps;
+      if (disposition !== false) {
+        // Every `url()` carries a disposition, which only a signed URL can
+        // bind: never the permanent link, and nothing at all where the
+        // adapter can't bind one (its `url()` throws).
+        publicUrl = false;
+        if (!signedUrl.disposition) {
+          signedUrl = { disposition: false, expiry: "none", supported: false };
+        }
+      }
+      if (maxExpiresIn !== undefined && signedUrl.supported) {
+        // A plain `url()` is pinned to the cap, so it signs too.
+        publicUrl = false;
+      }
+      if (maxUploadSize !== undefined && !signedUpload.maxSize) {
+        // Every `signedUploadUrl()` carries a `maxSize` this adapter can't
+        // enforce, so it fails closed on every call.
+        signedUpload = { contentType: false, maxSize: false, supported: false };
+      }
+      return { ...caps, publicUrl, signedUpload, signedUrl };
+    },
     extend: (files) => {
       instance = files;
       return {};

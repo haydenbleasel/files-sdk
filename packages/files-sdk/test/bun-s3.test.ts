@@ -368,6 +368,16 @@ describe("bun-s3 adapter", () => {
     await expect(
       adapter.signedUploadUrl("up.txt", { expiresIn: 60, maxSize: 1024 })
     ).rejects.toMatchObject({ code: "Unsupported" });
+    // A size floor needs the same POST policy; `minSize: 0` asks for nothing.
+    await expect(
+      adapter.signedUploadUrl("up.txt", { expiresIn: 60, minSize: 1 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/`minSize` is not supported/u),
+    });
+    expect(
+      await adapter.signedUploadUrl("up.txt", { expiresIn: 60, minSize: 0 })
+    ).toMatchObject({ method: "PUT" });
   });
 
   test("url and signedUploadUrl reject expiresIn past the SigV4 one-week cap", async () => {
@@ -1050,5 +1060,159 @@ describe("bun-s3 resumable uploads (in-process)", () => {
       code: "Invalid",
       message: expect.stringMatching(/Cannot resume a gcs/u),
     });
+  });
+});
+
+// What Bun 1.4 throws for a failed HEAD that isn't a 404: no status, and no
+// body to read a code from.
+const unknownError = () =>
+  Object.assign(new Error("an unexpected error has occurred"), {
+    code: "UnknownError",
+    name: "S3Error",
+  });
+
+describe("bun-s3 status-less HEAD failures", () => {
+  // A fake whose HEAD (`stat` / `exists`) fails the way Bun's does and whose
+  // presigned URLs point at a local server answering with `status`.
+  const failingHeads = (status: number) => {
+    let probes = 0;
+    const server = Bun.serve({
+      fetch(req) {
+        probes += 1;
+        expect(req.method).toBe("HEAD");
+        return new Response(null, { status });
+      },
+      port: 0,
+    });
+    const client = new FakeBunS3Client();
+    client.entries.set("k", {
+      bytes: new Uint8Array([1]),
+      etag: '"e"',
+      lastModified: new Date(0),
+      type: "text/plain",
+    });
+    client.stat = () => Promise.reject(unknownError());
+    client.exists = () => Promise.reject(unknownError());
+    const file = client.file.bind(client);
+    client.file = (path) => ({ ...file(path), stat: () => client.stat(path) });
+    const presign = client.presign.bind(client);
+    // oxlint-disable-next-line typescript/no-explicit-any -- the fake's readonly arrow is swapped per test
+    (client as any).presign = (path: string, options?: BunS3PresignOptions) =>
+      presign(path, options).replace(
+        client.signingOrigin,
+        `http://localhost:${server.port}`
+      );
+    return { client, probes: () => probes, stop: () => server.stop(true) };
+  };
+
+  test("a 401/403 is re-read from a presigned HEAD and surfaces as Unauthorized", async () => {
+    for (const status of [401, 403]) {
+      const { client, probes, stop } = failingHeads(status);
+      try {
+        const adapter = bunS3({ client });
+        for (const run of [
+          () => adapter.head("k"),
+          () => adapter.download("k"),
+          () => adapter.exists("k"),
+          () => adapter.copy("k", "to"),
+        ]) {
+          // oxlint-disable-next-line no-await-in-loop -- sequential cases against one server
+          const rejection = await run().then(
+            () => null,
+            (error: unknown) => error
+          );
+          expect(rejection).toBeInstanceOf(FilesError);
+          expect((rejection as FilesError).code).toBe("Unauthorized");
+          // The original Bun error stays on the chain.
+          expect((rejection as FilesError).cause).toMatchObject({
+            code: "UnknownError",
+          });
+        }
+        expect(probes()).toBe(4);
+      } finally {
+        stop();
+      }
+    }
+  });
+
+  test("Files does not retry the re-classified auth failure", async () => {
+    const { client, probes, stop } = failingHeads(403);
+    try {
+      const files = new Files({ adapter: bunS3({ client }), retries: 2 });
+      await expect(files.download("k")).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
+      expect(probes()).toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  test("a 5xx, or a HEAD that now succeeds, keeps the retryable Provider error", async () => {
+    for (const status of [500, 200]) {
+      const { client, stop } = failingHeads(status);
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- sequential cases
+        await expect(bunS3({ client }).head("k")).rejects.toMatchObject({
+          code: "Provider",
+          message: "an unexpected error has occurred",
+        });
+      } finally {
+        stop();
+      }
+    }
+  });
+
+  test("a probe that can't run keeps the original error, and coded errors skip the probe", async () => {
+    const client = new FakeBunS3Client();
+    client.stat = () => Promise.reject(unknownError());
+    // oxlint-disable-next-line typescript/no-explicit-any -- the fake's readonly arrow is swapped per test
+    (client as any).presign = () => {
+      throw new Error("no credentials");
+    };
+    const adapter = bunS3({ client });
+    await expect(adapter.head("k")).rejects.toMatchObject({
+      code: "Provider",
+    });
+    // A rejection that isn't an object at all is mapped without probing.
+    client.stat = () => Promise.reject(new Error("plain"));
+    await expect(adapter.head("k")).rejects.toMatchObject({
+      code: "Provider",
+      message: "plain",
+    });
+    client.stat = () =>
+      // oxlint-disable-next-line prefer-promise-reject-errors -- a non-Error rejection is the case under test
+      Promise.reject("boom");
+    await expect(adapter.head("k")).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("end to end on Bun's own S3Client: a bodyless 403 HEAD is Unauthorized", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      fetch() {
+        requests += 1;
+        return new Response(null, { status: 403 });
+      },
+      port: 0,
+    });
+    try {
+      const files = new Files({
+        adapter: bunS3({
+          accessKeyId: "a",
+          bucket: "b",
+          endpoint: `http://localhost:${server.port}`,
+          region: "us-east-1",
+          secretAccessKey: "s",
+        }),
+        retries: 2,
+      });
+      await expect(files.head("k")).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
+      // Bun's HEAD plus the status probe; no retries.
+      expect(requests).toBe(2);
+    } finally {
+      server.stop(true);
+    }
   });
 });

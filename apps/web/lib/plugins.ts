@@ -83,4 +83,10 @@ export const PLUGINS: Plugin[] = [
     name: "zip()",
     slug: "zip",
   },
+  {
+    description:
+      "Normalized bucket notifications, routed by type and key glob.",
+    name: "events()",
+    slug: "events",
+  },
 ];

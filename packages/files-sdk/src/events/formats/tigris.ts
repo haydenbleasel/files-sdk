@@ -7,7 +7,7 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, toSize, toTime } from "./types.js";
+import { bareEtag, malformed, stampOf, toSize, toTime } from "./types.js";
 
 const typeOf = (eventName: string): "created" | "deleted" | undefined => {
   switch (eventName) {
@@ -41,14 +41,13 @@ const fromEvent = (event: JsonValue): RawEvent[] => {
   }
   const etag = bareEtag(object.eTag);
   const size = toSize(object.size);
-  const time = toTime(event.eventTime, Date.now());
   const bucket = isString(event.bucket) ? event.bucket : undefined;
   return [
     {
-      id: `${eventName}:${bucket ?? ""}/${object.key}@${etag ?? ""}#${time}`,
+      id: `${eventName}:${bucket ?? ""}/${object.key}@${stampOf(event, event.eventTime, etag)}`,
       key: object.key,
       raw: event,
-      time,
+      time: toTime(event.eventTime, Date.now()),
       type,
       ...(bucket !== undefined && { bucket }),
       ...(etag !== undefined && { etag }),

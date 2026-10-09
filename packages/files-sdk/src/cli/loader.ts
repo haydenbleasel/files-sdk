@@ -1,6 +1,8 @@
 import { Files } from "../index.js";
 import type { FilesOptions } from "../index.js";
 import { FilesError } from "../internal/errors.js";
+import { isObject } from "../internal/is.js";
+import { getProvider } from "../providers/index.js";
 import { PROVIDER_NAMES, PROVIDERS } from "./registry.js";
 import type { ProviderOpts } from "./registry.js";
 
@@ -121,6 +123,12 @@ export interface LoadResult {
   provider: string;
 }
 
+/** Whether a failed `import()` failed because the package isn't installed. */
+export const isModuleNotFound = (cause: unknown): boolean => {
+  const code = isObject(cause) && "code" in cause ? cause.code : undefined;
+  return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
+};
+
 export const loadFiles = async (
   opts: GlobalCliOptions
 ): Promise<LoadResult> => {
@@ -147,6 +155,21 @@ export const loadFiles = async (
     }
     return { files: new Files(filesOpts), provider };
   } catch (error) {
+    // The adapter's SDK is an optional peer that isn't installed: a setup
+    // problem in this install, not a backend failure, so it exits like a
+    // usage error and says what to install.
+    if (isModuleNotFound(error)) {
+      const peers = getProvider(provider)?.peerDeps ?? [];
+      const hint =
+        peers.length > 0
+          ? ` — install it with \`npm install ${peers.join(" ")}\``
+          : "";
+      throw new FilesError(
+        "Unsupported",
+        `the "${provider}" provider needs its SDK${hint}`,
+        error
+      );
+    }
     // The adapter's own missing-required-field error is the most accurate
     // message — wrap it with the provider's `notes` hint so OAuth-only
     // providers don't leave the user guessing where to plug credentials in.

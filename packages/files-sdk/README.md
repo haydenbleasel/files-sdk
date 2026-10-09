@@ -1,6 +1,6 @@
 # Files SDK
 
-A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.
+A unified storage SDK for object and blob backends. One small, honest API. Web-standard I/O. An escape hatch when you need the native client.
 
 [![npm downloads](https://img.shields.io/npm/dm/files-sdk.svg)](https://www.npmjs.com/package/files-sdk) [![Socket Badge](https://badge.socket.dev/npm/package/files-sdk/latest)](https://socket.dev/npm/package/files-sdk/overview/latest) ![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/haydenbleasel/files-sdk?utm_source=oss&utm_medium=github&utm_campaign=haydenbleasel%2Ffiles-sdk&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
@@ -9,6 +9,8 @@ A unified storage SDK for object and blob backends. One small, honest API. Web-s
 ```sh
 npm install files-sdk
 ```
+
+Requires Node.js 22+ (also runs on Bun, Deno, and Cloudflare Workers).
 
 Each provider's native SDK is an **optional peer dependency** — install only the ones you actually use, alongside `files-sdk` itself. A few examples:
 
@@ -82,7 +84,7 @@ File handles are a thin layer over the same adapter methods, so adapters do not 
 
 ## What you get
 
-- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`/`listAll`, `url`, `signedUploadUrl`, plus `file(key)` for a key-scoped handle. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox. `exists` returns `false` only when the provider reports `NotFound`; auth, permission, and transport failures still throw.
+- **One API across providers** — `upload`, `download`, `head`, `exists`, `delete`, `copy`, `move`, `list`/`listAll`, `search`, `url`, `signedUploadUrl`, `abortUpload`, plus `file(key)` for a key-scoped handle. The shape is the same on S3, GCS, Azure, Vercel Blob, the local filesystem, and consumer providers like Dropbox. `exists` returns `false` only when the provider reports `NotFound`; auth, permission, and transport failures still throw.
 - **Web-standard I/O** — bodies are `Blob`, `File`, `ReadableStream`, `Uint8Array`, `ArrayBuffer`, or `string`. No provider-specific types leak into your code.
 - **Escape hatch** — every adapter exposes its native client at `files.raw`, so provider-specific features are one property access away.
 - **Tree-shakeable** — each adapter is a separate entry point. You only bundle what you import.

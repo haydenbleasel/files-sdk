@@ -5,10 +5,13 @@ import type { FailoverEvent, FailoverOptions } from "../src/failover/index.js";
 import { Files } from "../src/index.js";
 import type {
   Adapter,
+  AdapterCapabilities,
   ConditionalFilesOperation,
   PluginNext,
 } from "../src/index.js";
+import { intersectCapabilities } from "../src/internal/capabilities.js";
 import { FilesError } from "../src/internal/errors.js";
+import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
@@ -503,6 +506,195 @@ describe("failover — capabilities", () => {
       multipart: { create: false, replace: false },
       replace: false,
     });
+  });
+});
+
+/** A fake that reads ranges and lists by delimiter. */
+const capable = (): FakeAdapter =>
+  fakeAdapter({ supportsDelimiter: true, supportsRange: true });
+
+describe("failover — capabilities across backends", () => {
+  test("advertises only what every backend can do", () => {
+    const files = new Files({
+      adapter: capable(),
+      plugins: [
+        failover({
+          secondaries: [
+            capable(),
+            withCapabilities(fakeAdapter(), { metadata: false }),
+          ],
+        }),
+      ],
+    });
+    expect(new Files({ adapter: capable() }).capabilities.rangeRead).toBe(true);
+    const caps = files.capabilities;
+    expect(caps.rangeRead).toBe(false);
+    expect(caps.delimiter).toBe(false);
+    expect(caps.metadata).toBe(false);
+    expect(caps.cacheControl).toBe(true);
+    expect(caps.signedUrl).toEqual({
+      disposition: true,
+      expiry: "exact",
+      supported: true,
+    });
+  });
+
+  test("refuses an option a secondary can't honor while the primary is healthy", async () => {
+    const primary = fakeAdapter({ supportsRange: true });
+    await primary.upload("a.txt", "hello");
+    const events: FailoverEvent[] = [];
+    const files = new Files({
+      adapter: primary,
+      plugins: [
+        failover({
+          onFailover: (event) => events.push(event),
+          secondaries: withCapabilities(fakeAdapter(), { metadata: false }),
+        }),
+      ],
+    });
+    await expect(
+      files.download("a.txt", { range: { end: 1, start: 0 } })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: 'range downloads are not supported by the "failover" plugin',
+    });
+    await expect(
+      files.upload("b.txt", "x", { metadata: { user: "1" } })
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
+    expect(primary.has("b.txt")).toBe(false);
+    expect(events).toEqual([]);
+    // What every backend supports still works.
+    expect(await files.download("a.txt").then((f) => f.text())).toBe("hello");
+  });
+
+  test("keeps the primary's provider-event format", () => {
+    const files = new Files({
+      adapter: memory(),
+      plugins: [failover({ secondaries: fakeAdapter() })],
+    });
+    expect(files.capabilities.events).toEqual({ format: "memory" });
+  });
+});
+
+/** A full snapshot with every capability off — the base the cases override. */
+const noCaps = (
+  overrides: Partial<AdapterCapabilities> = {}
+): AdapterCapabilities => ({
+  ...new Files({ adapter: { ...fakeAdapter(), capabilities: {} } })
+    .capabilities,
+  ...overrides,
+});
+
+describe("intersectCapabilities", () => {
+  test("ANDs the boolean flags", () => {
+    const on = noCaps({
+      cacheControl: true,
+      metadata: true,
+      publicUrl: true,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: true,
+      uploadProgress: true,
+    });
+    expect(intersectCapabilities(on, on)).toEqual(on);
+    expect(intersectCapabilities(on, noCaps())).toEqual(noCaps());
+  });
+
+  test("keeps the weaker delimiter support", () => {
+    const delimiter = (a: AdapterCapabilities["delimiter"], b: typeof a) =>
+      intersectCapabilities(noCaps({ delimiter: a }), noCaps({ delimiter: b }))
+        .delimiter;
+    expect(delimiter("any", "any")).toBe("any");
+    expect(delimiter("any", "slash")).toBe("slash");
+    expect(delimiter("slash", "any")).toBe("slash");
+    expect(delimiter("any", false)).toBe(false);
+    expect(delimiter(false, "slash")).toBe(false);
+  });
+
+  test("signs only when both sign, with the weaker expiry and tighter cap", () => {
+    const signed = (signedUrl: AdapterCapabilities["signedUrl"]) =>
+      noCaps({ signedUrl });
+    const exact = signed({
+      disposition: true,
+      expiry: "exact",
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
+    const provider = signed({
+      disposition: false,
+      expiry: "provider",
+      maxExpiresIn: 3600,
+      supported: true,
+    });
+    const uncapped = signed({
+      disposition: true,
+      expiry: "exact",
+      supported: true,
+    });
+    expect(intersectCapabilities(exact, provider).signedUrl).toEqual({
+      disposition: false,
+      expiry: "provider",
+      maxExpiresIn: 3600,
+      supported: true,
+    });
+    expect(intersectCapabilities(provider, exact).signedUrl.expiry).toBe(
+      "provider"
+    );
+    expect(intersectCapabilities(uncapped, exact).signedUrl).toEqual(
+      exact.signedUrl
+    );
+    expect(intersectCapabilities(uncapped, uncapped).signedUrl).toEqual(
+      uncapped.signedUrl
+    );
+    expect(intersectCapabilities(exact, noCaps()).signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
+  });
+
+  test("hands out direct uploads only when both can", () => {
+    const upload = (signedUpload: AdapterCapabilities["signedUpload"]) =>
+      noCaps({ signedUpload });
+    const full = upload({
+      contentType: true,
+      maxExpiresIn: 100,
+      maxSize: true,
+      supported: true,
+    });
+    const partial = upload({
+      contentType: true,
+      maxSize: false,
+      supported: true,
+    });
+    expect(intersectCapabilities(full, partial).signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 100,
+      maxSize: false,
+      supported: true,
+    });
+    expect(intersectCapabilities(partial, full).signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 100,
+      maxSize: false,
+      supported: true,
+    });
+    expect(intersectCapabilities(full, noCaps()).signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: false,
+    });
+  });
+
+  test("takes conditional and events from the first snapshot", () => {
+    const first = noCaps({ events: { format: "s3" } });
+    const second = noCaps({ events: { format: "gcs" } });
+    expect(intersectCapabilities(first, second).events).toEqual({
+      format: "s3",
+    });
+    expect(intersectCapabilities(first, second).conditional).toBe(
+      first.conditional
+    );
   });
 });
 

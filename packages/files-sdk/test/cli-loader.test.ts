@@ -3,7 +3,12 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 
-import { describeProvider, loadFiles } from "../src/cli/loader.js";
+import {
+  describeProvider,
+  isModuleNotFound,
+  loadFiles,
+} from "../src/cli/loader.js";
+import { PROVIDERS } from "../src/cli/registry.js";
 import { Files } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
 
@@ -142,5 +147,61 @@ describe("cli/loader loadFiles", () => {
       "utf-8"
     );
     expect(onDisk).toBe("hi");
+  });
+});
+
+const withLoad = async (
+  provider: string,
+  load: () => Promise<never>,
+  fn: () => Promise<void>
+): Promise<void> => {
+  const entry = PROVIDERS[provider];
+  if (!entry) {
+    throw new Error(`no registry entry for ${provider}`);
+  }
+  const original = entry.load;
+  entry.load = load;
+  try {
+    await fn();
+  } finally {
+    entry.load = original;
+  }
+};
+const notFound = (): Promise<never> =>
+  Promise.reject(
+    Object.assign(new Error("Cannot find package 'dropbox'"), {
+      code: "ERR_MODULE_NOT_FOUND",
+    })
+  );
+
+describe("cli/loader missing provider SDK", () => {
+  test("an uninstalled peer is Unsupported and names what to install", async () => {
+    // dropbox has `notes`, so this also pins that the install hint wins over
+    // the generic credentials hint.
+    await withLoad("dropbox", notFound, async () => {
+      const error = await loadFiles({ provider: "dropbox" }).catch(
+        (error_: unknown) => error_
+      );
+      expect(error).toBeInstanceOf(FilesError);
+      expect(error).toMatchObject({ code: "Unsupported" });
+      expect((error as Error).message).toContain("npm install dropbox");
+    });
+  });
+
+  test("a provider with no SDK peer gets no install hint", async () => {
+    await withLoad("fs", notFound, async () => {
+      const error = await loadFiles({ provider: "fs", root: "/tmp" }).catch(
+        (error_: unknown) => error_
+      );
+      expect(error).toMatchObject({ code: "Unsupported" });
+      expect((error as Error).message).not.toContain("npm install");
+    });
+  });
+
+  test("isModuleNotFound recognises both module-not-found codes", () => {
+    expect(isModuleNotFound({ code: "ERR_MODULE_NOT_FOUND" })).toBe(true);
+    expect(isModuleNotFound({ code: "MODULE_NOT_FOUND" })).toBe(true);
+    expect(isModuleNotFound(new Error("other"))).toBe(false);
+    expect(isModuleNotFound("nope")).toBe(false);
   });
 });

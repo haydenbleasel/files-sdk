@@ -153,8 +153,12 @@ const listMock = mock((_storageZone: unknown, path: string) => {
   return Promise.resolve(entries);
 });
 
-const removeMock = mock((_storageZone: unknown, path: string) =>
-  Promise.resolve(backing.delete(stripPath(path)))
+const removeMock = mock(
+  (
+    _storageZone: unknown,
+    path: string,
+    _options?: { throwOnError?: boolean }
+  ) => Promise.resolve(backing.delete(stripPath(path)))
 );
 
 const uploadMock = mock(
@@ -470,6 +474,49 @@ describe("bunnyStorage adapter", () => {
       message: expect.stringContaining("still exists"),
     });
     expect(backing.has("a.txt")).toBe(true);
+  });
+
+  test("delete asks the SDK to throw on HTTP errors and classifies them", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "read-only",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    await files.upload("a.txt", "hello");
+    // A 401 (wrong or read-only key) is a definitive refusal, not a retried
+    // Provider failure — and no probe is needed to find that out.
+    removeMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("Unauthorized access to storage zone: uploads"))
+    );
+    getMock.mockClear();
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    expect(removeMock.mock.calls.at(-1)?.[2]).toEqual({ throwOnError: true });
+    expect(getMock).not.toHaveBeenCalled();
+    // A 404 is an idempotent success.
+    removeMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("File not found: /uploads/gone.txt"))
+    );
+    await expect(files.delete("gone.txt")).resolves.toBeUndefined();
+    // Anything else (403/5xx: "unknown error") stays a retryable Provider.
+    removeMock.mockImplementationOnce(() =>
+      Promise.reject(
+        new Error("An unknown error has occurred during the request.")
+      )
+    );
+    await expect(
+      new Files({
+        adapter: bunnyStorage({
+          accessKey: "k",
+          region: "de",
+          zone: "uploads",
+        }),
+        retries: 0,
+      }).delete("a.txt")
+    ).rejects.toMatchObject({ code: "Provider" });
   });
 
   test("delete surfaces the probe's error when remove fails", async () => {

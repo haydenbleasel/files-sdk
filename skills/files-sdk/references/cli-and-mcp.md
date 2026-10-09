@@ -31,12 +31,14 @@ Each maps to a `Files` method:
 | `copy` | `copy` |  |
 | `move` | `move` |  |
 | `delete` | `delete` | takes multiple keys |
-| `url` | `url` | `--expires-in <sec>` |
+| `url` | `url` | `--expires-in <sec>`; on an adapter that can't sign it fails with `Unsupported` (exit 2) |
 | `sign-upload` | `signedUploadUrl` | `--expires-in`, `--max-size`, `--content-type` |
 | `capabilities` | `capabilities` | what the adapter supports, as JSON; no provider round-trip |
 | `transfer` | `transfer` | `--to '<json>'` destination config; `--prefix`, `--no-overwrite` |
 | `sync` | `sync` | `--to '<json>'`; `--prefix`, `--dest-prefix`, `--compare etag\|size`, `--prune` (destructive); global `--dry-run` prints the plan |
-| `events parse [file]` | `files.events.parse` (`files-sdk/events`) | prints the normalized events for a notification delivery (stdin when no file); `--format s3\|r2\|gcs\|azure\|b2\|…` needs no provider. No MCP tool |
+| `events parse [file]` | `files.events.parse` (`files-sdk/events`) | prints the normalized events for a notification delivery (piped stdin when no file; a terminal with no file fails `Invalid`); a configured provider supplies the adapter, format, key prefix and bucket filter, `--format s3\|r2\|gcs\|azure\|b2\|…` overrides the format (no provider needed); repeatable `--header "name: value"` (e.g. `X-Appwrite-Webhook-Events` for `--format appwrite`). No MCP tool |
+
+`files.abortUpload()` is SDK-only: there's no CLI command or MCP tool for it.
 
 ```sh
 files --provider s3 --bucket uploads upload reports/q1.pdf --file ./q1.pdf --content-type application/pdf

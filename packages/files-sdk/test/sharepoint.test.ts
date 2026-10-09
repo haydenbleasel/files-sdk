@@ -55,6 +55,7 @@ const fakeApi = (path: string) => ({
     lastCalls.push({ body, method: "PUT", path });
     return Promise.resolve(putHandler(path, body));
   },
+  query: () => fakeApi(path),
   responseType: () => fakeApi(path),
   top: () => fakeApi(path),
 });
@@ -1103,6 +1104,9 @@ describe("sharepoint adapter", () => {
     const driver = adapter.resumableUpload?.("big.bin", {});
     expect(driver?.mode).toBe("offset");
     expect(() => driver?.partSize).toThrow(/upload session not started/u);
+    expect(() => driver?.partSize).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("copy > delegates to onedrive (POST /copy + monitor)", async () => {
@@ -1205,7 +1209,8 @@ describe("sharepoint adapter", () => {
       });
       await expect(adapter.copy("src.txt", "dest.txt")).rejects.toMatchObject({
         code: "Provider",
-        message: expect.stringContaining("timed out"),
+        message: expect.stringContaining("did not finish within 10ms"),
+        permanent: true,
       });
     } finally {
       globalThis.fetch = origFetch;

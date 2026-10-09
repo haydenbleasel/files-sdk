@@ -51,6 +51,7 @@ createFilesRouter({
 
   maxListLimit?: number,       // cap a list page (and a search's walk page). Default 1000.
   maxSearchResults?: number,   // cap a search page. Default 1000.
+  maxSearchScan?: number,      // keys one search reads before answering truncated: true. Default 10000.
   maxUploadSize?: number,      // reject larger uploads (checked at presign, bound, verified on complete).
 
   // Runs once per verified upload; its result is the client's upload `data`.
@@ -58,6 +59,11 @@ createFilesRouter({
   onUploadComplete?: (ctx) => TData | Promise<TData>,
   onRejected?: "delete" | "keep", // rejected objects. Default "delete".
   completions?: CompletionStore,  // make keyless completions single-use.
+  completeGracePeriod?: number,   // seconds `complete` still accepts an expired upload token. Default 3600.
+
+  // Gets every failure the client only sees as a generic 500 (anything thrown
+  // that isn't a FilesError or RouterError). Default console.error.
+  onError?: (error: unknown, req: Request) => void,
 
   // Limits on client-driven load (see "Request limits" below).
   maxBatchSize?: number,           // keys[]/files[]/completions[] per request. Default 1000.
@@ -85,23 +91,23 @@ createFilesRouter({
 
 The `url` operation follows the same rules: it signs whenever the adapter can (with your `defaultExpiresIn` unless the client asks for one), and on an adapter that only has permanent links, a client-requested `expiresIn` or an `authorize` `maxExpiresIn` is answered with a `422` instead of a link that outlives it.
 
-Force one with `downloadMode: "redirect" | "proxy"`. Downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. The proxy path sets the header itself, and the redirect path binds it into the signed URL. Proxied downloads also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type.
+Force one with `downloadMode: "redirect" | "proxy"`. Downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. The proxy path sets the header itself, and the redirect path binds it into the signed URL. Proxied downloads also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type, and `Cache-Control: private, no-store`, so a shared cache never keeps an authorized response. Except for raster images, audio, video, and PDF, they also carry `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'`: a stored HTML or SVG file opened inline from your origin gets an opaque origin, loads nothing, and runs no script.
 
-Some adapters can sign a URL but can't bind a `Content-Disposition` into it (Vercel Blob in private mode, Box, Dropbox, PocketBase, …), and their `url()` refuses the option rather than drop it. With `downloadMode: "auto"`, the gateway proxies those downloads instead, so the attachment header still applies. With `downloadMode: "redirect"` there is no fallback, and the refusal surfaces as an error. When `authorize` returns `{ disposition: "inline" }`, inline rendering is already your policy, so the gateway redirects to a URL minted without a disposition.
+Some adapters can sign a URL but can't bind a `Content-Disposition` into it (Vercel Blob in private mode, Box, Dropbox, PocketBase, …), and their `url()` refuses the option rather than drop it. With `downloadMode: "auto"`, the gateway proxies those downloads instead, so the attachment header still applies. More generally, whenever `url()` refuses with `Unsupported` on the signed or the public-link path, `auto` falls back to the proxy. With `downloadMode: "redirect"` there is no fallback, and the refusal surfaces as an error. When `authorize` returns `{ disposition: "inline" }`, inline rendering is already your policy, so the gateway redirects to a URL minted without a disposition.
 
 On the proxy path, `Accept-Ranges` reflects the adapter: `bytes` when it can serve ranges, `none` when it can't. A `Range` request that carries an `If-Range` validator (the `ETag` or date from an earlier response) only gets a `206` slice while the object is unchanged. If the object changed, the gateway sends the whole new object with a `200`, so a resumed download never splices bytes from two versions. Proxied responses carry `ETag` as a quoted entity-tag (even when the adapter reports it bare, as the S3 family does) and `Last-Modified` when the adapter knows it, and `If-Range` matches either the quoted or the bare form.
 
-A ranged request to a non-range adapter gets `416` with the default `onUnsupportedRange: "reject"`, with one exception. `bytes=0-` (the open-ended range every `<video>` and `<audio>` element starts with) is satisfied by the whole body, so it gets the full object with a `200`. With `onUnsupportedRange: "ignore"` any ranged request to a non-range adapter gets the whole object with a `200`, and the browser client rejects that instead of treating it as the slice.
+A ranged request to a non-range adapter gets `416` with the default `onUnsupportedRange: "reject"`, with one exception. A `416` carries a JSON error body (`Validation`, `reason: "range"`), which the browser client turns into an `Invalid` error. `bytes=0-` (the open-ended range every `<video>` and `<audio>` element starts with) is satisfied by the whole body, so it gets the full object with a `200`. With `onUnsupportedRange: "ignore"` any ranged request to a non-range adapter gets the whole object with a `200`, and the browser client rejects that instead of treating it as the slice.
 
 The JSON `url` operation applies the same safe default before calling `files.url()`: a browser request for `responseContentDisposition: "inline"` is rewritten to `attachment`, while an existing `attachment; filename="..."` value keeps its filename. Return `{ disposition: "inline" }` from `authorize` only for routes where inline rendering is deliberate server policy.
 
-On an adapter that can't bind a disposition into its URLs, the gateway can't guarantee `attachment`, so the `url` operation fails with a `Provider` error instead of handing out a URL that may render inline. The message says how to proceed: return `{ disposition: "inline" }` from `authorize` for routes where inline URLs are acceptable (the URL is then minted without a disposition), or use `download`, which proxies the bytes and sets `Content-Disposition` itself.
+On an adapter that can't bind a disposition into its URLs, the gateway can't guarantee `attachment`, so the `url` operation fails with a `422` `Unsupported` error instead of handing out a URL that may render inline. The message says how to proceed: return `{ disposition: "inline" }` from `authorize` for routes where inline URLs are acceptable (the URL is then minted without a disposition), or use `download`, which proxies the bytes and sets `Content-Disposition` itself.
 
 ## How uploads flow
 
 A keyless `upload(file)` runs a three-step protocol so bytes never round-trip through your server when they don't have to:
 
-1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target. A file whose declared `size` is over `maxUploadSize` is refused up front with `422` and `reason: "size"`, before anything is signed.
+1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target. A file whose declared `size` is over `maxUploadSize` is refused up front with `422` and `reason: "size"`, before anything is signed. A batch is signed at most `maxConcurrency` targets at a time. A proxy target's token isn't capped by the adapter's `signedUpload.maxExpiresIn`, which only limits the provider's own presigned URLs.
 2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress. Like a presigned URL, the proxy `PUT` is authorized by its token alone (see [Authorization](/docs/ui/server/authorization)).
 3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry with no stored metadata. (The token is signed, not encrypted: its payload names the key it was minted for, so treat a token as readable by whoever holds it.) The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted. The server then runs [`onUploadComplete`](/docs/ui/server/upload-lifecycle) and returns the stored metadata with whatever the hook returned.
 
@@ -114,7 +120,7 @@ Every JSON request is untrusted input that turns into storage calls, so the gate
 - **Batch size.** `keys[]` (`head`/`exists`/`delete` bulk forms), `files[]` (`presign`) and `completions[]` (`complete`) are capped at `maxBatchSize` (default 1000). A larger request gets `413` with `reason: "count"` before any storage call.
 - **Concurrency.** A bulk op's client-supplied `concurrency` is clamped to `maxConcurrency` (default 16).
 - **Body size.** A JSON body over `maxJsonBodySize` (default 1 MiB) gets `413` with `reason: "size"`. It is refused from `Content-Length` up front, or as soon as a streamed body passes the cap, without buffering the rest.
-- **Search.** A `search` page's `limit` is clamped to `maxListLimit`. Patterns are also bounded: at most `maxSearchPatternLength` characters (default 256) and `maxSearchWildcards` unbounded wildcards or quantifiers (default 4). `*`, `**`, `+`, and `{n,}` each count, and an unanchored regex counts one more. Nested repetition such as `(a+)+` is always refused. A pattern over either limit gets `422` before any key is matched. Globs and regexes both run on a backtracking engine, where each wildcard multiplies the worst-case work per key, so this bounds what one request can cost in CPU. Raise the limit if your patterns need more, or lower it if `search` is open to untrusted users.
+- **Search.** A `search` page's `limit` is clamped to `maxListLimit`, and one request reads at most `maxSearchScan` keys (default 10,000), matching or not, before it stops and answers `truncated: true`, so a pattern that matches nothing can't walk the whole bucket. Patterns are also bounded: at most `maxSearchPatternLength` characters (default 256) and `maxSearchWildcards` unbounded wildcards or quantifiers (default 4). `*`, `**`, `+`, and `{n,}` each count, and an unanchored regex counts one more. Nested repetition such as `(a+)+` is always refused. A pattern over either limit gets `422` before any key is matched. Globs and regexes both run on a backtracking engine, where each wildcard multiplies the worst-case work per key, so this bounds what one request can cost in CPU. Raise the limit if your patterns need more, or lower it if `search` is open to untrusted users.
 
 ## Other frameworks
 

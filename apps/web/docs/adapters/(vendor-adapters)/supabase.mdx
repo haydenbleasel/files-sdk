@@ -41,12 +41,12 @@ const files = new Files({
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ⚠️ | `cacheControl` maps to Supabase's seconds-based field, so only a `max-age=<n>` (optionally with `public`) or a bare number of seconds is accepted; other directives (`no-store`, `immutable`, `private`, …) throw rather than being dropped. Pause/resume via `control` uses Supabase's TUS endpoint (needs `url` + `key`, not a pre-built `client`) in fixed 6 MiB chunks - Supabase requires that size, so `multipart.partSize` is ignored. |
-| `download` | ⚠️ | Supabase's `download()` has no range primitive, so `range` throws. |
+| `upload` | ⚠️ | `cacheControl` maps to Supabase's seconds-based field, so only a `max-age=<n>` (optionally with `public`) or a bare number of seconds is accepted; other directives (`no-store`, `immutable`, `private`, …) throw rather than being dropped. Pause/resume via `control` uses Supabase's TUS endpoint (needs `url` + `key`; with a pre-built `client`, `capabilities.resumable` is `false`) in fixed 6 MiB chunks - Supabase requires that size, so `multipart.partSize` is ignored. `abortUpload()` rejects when Supabase refuses the cancel. |
+| `download` | ⚠️ | Supabase's `download()` has no range primitive, so `range` throws. The download response carries no user metadata, so every download (buffered or streamed) also requests the object's info, for its size, ETag, last-modified, and metadata. If that lookup fails with anything other than `NotFound`, the download fails rather than return the body without its metadata. |
 | `delete` | ✅ |  |
 | `list` | ✅ | Uses Supabase's V2 list API: a flat, recursive, string-prefix scan over full keys with a real server cursor. (The legacy V1 API is folder-scoped and non-recursive, so it could not back the unified `list` contract.) |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
-| `head` | ✅ |  |
+| `head` | ✅ | User `metadata` round-trips exactly, on `head()` and every download path (keys aren't camelCased), so [`encryption()`](/docs/plugins/encryption), [`compression()`](/docs/plugins/compression), and [`dedup()`](/docs/plugins/dedup) work on Supabase. |
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ⚠️ | Default mints a signed read URL via `createSignedUrl` (1-hour default). With `public: true`, returns the permanent unsigned `getPublicUrl` result. With `publicBaseUrl`, returns `<publicBaseUrl>/<key>`. `responseContentDisposition` forces the signed path and maps onto Supabase's `download` option, which can only force an attachment: `attachment` and `attachment; filename="…"` work, while `inline` or any other disposition throws. |

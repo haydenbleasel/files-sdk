@@ -194,4 +194,62 @@ describe("offset-http driver", () => {
     });
     expect(calls).toBe(3);
   });
+
+  test.each([200, 204, 404, 410, 499])(
+    "a cancel answered HTTP %d discards the session",
+    async (status) => {
+      const calls = await withStatus(status, async (driver) => {
+        await expect(driver.discard()).resolves.toBeUndefined();
+      });
+      expect(calls).toBe(1);
+    }
+  );
+
+  test.each([
+    [401, "Unauthorized", true],
+    [403, "Unauthorized", true],
+    [409, "Conflict", true],
+    [500, "Provider", false],
+    [503, "Provider", false],
+  ])(
+    "a cancel refused with HTTP %d rejects as %s",
+    async (status, code, permanent) => {
+      await withStatus(status, async (driver) => {
+        await expect(driver.discard()).rejects.toMatchObject({
+          code,
+          message: `resumable session cancel failed (HTTP ${status}).`,
+          permanent,
+        });
+      });
+    }
+  );
+
+  test("abortUpload retries a 5xx cancel and fails on a refused one", async () => {
+    const abortThrough = (driver: OffsetResumableDriver): Promise<void> =>
+      new Files({
+        adapter: { ...fakeAdapter(), resumableUpload: () => driver },
+        retries: { backoff: () => 0, max: 2 },
+      }).abortUpload("k", {
+        bucket: "b",
+        key: "k",
+        provider: "gcs",
+        uri: SESSION,
+      });
+    const retried = await withStatus(503, async (driver) => {
+      await expect(abortThrough(driver)).rejects.toMatchObject({
+        code: "Provider",
+      });
+    });
+    expect(retried).toBe(3);
+    const refused = await withStatus(403, async (driver) => {
+      await expect(abortThrough(driver)).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
+    });
+    expect(refused).toBe(1);
+    // GCS's 499 is its success reply to a cancel.
+    await withStatus(499, async (driver) => {
+      await expect(abortThrough(driver)).resolves.toBeUndefined();
+    });
+  });
 });

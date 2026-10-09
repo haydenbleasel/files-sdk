@@ -162,6 +162,20 @@ const servesPublicUrl = (
   projectId: string | undefined
 ): boolean => Boolean(isPublic && endpoint && projectId);
 
+interface ChunkedUploadConfig {
+  apiKey: string;
+  endpoint: string;
+  projectId: string;
+}
+
+// All three are needed to authenticate a raw chunk request.
+const chunkedUploadConfigOf = (
+  endpoint: string | undefined,
+  projectId: string | undefined,
+  apiKey: string | undefined
+): ChunkedUploadConfig | undefined =>
+  endpoint && projectId && apiKey ? { apiKey, endpoint, projectId } : undefined;
+
 const isStorageInstance = (candidate: unknown): candidate is Storage =>
   isObject(candidate) &&
   "createFile" in candidate &&
@@ -172,8 +186,8 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   let { endpoint, projectId } = opts;
   // Captured for the raw chunked (resumable) upload path, which the node SDK
   // doesn't expose. Only available when the adapter builds its own client from
-  // an API key — a pre-built `client` keeps its key private, so resumable
-  // throws there.
+  // an API key — a pre-built `client` keeps its key private, so no resumable
+  // driver is attached there.
   let apiKey: string | undefined;
 
   if (opts.client) {
@@ -248,6 +262,187 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       }
     }
     return storage.createFile({ bucketId: opts.bucket, file, fileId });
+  };
+
+  // Endpoint, project, and API key for the raw chunked-upload requests, which
+  // the node SDK doesn't expose. Only resolvable when the adapter built its
+  // own client from an API key.
+  const chunkedUploadConfig = chunkedUploadConfigOf(
+    endpoint,
+    projectId,
+    apiKey
+  );
+
+  const chunkedDriver = (
+    cfg: ChunkedUploadConfig,
+    key: string
+  ): OffsetResumableDriver => {
+    assertAppwriteKey(key);
+    // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
+    // before a resumable upload ever reaches here.
+    let session:
+      | Extract<ResumableUploadSession, { provider: "appwrite" }>
+      | undefined;
+    let finalFile:
+      | { $id: string; mimeType?: string; sizeOriginal?: number }
+      | undefined;
+    let contentType = "application/octet-stream";
+    const requireSession = () => {
+      if (!session) {
+        throw new FilesError(
+          "Invalid",
+          "appwrite: resumable upload not started."
+        );
+      }
+      return session;
+    };
+    return {
+      adopt(adopted: ResumableUploadSession) {
+        if (adopted.provider !== "appwrite") {
+          throw new FilesError(
+            "Invalid",
+            `Cannot resume a ${adopted.provider} session on an appwrite adapter.`
+          );
+        }
+        if (adopted.key !== key) {
+          throw new FilesError(
+            "Invalid",
+            "Resume token does not match this upload's key."
+          );
+        }
+        session = adopted;
+        ({ contentType } = adopted);
+      },
+      begin(meta): Promise<ResumableUploadSession> {
+        ({ contentType } = meta);
+        session = {
+          contentType,
+          fileId: key,
+          key,
+          offset: 0,
+          provider: "appwrite",
+        };
+        return Promise.resolve(session);
+      },
+      complete(): Promise<UploadResult> {
+        // `uploadAt` records every chunk's response, and the orchestrator
+        // always sends at least one chunk before completing, so `finalFile`
+        // is the last (complete) file. Fall back to the session for safety.
+        const current = requireSession();
+        return Promise.resolve({
+          contentType: finalFile?.mimeType ?? contentType,
+          key: finalFile?.$id ?? current.fileId,
+          size: finalFile?.sizeOriginal ?? current.offset,
+        });
+      },
+      async discard() {
+        // Only delete a file this upload created: one exists once a chunk
+        // (or the 0-byte create) has landed. Before that, whatever sits at
+        // the key isn't ours — Appwrite refuses a chunked upload onto an
+        // existing file ID, so `control.abort()` after that refusal (or
+        // before the first chunk) must leave the existing file alone.
+        if (!finalFile && (session?.offset ?? 0) === 0) {
+          return;
+        }
+        try {
+          // And only while it's still partial. A token whose upload has
+          // since finished (a stale `control.toJSON()` passed to
+          // `files.abortUpload()`, or an abort after the last chunk landed)
+          // now names a complete file, which is not this call's to delete.
+          const file = await storage.getFile({
+            bucketId: opts.bucket,
+            fileId: key,
+          });
+          if (file.chunksUploaded >= file.chunksTotal) {
+            return;
+          }
+          await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
+        } catch {
+          // Best-effort — a partial chunked upload may not be deletable.
+        }
+      },
+      mode: "offset",
+      // Appwrite's chunked upload uses a fixed 5 MiB chunk; every chunk but
+      // the last must be exactly that size, so this isn't caller-tunable.
+      partSize: 5 * 1024 * 1024,
+      probe(): Promise<{ nextOffset: number }> {
+        return Promise.resolve({ nextOffset: requireSession().offset });
+      },
+      async uploadAt({ offset, data, total, signal }): Promise<{
+        nextOffset: number;
+      }> {
+        const current = requireSession();
+        if (data.byteLength === 0) {
+          // A 0-byte body arrives as one empty chunk, which has no valid
+          // Content-Range (`bytes 0--1/0`): create it in a single request,
+          // exactly like `upload()`.
+          try {
+            const created = await createOrReplace(
+              current.fileId,
+              InputFile.fromBuffer(new Uint8Array(), key)
+            );
+            finalFile = {
+              $id: created.$id,
+              mimeType: created.mimeType,
+              sizeOriginal: created.sizeOriginal,
+            };
+          } catch (error) {
+            throw mapAppwriteError(error);
+          }
+          return { nextOffset: 0 };
+        }
+        const form = new FormData();
+        form.append("fileId", current.fileId);
+        // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+        // widened typed arrays to `ArrayBufferLike`); the orchestrator
+        // slices each chunk from the upload body into a fresh view, never
+        // shared memory.
+        form.append("file", new Blob([data as BlobPart]), key);
+        const res = await fetch(
+          `${cfg.endpoint}/storage/buckets/${opts.bucket}/files`,
+          {
+            body: form,
+            headers: {
+              "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
+              "X-Appwrite-ID": current.fileId,
+              "X-Appwrite-Key": cfg.apiKey,
+              "X-Appwrite-Project": cfg.projectId,
+            },
+            method: "POST",
+            ...(signal && { signal }),
+          }
+        );
+        if (!res.ok) {
+          const text = await res.text();
+          // Classify by status like every SDK call (409 when the file ID
+          // already exists, 401/403, 404), so a definitive refusal isn't
+          // retried as a transient Provider error.
+          throw mapAppwriteError(
+            new AppwriteException(
+              `appwrite: chunk upload failed (HTTP ${res.status}): ${text}`.trim(),
+              res.status,
+              "",
+              text
+            )
+          );
+        }
+        // Appwrite answers every chunk with the `File` model; keep only the
+        // fields `complete()` reads, each checked as it is read.
+        const json: JsonValue = await res.json();
+        if (isJsonObject(json)) {
+          finalFile = {
+            $id: isString(json.$id) ? json.$id : current.fileId,
+            ...(isString(json.mimeType) && { mimeType: json.mimeType }),
+            ...(isNumber(json.sizeOriginal) && {
+              sizeOriginal: json.sizeOriginal,
+            }),
+          };
+        }
+        const nextOffset = offset + data.byteLength;
+        current.offset = nextOffset;
+        return { nextOffset };
+      },
+    };
   };
 
   // `contentType` is silently dropped — Appwrite's createFile auto-detects
@@ -380,184 +575,13 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     },
     name: "appwrite",
     raw: storage,
-    resumableUpload(key, _resumableOpts): OffsetResumableDriver {
-      assertAppwriteKey(key);
-      // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
-      // before a resumable upload ever reaches here.
-      let session:
-        | Extract<ResumableUploadSession, { provider: "appwrite" }>
-        | undefined;
-      let finalFile:
-        | { $id: string; mimeType?: string; sizeOriginal?: number }
-        | undefined;
-      let contentType = "application/octet-stream";
-      const requireConfig = () => {
-        if (!(endpoint && projectId && apiKey)) {
-          throw new FilesError(
-            "Unsupported",
-            "appwrite: resumable uploads require an API key with endpoint/projectId — a pre-built `client` doesn't expose its key."
-          );
-        }
-        return { apiKey, endpoint, projectId };
-      };
-      const requireSession = () => {
-        if (!session) {
-          throw new FilesError(
-            "Invalid",
-            "appwrite: resumable upload not started."
-          );
-        }
-        return session;
-      };
-      return {
-        adopt(adopted: ResumableUploadSession) {
-          if (adopted.provider !== "appwrite") {
-            throw new FilesError(
-              "Invalid",
-              `Cannot resume a ${adopted.provider} session on an appwrite adapter.`
-            );
-          }
-          if (adopted.key !== key) {
-            throw new FilesError(
-              "Invalid",
-              "Resume token does not match this upload's key."
-            );
-          }
-          session = adopted;
-          ({ contentType } = adopted);
-        },
-        begin(meta): Promise<ResumableUploadSession> {
-          ({ contentType } = meta);
-          session = {
-            contentType,
-            fileId: key,
-            key,
-            offset: 0,
-            provider: "appwrite",
-          };
-          return Promise.resolve(session);
-        },
-        complete(): Promise<UploadResult> {
-          // `uploadAt` records every chunk's response, and the orchestrator
-          // always sends at least one chunk before completing, so `finalFile`
-          // is the last (complete) file. Fall back to the session for safety.
-          const current = requireSession();
-          return Promise.resolve({
-            contentType: finalFile?.mimeType ?? contentType,
-            key: finalFile?.$id ?? current.fileId,
-            size: finalFile?.sizeOriginal ?? current.offset,
-          });
-        },
-        async discard() {
-          // Only delete a file this upload created: one exists once a chunk
-          // (or the 0-byte create) has landed. Before that, whatever sits at
-          // the key isn't ours — Appwrite refuses a chunked upload onto an
-          // existing file ID, so `control.abort()` after that refusal (or
-          // before the first chunk) must leave the existing file alone.
-          if (!finalFile && (session?.offset ?? 0) === 0) {
-            return;
-          }
-          try {
-            // And only while it's still partial. A token whose upload has
-            // since finished (a stale `control.toJSON()` passed to
-            // `files.abortUpload()`, or an abort after the last chunk landed)
-            // now names a complete file, which is not this call's to delete.
-            const file = await storage.getFile({
-              bucketId: opts.bucket,
-              fileId: key,
-            });
-            if (file.chunksUploaded >= file.chunksTotal) {
-              return;
-            }
-            await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
-          } catch {
-            // Best-effort — a partial chunked upload may not be deletable.
-          }
-        },
-        mode: "offset",
-        // Appwrite's chunked upload uses a fixed 5 MiB chunk; every chunk but
-        // the last must be exactly that size, so this isn't caller-tunable.
-        partSize: 5 * 1024 * 1024,
-        probe(): Promise<{ nextOffset: number }> {
-          return Promise.resolve({ nextOffset: requireSession().offset });
-        },
-        async uploadAt({ offset, data, total, signal }): Promise<{
-          nextOffset: number;
-        }> {
-          const current = requireSession();
-          if (data.byteLength === 0) {
-            // A 0-byte body arrives as one empty chunk, which has no valid
-            // Content-Range (`bytes 0--1/0`): create it in a single request,
-            // exactly like `upload()`.
-            try {
-              const created = await createOrReplace(
-                current.fileId,
-                InputFile.fromBuffer(new Uint8Array(), key)
-              );
-              finalFile = {
-                $id: created.$id,
-                mimeType: created.mimeType,
-                sizeOriginal: created.sizeOriginal,
-              };
-            } catch (error) {
-              throw mapAppwriteError(error);
-            }
-            return { nextOffset: 0 };
-          }
-          const cfg = requireConfig();
-          const form = new FormData();
-          form.append("fileId", current.fileId);
-          // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
-          // widened typed arrays to `ArrayBufferLike`); the orchestrator
-          // slices each chunk from the upload body into a fresh view, never
-          // shared memory.
-          form.append("file", new Blob([data as BlobPart]), key);
-          const res = await fetch(
-            `${cfg.endpoint}/storage/buckets/${opts.bucket}/files`,
-            {
-              body: form,
-              headers: {
-                "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
-                "X-Appwrite-ID": current.fileId,
-                "X-Appwrite-Key": cfg.apiKey,
-                "X-Appwrite-Project": cfg.projectId,
-              },
-              method: "POST",
-              ...(signal && { signal }),
-            }
-          );
-          if (!res.ok) {
-            const text = await res.text();
-            // Classify by status like every SDK call (409 when the file ID
-            // already exists, 401/403, 404), so a definitive refusal isn't
-            // retried as a transient Provider error.
-            throw mapAppwriteError(
-              new AppwriteException(
-                `appwrite: chunk upload failed (HTTP ${res.status}): ${text}`.trim(),
-                res.status,
-                "",
-                text
-              )
-            );
-          }
-          // Appwrite answers every chunk with the `File` model; keep only the
-          // fields `complete()` reads, each checked as it is read.
-          const json: JsonValue = await res.json();
-          if (isJsonObject(json)) {
-            finalFile = {
-              $id: isString(json.$id) ? json.$id : current.fileId,
-              ...(isString(json.mimeType) && { mimeType: json.mimeType }),
-              ...(isNumber(json.sizeOriginal) && {
-                sizeOriginal: json.sizeOriginal,
-              }),
-            };
-          }
-          const nextOffset = offset + data.byteLength;
-          current.offset = nextOffset;
-          return { nextOffset };
-        },
-      };
-    },
+    // The chunked (resumable) path is raw HTTP authenticated with the API
+    // key, so the driver is only attached when the adapter built its own
+    // client from one — a pre-built `client` keeps its key private.
+    ...(chunkedUploadConfig && {
+      resumableUpload: (key: string): OffsetResumableDriver =>
+        chunkedDriver(chunkedUploadConfig, key),
+    }),
     signedUploadUrl: (_key: string, _opts: SignUploadOptions) =>
       Promise.reject(
         new FilesError(

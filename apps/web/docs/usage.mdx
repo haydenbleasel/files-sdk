@@ -107,7 +107,7 @@ const files = new Files({
 const readOnlyFiles = files.readonly();
 ```
 
-Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, `search`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
+Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`, `search`, and `url`. The write surfaces - `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, `abortUpload`, and the equivalent `file(key)` helpers - throw [`FilesError`](/docs/api/errors) with `code: "ReadOnly"`. The [`raw`](/docs/escape-hatch) escape hatch stays unchanged.
 
 ## Working in bulk
 

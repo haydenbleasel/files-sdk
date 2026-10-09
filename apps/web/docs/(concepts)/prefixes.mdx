@@ -16,7 +16,6 @@ const users = new Files({
 await users.upload("123/avatar.png", file); // writes users/123/avatar.png
 const stored = await users.head("123/avatar.png"); // reads users/123/avatar.png
 stored.key; // "123/avatar.png" - prefix stripped from the result
-stored.name; // "123/avatar.png" - kept consistent with key
 
 const { items } = await users.list(); // scoped to users/, keys returned relative
 ```
@@ -33,4 +32,4 @@ An empty prefix (`""`) or an all-slash one (`"/"`) means no prefix, the same as 
 
 ## What stays caller-facing
 
-The prefix is an internal detail — it never leaks back to you. Results (`key`, `name`) come back relative, and [hook](/docs/api/onaction) payloads report the `key` / `keys` you passed, never the prefixed path the adapter saw. The same holds in the [bulk](/docs/bulk) forms: keys are resolved under the prefix on the way in and stripped on the way out, just as in the single-key forms.
+The prefix is an internal detail — it never leaks back to you. Results (`key`) come back relative, and [hook](/docs/api/onaction) payloads report the `key` / `keys` you passed, never the prefixed path the adapter saw. The same holds in the [bulk](/docs/bulk) forms: keys are resolved under the prefix on the way in and stripped on the way out, just as in the single-key forms.

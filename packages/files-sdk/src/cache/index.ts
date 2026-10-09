@@ -1,5 +1,6 @@
 import { createStoredFile, isConditionalOperation } from "../index.js";
 import type {
+  Adapter,
   FileInfo,
   FilesOperation,
   FilesPlugin,
@@ -9,7 +10,7 @@ import type {
 } from "../index.js";
 import { DEFAULT_URL_EXPIRES_IN } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
-import { isNumber } from "../internal/is.js";
+import { isNumber, isString } from "../internal/is.js";
 
 /** The read verbs {@link cache} can serve from its store. */
 export type CacheableOperation = "head" | "url" | "download";
@@ -46,11 +47,15 @@ export interface CacheRecord {
 }
 
 /**
- * The backing store for {@link cache}. Keyed by the **caller-facing** object key
- * (never the internal prefixed path), each entry is the whole {@link CacheRecord}
- * for that key — so a write invalidates every cached verb in one `delete`.
- * Defaults to a bounded in-memory LRU; pass your own to share a cache across
- * instances or processes (e.g. a Redis-backed store that serializes the record).
+ * The backing store for {@link cache}. Each entry is the whole
+ * {@link CacheRecord} for one object — so a write invalidates every cached verb
+ * in one `delete`. Store keys are opaque strings that scope the
+ * **caller-facing** object key by the {@link CacheOptions.namespace} and the
+ * instance `prefix` (`<namespace>/<prefix>/<key>`, the first two
+ * percent-encoded), so instances sharing one store never read each other's
+ * entries unless they share both. Defaults to a bounded in-memory LRU; pass your
+ * own to share a cache across instances or processes (e.g. a Redis-backed store
+ * that serializes the record).
  *
  * Methods may be sync or async; the plugin awaits them either way. A distributed
  * store has an inherent read-modify-write race when two different verbs for the
@@ -75,8 +80,21 @@ export interface CacheOptions {
    * Where cached records live. Defaults to a bounded in-memory LRU keyed by
    * object key (see {@link CacheOptions.maxEntries}). Pass a {@link CacheStore}
    * to back the cache with your own KV — shared across instances/processes.
+   * A custom store requires a {@link CacheOptions.namespace}.
    */
   store?: CacheStore;
+  /**
+   * The name that scopes this cache's entries inside a shared
+   * {@link CacheOptions.store}, alongside the instance `prefix`. Required with a
+   * custom `store` (`cache()` throws `Invalid` without one): the plugin can't
+   * tell which bucket an adapter points at, so it can't keep two buckets'
+   * entries apart on its own. Every `cache()` that shares a store **and** a
+   * namespace (and the same `prefix`) serves the others' cached bytes, URLs,
+   * and metadata, so give each bucket its own (e.g. `"uploads-prod"`), and
+   * reuse one only across instances or processes that address the same bucket.
+   * Instances with different `prefix`es stay apart even under one namespace.
+   */
+  namespace?: string;
   /**
    * Time-to-live for cached entries, in milliseconds. Defaults to `60_000`
    * (60s). `0` or negative disables time-based expiry (entries live until
@@ -135,7 +153,9 @@ export type CacheApi = {
    * Drop the cached entries for one key — or the **entire** cache when `key` is
    * omitted. Reach for this after a change the plugin couldn't see (a write
    * through a presigned URL, or directly against the provider), to stop serving
-   * stale reads.
+   * stale reads. With no `key` it calls the store's `clear()`, so on a shared
+   * {@link CacheOptions.store} it drops every namespace's entries, not only
+   * this instance's.
    */
   invalidateCache: (key?: string) => Promise<void>;
   /** A fresh snapshot of cache hit/miss counts since construction (or last reset). */
@@ -246,6 +266,14 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
   range ? `${range.start}-${range.end ?? ""}` : "";
 
 /**
+ * The store-key prefix for one namespace and instance `prefix`. Both parts are
+ * percent-encoded so neither can contain the `/` separators, which keeps the
+ * mapping unambiguous whatever the caller-facing key holds.
+ */
+const scopeOf = (namespace: string, prefix: string): string =>
+  `${encodeURIComponent(namespace)}/${encodeURIComponent(prefix)}/`;
+
+/**
  * An LRU/KV cache in front of the cheap read verbs — `head`, `url`, and
  * (opt-in) small `download` bodies. A repeat read of an unchanged key is served
  * from memory instead of round-tripping to the provider; any write through the
@@ -272,11 +300,22 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  *
  * Invalidation is by **caller-facing key** (never the internal prefixed path):
  * `upload`/`delete` drop that key, `copy` drops the destination, `move` drops
- * both. Writes the plugin can't observe — a presigned-URL upload, or a change
- * made straight against the provider — won't invalidate; call
- * `files.invalidateCache(key)` (or `invalidateCache()` to clear all) when that
- * happens, and treat a cache as eventually-consistent. It writes **no object
- * metadata** and has **no native dependencies**, so it works on any adapter.
+ * both. A provider storage event from `files-sdk/events` (an upload through a
+ * presigned URL, a write by another process) drops its key too, when the
+ * instance has `events()` wired to a feed. Writes the plugin can't observe at
+ * all won't invalidate; call `files.invalidateCache(key)` (or
+ * `invalidateCache()` to clear all) when that happens, and treat a cache as
+ * eventually-consistent. It writes **no object metadata** and has **no native
+ * dependencies**, so it works on any adapter.
+ *
+ * Entries are scoped to the instance: the store key carries the instance
+ * `prefix` (and, with a shared {@link CacheOptions.store}, the required
+ * {@link CacheOptions.namespace}), so tenants that differ by `prefix` never see
+ * each other's entries. One `cache()` serves one {@link Files} instance (and
+ * its {@link Files.readonly} views); passing the same `cache()` to an instance
+ * with another adapter or `prefix` throws `Invalid` at construction. To share
+ * entries between instances, give each its own `cache()` with the same `store`
+ * and `namespace`.
  *
  * Plugins run **outside** retries, so a cache hit skips the retry loop entirely
  * and a populated entry reflects one logical, post-retry result. Place `cache()`
@@ -293,8 +332,8 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  * It uses `extend` (for `invalidateCache()` / `cacheStats()` / `resetCacheStats()`),
  * so reach for {@link createFiles} to surface those on the type.
  *
- * @param options optional `{ store, ttl, operations, maxBytes, maxEntries,
- *   clock, defaultUrlExpiresIn }`.
+ * @param options optional `{ store, namespace, ttl, operations, maxBytes,
+ *   maxEntries, clock, defaultUrlExpiresIn }`.
  * @example
  * ```ts
  * import { createFiles } from "files-sdk";
@@ -314,6 +353,19 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  * ```
  */
 export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
+  const { namespace } = options;
+  if (namespace !== undefined && !isString(namespace)) {
+    throw new FilesError("Invalid", "cache: `namespace` must be a string");
+  }
+  if (
+    options.store !== undefined &&
+    (namespace === undefined || namespace === "")
+  ) {
+    throw new FilesError(
+      "Invalid",
+      "cache: a custom `store` needs a `namespace` — every cache() sharing a store and namespace serves the others' cached bytes, and the plugin can't tell which bucket an adapter points at; name the bucket (e.g. `namespace: \"uploads-prod\"`)"
+    );
+  }
   const ttl = options.ttl ?? DEFAULT_TTL;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const defaultUrlExpiresIn =
@@ -325,6 +377,14 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   const enabled = new Set(options.operations ?? DEFAULT_OPERATIONS);
 
   const stats: CacheStats = { hits: 0, misses: 0 };
+
+  // The instance this plugin serves, bound in `extend` (the only hook that sees
+  // it). `wrap` can't tell instances apart, so one plugin object serving two
+  // scopes would key both by whichever bound last — refused in `extend`.
+  let bound: { adapter: Adapter; prefix: string } | undefined;
+  let scope = scopeOf(namespace ?? "", "");
+  /** The store key for a caller-facing key, scoped to the bound instance. */
+  const keyOf = (key: string): string => `${scope}${key}`;
 
   /** Compute an absolute expiry, optionally capped by a verb-specific window. */
   const expiryFrom = (now: number, capMs?: number): number => {
@@ -346,7 +406,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     next: PluginNext
   ): Promise<FileInfo> => {
     const now = clock();
-    const record = await store.get(op.key);
+    const record = await store.get(keyOf(op.key));
     const entry = record?.head;
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
@@ -355,7 +415,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     stats.misses += 1;
     const file = await next(op);
     const meta = metaOf(file);
-    await putRecord(op.key, (prev) => ({
+    await putRecord(keyOf(op.key), (prev) => ({
       ...prev,
       head: { expiresAt: expiryFrom(now), meta },
     }));
@@ -368,7 +428,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   ): Promise<string> => {
     const signature = urlSignature(op.options);
     const now = clock();
-    const record = await store.get(op.key);
+    const record = await store.get(keyOf(op.key));
     const entry = record?.urls?.[signature];
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
@@ -385,7 +445,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
       (op.options?.expiresIn ?? defaultUrlExpiresIn) * 1000,
       signedLifetimeMs(value) ?? Number.POSITIVE_INFINITY
     );
-    await putRecord(op.key, (prev) => ({
+    await putRecord(keyOf(op.key), (prev) => ({
       ...prev,
       urls: {
         ...prev.urls,
@@ -401,7 +461,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   ): Promise<StoredFile> => {
     const signature = rangeSignature(op.options?.range);
     const now = clock();
-    const record = await store.get(op.key);
+    const record = await store.get(keyOf(op.key));
     const entry = record?.downloads?.[signature];
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
@@ -423,7 +483,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     const meta = metaOf(file);
     // The cache keeps its own copy, so the caller's bytes stay theirs to
     // mutate.
-    await putRecord(op.key, (prev) => ({
+    await putRecord(keyOf(op.key), (prev) => ({
       ...prev,
       downloads: {
         ...prev.downloads,
@@ -460,7 +520,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         await Promise.all(
           keys.map(async (key) => {
             try {
-              await store.delete(key);
+              await store.delete(keyOf(key));
             } catch {
               // The original error is the outcome; a store hiccup here must
               // not replace it.
@@ -508,7 +568,7 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         const result = await invalidateOnStaleFailure(op, [op.key], () =>
           next(op)
         );
-        await store.delete(op.key);
+        await store.delete(keyOf(op.key));
         return result;
       }
       case "copy": {
@@ -517,15 +577,15 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         // ends on a stale failure. The success path touches only `op.to`.
         const keys = isConditionalOperation(op) ? [op.from, op.to] : [op.to];
         const result = await invalidateOnStaleFailure(op, keys, () => next(op));
-        await store.delete(op.to);
+        await store.delete(keyOf(op.to));
         return result;
       }
       case "move": {
         const keys = [op.from, op.to];
         const result = await invalidateOnStaleFailure(op, keys, () => next(op));
         // oxlint-disable-next-line react-doctor/async-parallel -- ordered after the write settles, not independent work.
-        await store.delete(op.from);
-        await store.delete(op.to);
+        await store.delete(keyOf(op.from));
+        await store.delete(keyOf(op.to));
         return result;
       }
       default: {
@@ -534,21 +594,59 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     }
   }) as NonNullable<FilesPlugin["wrap"]>;
 
+  /**
+   * Drop a key's record from a synchronous hook. A sync store has dropped it by
+   * the time this returns; an async store's delete settles shortly after, and
+   * its failure is swallowed — an event is only a hint, never the caller's op.
+   */
+  const dropQuietly = async (key: string): Promise<void> => {
+    try {
+      // Called synchronously up to its first `await`, so a sync store's
+      // delete lands before the event moves on.
+      await store.delete(keyOf(key));
+    } catch {
+      // A store hiccup must not break event delivery.
+    }
+  };
+
   return {
-    extend: () => ({
-      cacheStats: () => ({ ...stats }),
-      invalidateCache: async (key?: string) => {
-        if (key === undefined) {
-          await store.clear();
-          return;
-        }
-        await store.delete(key);
-      },
-      resetCacheStats: () => {
-        stats.hits = 0;
-        stats.misses = 0;
-      },
-    }),
+    // A provider event means the object changed behind the instance's back (a
+    // presigned upload, another process, a lifecycle rule) — drop its record so
+    // the next read re-fetches. The event itself passes through untouched.
+    event: (event) => {
+      // Fire-and-forget: the hook is synchronous, and `dropQuietly` never
+      // rejects.
+      void dropQuietly(event.key);
+      return event;
+    },
+    extend: (files) => {
+      const { adapter, prefix } = files;
+      // A read-only view re-runs `extend` with the same adapter and prefix,
+      // which is fine; anything else would share one wrap (and store) across
+      // two scopes and serve one instance's entries to the other.
+      if (bound && (bound.adapter !== adapter || bound.prefix !== prefix)) {
+        throw new FilesError(
+          "Invalid",
+          "cache: this cache() is already installed on a Files instance with a different adapter or prefix, and sharing it would serve one instance's cached entries to the other; create a cache() per instance (pass the same `store` and `namespace` to share entries)"
+        );
+      }
+      bound = { adapter, prefix };
+      scope = scopeOf(namespace ?? "", prefix);
+      return {
+        cacheStats: () => ({ ...stats }),
+        invalidateCache: async (key?: string) => {
+          if (key === undefined) {
+            await store.clear();
+            return;
+          }
+          await store.delete(keyOf(key));
+        },
+        resetCacheStats: () => {
+          stats.hits = 0;
+          stats.misses = 0;
+        },
+      };
+    },
     name: "cache",
     wrap,
   };

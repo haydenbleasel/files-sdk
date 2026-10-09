@@ -20,6 +20,7 @@ import type {
   CompleteResponse,
   ExplicitUploadResponse,
   PresignedUpload,
+  SearchResponse,
   SignedUploadUrlResponse,
   WireBulkError,
   WireFileInfo,
@@ -314,6 +315,11 @@ export const createFilesClient = <TData = unknown>(
     } catch {
       // fall through
     }
+    // A Range past the end — from an older gateway without an error body, or
+    // the storage host a download redirected to — is the caller's to fix.
+    if (res.status === 416) {
+      return new FilesError("Invalid", "range not satisfiable");
+    }
     return res.redirected
       ? storageError(res)
       : new FilesError("Provider", `gateway responded ${res.status}`);
@@ -407,7 +413,10 @@ export const createFilesClient = <TData = unknown>(
         : { fields: target.fields }),
     });
     if (result.status < 200 || result.status >= 300) {
-      throw new FilesError("Provider", `upload failed (${result.status})`);
+      // The gateway's own proxy PUT answers with its error envelope (a 409
+      // once the upload has completed, a 422 over the size cap); a storage
+      // host's body is foreign and reported generically.
+      handleEndpointResult(result.status, result.text);
     }
   };
 
@@ -809,7 +818,7 @@ export const createFilesClient = <TData = unknown>(
         pattern instanceof RegExp
           ? { flags: pattern.flags, isRegex: true, pattern: pattern.source }
           : { pattern };
-      const res = await post<{ matches: WireFileInfo[] }>(
+      const res = await post<SearchResponse>(
         {
           op: "search",
           ...base,
@@ -828,6 +837,9 @@ export const createFilesClient = <TData = unknown>(
       for (const match of res.matches) {
         yield toFileInfo(match);
       }
+      // The gateway answers one bounded page: `truncated` says it stopped at
+      // a result cap or its scan budget before the end, so more may match.
+      return { truncated: res.truncated === true };
     },
 
     signedUploadUrl: async (key, opts: SignUploadCallOptions) => {

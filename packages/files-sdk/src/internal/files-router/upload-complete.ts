@@ -8,7 +8,11 @@
 import type { FileInfo, Files } from "../../index.js";
 import { FilesError } from "../errors.js";
 import type { JsonValue } from "../json.js";
-import { RouterError, serializeFilesError } from "../router-core/envelope.js";
+import {
+  INTERNAL_ERROR_MESSAGE,
+  RouterError,
+  serializeFilesError,
+} from "../router-core/envelope.js";
 import type { WireFilesError, WireUploadedFile } from "./protocol.js";
 
 /** How the bytes reached storage: direct to a presigned target, through the gateway's proxy PUT, or a keyed `upload(key, body)`. */
@@ -77,7 +81,10 @@ export interface CompletionStore {
 /**
  * Throw from `onUploadComplete` to refuse an upload with a client-facing
  * reason: the client gets a 422 (`Validation`, reason `rejected`) carrying
- * `message`. Any other throw is reported like an `authorize` failure.
+ * `message`. A `FilesError` reaches the client the same way, under its own
+ * code; any other throw is passed to the router's `onError` and the client
+ * gets a generic 500, so its message (a SQL error, a connection string) never
+ * leaves the server.
  */
 export class UploadRejectedError extends RouterError {
   constructor(message: string) {
@@ -145,15 +152,36 @@ export const discardRejected = async (
   }
 };
 
-/** A hook failure as a per-completion bulk error on the keyless `complete` response. */
-export const rejectionToWire = (cause: unknown): WireFilesError => {
+/**
+ * A hook failure as a per-completion bulk error on the keyless `complete`
+ * response. A `RouterError` (`UploadRejectedError`) or `FilesError` is the
+ * hook's message to the client; anything else — a plain `Error` from the app's
+ * database, say — is reported to `report` and reaches the client only as a
+ * generic failure.
+ */
+export const rejectionToWire = (
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever the app's hook threw
+  cause: unknown,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- the router's `onError`, which takes any thrown value
+  report: (error: unknown) => void
+): WireFilesError => {
   if (cause instanceof RouterError) {
     return {
       aborted: false,
       code: cause.code,
       message: cause.message,
       timedOut: false,
+      ...(cause.reason && { reason: cause.reason }),
     };
   }
-  return serializeFilesError(FilesError.wrap(cause));
+  if (cause instanceof FilesError) {
+    return serializeFilesError(cause);
+  }
+  report(cause);
+  return {
+    aborted: false,
+    code: "Provider",
+    message: INTERNAL_ERROR_MESSAGE,
+    timedOut: false,
+  };
 };

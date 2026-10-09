@@ -13,6 +13,25 @@ import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
 
+// Read helpers (an `await` result is never dereferenced inline).
+const sizeOf = async (
+  files: { head: (key: string) => Promise<{ size: number }> },
+  key: string
+): Promise<number> => {
+  const info = await files.head(key);
+  return info.size;
+};
+
+const textOf = async (
+  files: {
+    download: (key: string) => Promise<{ text: () => Promise<string> }>;
+  },
+  key: string
+): Promise<string> => {
+  const file = await files.download(key);
+  return await file.text();
+};
+
 const stubFetchCapturing = (sink: { signal?: AbortSignal }) => {
   globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
     sink.signal = init?.signal ?? undefined;
@@ -206,8 +225,11 @@ const copyFileMock = mock(
     if (!dest || dest.type !== "folder") {
       return Promise.reject(apiError(404, "not_found"));
     }
-    const id = newId();
     const name = body.name ?? src.name;
+    if (findChild(body.parent.id, name)) {
+      return Promise.reject(apiError(409, "item_name_in_use"));
+    }
+    const id = newId();
     const copy: FakeFile = {
       bytes: Buffer.from(src.bytes),
       etag: `etag_${id}`,
@@ -1111,9 +1133,13 @@ describe("box adapter", () => {
     async (status, code, expected) => {
       const files = new Files({ adapter: box(baseOpts) });
       await files.upload("a.txt", "hi");
-      getFileByIdMock.mockImplementationOnce(() =>
-        Promise.reject(apiError(status, code ?? "other"))
-      );
+      // A NotFound on a cached id is re-resolved once, so a 404 answers both
+      // attempts.
+      for (let i = 0; i < (expected === "NotFound" ? 2 : 1); i += 1) {
+        getFileByIdMock.mockImplementationOnce(() =>
+          Promise.reject(apiError(status, code ?? "other"))
+        );
+      }
       const err = await files.head("a.txt").catch((error: unknown) => error);
       expect(err).toBeInstanceOf(FilesError);
       expect((err as FilesError).code).toBe(expected);
@@ -1123,9 +1149,12 @@ describe("box adapter", () => {
   test("mapBoxError preserves the underlying error message", async () => {
     const files = new Files({ adapter: box(baseOpts) });
     await files.upload("a.txt", "hi");
-    getFileByIdMock.mockImplementationOnce(() =>
-      Promise.reject(apiError(404, "not_found", "the file is gone"))
-    );
+    // Both the cached-id attempt and the re-resolved retry 404.
+    for (let i = 0; i < 2; i += 1) {
+      getFileByIdMock.mockImplementationOnce(() =>
+        Promise.reject(apiError(404, "not_found", "the file is gone"))
+      );
+    }
     const err = await files.head("a.txt").catch((error: unknown) => error);
     expect(err).toBeInstanceOf(FilesError);
     expect((err as FilesError).message).toBe("the file is gone");
@@ -1784,6 +1813,145 @@ describe("box adapter", () => {
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.upload("collide.txt", "hi")).rejects.toMatchObject({
       code: "Conflict",
+    });
+  });
+
+  describe("stale cached ids (another process re-created the key)", () => {
+    // Simulates another process deleting `key` and re-uploading it, which
+    // gives it a new Box id while this instance still caches the old one.
+    const recreateElsewhere = async (key: string, body: string) => {
+      for (const [id, item] of store) {
+        if (item.type === "file" && item.name === key) {
+          store.delete(id);
+        }
+      }
+      await new Files({ adapter: box(baseOpts) }).upload(key, body);
+    };
+
+    test("head/exists/download/url re-resolve instead of reporting NotFound", async () => {
+      stubFetchToServeStore();
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "old");
+      // Each read re-resolves, which refreshes the cache — so re-create the
+      // key elsewhere before every one.
+      await recreateElsewhere("a.txt", "newer");
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+      await recreateElsewhere("a.txt", "newer");
+      expect(await sizeOf(files, "a.txt")).toBe(5);
+      await recreateElsewhere("a.txt", "newer");
+      expect(await textOf(files, "a.txt")).toBe("newer");
+      await recreateElsewhere("a.txt", "newer");
+      const before = getDownloadFileUrlMock.mock.calls.length;
+      await expect(files.url("a.txt")).resolves.toMatch(/dl\.box\.test/u);
+      expect(getDownloadFileUrlMock.mock.calls.length - before).toBe(2);
+    });
+
+    test("upload writes a new file instead of failing on the dead id", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "old");
+      for (const [id, item] of store) {
+        if (item.type === "file") {
+          store.delete(id);
+        }
+      }
+      await files.upload("a.txt", "again");
+      expect(uploadFileVersionMock).toHaveBeenCalledTimes(1);
+      expect(uploadFileMock).toHaveBeenCalledTimes(2);
+      expect(await sizeOf(files, "a.txt")).toBe(5);
+    });
+
+    test("delete removes the live file, not just the dead id", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "old");
+      await recreateElsewhere("a.txt", "newer");
+      await files.delete("a.txt");
+      await expect(files.exists("a.txt")).resolves.toBe(false);
+      expect([...store.values()].some((item) => item.type === "file")).toBe(
+        false
+      );
+    });
+
+    test("a stale cached folder id is re-walked for uploads and listings", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("docs/a.txt", "a");
+      // Another process removes and re-creates the folder (new id).
+      for (const id of store.keys()) {
+        if (id !== ROOT_ID) {
+          store.delete(id);
+        }
+      }
+      await new Files({ adapter: box(baseOpts) }).upload("docs/b.txt", "b");
+      const listed = await files.list({ prefix: "docs/" });
+      expect(listed.items.map((item) => item.key)).toEqual(["docs/b.txt"]);
+      await files.upload("docs/c.txt", "c");
+      expect(await sizeOf(files, "docs/c.txt")).toBe(1);
+    });
+
+    test("copy re-resolves a stale source id", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "old");
+      await recreateElsewhere("a.txt", "newer");
+      await files.copy("a.txt", "b.txt");
+      expect(await sizeOf(files, "b.txt")).toBe(5);
+    });
+
+    test("a plain miss under a cached folder is not retried", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("docs/a.txt", "a");
+      getFolderItemsMock.mockClear();
+      await expect(files.exists("docs/missing.txt")).resolves.toBe(false);
+      expect(getFolderItemsMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("copy onto an existing destination", () => {
+    test("replaces an existing file, like every other adapter", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("from.txt", "new");
+      await files.upload("to.txt", "older");
+      const oldId = [...store.values()].find(
+        (item) => item.type === "file" && item.name === "to.txt"
+      )?.id as string;
+      await files.copy("from.txt", "to.txt");
+      expect(deleteFileByIdMock.mock.calls).toEqual([[oldId]]);
+      expect(await sizeOf(files, "to.txt")).toBe(3);
+      // move falls back to copy + delete, so it overwrites too.
+      await files.upload("third.txt", "third!");
+      await files.move("third.txt", "to.txt");
+      expect(await sizeOf(files, "to.txt")).toBe(6);
+      await expect(files.exists("third.txt")).resolves.toBe(false);
+    });
+
+    test("a folder at the destination stays a Conflict", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("from.txt", "new");
+      await files.upload("photos/a.jpg", "a");
+      await expect(files.copy("from.txt", "photos")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      expect(deleteFileByIdMock).not.toHaveBeenCalled();
+    });
+
+    test("copying a file onto itself stays a Conflict and deletes nothing", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("a.txt", "a");
+      await expect(files.copy("a.txt", "a.txt")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      expect(deleteFileByIdMock).not.toHaveBeenCalled();
+      await expect(files.exists("a.txt")).resolves.toBe(true);
+    });
+
+    test("a conflict with nothing found by name is rethrown", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("from.txt", "new");
+      copyFileMock.mockImplementationOnce(() =>
+        Promise.reject(apiError(409, "item_name_in_use"))
+      );
+      await expect(files.copy("from.txt", "to.txt")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      expect(deleteFileByIdMock).not.toHaveBeenCalled();
     });
   });
 

@@ -19,6 +19,7 @@ import type {
   UploadProgress,
 } from "../src/index.js";
 import { countingStream } from "../src/internal/core.js";
+import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const streamOf = (chunks: Uint8Array[]): ReadableStream<Uint8Array> =>
@@ -244,6 +245,31 @@ describe("Files class", () => {
       });
       expect(base.has("b.txt")).toBe(true);
       expect(batches).toBe(0);
+    }
+  });
+
+  test("delete (array) with stopOnError deletes up to an invalid key, with or without plugins", async () => {
+    const passthrough: FilesPlugin = {
+      name: "passthrough",
+      wrap: (op, next) => next(op),
+    };
+    for (const plugins of [[], [passthrough]]) {
+      const adapter = fakeAdapter();
+      const files = new Files({ adapter, plugins });
+      // eslint-disable-next-line no-await-in-loop -- each setup is checked on its own
+      await files.upload(["a.txt", "b.txt"].map((key) => ({ body: key, key })));
+      // eslint-disable-next-line no-await-in-loop -- each setup is checked on its own
+      const result = await files.delete(["a.txt", "", "b.txt"], {
+        stopOnError: true,
+      });
+      // Keys are validated in turn, so the key ahead of the invalid one is
+      // deleted and the run stops there — not before any delete.
+      expect(result.results).toEqual(["a.txt"]);
+      expect(result.errors).toEqual([
+        { error: expect.objectContaining({ code: "Invalid" }), key: "" },
+      ]);
+      expect(adapter.has("a.txt")).toBe(false);
+      expect(adapter.has("b.txt")).toBe(true);
     }
   });
 
@@ -2272,6 +2298,13 @@ const narrowing = (name: string, seen: string[]): FilesPlugin => ({
   name,
 });
 
+/** The refusal a capability the "narrow-all" plugin turns off produces. */
+const refusedByNarrowAll = (message: string) => ({
+  code: "Unsupported",
+  message: `${message} the "narrow-all" plugin`,
+  permanent: true,
+});
+
 /** A plugin that records every op it sees and passes it through. */
 const recording = (seen: string[]): FilesPlugin => ({
   name: "recording",
@@ -2336,6 +2369,78 @@ describe("capability gates run before plugins", () => {
       'range downloads are not supported by the "no-ranges" plugin'
     );
     expect(seen).toEqual([]);
+  });
+
+  test("a plugin that only narrows capabilities is enforced without any wrap", async () => {
+    const narrowAll: FilesPlugin = {
+      capabilities: (caps) => ({
+        ...caps,
+        cacheControl: false,
+        delimiter: false,
+        metadata: false,
+        rangeRead: false,
+        resumable: false,
+        signedUrl: { disposition: false, expiry: "none", supported: false },
+      }),
+      name: "narrow-all",
+    };
+    const adapter = {
+      ...fakeAdapter({ supportsDelimiter: true, supportsRange: true }),
+      // Declares resumable uploads; the gate refuses before one is built.
+      resumableUpload: (): never => {
+        throw new Error("unreachable");
+      },
+    };
+    await adapter.upload("a.txt", "0123456789");
+    const files = new Files({ adapter, plugins: [narrowAll] });
+    await expect(
+      files.download("a.txt", { range: { start: 0 } })
+    ).rejects.toMatchObject(
+      refusedByNarrowAll("range downloads are not supported by")
+    );
+    await expect(
+      files.upload("b.txt", "x", { metadata: { a: "1" } })
+    ).rejects.toMatchObject(
+      refusedByNarrowAll("`metadata` is not supported by")
+    );
+    await expect(
+      files.upload("b.txt", "x", { cacheControl: "no-store" })
+    ).rejects.toMatchObject(
+      refusedByNarrowAll("`cacheControl` is not supported by")
+    );
+    await expect(
+      files.upload("b.txt", "x", { control: new UploadControl() })
+    ).rejects.toMatchObject(
+      refusedByNarrowAll("pause-able/resumable uploads are not supported by")
+    );
+    await expect(files.list({ delimiter: "/" })).rejects.toMatchObject(
+      refusedByNarrowAll(
+        "directory-style listing (delimiter) is not supported by"
+      )
+    );
+    await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject(
+      refusedByNarrowAll("an expiring url() (`expiresIn`) is not supported by")
+    );
+    // A bulk item is gated on its own; nothing refused reached the adapter.
+    const bulk = await files.upload([
+      { body: "1", key: "ok.txt" },
+      { body: "2", key: "meta.txt", metadata: { a: "1" } },
+    ]);
+    expect(bulk.results.map((item) => item.key)).toEqual(["ok.txt"]);
+    expect(bulk.errors?.[0]?.key).toBe("meta.txt");
+    expect(adapter.has("b.txt")).toBe(false);
+    expect(adapter.has("meta.txt")).toBe(false);
+    // Calls the narrowing leaves alone still go through.
+    const whole = await files.download("a.txt");
+    expect(await whole.text()).toBe("0123456789");
+    // A plugin that only extends adds no gate of its own.
+    const extendOnly = new Files({
+      adapter,
+      plugins: [{ extend: () => ({ hello: () => "hi" }), name: "extend-only" }],
+    });
+    await expect(
+      extendOnly.download("a.txt", { range: { end: 1, start: 0 } })
+    ).resolves.toMatchObject({ size: 2 });
   });
 
   test("a slash-only adapter refuses any other delimiter, with or without plugins", async () => {
@@ -2540,6 +2645,55 @@ describe("plugin capability hooks", () => {
     expect(files.capabilities.rangeRead).toBe(false);
     expect(files.readonly().capabilities.rangeRead).toBe(false);
     expect(files.readonly().capabilities.signedUrl.supported).toBe(false);
+  });
+});
+
+describe("symbol-keyed plugin extensions", () => {
+  test("can't replace the internal event folding, or collide with each other", () => {
+    const sneaky: FilesPlugin = {
+      // SAFETY: test-only — an `extend` surface keyed by an internal symbol.
+      extend: () =>
+        ({ [FOLD_PROVIDER_EVENT]: (event: unknown) => event }) as Record<
+          string,
+          unknown
+        >,
+      name: "sneaky",
+    };
+    expect(
+      () =>
+        new Files({ adapter: fakeAdapter(), plugins: [sneaky], prefix: "a" })
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message:
+          'plugin "sneaky": extension "Symbol(files-sdk.foldProviderEvent)" collides with an existing Files member',
+      })
+    );
+
+    const tag = Symbol("tag");
+    const tagging = (name: string): FilesPlugin => ({
+      extend: () => ({ [tag]: name }) as Record<string, unknown>,
+      name,
+    });
+    // A symbol no member uses is grafted on like a named extension.
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [tagging("a")],
+    });
+    expect((files as unknown as Record<symbol, unknown>)[tag]).toBe("a");
+    expect(
+      () =>
+        new Files({
+          adapter: fakeAdapter(),
+          plugins: [tagging("a"), tagging("b")],
+        })
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message:
+          'plugin "b": extension "Symbol(tag)" collides with another plugin\'s extension',
+      })
+    );
   });
 });
 

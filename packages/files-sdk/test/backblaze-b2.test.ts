@@ -193,6 +193,50 @@ describe("backblaze-b2 adapter", () => {
     s3Mock.reset();
   });
 
+  test("signedUpload: no maxSize, since B2 has no browser POST uploads", async () => {
+    const adapter = backblazeB2({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      region: "us-west-002",
+      secretAccessKey: "SECRET",
+    });
+    const files = new Files({ adapter });
+    expect(files.capabilities.signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: false,
+      supported: true,
+    });
+    // The presigned PUT still works and binds the content type.
+    const put = await files.signedUploadUrl("a.png", {
+      contentType: "image/png",
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(put.method).toBe("PUT");
+    // maxSize (and a positive minSize) would need the presigned POST that B2
+    // refuses, so they fail closed before anything is signed.
+    let pending: Promise<unknown> | undefined;
+    expect(() => {
+      pending = adapter.signedUploadUrl("a.png", {
+        expiresIn: 60,
+        maxSize: 1024,
+      });
+    }).not.toThrow();
+    await expect(pending).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(
+        /^backblaze-b2: `maxSize` is not supported\. Backblaze B2 does not implement the S3 POST Object API/u
+      ),
+    });
+    await expect(
+      files.signedUploadUrl("a.png", { expiresIn: 60, minSize: 1 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/`minSize` is not supported/u),
+    });
+  });
+
   test("default error messages from the inner s3 adapter are relabeled as 'Backblaze B2 error'", async () => {
     // Bypass the SDK mock and exercise the error mapper directly: the
     // backblaze-b2 adapter configures it to use 'Backblaze B2 error' as the

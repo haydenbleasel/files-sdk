@@ -551,12 +551,20 @@ describe("memory adapter", () => {
       });
     });
 
-    test("reflects expiresIn and responseContentDisposition when passed", async () => {
+    test("refuses expiresIn even when called directly: there's no signer", async () => {
       const adapter = memory();
       await adapter.upload("a.txt", "x");
-      expect(await adapter.url("a.txt", { expiresIn: 60 })).toBe(
-        "memory://a.txt?expires=60"
-      );
+      await expect(
+        adapter.url("a.txt", { expiresIn: 60 })
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/expiresIn/u),
+      });
+    });
+
+    test("reflects responseContentDisposition when passed", async () => {
+      const adapter = memory();
+      await adapter.upload("a.txt", "x");
       const withDisposition = await adapter.url("a.txt", {
         responseContentDisposition: "attachment",
       });

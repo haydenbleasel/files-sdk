@@ -407,6 +407,40 @@ describe("versioning plugin — limit", () => {
     expect(bodies).toEqual(["v3", "v2"]);
   });
 
+  test("a failed write doesn't evict history", async () => {
+    const base = fakeAdapter();
+    let failUploads = false;
+    const flaky: Adapter = {
+      ...base,
+      upload: (key, body, opts) =>
+        failUploads
+          ? Promise.reject(new FilesError("Provider", "storage hiccup"))
+          : base.upload(key, body, opts),
+    };
+    const files = withVersioning({ limit: 2 }, flaky);
+    for (const value of ["v1", "v2", "v3"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential overwrites build ordered version history
+      await files.upload("k", value);
+    }
+    failUploads = true;
+    for (const attempt of ["x1", "x2"]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential failing writes
+      await expect(files.upload("k", attempt)).rejects.toThrow(
+        "storage hiccup"
+      );
+    }
+    failUploads = false;
+    // The real versions are still there ("v2", "v1"), alongside the copies of
+    // "v3" the failed writes snapshotted; nothing was pruned for a failure.
+    const history = await files.versions("k");
+    const kept = await Promise.all(history.map((v) => bodyOf(files, v.key)));
+    expect(kept).toEqual(["v3", "v3", "v2", "v1"]);
+    // The next write that lands prunes back down to the limit.
+    await files.upload("k", "v4");
+    expect(await files.versions("k")).toHaveLength(2);
+    expect(await bodyOf(files, "k")).toBe("v4");
+  });
+
   test("rejects a non-positive limit", () => {
     expect(() => versioning({ limit: 0 })).toThrow(/positive integer/u);
     expect(() => versioning({ limit: 1.5 })).toThrow(/positive integer/u);

@@ -376,6 +376,21 @@ describe("r2 adapter — HTTP path", () => {
       ).rejects.toThrow(/maxSize.*not supported/u);
     });
 
+    test("signedUploadUrl with a positive minSize throws too; minSize 0 presigns", async () => {
+      const files = new Files({ adapter: makeAdapter() });
+      await expect(
+        files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/^r2: `minSize` is not supported/u),
+      });
+      const out = await files.signedUploadUrl("a.txt", {
+        expiresIn: 60,
+        minSize: 0,
+      });
+      expect(out.method).toBe("PUT");
+    });
+
     test("signedUploadUrl with maxSize rejects asynchronously on a direct adapter call", async () => {
       const adapter = makeAdapter();
       let pending: Promise<unknown> | undefined;
@@ -1023,6 +1038,9 @@ describe("r2 adapter — Workers binding path", () => {
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60, maxSize: 5_000_000 })
     ).rejects.toThrow(/maxSize.*not supported/u);
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
+    ).rejects.toThrow(/minSize.*not supported/u);
   });
 
   test("hybrid: url() falls back to HTTP signing when no publicBaseUrl is set", async () => {
@@ -1623,6 +1641,9 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     await expect(
       files.signedUploadUrl("up.bin", { expiresIn: 60, maxSize: 1024 })
     ).rejects.toThrow(/maxSize.*not supported.*R2/su);
+    await expect(
+      files.signedUploadUrl("up.bin", { expiresIn: 60, minSize: 1 })
+    ).rejects.toThrow(/minSize.*not supported.*R2/su);
   });
 
   test("signedUploadUrl with maxSize rejects asynchronously on a direct adapter call", async () => {

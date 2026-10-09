@@ -656,6 +656,74 @@ describe("uploadthing adapter", () => {
     }
   });
 
+  test("an expiry past the 7-day cap throws Invalid before signing", async () => {
+    // generateSignedURL's own refusal is a plain Error (a retryable
+    // Provider), so the adapter checks first — for url() and for the signed
+    // fetch URL a too-long `defaultUrlExpiresIn` would mint.
+    const files = new Files({
+      adapter: uploadthing({ acl: "private" }),
+      retries: 2,
+    });
+    await expect(
+      files.url("a.txt", { expiresIn: 604_801 })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/within 604800 seconds \(7 days\)/u),
+    });
+    const tooLongDefault = new Files({
+      adapter: uploadthing({ acl: "private", defaultUrlExpiresIn: 604_801 }),
+    });
+    await expect(tooLongDefault.url("a.txt")).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    await expect(tooLongDefault.download("a.txt")).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    expect(generateSignedURLMock).not.toHaveBeenCalled();
+    await files.url("a.txt", { expiresIn: 604_800 });
+    expect(generateSignedURLMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a private download maps a generateSignedURL failure", async () => {
+    generateSignedURLMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error("denied"), { code: "FORBIDDEN", status: 403 })
+      )
+    );
+    const files = new Files({ adapter: uploadthing({ acl: "private" }) });
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
+  test("direct-fetch reads classify statuses with the standard buckets", async () => {
+    const files = new Files({ adapter: uploadthing(), retries: 0 });
+    for (const [status, code] of [
+      [401, "Unauthorized"],
+      [403, "Unauthorized"],
+      [409, "Conflict"],
+      [412, "Conflict"],
+      [500, "Provider"],
+    ] as const) {
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          new Response(null, { status, statusText: "x" })
+        )) as unknown as typeof fetch;
+      // oxlint-disable-next-line no-await-in-loop -- each status is checked in turn.
+      await expect(files.head("a.txt")).rejects.toMatchObject({ code });
+      // oxlint-disable-next-line no-await-in-loop -- each status is checked in turn.
+      await expect(files.download("a.txt")).rejects.toMatchObject({ code });
+    }
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(null, { status: 500 })
+      )) as unknown as typeof fetch;
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "uploadthing: download failed for a.txt (HTTP 500).",
+    });
+  });
+
   test("url maps a generateSignedURL failure through mapUploadThingError", async () => {
     generateSignedURLMock.mockImplementationOnce(() =>
       Promise.reject(

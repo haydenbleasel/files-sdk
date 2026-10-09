@@ -30,7 +30,7 @@ const ADAPTERS = [
     slug: "r2",
   },
   {
-    call: "vercelBlob()",
+    call: 'vercelBlob({ access: "private" })',
     factory: "vercelBlob",
     hide: "group-not-has-[#hero-adapter-vercel-blob:checked]/code:hidden",
     label: "Vercel Blob",

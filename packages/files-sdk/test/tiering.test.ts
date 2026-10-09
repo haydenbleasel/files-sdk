@@ -5,13 +5,15 @@ import type {
   Adapter,
   ConditionalFilesOperation,
   DownloadOptions,
+  FileEvent,
   ListOptions,
   ListResult,
   PluginNext,
 } from "../src/index.js";
+import { memory } from "../src/memory/index.js";
 import { tiering } from "../src/tiering/index.js";
 import type { TieringOptions, TierRouter } from "../src/tiering/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
 /** Route the `cold/` prefix to cold, everything else to hot. */
@@ -762,6 +764,117 @@ describe("tiering — capabilities", () => {
       multipart: { create: false, replace: false },
       replace: false,
     });
+  });
+});
+
+/** A fake whose copies run server-side. */
+const serverSide = (): Adapter =>
+  withCapabilities(fakeAdapter(), { serverSideCopy: true });
+
+/** A provider event for `key`, as `files-sdk/events` hands it to a plugin. */
+const event = (key: string): FileEvent => ({
+  id: key,
+  key,
+  provider: "memory",
+  raw: null,
+  source: "provider",
+  time: 0,
+  type: "created",
+});
+
+describe("tiering — capabilities across tiers", () => {
+  test("advertises only what both tiers can do", () => {
+    const hot = fakeAdapter({ supportsDelimiter: true, supportsRange: true });
+    const cold = withCapabilities(fakeAdapter(), {
+      cacheControl: false,
+      signedUrl: { expiry: "provider", supported: true },
+    });
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, route: prefixRoute })],
+    });
+    const caps = files.capabilities;
+    expect(caps.delimiter).toBe(false);
+    expect(caps.rangeRead).toBe(false);
+    expect(caps.cacheControl).toBe(false);
+    expect(caps.metadata).toBe(true);
+    expect(caps.signedUrl).toEqual({
+      disposition: false,
+      expiry: "provider",
+      supported: true,
+    });
+  });
+
+  test("refuses an option the cold tier can't honor, even on hot-routed keys", async () => {
+    const hot = fakeAdapter({ supportsDelimiter: true, supportsRange: true });
+    await hot.upload("a.txt", "hello");
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold: fakeAdapter(), route: prefixRoute })],
+    });
+    await expect(files.list({ delimiter: "/" })).rejects.toMatchObject({
+      code: "Unsupported",
+      message:
+        'directory-style listing (delimiter) is not supported by the "tiering" plugin',
+    });
+    await expect(
+      files.download("a.txt", { range: { end: 1, start: 0 } })
+    ).rejects.toMatchObject({ code: "Unsupported" });
+  });
+
+  test("narrows delimiter support to the weaker tier", async () => {
+    const hot = fakeAdapter({ supportsDelimiter: true });
+    const cold = withCapabilities(fakeAdapter({ supportsDelimiter: true }), {
+      delimiter: "slash",
+    });
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, route: prefixRoute })],
+    });
+    expect(files.capabilities.delimiter).toBe("slash");
+    await files.upload("photos/x.jpg", "1");
+    const listed = await files.list({ delimiter: "/" });
+    expect(listed.prefixes).toEqual(["photos/"]);
+    await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
+      code: "Unsupported",
+    });
+  });
+
+  test("never reports copies as server-side (a cross-tier copy streams)", () => {
+    const files = createFiles({
+      adapter: serverSide(),
+      plugins: [tiering({ cold: serverSide(), route: prefixRoute })],
+    });
+    expect(files.capabilities.serverSideCopy).toBe(false);
+  });
+
+  test("keeps the hot tier's event format, and reports none under fallback", () => {
+    const deterministic = createFiles({
+      adapter: memory(),
+      plugins: [tiering({ cold: memory(), route: prefixRoute })],
+    });
+    expect(deterministic.capabilities.events).toEqual({ format: "memory" });
+    const discoverable = createFiles({
+      adapter: memory(),
+      plugins: [
+        tiering({ cold: memory(), fallback: true, route: prefixRoute }),
+      ],
+    });
+    expect(discoverable.capabilities.events).toBe(false);
+  });
+
+  test("maps provider events onto hot-routed keys, and refuses them under fallback", () => {
+    const { event: hook } = tiering({ cold: memory(), route: prefixRoute });
+    expect(hook?.(event("a.txt"))).toEqual(event("a.txt"));
+    expect(hook?.(event("cold/a.txt"))).toBeNull();
+    const fallback = tiering({
+      cold: memory(),
+      fallback: true,
+      route: prefixRoute,
+    });
+    expect(() => fallback.event?.(event("a.txt"))).toThrow(
+      expect.objectContaining({ code: "Unsupported" })
+    );
   });
 });
 

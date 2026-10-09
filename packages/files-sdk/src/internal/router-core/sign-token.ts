@@ -94,10 +94,16 @@ export const signToken = async (
   return `${body}.${toBase64Url(new Uint8Array(signature))}`;
 };
 
+/**
+ * Verify `token`'s signature and expiry. `graceMs` extends the expiry for a
+ * step that may legitimately run after it — `complete`, whose bytes can finish
+ * landing after the window the upload started in.
+ */
 export const verifyToken = async (
   token: string,
   secret: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  graceMs = 0
 ): Promise<VerifyResult> => {
   const dot = token.indexOf(".");
   if (dot <= 0 || dot === token.length - 1) {
@@ -131,7 +137,7 @@ export const verifyToken = async (
   } catch {
     return { failure: "malformed", ok: false };
   }
-  if (!isNumber(payload.exp) || payload.exp < now) {
+  if (!isNumber(payload.exp) || payload.exp + graceMs < now) {
     return { failure: "expired", ok: false };
   }
   return { ok: true, payload };

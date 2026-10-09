@@ -11,6 +11,6 @@
   - `files.capabilities.publicUrl` reports whether a plain `url(key)` returns a permanent link on this instance.
   - `files.capabilities.signedUrl.disposition` reports whether a `responseContentDisposition` is bound into the signed URL.
   - Custom adapters declare both in their `capabilities` (they default to `false`).
-- **Gateway downloads (`files-sdk/api`):** a download now redirects to a signed URL only when the adapter can also bind the forced `Content-Disposition`, and otherwise streams through the proxy. This fixes default gateway downloads failing on adapters that sign but reject a disposition: Vercel Blob and UploadThing in private mode, PocketBase, and Cloudinary private delivery. With no forced disposition and no `authorize` lifetime cap, an adapter with a permanent public link is redirected to it.
+- **Gateway downloads (`files-sdk/api`):** a download now redirects to a signed URL only when the adapter can also bind the forced `Content-Disposition`, and otherwise streams through the proxy. With no forced disposition and no `authorize` lifetime cap, an adapter with a permanent public link is redirected to it.
 - **Gateway `url` operation:** it signs whenever the adapter can. On an adapter that can't sign, a client-requested `expiresIn` or an `authorize` `maxExpiresIn` is answered with a `422` instead of a permanent link.
 - **`signedUrlPolicy()`:** it no longer pins a missing `expiresIn` on an instance that can't sign, which would now throw.

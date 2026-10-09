@@ -4,6 +4,7 @@ import type { Adapter } from "../index.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { s3 } from "../s3/index.js";
+import { assertNoPostPolicy, withoutPostPolicy } from "../s3/shared.js";
 
 export interface BackblazeB2AdapterOptions {
   /** B2 bucket name. The adapter scopes all operations to it. */
@@ -101,7 +102,18 @@ export const backblazeB2 = (
       ...inner.capabilities,
       // B2 Event Notifications (its own webhook format, not S3's).
       events: { format: "b2" },
+      // B2's S3-compatible API lists "browser-based uploads to pre-signed
+      // URLs using POST" as unsupported, so the presigned POST the s3 engine
+      // would use for `maxSize` fails at upload time; `signedUploadUrl()`
+      // rejects it (and a positive `minSize`) up front instead. See
+      // https://www.backblaze.com/docs/cloud-storage-s3-compatible-api.
+      signedUpload: withoutPostPolicy(inner.capabilities?.signedUpload),
     },
     name: "backblaze-b2",
+    // `async` so the rejection is a rejected promise, like every other method.
+    async signedUploadUrl(key, signOpts) {
+      assertNoPostPolicy("backblaze-b2", "Backblaze B2", signOpts);
+      return await inner.signedUploadUrl(key, signOpts);
+    },
   };
 };

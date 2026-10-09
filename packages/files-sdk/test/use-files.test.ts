@@ -266,6 +266,14 @@ describe("useFiles", () => {
       matches.push(f.key);
     }
     expect(matches).toContain("k.txt");
+    // The client's `{ truncated }` summary survives the hook's error wrapper.
+    const it = result.current.search("k*", { maxResults: 1 });
+    let step = await it.next();
+    while (!step.done) {
+      // oxlint-disable-next-line no-await-in-loop -- drain to the return value
+      step = await it.next();
+    }
+    expect(step.value).toEqual({ truncated: matches.length > 1 });
 
     // an upload that fails routes through the error path
     await act(async () => {

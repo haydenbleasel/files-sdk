@@ -34,3 +34,5 @@ Box can't attach a webhook to the root folder (`0`), which is the adapter's defa
 ## What maps to what
 
 `FILE.UPLOADED` and `FILE.RESTORED` become `created`; `FILE.TRASHED` and `FILE.DELETED` become `deleted` (a delete can send both, depending on your enterprise's trash settings). `FILE.MOVED` and `FILE.RENAMED` are skipped, since they don't say where the file was. `event.id` is Box's event id, which stays the same across retries.
+
+A trashed file's folder path is just the Trash folder, and only its `parent` records where it was, so a `FILE.TRASHED` or `FILE.DELETED` event has a key only for a file that sat directly in `rootFolderId`. Deletes of files in deeper folders are dropped; reconcile against [`list()`](/docs/api/list) if you need them.

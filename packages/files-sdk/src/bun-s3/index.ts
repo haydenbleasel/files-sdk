@@ -223,6 +223,31 @@ export const mapBunS3Error = makeErrorMapper({
   providerLabel: "Bun S3 error",
 });
 
+// Bun's `S3Error` carries no HTTP status: Bun reads the failure's class from
+// the response body's XML `<Code>`, and a HEAD response has no body. So every
+// failed HEAD (`stat()`, `exists()`) other than a 404, which Bun maps to
+// `NoSuchKey` itself, arrives as a code-less `UnknownError`, and a 403 looks
+// exactly like a 500. Mapped as-is it would be a retryable Provider error.
+const BUN_UNCLASSIFIED_CODE = "UnknownError";
+
+// How long the status-probe URL below stays valid. It's used immediately.
+const STATUS_PROBE_EXPIRES_IN = 60;
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
+const isUnclassifiedBunError = (error: unknown): boolean => {
+  if (!isObject(error)) {
+    return false;
+  }
+  // SAFETY: an object; each field is read optionally.
+  const e = error as BunS3ErrorFields;
+  return (
+    e.code === BUN_UNCLASSIFIED_CODE &&
+    e.status === undefined &&
+    e.statusCode === undefined &&
+    e.$metadata?.httpStatusCode === undefined
+  );
+};
+
 const stripEtag = (etag: string | undefined): string | undefined =>
   etag?.replaceAll(/^"+|"+$/gu, "");
 
@@ -315,6 +340,64 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
   const { publicBaseUrl } = opts;
 
+  /**
+   * The HTTP status of a HEAD that Bun failed without one (see
+   * {@link isUnclassifiedBunError}). Presigns the same HEAD (local signing,
+   * no I/O) and sends it with `fetch`, which does expose the status line.
+   * `undefined` when the probe can't tell: it failed in transport, or the
+   * HEAD now succeeds, in which case the original error stands and stays
+   * retryable.
+   */
+  const probeHeadStatus = async (key: string): Promise<number | undefined> => {
+    try {
+      const res = await globalThis.fetch(
+        client.presign(key, {
+          expiresIn: STATUS_PROBE_EXPIRES_IN,
+          method: "HEAD",
+        }),
+        { method: "HEAD" }
+      );
+      return res.ok ? undefined : res.status;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * Map a failed HEAD. A status-less `UnknownError` is re-classified from a
+   * status probe, so a 401/403 surfaces as `Unauthorized` (never retried)
+   * instead of a Provider error that `retries` reissues. One extra request,
+   * only on that failure path.
+   */
+  const mapHeadError = async (
+    key: string,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever Bun's HEAD rejected with, mapped here
+    error: unknown
+  ): Promise<FilesError> => {
+    const mapped = mapBunS3Error(error);
+    if (!isUnclassifiedBunError(error)) {
+      return mapped;
+    }
+    const status = await probeHeadStatus(key);
+    const byStatus =
+      status === undefined ? undefined : mapBunS3Error({ status });
+    if (!byStatus || byStatus.code === "Provider") {
+      return mapped;
+    }
+    return new FilesError(byStatus.code, byStatus.message, error);
+  };
+
+  const statOrThrow = async (
+    key: string,
+    stat: () => Promise<BunS3Stats>
+  ): Promise<BunS3Stats> => {
+    try {
+      return await stat();
+    } catch (error) {
+      throw await mapHeadError(key, error);
+    }
+  };
+
   // In-flight resumable uploads. Bun's S3 client exposes no multipart
   // upload-id, so chunks are buffered in-process and written in one call at
   // complete — pause/resume works within a process, but a token can't be
@@ -371,7 +454,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     async copy(from, to) {
       try {
         const source = client.file(from);
-        const stat = await source.stat();
+        const stat = await statOrThrow(from, () => source.stat());
         await client.write(to, new Response(source.stream()), {
           type: stat.type || DEFAULT_CONTENT_TYPE,
         });
@@ -389,7 +472,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     async download(key, downloadOpts) {
       try {
         const file = client.file(key);
-        const stat = await file.stat();
+        const stat = await statOrThrow(key, () => file.stat());
         const range = downloadOpts?.range;
         // Bun's slice() is Blob-style (exclusive end), so an inclusive
         // ByteRange.end maps to end + 1; the sliced handle issues a ranged GET
@@ -418,7 +501,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       try {
         return await client.exists(key);
       } catch (error) {
-        const mapped = mapBunS3Error(error);
+        const mapped = await mapHeadError(key, error);
         if (mapped.code === "NotFound") {
           return false;
         }
@@ -427,7 +510,10 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     },
     async head(key) {
       try {
-        return infoFromStat(key, await client.stat(key));
+        return infoFromStat(
+          key,
+          await statOrThrow(key, () => client.stat(key))
+        );
       } catch (error) {
         throw mapBunS3Error(error);
       }
@@ -526,7 +612,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           }
           try {
             await client.write(key, bytes, { type: contentType });
-            const stat = await client.stat(key);
+            const stat = await statOrThrow(key, () => client.stat(key));
             // SAFETY: `requirePending()` above throws unless a session was
             // begun or adopted, which is what sets `uploadId`.
             pending.delete(uploadId as string);
@@ -569,6 +655,16 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           new FilesError(
             "Unsupported",
             "bun-s3 adapter: `maxSize` is not supported because Bun.s3 exposes presigned URLs, not S3 POST policy fields."
+          )
+        );
+      }
+      // Same gap for a size floor: a presigned PUT has no size condition.
+      // `minSize: 0` asks for nothing, so it holds trivially.
+      if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+        return Promise.reject(
+          new FilesError(
+            "Unsupported",
+            "bun-s3 adapter: `minSize` is not supported because Bun.s3 exposes presigned PUT URLs, which carry no size condition, not S3 POST policy fields. Reject small uploads at your application gateway, or omit `minSize`."
           )
         );
       }

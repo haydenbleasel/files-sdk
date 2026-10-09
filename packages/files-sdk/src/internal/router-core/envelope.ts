@@ -11,6 +11,14 @@ import type {
   WireErrorReason,
   WireFilesError,
 } from "../files-router/protocol.js";
+import { isObject } from "../is.js";
+
+// The gateway core is bundled into both the edge pass (`files-sdk/api`) and the
+// Node pass (`files-sdk/nestjs`, which builds its router internally), so an app
+// can hold two copies of this class — `UploadRejectedError` imported from
+// `files-sdk/api` and thrown into a NestJS-mounted router, say. The registry
+// brand lets `instanceof` match across copies, like `FilesError`'s.
+const ROUTER_ERROR_BRAND = Symbol.for("files-sdk.RouterError");
 
 /**
  * A failure the router itself raises (authorization, validation, origin) — as
@@ -18,6 +26,14 @@ import type {
  * and optional `reason` directly.
  */
 export class RouterError extends Error {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- `instanceof` hands any value to `Symbol.hasInstance`; this method is the check
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    if (this !== RouterError) {
+      return Function.prototype[Symbol.hasInstance].call(this, value);
+    }
+    return isObject(value) && ROUTER_ERROR_BRAND in value;
+  }
+
   readonly code: WireErrorCode;
   readonly reason?: WireErrorReason;
   /** HTTP status override (e.g. 413 for an oversized request); else derived from `code`. */
@@ -36,6 +52,12 @@ export class RouterError extends Error {
     this.status = status;
   }
 }
+
+// Set once on the prototype so subclasses (`UploadRejectedError`) inherit it and
+// it stays off the wire (`JSON.stringify`/`Object.keys`).
+Object.defineProperty(RouterError.prototype, ROUTER_ERROR_BRAND, {
+  value: true,
+});
 
 export const httpStatus = (code: WireErrorCode): number => {
   switch (code) {
@@ -90,25 +112,76 @@ const wireCodeFromFilesError = (code: FilesErrorCode): WireErrorCode => {
   }
 };
 
+/**
+ * Storage keys (and list prefixes) the request resolved, mapped to what the
+ * client sent. A provider's error message names the storage key — authorize's
+ * `keyPrefix` included — so the message is rewritten to the caller's own key
+ * before it crosses the wire: one tenant never learns how its keys are laid
+ * out in the bucket.
+ */
+export type KeyRedactions = ReadonlyMap<string, string>;
+
+/** `message` with every resolved storage key replaced by the client's key. */
+export const redactKeys = (
+  message: string,
+  redactions: KeyRedactions | undefined
+): string => {
+  if (!redactions || redactions.size === 0) {
+    return message;
+  }
+  let out = message;
+  // Longest first, so a key never clobbers part of a longer one it prefixes.
+  const entries = [...redactions].toSorted((a, b) => b[0].length - a[0].length);
+  for (const [storage, client] of entries) {
+    if (storage !== client && storage !== "") {
+      out = out.replaceAll(storage, client);
+    }
+  }
+  return out;
+};
+
 /** Serialize a `FilesError` to the wire shape — the safe subset, no `cause`. */
-export const serializeFilesError = (error: FilesError): WireFilesError => ({
+export const serializeFilesError = (
+  error: FilesError,
+  redactions?: KeyRedactions
+): WireFilesError => ({
   aborted: error.aborted,
   code: error.code,
-  message: error.message,
+  message: redactKeys(error.message, redactions),
   timedOut: error.timedOut,
 });
+
+/**
+ * What the client hears about a failure that is neither a `FilesError` nor a
+ * `RouterError` — a bug, or a plain `Error` an app hook threw. Its message can
+ * carry anything (a connection string, a SQL error), so it never crosses the
+ * wire; the router's `onError` gets the original.
+ */
+export const INTERNAL_ERROR_MESSAGE = "internal server error";
+
+/** Whether `cause` is an error the gateway reports verbatim (minus `cause`). */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
+export const isWireSafeError = (cause: unknown): boolean =>
+  cause instanceof RouterError || cause instanceof FilesError;
 
 export interface ErrorResult {
   status: number;
   body: WireError;
 }
 
-/** Map any thrown value to a wire error envelope + HTTP status. */
-export const toErrorResult = (cause: unknown): ErrorResult => {
+/**
+ * Map any thrown value to a wire error envelope + HTTP status. Anything other
+ * than a `RouterError`/`FilesError` is a generic 500 — its message stays on the
+ * server (see {@link INTERNAL_ERROR_MESSAGE}).
+ */
+export const toErrorResult = (
+  cause: unknown,
+  redactions?: KeyRedactions
+): ErrorResult => {
   if (cause instanceof RouterError) {
     const body: WireError["error"] = {
       code: cause.code,
-      message: cause.message,
+      message: redactKeys(cause.message, redactions),
     };
     if (cause.reason) {
       body.reason = cause.reason;
@@ -121,10 +194,14 @@ export const toErrorResult = (cause: unknown): ErrorResult => {
   if (cause instanceof FilesError) {
     const code = wireCodeFromFilesError(cause.code);
     return {
-      body: { error: { code, message: cause.message } },
+      body: {
+        error: { code, message: redactKeys(cause.message, redactions) },
+      },
       status: httpStatus(code),
     };
   }
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return { body: { error: { code: "Provider", message } }, status: 500 };
+  return {
+    body: { error: { code: "Provider", message: INTERNAL_ERROR_MESSAGE } },
+    status: 500,
+  };
 };

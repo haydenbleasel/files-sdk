@@ -163,7 +163,7 @@ describe("s3", () => {
     const [event] = await parse("s3", fixture("s3/lambda-put.json"));
     expect(event).toMatchObject({
       etag: "d41d8cd98f00b204e9800998ecf8427e",
-      id: "created:HappyFace.jpg@0055AED6DCD90281E5",
+      id: "created:amzn-s3-demo-bucket/HappyFace.jpg@0055AED6DCD90281E5",
       key: "HappyFace.jpg",
       provider: "s3",
       size: 1024,
@@ -359,7 +359,9 @@ describe("s3", () => {
         )
       ).toEqual([expected]);
       const [event] = await parse("storj", message);
-      expect(event?.id).toBe("created:uploads/video.mp4@1892E0DE46FBAE18");
+      expect(event?.id).toBe(
+        "created:my-bucket/uploads/video.mp4@1892E0DE46FBAE18"
+      );
     });
 
     test("the Node client's message, whose data is a Buffer", async () => {
@@ -431,7 +433,7 @@ describe("s3", () => {
     expect(list[0]?.type).toBe(type as FileEvent["type"]);
   });
 
-  test("an id falls back from sequencer to versionId to etag", async () => {
+  test("without a sequencer, the id comes from the version, time and ETag, never the clock", async () => {
     const base = fixture("s3/lambda-put.json") as {
       Records: { s3: { object: Record<string, unknown> } }[];
     };
@@ -443,8 +445,65 @@ describe("s3", () => {
       Records: [{ ...record, s3: { ...record.s3, object: noSequencer } }],
     });
     expect(parsed[0]?.id).toBe(
-      "created:HappyFace.jpg@096fKKXTRTtl3on89fVO.nfljtsv6qko"
+      "created:amzn-s3-demo-bucket/HappyFace.jpg@096fKKXTRTtl3on89fVO.nfljtsv6qko#1970-01-01T00:00:00.000Z#d41d8cd98f00b204e9800998ecf8427e"
     );
+    // RustFS's documented record has no sequencer, time, version or ETag: the
+    // id is a hash of the record, the same on every redelivery.
+    const rustfsEvent = fixture("s3-compatible/rustfs-webhook.json");
+    const [first] = await parse("rustfs", rustfsEvent);
+    await Bun.sleep(2);
+    const [again] = await parse("rustfs", structuredClone(rustfsEvent));
+    expect(first?.id).toMatch(
+      /^created:my-bucket\/uploads\/hello\.dat@h:[0-9a-f]{16}$/u
+    );
+    expect(again?.id).toBe(first?.id as string);
+    // Key order doesn't change the hash (a string, so it stays reversed).
+    const reordered =
+      '{"Records":[{"s3":{"object":{"key":"uploads%2Fhello.dat"},"bucket":{"name":"my-bucket"}},"eventName":"s3:ObjectCreated:Put"}]}';
+    const [fromReordered] = await parse("rustfs", reordered);
+    expect(fromReordered?.id).toBe(first?.id as string);
+    const other = await parse("rustfs", {
+      Records: [
+        {
+          eventName: "s3:ObjectCreated:Put",
+          s3: {
+            bucket: { name: "my-bucket" },
+            object: { key: "uploads%2Fhello.dat" },
+          },
+          userIdentity: { principalId: "x" },
+        },
+      ],
+    });
+    expect(other[0]?.id).not.toBe(first?.id as string);
+  });
+
+  test("a Lambda subscribed to the SNS topic", async () => {
+    const message = JSON.stringify(fixture("s3/lambda-put.json"));
+    const lambdaSns = {
+      Records: [
+        {
+          EventSource: "aws:sns",
+          EventSubscriptionArn: "arn:aws:sns:us-east-1:1:uploads:sub",
+          EventVersion: "1.0",
+          Sns: {
+            Message: message,
+            MessageId: "m1",
+            Signature: "x",
+            SignatureVersion: "1",
+            SigningCertUrl: "https://sns.us-east-1.amazonaws.com/x.pem",
+            Subject: "Amazon S3 Notification",
+            Timestamp: "2026-01-01T00:00:00.000Z",
+            TopicArn: "arn:aws:sns:us-east-1:1:uploads",
+            Type: "Notification",
+          },
+        },
+      ],
+    };
+    const viaSns = await parse("s3", lambdaSns);
+    expect(viaSns.map((e) => e.key)).toEqual(["HappyFace.jpg"]);
+    await expect(
+      parse("s3", { Records: [{ EventSource: "aws:sns", Sns: "nope" }] })
+    ).rejects.toThrow("SNS record without an Sns notification");
   });
 
   test("malformed deliveries throw", async () => {
@@ -870,6 +929,27 @@ describe("memory", () => {
   });
 });
 
+const supabaseDelete = (bucket: string) => ({
+  old_record: {
+    bucket_id: bucket,
+    id: `u-${bucket}`,
+    metadata: {},
+    name: "user-1/profile.png",
+    version: "v1",
+  },
+  record: null,
+  schema: "storage",
+  table: "objects",
+  type: "DELETE",
+});
+
+const blobDeleted = (container: string) => ({
+  eventTime: "2026-01-01T00:00:00Z",
+  eventType: "Microsoft.Storage.BlobDeleted",
+  id: container,
+  subject: `/blobServices/default/containers/${container}/blobs/a.txt`,
+});
+
 describe("bucket and prefix mapping", () => {
   test("an instance prefix is stripped; keys outside it are dropped", async () => {
     const files = filesAs("s3", { prefix: "tenant-a" });
@@ -900,6 +980,56 @@ describe("bucket and prefix mapping", () => {
     expect(outside).toEqual([]);
   });
 
+  test("the adapter's own bucket filters by default; events({ bucket: false }) turns it off", async () => {
+    const avatars = createFiles({
+      adapter: providerAdapter("supabase", { bucket: "avatars" }),
+      plugins: [events()],
+    });
+    expect(await avatars.events.parse(supabaseDelete("originals"))).toEqual([]);
+    const own = await avatars.events.parse(supabaseDelete("avatars"));
+    expect(own.map((e) => e.key)).toEqual(["user-1/profile.png"]);
+    const azure = createFiles({
+      adapter: providerAdapter("azure", { bucket: "c1" }),
+      plugins: [events()],
+    });
+    expect(await azure.events.parse(blobDeleted("other"))).toEqual([]);
+    expect(await azure.events.parse(blobDeleted("c1"))).toHaveLength(1);
+    // A delivery that names no bucket always passes.
+    const s3Files = createFiles({
+      adapter: providerAdapter("s3", { bucket: "uploads" }),
+      plugins: [events()],
+    });
+    expect(await s3Files.events.parse(fixture("s3/lambda-put.json"))).toEqual(
+      []
+    );
+    expect(
+      await s3Files.events.parse({ Records: [s3RecordOf("no-bucket")] })
+    ).toHaveLength(1);
+    // Opt out, or name another bucket explicitly.
+    const anyBucket = createFiles({
+      adapter: providerAdapter("s3", { bucket: "uploads" }),
+      plugins: [events({ bucket: false })],
+    });
+    expect(
+      await anyBucket.events.parse(fixture("s3/lambda-put.json"))
+    ).toHaveLength(1);
+    const named = createFiles({
+      adapter: providerAdapter("s3", { bucket: "uploads" }),
+      plugins: [events({ bucket: "amzn-s3-demo-bucket" })],
+    });
+    expect(
+      await named.events.parse(fixture("s3/lambda-put.json"))
+    ).toHaveLength(1);
+    // An empty or non-string `bucket` on the adapter isn't a filter.
+    const blank = createFiles({
+      adapter: providerAdapter("s3", { bucket: "" }),
+      plugins: [events()],
+    });
+    expect(
+      await blank.events.parse(fixture("s3/lambda-put.json"))
+    ).toHaveLength(1);
+  });
+
   test("events({ bucket }) drops other buckets' events", async () => {
     const files = createFiles({
       adapter: providerAdapter("s3"),
@@ -922,5 +1052,181 @@ describe("bucket and prefix mapping", () => {
         ],
       })
     ).toHaveLength(1);
+  });
+});
+
+const r2Put = (eventTime: string) => ({
+  action: "PutObject",
+  bucket: "b",
+  eventTime,
+  object: { eTag: "abc", key: "a.txt", size: 3 },
+});
+
+describe("event ids never come from the clock", () => {
+  const twice = async (
+    name: string,
+    input: unknown
+  ): Promise<[string | undefined, string | undefined]> => {
+    const [first] = await parse(name, input);
+    await Bun.sleep(2);
+    const [again] = await parse(name, structuredClone(input));
+    return [first?.id, again?.id];
+  };
+
+  test("r2: a re-upload of the same bytes after a delete keeps its own id", async () => {
+    const seen = new Set<string>();
+    const handled: string[] = [];
+    const files = createFiles({
+      adapter: providerAdapter("r2"),
+      plugins: [
+        events({
+          dedupe: {
+            add: (id) => {
+              seen.add(id);
+            },
+            has: (id) => seen.has(id),
+          },
+        }),
+      ],
+    });
+    files.events.on("*", (e) => {
+      handled.push(`${e.type}:${e.key}`);
+    });
+    const del = {
+      action: "DeleteObject",
+      bucket: "b",
+      eventTime: "2026-01-01T00:01:00Z",
+      object: { key: "a.txt" },
+    };
+    await files.events.dispatch(r2Put("2026-01-01T00:00:00Z"));
+    await files.events.dispatch(del);
+    await files.events.dispatch(r2Put("2026-01-01T00:02:00Z"));
+    // A redelivery is still dropped.
+    await files.events.dispatch(r2Put("2026-01-01T00:02:00Z"));
+    expect(handled).toEqual([
+      "created:a.txt",
+      "deleted:a.txt",
+      "created:a.txt",
+    ]);
+    expect([...seen][0]).toBe("created:b/a.txt@2026-01-01T00:00:00Z#abc");
+    const [first, again] = await twice("r2", {
+      action: "DeleteObject",
+      object: { key: "a.txt" },
+    });
+    expect(first).toMatch(/^deleted:a\.txt@h:[0-9a-f]{16}$/u);
+    expect(again).toBe(first as string);
+  });
+
+  test("s3: an EventBridge event without an id", async () => {
+    const event = fixture("s3/eventbridge-created.json") as Record<
+      string,
+      unknown
+    >;
+    const { id: _id, ...noId } = event;
+    const [first, again] = await twice("s3", noId);
+    expect(first).toStartWith("created:example-key@");
+    expect(again).toBe(first as string);
+    const detail = noId.detail as { object: Record<string, unknown> };
+    const [sequenced] = await parse("s3", {
+      ...noId,
+      detail: { ...detail, object: { ...detail.object, sequencer: "00ab" } },
+    });
+    expect(sequenced?.id).toBe("created:example-key@00ab");
+  });
+
+  test("gcs: no generation falls back to the event time, then a hash", async () => {
+    const message = fixture("gcs/pubsub-pull-finalize.json") as {
+      attributes: Record<string, string>;
+    };
+    const { objectGeneration: _g, ...attributes } = message.attributes;
+    const [timed] = await parse("gcs", { ...message, attributes });
+    expect(timed?.id).toBe(
+      `OBJECT_FINALIZE:sample-bucket/folder/Test.cs#${attributes.eventTime}`
+    );
+    const { eventTime: _t, ...bare } = attributes;
+    const [first, again] = await twice("gcs", {
+      attributes: bare,
+      messageId: "1",
+    });
+    expect(first).toMatch(/#h:[0-9a-f]{16}$/u);
+    // A duplicate Pub/Sub message (new message id) for the same change.
+    const [duplicate] = await parse("gcs", {
+      attributes: bare,
+      messageId: "2",
+    });
+    expect(duplicate?.id).toBe(first as string);
+    expect(again).toBe(first as string);
+    const [ce1, ce2] = await twice("gcs", {
+      source: "//storage.googleapis.com/projects/_/buckets/b",
+      specversion: "1.0",
+      subject: "objects/a.txt",
+      type: "google.cloud.storage.object.v1.deleted",
+    });
+    expect(ce1).toMatch(/^deleted:b\/a\.txt#h:/u);
+    expect(ce2).toBe(ce1 as string);
+    // No source: the identity hashed has an absent field.
+    const [sourceless] = await parse("gcs", {
+      specversion: "1.0",
+      subject: "objects/a.txt",
+      type: "google.cloud.storage.object.v1.deleted",
+    });
+    expect(sourceless?.id).toMatch(/^deleted:\/a\.txt#h:/u);
+  });
+
+  test("azure: no id or sequencer falls back to the event time, then a hash", async () => {
+    const deleted = {
+      eventType: "Microsoft.Storage.BlobDeleted",
+      subject: "/blobServices/default/containers/c/blobs/a.txt",
+    };
+    const [timed] = await parse("azure", {
+      ...deleted,
+      eventTime: "2026-01-01T00:00:00.1234567Z",
+    });
+    expect(timed?.id).toBe("deleted:c/a.txt@2026-01-01T00:00:00.1234567Z");
+    const [first, again] = await twice("azure", deleted);
+    expect(first).toMatch(/^deleted:c\/a\.txt@h:/u);
+    expect(again).toBe(first as string);
+  });
+
+  test("b2, tigris and cloudinary records without ids", async () => {
+    const [b2First, b2Again] = await twice("backblaze-b2", {
+      events: [{ eventType: "b2:ObjectCreated:Upload", objectName: "a.txt" }],
+    });
+    expect(b2First).toMatch(/^b2:ObjectCreated:Upload:a\.txt@h:/u);
+    expect(b2Again).toBe(b2First as string);
+    const [b2Stamped] = await parse("backblaze-b2", {
+      events: [
+        {
+          eventTimestamp: 1_700_000_000_000,
+          eventType: "b2:ObjectCreated:Upload",
+          objectName: "a.txt",
+          objectVersionId: "v1",
+        },
+      ],
+    });
+    expect(b2Stamped?.id).toBe(
+      "b2:ObjectCreated:Upload:a.txt@v1#1700000000000"
+    );
+    const [tigrisFirst, tigrisAgain] = await twice("tigris", {
+      events: [{ eventName: "OBJECT_DELETED", object: { key: "a.txt" } }],
+    });
+    expect(tigrisFirst).toMatch(/^OBJECT_DELETED:\/a\.txt@h:/u);
+    expect(tigrisAgain).toBe(tigrisFirst as string);
+    const [upload1, upload2] = await twice("cloudinary", {
+      asset_id: "x",
+      notification_type: "upload",
+      public_id: "a",
+      resource_type: "raw",
+    });
+    expect(upload1).toMatch(/^upload:x@h:/u);
+    expect(upload2).toBe(upload1 as string);
+    const [renamed] = await parse("cloudinary", {
+      asset_id: "x",
+      from_public_id: "a",
+      notification_context: { triggered_at: "2026-01-01T00:00:00.123456Z" },
+      notification_type: "rename",
+      to_public_id: "b",
+    });
+    expect(renamed?.id).toBe("rename:x@2026-01-01T00:00:00.123456Z:from");
   });
 });

@@ -1,12 +1,20 @@
 // oxlint-disable unicorn/no-await-expression-member -- asserting fields off awaited Responses is the natural shape here.
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { timingSafeEqual } from "../src/events/crypto.js";
 import { events } from "../src/events/index.js";
-import type { EventsOptions } from "../src/events/index.js";
-import type { FileEvent } from "../src/index.js";
+import type { EventsOptions, GoogleOidcOptions } from "../src/events/index.js";
+import type { FileEvent, FilesPlugin } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { createRouteHandler } from "../src/next/index.js";
@@ -20,6 +28,10 @@ const headersOf = (name: string): Record<string, string> =>
   JSON.parse(fixtureText(name)) as Record<string, string>;
 
 const URL_ = "https://app.test/hooks/storage";
+
+afterEach(() => {
+  mock.restore();
+});
 
 const filesAs = (name: string, opts: EventsOptions = {}) =>
   createFiles({
@@ -48,6 +60,16 @@ const s3Body = JSON.stringify({
   ],
 });
 
+const withTiering = (opts: EventsOptions) =>
+  createFiles({
+    adapter: providerAdapter("s3"),
+    plugins: [
+      events(opts),
+      tiering({ cold: memory(), fallback: true, route: () => "hot" }),
+    ],
+    prefix: "app",
+  });
+
 describe("webhook() construction", () => {
   test("verify is required", () => {
     const files = filesAs("minio");
@@ -58,6 +80,9 @@ describe("webhook() construction", () => {
     expect(() => files.events.webhook({ verify: { token: "" } })).toThrow(
       "non-empty secret"
     );
+    expect(() =>
+      filesAs("backblaze-b2").events.webhook({ verify: { secret: "" } })
+    ).toThrow("verify.secret must be a non-empty secret");
   });
 
   test("an adapter with no format fails at construction", () => {
@@ -67,16 +92,21 @@ describe("webhook() construction", () => {
   });
 
   test("a plugin that refuses provider events fails at construction", () => {
-    const files = createFiles({
-      adapter: providerAdapter("s3"),
-      plugins: [
-        events(),
-        tiering({ cold: memory(), fallback: true, route: () => "hot" }),
-      ],
-      prefix: "app",
-    });
-    expect(() => files.events.webhook({ verify: false })).toThrow(
-      "fallback: true"
+    // tiering({ fallback: true }) turns the adapter's format off...
+    expect(() => withTiering({}).events.webhook({ verify: false })).toThrow(
+      "has no notification format on this instance: a plugin turned provider events off"
+    );
+    // ...and refuses provider events when one is forced.
+    expect(() =>
+      withTiering({ format: "s3" }).events.webhook({ verify: false })
+    ).toThrow("fallback: true");
+  });
+
+  test("the error for a missing format lists every format", () => {
+    expect(() =>
+      filesAs("vercel-blob").events.webhook({ verify: false })
+    ).toThrow(
+      "pass a `format` (appwrite, azure, b2, box, cloudinary, gcs, memory, r2, s3, supabase, tigris)"
     );
   });
 });
@@ -139,18 +169,118 @@ describe("token verification", () => {
 
 describe("status codes", () => {
   test("400 on a malformed delivery, 500 when a handler throws", async () => {
-    const files = filesAs("minio", { onError: () => {} });
+    const reported: unknown[] = [];
+    const files = filesAs("minio", {
+      onError: (cause) => {
+        reported.push(cause);
+      },
+    });
     const hook = files.events.webhook({ verify: false });
     expect((await hook.handle(post("{not json"))).status).toBe(400);
-    expect((await hook.handle(post('{"x":1}'))).status).toBe(400);
+    const bad = await hook.handle(post('{"x":1}'));
+    expect(bad.status).toBe(400);
+    expect(await bad.text()).toContain("not a s3 notification");
     files.events.on("*", () => {
-      throw new Error("db down");
+      throw new Error("db password=hunter2");
     });
     const res = await hook.handle(post(s3Body));
     expect(res.status).toBe(500);
+    // The handler's message stays out of the response; onError has it.
     expect(await res.json()).toEqual({
-      error: { message: "files-sdk/events: a handler failed: db down" },
+      error: { message: "files-sdk/events: a handler failed" },
     });
+    expect(String(reported[0])).toContain("hunter2");
+  });
+
+  test("an unexpected failure is a generic 500, reported to onError", async () => {
+    const reported: string[] = [];
+    const onError = (cause: unknown, req: Request) => {
+      reported.push(`${new URL(req.url).pathname}: ${String(cause)}`);
+    };
+    // A plugin hook that throws a plain error while mapping a delivery.
+    const boom: FilesPlugin = {
+      event: (event) => {
+        if (event.key !== "probe") {
+          throw new Error("internal detail");
+        }
+        return event;
+      },
+      name: "boom",
+    };
+    const files = createFiles({
+      adapter: providerAdapter("minio"),
+      plugins: [events(), boom],
+    });
+    const hook = files.events.webhook({ onError, verify: false });
+    const mapped = await hook.handle(post(s3Body));
+    expect(mapped.status).toBe(500);
+    expect(await mapped.json()).toEqual({
+      error: { message: "files-sdk/events: the delivery failed" },
+    });
+    // A dedupe store that's down: not a handler failure, so it's reported.
+    const store = filesAs("minio", {
+      dedupe: {
+        add: () => {},
+        has: () => {
+          throw new Error("redis down");
+        },
+      },
+    });
+    const deduped = await store.events
+      .webhook({ onError, verify: false })
+      .handle(post(s3Body));
+    expect(deduped.status).toBe(500);
+    // A JWKS that isn't JSON fails while authenticating.
+    const garbled = filesAs("gcs").events.webhook({
+      onError,
+      verify: {
+        google: {
+          audience: URL_,
+          email: "push@p.iam.gserviceaccount.com",
+          fetch: (() =>
+            Promise.resolve(new Response("<html>"))) as unknown as typeof fetch,
+        },
+      },
+    });
+    const token = `${btoa(JSON.stringify({ alg: "RS256", kid: "k" }))}.e30.sig`;
+    const auth = await garbled.handle(
+      post("{}", { authorization: `Bearer ${token}` })
+    );
+    expect(auth.status).toBe(500);
+    expect(await auth.text()).not.toContain("html");
+    expect(reported).toEqual([
+      "/hooks/storage: Error: internal detail",
+      "/hooks/storage: Error: redis down",
+      expect.stringContaining("/hooks/storage: SyntaxError"),
+    ]);
+  });
+
+  test("the default onError logs; a throwing onError is contained", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const failing = filesAs("minio", {
+      dedupe: {
+        add: () => {},
+        has: () => {
+          throw new Error("redis down");
+        },
+      },
+    });
+    const logged = await failing.events
+      .webhook({ verify: false })
+      .handle(post(s3Body));
+    expect(logged.status).toBe(500);
+    expect(String(error.mock.calls[0]?.[0])).toContain(
+      "webhook delivery to /hooks/storage failed"
+    );
+    const throwing = await failing.events
+      .webhook({
+        onError: () => {
+          throw new Error("reporter down");
+        },
+        verify: false,
+      })
+      .handle(post(s3Body));
+    expect(throwing.status).toBe(500);
   });
 
   test("405 for other methods; 204 for a plain OPTIONS; 200 for HEAD", async () => {
@@ -166,11 +296,12 @@ describe("status codes", () => {
     expect(options.status).toBe(204);
   });
 
-  test("a non-Unauthorized verification failure is a 500", async () => {
+  test("an unreachable key server is a 502, so the provider redelivers", async () => {
     const hook = filesAs("gcs").events.webhook({
       verify: {
         google: {
           audience: URL_,
+          email: "push@p.iam.gserviceaccount.com",
           fetch: (() =>
             Promise.reject(
               new Error("network down")
@@ -182,7 +313,8 @@ describe("status codes", () => {
     const res = await hook.handle(
       post("{}", { authorization: `Bearer ${token}` })
     );
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(502);
+    expect(await res.text()).toContain("fetching Google's signing keys failed");
   });
 
   test("mounts through a gateway binding", async () => {
@@ -315,7 +447,8 @@ describe("Google OIDC verification", () => {
   });
 
   const setup = (
-    jwks: () => object = () => ({ keys: [{ ...jwk, kid: "k1" }] })
+    jwks: () => object = () => ({ keys: [{ ...jwk, kid: "k1" }] }),
+    now: () => number = () => NOW
   ) => {
     const fetchJwks = mock((_url: string) =>
       Promise.resolve(Response.json(jwks()))
@@ -331,7 +464,7 @@ describe("Google OIDC verification", () => {
           audience: AUDIENCE,
           email: EMAIL,
           fetch: fetchJwks as unknown as typeof fetch,
-          now: () => NOW,
+          now,
         },
       },
     });
@@ -361,31 +494,54 @@ describe("Google OIDC verification", () => {
     );
   });
 
-  test("an unknown key id refetches once (key rotation)", async () => {
+  test("an unknown key id refetches (key rotation), at most once a minute", async () => {
     let rotated = false;
-    const { fetchJwks, hook } = setup(() =>
-      rotated
-        ? { keys: [{ ...jwk, kid: "k2" }, { kid: "ec", kty: "EC" }, "junk"] }
-        : { keys: [{ ...jwk, kid: "k1" }] }
+    let clock = NOW;
+    const { fetchJwks, hook } = setup(
+      () =>
+        rotated
+          ? { keys: [{ ...jwk, kid: "k2" }, { kid: "ec", kty: "EC" }, "junk"] }
+          : { keys: [{ ...jwk, kid: "k1" }] },
+      () => clock
     );
-    await hook.handle(
-      post(push, { authorization: `Bearer ${await sign(valid())}` })
-    );
+    const withKid = async (kid: string) =>
+      hook.handle(
+        post(push, {
+          authorization: `Bearer ${await sign(valid(), { kid })}`,
+        })
+      );
+    expect((await withKid("k1")).status).toBe(200);
     rotated = true;
-    const res = await hook.handle(
-      post(push, {
-        authorization: `Bearer ${await sign(valid(), { kid: "k2" })}`,
-      })
-    );
-    expect(res.status).toBe(200);
+    // Within a minute of the last fetch, an unknown id doesn't refetch.
+    const early = await withKid("k2");
+    expect(early.status).toBe(401);
+    expect(await early.text()).toContain("unknown key");
+    expect(fetchJwks).toHaveBeenCalledTimes(1);
+    clock += 61_000;
+    expect((await withKid("k2")).status).toBe(200);
     expect(fetchJwks).toHaveBeenCalledTimes(2);
-    const unknown = await hook.handle(
-      post(push, {
-        authorization: `Bearer ${await sign(valid(), { kid: "k9" })}`,
-      })
+    // A flood of made-up ids costs nothing more until the minute is up.
+    for (const kid of ["k9", "k10", "k11"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one after the other
+      expect((await withKid(kid)).status).toBe(401);
+    }
+    expect(fetchJwks).toHaveBeenCalledTimes(2);
+    // After an hour the keys are refetched even for a known id.
+    clock += 3_600_000;
+    expect((await withKid("k2")).status).toBe(200);
+    expect(fetchJwks).toHaveBeenCalledTimes(3);
+  });
+
+  test("concurrent deliveries share one key fetch", async () => {
+    const { fetchJwks, hook } = setup();
+    const token = await sign(valid());
+    const results = await Promise.all(
+      [1, 2, 3].map(() =>
+        hook.handle(post(push, { authorization: `Bearer ${token}` }))
+      )
     );
-    expect(unknown.status).toBe(401);
-    expect(await unknown.text()).toContain("unknown key");
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(fetchJwks).toHaveBeenCalledTimes(1);
   });
 
   test.each([
@@ -449,33 +605,44 @@ describe("Google OIDC verification", () => {
     expect(seen).toEqual([]);
   });
 
-  test("an array audience; no email check when none is configured", async () => {
-    const fetchJwks = mock(() =>
-      Promise.resolve(Response.json({ keys: [{ ...jwk, kid: "k1" }] }))
-    );
-    const hook = filesAs("gcs").events.webhook({
-      verify: {
-        google: {
-          audience: AUDIENCE,
-          fetch: fetchJwks as unknown as typeof fetch,
-          now: () => NOW,
-        },
-      },
-    });
-    const { email: _e, ...noEmail } = valid();
-    const res = await hook.handle(
+  test("an array audience passes; a token with no email doesn't", async () => {
+    const { hook } = setup();
+    const array = await hook.handle(
       post(push, {
-        authorization: `Bearer ${await sign({ ...noEmail, aud: [AUDIENCE] })}`,
+        authorization: `Bearer ${await sign({ ...valid(), aud: [AUDIENCE] })}`,
       })
     );
-    expect(res.status).toBe(200);
+    expect(array.status).toBe(200);
+    const { email: _e, ...noEmail } = valid();
+    const anyone = await hook.handle(
+      post(push, { authorization: `Bearer ${await sign(noEmail)}` })
+    );
+    expect(anyone.status).toBe(401);
+    expect(await anyone.text()).toContain("another service account");
   });
 
-  test("a failing JWKS fetch is a 500", async () => {
+  test("an audience and a service account are both required", () => {
+    const files = filesAs("gcs");
+    for (const [google, message] of [
+      [{ audience: AUDIENCE }, "verify.google.email must be"],
+      [{ audience: AUDIENCE, email: "" }, "verify.google.email must be"],
+      [{ email: EMAIL }, "verify.google.audience must be"],
+      [{ audience: "", email: EMAIL }, "verify.google.audience must be"],
+    ] as const) {
+      expect(() =>
+        files.events.webhook({
+          verify: { google: google as unknown as GoogleOidcOptions },
+        })
+      ).toThrow(message);
+    }
+  });
+
+  test("a failing JWKS fetch is a 502", async () => {
     const hook = filesAs("gcs").events.webhook({
       verify: {
         google: {
           audience: AUDIENCE,
+          email: EMAIL,
           fetch: (() =>
             Promise.resolve(
               new Response("nope", { status: 503 })
@@ -487,13 +654,13 @@ describe("Google OIDC verification", () => {
     const res = await hook.handle(
       post(push, { authorization: `Bearer ${await sign(valid())}` })
     );
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(502);
     expect(await res.text()).toContain("signing keys failed (503)");
   });
 
   test("the default fetch and clock are used when none are given", () => {
     const hook = filesAs("gcs").events.webhook({
-      verify: { google: { audience: AUDIENCE } },
+      verify: { google: { audience: AUDIENCE, email: EMAIL } },
     });
     expect(hook.handle).toBeFunction();
   });

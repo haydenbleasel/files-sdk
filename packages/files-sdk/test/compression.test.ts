@@ -5,7 +5,8 @@ import { compression } from "../src/compression/index.js";
 import type { CompressionFormat } from "../src/compression/index.js";
 import { failover } from "../src/failover/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { Adapter } from "../src/index.js";
+import type { Adapter, FileEvent } from "../src/index.js";
+import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
@@ -292,7 +293,13 @@ describe("compression plugin — passthrough + failure", () => {
     await new Files({ adapter }).upload("bad", TEXT, {
       metadata: { fscmp_alg: "lzma", fscmp_size: String(TEXT.length) },
     });
-    await expect(files.download("bad")).rejects.toThrow(/unknown algorithm/u);
+    // A marker this version can't decode is a capability gap, not a provider
+    // failure — deterministic, so never retried.
+    await expect(files.download("bad")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/unknown algorithm "lzma"/u),
+      permanent: true,
+    });
   });
 
   test("download rejects corrupted compressed data", async () => {
@@ -394,7 +401,9 @@ describe("compression plugin — backstop refusals", () => {
 
 describe("compression plugin — refusals are permanent", () => {
   test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
-    const secondary = fakeAdapter();
+    // Range-capable like the primary: failover() advertises only what every
+    // backend can do, and this checks the plugin's own refusal.
+    const secondary = fakeAdapter({ supportsRange: true });
     await new Files({ adapter: secondary }).upload("a.txt", "replica");
     const files = new Files({
       // Range-capable, so the range refusal is the plugin's, not the adapter's.
@@ -432,5 +441,29 @@ describe("compression plugin — refusals are permanent", () => {
       expect(failure).toBeInstanceOf(FilesError);
       expect((failure as FilesError).permanent).toBe(true);
     }
+  });
+});
+
+/** A provider event as `files-sdk/events` hands it to the core. */
+const providerEvent = (key: string): FileEvent => ({
+  etag: '"stored"',
+  id: key,
+  key,
+  provider: "fake",
+  raw: null,
+  size: 99,
+  source: "provider",
+  time: 0,
+  type: "created",
+});
+
+describe("compression plugin — provider events", () => {
+  test("clears the stored size on every event, keeping the ETag", () => {
+    // The event carries no metadata, so an object compression() didn't write
+    // can't be told apart: its size is cleared as well.
+    const { size: _size, ...rest } = providerEvent("a.txt");
+    expect(compressed()[FOLD_PROVIDER_EVENT](providerEvent("a.txt"))).toEqual(
+      rest
+    );
   });
 });

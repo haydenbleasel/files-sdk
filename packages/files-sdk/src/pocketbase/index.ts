@@ -296,9 +296,13 @@ export const pocketbase = (
   const filenameOf = (record: FileRecord): string => {
     const raw = record[fileField];
     if (!isString(raw) || !raw) {
+      // The record answered but carries no single filename where the adapter
+      // was told to look — a `fileField` that isn't the collection's
+      // single-file field, or a record with no file. Re-fetching returns the
+      // same record, so it's a deterministic `Invalid`, never retried.
       throw new FilesError(
-        "Provider",
-        `pocketbase: record ${record.id} has no file in field "${fileField}".`
+        "Invalid",
+        `pocketbase: record ${record.id} has no file in field "${fileField}". Check that \`fileField\` names the collection's single-file field and that the record has a file.`
       );
     }
     return raw;

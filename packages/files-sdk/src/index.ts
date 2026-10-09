@@ -706,13 +706,15 @@ export interface SignedUrlCapability {
    * public link (an S3 SigV4 URL, an Azure SAS, a GCS signed URL, a Box or
    * PocketBase access-token URL, …). Whether such a URL honors
    * {@link UrlOptions.expiresIn} exactly is a separate, per-provider detail —
-   * some providers pin the lifetime server-side and ignore the request; see the
-   * provider-gaps page. `false` when the adapter has no signing primitive: it
-   * returns only a permanent URL and ignores `expiresIn` (Vercel Blob in public
-   * mode, Appwrite, Convex, the filesystem's `file://` / `urlBaseUrl` URL),
-   * or throws because it cannot mint a URL at all (FTP/SFTP without a
-   * `publicBaseUrl`, OneDrive / Google Drive outside their public-link mode).
-   * When `false`, prefer `download()`.
+   * some providers pin the lifetime server-side and treat it as advisory; see
+   * {@link SignedUrlCapability.expiry}. `false` when the adapter has no
+   * signing primitive: a plain `url(key)` returns only a permanent URL (Vercel
+   * Blob in public mode, Appwrite, Convex, the filesystem's `file://` /
+   * `urlBaseUrl` URL) or throws because it cannot mint a URL at all (FTP/SFTP
+   * without a `publicBaseUrl`, OneDrive / Google Drive outside their
+   * public-link mode), and `url(key, { expiresIn })` is refused with an
+   * `Unsupported` {@link FilesError} before the adapter runs — never answered
+   * with a permanent link. When `false`, prefer `download()`.
    */
   supported: boolean;
   /**
@@ -723,8 +725,8 @@ export interface SignedUrlCapability {
    * - `"provider"` — the URL is tokenized and does expire, but the provider
    *   sets the lifetime; `expiresIn` is advisory (Box, PocketBase, Dropbox's
    *   4-hour temporary links).
-   * - `"none"` — `url()` returns a permanent link (or throws), so `expiresIn`
-   *   can't be honored.
+   * - `"none"` — `url()` returns a permanent link (or throws), so an
+   *   `expiresIn` is refused with `Unsupported` before the adapter runs.
    */
   expiry: SignedUrlExpiry;
   /**
@@ -1031,15 +1033,21 @@ export interface Adapter<Raw = unknown> {
    * - **S3 / R2 (HTTP) / MinIO / DigitalOcean Spaces / Storj / Hetzner / Akamai / Backblaze B2 / Wasabi / Tigris** sign a `GetObject` request — the URL
    *   expires after `opts.expiresIn` seconds (or the adapter's default,
    *   typically 3600). If the adapter was constructed with
-   *   `publicBaseUrl`, the URL is built against that origin instead and
-   *   does not expire.
+   *   `publicBaseUrl`, a plain `url(key)` is built against that origin
+   *   instead and does not expire; an `expiresIn` or
+   *   `responseContentDisposition` still signs.
    * - **R2 (binding)** uses `publicBaseUrl` if configured, falls back to
    *   HTTP signing if HTTP credentials were also passed (hybrid mode),
    *   and otherwise throws.
-   * - **Vercel Blob (public)** returns the permanent CDN URL.
-   *   `expiresIn` is ignored.
+   * - **Vercel Blob (public)** returns the permanent CDN URL. It never sees
+   *   an `expiresIn`: it declares `signedUrl.supported: false`, so
+   *   {@link Files} refuses one with `Unsupported` first.
    * - **Vercel Blob (private)** mints a Vercel Signed URL (presigned GET)
    *   scoped to the key, honoring `expiresIn`.
+   *
+   * An adapter that declares {@link AdapterCapabilityDeclaration.signedUrl}
+   * `supported: false` is never called with `expiresIn` — the wrapper refuses
+   * it before any provider I/O.
    *
    * **Keys are passed raw.** The built-in adapters build URLs against a
    * `publicBaseUrl` (or Vercel Blob's fast path) by `encodeURIComponent`-ing
@@ -1079,11 +1087,12 @@ export type FilesActionType =
   | "move"
   | "list"
   | "url"
-  | "signedUploadUrl";
+  | "signedUploadUrl"
+  | "abortUpload";
 
 type WriteActionType = Extract<
   FilesActionType,
-  "upload" | "delete" | "copy" | "move" | "signedUploadUrl"
+  "upload" | "delete" | "copy" | "move" | "signedUploadUrl" | "abortUpload"
 >;
 
 /**
@@ -1291,9 +1300,10 @@ export type ConditionalFilesOperation =
 
 /**
  * A single in-flight operation handed to a {@link FilesPlugin}. One variant per
- * public verb (mirroring {@link FilesActionType}), carrying the caller-facing,
- * **un-prefixed** inputs — a plugin never sees the internal prefixed path, the
- * same rule {@link FilesHooks} follow.
+ * public verb (mirroring {@link FilesActionType}, except `abortUpload`, which
+ * reports through the hooks but never reaches a `wrap`), carrying the
+ * caller-facing, **un-prefixed** inputs — a plugin never sees the internal
+ * prefixed path, the same rule {@link FilesHooks} follow.
  *
  * The array form of `upload` / `download` / `head` / `exists` / `delete` fans
  * out to one op per item, each marked `bulk: true`, so a plugin can tell a
@@ -1426,8 +1436,9 @@ export interface FilesPlugin<
    * fail-closed throw.
    *
    * The core also gates on the narrowed snapshot: an option a plugin turns
-   * off (`range`, `metadata`, `cacheControl`, `control`, `delimiter`) is
-   * refused before any plugin's `wrap` runs, with an error naming the plugin.
+   * off (`range`, `metadata`, `cacheControl`, `control`, `delimiter`, an
+   * `expiresIn` on `url()`) is refused before any plugin's `wrap` runs, with
+   * an error naming the plugin — whether or not that plugin wraps anything.
    *
    * Return a new object rather than mutating the argument. Only narrow — the
    * hook changes what is advertised, not what the adapter can do, so widening
@@ -1950,6 +1961,14 @@ export class Files<A extends Adapter = Adapter> {
    * short-circuits on its length so a plugin-free instance is byte-identical.
    */
   readonly #wraps: InternalWrap[];
+  /**
+   * Whether any plugin wraps operations or narrows {@link Files.capabilities}
+   * — either way the adapter's own declaration no longer tells the whole
+   * story, so {@link Files.#dispatch} gates options on the plugin-narrowed
+   * snapshot before the onion runs. `false` keeps a plugin-free instance on
+   * the inner adapter-declaration checks alone.
+   */
+  readonly #gatesBeforePlugins: boolean;
 
   constructor(opts: FilesOptions<A>) {
     const {
@@ -1978,6 +1997,9 @@ export class Files<A extends Adapter = Adapter> {
     this.#wraps = (plugins ?? []).flatMap((plugin) =>
       plugin.wrap ? [plugin.wrap as InternalWrap] : []
     );
+    this.#gatesBeforePlugins = (plugins ?? []).some(
+      (plugin) => plugin.wrap !== undefined || plugin.capabilities !== undefined
+    );
     // `extend` runs against the fully-wrapped instance (fields + `#wraps` are
     // already set), so an extension method that calls back into `this.upload()`
     // goes through the onion too.
@@ -1995,7 +2017,7 @@ export class Files<A extends Adapter = Adapter> {
    * key, which would corrupt `await files`.
    */
   #applyExtensions(plugins: readonly FilesPlugin[]): void {
-    const contributed = new Set<string>();
+    const contributed = new Set<PropertyKey>();
     for (const plugin of plugins) {
       if (!plugin.extend) {
         continue;
@@ -2004,20 +2026,23 @@ export class Files<A extends Adapter = Adapter> {
       // parameter, which narrows `raw`; `extend` is written against the base
       // `Files` surface, which every instance satisfies.
       const surface = plugin.extend(this as Files);
-      for (const key of Object.keys(surface)) {
+      // Every own key `Object.assign` will copy — symbols included, since a
+      // symbol-keyed member (the internal event-folding method) is shadowed
+      // just as easily as a named one.
+      for (const key of Reflect.ownKeys(surface)) {
         // A new own property would shadow a real method or getter (every one
         // lives on the prototype, including inherited `Object` members), and a
         // `then` key would make the instance thenable and corrupt `await files`.
         if (key === "then" || key in Files.prototype) {
           throw new FilesError(
             "Invalid",
-            `plugin "${plugin.name}": extension "${key}" collides with an existing Files member`
+            `plugin "${plugin.name}": extension "${String(key)}" collides with an existing Files member`
           );
         }
         if (contributed.has(key)) {
           throw new FilesError(
             "Invalid",
-            `plugin "${plugin.name}": extension "${key}" collides with another plugin's extension`
+            `plugin "${plugin.name}": extension "${String(key)}" collides with another plugin's extension`
           );
         }
         contributed.add(key);
@@ -2042,11 +2067,13 @@ export class Files<A extends Adapter = Adapter> {
     // each layer must resolve to the result of the op it received (a plugin
     // returning another verb's result is a type error in its own `wrap`), so
     // the erased result is this op's `OperationResult<O>`.
-    if (this.#wraps.length > 0) {
+    if (this.#gatesBeforePlugins) {
       // Refuse an unsupported option before any plugin runs, so a plugin
       // can't do I/O (a version snapshot, a trash move) for a call the core
       // is about to reject. The inner gates still catch options a plugin
-      // injects on the way in.
+      // injects on the way in, but they read only the adapter's declaration —
+      // so this is also the one place a plugin that narrows a capability
+      // without wrapping anything gets that narrowing enforced.
       try {
         this.#assertSupportedBeforePlugins(op);
       } catch (error) {
@@ -3633,7 +3660,13 @@ export class Files<A extends Adapter = Adapter> {
     // `deleteManyWithFallback` gives the same input-order errors, `stopOnError`,
     // and bounded `concurrency`; an invalid key throws in `#path` inside the
     // per-key call and is collected like any other failure.
-    if (this.#wraps.length > 0) {
+    //
+    // `stopOnError` takes this path without plugins too: a native batch can't
+    // stop partway, and validating every key up front would stop on an invalid
+    // key *before* deleting the valid keys ahead of it. Per key, in order, the
+    // run deletes up to the first failure — whatever kind it is — and so
+    // returns the same result with or without plugins.
+    if (this.#wraps.length > 0 || opts?.stopOnError) {
       return deleteManyWithFallback(
         keys,
         (key) =>
@@ -3676,13 +3709,6 @@ export class Files<A extends Adapter = Adapter> {
       try {
         path = this.#path(key);
       } catch (error) {
-        if (opts?.stopOnError) {
-          // Short-circuit before any delete is attempted.
-          return {
-            errors: [{ error: FilesError.wrap(error), key: String(key) }],
-            results: [],
-          };
-        }
         errors.push({ error: FilesError.wrap(error), index, key: String(key) });
         continue;
       }
@@ -3698,12 +3724,9 @@ export class Files<A extends Adapter = Adapter> {
     // Retry-free (as documented for bulk), but still under the constructor
     // `signal`/`timeout` via the non-retryable #run. The native bulk
     // primitive takes no per-call signal, so the whole batch runs under one
-    // #run; the fan-out fallback runs one per key.
-    // `stopOnError` runs one key at a time, like the plugin path above: a
-    // native batch request can't stop partway through.
-    const nativeDeleteMany = opts?.stopOnError
-      ? undefined
-      : this.#adapter.deleteMany?.bind(this.#adapter);
+    // #run; the fan-out fallback runs one per key. (`stopOnError` never gets
+    // here — it took the per-key path above.)
+    const nativeDeleteMany = this.#adapter.deleteMany?.bind(this.#adapter);
     const result = nativeDeleteMany
       ? await this.#run(undefined, () => nativeDeleteMany(paths, opts), false)
       : await deleteManyWithFallback(
@@ -3839,7 +3862,7 @@ export class Files<A extends Adapter = Adapter> {
    * `list` hook per page. Stop early by `break`ing out of the loop; no further
    * pages are fetched.
    *
-   * @yields {StoredFile} each stored object, one page at a time, following the cursor.
+   * @yields {FileInfo} each stored object's metadata (no body), one page at a time, following the cursor.
    */
   async *listAll(opts?: ListOptions): AsyncGenerator<FileInfo, void> {
     // `delimiter` would collapse nested keys into folders, so `listAll` would
@@ -3979,49 +4002,55 @@ export class Files<A extends Adapter = Adapter> {
    * Blob) let the session expire on its own, and in-process sessions (Box,
    * Bun S3, memory) don't outlive their process, so for those this resolves
    * without a provider call. A session that's already gone (completed or
-   * discarded) is not an error. Throws on an adapter without resumable
-   * uploads, and `ReadOnly` on a {@link Files.readonly} view.
+   * discarded) is not an error, but a cancel the provider refuses rejects.
+   * Throws on an adapter without resumable uploads, and `ReadOnly` on a
+   * {@link Files.readonly} view.
+   *
+   * Reports through {@link FilesHooks} like the other write verbs — one
+   * `onAction` with `type: "abortUpload"` and the caller's `key`, `onError` on
+   * a rejection, `onRetry` per retried discard. It isn't a
+   * {@link FilesOperation}, though, so plugin `wrap`s don't see it.
    */
-  async abortUpload(
+  abortUpload(
     key: string,
     session: ResumableUploadSession,
     opts?: OperationOptions
   ): Promise<void> {
-    if (this.#isReadOnly) {
-      throw new FilesError(
-        "ReadOnly",
-        "Cannot call abortUpload() on a read-only Files instance."
-      );
-    }
-    if (!this.#adapter.resumableUpload) {
-      throw new FilesError(
-        "Unsupported",
-        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
-      );
-    }
-    if (!(isObject(session) && isString(session.provider))) {
-      throw new FilesError(
-        "Invalid",
-        "abortUpload() needs the resumable-upload session token from control.toJSON()."
-      );
-    }
-    const driver = this.#adapter.resumableUpload(this.#path(key), {});
-    try {
-      // Throws when the token belongs to another key, bucket, or provider —
-      // never discard a session this call wasn't pointed at.
-      driver.adopt(session);
-    } catch (error) {
-      throw FilesError.wrap(error);
-    }
-    try {
-      await this.#run(opts, () => driver.discard());
-    } catch (error) {
-      // Already completed or discarded: the session is gone either way.
-      if (error instanceof FilesError && error.code === "NotFound") {
-        return;
+    const ctx: ActionContext & { type: "abortUpload" } = {
+      key,
+      type: "abortUpload",
+    };
+    return this.#writeAction(ctx, async () => {
+      if (!this.#adapter.resumableUpload) {
+        throw new FilesError(
+          "Unsupported",
+          `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
+        );
       }
-      throw error;
-    }
+      if (!(isObject(session) && isString(session.provider))) {
+        throw new FilesError(
+          "Invalid",
+          "abortUpload() needs the resumable-upload session token from control.toJSON()."
+        );
+      }
+      const driver = this.#adapter.resumableUpload(this.#path(key), {});
+      try {
+        // Throws when the token belongs to another key, bucket, or provider —
+        // never discard a session this call wasn't pointed at.
+        driver.adopt(session);
+      } catch (error) {
+        throw FilesError.wrap(error);
+      }
+      try {
+        await this.#run(opts, () => driver.discard(), true, ctx);
+      } catch (error) {
+        // Already completed or discarded: the session is gone either way.
+        if (error instanceof FilesError && error.code === "NotFound") {
+          return;
+        }
+        throw error;
+      }
+    });
   }
 
   // eslint-disable-next-line complexity -- retry, timeout, abort, and hook settlement deliberately share one attempt loop

@@ -1,10 +1,9 @@
 import { createRequire } from "node:module";
 
-import { Command, Option } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 
 import { EVENT_FORMATS } from "../events/index.js";
 import { FilesError } from "../internal/errors.js";
-import { isObject } from "../internal/is.js";
 import {
   runCapabilities,
   runCopy,
@@ -41,6 +40,7 @@ import type {
 } from "./commands.js";
 import { fail, parseJsonObject, parseProviderOptions } from "./io.js";
 import type { OutputOpts } from "./io.js";
+import { isModuleNotFound } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
 // Type-only — runtime load is the dynamic `import("./mcp.js")` below so the
 // optional `@modelcontextprotocol/sdk` dep stays lazy.
@@ -73,8 +73,10 @@ const intArg = (raw: string): number => {
   // Strict: `parseInt` would silently truncate trailing garbage, turning
   // `--part-size 5MB` into 5 bytes, `--timeout 1s` into 1ms, `--limit 1.9`
   // into 1.
+  // commander turns an InvalidArgumentError into a usage error (exit 2, with
+  // help); a plain throw would escape it and be reported as a backend failure.
   if (!/^-?\d+$/u.test(raw.trim())) {
-    throw new TypeError(`expected an integer, got: ${raw}`);
+    throw new InvalidArgumentError(`expected an integer, got: ${raw}`);
   }
   // oxlint-disable-next-line unicorn/prefer-number-coercion -- explicit radix parseInt is clearer here than Math.trunc(Number(raw))
   return Number.parseInt(raw, 10);
@@ -96,13 +98,14 @@ const parseDestination = (raw?: string): GlobalCliOptions | undefined =>
 // Anything other than a module-not-found error passes through unchanged (the
 // caller rethrows it), hence the generic.
 export const rewrapMcpLoadError = <C>(cause: C): Error | C => {
-  const code = isObject(cause) && "code" in cause ? cause.code : undefined;
-  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+  if (isModuleNotFound(cause)) {
     // `Unsupported`: a setup problem in this install, not a backend failure,
-    // so it exits like a usage error.
+    // so it exits like a usage error. `zod` is named too: it's an optional
+    // peer, so a strict installer (pnpm) can leave it out even though the
+    // MCP SDK itself is present.
     return new FilesError(
       "Unsupported",
-      "the `mcp` subcommand requires `@modelcontextprotocol/sdk` — install it with `npm install @modelcontextprotocol/sdk`",
+      "the `mcp` subcommand requires `@modelcontextprotocol/sdk` and `zod` — install them with `npm install @modelcontextprotocol/sdk zod`",
       cause
     );
   }
@@ -166,7 +169,7 @@ const buildGlobal = (program: Command): void => {
     .option("--session-token <token>", `${G.S3} STS session token`)
     .option(
       "--public-base-url <url>",
-      `${G.SHARED} origin for url() — skip signing (S3 family, R2, GCS, Azure, Supabase, Firebase, Box, Dropbox, Bunny, FTP, SFTP, WebDAV, PocketBase)`
+      `${G.SHARED} origin for a plain url(), which then returns a permanent link (S3 family, R2, GCS, Azure, Supabase, Firebase, Box, Dropbox, Bunny, FTP, SFTP, WebDAV, PocketBase); on adapters that can sign, --expires-in still signs`
     )
     .option(
       "--default-url-expires-in <seconds>",
@@ -622,7 +625,7 @@ export const buildProgram = (
   program
     .command("capabilities")
     .description(
-      "print what the configured adapter can do (range reads, signed URLs, server-side copy, multipart, …) as JSON"
+      "print what the configured adapter can do (range reads, signed URLs, server-side copy, resumable uploads, …) as JSON"
     )
     .action(
       wrap(runCapabilities, (common, _opts: Flags<CommonRunOpts>) => common)
@@ -699,7 +702,11 @@ export const buildProgram = (
   program
     .command("url <key>")
     .description("build a URL (presigned for signing adapters)")
-    .option("--expires-in <seconds>", "presigned URL expiry", intArg)
+    .option(
+      "--expires-in <seconds>",
+      "signed URL expiry; fails (Unsupported, exit 2) on adapters that can only return permanent links",
+      intArg
+    )
     .option(
       "--response-content-disposition <value>",
       "force Content-Disposition on the response (forces signing path)"
@@ -824,8 +831,13 @@ export const buildProgram = (
     .addOption(
       new Option(
         "--format <format>",
-        "read this notification format without configuring a provider"
+        "read this notification format (overrides the provider's; no provider needed)"
       ).choices([...EVENT_FORMATS])
+    )
+    .option(
+      "--header <header>",
+      'a delivery header as "name: value" (repeatable), for formats that read headers, like appwrite',
+      collect
     )
     .action(
       wrap(
@@ -834,7 +846,7 @@ export const buildProgram = (
           common,
           file: string | undefined,
           opts: Flags<EventsParseCmdOpts, "file">
-        ) => ({ ...common, file, format: opts.format })
+        ) => ({ ...common, file, format: opts.format, header: opts.header })
       )
     );
 

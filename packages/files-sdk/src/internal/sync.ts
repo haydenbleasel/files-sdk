@@ -21,6 +21,7 @@ import type {
 } from "../index.js";
 import { mapMany } from "./core.js";
 import { isFunction } from "./is.js";
+import { abortError } from "./retry.js";
 
 /**
  * How `sync` decides a destination object is already up to date — the predicate
@@ -121,9 +122,12 @@ export interface SyncOptions extends BulkOptions {
    */
   onProgress?: (progress: SyncProgress) => void;
   /**
-   * Abort the sync. Forwarded to every `list` / `download` / `upload` (the bulk
-   * `delete` carries no signal). Aborting during a walk rejects the call;
-   * aborting during the upload phase surfaces the cancelled keys in `errors`.
+   * Abort the sync. Forwarded to every `list` / `download` / `upload`. Aborting
+   * during a walk rejects the call; aborting during the upload phase surfaces
+   * the cancelled keys in `errors`. The bulk `delete` carries no signal, so the
+   * prune checks it before each batch of up to 100 keys instead: once the
+   * signal is aborted, no further destination key is deleted, and the keys
+   * left unpruned surface in `errors` as aborted too.
    */
   signal?: AbortSignal;
 }
@@ -315,23 +319,54 @@ const runUploads = async (
   return { errors: [...errors], skipped, uploaded };
 };
 
+/**
+ * Keys per bulk `delete` when the prune can be aborted. The bulk call carries
+ * no signal, so the abort is checked between batches: small enough that an
+ * adapter deleting key by key stops within a hundred deletes of the abort,
+ * large enough that a native batch (S3 `DeleteObjects`, Azure batch) still
+ * removes many keys per request.
+ */
+const PRUNE_BATCH = 100;
+
 const runPrune = async (
   dest: Files,
   keys: string[],
   opts: SyncOptions | undefined,
   report: (key: string, status: SyncProgress["status"]) => void
 ): Promise<{ deleted: string[]; errors: BulkError[] }> => {
-  const res = await dest.delete(keys, {
-    ...(opts?.concurrency !== undefined && { concurrency: opts.concurrency }),
-    ...(opts?.stopOnError && { stopOnError: true }),
-  });
-  const { results: deleted } = res;
-  const errors = res.errors ?? [];
-  for (const key of deleted) {
-    report(key, "deleted");
-  }
-  for (const { key } of errors) {
-    report(key, "failed");
+  const signal = opts?.signal;
+  const deleted: string[] = [];
+  const errors: BulkError[] = [];
+  // Without a signal nothing can stop the prune, so it's one bulk call.
+  const batchSize = signal ? PRUNE_BATCH : keys.length;
+  for (let start = 0; start < keys.length; start += batchSize) {
+    if (signal?.aborted) {
+      // Never trim the destination after the caller cancelled: the keys left
+      // surface as aborted, like the uploads an abort cut off.
+      const error = abortError(signal.reason);
+      for (const key of keys.slice(start)) {
+        errors.push({ error, key });
+        report(key, "failed");
+      }
+      break;
+    }
+    // eslint-disable-next-line no-await-in-loop -- batches run in order so an abort can stop the prune between them
+    const res = await dest.delete(keys.slice(start, start + batchSize), {
+      ...(opts?.concurrency !== undefined && { concurrency: opts.concurrency }),
+      ...(opts?.stopOnError && { stopOnError: true }),
+    });
+    for (const key of res.results) {
+      deleted.push(key);
+      report(key, "deleted");
+    }
+    for (const failure of res.errors ?? []) {
+      errors.push(failure);
+      report(failure.key, "failed");
+    }
+    if (opts?.stopOnError && errors.length > 0) {
+      // The failing batch already stopped at its first failure; so does the run.
+      return { deleted, errors };
+    }
   }
   return { deleted, errors };
 };
@@ -355,7 +390,8 @@ const runPrune = async (
  * successes land in `uploaded` / `deleted`, per-key failures in `errors`. Pass
  * `stopOnError` to bail at the first upload failure (sequential; the prune phase
  * is then skipped). Uploads run before prunes, so an interrupted run never
- * leaves the destination missing data it was about to gain.
+ * leaves the destination missing data it was about to gain, and an aborted
+ * `signal` stops the prune too (see {@link SyncOptions.signal}).
  *
  * ```ts
  * import { Files, sync } from "files-sdk";
@@ -451,7 +487,8 @@ export const sync = async (
   );
 
   // Prune after uploads. Under `stopOnError` an upload failure bails the run, so
-  // the destination is never trimmed against a half-applied source.
+  // the destination is never trimmed against a half-applied source; an aborted
+  // `signal` is honored inside `runPrune`, before each batch.
   const allErrors = errors;
   let deleted: string[] = [];
   const bailed = stopOnError === true && errors.length > 0;

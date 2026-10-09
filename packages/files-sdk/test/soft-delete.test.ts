@@ -64,6 +64,36 @@ describe("soft-delete plugin — delete moves to trash", () => {
     expect(await bodyOf(files, ".trash/notes.txt")).toBe("hi");
   });
 
+  test("trashed({ prefix }) lists only what was deleted from under it", async () => {
+    const listed: (string | undefined)[] = [];
+    const base = fakeAdapter();
+    const files = createFiles({
+      adapter: {
+        ...base,
+        list: (opts) => {
+          listed.push(opts?.prefix);
+          return base.list(opts);
+        },
+      },
+      plugins: [softDelete()],
+    });
+    for (const key of ["users/1/a.txt", "users/2/b.txt", "users/1/c.txt"]) {
+      // eslint-disable-next-line no-await-in-loop -- seed in order
+      await files.upload(key, key);
+      // eslint-disable-next-line no-await-in-loop -- seed in order
+      await files.delete(key);
+    }
+    listed.length = 0;
+    const mine = await files.trashed({ prefix: "users/1/" });
+    expect(mine.map((t) => t.key).toSorted()).toEqual([
+      "users/1/a.txt",
+      "users/1/c.txt",
+    ]);
+    expect(mine[0]?.trashKey.startsWith(".trash/users/1/")).toBe(true);
+    expect(listed).toEqual([".trash/users/1/"]);
+    expect(await files.trashed({})).toHaveLength(3);
+  });
+
   test("deleting a missing key is a no-op, like a plain delete", async () => {
     const files = withSoftDelete();
     await expect(files.delete("ghost.txt")).resolves.toBeUndefined();

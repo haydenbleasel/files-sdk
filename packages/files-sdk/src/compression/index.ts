@@ -206,11 +206,12 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       return { ...file, metadata, size };
     }
     if (!FORMATS.has(alg)) {
+      // A marker this version can't decode (a newer writer's algorithm, or a
+      // hand-edited one) is a capability gap, not a provider failure: the
+      // same read can only fail the same way, so it's never retried.
       throw new FilesError(
-        "Provider",
-        `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `compression: "${op.key}" was stored with an unknown algorithm "${alg}"`
       );
     }
     const compressed = new Uint8Array(await file.arrayBuffer());
@@ -254,7 +255,9 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
     // A provider event reports the stored object's size, not the caller's
-    // (the transformed body); the stored ETag and type still describe it.
+    // (the transformed body); the stored ETag and type still describe it. The
+    // event carries no object metadata, so an object this plugin didn't write
+    // (a mixed bucket) can't be told apart: its size is cleared too.
     event: ({ size: _stored, ...event }) => event,
     name: "compression",
     wrap: handlers({

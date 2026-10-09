@@ -1020,7 +1020,7 @@ describe("pocketbase adapter", () => {
       }
     });
 
-    test("download throws Provider when the record has no file in fileField", async () => {
+    test("download throws a non-retryable Invalid when the record has no file in fileField", async () => {
       const adapter = pocketbase({
         collection: "files",
         url: "http://pb.test",
@@ -1033,9 +1033,14 @@ describe("pocketbase adapter", () => {
         recordId: nextRecordId(),
         updated: "2024-01-01T00:00:00.000Z",
       });
-      await expect(adapter.download("ghost.txt")).rejects.toThrow(
-        /has no file in field/u
-      );
+      await expect(adapter.download("ghost.txt")).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/has no file in field/u),
+        permanent: true,
+      });
+      await expect(adapter.head("ghost.txt")).rejects.toMatchObject({
+        code: "Invalid",
+      });
     });
 
     test("upload rethrows non-NotFound errors from the dedupe probe", async () => {

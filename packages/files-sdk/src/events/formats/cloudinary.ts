@@ -11,7 +11,14 @@ import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { HashName } from "../crypto.js";
 import { digest, timingSafeEqual, toHex, utf8 } from "../crypto.js";
 import type { EventParser, ParseContext, RawEvent } from "./types.js";
-import { bareEtag, malformed, toSize, toTime, unauthorized } from "./types.js";
+import {
+  bareEtag,
+  malformed,
+  stampOf,
+  toSize,
+  toTime,
+  unauthorized,
+} from "./types.js";
 
 /** How old a signed delivery may be (Cloudinary's SDKs default to 2 hours). */
 const MAX_AGE_MS = 2 * 60 * 60 * 1000;
@@ -59,16 +66,20 @@ const contentTypeOf = (resource: JsonObject): string | undefined => {
   return undefined;
 };
 
+/** `notification_context.triggered_at`, exactly as sent. */
 const triggeredAt = (body: JsonObject): JsonValue | undefined =>
   isJsonObject(body.notification_context)
-    ? trimMicros(body.notification_context.triggered_at)
+    ? body.notification_context.triggered_at
     : undefined;
 
 const fromUpload = (body: JsonObject): RawEvent[] => {
   if (!isString(body.public_id)) {
     throw malformed("cloudinary", "upload notification without public_id");
   }
-  const time = toTime(body.created_at, toTime(triggeredAt(body), Date.now()));
+  const time = toTime(
+    body.created_at,
+    toTime(trimMicros(triggeredAt(body)), Date.now())
+  );
   const size = toSize(body.bytes);
   const etag = bareEtag(body.etag);
   const contentType = contentTypeOf(body);
@@ -76,7 +87,7 @@ const fromUpload = (body: JsonObject): RawEvent[] => {
     {
       id: isString(body.request_id)
         ? body.request_id
-        : `upload:${String(body.asset_id)}@${time}`,
+        : `upload:${String(body.asset_id)}@${stampOf(body, body.created_at, triggeredAt(body))}`,
       key: body.public_id,
       raw: body,
       time,
@@ -93,7 +104,8 @@ const fromDelete = (body: JsonObject, scope: CloudinaryScope): RawEvent[] => {
   if (!isJsonArray(body.resources)) {
     throw malformed("cloudinary", "delete notification without resources[]");
   }
-  const time = toTime(triggeredAt(body), Date.now());
+  const time = toTime(trimMicros(triggeredAt(body)), Date.now());
+  const stamp = stampOf(body, triggeredAt(body));
   return body.resources.flatMap((resource) => {
     if (!(isJsonObject(resource) && isString(resource.public_id))) {
       throw malformed("cloudinary", "deleted resource without public_id");
@@ -103,7 +115,7 @@ const fromDelete = (body: JsonObject, scope: CloudinaryScope): RawEvent[] => {
     }
     return [
       {
-        id: `delete:${String(resource.asset_id ?? resource.public_id)}@${time}`,
+        id: `delete:${String(resource.asset_id ?? resource.public_id)}@${stamp}`,
         key: resource.public_id,
         raw: body,
         time,
@@ -119,10 +131,10 @@ const fromRename = (body: JsonObject): RawEvent[] => {
   if (!(isString(from) && isString(to))) {
     throw malformed("cloudinary", "rename notification without public ids");
   }
-  const time = toTime(triggeredAt(body), Date.now());
+  const time = toTime(trimMicros(triggeredAt(body)), Date.now());
   const id = isString(body.request_id)
     ? body.request_id
-    : `rename:${String(body.asset_id)}@${time}`;
+    : `rename:${String(body.asset_id)}@${stampOf(body, triggeredAt(body))}`;
   return [
     { id: `${id}:from`, key: from, raw: body, time, type: "deleted" },
     { id: `${id}:to`, key: to, raw: body, time, type: "created" },

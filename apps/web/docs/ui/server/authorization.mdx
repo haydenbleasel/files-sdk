@@ -34,12 +34,14 @@ authorize(ctx: {
   keys?: string[];            // bulk ops
   from?: string; to?: string; // copy / move
   // Parsed op params: url → { expiresIn }; signedUploadUrl → { expiresIn,
-  // maxSize?, minSize? }; restoreVersion → { versionId }; {} for the rest.
+  // maxSize?, minSize? }; restoreVersion → { versionId }; upload: presign →
+  // { files: [{ name, size, type }], expiresIn? }, the keyed PUT →
+  // { contentType?, size? }, complete → {}; {} for the rest.
   params: Readonly<Record<string, unknown>>;
 })
 ```
 
-`operation` is the coarse verb, so one predicate covers the bulk and byte variants too (a `head-many` request authorizes as `"head"`; `presign`/`complete`/the upload `PUT` all authorize as `"upload"`).
+`operation` is the coarse verb, so one predicate covers the bulk and byte variants too (a `head-many` request authorizes as `"head"`; `presign`/`complete`/the upload `PUT` all authorize as `"upload"`). The upload `params` are what the client declared, enough for a per-user quota or type gate; they're advisory, since the proxy `PUT` and `complete` still hold the real body to `maxUploadSize`.
 
 ## The constraint
 
@@ -48,13 +50,17 @@ return {
   keyPrefix?: string;     // prepended to every key/from/to; stripped from results
   maxExpiresIn?: number;  // ceiling on url()/download/upload-URL expiry (seconds)
   disposition?: "attachment" | "inline" | string; // download/url Content-Disposition
-  filterKeys?: (key: string) => boolean;           // narrow a bulk op
+  filterKeys?: (key: string) => boolean;           // narrow a bulk op; hide keys from versions / restoreVersion / restoreTrashed / complete
   maxResults?: number;    // clamp a list/search page
   context?: TContext;     // per-request data for onUploadComplete (the user, the tenant)
 };
 ```
 
 `keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` re-root **both** ends under the caller's prefix: a `from` that names another tenant's key just becomes a key inside the caller's own prefix, so neither end can reach outside the scope.
+
+Keys are checked after the prefix is applied: a `..` or `.` segment, a NUL byte, a leading `/` or `\`, or an empty key gets `422`, and a backslash counts as a path separator for the `..` check (the `fs` adapter on Windows would resolve `..\u2\secret.txt` into a sibling tenant).
+
+The storage prefixes that [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) keep their own objects under (`.versions`, `.trash`) are reserved: a key or a `list`/`search` prefix inside one gets `403`, so a client allowed to `delete` but not `purge` can't hard-delete `.trash/notes.txt` or forge a version. Use the plugin verbs (`versions`, `restoreVersion`, `trashed`, `restoreTrashed`, `purge`) instead; on a gateway whose `Files` lacks the plugin, those answer `422` `Unsupported` (reason `capability`). The check runs on the resolved key, so under a `keyPrefix` a tenant's own `users/u1/.trash/…` is an ordinary key.
 
 `maxExpiresIn` is the only expiry ceiling. The router's `defaultExpiresIn` is just what applies when the client doesn't ask, and a client may request a longer `expiresIn` for `url()` or an upload. Return `maxExpiresIn` to cap it. On an adapter that only has permanent links (Vercel Blob public, UploadThing `public-read`, …), a capped `url` can't be honored, so it fails with a `422` `Unsupported` error. In the default `"auto"` `downloadMode`, `download` proxies the bytes instead of redirecting.
 
@@ -116,4 +122,4 @@ The gateway reads no cookies except inside your `authorize` hook, so all authent
 
 ## What crosses the wire
 
-Errors are serialized to `{ error: { code, reason?, message } }` and the underlying `FilesError.cause` (provider request IDs, headers) is **never** included. The client rebuilds a `FilesError` from the envelope, so `try/catch` in the browser behaves like the SDK.
+Errors are serialized to `{ error: { code, reason?, message } }` and the underlying `FilesError.cause` (provider request IDs, headers) is **never** included. Provider messages are rewritten to name the key the client sent, so the `keyPrefix` never leaks. Anything thrown that isn't a `FilesError` or `RouterError` (a database error from your `authorize`, say) is answered with a generic `500` ("internal server error") and handed to the router's [`onError`](/docs/ui/server/gateway#options), which defaults to `console.error`. The client rebuilds a `FilesError` from the envelope, so `try/catch` in the browser behaves like the SDK.

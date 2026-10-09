@@ -131,7 +131,7 @@ Pass several keys to delete them in one fan-out; see [many keys at once](#many-k
 
 ### url
 
-Get a read URL for a key — presigned and short-lived on signing adapters, a public URL for CDN-backed providers. `--expires-in` sets the lifetime in seconds.
+Get a read URL for a key — presigned and short-lived on signing adapters, a public URL for CDN-backed providers. `--expires-in` sets the lifetime in seconds. On an adapter that can't sign (Vercel Blob public, UploadThing `public-read`, Convex, Appwrite, `fs`), `--expires-in` fails with `Unsupported` (exit 2) instead of returning a permanent link; leave it out to get that link.
 
 ```bash lineNumbers
 files --provider r2 --bucket uploads url reports/2026-q1.pdf --expires-in 600
@@ -161,12 +161,16 @@ files --provider r2 --bucket uploads capabilities
 
 ### events parse
 
-Print the [events](/docs/events) a bucket notification delivery normalizes to, as JSON: a webhook body, an SQS or Queue message, a Pub/Sub message, a whole Lambda event. Reads the file, or stdin when none is given. With `--format`, no provider is needed; otherwise the configured provider picks the format and `--key-prefix` maps keys the way the instance would.
+Print the [events](/docs/events) a bucket notification delivery normalizes to, as JSON: a webhook body, an SQS or Queue message, a Pub/Sub message, a whole Lambda event. Reads the file, or stdin when it's piped; with neither, it fails with `Invalid` instead of waiting on a terminal.
+
+A configured provider supplies the adapter, its format, and `--key-prefix` key mapping, the way the instance would, and with a configured bucket other buckets' events are dropped. `--format` overrides the provider's format (and, with no provider configured, is all you need). `--header "name: value"` (repeatable) passes delivery headers, for formats that read them: `--format appwrite` takes the event type from `X-Appwrite-Webhook-Events`.
 
 ```bash lineNumbers
 files events parse delivery.json --format s3
 aws sqs receive-message --queue-url "$QUEUE" | jq '.Messages[0].Body | fromjson' \
   | files events parse --format s3
+files events parse appwrite.json --format appwrite \
+  --header "X-Appwrite-Webhook-Events: buckets.uploads.files.abc.create"
 ```
 
 ### transfer

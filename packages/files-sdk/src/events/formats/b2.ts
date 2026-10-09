@@ -11,7 +11,7 @@ import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import { hmac, timingSafeEqual, toHex, utf8 } from "../crypto.js";
 import type { EventParser, RawEvent } from "./types.js";
-import { malformed, toSize, toTime, unauthorized } from "./types.js";
+import { malformed, stampOf, toSize, toTime, unauthorized } from "./types.js";
 
 const typeOf = (eventType: string): "created" | "deleted" | undefined => {
   if (eventType.startsWith("b2:ObjectCreated:")) {
@@ -45,15 +45,14 @@ const fromEvent = (event: JsonValue): RawEvent[] => {
   }
   // B2 reports 0 for a hide marker; on a delete, size isn't the caller's.
   const size = type === "created" ? toSize(event.objectSize) : undefined;
-  const time = toTime(event.eventTimestamp, Date.now());
   return [
     {
       id: isString(event.eventId)
         ? event.eventId
-        : `${eventType}:${objectName}@${time}`,
+        : `${eventType}:${objectName}@${stampOf(event, event.objectVersionId, event.eventTimestamp)}`,
       key: objectName,
       raw: event,
-      time,
+      time: toTime(event.eventTimestamp, Date.now()),
       type,
       ...(isString(event.bucketName) && { bucket: event.bucketName }),
       ...(size !== undefined && { size }),

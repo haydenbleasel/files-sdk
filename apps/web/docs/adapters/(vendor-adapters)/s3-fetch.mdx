@@ -68,7 +68,7 @@ Same coverage and limits as the R2 fetch client: `upload`, `download` (including
 - `ReadableStream` bodies are buffered in memory before a single PUT (a lone PUT needs a `Content-Length`, and single-request uploads cap at 5&nbsp;GB). Inside a Worker that buffering counts against the isolate's memory limit.
 - `multipart` and resumable (`control`) uploads throw instead of engaging the S3 multipart API.
 - Bulk deletes fan out as per-key `delete()` calls instead of batched `DeleteObjects` requests. On Workers each call is a subrequest, so chunk large bulk deletes to stay under the per-invocation subrequest cap.
-- `signedUploadUrl()` returns a presigned PUT; `maxSize` throws because enforcing it needs a presigned POST policy this engine doesn't implement. Enforce upload caps at your application gateway instead.
+- `signedUploadUrl()` returns a presigned PUT; `maxSize` and a positive `minSize` throw because enforcing either needs a presigned POST policy this engine doesn't implement. Enforce upload caps at your application gateway instead.
 - Keys containing `.` or `..` path segments are rejected - URL normalization would silently sign a request for a different key.
 - Byte-level `onProgress` reporting falls back to the SDK's generic reporting.
 - No provider-native [conditional operations](/docs/conditional-operations).
@@ -96,5 +96,5 @@ S3's own [limits](/docs/adapters/s3#limits) apply here too: presigned URLs live 
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ✅ |  |
-| `signedUploadUrl` | ⚠️ | PUT URL only - `maxSize` throws (no presigned POST policy). |
+| `signedUploadUrl` | ⚠️ | PUT URL only - `maxSize` and a positive `minSize` throw (no presigned POST policy). |
 | conditional operations | ❌ | Not advertised on this engine. |

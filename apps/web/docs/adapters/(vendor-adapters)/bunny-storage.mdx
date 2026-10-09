@@ -48,7 +48,7 @@ Keys with a `.` or `..` path segment (including the `%2e` spellings) are rejecte
 | --- | :-: | --- |
 | `upload` | ⚠️ | Custom `metadata` and `cacheControl` throw — the Bunny Storage TypeScript SDK exposes content-type/checksum but no arbitrary object metadata or per-object cache-control field. Configure cache behavior on the Pull Zone/CDN. Resumable uploads (`control`) are not supported — Bunny Storage uploads in a single PUT. |
 | `download` | ✅ |  |
-| `delete` | ✅ | Idempotent: a missing key is a no-op. The SDK reports a failed `DELETE` only as `false`, so the adapter probes the key: if it still exists (say, a read-only access key), the delete throws instead of reporting success. |
+| `delete` | ✅ | Idempotent: a missing key is a no-op. The SDK reports a failed `DELETE` only as `false`, so the adapter probes the key: if it still exists (say, a read-only access key), the delete throws `Unauthorized` instead of reporting success. |
 | `list` | ⚠️ | Bunny lists a directory, not a recursive object-prefix scan. The adapter chooses the nearest directory for `prefix`, filters that page client-side, and encodes numeric offsets as cursors after fetching the directory listing. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ✅ |  |

@@ -45,6 +45,11 @@ import { inferTypeFromName } from "../internal/mime.js";
 import { reportProgress } from "../internal/resumable.js";
 import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
+import {
+  assertHeaderSafeMetadata,
+  isAwsEndpoint,
+  isAwsHost,
+} from "./shared.js";
 
 /**
  * The subset of the `@aws-sdk/*` modules the S3 engine is built from. This
@@ -109,11 +114,14 @@ export interface S3AdapterOptions {
    * Whether to expose the native conditional primitives (`If-Match` /
    * `If-None-Match` create, replace, exact read, delete, and copy).
    *
-   * Defaults to `true` only when the client will talk to canonical AWS S3:
-   * no `endpoint` here and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`
-   * redirect in the environment. S3-compatible services differ in which
-   * conditional headers they honor, so the adapter fails closed for them
-   * rather than risk an unconditional overwrite.
+   * Defaults to `true` only when the client will talk to AWS S3: no
+   * `endpoint` here and no `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`
+   * redirect in the environment, or one whose hostname is `amazonaws.com` /
+   * `amazonaws.com.cn` (or a subdomain of either). S3-compatible services
+   * differ in which conditional headers they honor, so the adapter fails
+   * closed for them rather than risk an unconditional overwrite. The same
+   * test decides whether the adapter declares S3 event records
+   * (`capabilities.events`).
    *
    * A shared-config `endpoint_url` (profile- or service-level) is invisible
    * at construction, so it is caught at request time instead: a conditional
@@ -266,17 +274,6 @@ const CONDITIONAL_HEADERS: readonly (readonly [
   ["CopySourceIfMatch", "x-amz-copy-source-if-match"],
 ];
 
-// Canonical AWS S3 hostnames: the only backends known to honor every
-// conditional header. VPC / FIPS / dual-stack / GovCloud endpoints all live
-// under these suffixes; S3-compatible services never do.
-const AWS_HOST_SUFFIXES = ["amazonaws.com", "amazonaws.com.cn"];
-const isAwsHost = (hostname: string): boolean => {
-  const host = hostname.toLowerCase();
-  return AWS_HOST_SUFFIXES.some(
-    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
-  );
-};
-
 /**
  * Build-step middleware that keeps a conditional request from ever going out
  * without its predicate on the wire, and — unless the caller opted in with
@@ -323,6 +320,41 @@ const conditionalRequestGuard =
           "Unsupported",
           `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; conditional requests need 3.919.0 or newer`
         );
+      }
+    }
+    return next(args);
+  };
+
+// The headers the SDK's flexible-checksums middleware adds to a PutObject.
+const CHECKSUM_HEADER_PREFIX = "x-amz-checksum-";
+const CHECKSUM_ALGORITHM_HEADER = "x-amz-sdk-checksum-algorithm";
+
+/**
+ * Build-step middleware for a presigned PutObject that drops the request
+ * checksum headers. With the SDK's default `requestChecksumCalculation:
+ * "WHEN_SUPPORTED"` the client computes a CRC32 of the request body, which
+ * is empty when presigning, and the presigner hoists it into the URL
+ * (`x-amz-checksum-crc32=AAAAAA==`). S3 then checks every upload through the
+ * URL against the empty body's checksum and rejects real content. Registered
+ * at low priority on the one command, so it runs after the checksum
+ * middleware and leaves the client (and `files.raw`) untouched.
+ */
+const presignWithoutChecksum =
+  <Args extends { request: unknown }, Result>(
+    next: (args: Args) => Promise<Result>
+  ) =>
+  (args: Args): Promise<Result> => {
+    // SAFETY: registered at the `build` step, where `args.request` is the
+    // serialized HttpRequest; `headers` is read optionally all the same.
+    const { headers } = args.request as BuiltRequest;
+    for (const name of Object.keys(headers ?? {})) {
+      const lower = name.toLowerCase();
+      if (
+        lower.startsWith(CHECKSUM_HEADER_PREFIX) ||
+        lower === CHECKSUM_ALGORITHM_HEADER
+      ) {
+        // oxlint-disable-next-line typescript/no-dynamic-delete -- header names are dynamic by nature; this mutates the request built for this one presign
+        delete headers?.[name];
       }
     }
     return next(args);
@@ -498,7 +530,8 @@ const createS3ResumableDriver = (
   bucket: string,
   key: string,
   driverOpts: ResumableDriverOptions,
-  wrapErr: (cause: unknown) => FilesError
+  wrapErr: (cause: unknown) => FilesError,
+  providerLabel: string
 ): PartsResumableDriver => {
   const {
     AbortMultipartUploadCommand,
@@ -512,7 +545,12 @@ const createS3ResumableDriver = (
   let uploadId: string | undefined;
   const requireUploadId = (): string => {
     if (uploadId === undefined) {
-      throw new FilesError("Provider", "S3 resumable upload has no session.");
+      // Only reachable by driving the driver out of order (a part, probe, or
+      // complete before `begin` / `adopt`): a misuse, not a provider answer.
+      throw new FilesError(
+        "Invalid",
+        "S3 resumable upload has no session: call begin() or adopt() first."
+      );
     }
     return uploadId;
   };
@@ -534,6 +572,7 @@ const createS3ResumableDriver = (
       ({ partSize } = session);
     },
     async begin(meta): Promise<ResumableUploadSession> {
+      assertHeaderSafeMetadata(providerLabel, driverOpts.metadata);
       // Pinned in the token below, so a resume slices on the same boundaries.
       partSize = fitPartSizeToTotal(partSize, meta.total);
       try {
@@ -819,6 +858,19 @@ export const mapS3Error = (
   );
 };
 
+/**
+ * Whether the client will talk to AWS S3. The endpoint it uses is the
+ * explicit `endpoint`, else an `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`
+ * redirect (which `S3Client` honors on its own, in that order), else AWS
+ * itself. An explicit AWS endpoint (regional, VPC, FIPS, dual-stack) is still
+ * AWS, the same call `s3Fetch()` makes for its endpoint.
+ */
+const resolvesToAws = (endpoint: string | undefined): boolean => {
+  const resolved =
+    endpoint ?? readEnv("AWS_ENDPOINT_URL_S3") ?? readEnv("AWS_ENDPOINT_URL");
+  return resolved === undefined || isAwsEndpoint(resolved);
+};
+
 export const createS3Adapter = (
   sdk: S3Sdk,
   opts: S3AdapterOptions
@@ -1022,6 +1074,7 @@ export const createS3Adapter = (
     options?: AdapterUploadOptions
   ): Promise<ConditionalUploadResult> => {
     assertConditionalUploadOptions(options);
+    assertHeaderSafeMetadata(providerLabel, options?.metadata);
     const predicate =
       condition.type === "create"
         ? { IfNoneMatch: "*" }
@@ -1096,15 +1149,11 @@ export const createS3Adapter = (
     }
   };
 
-  // Canonical AWS only, unless the caller says otherwise: an explicit
-  // `endpoint` or an `AWS_ENDPOINT_URL*` redirect (which `S3Client` honors
-  // on its own) both point at a service whose conditional-header support is
+  // Canonical AWS only, unless the caller says otherwise: an endpoint that
+  // isn't an AWS host points at a service whose conditional-header support is
   // unknown, so the primitives stay off and every conditional call fails
   // closed before provider I/O.
-  const canonicalAws =
-    opts.endpoint === undefined &&
-    readEnv("AWS_ENDPOINT_URL_S3") === undefined &&
-    readEnv("AWS_ENDPOINT_URL") === undefined;
+  const canonicalAws = resolvesToAws(opts.endpoint);
   const nativeConditional = opts.conditional ?? canonicalAws;
   const conditional: S3Adapter["conditional"] = nativeConditional
     ? {
@@ -1177,8 +1226,8 @@ export const createS3Adapter = (
       serverSideCopy: true,
       // A `maxSize` switches `signedUploadUrl()` to a presigned POST whose
       // policy enforces `content-length-range` (and binds `Content-Type`); the
-      // presigned PUT signs `Content-Type` too and throws past SigV4's
-      // one-week ceiling.
+      // presigned PUT signs `Content-Type` too, and a positive `minSize`
+      // without `maxSize` throws. Both throw past SigV4's one-week ceiling.
       signedUpload: {
         contentType: true,
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
@@ -1374,10 +1423,28 @@ export const createS3Adapter = (
         bucket,
         key,
         resumableOpts,
-        wrapErr
+        wrapErr,
+        providerLabel
       );
     },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
+      // Both the presigned POST and the presigned PUT are SigV4, so both hit
+      // the one-week ceiling.
+      assertSigV4ExpiresIn(providerLabel, signOpts.expiresIn);
+      // A size floor rides on the POST policy's `content-length-range`, which
+      // only `maxSize` selects. A presigned PUT has no size condition at all,
+      // so a positive `minSize` on its own can't be enforced. (`0` asks for
+      // nothing, so it holds trivially.)
+      if (
+        signOpts.maxSize === undefined &&
+        signOpts.minSize !== undefined &&
+        signOpts.minSize > 0
+      ) {
+        throw new FilesError(
+          "Unsupported",
+          `${providerLabel}: \`minSize\` is enforced only by the presigned POST policy that \`maxSize\` selects; a presigned PUT has no size condition. Pass \`maxSize\` as well, or omit \`minSize\`.`
+        );
+      }
       try {
         if (signOpts.maxSize !== undefined) {
           const minSize = signOpts.minSize ?? 1;
@@ -1398,27 +1465,28 @@ export const createS3Adapter = (
           });
           return { fields: post.fields, method: "POST", url: post.url };
         }
-        assertSigV4ExpiresIn(providerLabel, signOpts.expiresIn);
+        const command = new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ...(signOpts.contentType && { ContentType: signOpts.contentType }),
+        });
+        command.middlewareStack.add(presignWithoutChecksum, {
+          name: "filesSdkPresignWithoutChecksum",
+          priority: "low",
+          step: "build",
+        });
         // The presigner always adds `content-type` to its unsignable set, so
         // without an override the URL is signed over `host` alone and the
         // Content-Type is advisory: a client could PUT any type. Opting it into
         // `signableHeaders` (which wins over the unsignable set in
         // `@smithy/signature-v4`) binds it, so a mismatched type gets a 403 —
         // matching the fetch engine, whose `allHeaders` signs it too.
-        const url = await getSignedUrl(
-          client,
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            ...(signOpts.contentType && { ContentType: signOpts.contentType }),
+        const url = await getSignedUrl(client, command, {
+          expiresIn: signOpts.expiresIn,
+          ...(signOpts.contentType && {
+            signableHeaders: new Set(["content-type"]),
           }),
-          {
-            expiresIn: signOpts.expiresIn,
-            ...(signOpts.contentType && {
-              signableHeaders: new Set(["content-type"]),
-            }),
-          }
-        );
+        });
         return {
           headers: signOpts.contentType
             ? { "Content-Type": signOpts.contentType }
@@ -1432,6 +1500,7 @@ export const createS3Adapter = (
     },
     async upload(key, body, options) {
       const { multipart, onProgress, signal } = options ?? {};
+      assertHeaderSafeMetadata(providerLabel, options?.metadata);
       const normalized = await normalizeBody(body, options?.contentType);
       const { data, contentType, contentLength } = normalized;
       const params = putParams(key, normalized, options);

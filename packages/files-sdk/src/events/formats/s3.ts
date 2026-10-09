@@ -8,6 +8,8 @@
 // - an SQS message (`{ Records: [{ eventSource: "aws:sqs", body }] }`, or one
 //   such record) whose `body` is the event, an SNS envelope around it
 //   (`{ Type: "Notification", Message }`), or an EventBridge event;
+// - a Lambda subscribed to an SNS topic (`{ Records: [{ EventSource:
+//   "aws:sns", Sns: { Type: "Notification", Message } }] }`);
 // - EventBridge's own shape (`{ source: "aws.s3", "detail-type", detail }`);
 // - a Google Pub/Sub message whose `data` is the event, base64-encoded (Storj
 //   delivers this way): pushed (`{ message, subscription }`), pulled
@@ -21,7 +23,14 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { Delivery, EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, pubsubText, toSize, toTime } from "./types.js";
+import {
+  bareEtag,
+  malformed,
+  pubsubText,
+  stampOf,
+  toSize,
+  toTime,
+} from "./types.js";
 
 const decodeKey = (key: string): string => {
   try {
@@ -92,17 +101,21 @@ const fromRecord = (record: JsonObject): RawEvent[] => {
   const etag = bareEtag(object.eTag);
   const size = toSize(object.size);
   const bucket = s3 && field(s3, "bucket");
-  const sequencer = isString(object.sequencer) ? object.sequencer : undefined;
+  const bucketName = bucket && isString(bucket.name) ? bucket.name : undefined;
   const versionId = isString(object.versionId) ? object.versionId : undefined;
-  const time = toTime(record.eventTime, Date.now());
+  // The sequencer orders every change to a key; without one (RustFS), the
+  // version, the event's own time and the ETag together tell changes apart.
+  const stamp = isString(object.sequencer)
+    ? stampOf(record, object.sequencer)
+    : stampOf(record, versionId, record.eventTime, etag);
   return [
     {
-      id: `${type}:${key}@${sequencer ?? versionId ?? etag ?? time}`,
+      id: `${type}:${bucketName === undefined ? "" : `${bucketName}/`}${key}@${stamp}`,
       key,
       raw: record,
-      time,
+      time: toTime(record.eventTime, Date.now()),
       type,
-      ...(bucket && isString(bucket.name) && { bucket: bucket.name }),
+      ...(bucketName !== undefined && { bucket: bucketName }),
       ...(etag !== undefined && { etag }),
       ...(size !== undefined && type === "created" && { size }),
       ...(versionId !== undefined && { versionId }),
@@ -139,16 +152,15 @@ const fromEventBridge = (event: JsonObject): RawEvent[] => {
   const etag = bareEtag(object.etag);
   const size = toSize(object.size);
   const versionId = object["version-id"];
-  const sequencer = isString(object.sequencer) ? object.sequencer : undefined;
-  const time = toTime(event.time, Date.now());
+  const stamp = isString(object.sequencer)
+    ? stampOf(event, object.sequencer)
+    : stampOf(event, versionId, event.time, etag);
   return [
     {
-      id: isString(event.id)
-        ? event.id
-        : `${type}:${object.key}@${sequencer ?? time}`,
+      id: isString(event.id) ? event.id : `${type}:${object.key}@${stamp}`,
       key: object.key,
       raw: event,
-      time,
+      time: toTime(event.time, Date.now()),
       type,
       ...(bucket && isString(bucket.name) && { bucket: bucket.name }),
       ...(etag !== undefined && { etag }),
@@ -160,10 +172,19 @@ const fromEventBridge = (event: JsonObject): RawEvent[] => {
 
 /**
  * What an envelope carries, or `undefined` when `value` isn't one: an SNS
- * notification (SNS → SQS with raw delivery off), an SQS record, or a Google
- * Pub/Sub message (Storj), pushed, pulled, or from the Node client.
+ * notification (SNS → SQS with raw delivery off, or SNS → HTTPS), a Lambda's
+ * SNS record, an SQS record, or a Google Pub/Sub message (Storj), pushed,
+ * pulled, or from the Node client.
  */
 const unwrap = (value: JsonObject): JsonValue[] | undefined => {
+  // A Lambda subscribed to the SNS topic gets `{ Records: [{ EventSource:
+  // "aws:sns", Sns }] }`; `Sns` is the notification, as over HTTPS.
+  if (value.EventSource === "aws:sns") {
+    if (!isJsonObject(value.Sns)) {
+      throw malformed("s3", "SNS record without an Sns notification");
+    }
+    return [value.Sns];
+  }
   if (isString(value.Type) && "TopicArn" in value) {
     return value.Type === "Notification" && isString(value.Message)
       ? [decodeJson(value.Message)]

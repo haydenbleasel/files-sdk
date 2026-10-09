@@ -77,3 +77,26 @@ export const timingSafeEqual = (a: string, b: string): boolean => {
   }
   return diff === 0;
 };
+
+/* oxlint-disable no-bitwise -- a non-cryptographic string hash is defined in terms of 32-bit integer mixing */
+const hex32 = (n: number): string => (n >>> 0).toString(16).padStart(8, "0");
+
+/**
+ * A fast, stable 64-bit hash of `text` (two cyrb53-style lanes over its UTF-8
+ * bytes), as 16 hex digits. For idempotency keys, not for security: a
+ * redelivery of the same text hashes the same.
+ */
+export const stableHash = (text: string): string => {
+  let h1 = 0xde_ad_be_ef;
+  let h2 = 0x41_c6_ce_57;
+  for (const byte of utf8(text)) {
+    h1 = Math.imul(h1 ^ byte, 2_654_435_761);
+    h2 = Math.imul(h2 ^ byte, 1_597_334_677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2_246_822_507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3_266_489_909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2_246_822_507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3_266_489_909);
+  return `${hex32(h2)}${hex32(h1)}`;
+};
+/* oxlint-enable no-bitwise */

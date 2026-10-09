@@ -68,4 +68,11 @@ subscription.on("message", async (message) => {
 
 One storage change can arrive as several Pub/Sub messages with different message ids, so `event.id` is built from the bucket, object, generation and event type instead. `versionId` is the generation.
 
-Eventarc's `archived` events can't tell an overwrite from a delete, so they're skipped; on a versioned bucket, use Pub/Sub notifications.
+## Eventarc and overwrites
+
+Eventarc CloudEvents don't carry `overwrittenByGeneration`, so they can't tell an overwrite from a delete:
+
+- **Without Object Versioning**, GCS sends `object.v1.deleted` for the replaced generation every time an object is [overwritten](https://docs.cloud.google.com/storage/docs/pubsub-notifications). It arrives as a `deleted` for a key that still exists, and it can land after the new object's `created`.
+- **With Object Versioning**, an overwrite or a delete sends `object.v1.archived` for the old generation, so `archived` events are skipped.
+
+When that matters, use Pub/Sub notifications, which mark an overwrite with `overwrittenByGeneration` so it's skipped. On Eventarc, check [`files.exists(event.key)`](/docs/api/exists) before acting on a `deleted`.

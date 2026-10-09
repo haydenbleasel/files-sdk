@@ -23,7 +23,7 @@ const files = new Files({
 
 ## Identifying the call
 
-`type` is the method name - `"upload"`, `"download"`, `"copy"`, and so on. Which key field is set depends on the shape of that call:
+`type` is the method name: `"upload"`, `"download"`, `"head"`, `"exists"`, `"delete"`, `"copy"`, `"move"`, `"list"`, `"url"`, `"signedUploadUrl"`, or `"abortUpload"`. `abortUpload()` fires the hooks like the other write verbs (including `onRetry` for a retried discard), but it isn't a plugin operation, so plugin `wrap`s don't see it. Which key field is set depends on the shape of that call:
 
 - **Single-key calls** (`upload(key, …)`, `download(key)`, `delete(key)`, …) set `key`.
 - **Array calls** (`upload([…])`, `delete([…])`, …) set `keys` and fire one event for the whole batch - the per-item failures live in `result.errors`, not here.

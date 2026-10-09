@@ -433,16 +433,12 @@ describe("google-drive adapter", () => {
     // `{ a: "1" }` then `{ b: "2" }` reads back as `{ a: "1", b: "2" }`
     // while every other adapter yields `{ b: "2" }`.
     const files = new Files({ adapter: googleDrive(baseOpts) });
-    await files.upload("a.txt", "v1", {
-      cacheControl: "max-age=60",
-      metadata: { a: "1" },
-    });
+    await files.upload("a.txt", "v1", { metadata: { a: "1" } });
     await files.upload("a.txt", "v2", { metadata: { b: "2" } });
     const args = filesUpdateMock.mock.calls.at(-1)?.[0] as {
       requestBody: { appProperties: Record<string, string | null> };
     };
     expect(args.requestBody.appProperties.a).toBeNull();
-    expect(args.requestBody.appProperties.fsdkCacheControl).toBeNull();
     expect(args.requestBody.appProperties.b).toBe("2");
     expect(args.requestBody.appProperties.fsdkKey).toBe("a.txt");
     const meta = await files.head("a.txt");
@@ -867,7 +863,6 @@ describe("google-drive adapter", () => {
   test("signedUploadUrl on an existing key clears the previous upload's appProperties", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("a.txt", "old", {
-      cacheControl: "max-age=60",
       contentType: "text/html",
       metadata: { owner: "u1" },
     });
@@ -889,7 +884,6 @@ describe("google-drive adapter", () => {
     }) as typeof fetch;
     await files.signedUploadUrl("a.txt", { expiresIn: 3600 });
     expect(body?.appProperties).toEqual({
-      fsdkCacheControl: null,
       fsdkContentType: null,
       fsdkKey: "a.txt",
       owner: null,
@@ -967,15 +961,17 @@ describe("google-drive adapter", () => {
 
   test("declares its capabilities", () => {
     const caps = new Files({ adapter: googleDrive(baseOpts) }).capabilities;
-    expect(caps.cacheControl).toBe(true);
+    // Drive never serves a stored Cache-Control, so it isn't claimed.
+    expect(caps.cacheControl).toBe(false);
     expect(caps.delimiter).toBe("any");
     expect(caps.metadata).toBe(true);
     expect(caps.rangeRead).toBe(true);
     expect(caps.resumable).toBe(true);
     expect(caps.serverSideCopy).toBe(true);
-    // A resumable upload session enforces no size limit.
+    // A resumable upload session enforces no size limit, and binds the
+    // content type given at initiation.
     expect(caps.signedUpload).toEqual({
-      contentType: false,
+      contentType: true,
       maxSize: false,
       supported: true,
     });
@@ -1006,6 +1002,32 @@ describe("google-drive adapter", () => {
       code: "Unsupported",
       message: expect.stringMatching(/expiresIn/u),
     });
+  });
+
+  test("upload refuses cacheControl before any Drive call", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.upload("a.txt", "v1", { cacheControl: "max-age=60" })
+    ).rejects.toMatchObject({ code: "Unsupported" });
+    expect(filesCreateMock).not.toHaveBeenCalled();
+    expect(filesListMock).not.toHaveBeenCalled();
+  });
+
+  test("the `client` escape hatch has no resumable uploads to offer", async () => {
+    const files = new Files({
+      adapter: googleDrive({
+        client: fakeDriveClient as never,
+        rootFolderId: "rootX",
+      }),
+    });
+    expect(files.capabilities.resumable).toBe(false);
+    await expect(
+      files.upload("a.txt", "hello", { control: new UploadControl() })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/resumable/u),
+    });
+    expect(filesListMock).not.toHaveBeenCalled();
   });
 
   test("signedUpload is unsupported when built from the `client` escape hatch", () => {

@@ -5,15 +5,17 @@
 // the minting endpoint (path + query) so the server stays stateless and the
 // client can't forge, relax, or redeem it anywhere else.
 
+import pMap from "p-map";
+
 import type { Files, SignedUpload, UploadResult } from "../../index.js";
 import { FilesError } from "../errors.js";
 import { eventSinkOf, gatewayUploadEvent } from "../events.js";
-import { RouterError } from "../router-core/envelope.js";
+import { RouterError, redactKeys } from "../router-core/envelope.js";
 import type { TokenPayload } from "../router-core/sign-token.js";
 import { signToken, verifyToken } from "../router-core/sign-token.js";
 import type { ResultModel } from "../router-core/web.js";
 import type { Scope } from "./authorize.js";
-import { assertSafeKey } from "./keys.js";
+import { outsideScope, scopeKey } from "./keys.js";
 import type {
   ClientFileInfo,
   ExplicitUploadResponse,
@@ -38,6 +40,19 @@ export interface UploadConfig {
   files: Files;
   secret: string;
   defaultExpiresIn: number;
+  /**
+   * How long after an upload token expires `complete` still redeems it, ms.
+   * The token gates when the bytes may *start* landing; a large body can
+   * finish after that, and the client completes only once it has.
+   */
+  completeGraceMs: number;
+  /** Most presign targets signed at once. */
+  maxConcurrency: number;
+  /** Key prefixes plugins reserve on `files` — never minted into. */
+  reserved: readonly string[];
+  /** The router's `onError`, for failures whose message can't reach the client. */
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- takes any thrown value
+  reportError: (error: unknown) => void;
   maxUploadSize?: number;
   proxyUrl: (token: string) => string;
   /** The request's canonical non-routing query — see {@link boundQuery}. */
@@ -93,9 +108,13 @@ type Redeemed =
   | { ok: false; message: string };
 
 // Verify `token` and its endpoint binding: the payload this request may act
-// on, or why it may not.
-const redeem = async (token: string, cfg: UploadConfig): Promise<Redeemed> => {
-  const verified = await verifyToken(token, cfg.secret, cfg.now());
+// on, or why it may not. `graceMs` extends the expiry (for `complete` only).
+const redeem = async (
+  token: string,
+  cfg: UploadConfig,
+  graceMs = 0
+): Promise<Redeemed> => {
+  const verified = await verifyToken(token, cfg.secret, cfg.now(), graceMs);
   if (!verified.ok) {
     return { message: `upload token ${verified.failure}`, ok: false };
   }
@@ -112,11 +131,8 @@ const extFromName = (name: string): string => {
   return /^\.[a-z0-9]+$/iu.test(ext) ? ext.toLowerCase() : "";
 };
 
-const mintKey = (prefix: string, name: string): string => {
-  const key = `${prefix}${crypto.randomUUID()}${extFromName(name)}`;
-  assertSafeKey(key);
-  return key;
-};
+const mintKey = (cfg: UploadConfig, prefix: string, name: string): string =>
+  scopeKey(prefix, `${crypto.randomUUID()}${extFromName(name)}`, cfg.reserved);
 
 const clampExpiry = (base: number, ...caps: (number | undefined)[]): number => {
   let value = base;
@@ -191,11 +207,13 @@ export const handlePresign = async (
     throw new RouterError("Validation", "upload exceeds maxUploadSize", "size");
   }
   const { signedUpload } = cfg.files.capabilities;
-  const expires = clampExpiry(
+  // The proxy PUT is the gateway's own, so only `authorize` caps its token;
+  // the adapter's signing limit applies to the storage-signed target alone.
+  const proxyExpires = clampExpiry(
     requestedExpiresIn ?? cfg.defaultExpiresIn,
-    scope.maxExpiresIn,
-    signedUpload.maxExpiresIn
+    scope.maxExpiresIn
   );
+  const signedExpires = clampExpiry(proxyExpires, signedUpload.maxExpiresIn);
   // Presign only when the adapter can bind everything this upload carries: a
   // `maxUploadSize` it can't enforce, or a content type it can't sign, would
   // be refused — so those go through the proxy, which enforces both itself.
@@ -216,7 +234,7 @@ export const handlePresign = async (
     try {
       return await cfg.files.signedUploadUrl(key, {
         contentType: file.type || undefined,
-        expiresIn: expires,
+        expiresIn: signedExpires,
         minSize: 0,
         signal: cfg.signal,
         ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
@@ -235,8 +253,9 @@ export const handlePresign = async (
   };
 
   const presignOne = async (file: ClientFileInfo): Promise<PresignedUpload> => {
-    const key = mintKey(scope.prefix, file.name);
+    const key = mintKey(cfg, scope.prefix, file.name);
     const signed = await signedTarget(key, file);
+    const expires = signed === undefined ? proxyExpires : signedExpires;
     const id = await signToken(
       {
         contentType: file.type || undefined,
@@ -257,7 +276,10 @@ export const handlePresign = async (
     };
   };
 
-  const uploads = await Promise.all(files.map(presignOne));
+  // One signing call per file, bounded like the bulk verbs' fan-out.
+  const uploads = await pMap(files, presignOne, {
+    concurrency: Math.max(1, cfg.maxConcurrency),
+  });
   return { body: { uploads }, kind: "json", status: 200 };
 };
 
@@ -267,6 +289,21 @@ const unauthorizedEntry = (message: string, key: string): WireBulkError => ({
   error: { aborted: false, code: "Unauthorized", message, timedOut: false },
   key,
 });
+
+// `authorize`'s `filterKeys` hides this key from the caller.
+const filteredEntry = (key: string): WireBulkError => {
+  const refusal = outsideScope();
+  return {
+    error: {
+      aborted: false,
+      code: refusal.code,
+      message: refusal.message,
+      timedOut: false,
+      ...(refusal.reason && { reason: refusal.reason }),
+    },
+    key,
+  };
+};
 
 const withData = (file: WireFileInfo, data: UploadData): WireUploadedFile =>
   data === undefined ? file : { ...file, data };
@@ -380,7 +417,7 @@ const completeOne = async (
   scope: Scope,
   unscope: (key: string) => string
 ): Promise<CompletionOutcome> => {
-  const verified = await redeem(completion.id, cfg);
+  const verified = await redeem(completion.id, cfg, cfg.completeGraceMs);
   if (!verified.ok) {
     return {
       error: unauthorizedEntry(verified.message, completion.key),
@@ -397,8 +434,15 @@ const completeOne = async (
       ok: false,
     };
   }
+  if (scope.filterKeys && !scope.filterKeys(unscope(key))) {
+    return { error: filteredEntry(completion.key), ok: false };
+  }
   const store = cfg.lifecycle?.completions;
   const uploadId = await uploadIdFor(completion.id);
+  // A failed removal's provider message names the storage key; the client
+  // hears its own.
+  const redact = (message: string): string =>
+    redactKeys(message, new Map([[key, unscope(key)]]));
   try {
     // A replayed `complete` for an upload this store already settled gets the
     // recorded answer; the hook does not fire twice.
@@ -420,8 +464,11 @@ const completeOne = async (
         error: {
           error: {
             aborted: false,
-            code: "Provider",
-            message: `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}${removal}`,
+            code: "Validation",
+            message: redact(
+              `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}${removal}`
+            ),
+            reason: "size",
             timedOut: false,
           },
           key: unscope(key),
@@ -436,24 +483,37 @@ const completeOne = async (
       wire: fileInfoToWire(meta, unscope),
     });
     if (!settled.ok) {
-      const error = rejectionToWire(settled.cause);
+      const error = rejectionToWire(settled.cause, cfg.reportError);
       return {
         error: {
-          error: { ...error, message: `${error.message}${settled.removal}` },
+          error: {
+            ...error,
+            message: `${error.message}${redact(settled.removal)}`,
+          },
           key: unscope(key),
         },
         ok: false,
       };
     }
+    // Remember it for as long as `complete` would still redeem the token.
     await store?.set(
       uploadId,
       { file: settled.file },
-      Math.max(0, exp - cfg.now())
+      Math.max(0, exp + cfg.completeGraceMs - cfg.now())
     );
     return settled;
   } catch (error) {
+    // A `FilesError` (the `head`) is reported like any bulk failure; anything
+    // else came from the app's `completions` store, and its message stays on
+    // the server.
     return {
-      error: bulkErrorToWire(FilesError.wrap(error), key, unscope),
+      error:
+        error instanceof FilesError
+          ? bulkErrorToWire(error, key, unscope)
+          : {
+              error: rejectionToWire(error, cfg.reportError),
+              key: unscope(key),
+            },
       ok: false,
     };
   }
@@ -498,10 +558,28 @@ export const handleProxyUpload = async (
   if (!verified.ok) {
     throw new RouterError("Unauthorized", verified.message);
   }
+  const { key, maxSize, contentType, via } = verified.payload;
+  // A token minted for a storage-signed target redeems at storage, never
+  // here: its bytes must arrive the way `presign` decided (and the way
+  // `onUploadComplete` will be told they did).
+  if (via !== "proxy") {
+    throw new RouterError(
+      "Unauthorized",
+      "upload token was not issued for the proxy"
+    );
+  }
+  // Once `complete` has accepted the upload, the token's job is done: a
+  // second PUT would replace the bytes the hook already approved (and a
+  // replayed `complete` would answer with the stale record). Only a
+  // `completions` store can tell — without one the token stays writable until
+  // it expires, like a presigned URL.
+  const store = cfg.lifecycle?.completions;
+  if (store && (await store.get(await uploadIdFor(token)))) {
+    throw new RouterError("Conflict", "upload was already completed");
+  }
   if (!body) {
     throw new RouterError("Validation", "missing request body");
   }
-  const { key, maxSize, contentType } = verified.payload;
   if (
     maxSize !== undefined &&
     contentLength !== undefined &&

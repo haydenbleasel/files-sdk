@@ -9,6 +9,7 @@ import type {
   FileInfo,
   ListResult,
   OffsetResumableDriver,
+  ResumableDriverOptions,
   ResumableUploadSession,
   SignedUpload,
   StoredFile,
@@ -23,10 +24,13 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
-import { isNumber, isObject, isString } from "../internal/is.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
-import { statusError } from "../internal/resumable-offset-http.js";
+import {
+  assertSessionDiscarded,
+  statusError,
+} from "../internal/resumable-offset-http.js";
 import { sameOriginSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -387,12 +391,17 @@ const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
 
 const b64 = (value: string): string => Buffer.from(value).toString("base64");
 
+interface TusConfig {
+  endpoint: string;
+  key: string;
+}
+
 // Resolve the resumable (TUS) endpoint + key the same way `buildClient`
 // resolves the storage URL. Returns `undefined` when only a pre-built `client`
 // was supplied (no URL/key to reach the upload endpoint with).
 const resolveTusConfig = (
   opts: SupabaseAdapterOptions
-): { endpoint: string; key: string } | undefined => {
+): TusConfig | undefined => {
   if (opts.client) {
     return;
   }
@@ -485,19 +494,252 @@ const stringifyMetadata = (
 const blobToUint8 = async (blob: Blob): Promise<Uint8Array> =>
   new Uint8Array(await blob.arrayBuffer());
 
-const safeInfo = async (
-  bucketRef: ReturnType<StorageClient["from"]>,
-  key: string
-): Promise<SupabaseInfoLike | undefined> => {
-  try {
-    const { data, error } = await bucketRef.info(key);
-    if (error || !data) {
-      return;
-    }
-    return data;
-  } catch {
-    // info() may not be supported on older Supabase deployments.
+type StorageFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The parts of a storage-js `StorageFileApi` needed to call the object-info
+ * endpoint directly: its storage base URL, default headers, and fetch. The
+ * fetch matters — supabase-js passes a wrapper that injects the signed-in
+ * user's JWT, so going around it would drop the caller's auth.
+ */
+interface StorageRequestContext {
+  fetch: StorageFetch;
+  headers: Record<string, string>;
+  url: string;
+}
+
+/**
+ * Read the request context off a bucket client. The fields are `protected`
+ * in storage-js's types but always present at runtime on a real
+ * `StorageFileApi`; a duck-typed stand-in may lack them, so they're probed.
+ */
+const requestContextOf = (
+  bucketRef: ReturnType<StorageClient["from"]>
+): StorageRequestContext | undefined => {
+  // Widened so the `protected` fields can be probed by name.
+  const ref: object = bucketRef;
+  if (!("url" in ref && "headers" in ref && "fetch" in ref)) {
+    return;
   }
+  const { url, headers, fetch: fetcher } = ref;
+  if (!(isString(url) && isObject(headers) && isFunction(fetcher))) {
+    return;
+  }
+  const stringHeaders: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (isString(value)) {
+      stringHeaders[name] = value;
+    }
+  }
+  return {
+    // SAFETY: storage-js types `BaseApiClient#fetch` as its `Fetch`
+    // (`typeof fetch`), built by `resolveFetch` as an arrow wrapper, so it
+    // takes a URL string + RequestInit and needs no `this`.
+    fetch: fetcher as StorageFetch,
+    headers: stringHeaders,
+    url,
+  };
+};
+
+/** A response's JSON body, or `undefined` when it isn't JSON. */
+const readJson = async (res: Response): Promise<JsonValue | undefined> => {
+  try {
+    const parsed: JsonValue = await res.json();
+    return parsed;
+  } catch {
+    // An error page or empty body: classified by its HTTP status alone.
+  }
+};
+
+/** Map the object-info endpoint's snake_case body onto {@link SupabaseInfoLike}. */
+const fromRawInfo = (body: JsonValue | undefined): SupabaseInfoLike => {
+  if (!isJsonObject(body)) {
+    return {};
+  }
+  const { size } = body;
+  const contentType = body["content_type"];
+  const { etag } = body;
+  const lastModified = body["last_modified"] ?? body["updated_at"];
+  const { metadata } = body;
+  return {
+    ...(isNumber(size) && { size }),
+    ...(isString(contentType) && { contentType }),
+    ...(isString(etag) && { etag }),
+    ...((isString(lastModified) || isNumber(lastModified)) && {
+      lastModified,
+    }),
+    ...(isJsonObject(metadata) && { metadata }),
+  };
+};
+
+/** Percent-encode each path segment, as storage-js does for signed URLs. */
+const encodeObjectPath = (key: string): string =>
+  key.replace(/^\/+/u, "").split("/").map(encodeURIComponent).join("/");
+
+/**
+ * Supabase's TUS endpoint as an offset-mode resumable driver. Only attached
+ * when the adapter resolved a project URL + key to reach `/upload/resumable`
+ * with — a pre-built `client` carries neither.
+ */
+const tusDriver = (
+  tus: TusConfig,
+  bucket: string,
+  key: string,
+  resumableOpts: ResumableDriverOptions
+): OffsetResumableDriver => {
+  // Supabase's TUS endpoint reads `cacheControl` as seconds and user
+  // metadata as a JSON string under `metadata` (its `user_metadata`).
+  // Validate the cache-control mapping up front, before any request.
+  const cacheSeconds =
+    resumableOpts.cacheControl === undefined
+      ? undefined
+      : cacheControlSeconds(resumableOpts.cacheControl);
+  const extraMetadata = [
+    ...(cacheSeconds === undefined
+      ? []
+      : [`cacheControl ${b64(cacheSeconds)}`]),
+    ...(resumableOpts.metadata
+      ? [`metadata ${b64(JSON.stringify(resumableOpts.metadata))}`]
+      : []),
+  ];
+  let uri: string | undefined;
+  let contentType = DEFAULT_CONTENT_TYPE;
+  let lastOffset = 0;
+  const requireUri = () => {
+    if (!uri) {
+      throw new FilesError(
+        "Invalid",
+        "supabase: resumable upload has no session."
+      );
+    }
+    return uri;
+  };
+  const authHeaders = () => ({
+    Authorization: `Bearer ${tus.key}`,
+    "Tus-Resumable": "1.0.0",
+    apikey: tus.key,
+  });
+  return {
+    adopt(session: ResumableUploadSession) {
+      if (session.provider !== "supabase") {
+        throw new FilesError(
+          "Invalid",
+          `Cannot resume a ${session.provider} session on a supabase adapter.`
+        );
+      }
+      if (session.key !== key) {
+        throw new FilesError(
+          "Invalid",
+          "Resume token does not match this upload's key."
+        );
+      }
+      uri = sameOriginSessionUrl(
+        session.uri,
+        tus.endpoint,
+        "supabase resumable session URL"
+      );
+      ({ contentType } = session);
+    },
+    async begin(meta): Promise<ResumableUploadSession> {
+      ({ contentType } = meta);
+      const { endpoint } = tus;
+      const res = await fetch(endpoint, {
+        headers: {
+          ...authHeaders(),
+          "Upload-Length": String(meta.total),
+          "Upload-Metadata": [
+            `bucketName ${b64(bucket)}`,
+            `objectName ${b64(key)}`,
+            `contentType ${b64(meta.contentType)}`,
+            ...extraMetadata,
+          ].join(","),
+          "x-upsert": "true",
+        },
+        method: "POST",
+      });
+      if (res.status !== 201) {
+        throw statusError(
+          res.status,
+          "supabase: resumable session init failed"
+        );
+      }
+      const location = res.headers.get("location");
+      if (!location) {
+        throw new FilesError(
+          "Provider",
+          "supabase: resumable session response missing Location header"
+        );
+      }
+      uri = sameOriginSessionUrl(
+        location,
+        endpoint,
+        "supabase resumable session URL"
+      );
+      return { contentType, key, provider: "supabase", uri };
+    },
+    complete(): Promise<UploadResult> {
+      return Promise.resolve({ contentType, key, size: lastOffset });
+    },
+    async discard() {
+      if (!uri) {
+        return;
+      }
+      try {
+        const res = await fetch(uri, {
+          headers: authHeaders(),
+          method: "DELETE",
+        });
+        // A refused or failed cancel leaves the session live, so it throws
+        // (401/403 Unauthorized, 5xx retryable); 404/410 mean it's gone.
+        assertSessionDiscarded(res, "supabase: upload session cancel failed");
+      } catch (error) {
+        throw mapSupabaseError(error);
+      }
+    },
+    mode: "offset",
+    // Supabase's TUS endpoint requires exactly 6 MiB chunks ("must be set
+    // to 6MB, do not change it"), so a caller's `multipart.partSize` is
+    // rounded to that one valid size rather than forwarded.
+    partSize: TUS_CHUNK_SIZE,
+    async probe(): Promise<{ nextOffset: number }> {
+      const res = await fetch(requireUri(), {
+        headers: authHeaders(),
+        method: "HEAD",
+      });
+      if (!res.ok) {
+        // An expired or terminated TUS upload answers 404/410 (NotFound).
+        throw statusError(res.status, "supabase: resume status check failed");
+      }
+      lastOffset = Number(res.headers.get("upload-offset") ?? 0);
+      return { nextOffset: lastOffset };
+    },
+    async uploadAt({ offset, data, signal }): Promise<{ nextOffset: number }> {
+      // SAFETY: `BodyInit` pins the view to `ArrayBuffer` backing (TS 5.7
+      // widened typed arrays to `ArrayBufferLike`); the orchestrator
+      // slices each chunk from the upload body into a fresh view, never
+      // shared memory.
+      const chunk = data as BodyInit;
+      const res = await fetch(requireUri(), {
+        body: chunk,
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/offset+octet-stream",
+          "Upload-Offset": String(offset),
+        },
+        method: "PATCH",
+        ...(signal && { signal }),
+      });
+      if (!res.ok) {
+        // A TUS offset mismatch answers 409 (Conflict): re-sending the
+        // same chunk can only fail the same way, so it isn't retried.
+        throw statusError(res.status, "supabase: chunk upload failed");
+      }
+      lastOffset = Number(
+        res.headers.get("upload-offset") ?? offset + data.byteLength
+      );
+      return { nextOffset: lastOffset };
+    },
+  };
 };
 
 export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
@@ -510,26 +752,116 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
   }
   const client = buildClient(opts);
   const bucketRef = client.from(bucket);
+  const requestContext = requestContextOf(bucketRef);
+  const tus = resolveTusConfig(opts);
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+
+  /**
+   * Fetch an object's info (size, type, etag, last-modified, user metadata).
+   * storage-js's `info()` runs the response through `recursiveToCamel`,
+   * which rewrites every nested key — user metadata included — so
+   * `fsenc_dek_iv` came back as `fsencDekIv` and the encryption, compression,
+   * and dedup plugins couldn't find their fields. Call the same
+   * `/object/info/{bucket}/{key}` endpoint directly, through the client's own
+   * URL, headers, and fetch, so keys come back exactly as stored.
+   */
+  const objectInfo = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<SupabaseInfoLike> => {
+    if (!requestContext) {
+      // A stand-in client without storage-js internals: only `info()` is
+      // reachable.
+      const { data, error } = await bucketRef.info(key);
+      if (error) {
+        throw mapSupabaseError(error);
+      }
+      return data;
+    }
+    try {
+      const res = await requestContext.fetch(
+        `${requestContext.url}/object/info/${encodeURIComponent(bucket)}/${encodeObjectPath(key)}`,
+        {
+          headers: requestContext.headers,
+          method: "GET",
+          ...(signal && { signal }),
+        }
+      );
+      const body = await readJson(res);
+      if (!res.ok) {
+        // Same shape storage-js turns into a `StorageApiError`: the HTTP
+        // status plus the body's `statusCode` / `code` / `error` / `message`.
+        throw mapSupabaseError({
+          ...(isJsonObject(body) && body),
+          status: res.status,
+        });
+      }
+      return fromRawInfo(body);
+    } catch (error) {
+      throw mapSupabaseError(error);
+    }
+  };
+
+  /**
+   * Object info for a download, settled rather than thrown so it can run
+   * alongside the body request. The body is already in hand, so a NotFound
+   * (the object was deleted between the two requests, or a self-hosted
+   * deployment predates the info endpoint) degrades to a file without
+   * metadata. Any other failure is kept to throw: returning the body without
+   * its metadata would hand the encryption plugin ciphertext it can't
+   * recognise.
+   */
+  const settledDownloadInfo = async (
+    key: string,
+    signal: AbortSignal | undefined
+  ): Promise<
+    { meta: SupabaseInfoLike | undefined } | { error: FilesError }
+  > => {
+    try {
+      return { meta: await objectInfo(key, signal) };
+    } catch (error) {
+      const mapped = mapSupabaseError(error);
+      return mapped.code === "NotFound"
+        ? { meta: undefined }
+        : { error: mapped };
+    }
+  };
+
+  /**
+   * Fetch the body and its info concurrently. The body's error wins: a
+   * missing object reports the download's NotFound, not the info lookup's.
+   */
+  const withInfo = async <T>(
+    key: string,
+    signal: AbortSignal | undefined,
+    fetchBody: () => Promise<T>
+  ): Promise<{ body: T; meta: SupabaseInfoLike | undefined }> => {
+    const pending = settledDownloadInfo(key, signal);
+    const body = await fetchBody();
+    const settled = await pending;
+    if ("error" in settled) {
+      throw settled.error;
+    }
+    return { body, meta: settled.meta };
+  };
 
   const downloadAsStreamFile = async (
     key: string,
     signal?: AbortSignal
   ): Promise<StoredFile> => {
-    const { data, error } = await bucketRef
-      .download(key, undefined, fetchParams(signal))
-      .asStream();
-    if (error) {
-      throw mapSupabaseError(error);
-    }
-    const stream: ReadableStream<Uint8Array> = data;
-    // Supabase's stream download doesn't surface metadata alongside
-    // the body. Issue an `info()` call for size/type/etag so the
-    // returned StoredFile is usable. info() may not be supported on
-    // older Supabase deployments; in that case we fall back to zero
-    // size and the stream's content-type.
-    const meta = await safeInfo(bucketRef, key);
+    // Supabase's download response carries no user metadata, so the info
+    // endpoint supplies size/type/etag/metadata alongside the body.
+    const { body: stream, meta } = await withInfo(key, signal, async () => {
+      const { data, error } = await bucketRef
+        .download(key, undefined, fetchParams(signal))
+        .asStream();
+      if (error) {
+        throw mapSupabaseError(error);
+      }
+      const body: ReadableStream<Uint8Array> = data;
+      return body;
+    });
     return createStoredFile(
       {
         contentType: meta?.contentType ?? DEFAULT_CONTENT_TYPE,
@@ -554,29 +886,27 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     key: string,
     signal?: AbortSignal
   ): Promise<StoredFile> => {
-    const { data, error } = await bucketRef.download(
-      key,
-      undefined,
-      fetchParams(signal)
-    );
-    if (error) {
-      throw mapSupabaseError(error);
-    }
-    const blob = data;
+    // The download response carries no user metadata (nor, reliably, an
+    // etag), so the info endpoint is always consulted alongside it.
+    const { body: blob, meta } = await withInfo(key, signal, async () => {
+      const { data, error } = await bucketRef.download(
+        key,
+        undefined,
+        fetchParams(signal)
+      );
+      if (error) {
+        throw mapSupabaseError(error);
+      }
+      const body: Blob = data;
+      return body;
+    });
     const bytes = await blobToUint8(blob);
-    // Blob.type may be empty when Supabase doesn't echo a Content-Type;
-    // fall back to info() in that case so callers get a useful type.
-    let { type } = blob;
-    let etag: string | undefined;
-    let lastModified: number | undefined;
-    let metadata: Record<string, string> | undefined;
-    if (!type) {
-      const meta = await safeInfo(bucketRef, key);
-      type = meta?.contentType ?? DEFAULT_CONTENT_TYPE;
-      etag = stripEtag(meta?.etag);
-      lastModified = toMs(meta?.lastModified);
-      metadata = stringifyMetadata(meta?.metadata);
-    }
+    // The served Content-Type wins; Blob.type is empty only when Supabase
+    // didn't echo one, and then the stored type from info() fills in.
+    const type = blob.type || meta?.contentType || DEFAULT_CONTENT_TYPE;
+    const etag = stripEtag(meta?.etag);
+    const lastModified = toMs(meta?.lastModified);
+    const metadata = stringifyMetadata(meta?.metadata);
     return createStoredFile(
       {
         contentType: type,
@@ -675,12 +1005,8 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       throw mapped;
     },
-    async head(key) {
-      const { data, error } = await bucketRef.info(key);
-      if (error) {
-        throw mapSupabaseError(error);
-      }
-      const info: SupabaseInfoLike = data;
+    async head(key, headOpts) {
+      const info = await objectInfo(key, headOpts?.signal);
       return {
         contentType: info.contentType ?? DEFAULT_CONTENT_TYPE,
         ...(info.etag && { etag: stripEtag(info.etag) }),
@@ -779,168 +1105,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     },
     name: "supabase",
     raw: client,
-    resumableUpload(key, resumableOpts): OffsetResumableDriver {
-      const tus = resolveTusConfig(opts);
-      // Supabase's TUS endpoint reads `cacheControl` as seconds and user
-      // metadata as a JSON string under `metadata` (its `user_metadata`).
-      // Validate the cache-control mapping up front, before any request.
-      const cacheSeconds =
-        resumableOpts.cacheControl === undefined
-          ? undefined
-          : cacheControlSeconds(resumableOpts.cacheControl);
-      const extraMetadata = [
-        ...(cacheSeconds === undefined
-          ? []
-          : [`cacheControl ${b64(cacheSeconds)}`]),
-        ...(resumableOpts.metadata
-          ? [`metadata ${b64(JSON.stringify(resumableOpts.metadata))}`]
-          : []),
-      ];
-      let uri: string | undefined;
-      let contentType = DEFAULT_CONTENT_TYPE;
-      let lastOffset = 0;
-      const requireTus = () => {
-        if (!tus) {
-          throw new FilesError(
-            "Unsupported",
-            "supabase: resumable uploads require `url` + `key` (not the pre-built `client` escape hatch)."
-          );
-        }
-        return tus;
-      };
-      const requireUri = () => {
-        if (!uri) {
-          throw new FilesError(
-            "Invalid",
-            "supabase: resumable upload has no session."
-          );
-        }
-        return uri;
-      };
-      const authHeaders = () => ({
-        Authorization: `Bearer ${requireTus().key}`,
-        "Tus-Resumable": "1.0.0",
-        apikey: requireTus().key,
-      });
-      return {
-        adopt(session: ResumableUploadSession) {
-          if (session.provider !== "supabase") {
-            throw new FilesError(
-              "Invalid",
-              `Cannot resume a ${session.provider} session on a supabase adapter.`
-            );
-          }
-          if (session.key !== key) {
-            throw new FilesError(
-              "Invalid",
-              "Resume token does not match this upload's key."
-            );
-          }
-          uri = sameOriginSessionUrl(
-            session.uri,
-            requireTus().endpoint,
-            "supabase resumable session URL"
-          );
-          ({ contentType } = session);
-        },
-        async begin(meta): Promise<ResumableUploadSession> {
-          ({ contentType } = meta);
-          const { endpoint } = requireTus();
-          const res = await fetch(endpoint, {
-            headers: {
-              ...authHeaders(),
-              "Upload-Length": String(meta.total),
-              "Upload-Metadata": [
-                `bucketName ${b64(bucket)}`,
-                `objectName ${b64(key)}`,
-                `contentType ${b64(meta.contentType)}`,
-                ...extraMetadata,
-              ].join(","),
-              "x-upsert": "true",
-            },
-            method: "POST",
-          });
-          if (res.status !== 201) {
-            throw statusError(
-              res.status,
-              "supabase: resumable session init failed"
-            );
-          }
-          const location = res.headers.get("location");
-          if (!location) {
-            throw new FilesError(
-              "Provider",
-              "supabase: resumable session response missing Location header"
-            );
-          }
-          uri = sameOriginSessionUrl(
-            location,
-            endpoint,
-            "supabase resumable session URL"
-          );
-          return { contentType, key, provider: "supabase", uri };
-        },
-        complete(): Promise<UploadResult> {
-          return Promise.resolve({ contentType, key, size: lastOffset });
-        },
-        async discard() {
-          if (!uri) {
-            return;
-          }
-          await fetch(uri, { headers: authHeaders(), method: "DELETE" });
-        },
-        mode: "offset",
-        // Supabase's TUS endpoint requires exactly 6 MiB chunks ("must be set
-        // to 6MB, do not change it"), so a caller's `multipart.partSize` is
-        // rounded to that one valid size rather than forwarded.
-        partSize: TUS_CHUNK_SIZE,
-        async probe(): Promise<{ nextOffset: number }> {
-          const res = await fetch(requireUri(), {
-            headers: authHeaders(),
-            method: "HEAD",
-          });
-          if (!res.ok) {
-            // An expired or terminated TUS upload answers 404/410 (NotFound).
-            throw statusError(
-              res.status,
-              "supabase: resume status check failed"
-            );
-          }
-          lastOffset = Number(res.headers.get("upload-offset") ?? 0);
-          return { nextOffset: lastOffset };
-        },
-        async uploadAt({
-          offset,
-          data,
-          signal,
-        }): Promise<{ nextOffset: number }> {
-          // SAFETY: `BodyInit` pins the view to `ArrayBuffer` backing (TS 5.7
-          // widened typed arrays to `ArrayBufferLike`); the orchestrator
-          // slices each chunk from the upload body into a fresh view, never
-          // shared memory.
-          const chunk = data as BodyInit;
-          const res = await fetch(requireUri(), {
-            body: chunk,
-            headers: {
-              ...authHeaders(),
-              "Content-Type": "application/offset+octet-stream",
-              "Upload-Offset": String(offset),
-            },
-            method: "PATCH",
-            ...(signal && { signal }),
-          });
-          if (!res.ok) {
-            // A TUS offset mismatch answers 409 (Conflict): re-sending the
-            // same chunk can only fail the same way, so it isn't retried.
-            throw statusError(res.status, "supabase: chunk upload failed");
-          }
-          lastOffset = Number(
-            res.headers.get("upload-offset") ?? offset + data.byteLength
-          );
-          return { nextOffset: lastOffset };
-        },
-      };
-    },
+    ...(tus && {
+      resumableUpload: (key: string, resumableOpts: ResumableDriverOptions) =>
+        tusDriver(tus, bucket, key, resumableOpts),
+    }),
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // Supabase's createSignedUploadUrl has no `content-length-range`
       // equivalent — there's no way to enforce a max upload size at the
@@ -1017,7 +1185,13 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       let etag: string | undefined;
       let lastModified: number | undefined;
       if (size === undefined) {
-        const info = await safeInfo(bucketRef, key);
+        let info: SupabaseInfoLike | undefined;
+        try {
+          info = await objectInfo(key);
+        } catch {
+          // Best effort: the write already succeeded, so a failed lookup
+          // reports size 0 rather than failing (and retrying) the upload.
+        }
         size = info?.size ?? 0;
         etag = stripEtag(info?.etag);
         lastModified = toMs(info?.lastModified);

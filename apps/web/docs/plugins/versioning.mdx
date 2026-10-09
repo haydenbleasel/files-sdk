@@ -76,7 +76,7 @@ The `key` on each entry is a real, downloadable object, so you can preview a ver
 
 ## Capping history
 
-By default history grows unbounded. Set `limit` to keep only the newest N versions per key - the oldest are pruned after each snapshot:
+By default history grows unbounded. Set `limit` to keep only the newest N versions per key - the oldest are pruned once the write that took the snapshot succeeds (a failed write prunes nothing, so history can briefly exceed the cap until the next successful write):
 
 ```ts
 versioning({ limit: 20 });
@@ -86,7 +86,7 @@ A `restoreVersion()` under a `limit` prunes only **after** the restored bytes ha
 
 ## Choosing the prefix
 
-Snapshots live under `.versions` by default. Override it with `prefix`, and keep your own data out of it:
+Snapshots live under `.versions` by default. Override it with `prefix`, and keep your own data out of it. Behind the [gateway](/docs/ui/server/authorization), this prefix is reserved: a client key or `list`/`search` prefix inside it gets `403`, so browsers reach history only through `versions()` and `restoreVersion()`:
 
 ```ts
 versioning({ prefix: ".history" });

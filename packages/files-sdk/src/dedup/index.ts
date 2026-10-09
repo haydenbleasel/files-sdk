@@ -14,6 +14,7 @@ import type {
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { isNumber } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface DedupOptions {
@@ -486,12 +487,17 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       signedUpload: { contentType: false, maxSize: false, supported: false },
       signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
-    // Provider events: the content-addressed blobs are internal, so drop them;
-    // a logical key holds an empty pointer, whose size and ETag aren't the
-    // caller's content.
+    // Provider events: the content-addressed blobs are internal, so drop them.
+    // A logical key this plugin wrote holds an empty pointer, whose size and
+    // ETag aren't the caller's content, so those are cleared. A pointer is
+    // never non-empty, though: an event reporting a body is for an object
+    // dedup didn't write (a mixed bucket), and keeps its own size and ETag.
     event: (event) => {
       if (isStoreKey(event.key)) {
         return null;
+      }
+      if (isNumber(event.size) && event.size > 0) {
+        return event;
       }
       const { etag: _pointerEtag, size: _pointerSize, ...rest } = event;
       return rest;

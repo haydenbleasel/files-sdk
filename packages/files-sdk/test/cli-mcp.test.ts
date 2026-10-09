@@ -163,6 +163,15 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(dl.data).not.toHaveProperty("type");
   });
 
+  test("upload infers the content type from the key when none is given", async () => {
+    const up = await call(h.client, "upload", {
+      key: "notes.md",
+      text: "# hi",
+    });
+    expect(up.isError).toBe(false);
+    expect(up.data.contentType).toStartWith("text/markdown");
+  });
+
   test("capabilities reports the fs adapter's snapshot", async () => {
     const res = await call(h.client, "capabilities");
     expect(res.isError).toBe(false);

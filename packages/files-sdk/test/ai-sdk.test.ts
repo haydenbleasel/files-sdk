@@ -379,7 +379,21 @@ describe("createFileTools", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).message).toMatch(/maxBytes/u);
+      // A refusal, so never retried as a backend failure.
+      expect((error as FilesError).code).toBe("Invalid");
     }
+  });
+
+  test("uploadFile with malformed base64 is Invalid, not a raw DOMException", async () => {
+    const files = newFiles();
+    const tools = createFileTools({ files });
+    await expect(
+      exec(tools.uploadFile, {
+        content: "not base64!!",
+        encoding: "base64",
+        key: "bad.bin",
+      })
+    ).rejects.toMatchObject({ code: "Invalid" });
   });
 
   test("uploadFile with encoding=base64 decodes binary content", async () => {

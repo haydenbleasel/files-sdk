@@ -303,6 +303,7 @@ describe("webdav adapter", () => {
 
   test("delete rethrows a non-NotFound error", async () => {
     const files = newFiles();
+    await files.upload("boom.txt", "x");
     await expect(files.delete("boom.txt")).rejects.toMatchObject({
       code: "Provider",
     });
@@ -570,6 +571,93 @@ describe("webdav adapter", () => {
   });
 });
 
+describe("webdav collections are not objects", () => {
+  // Wraps the fake so the test can see which mutating requests went out.
+  const tracked = () => {
+    const client = makeFakeClient();
+    const calls: string[] = [];
+    const { copyFile, deleteFile, moveFile } = client;
+    client.deleteFile = ((remote: string) => {
+      calls.push(`DELETE ${remote}`);
+      return deleteFile.call(client, remote);
+    }) as WebDAVClient["deleteFile"];
+    client.copyFile = ((from: string, to: string) => {
+      calls.push(`COPY ${from} ${to}`);
+      return copyFile.call(client, from, to);
+    }) as WebDAVClient["copyFile"];
+    client.moveFile = ((from: string, to: string) => {
+      calls.push(`MOVE ${from} ${to}`);
+      return moveFile.call(client, from, to);
+    }) as WebDAVClient["moveFile"];
+    return { calls, files: new Files({ adapter: webdav({ client }) }) };
+  };
+
+  test("delete of a collection's key is a no-op, never a recursive DELETE", async () => {
+    const { calls, files } = tracked();
+    await files.upload("photos/a.jpg", "a");
+    await files.delete("photos");
+    await files.delete("photos/");
+    expect(calls).toEqual([]);
+    expect(await files.exists("photos/a.jpg")).toBe(true);
+  });
+
+  test("delete of a missing key skips the DELETE", async () => {
+    const { calls, files } = tracked();
+    await files.delete("never.txt");
+    expect(calls).toEqual([]);
+  });
+
+  test("delete surfaces a non-NotFound stat error", async () => {
+    const client = {
+      stat: () => Promise.reject(webdavError(403, "Forbidden")),
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
+  test("copy and move refuse a collection source as NotFound", async () => {
+    const { calls, files } = tracked();
+    await files.upload("photos/a.jpg", "a");
+    await expect(files.copy("photos", "backup")).rejects.toMatchObject({
+      code: "NotFound",
+      message: expect.stringContaining("collection"),
+    });
+    await expect(files.move("photos", "backup")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("copy and move refuse a collection destination as Conflict", async () => {
+    const { calls, files } = tracked();
+    await files.upload("a.txt", "a");
+    await files.upload("photos/b.jpg", "b");
+    await expect(files.copy("a.txt", "photos")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    await expect(files.move("a.txt", "photos")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(calls).toEqual([]);
+    expect(await files.exists("photos/b.jpg")).toBe(true);
+  });
+
+  test("copy and move onto an existing file overwrite it", async () => {
+    const { files } = tracked();
+    await files.upload("a.txt", "new");
+    await files.upload("b.txt", "old");
+    await files.copy("a.txt", "b.txt");
+    const copied = await files.download("b.txt");
+    expect(await copied.text()).toBe("new");
+    await files.upload("c.txt", "newer");
+    await files.move("c.txt", "b.txt");
+    const moved = await files.download("b.txt");
+    expect(await moved.text()).toBe("newer");
+  });
+});
+
 describe("webdav edge cases (injected client)", () => {
   test("head on a directory throws NotFound", async () => {
     const files = newFiles();
@@ -680,6 +768,10 @@ describe("webdav edge cases (injected client)", () => {
     const client = {
       createDirectory: () => Promise.resolve(),
       moveFile: () => Promise.reject(webdavError(507, "Insufficient Storage")),
+      stat: (remote: string) =>
+        remote === "/a.txt"
+          ? Promise.resolve({ type: "file" })
+          : Promise.reject(webdavError(404, "Not Found")),
     } as unknown as WebDAVClient;
     const files = new Files({ adapter: webdav({ client }) });
     await expect(files.move("a.txt", "b/c.txt")).rejects.toMatchObject({

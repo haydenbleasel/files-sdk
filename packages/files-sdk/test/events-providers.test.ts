@@ -13,6 +13,7 @@ import type {
   EventsWebhookOptions,
 } from "../src/events/index.js";
 import { events } from "../src/events/index.js";
+import type { SnsVerifyOptions } from "../src/events/sns.js";
 import { snsVerifier, snsUrl, stringToSign } from "../src/events/sns.js";
 import { pemToDer, spkiOf } from "../src/events/x509.js";
 import type { Adapter, FileEvent } from "../src/index.js";
@@ -644,11 +645,11 @@ describe("box", () => {
   test("trashed and deleted files are deletes; other triggers are skipped", async () => {
     const files = filesAs({ name: "box" });
     expect(
-      (await files.events.parse(json("box/file-trashed.derived.json")))[0]?.type
-    ).toBe("deleted");
-    expect(
-      (await files.events.parse(json("box/file-deleted.derived.json")))[0]?.type
-    ).toBe("deleted");
+      (await files.events.parse(json("box/file-deleted.derived.json")))[0]
+    ).toMatchObject({
+      key: "Testing/Webhooks Base/Webhooks/Test-Image-3.png",
+      type: "deleted",
+    });
     const payload = jsonAs<Record<string, unknown>>("box/file-uploaded.json");
     expect(
       await files.events.parse({ ...payload, trigger: "FILE.PREVIEWED" })
@@ -673,7 +674,41 @@ describe("box", () => {
       trigger: "FILE.RESTORED",
     });
     expect(noId?.key).toBe("/a.txt");
-    expect(noId?.id).toStartWith("FILE.RESTORED:f1@");
+    expect(noId?.id).toMatch(/^FILE\.RESTORED:f1@h:[0-9a-f]{16}$/u);
+    const [stamped] = await files.events.parse({
+      created_at: "2026-01-01T00:00:00-07:00",
+      source: {
+        id: "f1",
+        name: "a.txt",
+        path_collection: { entries: [{ id: "0" }] },
+        type: "file",
+      },
+      trigger: "FILE.RESTORED",
+    });
+    expect(stamped?.id).toBe("FILE.RESTORED:f1@2026-01-01T00:00:00-07:00");
+    expect(
+      await files.events.parse({
+        source: { path_collection: { entries: [{ id: "0" }] }, type: "file" },
+        trigger: "FILE.UPLOADED",
+      })
+    ).toEqual([]);
+  });
+
+  test("a trashed file has a key only if it sat directly in the root folder", async () => {
+    // Box reports a trashed file at its Trash location; only `parent` says
+    // where it was, and a parent below the root can't be placed.
+    const trashed = json("box/file-trashed.derived.json");
+    expect(await filesAs({ name: "box" }).events.parse(trashed)).toEqual([]);
+    const inParent = filesAs({ name: "box", rootFolderId: "8290188973" });
+    expect((await inParent.events.parse(trashed))[0]).toMatchObject({
+      id: "eb0c4e06-751f-442c-86f8-fd5bb404dbec",
+      key: "Test-Image-3.png",
+      type: "deleted",
+    });
+    // A restore or upload is never placed by its parent alone.
+    expect(
+      await inParent.events.parse({ ...trashed, trigger: "FILE.RESTORED" })
+    ).toEqual([]);
   });
 });
 
@@ -688,6 +723,21 @@ describe("SNS over HTTPS", () => {
     }
   });
   const fetchImpl = certFetch as unknown as typeof fetch;
+  const TOPIC = "arn:aws:sns:us-west-2:131990247566:dongie-standard-topic";
+
+  /** A verifier pinned to the fixture's own topic, at the moment it was sent. */
+  const optsFor = (
+    name: string,
+    extra: Partial<SnsVerifyOptions> = {}
+  ): SnsVerifyOptions => {
+    const message = jsonAs<Record<string, string>>(`sns-http/${name}.json`);
+    return {
+      fetch: fetchImpl,
+      now: () => Date.parse(message.Timestamp as string),
+      topicArn: message.TopicArn as string,
+      ...extra,
+    };
+  };
 
   test.each([
     "subscription-confirmation",
@@ -699,7 +749,7 @@ describe("SNS over HTTPS", () => {
     "legacy-notification-v2",
     "legacy-notification-v2-subject",
   ])("%s verifies against its certificate", async (name) => {
-    const verify = snsVerifier({ fetch: fetchImpl });
+    const verify = snsVerifier(optsFor(name));
     const body = text(`sns-http/${name}.json`);
     await expect(verify(post(body), body)).resolves.toMatchObject({
       Type: expect.any(String),
@@ -707,7 +757,7 @@ describe("SNS over HTTPS", () => {
   });
 
   test("a tampered message, another topic, or a foreign cert host is a 401", async () => {
-    const verify = snsVerifier({ fetch: fetchImpl });
+    const verify = snsVerifier(optsFor("notification-v2"));
     const message = jsonAs<Record<string, string>>(
       "sns-http/notification-v2.json"
     );
@@ -715,14 +765,27 @@ describe("SNS over HTTPS", () => {
     await expect(verify(post(tampered), tampered)).rejects.toThrow(
       "SNS signature does not match"
     );
-    const pinned = snsVerifier({ fetch: fetchImpl, topicArn: "arn:other" });
+    const pinned = snsVerifier(
+      optsFor("notification-v2", { topicArn: "arn:other" })
+    );
     const body = JSON.stringify(message);
     await expect(pinned(post(body), body)).rejects.toThrow("another topic");
+    const noTopic = JSON.stringify({ ...message, TopicArn: undefined });
+    await expect(verify(post(noTopic), noTopic)).rejects.toThrow(
+      "another topic"
+    );
     const foreign = JSON.stringify({
       ...message,
       SigningCertURL: "https://evil.example.com/cert.pem",
     });
     await expect(verify(post(foreign), foreign)).rejects.toThrow(
+      "not a signed SNS message"
+    );
+    const unknownVersion = JSON.stringify({
+      ...message,
+      SignatureVersion: "3",
+    });
+    await expect(verify(post(unknownVersion), unknownVersion)).rejects.toThrow(
       "not a signed SNS message"
     );
     const badBase64 = JSON.stringify({ ...message, Signature: "%%%" });
@@ -737,8 +800,65 @@ describe("SNS over HTTPS", () => {
     );
   });
 
+  test("several topics can be pinned", async () => {
+    const verify = snsVerifier(
+      optsFor("notification-v2", { topicArn: ["arn:other", TOPIC] })
+    );
+    const body = text("sns-http/notification-v2.json");
+    await expect(verify(post(body), body)).resolves.toBeDefined();
+  });
+
+  test("another topic, or a stale message, is refused before any certificate is fetched", async () => {
+    const counting = mock((url: string) => certFetch(url));
+    const body = text("sns-http/notification-v2.json");
+    const sent = Date.parse(
+      jsonAs<{ Timestamp: string }>("sns-http/notification-v2.json").Timestamp
+    );
+    const opts = (extra: Partial<SnsVerifyOptions>) =>
+      optsFor("notification-v2", {
+        fetch: counting as unknown as typeof fetch,
+        ...extra,
+      });
+    await expect(
+      snsVerifier(opts({ topicArn: "arn:attacker" }))(post(body), body)
+    ).rejects.toThrow("another topic");
+    await expect(
+      snsVerifier(opts({ now: () => sent + 2 * 3_600_000 }))(post(body), body)
+    ).rejects.toThrow("too old");
+    expect(counting).not.toHaveBeenCalled();
+  });
+
+  test("the signed Timestamp must be recent, and not from the future", async () => {
+    const body = text("sns-http/notification-v2.json");
+    const message = jsonAs<Record<string, string>>(
+      "sns-http/notification-v2.json"
+    );
+    const sent = Date.parse(message.Timestamp as string);
+    const at = (now: number, maxAge?: number) =>
+      snsVerifier(
+        optsFor("notification-v2", {
+          now: () => now,
+          ...(maxAge !== undefined && { maxAge }),
+        })
+      )(post(body), body);
+    // Up to an hour late (SNS's longest retry policy) passes by default.
+    await expect(at(sent + 3_590_000)).resolves.toBeDefined();
+    await expect(at(sent + 3_610_000)).rejects.toThrow("too old");
+    await expect(at(sent + 3_610_000, 2 * 3_600_000)).resolves.toBeDefined();
+    await expect(at(sent - 60_000)).resolves.toBeDefined();
+    await expect(at(sent - 10 * 60_000)).rejects.toThrow("in the future");
+    const verify = snsVerifier(optsFor("notification-v2"));
+    for (const Timestamp of [undefined, "yesterday", 5]) {
+      const undated = JSON.stringify({ ...message, Timestamp });
+      // oxlint-disable-next-line no-await-in-loop -- three cases
+      await expect(verify(post(undated), undated)).rejects.toThrow(
+        "no Timestamp"
+      );
+    }
+  });
+
   test("raw message delivery is unsigned and fails closed", async () => {
-    const verify = snsVerifier({ fetch: fetchImpl });
+    const verify = snsVerifier(optsFor("notification-v2"));
     const body = text("sns-http/raw-delivery-s3-put.derived.json");
     await expect(
       verify(
@@ -759,13 +879,76 @@ describe("SNS over HTTPS", () => {
     const flaky = mock((url: string) =>
       fail ? Promise.resolve(new Response("", { status: 503 })) : certFetch(url)
     );
-    const verify = snsVerifier({ fetch: flaky as unknown as typeof fetch });
+    const verify = snsVerifier(
+      optsFor("notification-v2", { fetch: flaky as unknown as typeof fetch })
+    );
     const body = text("sns-http/notification-v2.json");
-    await expect(verify(post(body), body)).rejects.toThrow("(503)");
+    await expect(verify(post(body), body)).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("(503)"),
+    });
     fail = false;
     await expect(verify(post(body), body)).resolves.toBeDefined();
     await verify(post(body), body);
     expect(flaky).toHaveBeenCalledTimes(2);
+  });
+
+  test("a certificate host that fails is a 502, so SNS redelivers", async () => {
+    const unavailable = (() =>
+      Promise.resolve(
+        new Response("unavailable", { status: 503 })
+      )) as unknown as typeof fetch;
+    const unreachable = (() =>
+      Promise.reject(new TypeError("fetch failed"))) as unknown as typeof fetch;
+    for (const fetcher of [unavailable, unreachable]) {
+      const { hook, seen } = hookFor("s3", {
+        sns: optsFor("notification-v2", { fetch: fetcher }),
+      });
+      // oxlint-disable-next-line no-await-in-loop -- two cases
+      const res = await hook.handle(
+        post(text("sns-http/notification-v2.json"))
+      );
+      expect(res.status).toBe(502);
+      // oxlint-disable-next-line no-await-in-loop -- two cases
+      expect(await res.text()).toContain("signing certificate failed");
+      expect(seen).toEqual([]);
+    }
+  });
+
+  test("signing keys are cached per certificate URL, the most recently used few", async () => {
+    // SigningCertURL isn't signed, so one message verifies under any name for
+    // the same certificate.
+    const message = jsonAs<Record<string, string>>(
+      "sns-http/notification-v2.json"
+    );
+    const cert = text(
+      "sns-http/certs/SimpleNotificationService-7506a1e35b36ef5a444dd1a8e7cc3ed8.pem"
+    );
+    const served = mock((_url: string) => Promise.resolve(new Response(cert)));
+    const verify = snsVerifier(
+      optsFor("notification-v2", { fetch: served as unknown as typeof fetch })
+    );
+    const viaCert = (n: number) => {
+      const body = JSON.stringify({
+        ...message,
+        SigningCertURL: `https://sns.us-west-2.amazonaws.com/cert-${n}.pem`,
+      });
+      return verify(post(body), body);
+    };
+    for (let n = 0; n < 16; n += 1) {
+      // oxlint-disable-next-line no-await-in-loop -- fill the cache in order
+      await viaCert(n);
+    }
+    expect(served).toHaveBeenCalledTimes(16);
+    // A hit refreshes cert-0, so cert-1 is now the oldest.
+    await viaCert(0);
+    expect(served).toHaveBeenCalledTimes(16);
+    await viaCert(16);
+    expect(served).toHaveBeenCalledTimes(17);
+    await viaCert(0);
+    expect(served).toHaveBeenCalledTimes(17);
+    await viaCert(1);
+    expect(served).toHaveBeenCalledTimes(18);
   });
 
   test("the webhook confirms a subscription when asked to", async () => {
@@ -777,7 +960,10 @@ describe("SNS over HTTPS", () => {
         : Promise.resolve(new Response("<ConfirmSubscriptionResponse/>"));
     }) as unknown as typeof fetch;
     const { hook, seen } = hookFor("s3", {
-      sns: { confirm: true, fetch: fetchBoth },
+      sns: optsFor("subscription-confirmation", {
+        confirm: true,
+        fetch: fetchBoth,
+      }),
     });
     const res = await hook.handle(
       post(text("sns-http/subscription-confirmation.json"))
@@ -789,9 +975,42 @@ describe("SNS over HTTPS", () => {
     expect(seen).toEqual([]);
   });
 
+  test("a subscription to another topic is never confirmed", async () => {
+    const calls: string[] = [];
+    const fetchBoth = ((url: string) => {
+      calls.push(url);
+      return url.endsWith(".pem")
+        ? certFetch(url)
+        : Promise.resolve(new Response("<ConfirmSubscriptionResponse/>"));
+    }) as unknown as typeof fetch;
+    const { hook } = hookFor("s3", {
+      sns: optsFor("subscription-confirmation", {
+        confirm: true,
+        fetch: fetchBoth,
+        topicArn: "arn:aws:sns:us-west-2:123456789012:uploads",
+      }),
+    });
+    const res = await hook.handle(
+      post(text("sns-http/subscription-confirmation.json"))
+    );
+    expect(res.status).toBe(401);
+    expect(calls).toEqual([]);
+  });
+
   test("without confirm, the SubscribeURL is logged; unsubscribe is acknowledged", async () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
-    const { hook } = hookFor("s3", { sns: { fetch: fetchImpl } });
+    const confirmation = optsFor("subscription-confirmation");
+    const { hook } = hookFor("s3", {
+      sns: {
+        ...confirmation,
+        now: () =>
+          Date.parse(
+            jsonAs<{ Timestamp: string }>(
+              "sns-http/unsubscribe-confirmation.json"
+            ).Timestamp
+          ),
+      },
+    });
     const res = await hook.handle(
       post(text("sns-http/subscription-confirmation.json"))
     );
@@ -804,23 +1023,29 @@ describe("SNS over HTTPS", () => {
   });
 
   test("a failed confirmation is a 502", async () => {
-    const fetchBoth = ((url: string) =>
+    const reject = ((url: string) =>
       url.endsWith(".pem")
         ? certFetch(url)
         : Promise.resolve(
             new Response("", { status: 403 })
           )) as unknown as typeof fetch;
     const { hook } = hookFor("s3", {
-      sns: { confirm: true, fetch: fetchBoth },
+      sns: optsFor("subscription-confirmation", {
+        confirm: true,
+        fetch: reject,
+      }),
     });
     const res = await hook.handle(
       post(text("sns-http/subscription-confirmation.json"))
     );
     expect(res.status).toBe(502);
+    expect(await res.text()).toContain(
+      "confirming the SNS subscription failed (403)"
+    );
   });
 
   test("a verified notification goes on to the s3 parser", async () => {
-    const { hook } = hookFor("s3", { sns: { fetch: fetchImpl } });
+    const { hook } = hookFor("s3", { sns: optsFor("notification-v2") });
     // Signed, but its Message isn't an S3 event: verified, then a 400.
     const res = await hook.handle(post(text("sns-http/notification-v2.json")));
     expect(res.status).toBe(400);
@@ -840,10 +1065,25 @@ describe("SNS over HTTPS", () => {
     ).toEqual([]);
   });
 
-  test("verify.sns is only for the s3 format", () => {
-    expect(() => hookFor("gcs", { sns: {} })).toThrow(
+  test("verify.sns is only for the s3 format, and needs a topic", () => {
+    expect(() => hookFor("gcs", { sns: { topicArn: TOPIC } })).toThrow(
       "verify.sns is for S3 notifications"
     );
+    for (const topicArn of [undefined, "", [], [TOPIC, ""]]) {
+      expect(() =>
+        hookFor("s3", {
+          sns: { topicArn } as unknown as SnsVerifyOptions,
+        })
+      ).toThrow("verify.sns.topicArn must name the SNS topic");
+    }
+    for (const maxAge of [0, -1, Number.NaN, "1h"]) {
+      expect(() =>
+        hookFor("s3", {
+          sns: { maxAge, topicArn: TOPIC } as unknown as SnsVerifyOptions,
+        })
+      ).toThrow("verify.sns.maxAge must be a positive number");
+    }
+    expect(() => hookFor("s3", { sns: { topicArn: TOPIC } })).not.toThrow();
   });
 
   test("a SubscribeURL off SNS is refused", async () => {
@@ -854,7 +1094,7 @@ describe("SNS over HTTPS", () => {
     await expect(
       snsHandshake(
         { ...message, SubscribeURL: "https://evil.example.com/" },
-        {}
+        { topicArn: TOPIC }
       )
     ).rejects.toThrow("SubscribeURL is not an SNS endpoint");
   });
@@ -867,10 +1107,27 @@ describe("SNS over HTTPS", () => {
       snsUrl("https://sns.cn-north-1.amazonaws.com.cn/x.pem", true)
     ).toBeDefined();
     expect(
-      snsUrl("http://sns.us-east-1.amazonaws.com/x.pem", true)
-    ).toBeUndefined();
+      snsUrl("https://SNS.US-EAST-1.AMAZONAWS.COM:443/x.pem", true)
+    ).toBeDefined();
+    for (const rejected of [
+      "http://sns.us-east-1.amazonaws.com/x.pem",
+      "https://sns.us-east-1.amazonaws.com/x.txt",
+      "https://sns.us-east-1.amazonaws.com/x.pem?x=1",
+      "https://sns.us-east-1.amazonaws.com/x.pem#f",
+      "https://sns.us-east-1.amazonaws.com:8443/x.pem",
+      "https://user:pw@sns.us-east-1.amazonaws.com/x.pem",
+      "https://sns.us-east-1.amazonaws.com@evil.com/x.pem",
+      "https://sns.us-east-1.amazonaws.com.evil.com/x.pem",
+      "https://sns.us-east-1.amazonaws.com./x.pem",
+    ]) {
+      expect(snsUrl(rejected, true)).toBeUndefined();
+    }
+    // A SubscribeURL carries its action in the query.
     expect(
-      snsUrl("https://sns.us-east-1.amazonaws.com/x.txt", true)
+      snsUrl("https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription")
+    ).toBeDefined();
+    expect(
+      snsUrl("https://sns.us-east-1.amazonaws.com:8443/?Action=x")
     ).toBeUndefined();
     expect(snsUrl("not a url")).toBeUndefined();
     expect(snsUrl(4)).toBeUndefined();

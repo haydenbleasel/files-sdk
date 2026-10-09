@@ -29,11 +29,19 @@ export const fileInfoToWire = (
   return wire;
 };
 
+/**
+ * A per-key bulk failure for the wire: the key unscoped, and the storage key a
+ * provider's message names rewritten to it, so the authorize prefix never
+ * reaches the client.
+ */
 export const bulkErrorToWire = (
   error: FilesError,
   key: string,
   unscope: (key: string) => string
-): WireBulkError => ({
-  error: serializeFilesError(error),
-  key: unscope(key),
-});
+): WireBulkError => {
+  const clientKey = unscope(key);
+  return {
+    error: serializeFilesError(error, new Map([[key, clientKey]])),
+    key: clientKey,
+  };
+};

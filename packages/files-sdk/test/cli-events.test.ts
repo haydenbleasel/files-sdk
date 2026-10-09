@@ -38,11 +38,17 @@ beforeEach(() => {
 
 afterEach(() => restore());
 
-const printed = (): { key: string; type: string; source: string }[] =>
+const printed = (): {
+  key: string;
+  type: string;
+  source: string;
+  provider?: string;
+}[] =>
   JSON.parse(stdout.join("").trim()) as {
     key: string;
     type: string;
     source: string;
+    provider?: string;
   }[];
 
 describe("files events parse", () => {
@@ -119,6 +125,83 @@ describe("files events parse", () => {
     });
     expect(printed()).toMatchObject([{ key: "image.jpg", type: "created" }]);
     expect(stderr.join("")).toBe("");
+  });
+
+  test("--format with a provider keeps the provider's adapter", async () => {
+    await runEventsParse({
+      dryRun: false,
+      file: path.join(FIXTURES, "s3/minio-webhook-put.json"),
+      format: "s3",
+      global: {
+        accessKeyId: "k",
+        bucket: "test-bucket",
+        endpoint: "http://127.0.0.1:9000",
+        provider: "minio",
+        secretAccessKey: "s",
+      },
+      json: true,
+      pretty: false,
+      verbose: false,
+    });
+    expect(printed()).toMatchObject([
+      { key: "image.jpg", provider: "minio", type: "created" },
+    ]);
+  });
+
+  test("--header supplies delivery headers (appwrite reads the event type there)", async () => {
+    const headers = JSON.parse(
+      await fsp.readFile(
+        path.join(FIXTURES, "appwrite/file-create.headers.json"),
+        "utf-8"
+      )
+    ) as Record<string, string>;
+    await runEventsParse({
+      dryRun: false,
+      file: path.join(FIXTURES, "appwrite/file-create.body"),
+      format: "appwrite",
+      global: {},
+      header: [
+        `X-Appwrite-Webhook-Events: ${headers["x-appwrite-webhook-events"]}`,
+      ],
+      json: true,
+      pretty: false,
+      verbose: false,
+    });
+    expect(printed()).toMatchObject([{ type: "created" }]);
+  });
+
+  test("a malformed --header is Invalid", async () => {
+    await expect(
+      runEventsParse({
+        dryRun: false,
+        file: path.join(FIXTURES, "appwrite/file-create.body"),
+        format: "appwrite",
+        global: {},
+        header: ["no-colon"],
+        json: true,
+        pretty: false,
+        verbose: false,
+      })
+    ).rejects.toMatchObject({ code: "Invalid" });
+  });
+
+  test("with no file and a terminal on stdin, it fails instead of waiting", async () => {
+    const original = process.stdin.isTTY;
+    process.stdin.isTTY = true;
+    try {
+      await expect(
+        runEventsParse({
+          dryRun: false,
+          format: "s3",
+          global: {},
+          json: true,
+          pretty: false,
+          verbose: false,
+        })
+      ).rejects.toMatchObject({ code: "Invalid" });
+    } finally {
+      process.stdin.isTTY = original;
+    }
   });
 
   test("is wired into the program", async () => {

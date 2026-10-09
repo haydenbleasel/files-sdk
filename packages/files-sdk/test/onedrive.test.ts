@@ -9,6 +9,15 @@ import type { ResumableUploadSession } from "../src/index.js";
 import { mapGraphError, onedrive } from "../src/onedrive/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
 
+// Read helpers (an `await` result is never dereferenced inline).
+const sizeOf = async (
+  files: { head: (key: string) => Promise<{ size: number }> },
+  key: string
+): Promise<number> => {
+  const info = await files.head(key);
+  return info.size;
+};
+
 interface FakeItem {
   id: string;
   name: string;
@@ -249,6 +258,18 @@ const defaultPut = (
 };
 
 const defaultDelete = (apiPath: string): Promise<void> => {
+  // `/items/{id}` addressing (delete by the id of an inspected item).
+  const byId = /\/items\/(?<id>[^/]+)$/u.exec(apiPath)?.groups?.id;
+  if (byId !== undefined) {
+    const id = decodeURIComponent(byId);
+    for (const [vp, item] of store) {
+      if (item.id === id) {
+        store.delete(vp);
+        return Promise.resolve();
+      }
+    }
+    return Promise.reject(new GraphError(404, "Not found"));
+  }
   const parsed = parseItemPath(apiPath);
   if (!parsed || parsed.suffix !== undefined) {
     return Promise.reject(
@@ -276,6 +297,8 @@ const dispatchPut = mock(
     defaultPut(path, body, headers)
 );
 const dispatchDelete = mock((path: string) => defaultDelete(path));
+// Every `.query(...)` a request builder received, by API path.
+let queryCalls: { path: string; query: unknown }[] = [];
 
 const makeRequestBuilder = (path: string) => {
   let responseType: string | undefined;
@@ -307,7 +330,8 @@ const makeRequestBuilder = (path: string) => {
     put(body: unknown) {
       return dispatchPut(path, body, headers);
     },
-    query() {
+    query(q: unknown) {
+      queryCalls.push({ path, query: q });
       return builder;
     },
     responseType(t: unknown) {
@@ -335,6 +359,20 @@ const fakeClient = {
 
 const baseOpts = { client: fakeClient as never };
 
+// Answer the copy monitor's poll with `completed` for the body of `fn`.
+const withCompletedCopyMonitor = async (fn: () => Promise<void>) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      Response.json({ status: "completed" })
+    )) as unknown as typeof fetch;
+  try {
+    await fn();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+};
+
 beforeEach(() => {
   store = new Map();
   nextId = 0;
@@ -342,6 +380,7 @@ beforeEach(() => {
   dispatchPost.mockClear();
   dispatchPut.mockClear();
   dispatchDelete.mockClear();
+  queryCalls = [];
 });
 
 afterEach(() => {
@@ -875,6 +914,7 @@ describe("onedrive adapter", () => {
 
   test("copy maps a raw 404 response to NotFound", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("missing.txt", "hi");
     dispatchPost.mockImplementationOnce(() =>
       Promise.resolve(
         Response.json(
@@ -918,9 +958,18 @@ describe("onedrive adapter", () => {
         adapter: onedrive({ ...baseOpts, copyTimeoutMs: 50 }),
       });
       await files.upload("from.txt", "hi");
-      await expect(files.copy("from.txt", "to.txt")).rejects.toThrow(
-        /timed out/iu
-      );
+      // Permanent: the copy job may still finish, so a retry would start a
+      // second one — `retries` must not re-send it.
+      await expect(
+        files.copy("from.txt", "to.txt", { retries: 3 })
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringMatching(/did not finish within 50ms/u),
+        permanent: true,
+      });
+      expect(
+        dispatchPost.mock.calls.filter(([path]) => path.endsWith("/copy"))
+      ).toHaveLength(1);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -974,7 +1023,7 @@ describe("onedrive adapter", () => {
       });
       await files.upload("from.txt", "hi");
       await expect(files.copy("from.txt", "to.txt")).rejects.toThrow(
-        /timed out/iu
+        /did not finish/iu
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -1003,6 +1052,171 @@ describe("onedrive adapter", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("copy classifies a failed monitor job by its Graph error code", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_input: string | URL | Request) =>
+      Promise.resolve(
+        Response.json(
+          { errorCode: "accessDenied", status: "failed" },
+          { status: 200 }
+        )
+      )) as typeof fetch;
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await files.upload("from.txt", "hi");
+      await expect(files.copy("from.txt", "to.txt")).rejects.toMatchObject({
+        code: "Unauthorized",
+        message: "onedrive: copy operation failed",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("copy asks Graph to replace an existing destination file", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("from.txt", "new");
+    await files.upload("to.txt", "older");
+    await withCompletedCopyMonitor(() => files.copy("from.txt", "to.txt"));
+    expect(queryCalls).toEqual([
+      {
+        path: "/me/drive/root:/from.txt:/copy",
+        query: { "@microsoft.graph.conflictBehavior": "replace" },
+      },
+    ]);
+    expect(await sizeOf(files, "to.txt")).toBe(3);
+    expect(dispatchDelete).not.toHaveBeenCalled();
+  });
+
+  test("copy falls back to delete-then-copy when Graph ignores replace (OneDrive personal)", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("from.txt", "new");
+    await files.upload("to.txt", "older");
+    const destinationId = store.get("to.txt")?.id;
+    dispatchPost.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json(
+          { error: { code: "nameAlreadyExists", message: "exists" } },
+          { status: 409 }
+        )
+      )
+    );
+    await withCompletedCopyMonitor(() => files.copy("from.txt", "to.txt"));
+    expect(dispatchDelete.mock.calls).toEqual([
+      [`/me/drive/items/${destinationId}`],
+    ]);
+    expect(await sizeOf(files, "to.txt")).toBe(3);
+  });
+
+  test("a conflict with no existing destination is not retried", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("from.txt", "new");
+    dispatchPost.mockImplementationOnce(() =>
+      Promise.resolve(new Response(null, { status: 409 }))
+    );
+    await expect(files.copy("from.txt", "to.txt")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(dispatchDelete).not.toHaveBeenCalled();
+  });
+
+  test("copy refuses a folder source as NotFound and a folder destination as Conflict", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    store.set("photos", {
+      id: "fold-1",
+      isFolder: true,
+      name: "photos",
+      size: 0,
+    });
+    await files.upload("photos/a.jpg", "a");
+    await files.upload("from.txt", "x");
+    await expect(files.copy("photos", "backup")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await expect(files.copy("from.txt", "photos")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(
+      dispatchPost.mock.calls.filter(([path]) => path.endsWith("/copy"))
+    ).toHaveLength(0);
+    expect(dispatchDelete).not.toHaveBeenCalled();
+  });
+
+  test("copy onto the same item under another casing is a Conflict, never a replace", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "a");
+    // Graph resolves paths case-insensitively.
+    store.set("A.txt", store.get("a.txt") as FakeItem);
+    await expect(files.copy("a.txt", "A.txt")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(dispatchPost).not.toHaveBeenCalled();
+  });
+
+  test("delete of a folder's key is a no-op, never a recursive DELETE", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    store.set("photos", {
+      id: "fold-1",
+      isFolder: true,
+      name: "photos",
+      size: 0,
+    });
+    await files.upload("photos/a.jpg", "a");
+    await files.delete("photos");
+    expect(dispatchDelete).not.toHaveBeenCalled();
+    expect(store.has("photos/a.jpg")).toBe(true);
+  });
+
+  test("delete falls back to the item path when Graph returns no id", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "a");
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.resolve({ file: {}, name: "a.txt" })
+    );
+    await files.delete("a.txt");
+    expect(dispatchDelete.mock.calls).toEqual([["/me/drive/root:/a.txt:"]]);
+  });
+
+  test("delete surfaces a non-NotFound lookup error", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.reject(new GraphError(403, "denied"))
+    );
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+    expect(dispatchDelete).not.toHaveBeenCalled();
+  });
+
+  test.each(["", "/", "photos/"])(
+    "object verbs refuse the root/folder-shaped key %p as Invalid",
+    async (key) => {
+      for (const rootFolderPath of [undefined, "app-root"]) {
+        const files = new Files({
+          adapter: onedrive({
+            ...baseOpts,
+            ...(rootFolderPath && { rootFolderPath }),
+          }),
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.delete(key)).rejects.toMatchObject({
+          code: "Invalid",
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.copy("a.txt", key)).rejects.toMatchObject({
+          code: "Invalid",
+        });
+        // oxlint-disable-next-line no-await-in-loop -- one adapter config at a time
+        await expect(files.upload(key, "x")).rejects.toMatchObject({
+          code: "Invalid",
+        });
+      }
+      expect(dispatchDelete).not.toHaveBeenCalled();
+      expect(dispatchPost).not.toHaveBeenCalled();
+      expect(dispatchPut).not.toHaveBeenCalled();
+    }
+  );
 
   test("upload session maps a failed chunk PUT to a provider error", async () => {
     // Force the upload-session chunk PUT (plain fetch) to fail with a body
@@ -1335,6 +1549,14 @@ describe("onedrive resumable uploads", () => {
       { status: 201 }
     );
 
+  test("probing before the session starts is Invalid, not a retryable Provider", async () => {
+    const driver = onedrive(baseOpts).resumableUpload("doc.bin", {});
+    await expect(driver.probe()).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/not started/u),
+    });
+  });
+
   test("partSize is capped at Graph's 60 MiB fragment maximum", () => {
     const driver = onedrive(baseOpts).resumableUpload("doc.bin", {
       multipart: { partSize: 100 * 1024 * 1024 },
@@ -1483,6 +1705,48 @@ describe("onedrive resumable uploads", () => {
     await expect(promise).rejects.toMatchObject({ aborted: true });
     await aborting;
     expect(methods).toContain("DELETE");
+  });
+
+  test.each([
+    [403, "Unauthorized"],
+    [500, "Provider"],
+  ] as const)(
+    "abortUpload rejects a refused session cancel (%p → %s)",
+    async (status, code) => {
+      installFetch(() => new Response(null, { status }));
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await expect(
+        files.abortUpload(
+          "doc.bin",
+          {
+            itemPath: "doc.bin",
+            provider: "onedrive",
+            uploadUrl: "https://sn3302.up.1drv.com/up/session/doc",
+          },
+          { retries: 0 }
+        )
+      ).rejects.toMatchObject({
+        code,
+        message: expect.stringContaining("upload session cancel failed"),
+      });
+    }
+  );
+
+  test("abortUpload resolves when the session is already gone (404)", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      return new Response(null, { status: 404 });
+    });
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.abortUpload("doc.bin", {
+        itemPath: "doc.bin",
+        provider: "onedrive",
+        uploadUrl: "https://sn3302.up.1drv.com/up/session/doc",
+      })
+    ).resolves.toBeUndefined();
+    expect(methods).toEqual(["DELETE"]);
   });
 
   test("metadata is rejected", async () => {

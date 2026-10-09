@@ -7,7 +7,7 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, toSize, toTime } from "./types.js";
+import { bareEtag, malformed, stampOf, toSize, toTime } from "./types.js";
 
 const typeOf = (action: string): "created" | "deleted" | undefined => {
   switch (action) {
@@ -35,17 +35,20 @@ const fromNotification = (body: JsonObject): RawEvent[] => {
   if (!type) {
     return [];
   }
-  const time = toTime(body.eventTime, Date.now());
   const etag = bareEtag(object.eTag);
   const size = toSize(object.size);
+  const bucket = isString(body.bucket) ? body.bucket : undefined;
+  // No event id: the notification's own time tells a re-upload of the same
+  // bytes (same ETag) after a delete from the first upload.
+  const stamp = stampOf(body, body.eventTime, etag);
   return [
     {
-      id: `${type}:${object.key}@${etag ?? time}`,
+      id: `${type}:${bucket === undefined ? "" : `${bucket}/`}${object.key}@${stamp}`,
       key: object.key,
       raw: body,
-      time,
+      time: toTime(body.eventTime, Date.now()),
       type,
-      ...(isString(body.bucket) && { bucket: body.bucket }),
+      ...(bucket !== undefined && { bucket }),
       ...(etag !== undefined && { etag }),
       ...(size !== undefined && { size }),
     },

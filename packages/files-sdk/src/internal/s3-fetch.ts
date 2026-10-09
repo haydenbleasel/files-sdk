@@ -25,6 +25,7 @@ import type {
   SignedUpload,
   UrlOptions,
 } from "../index.js";
+import { assertHeaderSafeMetadata, isAwsHost } from "../s3/shared.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
   collectStream,
@@ -435,10 +436,8 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     return request.url;
   };
 
-  const host = endpointUrl.hostname.toLowerCase();
-  const awsHost = ["amazonaws.com", "amazonaws.com.cn"].some(
-    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
-  );
+  // The same AWS test the aws-sdk engine applies to its endpoint.
+  const awsHost = isAwsHost(endpointUrl.hostname);
 
   return {
     bucket,
@@ -585,6 +584,14 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
           `${providerLabel}: \`maxSize\` requires a presigned POST policy, which the fetch client does not implement. Enforce the limit at your application gateway before issuing the URL, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`
         );
       }
+      // A size floor needs the same POST policy (`content-length-range`); a
+      // presigned PUT has no size condition. `0` asks for nothing.
+      if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
+        throw new FilesError(
+          "Unsupported",
+          `${providerLabel}: \`minSize\` requires a presigned POST policy, which the fetch client does not implement, so a presigned PUT would accept an upload of any size. Reject small uploads at your application gateway, or omit \`minSize\`.`
+        );
+      }
       const url = await presign("PUT", key, signOpts.expiresIn, {
         ...(signOpts.contentType && {
           headers: { "content-type": signOpts.contentType },
@@ -608,6 +615,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
           `${providerLabel}: multipart uploads are not supported by the fetch client (bodies go up as a single PUT). Use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack), or upload in a single request under the 5 GB PUT cap.`
         );
       }
+      assertHeaderSafeMetadata(providerLabel, uploadOpts?.metadata);
       const { data, contentType } = await normalizeBody(
         body,
         uploadOpts?.contentType

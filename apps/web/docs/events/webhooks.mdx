@@ -3,7 +3,7 @@ title: Webhooks
 description: files.events.webhook() is an HTTP endpoint for providers that push. It answers their handshakes, authenticates every delivery, and tells the provider when to retry.
 ---
 
-MinIO, Pub/Sub push subscriptions, Eventarc and Event Grid deliver over HTTP. `files.events.webhook()` is the endpoint: it has the same `{ handle(req) }` shape as the [gateway](/docs/ui/server/gateway), so any gateway binding mounts it.
+MinIO and RustFS, Pub/Sub push subscriptions (GCS and Storj), Eventarc, Event Grid, SNS over HTTPS, and the B2, Tigris, Supabase, Cloudinary, Appwrite and Box webhooks deliver over HTTP. `files.events.webhook()` is the endpoint: it has the same `{ handle(req) }` shape as the [gateway](/docs/ui/server/gateway), so any gateway binding mounts it.
 
 ```ts title="app/api/storage-events/route.ts" lineNumbers
 import { createRouteHandler } from "files-sdk/next";
@@ -25,12 +25,12 @@ The same handler works with [Hono](/docs/ui/server/hono), [Express](/docs/ui/ser
 | `verify` | Checks | Use it for |
 | --- | --- | --- |
 | `{ token }` | `Authorization: Bearer <token>`, the header verbatim, or a `?token=` query parameter, compared in constant time. | MinIO's webhook `auth_token`; a secret in the Event Grid endpoint URL; an EventBridge API destination's API-key header. |
-| `{ google: { audience, email? } }` | The Google-signed OIDC token on the request: RS256 against Google's published keys, issuer, audience, expiry, and (with `email`) the service account and `email_verified`. | Pub/Sub push subscriptions with authentication, Eventarc. |
+| `{ google: { audience, email } }` | The Google-signed OIDC token on the request: RS256 against Google's published keys, issuer, audience, expiry, and the service account with `email_verified`. Both fields are required: anyone with a Google account can mint a token for any audience, so only `email` proves the push came from your subscription. | Pub/Sub push subscriptions with authentication, Eventarc. |
 | `{ secret, secondarySecret?, url? }` | The provider's own signature, checked the way that provider signs. | [B2](/docs/events/b2), [Cloudinary](/docs/events/cloudinary), [Appwrite](/docs/events/appwrite) (needs `url`), [Box](/docs/events/box) (`secondarySecret` for key rotation). |
-| `{ sns: { topicArn?, confirm? } }` | Amazon SNS message signatures, against the certificate at `SigningCertURL` on an SNS host. | [S3 → SNS → HTTPS](/docs/events/s3#sns-over-https). |
+| `{ sns: { topicArn, confirm?, maxAge?, now? } }` | Amazon SNS message signatures, against the certificate at `SigningCertURL` on an SNS host. `topicArn` (one ARN or an array) is required and checked on every message type, `SubscriptionConfirmation` included, so `confirm: true` never subscribes you to someone else's topic. The signed `Timestamp` must be fresh: no older than `maxAge` (default one hour) and no more than five minutes ahead of the clock. | [S3 → SNS → HTTPS](/docs/events/s3#sns-over-https). |
 | `false` | Nothing. | Only when something in front of the endpoint already authenticates (a gateway, mTLS, a private network). |
 
-`audience` is the subscription's configured audience; Pub/Sub defaults it to the push endpoint URL. Google's signing keys are fetched once and cached for an hour, refetching once when a token names a key the cache hasn't seen.
+`audience` is the subscription's configured audience; Pub/Sub defaults it to the push endpoint URL, and `email` is the service account the subscription authenticates as. Google's signing keys are fetched once and cached for an hour. A token that names a key the cache hasn't seen triggers a refetch at most once a minute, and concurrent requests share one fetch.
 
 ## Handshakes
 
@@ -39,7 +39,7 @@ The same handler works with [Hono](/docs/ui/server/hono), [Express](/docs/ui/ser
 - **Event Grid subscription validation:** a `SubscriptionValidationEvent` is answered with its `validationResponse` code, and no handlers run.
 - **CloudEvents abuse protection:** an `OPTIONS` request with `WebHook-Request-Origin` gets `WebHook-Allowed-Origin` and `WebHook-Allowed-Rate` back. Event Grid sends it when a subscription uses the CloudEvents schema, so route `OPTIONS` to the handler too (in Next.js, `export const OPTIONS = (req: Request) => webhook.handle(req)`).
 - **S3 test events:** the `s3:TestEvent` sent when you first configure notifications parses to nothing, as does B2's `b2:TestEvent`.
-- **SNS subscriptions:** with `verify: { sns: { confirm: true } }`, a verified `SubscriptionConfirmation` is confirmed by visiting its `SubscribeURL` (only when it's an SNS host). Without `confirm`, the URL is logged for you to visit.
+- **SNS subscriptions:** with `verify: { sns: { topicArn, confirm: true } }`, a verified `SubscriptionConfirmation` for your topic is confirmed by visiting its `SubscribeURL` (only when it's an SNS host). Without `confirm`, the URL is logged for you to visit.
 
 Handshakes are authenticated like any other request, so put the token in the URL you give Event Grid.
 
@@ -51,11 +51,14 @@ The status tells the provider whether to try again:
 | --- | --- | --- |
 | `200` `{ received: n }` | Handled (including deliveries that parsed to nothing). | Stops. |
 | `401` | The credential is missing or wrong. | Retries, then gives up or dead-letters. Fix the config. |
-| `400` | The body isn't JSON, or isn't the provider's format. | Retrying won't help. |
+| `400` | The body isn't JSON, isn't the provider's format, or a plugin refuses it (an `Invalid` or `Unsupported` error). | Retrying won't help. |
 | `405` | Not `POST` (or `OPTIONS`). |  |
-| `500` | A handler threw, or Google's keys couldn't be fetched. | Redelivers. |
+| `500` | A handler threw, or something else failed unexpectedly. The body is a generic message, since a handler's error may carry your data. | Redelivers. |
+| `502` | The SNS signing certificate or Google's keys couldn't be fetched. | Redelivers. |
 
-`webhook()` throws when it's created if the adapter has no [notification format](/docs/events#supported-providers), if `verify: { secret }` is used for a format without a signature (Tigris, Supabase, Event Grid: use `{ token }`), if Appwrite's `url` is missing, or if an installed plugin can't map provider events (for example [`tiering({ fallback: true })`](/docs/plugins/tiering)), so a misconfigured endpoint fails at startup rather than on its first delivery.
+A handler's error goes to [`events({ onError })`](/docs/plugins/events#options). Any other unexpected failure, the kind answered with a generic `500`, goes to `webhook({ onError(cause, req) })`, which defaults to `console.error`.
+
+`webhook()` throws when it's created if the adapter has no [notification format](/docs/events#supported-providers) (including when a plugin turned it off, as [`tiering({ fallback: true })`](/docs/plugins/tiering) does), if `verify.sns.topicArn`, `verify.google.audience`, or `verify.google.email` is missing, if `verify: { secret }` is used for a format without a signature (Tigris, Supabase, Event Grid: use `{ token }`), if Appwrite's `url` is missing, or if an installed plugin can't map provider events (for example [`tiering({ fallback: true })`](/docs/plugins/tiering)), so a misconfigured endpoint fails at startup rather than on its first delivery.
 
 ## Queue consumers
 

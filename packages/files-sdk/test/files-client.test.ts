@@ -16,7 +16,7 @@ import { FilesError } from "../src/internal/errors.js";
 import { memory } from "../src/memory/index.js";
 import { softDelete } from "../src/soft-delete/index.js";
 import { versioning } from "../src/versioning/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const ENDPOINT = "https://app.test/api/files";
 
@@ -65,6 +65,21 @@ const clientFor = (adapter: Adapter, opts: { headers?: HeadersInit } = {}) => {
   });
 };
 
+// Read a search generator to the end, keeping its return value (which a
+// `for await` loop drops).
+const drain = async (
+  it: AsyncGenerator<{ key: string }, { truncated: boolean }>
+) => {
+  const keys: string[] = [];
+  let step = await it.next();
+  while (!step.done) {
+    keys.push(step.value.key);
+    // oxlint-disable-next-line no-await-in-loop -- drain the generator to read its return value
+    step = await it.next();
+  }
+  return { keys, truncated: step.value.truncated };
+};
+
 describe("createFilesClient — round-trip", () => {
   let adapter: Adapter;
   beforeEach(() => {
@@ -100,7 +115,10 @@ describe("createFilesClient — round-trip", () => {
     expect("text" in head).toBe(false);
     expect(await (await client.download("notes/a.txt")).text()).toBe("alpha");
 
-    expect(await client.url("notes/a.txt")).toContain("memory://");
+    // A signer binds the gateway's forced disposition into its URL.
+    const signer = clientFor(fakeAdapter());
+    await signer.upload("notes/a.txt", "alpha");
+    expect(await signer.url("notes/a.txt")).toContain("fake.local");
     expect(await client.exists("notes/a.txt")).toBe(true);
     await client.delete("notes/a.txt");
     expect(await client.exists("notes/a.txt")).toBe(false);
@@ -153,11 +171,37 @@ describe("createFilesClient — round-trip", () => {
     expect(re).toEqual(["other/c"]);
   });
 
-  test("signedUploadUrl + capabilities", async () => {
+  test("search returns whether the gateway stopped early", async () => {
     const client = clientFor(adapter);
-    const signed = await client.signedUploadUrl("k", { expiresIn: 60 });
+    await client.upload("a1", "1");
+    await client.upload("a2", "2");
+    await client.upload("a3", "3");
+
+    expect(await drain(client.search("a*", { maxResults: 2 }))).toEqual({
+      keys: ["a1", "a2"],
+      truncated: true,
+    });
+    expect(await drain(client.search("a*"))).toEqual({
+      keys: ["a1", "a2", "a3"],
+      truncated: false,
+    });
+  });
+
+  test("a range past the end is Invalid", async () => {
+    const client = clientFor(adapter);
+    await client.upload("r.txt", "hello");
+    await expect(
+      client.download("r.txt", { range: { end: 200, start: 100 } })
+    ).rejects.toMatchObject({ code: "Invalid" });
+  });
+
+  test("signedUploadUrl + capabilities", async () => {
+    const signer = clientFor(
+      withCapabilities(fakeAdapter(), { signedUpload: { supported: true } })
+    );
+    const signed = await signer.signedUploadUrl("k", { expiresIn: 60 });
     expect(signed.method).toBe("PUT");
-    const caps = await client.capabilities();
+    const caps = await clientFor(adapter).capabilities();
     expect(caps.delimiter).toBe("any");
   });
 

@@ -430,6 +430,112 @@ describe("sync", () => {
     expect(await dest.exists("a.txt")).toBe(false);
   });
 
+  test("an abort once the uploads settle skips the prune and reports the unpruned keys", async () => {
+    const source = newFiles();
+    const dest = newFiles();
+    await source.upload("a.txt", "alpha");
+    await dest.upload("stale-1", "x");
+    await dest.upload("stale-2", "y");
+    const controller = new AbortController();
+    const events: SyncProgress[] = [];
+
+    const result = await sync(source, dest, {
+      onProgress: (event) => {
+        events.push(event);
+        // The last upload settles, then the caller cancels before the prune.
+        if (event.status === "uploaded") {
+          controller.abort(new Error("user cancelled"));
+        }
+      },
+      prune: true,
+      signal: controller.signal,
+    });
+
+    expect(result.uploaded).toEqual(["a.txt"]);
+    expect(result.deleted).toEqual([]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["stale-1", "stale-2"]);
+    expect(result.errors?.[0]?.error).toMatchObject({
+      aborted: true,
+      message: "Operation aborted: user cancelled",
+    });
+    expect(await dest.exists("stale-1")).toBe(true);
+    expect(await dest.exists("stale-2")).toBe(true);
+    // The unpruned keys still settle, so `done` reaches `total`.
+    expect(events.map((e) => [e.done, e.key, e.status])).toEqual([
+      [1, "a.txt", "uploaded"],
+      [2, "stale-1", "failed"],
+      [3, "stale-2", "failed"],
+    ]);
+  });
+
+  test("an abort mid-prune stops before the next batch", async () => {
+    const destAdapter = fakeAdapter();
+    const controller = new AbortController();
+    const batches: number[] = [];
+    // SAFETY: the fake always implements the native batch.
+    const nativeBatch = destAdapter.deleteMany as NonNullable<
+      typeof destAdapter.deleteMany
+    >;
+    const dest = new Files({
+      adapter: {
+        ...destAdapter,
+        deleteMany: (keys, opts) => {
+          batches.push(keys.length);
+          // The caller cancels while the first batch is in flight.
+          controller.abort();
+          return nativeBatch(keys, opts);
+        },
+      },
+    });
+    const stale = Array.from(
+      { length: 150 },
+      (_, index) => `stale-${String(index).padStart(3, "0")}`
+    );
+    await dest.upload(stale.map((key) => ({ body: key, key })));
+
+    const result = await sync(newFiles(), dest, {
+      prune: true,
+      signal: controller.signal,
+    });
+
+    // One batch of 100 landed; the abort kept the other 50 in place.
+    expect(batches).toEqual([100]);
+    expect(result.deleted).toEqual(stale.slice(0, 100));
+    expect(result.errors?.map((e) => e.key)).toEqual(stale.slice(100));
+    expect(result.errors?.every((e) => e.error.aborted)).toBe(true);
+    expect(await dest.exists("stale-149")).toBe(true);
+    expect(await dest.exists("stale-000")).toBe(false);
+  });
+
+  test("a batched prune runs every batch and stops at the first failure under stopOnError", async () => {
+    const keys = Array.from(
+      { length: 150 },
+      (_, index) => `k-${String(index).padStart(3, "0")}`
+    );
+    const { signal } = new AbortController();
+
+    const dest = newFiles();
+    await dest.upload(keys.map((key) => ({ body: key, key })));
+    const all = await sync(newFiles(), dest, { prune: true, signal });
+    expect(all.deleted).toEqual(keys);
+    expect(all.errors).toBeUndefined();
+
+    // `fail/x` sorts first, so the first batch fails on its first key and the
+    // second batch never starts.
+    const failing = newFiles();
+    await failing.upload(
+      ["fail/x", ...keys].map((key) => ({ body: key, key }))
+    );
+    const bailed = await sync(newFiles(), failing, {
+      prune: true,
+      signal,
+      stopOnError: true,
+    });
+    expect(bailed.deleted).toEqual([]);
+    expect(bailed.errors?.map((e) => e.key)).toEqual(["fail/x"]);
+    expect(await failing.exists("k-149")).toBe(true);
+  });
+
   test("a listing failure rejects the whole sync", async () => {
     const sourceAdapter = fakeAdapter();
     const source = new Files({

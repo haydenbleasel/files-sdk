@@ -233,7 +233,7 @@ export default defineConfig({
   // install command.
   deployment: cloudflare({ site: "https://files-sdk.dev" }),
   description:
-    "A unified storage SDK for object and blob backends. One small, honest API. Web-standards I/O. An escape hatch when you need the native client.",
+    "A unified storage SDK for object and blob backends. One small, honest API. Web-standard I/O. An escape hatch when you need the native client.",
 
   examples: {
     // Preview frames are iframes that get none of the docs sheet, so the
@@ -413,7 +413,7 @@ export default defineConfig({
     },
     software: {
       license: "https://opensource.org/license/mit",
-      operatingSystem: "Node.js 20+, Bun, Deno, Cloudflare Workers",
+      operatingSystem: "Node.js 22+, Bun, Deno, Cloudflare Workers",
       price: 0,
       sameAs: [
         "https://www.npmjs.com/package/files-sdk",

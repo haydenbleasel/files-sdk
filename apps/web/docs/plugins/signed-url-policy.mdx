@@ -93,9 +93,17 @@ Put `signedUrlPolicy()` **first** (outermost) so it sees the caller's original `
 plugins: [signedUrlPolicy({ maxExpiresIn: 900 }), cache()];
 ```
 
+## Capabilities under the policy
+
+[`files.capabilities`](/docs/capabilities) reports what's left once the policy applies, so callers and the [gateway](/docs/ui/server/gateway) pick a path that works instead of hitting a throw:
+
+- **A forced disposition** can't ride on a permanent link, so `publicUrl` reads `false`. On an instance that signs but can't bind a disposition (Vercel Blob in private mode), every `url()` throws, so `signedUrl.supported` reads `false` too.
+- **A `maxExpiresIn`** on a signing instance pins every plain `url()` to an expiry, so `publicUrl` reads `false`.
+- **A `maxUploadSize`** on an adapter that can't bind `maxSize` (R2, Azure, Supabase, the `fetch` S3 engine, Bun S3, …) makes every `signedUploadUrl()` throw, so `signedUpload.supported` reads `false`, and the gateway proxies uploads instead of presigning.
+
 ## Things to keep in mind
 
 - **It only guards the two URL-minting verbs.** `url()` and `signedUploadUrl()` are rewritten; reads, writes, `copy`, `move`, and `list` pass straight through untouched.
 - **It stores no metadata and transforms nothing on disk.** A bucket behind this policy is indistinguishable from one without it - safe to enable or remove at any time.
 - **It's a policy, not a scanner.** It enforces safe-by-default _headers and limits_; it doesn't inspect the bytes a signed upload will receive. Pair it with [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) for uploads that go through the instance; both refuse to mint `signedUploadUrl()` when they can't enforce it.
-- **It changes nothing on adapters without the matching primitive.** `expiresIn` is ignored by always-public adapters (e.g. Vercel Blob in public mode); on those the disposition override and size cap surface the same way a direct call would (returning unchanged, or throwing where the adapter has no primitive).
+- **It changes nothing on adapters without the matching primitive.** On an instance that can't sign (`capabilities.signedUrl.supported` is `false`, e.g. Vercel Blob in public mode), a `url()` with no `expiresIn` isn't pinned to the cap, so it still returns the permanent link; an explicit `expiresIn` throws `Unsupported`, the same as a direct call. The disposition override and size cap surface the same way a direct call would too (returning unchanged, or throwing where the adapter has no primitive).

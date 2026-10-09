@@ -22,6 +22,7 @@ export type {
   ListCallOptions,
   NativeFileRef,
   SearchCallOptions,
+  SearchSummary,
   SignUploadCallOptions,
   TrashedFile,
   UploadBody,

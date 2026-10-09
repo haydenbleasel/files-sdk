@@ -21,6 +21,7 @@ import type { FilesErrorCode } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonArray, isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
+import { statusError } from "../internal/resumable-offset-http.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface UploadThingAdapterOptions {
@@ -76,6 +77,20 @@ export interface UploadThingAdapterOptions {
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
 // `UTApi.generateSignedURL` throws for an `expiresIn` above 7 days.
 const SIGNED_URL_MAX_EXPIRES_IN = 604_800;
+
+/**
+ * Reject an expiry past UploadThing's 7-day cap up front. The SDK's own
+ * refusal is a plain `Error`, which would map to a retryable `Provider` —
+ * retrying a request that can never be signed.
+ */
+const assertSignedUrlExpiresIn = (expiresIn: number): void => {
+  if (expiresIn > SIGNED_URL_MAX_EXPIRES_IN) {
+    throw new FilesError(
+      "Invalid",
+      `uploadthing: signed URLs must expire within ${SIGNED_URL_MAX_EXPIRES_IN} seconds (7 days), UploadThing's limit; got expiresIn ${expiresIn}.`
+    );
+  }
+};
 const DEFAULT_REGION = "sea1";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const ACL_PUBLIC_READ = "public-read" as const;
@@ -339,19 +354,27 @@ export const uploadthing = (
   const publicUrl = (key: string): string =>
     `https://${appId}.ufs.sh/f/${encodeURIComponent(key)}`;
 
+  // Mint a private file's signed URL, checking the 7-day cap first.
+  const signedUrl = async (key: string, expiresIn: number): Promise<string> => {
+    assertSignedUrlExpiresIn(expiresIn);
+    try {
+      const { ufsUrl } = await utapi.generateSignedURL(key, {
+        expiresIn,
+        keyType: "customId",
+      });
+      return ufsUrl;
+    } catch (error) {
+      throw mapUploadThingError(error);
+    }
+  };
+
   // Resolve the URL we'd fetch for a given key, honoring the configured ACL.
   // For public, we synthesize the CDN URL from appId + customId — no API
   // round trip. For private we ask UploadThing for a short-lived signed URL.
-  const resolveFetchUrl = async (key: string): Promise<string> => {
-    if (acl === ACL_PUBLIC_READ) {
-      return publicUrl(key);
-    }
-    const { ufsUrl } = await utapi.generateSignedURL(key, {
-      expiresIn: defaultExpiresIn,
-      keyType: "customId",
-    });
-    return ufsUrl;
-  };
+  const resolveFetchUrl = (key: string): Promise<string> =>
+    acl === ACL_PUBLIC_READ
+      ? Promise.resolve(publicUrl(key))
+      : signedUrl(key, defaultExpiresIn);
 
   const headViaFetch = async (
     url: string,
@@ -369,9 +392,12 @@ export const uploadthing = (
       downloadTimeoutMs
     );
     if (!res.ok) {
-      throw new FilesError(
-        res.status === 404 ? "NotFound" : "Provider",
-        `uploadthing head failed: ${res.status} ${res.statusText} for ${key}`
+      // Standard status buckets: 404 → NotFound, 401/403 → Unauthorized,
+      // 409/412 → Conflict, anything else → Provider.
+      throw statusError(
+        res.status,
+        `uploadthing: head failed for ${key}`,
+        res.statusText || undefined
       );
     }
     const lengthHeader = res.headers.get("content-length");
@@ -484,9 +510,10 @@ export const uploadthing = (
         throw mapUploadThingError(error);
       }
       if (!res.ok) {
-        throw new FilesError(
-          res.status === 404 ? "NotFound" : "Provider",
-          `uploadthing download failed: ${res.status} ${res.statusText} for ${key}`
+        throw statusError(
+          res.status,
+          `uploadthing: download failed for ${key}`,
+          res.statusText || undefined
         );
       }
       if (range) {
@@ -680,16 +707,7 @@ export const uploadthing = (
       if (acl === ACL_PUBLIC_READ) {
         return publicUrl(key);
       }
-      const expiresIn = urlOpts?.expiresIn ?? defaultExpiresIn;
-      try {
-        const { ufsUrl } = await utapi.generateSignedURL(key, {
-          expiresIn,
-          keyType: "customId",
-        });
-        return ufsUrl;
-      } catch (error) {
-        throw mapUploadThingError(error);
-      }
+      return await signedUrl(key, urlOpts?.expiresIn ?? defaultExpiresIn);
     },
   };
 

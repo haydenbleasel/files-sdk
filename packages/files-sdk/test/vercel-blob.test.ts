@@ -917,6 +917,32 @@ describe("vercel-blob adapter", () => {
     }
   });
 
+  test("download classifies non-OK statuses with the standard buckets", async () => {
+    const files = new Files({ adapter: vercelBlob(), retries: 0 });
+    for (const [status, code] of [
+      [401, "Unauthorized"],
+      [403, "Unauthorized"],
+      [409, "Conflict"],
+      [412, "Conflict"],
+      [503, "Provider"],
+    ] as const) {
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          new Response(null, { status, statusText: "x" })
+        )) as unknown as typeof fetch;
+      // oxlint-disable-next-line no-await-in-loop -- each status is checked in turn.
+      await expect(files.download("a.txt")).rejects.toMatchObject({ code });
+    }
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(null, { status: 500 })
+      )) as unknown as typeof fetch;
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "vercel-blob: download failed for a.txt (HTTP 500).",
+    });
+  });
+
   test("upload computes size for Uint8Array, ArrayBuffer, ArrayBufferView, Blob, string", async () => {
     const adapter = vercelBlob();
     const u8 = await adapter.upload("u8.bin", new Uint8Array([1, 2, 3]));

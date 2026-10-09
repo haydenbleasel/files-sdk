@@ -5,8 +5,15 @@
 // certificate is trusted because of where it comes from — an SNS host, over
 // HTTPS — so that URL (and a `SubscribeURL` before visiting it) must be an
 // SNS endpoint. Raw message delivery strips the signature, so it fails closed.
+//
+// A valid signature only proves SNS sent the message, for whichever topic
+// published it, and any AWS account can publish S3-shaped JSON to a topic of
+// its own. So the topic is pinned (required), and the signed `Timestamp` must
+// be recent, so an old message can't be replayed. Both are checked before any
+// certificate is fetched.
 
-import { isString } from "../internal/is.js";
+import { FilesError } from "../internal/errors.js";
+import { isNumber, isString } from "../internal/is.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
 import { isJsonObject } from "../internal/json.js";
 import { fromBase64, utf8 } from "./crypto.js";
@@ -14,19 +21,40 @@ import { unauthorized } from "./formats/types.js";
 import { pemToDer, spkiOf } from "./x509.js";
 
 export interface SnsVerifyOptions {
-  /** Only accept messages from this topic (recommended). */
-  topicArn?: string;
+  /**
+   * The topic ARN (or ARNs) deliveries must come from. Required: SNS signs a
+   * message for any topic, including one an attacker owns, so without it a
+   * forged S3 event on their topic would verify (and, with `confirm`, your
+   * endpoint would subscribe to it). Checked on notifications and on
+   * subscription messages alike.
+   */
+  topicArn: string | readonly string[];
   /**
    * Visit the `SubscribeURL` of a verified `SubscriptionConfirmation`, so a
    * new subscription starts delivering. Default `false`: the URL is logged
    * for you to confirm by hand (SNS sends nothing until you do).
    */
   confirm?: boolean;
+  /**
+   * How old a message's signed `Timestamp` may be, ms, so a captured message
+   * can't be replayed later. Default one hour, the longest an SNS delivery
+   * policy retries for. A `Timestamp` more than five minutes ahead of the
+   * clock is refused too.
+   */
+  maxAge?: number;
+  /** Clock for the `Timestamp` check. Defaults to `Date.now`. */
+  now?: () => number;
   /** Fetches the signing certificate and the `SubscribeURL`. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
 
 const SNS_HOST = /^sns\.[a-z0-9-]{3,}\.amazonaws\.com(?:\.cn)?$/u;
+/** The default {@link SnsVerifyOptions.maxAge}. */
+const MAX_AGE_MS = 60 * 60 * 1000;
+/** Allowed clock drift ahead of a message's `Timestamp`. */
+const SKEW_MS = 5 * 60 * 1000;
+/** How many signing keys are kept. SNS uses one certificate per region at a time. */
+const MAX_KEYS = 16;
 
 const NOTIFICATION_FIELDS = [
   "Message",
@@ -46,7 +74,11 @@ const SUBSCRIPTION_FIELDS = [
   "Type",
 ];
 
-/** An `https://sns.<region>.amazonaws.com[.cn]/…` URL, or `undefined`. */
+/**
+ * An `https://sns.<region>.amazonaws.com[.cn]/…` URL on the default port with
+ * no credentials, or `undefined`. With `pem`, a signing certificate's URL: a
+ * `.pem` path and nothing after it (no query or fragment).
+ */
 export const snsUrl = (
   value: JsonValue | undefined,
   pem = false
@@ -56,11 +88,15 @@ export const snsUrl = (
   }
   try {
     const url = new URL(value);
-    return url.protocol === "https:" &&
+    const plain =
+      url.protocol === "https:" &&
       SNS_HOST.test(url.hostname) &&
-      (!pem || url.pathname.endsWith(".pem"))
-      ? url
-      : undefined;
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "";
+    const certificate =
+      url.pathname.endsWith(".pem") && url.search === "" && url.hash === "";
+    return plain && (!pem || certificate) ? url : undefined;
   } catch {
     return undefined;
   }
@@ -102,26 +138,97 @@ const decodeEnvelope = (body: string): JsonObject => {
   throw unauthorized("not a signed SNS message");
 };
 
+/** Throws `Invalid` unless `opts` pins at least one topic and a usable `maxAge`. */
+export const checkSnsOptions = (opts: SnsVerifyOptions): void => {
+  const topics: readonly unknown[] = Array.isArray(opts.topicArn)
+    ? opts.topicArn
+    : [opts.topicArn];
+  if (
+    topics.length === 0 ||
+    !topics.every((topic) => isString(topic) && topic !== "")
+  ) {
+    throw new FilesError(
+      "Invalid",
+      "files.events.webhook(): verify.sns.topicArn must name the SNS topic (or topics) your bucket publishes to"
+    );
+  }
+  const { maxAge } = opts;
+  if (
+    maxAge !== undefined &&
+    !(isNumber(maxAge) && Number.isFinite(maxAge) && maxAge > 0)
+  ) {
+    throw new FilesError(
+      "Invalid",
+      "files.events.webhook(): verify.sns.maxAge must be a positive number of milliseconds"
+    );
+  }
+};
+
+/** An upstream fetch (certificate, `SubscribeURL`) that failed: SNS should redeliver. */
+const upstream = (detail: string, cause?: unknown): FilesError =>
+  new FilesError("Provider", `files-sdk/events: ${detail}`, cause);
+
+const fetchOrThrow = async (
+  fetchImpl: typeof fetch,
+  url: URL,
+  what: string
+): Promise<Response> => {
+  let res: Response;
+  try {
+    res = await fetchImpl(url.href);
+  } catch (error) {
+    throw upstream(`${what} failed`, error);
+  }
+  if (!res.ok) {
+    throw upstream(`${what} failed (${res.status})`);
+  }
+  return res;
+};
+
+/** Refuse a message whose signed `Timestamp` is missing, too old, or from the future. */
+const checkTimestamp = (
+  timestamp: JsonValue | undefined,
+  at: number,
+  maxAge: number
+): void => {
+  const sent = isString(timestamp) ? Date.parse(timestamp) : Number.NaN;
+  if (Number.isNaN(sent)) {
+    throw unauthorized("SNS message has no Timestamp");
+  }
+  if (at - sent > maxAge) {
+    throw unauthorized("SNS message is too old (its Timestamp is past maxAge)");
+  }
+  if (sent - at > SKEW_MS) {
+    throw unauthorized("SNS message Timestamp is in the future");
+  }
+};
+
 /**
  * A verifier for SNS HTTP deliveries. Resolves with the verified envelope;
- * caches signing keys per certificate URL.
+ * caches signing keys per certificate URL (the most recently used few).
  */
 export const snsVerifier = (
   opts: SnsVerifyOptions
 ): ((req: Request, body: string) => Promise<JsonObject>) => {
+  checkSnsOptions(opts);
   const fetchImpl = opts.fetch ?? fetch;
+  const now = opts.now ?? Date.now;
+  const maxAge = opts.maxAge ?? MAX_AGE_MS;
+  const topics = new Set<string>(
+    isString(opts.topicArn) ? [opts.topicArn] : opts.topicArn
+  );
+  // Insertion-ordered, so the first key is the least recently used.
   const keys = new Map<string, Promise<CryptoKey>>();
 
   const fetchKey = async (
     url: URL,
     hash: "SHA-1" | "SHA-256"
   ): Promise<CryptoKey> => {
-    const res = await fetchImpl(url.href);
-    if (!res.ok) {
-      throw unauthorized(
-        `fetching the SNS signing certificate failed (${res.status})`
-      );
-    }
+    const res = await fetchOrThrow(
+      fetchImpl,
+      url,
+      "fetching the SNS signing certificate"
+    );
     return crypto.subtle.importKey(
       "spki",
       spkiOf(pemToDer(await res.text())),
@@ -134,7 +241,11 @@ export const snsVerifier = (
   const keyFor = (url: URL, hash: "SHA-1" | "SHA-256"): Promise<CryptoKey> => {
     const cacheKey = `${hash} ${url.href}`;
     let key = keys.get(cacheKey);
-    if (!key) {
+    if (key) {
+      // Most recently used goes last.
+      keys.delete(cacheKey);
+      keys.set(cacheKey, key);
+    } else {
       key = (async () => {
         try {
           return await fetchKey(url, hash);
@@ -146,6 +257,10 @@ export const snsVerifier = (
         }
       })();
       keys.set(cacheKey, key);
+      const [oldest] = keys.keys();
+      if (keys.size > MAX_KEYS && oldest !== undefined) {
+        keys.delete(oldest);
+      }
     }
     return key;
   };
@@ -163,9 +278,12 @@ export const snsVerifier = (
     if (!(hash && certUrl && isString(Signature))) {
       throw unauthorized("not a signed SNS message");
     }
-    if (opts.topicArn !== undefined && TopicArn !== opts.topicArn) {
+    // Before anything is fetched: an unauthenticated request for another
+    // topic, or a stale one, costs no outbound request.
+    if (!(isString(TopicArn) && topics.has(TopicArn))) {
       throw unauthorized("SNS message is from another topic");
     }
+    checkTimestamp(message.Timestamp, now(), maxAge);
     let signature: Uint8Array<ArrayBuffer>;
     try {
       signature = fromBase64(Signature);
@@ -196,17 +314,11 @@ export const snsHandshake = async (
       throw unauthorized("SubscribeURL is not an SNS endpoint");
     }
     if (opts.confirm) {
-      const res = await (opts.fetch ?? fetch)(subscribe.href);
-      if (!res.ok) {
-        return Response.json(
-          {
-            error: {
-              message: `confirming the subscription failed (${res.status})`,
-            },
-          },
-          { status: 502 }
-        );
-      }
+      await fetchOrThrow(
+        opts.fetch ?? fetch,
+        subscribe,
+        "confirming the SNS subscription"
+      );
       return Response.json({ confirmed: true });
     }
     // oxlint-disable-next-line no-console -- the only way to surface the URL a person must visit when auto-confirm is off.

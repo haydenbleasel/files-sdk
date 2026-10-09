@@ -11,6 +11,7 @@ import type {
   ListOptions,
   ListResult,
   OffsetResumableDriver,
+  ResumableDriverOptions,
   ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
@@ -29,7 +30,7 @@ import {
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
-import { isNumber, isObject, isString } from "../internal/is.js";
+import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
 import { statusError } from "../internal/resumable-offset-http.js";
@@ -183,6 +184,29 @@ const resolveConfig = (
   };
 };
 
+const isNonEmptyString = (value: unknown): value is string =>
+  isString(value) && value !== "";
+
+/**
+ * Whether a pre-built `client` was configured with the API key + secret that
+ * `private_download_url` signs with. The adapter skips `config()` for a
+ * client, so its own resolved credentials may not be what the SDK signs with.
+ */
+const clientCanSign = (client: typeof cloudinary): boolean => {
+  // A stand-in client may not implement `config()`; it can't sign then.
+  if (!isFunction(client.config)) {
+    return false;
+  }
+  const config: unknown = client.config();
+  return (
+    isObject(config) &&
+    "api_key" in config &&
+    isNonEmptyString(config.api_key) &&
+    "api_secret" in config &&
+    isNonEmptyString(config.api_secret)
+  );
+};
+
 const toBuffer = async (body: Body): Promise<Buffer> => {
   const normalized = await normalizeBody(body);
   const bytes =
@@ -264,6 +288,24 @@ export const cloudinaryAdapter = (
     });
   }
 
+  // Signed delivery URLs (`private` / `authenticated` reads) need an API key
+  // + secret: the adapter's own, or ones a pre-built `client` was configured
+  // with. Without them every signing call throws, so declare and refuse
+  // honestly instead.
+  const ownSigningCredentials =
+    apiKey && apiSecret ? { apiKey, apiSecret } : undefined;
+  const canSignUrls =
+    ownSigningCredentials !== undefined ||
+    (opts.client !== undefined && clientCanSign(opts.client));
+  const assertCanSignUrls = (): void => {
+    if (!canSignUrls) {
+      throw new FilesError(
+        "Unsupported",
+        `cloudinary: \`${type}\` assets are only served through signed URLs, which need both apiKey and apiSecret. Pass them at construction or set CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET / CLOUDINARY_URL (or configure them on the \`client\`).`
+      );
+    }
+  };
+
   const uploadBuffer = (
     buf: Buffer,
     uploadOpts: UploadApiOptions
@@ -308,14 +350,21 @@ export const cloudinaryAdapter = (
     expiresIn: number
   ): string => {
     if (!format) {
+      // The asset itself can't be signed for (no stored format), so this is
+      // a deterministic refusal rather than a provider failure.
       throw new FilesError(
-        "Provider",
-        `cloudinary: cannot mint signed URL for "${key}" — resource has no format. Raw assets must store their extension in the public_id.`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `cloudinary: cannot mint signed URL for "${key}" — resource has no format. Raw assets must store their extension in the public_id.`
       );
     }
     return sdk.utils.private_download_url(key, format, {
+      // Sign with the adapter's own credentials when it has them, so a
+      // pre-built `client` or another adapter's global `config()` can't
+      // change what the URL is signed with.
+      ...(ownSigningCredentials && {
+        api_key: ownSigningCredentials.apiKey,
+        api_secret: ownSigningCredentials.apiSecret,
+      }),
       expires_at: Math.floor(Date.now() / 1000) + expiresIn,
       resource_type: resourceType,
       type,
@@ -343,15 +392,181 @@ export const cloudinaryAdapter = (
       ...(range && { headers: rangeRequestHeaders(range) }),
     });
     if (!res.ok) {
-      throw new FilesError(
-        res.status === 404 ? "NotFound" : "Provider",
-        `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
+      // Standard status buckets: 404 → NotFound, 401/403 → Unauthorized,
+      // 409/412 → Conflict, anything else → Provider.
+      throw statusError(
+        res.status,
+        `cloudinary: download failed for "${key}"`,
+        res.statusText || undefined
       );
     }
     if (range) {
       assertRangeHonored(res.status, "cloudinary");
     }
     return new Uint8Array(await res.arrayBuffer());
+  };
+
+  const chunkedDriver = (
+    credentials: { apiKey: string; apiSecret: string },
+    key: string,
+    resumableOpts: ResumableDriverOptions
+  ): OffsetResumableDriver => {
+    // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
+    // before a resumable upload ever reaches here.
+    const { apiKey: signingKey, apiSecret: signingSecret } = credentials;
+    let session:
+      | Extract<ResumableUploadSession, { provider: "cloudinary" }>
+      | undefined;
+    let finalResponse: CloudinaryResource | undefined;
+    let contentType = "application/octet-stream";
+    const requireSession = () => {
+      if (!session) {
+        throw new FilesError(
+          "Invalid",
+          "cloudinary: resumable upload not started."
+        );
+      }
+      return session;
+    };
+    return {
+      adopt(adopted: ResumableUploadSession) {
+        if (adopted.provider !== "cloudinary") {
+          throw new FilesError(
+            "Invalid",
+            `Cannot resume a ${adopted.provider} session on a cloudinary adapter.`
+          );
+        }
+        if (adopted.key !== key) {
+          throw new FilesError(
+            "Invalid",
+            "Resume token does not match this upload's key."
+          );
+        }
+        session = adopted;
+        ({ contentType } = adopted);
+      },
+      begin(meta): Promise<ResumableUploadSession> {
+        ({ contentType } = meta);
+        session = {
+          contentType,
+          key,
+          offset: 0,
+          // Cloudinary ties a chunked upload together by this header value.
+          provider: "cloudinary",
+          // oxlint-disable-next-line sonarjs/pseudo-random -- non-crypto: just a unique-enough tag to correlate chunks of one upload.
+          uploadId: `fls-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+        return Promise.resolve(session);
+      },
+      complete(): Promise<UploadResult> {
+        if (!finalResponse) {
+          throw new FilesError(
+            "Provider",
+            "cloudinary: upload did not finalize."
+          );
+        }
+        return Promise.resolve({
+          contentType: resolveContentType(finalResponse, contentType),
+          ...(finalResponse.etag && { etag: finalResponse.etag }),
+          key: finalResponse.public_id,
+          ...(finalResponse.created_at && {
+            lastModified: new Date(finalResponse.created_at).getTime(),
+          }),
+          size: finalResponse.bytes ?? requireSession().offset,
+        });
+      },
+      discard() {
+        // Cloudinary has no abort for an in-progress chunked upload; the
+        // partial expires on its own.
+        return Promise.resolve();
+      },
+      mode: "offset",
+      partSize:
+        isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
+          ? resumableOpts.multipart.partSize
+          : 20 * 1024 * 1024,
+      probe(): Promise<{ nextOffset: number }> {
+        return Promise.resolve({ nextOffset: requireSession().offset });
+      },
+      async uploadAt({ offset, data, total, signal }): Promise<{
+        nextOffset: number;
+      }> {
+        const current = requireSession();
+        const timestamp = Math.floor(Date.now() / 1000);
+        // Cloudinary signs every param except file / api_key /
+        // resource_type / cloud_name, so a non-default delivery `type` must
+        // be both signed and sent — otherwise the asset lands as a public
+        // `upload` one that this adapter's type-scoped reads can't see.
+        const signature = sdk.utils.api_sign_request(
+          {
+            public_id: key,
+            timestamp,
+            ...(type !== "upload" && { type }),
+          },
+          signingSecret
+        );
+        const form = new FormData();
+        // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
+        // widened typed arrays to `ArrayBufferLike`); the orchestrator
+        // slices each chunk from the upload body into a fresh view, never
+        // shared memory.
+        form.append("file", new Blob([data as BlobPart]), key);
+        form.append("api_key", signingKey);
+        form.append("timestamp", String(timestamp));
+        form.append("signature", signature);
+        form.append("public_id", key);
+        if (type !== "upload") {
+          form.append("type", type);
+        }
+        // An empty body has no valid byte range (`bytes 0--1/0`), so it
+        // goes up as a plain single-shot upload instead of a chunk.
+        const chunkHeaders =
+          data.byteLength > 0
+            ? {
+                "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
+                "X-Unique-Upload-Id": current.uploadId,
+              }
+            : undefined;
+        const res = await fetch(
+          `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`,
+          {
+            body: form,
+            ...(chunkHeaders && { headers: chunkHeaders }),
+            method: "POST",
+            ...(signal && { signal }),
+          }
+        );
+        if (!res.ok) {
+          // Classified by status like the other resumable drivers: a 401
+          // (bad signature) is Unauthorized and isn't retried per chunk.
+          const body = await res.text();
+          throw statusError(
+            res.status,
+            "cloudinary: chunk upload failed",
+            body.trim() || undefined
+          );
+        }
+        // Cloudinary answers the final chunk with the full upload response
+        // (earlier chunks get a partial one without `public_id`). Keep the
+        // fields `complete()` reads, each checked as it is read.
+        const json: JsonValue = await res.json();
+        if (isJsonObject(json) && isString(json.public_id)) {
+          finalResponse = {
+            ...(isNumber(json.bytes) && { bytes: json.bytes }),
+            ...(isString(json.created_at) && { created_at: json.created_at }),
+            ...(isString(json.etag) && { etag: json.etag }),
+            ...(isString(json.format) && { format: json.format }),
+            public_id: json.public_id,
+            ...(isString(json.resource_type) && {
+              resource_type: json.resource_type,
+            }),
+          };
+        }
+        const nextOffset = offset + data.byteLength;
+        current.offset = nextOffset;
+        return { nextOffset };
+      },
+    };
   };
 
   return {
@@ -373,14 +588,15 @@ export const cloudinaryAdapter = (
         maxSize: false,
         supported: Boolean(apiKey && apiSecret),
       },
-      // `private` / `authenticated` delivery types sign URLs; the default
-      // `upload` (public) delivery type returns an unsigned, permanent CDN URL,
-      // so an explicit `expiresIn` is refused by the core gate. No URL carries
-      // a Content-Disposition override (`url()` throws on one).
+      // `private` / `authenticated` delivery types sign URLs — given an API
+      // key + secret to sign with; the default `upload` (public) delivery type
+      // returns an unsigned, permanent CDN URL, so an explicit `expiresIn` is
+      // refused by the core gate. No URL carries a Content-Disposition
+      // override (`url()` throws on one).
       signedUrl: {
         disposition: false,
         expiry: "exact",
-        supported: type !== "upload",
+        supported: type !== "upload" && canSignUrls,
       },
     },
     cloudName,
@@ -413,6 +629,9 @@ export const cloudinaryAdapter = (
       }
     },
     async download(key, downloadOpts) {
+      if (type !== "upload") {
+        assertCanSignUrls();
+      }
       try {
         const range = downloadOpts?.range;
         const resourcePromise: Promise<CloudinaryResource> = sdk.api.resource(
@@ -555,171 +774,16 @@ export const cloudinaryAdapter = (
     name: "cloudinary",
     raw: sdk,
     resourceType,
-    resumableUpload(key, resumableOpts): OffsetResumableDriver {
-      // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
-      // before a resumable upload ever reaches here.
-      if (!(apiKey && apiSecret)) {
-        throw new FilesError(
-          "Unsupported",
-          "cloudinary: resumable uploads require both apiKey and apiSecret."
-        );
-      }
-      const signingKey = apiKey;
-      const signingSecret = apiSecret;
-      let session:
-        | Extract<ResumableUploadSession, { provider: "cloudinary" }>
-        | undefined;
-      let finalResponse: CloudinaryResource | undefined;
-      let contentType = "application/octet-stream";
-      const requireSession = () => {
-        if (!session) {
-          throw new FilesError(
-            "Invalid",
-            "cloudinary: resumable upload not started."
-          );
-        }
-        return session;
-      };
-      return {
-        adopt(adopted: ResumableUploadSession) {
-          if (adopted.provider !== "cloudinary") {
-            throw new FilesError(
-              "Invalid",
-              `Cannot resume a ${adopted.provider} session on a cloudinary adapter.`
-            );
-          }
-          if (adopted.key !== key) {
-            throw new FilesError(
-              "Invalid",
-              "Resume token does not match this upload's key."
-            );
-          }
-          session = adopted;
-          ({ contentType } = adopted);
-        },
-        begin(meta): Promise<ResumableUploadSession> {
-          ({ contentType } = meta);
-          session = {
-            contentType,
-            key,
-            offset: 0,
-            // Cloudinary ties a chunked upload together by this header value.
-            provider: "cloudinary",
-            // oxlint-disable-next-line sonarjs/pseudo-random -- non-crypto: just a unique-enough tag to correlate chunks of one upload.
-            uploadId: `fls-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          };
-          return Promise.resolve(session);
-        },
-        complete(): Promise<UploadResult> {
-          if (!finalResponse) {
-            throw new FilesError(
-              "Provider",
-              "cloudinary: upload did not finalize."
-            );
-          }
-          return Promise.resolve({
-            contentType: resolveContentType(finalResponse, contentType),
-            ...(finalResponse.etag && { etag: finalResponse.etag }),
-            key: finalResponse.public_id,
-            ...(finalResponse.created_at && {
-              lastModified: new Date(finalResponse.created_at).getTime(),
-            }),
-            size: finalResponse.bytes ?? requireSession().offset,
-          });
-        },
-        discard() {
-          // Cloudinary has no abort for an in-progress chunked upload; the
-          // partial expires on its own.
-          return Promise.resolve();
-        },
-        mode: "offset",
-        partSize:
-          isObject(resumableOpts.multipart) && resumableOpts.multipart.partSize
-            ? resumableOpts.multipart.partSize
-            : 20 * 1024 * 1024,
-        probe(): Promise<{ nextOffset: number }> {
-          return Promise.resolve({ nextOffset: requireSession().offset });
-        },
-        async uploadAt({ offset, data, total, signal }): Promise<{
-          nextOffset: number;
-        }> {
-          const current = requireSession();
-          const timestamp = Math.floor(Date.now() / 1000);
-          // Cloudinary signs every param except file / api_key /
-          // resource_type / cloud_name, so a non-default delivery `type` must
-          // be both signed and sent — otherwise the asset lands as a public
-          // `upload` one that this adapter's type-scoped reads can't see.
-          const signature = sdk.utils.api_sign_request(
-            {
-              public_id: key,
-              timestamp,
-              ...(type !== "upload" && { type }),
-            },
-            signingSecret
-          );
-          const form = new FormData();
-          // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing (TS 5.7
-          // widened typed arrays to `ArrayBufferLike`); the orchestrator
-          // slices each chunk from the upload body into a fresh view, never
-          // shared memory.
-          form.append("file", new Blob([data as BlobPart]), key);
-          form.append("api_key", signingKey);
-          form.append("timestamp", String(timestamp));
-          form.append("signature", signature);
-          form.append("public_id", key);
-          if (type !== "upload") {
-            form.append("type", type);
-          }
-          // An empty body has no valid byte range (`bytes 0--1/0`), so it
-          // goes up as a plain single-shot upload instead of a chunk.
-          const chunkHeaders =
-            data.byteLength > 0
-              ? {
-                  "Content-Range": `bytes ${offset}-${offset + data.byteLength - 1}/${total}`,
-                  "X-Unique-Upload-Id": current.uploadId,
-                }
-              : undefined;
-          const res = await fetch(
-            `${CLOUDINARY_API_ROOT}/${cloudName}/${resourceType}/upload`,
-            {
-              body: form,
-              ...(chunkHeaders && { headers: chunkHeaders }),
-              method: "POST",
-              ...(signal && { signal }),
-            }
-          );
-          if (!res.ok) {
-            // Classified by status like the other resumable drivers: a 401
-            // (bad signature) is Unauthorized and isn't retried per chunk.
-            const body = await res.text();
-            throw statusError(
-              res.status,
-              "cloudinary: chunk upload failed",
-              body.trim() || undefined
-            );
-          }
-          // Cloudinary answers the final chunk with the full upload response
-          // (earlier chunks get a partial one without `public_id`). Keep the
-          // fields `complete()` reads, each checked as it is read.
-          const json: JsonValue = await res.json();
-          if (isJsonObject(json) && isString(json.public_id)) {
-            finalResponse = {
-              ...(isNumber(json.bytes) && { bytes: json.bytes }),
-              ...(isString(json.created_at) && { created_at: json.created_at }),
-              ...(isString(json.etag) && { etag: json.etag }),
-              ...(isString(json.format) && { format: json.format }),
-              public_id: json.public_id,
-              ...(isString(json.resource_type) && {
-                resource_type: json.resource_type,
-              }),
-            };
-          }
-          const nextOffset = offset + data.byteLength;
-          current.offset = nextOffset;
-          return { nextOffset };
-        },
-      };
-    },
+    // Chunked uploads are signed with the API secret, so the driver is only
+    // attached when both the key and secret resolved — `files.capabilities
+    // .resumable` then reports whether pause-able uploads can work.
+    ...(ownSigningCredentials && {
+      resumableUpload: (
+        key: string,
+        resumableOpts: ResumableDriverOptions
+      ): OffsetResumableDriver =>
+        chunkedDriver(ownSigningCredentials, key, resumableOpts),
+    }),
     signedUploadUrl(
       key: string,
       signOpts: SignUploadOptions
@@ -818,6 +882,7 @@ export const cloudinaryAdapter = (
         if (type === "upload") {
           return buildDeliveryUrl(key);
         }
+        assertCanSignUrls();
         // private / authenticated — sign with expiry. private_download_url
         // needs the asset format, so look the resource up to learn it.
         const expiresIn = urlOpts?.expiresIn ?? signedUrlExpiresIn;

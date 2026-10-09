@@ -369,19 +369,29 @@ export const bunnyStorage = (
       const path = toBunnyPath(key);
       let removed: boolean;
       try {
-        removed = await BunnyStorageSDK.file.remove(client, path);
+        // `throwOnError` makes the SDK throw on an HTTP error instead of
+        // resolving `false`, so the status is classified directly: a 404
+        // ("File not found") is an idempotent success and a 401 — a wrong or
+        // read-only key — surfaces as `Unauthorized`, not a retried failure.
+        removed = await BunnyStorageSDK.file.remove(client, path, {
+          throwOnError: true,
+        });
       } catch (error) {
-        // Only network-layer failures throw from `file.remove`.
-        throw mapBunnyStorageError(error);
+        const mapped = mapBunnyStorageError(error);
+        if (mapped.code === "NotFound") {
+          return;
+        }
+        throw mapped;
       }
       if (removed) {
         return;
       }
-      // `file.remove` resolves `response.ok` and never throws on an HTTP
-      // error, so `false` is either a missing key (404: idempotent success)
-      // or a real failure (401/403/5xx) the SDK doesn't tell apart. Probe the
-      // key: NotFound means there was nothing to delete; any other probe
-      // error surfaces; a file that is still there means the delete failed.
+      // An SDK without `throwOnError` resolves `response.ok` instead of
+      // throwing, so `false` is either a missing key (404: idempotent
+      // success) or a real failure (401/403/5xx) it doesn't tell apart. Probe
+      // the key: NotFound means there was nothing to delete; any other probe
+      // error surfaces; a file that is still there means the delete failed —
+      // possibly transiently, so it stays a retryable `Provider`.
       try {
         await BunnyStorageSDK.file.get(client, path);
       } catch (error) {
