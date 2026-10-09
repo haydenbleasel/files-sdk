@@ -1,9 +1,18 @@
 import { expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import pkg from "../package.json" with { type: "json" };
 import type * as ApiModule from "../src/api/index.js";
+import type * as FsModule from "../src/fs/index.js";
 import type * as RootModule from "../src/index.js";
 import type * as MemoryModule from "../src/memory/index.js";
 
@@ -174,6 +183,66 @@ test(
     );
 
     expect(res.status).toBe(401);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// The gateway recognizes an adapter's `responseContentDisposition` refusal by
+// a registry-symbol brand, because `files-sdk/api` (edge pass) and the Node
+// adapters each bundle their own copy of `internal/errors.ts`. Drive the built
+// router over the built `fs` adapter: the `url` op must answer with the
+// gateway's own guidance (refusal recognized), and an inline `authorize`
+// policy must mint the URL without the disposition.
+test(
+  "api router recognizes a disposition refusal from a separately bundled adapter",
+  async () => {
+    ensureBuilt();
+    const { createFiles } = (await import(
+      path.resolve(distDir, "index.js")
+    )) as typeof RootModule;
+    const { createFilesRouter } = (await import(
+      path.resolve(distDir, "api/index.js")
+    )) as typeof ApiModule;
+    const { fs: fsAdapter } = (await import(
+      path.resolve(distDir, "fs/index.js")
+    )) as typeof FsModule;
+
+    const root = mkdtempSync(path.join(tmpdir(), "files-sdk-build-output-"));
+    try {
+      const files = createFiles({
+        adapter: fsAdapter({ root, urlBaseUrl: "https://static.test/files/" }),
+      });
+      await files.upload("a.txt", "hello");
+      const urlOp = (disposition?: string) =>
+        createFilesRouter({
+          authorize: () => (disposition ? { disposition } : undefined),
+          files,
+          secret: "x".repeat(40),
+        }).handle(
+          new Request("http://localhost/api/files", {
+            body: JSON.stringify({ key: "a.txt", op: "url" }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        );
+
+      const refused = await urlOp();
+      expect(refused.status).toBe(500);
+      const { error } = (await refused.json()) as {
+        error: { message: string };
+      };
+      expect(error.message).toContain(
+        'Return { disposition: "inline" } from authorize'
+      );
+
+      const inline = await urlOp("inline");
+      expect(inline.status).toBe(200);
+      expect(((await inline.json()) as { url: string }).url).toBe(
+        "https://static.test/files/a.txt"
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   },
   COLD_BUILD_TIMEOUT_MS
 );

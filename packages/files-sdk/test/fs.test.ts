@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fs as fsAdapter, mapFsError } from "../src/fs/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const tmpRoots: string[] = [];
 
@@ -1072,6 +1073,9 @@ describe("fs adapter", () => {
       await expect(
         files.url("a.txt", { responseContentDisposition: "attachment" })
       ).rejects.toMatchObject({ code: "Provider" });
+      await expectDispositionRefusal(
+        files.url("a.txt", { responseContentDisposition: "attachment" })
+      );
     });
 
     test("throws on responseContentDisposition without urlBaseUrl", async () => {
@@ -1080,6 +1084,9 @@ describe("fs adapter", () => {
       await expect(
         files.url("a.txt", { responseContentDisposition: "attachment" })
       ).rejects.toMatchObject({ code: "Provider" });
+      await expectDispositionRefusal(
+        files.url("a.txt", { responseContentDisposition: "attachment" })
+      );
     });
   });
 

@@ -17,7 +17,7 @@ import {
   normalizeBody,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -528,8 +528,7 @@ export const bunnyStorage = (
     },
     url(key, urlOpts?: UrlOptions): Promise<string> {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "bunnyStorage: `responseContentDisposition` is not supported. Bunny Storage has no signed-read URL primitive where a Content-Disposition override can be bound."
         );
       }

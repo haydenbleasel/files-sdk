@@ -10,6 +10,7 @@ import type {
   OffsetResumableDriver,
   ResumableUploadSession,
 } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z").getTime();
 
@@ -436,6 +437,9 @@ describe("sftp adapter", () => {
     await expect(
       withBase.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition/iu);
+    await expectDispositionRefusal(
+      withBase.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("responseContentDisposition without publicBaseUrl throws", async () => {
@@ -443,6 +447,9 @@ describe("sftp adapter", () => {
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/publicBaseUrl/iu);
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("signedUploadUrl is not supported", async () => {

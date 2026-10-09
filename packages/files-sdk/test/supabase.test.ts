@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const sigOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
   m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
@@ -898,6 +899,9 @@ describe("supabase adapter", () => {
       await expect(
         adapter.url("a.txt", { responseContentDisposition: "inline" })
       ).rejects.toThrow(/only force an attachment/u);
+      await expectDispositionRefusal(
+        adapter.url("a.txt", { responseContentDisposition: "inline" })
+      );
     });
 
     test("responseContentDisposition forces signing even when publicBaseUrl set", async () => {

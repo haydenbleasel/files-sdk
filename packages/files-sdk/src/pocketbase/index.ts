@@ -24,7 +24,7 @@ import {
   rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import type { JsonObject } from "../internal/json.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -600,8 +600,7 @@ export const pocketbase = (
     },
     async url(key: string, urlOpts?: UrlOptions): Promise<string> {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "pocketbase: `responseContentDisposition` is not supported. PocketBase has no per-URL Content-Disposition override; use the `?download=true` query string on the URL itself (passthrough via `adapter.raw`) for forced-download behavior."
         );
       }

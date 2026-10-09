@@ -45,12 +45,13 @@ createFilesRouter({
   // seconds. Default 300. Not a ceiling — cap it with authorize's maxExpiresIn.
   defaultExpiresIn?: number,
 
-  // Force Content-Disposition: attachment on proxied downloads. Default true.
+  // Force Content-Disposition: attachment on downloads (proxied, or bound
+  // into the redirect URL). Default true.
   forceDownloadDisposition?: boolean,
 
   maxListLimit?: number,       // cap a list page (and a search's walk page). Default 1000.
   maxSearchResults?: number,   // cap a search page. Default 1000.
-  maxUploadSize?: number,      // reject larger uploads (bound + verified).
+  maxUploadSize?: number,      // reject larger uploads (checked at presign, bound, verified on complete).
 
   // Limits on client-driven load (see "Request limits" below).
   maxBatchSize?: number,           // keys[]/files[]/completions[] per request. Default 1000.
@@ -75,19 +76,25 @@ createFilesRouter({
 - **Redirect** — when the adapter can sign URLs (S3, R2, GCS, …), the gateway `302`s to a short-lived signed URL and the bytes flow **directly from storage**. Your server never touches them, and `Range` requests are handled by the provider.
 - **Proxy** — when the adapter can't sign (Vercel Blob in public mode, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
 
-Force one with `downloadMode: "redirect" | "proxy"`. Proxied downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. They also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type.
+Force one with `downloadMode: "redirect" | "proxy"`. Downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. The proxy path sets the header itself, and the redirect path binds it into the signed URL. Proxied downloads also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type.
 
-On the proxy path, `Accept-Ranges` reflects the adapter: `bytes` when it can serve ranges, `none` when it can't. A `Range` request that carries an `If-Range` validator (the `ETag` or date from an earlier response) only gets a `206` slice while the object is unchanged. If the object changed, the gateway sends the whole new object with a `200`, so a resumed download never splices bytes from two versions. With `onUnsupportedRange: "ignore"` a ranged request to a non-range adapter also gets the whole object with a `200`, and the browser client rejects that instead of treating it as the slice.
+Some adapters can sign a URL but can't bind a `Content-Disposition` into it (Vercel Blob in private mode, Box, Dropbox, PocketBase, …), and their `url()` refuses the option rather than drop it. With `downloadMode: "auto"`, the gateway proxies those downloads instead, so the attachment header still applies. With `downloadMode: "redirect"` there is no fallback, and the refusal surfaces as an error. When `authorize` returns `{ disposition: "inline" }`, inline rendering is already your policy, so the gateway redirects to a URL minted without a disposition.
+
+On the proxy path, `Accept-Ranges` reflects the adapter: `bytes` when it can serve ranges, `none` when it can't. A `Range` request that carries an `If-Range` validator (the `ETag` or date from an earlier response) only gets a `206` slice while the object is unchanged. If the object changed, the gateway sends the whole new object with a `200`, so a resumed download never splices bytes from two versions. Proxied responses carry `ETag` as a quoted entity-tag (even when the adapter reports it bare, as the S3 family does) and `Last-Modified` when the adapter knows it, and `If-Range` matches either the quoted or the bare form.
+
+A ranged request to a non-range adapter gets `416` with the default `onUnsupportedRange: "reject"`, with one exception. `bytes=0-` (the open-ended range every `<video>` and `<audio>` element starts with) is satisfied by the whole body, so it gets the full object with a `200`. With `onUnsupportedRange: "ignore"` any ranged request to a non-range adapter gets the whole object with a `200`, and the browser client rejects that instead of treating it as the slice.
 
 The JSON `url` operation applies the same safe default before calling `files.url()`: a browser request for `responseContentDisposition: "inline"` is rewritten to `attachment`, while an existing `attachment; filename="..."` value keeps its filename. Return `{ disposition: "inline" }` from `authorize` only for routes where inline rendering is deliberate server policy.
+
+On an adapter that can't bind a disposition into its URLs, the gateway can't guarantee `attachment`, so the `url` operation fails with a `Provider` error instead of handing out a URL that may render inline. The message says how to proceed: return `{ disposition: "inline" }` from `authorize` for routes where inline URLs are acceptable (the URL is then minted without a disposition), or use `download`, which proxies the bytes and sets `Content-Disposition` itself.
 
 ## How uploads flow
 
 A keyless `upload(file)` runs a three-step protocol so bytes never round-trip through your server when they don't have to:
 
-1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target.
-2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress.
-3. **complete** — the server verifies the token and `head`s the object — the authoritative size check that rejects an oversized "unbounded" upload — then returns the stored metadata.
+1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target. A file whose declared `size` is over `maxUploadSize` is refused up front with `422` and `reason: "size"`, before anything is signed.
+2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress. Like a presigned URL, the proxy `PUT` is authorized by its token alone (see [Authorization](/docs/ui/server/authorization)).
+3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry that doesn't echo its key. The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted.
 
 An explicit `upload(key, body)` skips presign and streams straight through the gateway. The stream reaches the adapter with no known length, so the S3-family adapters on their AWS SDK client need the optional `@aws-sdk/lib-storage` package for this path.
 

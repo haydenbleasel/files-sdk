@@ -27,7 +27,7 @@ import {
   rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
@@ -751,8 +751,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       // Validate the key (traversal guard) even though we don't connect.
       keyToRemote(key);
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "sftp: `responseContentDisposition` is not supported. SFTP publicBaseUrl URLs are static HTTP-front URLs, with no signature in which to bind the override."
         );
       }

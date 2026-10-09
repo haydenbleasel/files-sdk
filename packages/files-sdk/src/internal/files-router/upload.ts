@@ -165,6 +165,16 @@ export const handlePresign = async (
   scope: Scope,
   unscope: (key: string) => string
 ): Promise<ResultModel> => {
+  const { maxUploadSize } = cfg;
+  // The declared size is advisory (the proxy PUT and `complete` still enforce
+  // the real one), but a file that already says it is too large is refused
+  // before anything is signed.
+  if (
+    maxUploadSize !== undefined &&
+    files.some((file) => file.size > maxUploadSize)
+  ) {
+    throw new RouterError("Validation", "upload exceeds maxUploadSize", "size");
+  }
   const caps = cfg.files.capabilities;
   const expires = clampExpiry(
     requestedExpiresIn ?? cfg.defaultExpiresIn,
@@ -210,49 +220,86 @@ export const handlePresign = async (
   return { body: { uploads }, kind: "json", status: 200 };
 };
 
+const SCOPE_MISMATCH = "upload token was not issued for this caller";
+
+const unauthorizedEntry = (message: string, key: string): WireBulkError => ({
+  error: { aborted: false, code: "Unauthorized", message, timedOut: false },
+  key,
+});
+
+// An object `complete` found over the token's `maxSize` must not stay stored:
+// the key was minted by this server for this upload alone, so removing it
+// can't touch anything else. A failed removal is reported, not swallowed.
+const removeOversized = async (
+  cfg: UploadConfig,
+  key: string
+): Promise<string> => {
+  try {
+    await cfg.files.delete(key, { signal: cfg.signal });
+    return "";
+  } catch (error) {
+    const wrapped = FilesError.wrap(error);
+    return wrapped.code === "NotFound"
+      ? ""
+      : ` (removing it failed: ${wrapped.message})`;
+  }
+};
+
+// One completion: the stored file, or the per-key error entry explaining why
+// it can't be completed by this request.
+const completeOne = async (
+  cfg: UploadConfig,
+  completion: { id: string; key: string },
+  scope: Scope,
+  unscope: (key: string) => string
+): Promise<WireStoredFile | WireBulkError> => {
+  const verified = await redeem(completion.id, cfg);
+  if (!verified.ok) {
+    return unauthorizedEntry(verified.message, completion.key);
+  }
+  const { key, maxSize } = verified.payload;
+  // The token is valid, but only for the caller whose `authorize` scope
+  // minted it: another tenant presenting it must not learn the storage key or
+  // metadata. Answer with the key the caller sent, never the token's.
+  if (!key.startsWith(scope.prefix)) {
+    return unauthorizedEntry(SCOPE_MISMATCH, completion.key);
+  }
+  try {
+    const meta = await cfg.files.head(key, { signal: cfg.signal });
+    if (maxSize !== undefined && meta.size > maxSize) {
+      const removal = await removeOversized(cfg, key);
+      return {
+        error: {
+          aborted: false,
+          code: "Provider",
+          message: `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}${removal}`,
+          timedOut: false,
+        },
+        key: unscope(key),
+      };
+    }
+    return storedFileToWire(meta, unscope);
+  } catch (error) {
+    return bulkErrorToWire(FilesError.wrap(error), key, unscope);
+  }
+};
+
 export const handleComplete = async (
   cfg: UploadConfig,
   completions: { id: string; key: string }[],
+  scope: Scope,
   unscope: (key: string) => string
 ): Promise<ResultModel> => {
   const completed: WireStoredFile[] = [];
   const errors: WireBulkError[] = [];
 
-  // oxlint-disable-next-line sonarjs/too-many-break-or-continue-in-loop -- each per-completion validation failure (token, size) records an error and continues to the next
   for (const completion of completions) {
     // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- completions verified sequentially; small N
-    const verified = await redeem(completion.id, cfg);
-    if (!verified.ok) {
-      errors.push({
-        error: {
-          aborted: false,
-          code: "Unauthorized",
-          message: verified.message,
-          timedOut: false,
-        },
-        key: completion.key,
-      });
-      continue;
-    }
-    const { key, maxSize } = verified.payload;
-    try {
-      // oxlint-disable-next-line no-await-in-loop -- sequential head per completion.
-      const meta = await cfg.files.head(key, { signal: cfg.signal });
-      if (maxSize !== undefined && meta.size > maxSize) {
-        errors.push({
-          error: {
-            aborted: false,
-            code: "Provider",
-            message: `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}`,
-            timedOut: false,
-          },
-          key: unscope(key),
-        });
-        continue;
-      }
-      completed.push(storedFileToWire(meta, unscope));
-    } catch (error) {
-      errors.push(bulkErrorToWire(FilesError.wrap(error), key, unscope));
+    const outcome = await completeOne(cfg, completion, scope, unscope);
+    if ("error" in outcome) {
+      errors.push(outcome);
+    } else {
+      completed.push(outcome);
     }
   }
 

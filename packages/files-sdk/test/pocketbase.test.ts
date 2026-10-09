@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const lastArgOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
   m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
@@ -758,6 +759,9 @@ describe("pocketbase adapter", () => {
     await expect(
       adapter.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition.*not supported/u);
+    await expectDispositionRefusal(
+      adapter.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("signedUploadUrl is not supported", async () => {

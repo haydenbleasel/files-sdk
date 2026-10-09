@@ -31,7 +31,7 @@ import {
   rangedResponseSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
@@ -1397,8 +1397,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     },
     async url(key, urlOpts) {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "dropbox: `responseContentDisposition` is not supported. Dropbox temporary links and shared links have no Content-Disposition override."
         );
       }

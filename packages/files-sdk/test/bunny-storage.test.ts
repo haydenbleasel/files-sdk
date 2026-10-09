@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 interface StoredEntry {
   bytes: Uint8Array;
@@ -603,6 +604,9 @@ describe("bunnyStorage adapter", () => {
     await expect(
       publicFiles.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toMatchObject({ code: "Provider" });
+    await expectDispositionRefusal(
+      publicFiles.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("signedUploadUrl throws", async () => {

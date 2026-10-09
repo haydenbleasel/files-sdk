@@ -513,6 +513,25 @@ describe("download edge paths", () => {
     expect(file.size).toBe(5);
   });
 
+  test("decodeDownload takes the stored etag from the meta header over the quoted ETag", () => {
+    const meta = btoa(JSON.stringify({ etag: "abc123", key: "k" }));
+    const proxied = decodeDownload(
+      new Response("bytes", {
+        headers: { etag: '"abc123"', "x-files-meta": meta },
+      }),
+      "k"
+    );
+    expect(proxied.etag).toBe("abc123");
+    // A redirected download (no meta header) keeps the storage ETag.
+    const redirected = decodeDownload(
+      new Response("bytes", { headers: { etag: '"from-storage"' } }),
+      "k"
+    );
+    expect(redirected.etag).toBe('"from-storage"');
+    const none = decodeDownload(new Response("bytes"), "k");
+    expect(none.etag).toBeUndefined();
+  });
+
   test("decodeDownload buffers via arrayBuffer when Response.body is missing", async () => {
     // React Native's fetch never exposes `Response.body`.
     const data = new TextEncoder().encode("hello");

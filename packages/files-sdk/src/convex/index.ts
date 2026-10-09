@@ -7,7 +7,7 @@ import type {
   UrlOptions,
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isFunction } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -420,8 +420,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
 
     async url(key, urlOpts?: UrlOptions): Promise<string> {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "convex: `responseContentDisposition` is not supported. Convex serving URLs have no signature in which to bind a Content-Disposition override; serve untrusted content through your own HTTP action instead."
         );
       }

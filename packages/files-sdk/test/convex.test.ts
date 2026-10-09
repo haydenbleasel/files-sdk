@@ -12,6 +12,7 @@ import { convex } from "../src/convex/index.js";
 import type { ConvexAdapterOptions, ConvexCtx } from "../src/convex/index.js";
 import { Files } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 // --- Type-level guarantee --------------------------------------------------
 //
@@ -360,6 +361,9 @@ describe("convex adapter", () => {
       await expect(
         adapter.url(key, { responseContentDisposition: "attachment" })
       ).rejects.toMatchObject({ code: "Provider" });
+      await expectDispositionRefusal(
+        adapter.url(key, { responseContentDisposition: "attachment" })
+      );
     });
   });
 

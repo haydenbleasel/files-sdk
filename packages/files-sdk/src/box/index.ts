@@ -34,7 +34,7 @@ import {
   rangedResponseSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
@@ -1212,8 +1212,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     },
     async url(key, urlOpts) {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "box: `responseContentDisposition` is not supported. Box's getDownloadFileUrl and shared-link URLs have no Content-Disposition override."
         );
       }

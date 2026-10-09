@@ -23,7 +23,7 @@ import {
   resumableChunkSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonArray, isJsonObject } from "../internal/json.js";
@@ -1282,8 +1282,7 @@ export const googleDrive = (
     },
     async url(key, urlOpts) {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "google-drive: `responseContentDisposition` is not supported. Drive's webContentLink has no Content-Disposition override."
         );
       }

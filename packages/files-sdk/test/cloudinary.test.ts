@@ -5,6 +5,7 @@ import { Writable } from "node:stream";
 import { cloudinary, mapCloudinaryError } from "../src/cloudinary/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const CLOUD_NAME = "test-cloud";
 const API_KEY = "test-key";
@@ -530,6 +531,9 @@ describe("cloudinary adapter", () => {
       code: "Provider",
       message: expect.stringContaining("responseContentDisposition"),
     });
+    await expectDispositionRefusal(
+      files.url("test-file", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("url > mints signed URL for type=private with expiresIn", async () => {

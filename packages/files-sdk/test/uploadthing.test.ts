@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError } from "../src/index.js";
 import type { Body } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 // `appId: "myapp"`, `apiKey: "sk_test"`, `regions: ["sea1"]`
 const TEST_TOKEN = btoa(
@@ -548,6 +549,9 @@ describe("uploadthing adapter", () => {
         /responseContentDisposition/u
       );
     }
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("url for private adapter mints a signed URL", async () => {

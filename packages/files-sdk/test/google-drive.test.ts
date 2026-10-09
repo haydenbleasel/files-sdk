@@ -16,6 +16,7 @@ import type { JWT } from "google-auth-library";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const reqOptsOf = (m: { mock: { calls: unknown[][] } }) =>
   m.mock.calls.at(-1)?.[1] as { signal?: AbortSignal } | undefined;
@@ -738,6 +739,9 @@ describe("google-drive adapter", () => {
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition/u);
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("url returns drive.google.com URL when publicByDefault is true", async () => {

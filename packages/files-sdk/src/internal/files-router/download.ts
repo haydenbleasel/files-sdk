@@ -4,7 +4,8 @@
 // the request signal wired into `files.download` so a client disconnect aborts
 // the upstream fetch.
 
-import type { ByteRange, Files } from "../../index.js";
+import type { ByteRange, Files, UrlOptions } from "../../index.js";
+import { isDispositionUnsupported } from "../errors.js";
 import type { ResultModel } from "../router-core/web.js";
 import type { Scope } from "./authorize.js";
 
@@ -137,6 +138,95 @@ const rangeNotSatisfiable = (size: number): ResultModel => ({
   status: 416,
 });
 
+/**
+ * `bytes=0-`: the open-ended range from the first byte, which the whole body
+ * satisfies. Browsers open every `<video>`/`<audio>` with it, so a non-range
+ * adapter answers it with the full object (200) rather than a 416.
+ */
+const isWholeObjectRange = (header: string): boolean =>
+  /^bytes=0+-$/u.test(header.trim());
+
+/**
+ * The `ETag` response header in RFC 9110 entity-tag form. Adapters report
+ * etags as the provider gave them — the S3 family strips the quotes — so a
+ * bare value is quoted, and an already-quoted or weak one is left alone.
+ */
+const entityTag = (etag: string): string =>
+  etag.startsWith('"') || etag.startsWith('W/"') ? etag : `"${etag}"`;
+
+/**
+ * Whether `authorize` deliberately allowed inline rendering. Only then may a
+ * URL go out without the disposition an adapter refused to bind: a bare URL
+ * renders however the provider serves it, which inline policy already accepts.
+ */
+const isInlinePolicy = (policy: string | undefined): boolean =>
+  policy !== undefined && /^\s*inline\b/iu.test(policy);
+
+/**
+ * `files.url()` carrying `disposition`. When the adapter refuses to bind any
+ * disposition into its URLs (see `isDispositionUnsupported`) and the
+ * disposition is `authorize`'s inline policy, the URL is minted without one;
+ * any other refusal — the gateway's own `attachment` default — is rethrown,
+ * because the gateway can't guarantee that disposition.
+ */
+export const urlWithDisposition = async (
+  files: Files,
+  key: string,
+  opts: UrlOptions,
+  disposition: string | undefined,
+  policy: string | undefined
+): Promise<string> => {
+  if (!disposition) {
+    return await files.url(key, opts);
+  }
+  try {
+    return await files.url(key, {
+      ...opts,
+      responseContentDisposition: disposition,
+    });
+  } catch (error) {
+    if (isDispositionUnsupported(error) && isInlinePolicy(policy)) {
+      return await files.url(key, opts);
+    }
+    throw error;
+  }
+};
+
+// The signed-URL redirect, or `undefined` when `auto` mode should proxy
+// instead: the adapter can sign but can't bind the `attachment` disposition
+// the gateway forces, and the proxy path sets `Content-Disposition` itself.
+const redirectTarget = async (
+  cfg: DownloadConfig,
+  storageKey: string,
+  scope: Scope,
+  disposition: string | undefined,
+  signal: AbortSignal
+): Promise<ResultModel | undefined> => {
+  const caps = cfg.files.capabilities;
+  let expiresIn = cfg.defaultExpiresIn;
+  if (scope.maxExpiresIn !== undefined) {
+    expiresIn = Math.min(expiresIn, scope.maxExpiresIn);
+  }
+  if (caps.signedUrl.maxExpiresIn !== undefined) {
+    expiresIn = Math.min(expiresIn, caps.signedUrl.maxExpiresIn);
+  }
+  try {
+    const url = await urlWithDisposition(
+      cfg.files,
+      storageKey,
+      { expiresIn, signal },
+      disposition,
+      scope.disposition
+    );
+    return { kind: "redirect", location: url, status: 302 };
+  } catch (error) {
+    if (cfg.downloadMode === "auto" && isDispositionUnsupported(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+};
+
 export const handleDownload = async (
   cfg: DownloadConfig,
   storageKey: string,
@@ -155,19 +245,16 @@ export const handleDownload = async (
     (cfg.downloadMode === "auto" && caps.signedUrl.supported);
 
   if (useRedirect) {
-    let expiresIn = cfg.defaultExpiresIn;
-    if (scope.maxExpiresIn !== undefined) {
-      expiresIn = Math.min(expiresIn, scope.maxExpiresIn);
+    const redirect = await redirectTarget(
+      cfg,
+      storageKey,
+      scope,
+      disposition,
+      signal
+    );
+    if (redirect) {
+      return redirect;
     }
-    if (caps.signedUrl.maxExpiresIn !== undefined) {
-      expiresIn = Math.min(expiresIn, caps.signedUrl.maxExpiresIn);
-    }
-    const url = await cfg.files.url(storageKey, {
-      expiresIn,
-      signal,
-      ...(disposition && { responseContentDisposition: disposition }),
-    });
-    return { kind: "redirect", location: url, status: 302 };
   }
 
   const meta = await cfg.files.head(storageKey, { signal });
@@ -188,7 +275,10 @@ export const handleDownload = async (
         ({ length } = parsed);
         status = 206;
       }
-    } else if (cfg.onUnsupportedRange === "reject") {
+    } else if (
+      cfg.onUnsupportedRange === "reject" &&
+      !isWholeObjectRange(rangeHeader)
+    ) {
       return rangeNotSatisfiable(size);
     }
   }
@@ -212,7 +302,10 @@ export const handleDownload = async (
       lastModified: meta.lastModified,
       metadata: meta.metadata,
     }),
-    ...(meta.etag && { etag: meta.etag }),
+    ...(meta.etag && { etag: entityTag(meta.etag) }),
+    ...(meta.lastModified !== undefined && {
+      "last-modified": new Date(meta.lastModified).toUTCString(),
+    }),
     ...(disposition && { "content-disposition": disposition }),
     ...(range && {
       "content-range": `bytes ${range.start}-${range.end}/${size}`,

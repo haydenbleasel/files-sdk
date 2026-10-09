@@ -22,7 +22,7 @@ import {
   rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isString } from "../internal/is.js";
 import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
@@ -576,8 +576,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       // No hybrid? Fail rather than silently dropping the security ask.
       const wantsDisposition = Boolean(urlOpts.responseContentDisposition);
       if (wantsDisposition && !hybrid) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "r2 binding: `responseContentDisposition` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
         );
       }

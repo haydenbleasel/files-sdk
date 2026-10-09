@@ -8,7 +8,7 @@
 
 import type { Files, SearchMatch, StoredFile } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
-import type { FilesError } from "../errors.js";
+import { FilesError, isDispositionUnsupported } from "../errors.js";
 import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
@@ -28,7 +28,7 @@ import { isSafeSearchRegex } from "../search-regex.js";
 import type { Authorize, AuthorizeContext, Scope } from "./authorize.js";
 import { runAuthorize } from "./authorize.js";
 import type { DownloadConfig } from "./download.js";
-import { handleDownload } from "./download.js";
+import { handleDownload, urlWithDisposition } from "./download.js";
 import { assertSafePrefix, scopeKey, unscopeKey } from "./keys.js";
 import type {
   ClientFileInfo,
@@ -125,6 +125,12 @@ const routerUrlDisposition = (
   }
   return isAttachmentDisposition(requested) ? requested : "attachment";
 };
+
+// The `url` op on an adapter that can't bind any disposition into its URLs:
+// the gateway's `attachment` default can't be guaranteed, so fail loud and say
+// how to proceed rather than hand out a URL that may render inline.
+const URL_DISPOSITION_REFUSED =
+  'url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment". Return { disposition: "inline" } from authorize for routes where inline URLs are acceptable, or use download, which proxies the bytes and sets Content-Disposition itself.';
 
 // A bulk request's array length is client-controlled work (one provider call
 // per entry), so cap it before touching storage: 413 with reason `count`.
@@ -552,12 +558,30 @@ const dispatchJson = async (
         optStr(body, "responseContentDisposition"),
         scope.disposition
       );
-      const url = await ctx.files.url(scopeKey(scope.prefix, key), {
-        expiresIn: clampExpiry(ctx, expiresIn ?? ctx.defaultExpiresIn, scope),
-        responseContentDisposition: disposition,
-        signal,
-      });
-      return json({ url });
+      try {
+        const url = await urlWithDisposition(
+          ctx.files,
+          scopeKey(scope.prefix, key),
+          {
+            expiresIn: clampExpiry(
+              ctx,
+              expiresIn ?? ctx.defaultExpiresIn,
+              scope
+            ),
+            signal,
+          },
+          disposition,
+          scope.disposition
+        );
+        return json({ url });
+      } catch (error) {
+        if (isDispositionUnsupported(error)) {
+          throw new FilesError("Provider", URL_DISPOSITION_REFUSED, error, {
+            permanent: true,
+          });
+        }
+        throw error;
+      }
     }
     case "list": {
       const scope = await authorizeOp(ctx, { operation: "list", params: {} });
@@ -703,7 +727,12 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const items = completions(ctx, body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
-      return handleComplete(uploadCfg(ctx, parsed), items, unscoper(scope));
+      return handleComplete(
+        uploadCfg(ctx, parsed),
+        items,
+        scope,
+        unscoper(scope)
+      );
     }
     case "versions": {
       const key = str(body, "key");

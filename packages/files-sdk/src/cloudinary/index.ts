@@ -28,7 +28,7 @@ import {
   rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
@@ -818,8 +818,7 @@ export const cloudinaryAdapter = (
     },
     async url(key: string, urlOpts?: UrlOptions): Promise<string> {
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "cloudinary: `responseContentDisposition` is not supported. Cloudinary has no per-request Content-Disposition override — set the `attachment` flag on the asset URL via `raw` if you need it."
         );
       }

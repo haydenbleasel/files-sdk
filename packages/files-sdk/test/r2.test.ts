@@ -21,6 +21,7 @@ import { AwsClient } from "aws4fetch";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { r2 } from "../src/r2/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 import { makeFakeS3 } from "./fake-s3-server.js";
 
 const makeAdapter = () =>
@@ -708,6 +709,9 @@ describe("r2 adapter — Workers binding path", () => {
       expect((error as FilesError).code).toBe("Provider");
       expect((error as FilesError).message).toMatch(/HTTP credentials/u);
     }
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("signedUploadUrl from a plain binding throws Provider", async () => {

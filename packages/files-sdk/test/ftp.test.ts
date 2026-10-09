@@ -11,6 +11,7 @@ import type {
   OffsetResumableDriver,
   ResumableUploadSession,
 } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const STABLE_MTIME = new Date("2024-01-02T03:04:05Z");
 
@@ -661,6 +662,9 @@ describe("ftp edge cases (injected client)", () => {
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition/iu);
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("url with responseContentDisposition but no publicBaseUrl throws", async () => {
@@ -668,6 +672,9 @@ describe("ftp edge cases (injected client)", () => {
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition/iu);
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("deleteMany collects a transport error and continues", async () => {

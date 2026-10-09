@@ -5,6 +5,7 @@ import { AppwriteException, Client, Storage } from "node-appwrite";
 import { appwrite, mapAppwriteError } from "../src/appwrite/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const ENDPOINT = "https://cloud.appwrite.io/v1";
 const PROJECT_ID = "proj123";
@@ -247,6 +248,9 @@ describe("appwrite adapter", () => {
     await expect(
       files.url("file-123", { responseContentDisposition: "inline" })
     ).rejects.toThrow(/responseContentDisposition/u);
+    await expectDispositionRefusal(
+      files.url("file-123", { responseContentDisposition: "inline" })
+    );
   });
 
   test("signedUploadUrl > throws unsupported", async () => {

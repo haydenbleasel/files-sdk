@@ -16,7 +16,7 @@ import {
   rangeRequestHeaders,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonArray, isJsonObject } from "../internal/json.js";
@@ -696,8 +696,7 @@ export const uploadthing = (
       // user-uploaded HTML/SVG. Throw rather than silently dropping the
       // override — same shape as the Vercel Blob adapter.
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "uploadthing: `responseContentDisposition` is not supported. UploadThing has no override for the Content-Disposition header on signed or CDN URLs."
         );
       }

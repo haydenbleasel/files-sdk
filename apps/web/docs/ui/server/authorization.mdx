@@ -22,7 +22,7 @@ createFilesRouter({
 });
 ```
 
-`authorize` runs on every request except the proxy-upload `PUT` of a keyless upload. That request carries the HMAC token `presign` minted, and the token is what authorizes it, since `presign` already ran `authorize` as `"upload"`. **Throw** to deny — a `FilesError` maps to its status (`Unauthorized` → 401, `ReadOnly` → 403, …). **Return** a constraint object to allow, optionally narrowing what the caller can do. **Return nothing** (`void`) to allow as-is.
+`authorize` runs on every request except the proxy-upload `PUT` of a keyless upload. That request carries the HMAC token `presign` minted, and the token is what authorizes it, since `presign` already ran `authorize` as `"upload"`. It is a bearer token, like a presigned URL: whoever holds it can write the one key `presign` minted (within the size and type it binds) until it expires, and nothing else. The `complete` step that follows does run `authorize`, and refuses a token whose key lies outside the calling request's `keyPrefix`, so one tenant can't complete another tenant's upload and read back its key and metadata. **Throw** to deny — a `FilesError` maps to its status (`Unauthorized` → 401, `ReadOnly` → 403, …). **Return** a constraint object to allow, optionally narrowing what the caller can do. **Return nothing** (`void`) to allow as-is.
 
 ## The context
 
@@ -53,11 +53,13 @@ return {
 };
 ```
 
-`keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` require **both** ends under the prefix, preventing exfiltration across scopes.
+`keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` re-root **both** ends under the caller's prefix: a `from` that names another tenant's key just becomes a key inside the caller's own prefix, so neither end can reach outside the scope.
 
 `maxExpiresIn` is the only expiry ceiling. The router's `defaultExpiresIn` is just what applies when the client doesn't ask, and a client may request a longer `expiresIn` for `url()` or an upload. Return `maxExpiresIn` to cap it.
 
 `disposition` is the server-side override for both proxy downloads and URL minting. The gateway defaults untrusted URLs to `attachment`; return `"inline"` only when that operation is safe for the current user, key, and content type.
+
+Some adapters can't bind a `Content-Disposition` into their URLs at all (Vercel Blob, Box, Dropbox, the local `fs` adapter, …; see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, an `"inline"` disposition from `authorize` makes the gateway mint the URL without one, since inline rendering is already your policy. Without it, `download` proxies the bytes to apply `attachment` (unless `downloadMode` is `"redirect"`), and the `url` operation fails with a `Provider` error rather than hand out a URL that may render inline.
 
 ## Recipes
 

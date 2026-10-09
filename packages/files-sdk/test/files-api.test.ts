@@ -5,7 +5,7 @@ import { createFilesRouter } from "../src/api/index.js";
 import type { Authorize, CreateFilesRouterOptions } from "../src/api/index.js";
 import type { Adapter, SignUploadOptions } from "../src/index.js";
 import { createFiles } from "../src/index.js";
-import { FilesError } from "../src/internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter } from "./fake-adapter.js";
@@ -43,6 +43,21 @@ const put = (
   body: string,
   headers: Record<string, string> = {}
 ) => new Request(`${ENDPOINT}?${query}`, { body, headers, method: "PUT" });
+
+const REFUSAL = "fake: `responseContentDisposition` is not supported.";
+
+// A signing adapter that, like Vercel Blob or Dropbox, can't bind any
+// Content-Disposition into its URLs and refuses the option outright.
+const refusing = (): Adapter => {
+  const base = signing();
+  return {
+    ...base,
+    url: (key, opts) =>
+      opts?.responseContentDisposition
+        ? Promise.reject(dispositionUnsupported(REFUSAL))
+        : base.url(key, opts),
+  };
+};
 
 const allowAll: Authorize = () => {};
 
@@ -218,6 +233,51 @@ describe("createFilesRouter — read verbs", () => {
         "response-content-disposition"
       )
     ).toBe("inline");
+  });
+
+  test("url on an adapter that refuses dispositions fails loud by default, and goes bare under inline policy", async () => {
+    const refuser = refusing();
+    await seed(refuser, "a.txt", "hello");
+
+    // The gateway's own `attachment` default can't be guaranteed: fail with
+    // guidance, whether attachment came from the default or from authorize.
+    for (const authorize of [
+      allowAll,
+      () => ({ disposition: "attachment" }),
+    ] satisfies Authorize[]) {
+      // oxlint-disable-next-line no-await-in-loop -- one router per policy
+      const res = await router({ adapter: refuser, authorize }).handle(
+        post({ key: "a.txt", op: "url" })
+      );
+      expect(res.status).toBe(500);
+      // oxlint-disable-next-line no-await-in-loop -- read each response in turn
+      const { error } = await readJson<{
+        error: { code: string; message: string };
+      }>(res);
+      expect(error.code).toBe("Provider");
+      expect(error.message).toContain('"attachment"');
+      expect(error.message).toContain(
+        'Return { disposition: "inline" } from authorize'
+      );
+      expect(error.message).toContain("use download");
+    }
+
+    // Deliberate inline policy: the URL goes out without a disposition.
+    const inline = await router({
+      adapter: refuser,
+      authorize: () => ({ disposition: "inline" }),
+    }).handle(post({ key: "a.txt", op: "url" }));
+    expect(inline.status).toBe(200);
+    expect((await readJson<{ url: string }>(inline)).url).toBe(
+      "https://fake.local/a.txt?expires=300"
+    );
+
+    // Errors that aren't a disposition refusal pass through unchanged.
+    const missing = await router({
+      adapter: signing(),
+      operations: ["url"],
+    }).handle(post({ key: "missing.txt", op: "url" }));
+    expect(missing.status).toBe(404);
   });
 
   test("list with prefix + delimiter, and search", async () => {
@@ -782,6 +842,139 @@ describe("createFilesRouter — download", () => {
     expect(bypass.status).toBe(200);
   });
 
+  test("bytes=0- on a non-range adapter is the whole object (200), other ranges stay 416", async () => {
+    const adapter = fakeAdapter() as unknown as Adapter;
+    await seed(adapter, "a.txt", "hello");
+    const r = router({ adapter, operations: ["download"] });
+    // Every <video>/<audio> opens with `bytes=0-`.
+    const media = await r.handle(
+      get("op=download&key=a.txt", { range: "bytes=0-" })
+    );
+    expect(media.status).toBe(200);
+    expect(media.headers.get("content-range")).toBeNull();
+    expect(media.headers.get("content-length")).toBe("5");
+    expect(await media.text()).toBe("hello");
+
+    for (const range of ["bytes=1-", "bytes=0-2", "bytes=-2", "bytes=-"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one request per range
+      const res = await r.handle(get("op=download&key=a.txt", { range }));
+      expect(res.status).toBe(416);
+    }
+  });
+
+  test("proxied downloads send a quoted ETag and Last-Modified, and If-Range accepts either form", async () => {
+    const base = memory();
+    await seed(base, "a.txt", "hello world");
+    // The S3 family reports etags unquoted; the header must still be an
+    // RFC 9110 entity-tag.
+    let storedEtag = "abc123";
+    const adapter: Adapter = {
+      ...base,
+      head: async (key, opts) => ({
+        ...(await base.head(key, opts)),
+        etag: storedEtag,
+      }),
+    };
+    const r = router({ adapter, operations: ["download"] });
+    const meta = await createFiles({ adapter: base }).head("a.txt");
+
+    const res = await r.handle(get("op=download&key=a.txt"));
+    expect(res.headers.get("etag")).toBe('"abc123"');
+    expect(res.headers.get("last-modified")).toBe(
+      new Date(meta.lastModified ?? 0).toUTCString()
+    );
+    await res.text();
+
+    for (const validator of ['"abc123"', "abc123"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one request per validator form
+      const fresh = await r.handle(
+        get("op=download&key=a.txt", {
+          "if-range": validator,
+          range: "bytes=6-",
+        })
+      );
+      expect(fresh.status).toBe(206);
+      // oxlint-disable-next-line no-await-in-loop -- drain before the next request
+      expect(await fresh.text()).toBe("world");
+    }
+    const stale = await r.handle(
+      get("op=download&key=a.txt", { "if-range": '"other"', range: "bytes=6-" })
+    );
+    expect(stale.status).toBe(200);
+    await stale.text();
+
+    // Already-quoted and weak etags pass through untouched.
+    storedEtag = '"quoted"';
+    const quoted = await r.handle(get("op=download&key=a.txt"));
+    expect(quoted.headers.get("etag")).toBe('"quoted"');
+    await quoted.text();
+    storedEtag = 'W/"weak"';
+    const weak = await r.handle(get("op=download&key=a.txt"));
+    expect(weak.headers.get("etag")).toBe('W/"weak"');
+    await weak.text();
+  });
+
+  test("download on an adapter that refuses dispositions proxies in auto mode", async () => {
+    const adapter = refusing();
+    await seed(adapter, "a.txt", "hello");
+    const res = await router({ adapter, operations: ["download"] }).handle(
+      get("op=download&key=a.txt")
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(await res.text()).toBe("hello");
+  });
+
+  test("download in redirect mode rethrows the adapter's disposition refusal", async () => {
+    const adapter = refusing();
+    await seed(adapter, "a.txt", "hello");
+    const res = await router({
+      adapter,
+      authorize: () => ({ disposition: "attachment" }),
+      downloadMode: "redirect",
+    }).handle(get("op=download&key=a.txt"));
+    expect(res.status).toBe(500);
+    expect(
+      await readJson<{ error: { code: string; message: string } }>(res)
+    ).toEqual({ error: { code: "Provider", message: REFUSAL } });
+  });
+
+  test("an inline authorize policy redirects to a URL without a disposition", async () => {
+    const adapter = refusing();
+    await seed(adapter, "a.txt", "hello");
+    for (const downloadMode of ["auto", "redirect"] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- one router per mode
+      const res = await router({
+        adapter,
+        authorize: () => ({ disposition: 'inline; filename="a.txt"' }),
+        downloadMode,
+      }).handle(get("op=download&key=a.txt"));
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(
+        "https://fake.local/a.txt?expires=300"
+      );
+    }
+  });
+
+  test("download redirects without a disposition when forceDownloadDisposition is off", async () => {
+    const adapter = refusing();
+    await seed(adapter, "a.txt", "hello");
+    const res = await router({
+      adapter,
+      forceDownloadDisposition: false,
+      operations: ["download"],
+    }).handle(get("op=download&key=a.txt"));
+    expect(res.status).toBe(302);
+  });
+
+  test("download redirect errors other than a disposition refusal still surface", async () => {
+    const res = await router({
+      adapter: signing(),
+      operations: ["download"],
+    }).handle(get("op=download&key=missing.txt"));
+    expect(res.status).toBe(404);
+  });
+
   test("forced proxy mode + missing key", async () => {
     const adapter = signing();
     await seed(adapter, "a.txt", "hello");
@@ -855,7 +1048,7 @@ describe("createFilesRouter — upload", () => {
     expect(first(uploads).target.url).toContain("fake.local");
   });
 
-  test("complete rejects an oversized object against maxUploadSize", async () => {
+  test("complete rejects an oversized object against maxUploadSize and removes it", async () => {
     const adapter = memory();
     const r = router({
       adapter,
@@ -863,9 +1056,11 @@ describe("createFilesRouter — upload", () => {
       maxUploadSize: 3,
       operations: ["upload"],
     });
+    // The declared size is advisory: a client can understate it at presign
+    // and then put more bytes straight to storage.
     const presign = await r.handle(
       post({
-        files: [{ name: "x", size: 10, type: "text/plain" }],
+        files: [{ name: "x", size: 1, type: "text/plain" }],
         op: "presign",
       })
     );
@@ -881,10 +1076,269 @@ describe("createFilesRouter — upload", () => {
     );
     const body = (await complete.json()) as {
       files: unknown[];
-      errors?: { error: { message: string } }[];
+      errors?: { key: string; error: { message: string } }[];
     };
     expect(body.files).toHaveLength(0);
-    expect(first(body.errors ?? []).error.message).toContain("exceeds maxSize");
+    expect(first(body.errors ?? []).key).toBe(first(uploads).key);
+    expect(first(body.errors ?? []).error.message).toBe(
+      "uploaded object is 10 bytes, exceeds maxSize 3"
+    );
+    expect(await createFiles({ adapter }).exists(first(uploads).key)).toBe(
+      false
+    );
+  });
+
+  test("complete reports a failed removal of an oversized object, and ignores one already gone", async () => {
+    const base = memory();
+    let deleteError: FilesError | undefined;
+    const adapter: Adapter = {
+      ...base,
+      delete: (key, opts) =>
+        deleteError ? Promise.reject(deleteError) : base.delete(key, opts),
+    };
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 3,
+      operations: ["upload"],
+    });
+    const oversized = async () => {
+      const presign = await r.handle(
+        post({
+          files: [{ name: "x", size: 1, type: "text/plain" }],
+          op: "presign",
+        })
+      );
+      const minted = first(
+        (await readJson<{ uploads: { id: string; key: string }[] }>(presign))
+          .uploads
+      );
+      await createFiles({ adapter: base }).upload(minted.key, "0123456789");
+      const complete = await r.handle(
+        post({
+          completions: [{ id: minted.id, key: minted.key }],
+          op: "complete",
+        })
+      );
+      return first(
+        (await readJson<{ errors: { error: { message: string } }[] }>(complete))
+          .errors
+      ).error.message;
+    };
+
+    deleteError = new FilesError("Provider", "storage unavailable");
+    expect(await oversized()).toBe(
+      "uploaded object is 10 bytes, exceeds maxSize 3 (removing it failed: storage unavailable)"
+    );
+    deleteError = new FilesError("NotFound", "already gone");
+    expect(await oversized()).toBe(
+      "uploaded object is 10 bytes, exceeds maxSize 3"
+    );
+  });
+
+  test("presign refuses a declared size over maxUploadSize before signing", async () => {
+    const signed: string[] = [];
+    const adapter = {
+      ...signing(),
+      signedUploadUrl: (key: string) => {
+        signed.push(key);
+        return Promise.resolve({
+          headers: {},
+          method: "PUT" as const,
+          url: `https://fake.local/${key}`,
+        });
+      },
+    } satisfies Adapter;
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 5,
+      operations: ["upload"],
+    });
+    const res = await r.handle(
+      post({
+        files: [
+          { name: "small.txt", size: 5, type: "text/plain" },
+          { name: "big.txt", size: 6, type: "text/plain" },
+        ],
+        op: "presign",
+      })
+    );
+    expect(res.status).toBe(422);
+    const { error } = await readJson<{
+      error: { code: string; message: string; reason?: string };
+    }>(res);
+    expect(error).toEqual({
+      code: "Validation",
+      message: "upload exceeds maxUploadSize",
+      reason: "size",
+    });
+    expect(signed).toEqual([]);
+
+    // At the limit is fine.
+    const ok = await r.handle(
+      post({
+        files: [{ name: "small.txt", size: 5, type: "text/plain" }],
+        op: "presign",
+      })
+    );
+    expect(ok.status).toBe(200);
+    expect(signed).toHaveLength(1);
+  });
+
+  test("complete refuses a token minted under another caller's keyPrefix", async () => {
+    const adapter = memory();
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      authorize: ({ req }) => ({
+        keyPrefix: `users/${req.headers.get("x-user") ?? "anon"}/`,
+      }),
+    });
+    const as = (user: string, body: unknown) => post(body, { "x-user": user });
+
+    const presign = await r.handle(
+      as("alice", {
+        files: [{ name: "secret.txt", size: 5, type: "text/plain" }],
+        op: "presign",
+      })
+    );
+    const minted = first(
+      (
+        await readJson<{
+          uploads: { id: string; key: string; target: { url: string } }[];
+        }>(presign)
+      ).uploads
+    );
+    // The proxy PUT is a bearer-token upload: the token alone authorizes it.
+    const up = await r.handle(
+      new Request(minted.target.url, { body: "hello", method: "PUT" })
+    );
+    expect(up.status).toBe(200);
+    await createFiles({ adapter }).upload(
+      `users/alice/${minted.key}`,
+      "hello",
+      {
+        metadata: { owner: "alice" },
+      }
+    );
+
+    // Bob replays Alice's token: refused per completion, and the response
+    // never carries Alice's storage key or metadata.
+    const stolen = await r.handle(
+      as("bob", {
+        completions: [{ id: minted.id, key: "whatever.txt" }],
+        op: "complete",
+      })
+    );
+    expect(stolen.status).toBe(200);
+    const text = await stolen.text();
+    expect(text).not.toContain("users/alice");
+    expect(text).not.toContain(minted.key);
+    expect(text).not.toContain("owner");
+    expect(JSON.parse(text)).toEqual({
+      errors: [
+        {
+          error: {
+            aborted: false,
+            code: "Unauthorized",
+            message: "upload token was not issued for this caller",
+            timedOut: false,
+          },
+          key: "whatever.txt",
+        },
+      ],
+      files: [],
+    });
+
+    // Alice herself still completes it.
+    const own = await r.handle(
+      as("alice", {
+        completions: [{ id: minted.id, key: minted.key }],
+        op: "complete",
+      })
+    );
+    const done = await readJson<{
+      files: { key: string; metadata?: Record<string, string> }[];
+    }>(own);
+    expect(first(done.files).key).toBe(minted.key);
+    expect(first(done.files).metadata).toEqual({ owner: "alice" });
+  });
+
+  test("presign → complete under a per-request files factory stays per tenant", async () => {
+    // One shared store; each tenant's `files` instance is scoped by its own
+    // `prefix`, and `authorize` adds a per-user `keyPrefix` on top.
+    const shared = memory();
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      authorize: ({ req }) => ({
+        keyPrefix: `users/${req.headers.get("x-user") ?? "anon"}/`,
+      }),
+      files: (req) =>
+        createFiles({
+          adapter: shared,
+          prefix: `tenants/${req.headers.get("x-tenant") ?? "none"}/`,
+        }),
+      now: () => NOW,
+      secret: SECRET,
+    });
+    const as = (tenant: string, user: string, body: unknown) =>
+      post(body, { "x-tenant": tenant, "x-user": user });
+
+    const presign = await r.handle(
+      as("acme", "alice", {
+        files: [{ name: "a.txt", size: 5, type: "text/plain" }],
+        op: "presign",
+      })
+    );
+    const minted = first(
+      (
+        await readJson<{
+          uploads: { id: string; key: string; target: { url: string } }[];
+        }>(presign)
+      ).uploads
+    );
+    const up = await r.handle(
+      new Request(minted.target.url, {
+        body: "hello",
+        headers: { "x-tenant": "acme" },
+        method: "PUT",
+      })
+    );
+    expect(up.status).toBe(200);
+    expect(
+      await createFiles({ adapter: shared }).exists(
+        `tenants/acme/users/alice/${minted.key}`
+      )
+    ).toBe(true);
+
+    const completeAs = async (tenant: string, user: string) =>
+      readJson<{
+        files: { key: string; size: number }[];
+        errors?: { key: string; error: { code: string } }[];
+      }>(
+        await r.handle(
+          as(tenant, user, {
+            completions: [{ id: minted.id, key: minted.key }],
+            op: "complete",
+          })
+        )
+      );
+
+    // Another user in the same tenant: outside their keyPrefix.
+    const sameTenant = await completeAs("acme", "mallory");
+    expect(sameTenant.files).toEqual([]);
+    expect(first(sameTenant.errors ?? []).error.code).toBe("Unauthorized");
+
+    // The same user id under another tenant resolves another instance, which
+    // never sees the object.
+    const otherTenant = await completeAs("globex", "alice");
+    expect(otherTenant.files).toEqual([]);
+    expect(first(otherTenant.errors ?? []).error.code).toBe("NotFound");
+
+    const own = await completeAs("acme", "alice");
+    expect(own.errors).toBeUndefined();
+    expect(first(own.files)).toMatchObject({ key: minted.key, size: 5 });
   });
 
   test("explicit-key upload through the endpoint", async () => {

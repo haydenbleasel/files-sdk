@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 // The real error classes, captured before the module is mocked and
 // re-exported from the double below. Real `@vercel/blob` errors have
@@ -654,6 +655,9 @@ describe("vercel-blob adapter", () => {
         /responseContentDisposition|signing primitive/u
       );
     }
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("public url() never issues a signed token", async () => {

@@ -42,7 +42,10 @@ export const decodeDownload = (
   const { body } = res;
   return createStoredFile(
     {
-      etag: res.headers.get("etag") ?? meta.etag,
+      // The gateway's `ETag` header is quoted for HTTP; `X-Files-Meta` keeps
+      // the etag exactly as the adapter reported it, matching `head()`. A
+      // redirected download has no meta header, so the storage `ETag` stands.
+      etag: meta.etag ?? res.headers.get("etag") ?? undefined,
       key: meta.key ?? fallbackKey,
       lastModified: meta.lastModified,
       metadata: meta.metadata,

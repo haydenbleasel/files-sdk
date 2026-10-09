@@ -102,7 +102,7 @@ const images = useFiles({ endpoint: "/api/files?bucket=images" });
 ```
 
 :::note
-The selector is client-supplied, so treat it as untrusted input: `authorize` must enforce who may touch which bucket, exactly as it does for keys. The upload tokens `presign` mints are bound to the endpoint path and query they were minted under, so a token issued for `?bucket=images` is refused by the proxy upload and `complete` steps if it is presented with a different selector or at a different route. The token can't bind anything else a factory might read, such as the `Host` or a header or cookie, so give each router its own `secret` when a factory selects the instance that way.
+The selector is client-supplied, so treat it as untrusted input: `authorize` must enforce who may touch which bucket, exactly as it does for keys. The upload tokens `presign` mints are bound to the endpoint path and query they were minted under, so a token issued for `?bucket=images` is refused by the proxy upload and `complete` steps if it is presented with a different selector or at a different route. The token can't bind anything else a factory might read, such as the `Host` or a header or cookie, so give each router its own `secret` when a factory selects the instance that way. `complete` also refuses a token whose key lies outside the calling request's `keyPrefix`, and a factory that scopes each instance with its own `prefix` never resolves another tenant's key at all.
 :::
 
 Prefer separate routes when the buckets have genuinely different policies — two small routers are easier to audit than one branching `authorize`. The factory shines when the instances share a policy shape (per-tenant buckets, region routing) or when adding a route per bucket doesn't scale.

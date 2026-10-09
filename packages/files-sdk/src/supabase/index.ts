@@ -21,7 +21,7 @@ import {
   makeErrorMapper,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
@@ -289,8 +289,7 @@ const normalizeBody = async (
 const downloadOptionFor = (disposition: string): true | string => {
   const [typePart, ...params] = disposition.split(";");
   if ((typePart ?? "").trim().toLowerCase() !== "attachment") {
-    throw new FilesError(
-      "Provider",
+    throw dispositionUnsupported(
       `supabase: responseContentDisposition "${disposition}" is not supported — Supabase signed URLs can only force an attachment ("attachment" or 'attachment; filename="…"').`
     );
   }

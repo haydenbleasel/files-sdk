@@ -22,7 +22,7 @@ import {
   normalizeBody as coreNormalizeBody,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
@@ -611,8 +611,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       const disposition = urlOpts?.responseContentDisposition;
       if (disposition && !BARE_ATTACHMENT.test(disposition)) {
         return Promise.reject(
-          new FilesError(
-            "Provider",
+          dispositionUnsupported(
             `appwrite: responseContentDisposition ${JSON.stringify(disposition)} is not supported. Appwrite URLs carry no per-request Content-Disposition override; only a bare "attachment" is honored (via the /download endpoint, which names the file after its stored name).`
           )
         );

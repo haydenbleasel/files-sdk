@@ -7,6 +7,7 @@ import { DropboxResponseError } from "dropbox";
 import { dropbox } from "../src/dropbox/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 interface FakeFile {
   id: string;
@@ -722,6 +723,9 @@ describe("dropbox adapter", () => {
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     ).rejects.toThrow(/responseContentDisposition/u);
+    await expectDispositionRefusal(
+      files.url("a.txt", { responseContentDisposition: "attachment" })
+    );
   });
 
   test("url throws when expiresIn exceeds 4-hour cap", async () => {

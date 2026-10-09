@@ -123,3 +123,34 @@ export class FilesError extends Error {
 // stays out of `JSON.stringify`/`Object.keys`. A plain statement rather than a
 // `static {}` block keeps ES2022 class syntax out of the browser bundles.
 Object.defineProperty(FilesError.prototype, FILES_ERROR_BRAND, { value: true });
+
+// Marks the refusal an adapter's `url()` raises when it has no way to bind a
+// `responseContentDisposition` override into its URLs. A registry symbol for
+// the same reason as `FILES_ERROR_BRAND`: the gateway (`files-sdk/api`) is
+// bundled in a separate pass from the adapters, so a module-local marker would
+// not survive the trip between the two copies. Pure, so bundles that never
+// build or check the refusal (the browser bindings) drop it.
+// oxlint-disable-next-line eslint/no-inline-comments -- `@__PURE__` is a bundler annotation that must sit inline before the call
+const DISPOSITION_UNSUPPORTED_BRAND = /* @__PURE__ */ Symbol.for(
+  "files-sdk.DispositionUnsupported"
+);
+
+/**
+ * The `Provider` error an adapter throws from `url()` when it cannot honor
+ * `responseContentDisposition`. It is `permanent` (the identical call can only
+ * be refused again, so it is neither retried nor failed over), and branded so
+ * {@link isDispositionUnsupported} can recognize it across bundle copies.
+ */
+export const dispositionUnsupported = (message: string): FilesError => {
+  const error = new FilesError("Provider", message, undefined, {
+    permanent: true,
+  });
+  // Non-enumerable, like the class brand, so it stays off the wire.
+  Object.defineProperty(error, DISPOSITION_UNSUPPORTED_BRAND, { value: true });
+  return error;
+};
+
+/** Whether `error` is an adapter's {@link dispositionUnsupported} refusal. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
+export const isDispositionUnsupported = (error: unknown): boolean =>
+  error instanceof FilesError && DISPOSITION_UNSUPPORTED_BRAND in error;

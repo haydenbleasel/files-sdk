@@ -22,7 +22,7 @@ import {
   rangedResponseSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
@@ -976,8 +976,7 @@ export const vercelBlob = (
       // CDN URL nor a Vercel presigned URL can carry a Content-Disposition
       // override, so silently dropping it would be a regression — throw.
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "vercel-blob: `responseContentDisposition` is not supported. Vercel Blob URLs (public and presigned) carry no Content-Disposition override, so the header that prevents stored XSS on user-uploaded HTML/SVG cannot be applied. Use a different provider for buckets with untrusted content."
         );
       }

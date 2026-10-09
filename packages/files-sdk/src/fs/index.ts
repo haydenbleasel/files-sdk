@@ -22,7 +22,7 @@ import {
   joinPublicUrl,
   rangedSize,
 } from "../internal/core.js";
-import { FilesError } from "../internal/errors.js";
+import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { toWebStream } from "../internal/node-stream";
@@ -918,8 +918,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
     url(key, urlOpts): Promise<string> {
       const bodyPath = resolveKeyPath(root, key);
       if (urlOpts?.responseContentDisposition) {
-        throw new FilesError(
-          "Provider",
+        throw dispositionUnsupported(
           "fs: `responseContentDisposition` is not supported. fs URLs are either `file://` URLs or static-server URLs, with no signature in which to bind the override."
         );
       }
