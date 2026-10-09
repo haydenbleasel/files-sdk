@@ -9,11 +9,14 @@ export interface WasabiAdapterOptions {
   /** Wasabi bucket name. The adapter scopes all operations to it. */
   bucket: string;
   /**
-   * Wasabi storage region, e.g. `"us-east-1"`, `"us-east-2"`, `"us-central-1"`,
-   * `"us-west-1"`, `"ca-central-1"`, `"eu-central-1"`, `"eu-central-2"`,
-   * `"eu-west-1"`, `"eu-west-2"`, `"ap-northeast-1"`, `"ap-northeast-2"`,
-   * `"ap-southeast-1"`, `"ap-southeast-2"`. Drives the endpoint host
-   * (`https://s3.<region>.wasabisys.com`); there's no env-var fallback.
+   * Wasabi storage region: `"us-east-1"`, `"us-east-2"`, `"us-central-1"`,
+   * `"us-west-1"`, `"us-west-2"`, `"ca-central-1"`, `"eu-central-1"`,
+   * `"eu-central-2"`, `"eu-west-1"`, `"eu-west-2"`, `"eu-west-3"`,
+   * `"eu-south-1"`, `"ap-northeast-1"`, `"ap-northeast-2"`,
+   * `"ap-southeast-1"`, or `"ap-southeast-2"` (Wasabi's current list is at
+   * https://docs.wasabi.com/docs/service-urls-for-wasabis-storage-regions).
+   * Drives the endpoint host (`https://s3.<region>.wasabisys.com`); there's
+   * no env-var fallback.
    * Doubles as the SigV4 region. The region names mirror AWS but the
    * endpoints are Wasabi's own — buckets live in exactly one region.
    */
