@@ -16,11 +16,11 @@ import {
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadOptions,
   UploadResult,
 } from "../index.js";
@@ -370,20 +370,15 @@ interface BoxFileLike {
   sharedLink?: { url?: string; downloadUrl?: string | null } | null;
 }
 
-interface FileMeta {
-  size: number;
-  type: string;
-  etag?: string;
-  lastModified?: number;
-}
+type FileMeta = Omit<FileInfo, "key" | "metadata">;
 
 const fileMetaFromBox = (item: BoxFileLike): FileMeta => {
   const raw = item.modifiedAt ?? item.contentModifiedAt;
   const ts = isString(raw) ? raw : raw?.value;
   const ms = ts ? new Date(ts).getTime() : undefined;
   const meta: FileMeta = {
+    contentType: inferTypeFromName(item.name ?? ""),
     size: item.size ?? 0,
-    type: inferTypeFromName(item.name ?? ""),
   };
   if (item.etag !== null && item.etag !== undefined && item.etag !== "") {
     meta.etag = item.etag;
@@ -716,28 +711,6 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
     fileIdCache.delete(key);
   };
 
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures (a file deleted in between reads as
-  // NotFound) instead of leaking a raw SDK error out of `text()`.
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    try {
-      await authHandle.ensureReady();
-      const fileId = await resolveFileId(key);
-      const url = await client.downloads.getDownloadFileUrl(fileId);
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new FilesError(
-          "Provider",
-          `box: download fetch failed (${res.status})`
-        );
-      }
-      const ab = await res.arrayBuffer();
-      return new Uint8Array(ab);
-    } catch (error) {
-      throw mapBoxError(error);
-    }
-  };
-
   const fetchSharedLinkUrl = async (fileId: string): Promise<string> => {
     const file = await client.sharedLinksFiles.getSharedLinkForFile(fileId, {
       fields: "shared_link",
@@ -1027,10 +1000,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         const fileId = await resolveFileId(key);
         const file = await client.files.getFileById(fileId);
         const meta = fileMetaFromBox(file);
-        return createStoredFile(
-          { key, ...meta },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return { key, ...meta };
       } catch (error) {
         throw mapBoxError(error);
       }
@@ -1076,7 +1046,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
           },
         });
         const entries = page.entries ?? [];
-        const items: StoredFile[] = [];
+        const items: FileInfo[] = [];
         const prefixes: string[] = [];
         // Classify one child into items (files) or prefixes (subfolders,
         // folded mode only); nested so the loop's branching stays out of
@@ -1094,12 +1064,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
             return;
           }
           fileIdCache.set(key, entry.id);
-          items.push(
-            createStoredFile(
-              { key, ...fileMetaFromBox(entry) },
-              { factory: lazyDownload(key), kind: "lazy" }
-            )
-          );
+          items.push({ key, ...fileMetaFromBox(entry) });
         };
         for (const entry of entries) {
           collect(entry);

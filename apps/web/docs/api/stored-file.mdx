@@ -1,27 +1,37 @@
 ---
-title: StoredFile
-description: The type returned by download, head, and list - File's name/size/type/lastModified, plus the key, etag, and metadata that storage adds.
+title: FileInfo and StoredFile
+description: FileInfo is an object's metadata, returned by head, list, search, and upload. StoredFile is a download - the same metadata plus File's name/type and the body accessors.
 ---
 
-Native `File` covers `name`, `size`, `type`, and `lastModified`, but storage adds three things it doesn't carry: a full `key`, an `etag` for cache validation, and user-defined `metadata`. `StoredFile` mirrors `File`'s shape and adds those.
+Every result that describes an object is a `FileInfo`. Only [`download`](/docs/api/download) adds a body, as a `StoredFile`.
 
 ```ts lineNumbers
-interface StoredFile {
-  // File-shaped:
-  name: string; // = key
+interface FileInfo {
+  key: string;
   size: number;
+  contentType: string;
+  etag?: string;
+  lastModified?: number; // ms since the epoch
+  metadata?: Record<string, string>;
+}
+
+interface StoredFile extends FileInfo {
+  // File-shaped aliases:
+  name: string; // = key
   type: string; // = contentType
-  lastModified?: number;
+  // The body:
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
-  stream(): ReadableStream;
+  stream(): ReadableStream<Uint8Array>;
   blob(): Promise<Blob>;
-
-  // Storage-specific:
-  key: string;
-  etag?: string;
-  metadata?: Record<string, string>;
 }
 ```
 
-`upload` accepts a native `File` as input. `download`, `head`, and `list` all return `StoredFile`. The body accessors on results from `head` and `list` lazy-fetch on call.
+- **`FileInfo`** is what [`head`](/docs/api/head), [`list`](/docs/api/list) (and `listAll`), [`search`](/docs/api/search), and [`upload`](/docs/api/upload) return. It's plain metadata with nothing lazy on it, so it's safe to log, serialize, or cache. To read the bytes, call `download(info.key)`.
+- **`StoredFile`** is what `download` returns. Native `File` covers `name`, `size`, `type`, and `lastModified` but not a storage `key`, `etag`, or user `metadata`, so `StoredFile` carries both: the `FileInfo` fields, plus `name` and `type` so it can stand in where a `File` is expected.
+
+`upload` accepts a native `File` as input. A `StoredFile`'s body can be read once as a stream, or many times through `text()` / `arrayBuffer()` / `blob()` (call those before `stream()`, since they buffer the body for reuse).
+
+:::note
+Before v3, `head` and `list` returned a `StoredFile` whose body accessors quietly issued a full download when called. They now return `FileInfo`: replace `(await files.head(key)).text()` with `(await files.download(key)).text()`, and read `contentType` / `key` instead of `type` / `name` on head and list results.
+:::

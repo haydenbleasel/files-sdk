@@ -167,7 +167,7 @@ export const transfer = async (
     const body = file.stream();
     try {
       await dest.upload(destKey, body, {
-        contentType: file.type,
+        contentType: file.contentType,
         ...(keepMetadata && file.metadata && { metadata: file.metadata }),
         ...signalOpt,
       });

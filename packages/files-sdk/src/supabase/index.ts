@@ -6,6 +6,7 @@ import type { FileMetadata } from "@supabase/storage-js";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
@@ -510,14 +511,6 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
-  const downloadAsBytes = async (key: string): Promise<Uint8Array> => {
-    const { data, error } = await bucketRef.download(key);
-    if (error) {
-      throw mapSupabaseError(error);
-    }
-    return blobToUint8(data);
-  };
-
   const downloadAsStreamFile = async (
     key: string,
     signal?: AbortSignal
@@ -537,6 +530,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     const meta = await safeInfo(bucketRef, key);
     return createStoredFile(
       {
+        contentType: meta?.contentType ?? DEFAULT_CONTENT_TYPE,
         ...(meta?.etag && { etag: stripEtag(meta.etag) }),
         key,
         ...(meta?.lastModified && {
@@ -546,7 +540,6 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           metadata: stringifyMetadata(meta.metadata),
         }),
         size: meta?.size ?? 0,
-        type: meta?.contentType ?? DEFAULT_CONTENT_TYPE,
       },
       {
         factory: () => stream,
@@ -584,12 +577,12 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     }
     return createStoredFile(
       {
+        contentType: type,
         ...(etag && { etag }),
         key,
         ...(lastModified !== undefined && { lastModified }),
         ...(metadata && { metadata }),
         size: bytes.byteLength,
-        type,
       },
       { data: bytes, kind: "buffer" }
     );
@@ -678,24 +671,18 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         throw mapSupabaseError(error);
       }
       const info: SupabaseInfoLike = data;
-      return createStoredFile(
-        {
-          ...(info.etag && { etag: stripEtag(info.etag) }),
-          key,
-          ...(info.lastModified !== undefined && {
-            lastModified: toMs(info.lastModified),
-          }),
-          ...(info.metadata && {
-            metadata: stringifyMetadata(info.metadata),
-          }),
-          size: info.size ?? 0,
-          type: info.contentType ?? DEFAULT_CONTENT_TYPE,
-        },
-        {
-          factory: () => downloadAsBytes(key),
-          kind: "lazy",
-        }
-      );
+      return {
+        contentType: info.contentType ?? DEFAULT_CONTENT_TYPE,
+        ...(info.etag && { etag: stripEtag(info.etag) }),
+        key,
+        ...(info.lastModified !== undefined && {
+          lastModified: toMs(info.lastModified),
+        }),
+        ...(info.metadata && {
+          metadata: stringifyMetadata(info.metadata),
+        }),
+        size: info.size ?? 0,
+      };
     },
     async list(options): Promise<ListResult> {
       // Both shapes go through the V2 search API. The legacy V1 list() is
@@ -705,7 +692,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // nested keys would miss every nested object and surface phantom
       // zero-byte "files" for the folders. listV2 without a delimiter is a
       // plain string-prefix scan over full keys, with a real cursor.
-      const v2Item = (obj: SupabaseV2Row, fullKey: string): StoredFile => {
+      const v2Item = (obj: SupabaseV2Row, fullKey: string): FileInfo => {
         const meta: SupabaseListItemMetadata = obj.metadata ?? {};
         // `metadata` on a listing row is Supabase's *system* block (eTag,
         // size, mimetype, cacheControl, ...) — never user metadata. Surfacing
@@ -715,19 +702,16 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         const userMetadata = stringifyMetadata(
           isJsonObject(obj.user_metadata) ? obj.user_metadata : undefined
         );
-        return createStoredFile(
-          {
-            ...(meta.eTag && { etag: stripEtag(meta.eTag) }),
-            key: fullKey,
-            ...(meta.lastModified !== undefined && {
-              lastModified: toMs(meta.lastModified),
-            }),
-            ...(userMetadata && { metadata: userMetadata }),
-            size: meta.size ?? meta.contentLength ?? 0,
-            type: meta.mimetype ?? DEFAULT_CONTENT_TYPE,
-          },
-          { factory: () => downloadAsBytes(fullKey), kind: "lazy" }
-        );
+        return {
+          contentType: meta.mimetype ?? DEFAULT_CONTENT_TYPE,
+          ...(meta.eTag && { etag: stripEtag(meta.eTag) }),
+          key: fullKey,
+          ...(meta.lastModified !== undefined && {
+            lastModified: toMs(meta.lastModified),
+          }),
+          ...(userMetadata && { metadata: userMetadata }),
+          size: meta.size ?? meta.contentLength ?? 0,
+        };
       };
       const listFolded = async (delimiter: string): Promise<ListResult> => {
         assertSlashDelimiter("supabase", delimiter);
@@ -746,7 +730,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         const trimmedPrefix = options?.prefix?.replace(/\/$/u, "");
         const fullPath = (name: string, key?: string): string =>
           key ?? (trimmedPrefix ? `${trimmedPrefix}/${name}` : name);
-        const items: StoredFile[] = data.objects.map((obj) =>
+        const items: FileInfo[] = data.objects.map((obj) =>
           v2Item(obj, fullPath(obj.name, obj.key))
         );
         const prefixes = data.folders.map((folder) => {
@@ -775,7 +759,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       // Flat-mode object names are already full keys (`key` when the server
       // provides it is the same path).
-      const items: StoredFile[] = data.objects.map((obj) =>
+      const items: FileInfo[] = data.objects.map((obj) =>
         v2Item(obj, obj.key ?? obj.name)
       );
       return {

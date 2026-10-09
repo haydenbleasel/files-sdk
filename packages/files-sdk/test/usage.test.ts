@@ -120,15 +120,16 @@ describe("usage", () => {
     expect(files.usage().bytesDown).toBe(5);
   });
 
-  test("meters bytes read out of a head() body", async () => {
+  test("counts head() as metadata only, moving no bytes", async () => {
     const files = metered();
     await files.upload("a.txt", bytes("hello"));
     const file = await files.head("a.txt");
-    expect(await file.text()).toBe("hello");
+    expect(file.size).toBe(5);
+    expect("text" in file).toBe(false);
 
     const stats = files.usage();
     expect(stats.operationsByKind.head).toBe(1);
-    expect(stats.bytesDown).toBe(5);
+    expect(stats.bytesDown).toBe(0);
   });
 
   test("counts non-body verbs without moving bytes", async () => {
@@ -250,7 +251,7 @@ describe("usage", () => {
     const downloaded = await wrap(exact, (() =>
       Promise.resolve(
         createStoredFile(
-          { etag: "etag-1", key: "a.txt", size: 5, type: "text/plain" },
+          { contentType: "text/plain", etag: "etag-1", key: "a.txt", size: 5 },
           { data: bytes("hello"), kind: "buffer" }
         )
       )) as PluginNext);

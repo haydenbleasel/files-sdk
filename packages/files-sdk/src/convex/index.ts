@@ -1,5 +1,6 @@
 import type {
   Adapter,
+  FileInfo,
   ListResult,
   SignedUpload,
   StoredFile,
@@ -185,26 +186,6 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     return undefined;
   };
 
-  // Read a file body into bytes. Requires an action context.
-  const loadBytes = async (key: ConvexStorageId): Promise<Uint8Array> => {
-    if (!isFunction(storage.get)) {
-      throw new FilesError(
-        "Unsupported",
-        `convex: reading a file body ${REQUIRES_ACTION}`
-      );
-    }
-    let blob: Blob | null;
-    try {
-      blob = await storage.get(key);
-    } catch (error) {
-      throw mapConvexError(error);
-    }
-    if (!blob) {
-      throw new FilesError("NotFound", `convex: not found: ${key}`);
-    }
-    return new Uint8Array(await blob.arrayBuffer());
-  };
-
   const adapter: ConvexAdapter = {
     capabilities: {
       // Convex storage ids are immutable — `copy()` is unsupported (throws).
@@ -262,13 +243,13 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       const meta = await readMeta(key);
       return createStoredFile(
         {
+          contentType: meta?.contentType ?? (blob.type || OCTET_STREAM),
           ...(meta?.sha256 && { etag: meta.sha256 }),
           key,
           ...(meta?.lastModified !== undefined && {
             lastModified: meta.lastModified,
           }),
           size: meta?.size ?? bytes.byteLength,
-          type: meta?.contentType ?? (blob.type || OCTET_STREAM),
         },
         { data: bytes, kind: "buffer" }
       );
@@ -287,7 +268,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       }
     },
 
-    async head(key): Promise<StoredFile> {
+    async head(key): Promise<FileInfo> {
       let meta: Awaited<ReturnType<typeof readMeta>>;
       try {
         meta = await readMeta(key);
@@ -308,18 +289,15 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
         }
         meta = { contentType: OCTET_STREAM, sha256: "", size: 0 };
       }
-      return createStoredFile(
-        {
-          ...(meta.sha256 && { etag: meta.sha256 }),
-          key,
-          ...(meta.lastModified !== undefined && {
-            lastModified: meta.lastModified,
-          }),
-          size: meta.size,
-          type: meta.contentType,
-        },
-        { factory: () => loadBytes(key), kind: "lazy" }
-      );
+      return {
+        contentType: meta.contentType,
+        ...(meta.sha256 && { etag: meta.sha256 }),
+        key,
+        ...(meta.lastModified !== undefined && {
+          lastModified: meta.lastModified,
+        }),
+        size: meta.size,
+      };
     },
 
     async list(options): Promise<ListResult> {
@@ -341,20 +319,17 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       // Storage ids are opaque (not hierarchical), so `prefix` is rarely
       // meaningful here; applied as a literal id prefix for consistency.
       const prefix = options?.prefix;
-      const items: StoredFile[] = result.page.flatMap((doc) =>
+      const items: FileInfo[] = result.page.flatMap((doc) =>
         prefix && !doc._id.startsWith(prefix)
           ? []
           : [
-              createStoredFile(
-                {
-                  etag: doc.sha256,
-                  key: doc._id,
-                  lastModified: doc._creationTime,
-                  size: doc.size,
-                  type: doc.contentType ?? OCTET_STREAM,
-                },
-                { factory: () => loadBytes(doc._id), kind: "lazy" }
-              ),
+              {
+                contentType: doc.contentType ?? OCTET_STREAM,
+                etag: doc.sha256,
+                key: doc._id,
+                lastModified: doc._creationTime,
+                size: doc.size,
+              },
             ]
       );
       return {

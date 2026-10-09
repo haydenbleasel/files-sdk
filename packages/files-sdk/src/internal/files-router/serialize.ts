@@ -1,23 +1,21 @@
-// Shape `StoredFile`s and bulk errors for the wire. A local 7-field mapper (not
-// the CLI's `storedFileToJson`) keeps `cli/io.ts`'s `node:fs`/`node:stream`
-// imports out of the edge-safe gateway bundle. Keys are unscoped (the authorize
-// prefix stripped) so the client sees user-relative keys.
+// Shape `FileInfo`s and bulk errors for the wire. A local mapper (not the
+// CLI's `fileInfoToJson`) keeps `cli/io.ts`'s `node:fs`/`node:stream` imports
+// out of the edge-safe gateway bundle. Keys are unscoped (the authorize prefix
+// stripped) so the client sees user-relative keys.
 
-import type { StoredFile } from "../../index.js";
+import type { FileInfo } from "../../index.js";
 import type { FilesError } from "../errors.js";
 import { serializeFilesError } from "../router-core/envelope.js";
-import type { WireBulkError, WireStoredFile } from "./protocol.js";
+import type { WireBulkError, WireFileInfo } from "./protocol.js";
 
-export const storedFileToWire = (
-  file: StoredFile,
+export const fileInfoToWire = (
+  file: FileInfo,
   unscope: (key: string) => string
-): WireStoredFile => {
-  const key = unscope(file.key);
-  const wire: WireStoredFile = {
-    key,
-    name: key,
+): WireFileInfo => {
+  const wire: WireFileInfo = {
+    contentType: file.contentType,
+    key: unscope(file.key),
     size: file.size,
-    type: file.type,
   };
   if (file.lastModified !== undefined) {
     wire.lastModified = file.lastModified;

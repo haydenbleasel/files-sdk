@@ -1,16 +1,7 @@
-import type { StoredFile } from "../index.js";
+import type { FileInfo, StoredFile } from "../index.js";
 import { collectStream } from "./core.js";
 import { FilesError } from "./errors.js";
 import { isFunction } from "./is.js";
-
-export interface StoredFileMeta {
-  key: string;
-  size: number;
-  type: string;
-  lastModified?: number;
-  etag?: string;
-  metadata?: Record<string, string>;
-}
 
 export type BodySource =
   | { kind: "buffer"; data: Uint8Array }
@@ -73,7 +64,7 @@ const blobBytes = async (blob: Blob): Promise<Uint8Array> => {
 };
 
 export const createStoredFile = (
-  meta: StoredFileMeta,
+  meta: FileInfo,
   body: BodySource,
   // A native Blob source (e.g. `Response.blob()`) for runtimes whose Blob
   // cannot wrap raw bytes — React Native. Used by blob() only when the bytes
@@ -162,7 +153,7 @@ export const createStoredFile = (
       try {
         // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing; see
         // `arrayBuffer()` above — download bytes never share memory.
-        return new Blob([bytes as BlobPart], { type: meta.type });
+        return new Blob([bytes as BlobPart], { type: meta.contentType });
       } catch (error) {
         // React Native, after the bytes were already materialized (a byte
         // accessor ran first, or the source has no native Blob form).
@@ -173,6 +164,7 @@ export const createStoredFile = (
         );
       }
     },
+    contentType: meta.contentType,
     etag: meta.etag,
     key: meta.key,
     lastModified: meta.lastModified,
@@ -199,6 +191,6 @@ export const createStoredFile = (
       const bytes = await toBytes();
       return new TextDecoder().decode(bytes);
     },
-    type: meta.type,
+    type: meta.contentType,
   };
 };

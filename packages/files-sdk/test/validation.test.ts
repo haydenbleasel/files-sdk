@@ -26,7 +26,7 @@ const streamOf = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
 
 const typeOf = async (files: Files, key: string): Promise<string> => {
   const file = await files.head(key);
-  return file.type;
+  return file.contentType;
 };
 
 const caught = async (promise: Promise<unknown>): Promise<unknown> => {

@@ -6,8 +6,8 @@ import path from "node:path";
 import {
   emit,
   fail,
+  fileInfoToJson,
   readBody,
-  storedFileToJson,
   writeBody,
 } from "../src/cli/io.js";
 import { createStoredFile } from "../src/index.js";
@@ -271,11 +271,11 @@ const makeStoredFile = (text: string) => {
   const bytes = new TextEncoder().encode(text);
   return createStoredFile(
     {
+      contentType: "text/plain",
       etag: '"x"',
       key: "k",
       lastModified: 0,
       size: bytes.byteLength,
-      type: "text/plain",
     },
     { data: bytes, kind: "buffer" }
   );
@@ -328,27 +328,36 @@ describe("cli/io writeBody", () => {
   });
 });
 
-describe("cli/io storedFileToJson", () => {
-  test("projects only the public metadata fields", () => {
+describe("cli/io fileInfoToJson", () => {
+  test("projects only the FileInfo fields, even off a downloaded file", () => {
     const file = createStoredFile(
       {
+        contentType: "text/plain",
         etag: '"abc"',
         key: "k/x",
         lastModified: 123,
         metadata: { a: "1" },
         size: 9,
-        type: "text/plain",
       },
       { data: new Uint8Array(9), kind: "buffer" }
     );
-    expect(storedFileToJson(file)).toEqual({
+    const json = fileInfoToJson(file);
+    expect(json).toEqual({
+      contentType: "text/plain",
       etag: '"abc"',
       key: "k/x",
       lastModified: 123,
       metadata: { a: "1" },
-      name: file.name,
       size: 9,
-      type: "text/plain",
     });
+    // The download-only `File`-like aliases and body accessors stay out.
+    expect(Object.keys(json).toSorted()).toEqual([
+      "contentType",
+      "etag",
+      "key",
+      "lastModified",
+      "metadata",
+      "size",
+    ]);
   });
 });

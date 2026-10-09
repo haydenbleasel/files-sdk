@@ -204,7 +204,7 @@ describe("tiering — copy / move", () => {
     });
     await files.copy("a.json", "cold/a.json");
     const head = await files.head("cold/a.json");
-    expect(head.type).toBe("application/json");
+    expect(head.contentType).toBe("application/json");
     expect(head.metadata).toEqual({ owner: "ada" });
   });
 

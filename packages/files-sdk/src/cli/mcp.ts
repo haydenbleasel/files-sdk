@@ -9,7 +9,7 @@ import { sync, transfer } from "../index.js";
 import type { BulkOptions } from "../index.js";
 import { rangedSize } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
-import { filesErrorReplacer, storedFileToJson } from "./io.js";
+import { fileInfoToJson, filesErrorReplacer } from "./io.js";
 import { loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
 
@@ -354,7 +354,7 @@ export const buildMcpServer = async (
         });
         const bytes = await readMcpDownloadCapped(file.stream(), key, cap);
         return ok({
-          ...storedFileToJson(file),
+          ...fileInfoToJson(file),
           base64: Buffer.from(
             bytes.buffer,
             bytes.byteOffset,
@@ -389,11 +389,11 @@ export const buildMcpServer = async (
           );
           return ok({
             ...result,
-            files: result.files.map(storedFileToJson),
+            files: result.files.map(fileInfoToJson),
           });
         }
         const file = await files.head(key);
-        return ok(storedFileToJson(file));
+        return ok(fileInfoToJson(file));
       } catch (error) {
         return errorPayload(error);
       }
@@ -549,9 +549,9 @@ export const buildMcpServer = async (
               "`delimiter` lists one folder level and `all` walks the whole tree — pass one, not both"
             );
           }
-          const items: ReturnType<typeof storedFileToJson>[] = [];
+          const items: ReturnType<typeof fileInfoToJson>[] = [];
           for await (const file of files.listAll({ cursor, limit, prefix })) {
-            items.push(storedFileToJson(file));
+            items.push(fileInfoToJson(file));
           }
           return ok({ items });
         }
@@ -563,7 +563,7 @@ export const buildMcpServer = async (
         });
         return ok({
           cursor: result.cursor,
-          items: result.items.map(storedFileToJson),
+          items: result.items.map(fileInfoToJson),
           ...(result.prefixes && { prefixes: result.prefixes }),
         });
       } catch (error) {
@@ -608,7 +608,7 @@ export const buildMcpServer = async (
     },
     async ({ pattern, match, prefix, limit, maxResults, caseInsensitive }) => {
       try {
-        const items: ReturnType<typeof storedFileToJson>[] = [];
+        const items: ReturnType<typeof fileInfoToJson>[] = [];
         for await (const file of files.search(pattern, {
           caseInsensitive,
           limit,
@@ -616,7 +616,7 @@ export const buildMcpServer = async (
           maxResults,
           prefix,
         })) {
-          items.push(storedFileToJson(file));
+          items.push(fileInfoToJson(file));
         }
         return ok({ items });
       } catch (error) {

@@ -519,26 +519,19 @@ describe("google-drive adapter", () => {
     expect(f.size).toBe(3);
   });
 
-  test("head returns metadata with lazy body factory", async () => {
+  test("head returns plain metadata without touching the body", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });
     const f = await files.head("a.txt");
-    expect(f.type).toBe("text/plain");
+    expect(f.key).toBe("a.txt");
+    expect(f.contentType).toBe("text/plain");
     expect(f.etag).toBe("etag-id-1");
-    // Body accessor lazily issues alt=media.
-    const before = filesGetMock.mock.calls.length;
-    expect(await f.text()).toBe("body-id-1");
-    expect(filesGetMock.mock.calls.length).toBeGreaterThan(before);
-  });
-
-  test("a head() body read maps a file deleted in between to NotFound", async () => {
-    const files = new Files({ adapter: googleDrive(baseOpts) });
-    await files.upload("a.txt", "hi");
-    const f = await files.head("a.txt");
-    store.delete("id-1");
-    const err = await f.text().catch((error: unknown) => error);
-    expect(err).toBeInstanceOf(FilesError);
-    expect((err as FilesError).code).toBe("NotFound");
+    expect("text" in f).toBe(false);
+    // No alt=media request — only metadata.
+    const mediaGets = filesGetMock.mock.calls.filter(
+      (c) => (c[0] as { alt?: string } | undefined)?.alt === "media"
+    );
+    expect(mediaGets.length).toBe(0);
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {

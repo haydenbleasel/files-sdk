@@ -79,6 +79,6 @@ Placed **last** (innermost) it instead meters the bytes-on-the-wire to the provi
 ## Things to keep in mind
 
 - **`bytesUp` comes from each upload's reported result size.** The rare adapter that doesn't report a size contributes `0` to `bytesUp` for that upload.
-- **`bytesDown` is only the body you read.** Reading metadata with `head()` and never touching the body costs nothing; the moment you call a body accessor, the bytes are tallied.
+- **`bytesDown` is only the body you read.** `head()` and `list()` return metadata only, so they cost nothing; a `download()` is tallied as you read its body.
 - **It counts logical operations, not provider requests.** Retries happen below the plugin, so a call that retries three times still counts once.
 - **No metadata, no native deps.** Unlike the transforming plugins it never reads or rewrites the body, so streaming, range downloads, `url()`, and `signedUploadUrl()` all keep working on any adapter.

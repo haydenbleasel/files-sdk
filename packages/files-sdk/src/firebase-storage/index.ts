@@ -12,8 +12,8 @@ import type { App } from "firebase-admin/app";
 
 import type {
   Adapter,
+  FileInfo,
   SignedUpload,
-  StoredFile,
   UploadProgress,
   UploadResult,
 } from "../index.js";
@@ -153,18 +153,6 @@ const uint8ToBuffer = (u8: Uint8Array): Buffer =>
 const bufferToUint8 = (buf: Buffer): Uint8Array =>
   new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 
-// The lazy body behind head()/list() results runs after the operation has
-// returned, so it maps its own failures (an object deleted in between reads
-// as NotFound) instead of leaking a raw ApiError out of `text()`.
-const readFileBytes = async (file: File): Promise<Uint8Array> => {
-  try {
-    const [buf] = await file.download();
-    return bufferToUint8(buf);
-  } catch (error) {
-    throw mapFirebaseStorageError(error);
-  }
-};
-
 const pipeWebToNode = async (
   web: ReadableStream<Uint8Array>,
   node: NodeJS.WritableStream
@@ -200,11 +188,11 @@ const writeViaResumableStream = async (
 };
 
 interface StoredObjectMeta {
+  contentType: string;
   etag?: string;
   lastModified?: number;
   metadata?: Record<string, string>;
   size: number;
-  type: string;
 }
 
 const metaToStored = (meta: FileMetadata | undefined): StoredObjectMeta => {
@@ -215,11 +203,11 @@ const metaToStored = (meta: FileMetadata | undefined): StoredObjectMeta => {
   const userMeta = meta?.metadata as Record<string, string> | undefined;
   const updated = meta?.updated;
   return {
+    contentType: meta?.contentType ?? "application/octet-stream",
     ...(meta?.etag && { etag: meta.etag }),
     ...(updated && { lastModified: new Date(updated).getTime() }),
     ...(userMeta && { metadata: userMeta }),
     size: Number(meta?.size ?? 0),
-    type: meta?.contentType ?? "application/octet-stream",
   };
 };
 
@@ -457,13 +445,8 @@ export const firebaseStorage = (
     },
     async head(key) {
       try {
-        const file = bucket.file(key);
-        const [meta] = await file.getMetadata();
-        const m = metaToStored(meta);
-        return createStoredFile(
-          { key, ...m },
-          { factory: () => readFileBytes(file), kind: "lazy" }
-        );
+        const [meta] = await bucket.file(key).getMetadata();
+        return { key, ...metaToStored(meta) };
       } catch (error) {
         throw mapFirebaseStorageError(error);
       }
@@ -479,13 +462,10 @@ export const firebaseStorage = (
           ...(options?.cursor && { pageToken: options.cursor }),
           ...(options?.delimiter && { delimiter: options.delimiter }),
         });
-        const items: StoredFile[] = files.map((f) => {
-          const m = metaToStored(f.metadata);
-          return createStoredFile(
-            { key: f.name, ...m },
-            { factory: () => readFileBytes(f), kind: "lazy" }
-          );
-        });
+        const items: FileInfo[] = files.map((f) => ({
+          key: f.name,
+          ...metaToStored(f.metadata),
+        }));
         const cursor = nextQuery?.pageToken;
         // The raw API response is untyped; `prefixes` is the JSON string list
         // of common prefixes for a delimiter listing.

@@ -2,13 +2,15 @@
 // the whole `Files` verb set over the gateway endpoint. One method per verb maps
 // to a JSON POST (or the download GET / upload PUT byte paths). React/Vue/Svelte
 // wrap this; it never touches React or `window` at module scope. `download`
-// returns the same lazy `StoredFile` the server SDK returns.
+// returns the same lazy `StoredFile` the server SDK returns; `head`/`list`/
+// `search` return plain `FileInfo` metadata, with no body accessors.
 
 import pMap from "p-map";
 
 import type {
   AdapterCapabilities,
   BulkError,
+  FileInfo,
   StoredFile,
   UploadResult,
 } from "../index.js";
@@ -20,12 +22,11 @@ import type {
   PresignedUpload,
   SignedUploadUrlResponse,
   WireBulkError,
+  WireFileInfo,
   WireFilesError,
-  WireStoredFile,
 } from "../internal/files-router/protocol.js";
 import { isFunction, isObject, isString } from "../internal/is.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
-import { createStoredFile } from "../internal/stored-file.js";
 import { decodeDownload } from "./download-decode.js";
 import type { FileUploadState } from "./progress.js";
 import { aggregate, fileName, initialState } from "./progress.js";
@@ -101,6 +102,16 @@ const withErrors = <T extends object>(base: T, errors?: WireBulkError[]): T => {
   const revived = reviveBulk(errors);
   return revived ? { ...base, errors: revived } : base;
 };
+
+// Metadata only: reading the bytes is always an explicit `download()`.
+const toFileInfo = (wire: WireFileInfo): FileInfo => ({
+  contentType: wire.contentType,
+  etag: wire.etag,
+  key: wire.key,
+  lastModified: wire.lastModified,
+  metadata: wire.metadata,
+  size: wire.size,
+});
 
 // A download the gateway redirected fails at the storage host, whose error
 // body isn't the gateway's envelope: classify it by HTTP status the way an
@@ -339,25 +350,6 @@ export const createFilesClient = (
     return decodeDownload(res, key);
   };
 
-  const toStoredFile = (wire: WireStoredFile): StoredFile =>
-    createStoredFile(
-      {
-        etag: wire.etag,
-        key: wire.key,
-        lastModified: wire.lastModified,
-        metadata: wire.metadata,
-        size: wire.size,
-        type: wire.type,
-      },
-      {
-        factory: async () => {
-          const file = await downloadOne(wire.key);
-          return new Uint8Array(await file.arrayBuffer());
-        },
-        kind: "lazy",
-      }
-    );
-
   // --- upload paths ---
 
   // The through-endpoint upload answers with the op's JSON body on 2xx and the
@@ -457,13 +449,7 @@ export const createFilesClient = (
       }
       settleSucceeded(state, done.key);
       report();
-      return {
-        etag: done.etag,
-        key: done.key,
-        lastModified: done.lastModified,
-        size: done.size,
-        type: done.type,
-      };
+      return toFileInfo(done);
     } catch (error) {
       settleFailed(state, error, opts?.signal);
       report();
@@ -507,13 +493,13 @@ export const createFilesClient = (
         signal: opts?.signal,
         url: `${endpoint}${sep}op=upload&key=${encodeURIComponent(key)}`,
       });
-      const parsed = handleEndpointResult<{ file: UploadOutcome }>(
+      const parsed = handleEndpointResult<{ file: WireFileInfo }>(
         result.status,
         result.text
       );
       settleSucceeded(state, parsed.file.key);
       report();
-      return parsed.file;
+      return toFileInfo(parsed.file);
     } catch (error) {
       settleFailed(state, error, opts?.signal);
       report();
@@ -594,13 +580,7 @@ export const createFilesClient = (
     const errors: BulkError[] = [];
     for (const result of results) {
       if (result.ok) {
-        uploaded.push({
-          contentType: result.out.type,
-          etag: result.out.etag,
-          key: result.out.key,
-          lastModified: result.out.lastModified,
-          size: result.out.size,
-        });
+        uploaded.push(result.out);
       } else {
         errors.push({ error: result.error, key: result.key });
       }
@@ -721,7 +701,7 @@ export const createFilesClient = (
     head: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
         const res = await post<{
-          files: WireStoredFile[];
+          files: WireFileInfo[];
           errors?: WireBulkError[];
         }>(
           {
@@ -732,18 +712,18 @@ export const createFilesClient = (
           },
           opts?.signal
         );
-        return withErrors({ files: res.files.map(toStoredFile) }, res.errors);
+        return withErrors({ files: res.files.map(toFileInfo) }, res.errors);
       }
-      const r = await post<{ file: WireStoredFile }>(
+      const r = await post<{ file: WireFileInfo }>(
         { key: keyOrKeys, op: "head" },
         opts?.signal
       );
-      return toStoredFile(r.file);
+      return toFileInfo(r.file);
     }) as FilesClient["head"],
 
     list: async (opts?: ListCallOptions) => {
       const res = await post<{
-        items: WireStoredFile[];
+        items: WireFileInfo[];
         prefixes?: string[];
         cursor?: string;
       }>(
@@ -757,7 +737,7 @@ export const createFilesClient = (
         opts?.signal
       );
       return {
-        items: res.items.map(toStoredFile),
+        items: res.items.map(toFileInfo),
         ...(res.prefixes && { prefixes: res.prefixes }),
         ...(res.cursor && { cursor: res.cursor }),
       };
@@ -787,15 +767,15 @@ export const createFilesClient = (
     },
 
     restoreTrashed: async (key, opts) => {
-      const res = await post<{ file: WireStoredFile }>(
+      const res = await post<{ file: WireFileInfo }>(
         { key, op: "restore-trashed" },
         opts?.signal
       );
-      return toStoredFile(res.file);
+      return toFileInfo(res.file);
     },
 
     restoreVersion: async (key, versionId, opts) => {
-      const res = await post<{ file: WireStoredFile }>(
+      const res = await post<{ file: WireFileInfo }>(
         {
           key,
           op: "restore-version",
@@ -803,7 +783,7 @@ export const createFilesClient = (
         },
         opts?.signal
       );
-      return toStoredFile(res.file);
+      return toFileInfo(res.file);
     },
 
     async *search(pattern: string | RegExp, opts?: SearchCallOptions) {
@@ -811,7 +791,7 @@ export const createFilesClient = (
         pattern instanceof RegExp
           ? { flags: pattern.flags, isRegex: true, pattern: pattern.source }
           : { pattern };
-      const res = await post<{ matches: WireStoredFile[] }>(
+      const res = await post<{ matches: WireFileInfo[] }>(
         {
           op: "search",
           ...base,
@@ -828,7 +808,7 @@ export const createFilesClient = (
         opts?.signal
       );
       for (const match of res.matches) {
-        yield toStoredFile(match);
+        yield toFileInfo(match);
       }
     },
 

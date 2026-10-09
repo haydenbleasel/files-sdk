@@ -4,12 +4,12 @@ import * as blob from "@vercel/blob";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   PartMeta,
   PartsResumableDriver,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -78,10 +78,9 @@ export interface VercelBlobAdapterOptions {
    *   reachable via their CDN URL without authentication. `url()` returns a
    *   permanent public URL.
    * - `"private"`: blobs are uploaded with `access: "private"`. They cannot
-   *   be fetched by their plain URL — `download()` and the lazy bodies
-   *   returned from `head()` / `list()` instead route through `blob.get(key,
-   *   { access: "private" })`, which uses whichever credentials the adapter
-   *   resolved (read-write token or OIDC). `url()` mints a presigned GET URL
+   *   be fetched by their plain URL — `download()` instead routes through
+   *   `blob.get(key, { access: "private" })`, which uses whichever
+   *   credentials the adapter resolved (read-write token or OIDC). `url()` mints a presigned GET URL
    *   (Vercel Signed URLs) that expires after `expiresIn` seconds.
    *
    * `signedUploadUrl()` mints a presigned PUT URL in either mode.
@@ -122,9 +121,9 @@ export interface VercelBlobAdapterOptions {
    */
   allowOverwrite?: boolean;
   /**
-   * Timeout in milliseconds for public-URL fetches issued by `download()`,
-   * and by lazy bodies returned from `head()`/`list()`. A hung CDN response
-   * would otherwise leak a fetch that never resolves.
+   * Timeout in milliseconds for the public-URL fetches and private
+   * `blob.get` reads issued by `download()`. A hung CDN response would
+   * otherwise leak a fetch that never resolves.
    *
    * Defaults to 300_000 (5 minutes). Pass `0` to disable the timeout (not
    * recommended in server contexts — a stuck request will pin a connection
@@ -503,20 +502,6 @@ export const vercelBlob = (
   // through `blob.get(...)` instead, which uses whichever credentials the
   // adapter resolved. Returns a stream and a content type; callers can buffer
   // or pipe it.
-  // Lazy bodies from head()/list() on public blobs. Mirrors download()'s
-  // status check so a blob deleted between the listing and the read throws
-  // NotFound instead of resolving with the CDN's error page as its bytes.
-  const fetchPublicBody = async (url: string): Promise<Uint8Array> => {
-    const res = await fetchWithTimeout(url, downloadTimeoutMs);
-    if (!res.ok) {
-      throw new FilesError(
-        res.status === 404 ? "NotFound" : "Provider",
-        `vercel-blob download failed: ${res.status} ${res.statusText}`
-      );
-    }
-    return new Uint8Array(await res.arrayBuffer());
-  };
-
   const getPrivateBody = async (
     key: string,
     signal?: AbortSignal
@@ -542,25 +527,6 @@ export const vercelBlob = (
       size: got.blob.size,
       stream: got.stream,
     };
-  };
-
-  // The lazy body behind head()/list() results: private blobs read through
-  // `blob.get`, public ones from the CDN URL. It runs after the operation has
-  // returned, so it maps its own failures instead of leaking a raw SDK or
-  // transport error out of `text()`.
-  const readLazyBody = async (
-    key: string,
-    url: string
-  ): Promise<Uint8Array> => {
-    try {
-      if (access === "private") {
-        const got = await getPrivateBody(key);
-        return new Uint8Array(await new Response(got.stream).arrayBuffer());
-      }
-      return await fetchPublicBody(url);
-    } catch (error) {
-      throw mapBlobError(error);
-    }
   };
 
   // A public URL is built from the store id and the key alone, so it needs no
@@ -651,10 +617,10 @@ export const vercelBlob = (
       const result = await headRaw(key, downloadOpts?.signal);
       try {
         const meta = {
+          contentType: result.contentType ?? DEFAULT_CONTENT_TYPE,
           etag: result.etag,
           key: result.pathname,
           lastModified: result.uploadedAt?.getTime(),
-          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
         };
         if (access === "private") {
           const got = await getPrivateBody(key, downloadOpts?.signal);
@@ -721,16 +687,13 @@ export const vercelBlob = (
     },
     async head(key, operationOpts) {
       const result = await headRaw(key, operationOpts?.signal);
-      return createStoredFile(
-        {
-          etag: result.etag,
-          key: result.pathname,
-          lastModified: result.uploadedAt?.getTime(),
-          size: result.size,
-          type: result.contentType ?? DEFAULT_CONTENT_TYPE,
-        },
-        { factory: () => readLazyBody(key, result.url), kind: "lazy" }
-      );
+      return {
+        contentType: result.contentType ?? DEFAULT_CONTENT_TYPE,
+        etag: result.etag,
+        key: result.pathname,
+        lastModified: result.uploadedAt?.getTime(),
+        size: result.size,
+      };
     },
     async list(options): Promise<ListResult> {
       try {
@@ -745,18 +708,13 @@ export const vercelBlob = (
           ...(options?.cursor && { cursor: options.cursor }),
           ...(options?.delimiter && { mode: "folded" as const }),
         });
-        const items: StoredFile[] = result.blobs.map((b) =>
-          createStoredFile(
-            {
-              etag: b.etag,
-              key: b.pathname,
-              lastModified: b.uploadedAt?.getTime(),
-              size: b.size,
-              type: DEFAULT_CONTENT_TYPE,
-            },
-            { factory: () => readLazyBody(b.pathname, b.url), kind: "lazy" }
-          )
-        );
+        const items: FileInfo[] = result.blobs.map((b) => ({
+          contentType: DEFAULT_CONTENT_TYPE,
+          etag: b.etag,
+          key: b.pathname,
+          lastModified: b.uploadedAt?.getTime(),
+          size: b.size,
+        }));
         // `mode: "folded"` is only sent alongside a delimiter; an expanded
         // listing carries no `folders`, so read it as optional despite the
         // folded result type the conditional spread selects.

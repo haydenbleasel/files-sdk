@@ -407,7 +407,7 @@ describe("uploadthing adapter", () => {
     const info = await files.head("a.png");
     expect(observedMethod).toBe("HEAD");
     expect(info.size).toBe(42);
-    expect(info.type).toBe("image/png");
+    expect(info.contentType).toBe("image/png");
     expect(info.etag).toBe('"xyz"');
     expect(info.key).toBe("a.png");
   });
@@ -496,7 +496,7 @@ describe("uploadthing adapter", () => {
     expect(call?.[0]?.customId).toBe("b.txt");
   });
 
-  test("list maps files to StoredFile items, preferring customId as key", async () => {
+  test("list maps files to FileInfo items, preferring customId as key", async () => {
     const files = new Files({ adapter: uploadthing() });
     const out = await files.list({ limit: 10 });
     expect(out.items.map((i) => i.key)).toEqual(["a/1.txt", "ut-key-2"]);
@@ -848,7 +848,7 @@ describe("uploadthing adapter", () => {
     }
   });
 
-  test("head's lazy body factory fetches on first body access", async () => {
+  test("head issues only a HEAD and returns no body accessors", async () => {
     const calls: { method: string }[] = [];
     globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
       calls.push({ method: init?.method ?? "GET" });
@@ -865,36 +865,7 @@ describe("uploadthing adapter", () => {
     const files = new Files({ adapter: uploadthing() });
     const meta = await files.head("a.txt");
     expect(calls).toEqual([{ method: "HEAD" }]);
-    const body = await meta.text();
-    expect(body).toBe("payload");
-    expect(calls).toEqual([{ method: "HEAD" }, { method: "GET" }]);
-  });
-
-  test("head's lazy body factory throws NotFound when the follow-up GET 404s", async () => {
-    let firstCall = true;
-    globalThis.fetch = ((_url: unknown, init?: RequestInit) => {
-      if (init?.method === "HEAD" && firstCall) {
-        firstCall = false;
-        return Promise.resolve(
-          new Response(null, {
-            headers: { "content-length": "5", "content-type": "text/plain" },
-            status: 200,
-          })
-        );
-      }
-      return Promise.resolve(
-        new Response(null, { status: 404, statusText: "Not Found" })
-      );
-    }) as unknown as typeof fetch;
-    const files = new Files({ adapter: uploadthing() });
-    const meta = await files.head("a.txt");
-    try {
-      await meta.text();
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("NotFound");
-    }
+    expect(meta).not.toHaveProperty("text");
   });
 
   test("list wraps a thrown utapi.listFiles error", async () => {
@@ -916,7 +887,7 @@ describe("uploadthing adapter", () => {
     }
   });
 
-  test("list items expose lazy bodies that fetch on first access", async () => {
+  test("list items are metadata only — no fetch, no body accessors", async () => {
     const fetched: string[] = [];
     globalThis.fetch = ((url: unknown) => {
       fetched.push(typeof url === "string" ? url : (url as URL).toString());
@@ -925,67 +896,8 @@ describe("uploadthing adapter", () => {
     const files = new Files({ adapter: uploadthing() });
     const out = await files.list();
     expect(fetched).toEqual([]);
-    const text = await out.items[0]?.text();
-    expect(text).toBe("contents");
-    expect(fetched).toHaveLength(1);
-    expect(fetched[0]).toBe("https://myapp.ufs.sh/f/a%2F1.txt");
-  });
-
-  test("list items' lazy bodies throw NotFound when the fetch 404s", async () => {
-    // A file deleted between the listing and the body read must not
-    // resolve with the CDN's error page as its contents.
-    const files = new Files({ adapter: uploadthing() });
-    const out = await files.list();
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response("<html>gone</html>", {
-          status: 404,
-          statusText: "Not Found",
-        })
-      )) as unknown as typeof fetch;
-    const thrown = await out.items[0]?.text().catch((error: unknown) => error);
-    expect(thrown).toBeInstanceOf(FilesError);
-    expect((thrown as FilesError).code).toBe("NotFound");
-    expect((thrown as FilesError).message).toMatch(/404/u);
-  });
-
-  test("list items' lazy bodies throw Provider on a non-404 failure", async () => {
-    const files = new Files({ adapter: uploadthing() });
-    const out = await files.list();
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response("denied", { status: 403, statusText: "Forbidden" })
-      )) as unknown as typeof fetch;
-    const thrown = await out.items[0]?.text().catch((error: unknown) => error);
-    expect(thrown).toBeInstanceOf(FilesError);
-    expect((thrown as FilesError).code).toBe("Provider");
-    expect((thrown as FilesError).message).toMatch(/403/u);
-  });
-
-  test("lazy bodies map a raw failure instead of letting it escape", async () => {
-    // A transport error on head()'s body read, and a signing error on a
-    // private list item's (it resolves its URL at read time), are mapped.
-    const files = new Files({ adapter: uploadthing() });
-    const info = await files.head("a.txt");
-    const raw = new TypeError("fetch failed");
-    globalThis.fetch = (() => Promise.reject(raw)) as unknown as typeof fetch;
-    const headError = await info.text().catch((error: unknown) => error);
-    expect(headError).toBeInstanceOf(FilesError);
-    expect(headError).toMatchObject({ cause: raw, code: "Provider" });
-
-    const privateFiles = new Files({
-      adapter: uploadthing({ acl: "private" }),
-    });
-    const listed = await privateFiles.list();
-    const [item] = listed.items;
-    generateSignedURLMock.mockImplementationOnce(() =>
-      Promise.reject(
-        Object.assign(new Error("denied"), { code: "FORBIDDEN", status: 403 })
-      )
-    );
-    await expect(item?.text()).rejects.toMatchObject({
-      code: "Unauthorized",
-    });
+    expect(out.items[0]).not.toHaveProperty("text");
+    expect(out.items[0]?.contentType).toBe("application/octet-stream");
   });
 
   test("downloadTimeoutMs: 0 disables AbortSignal.timeout on fetches", async () => {

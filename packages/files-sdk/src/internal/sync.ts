@@ -15,9 +15,9 @@
 import type {
   BulkError,
   BulkOptions,
+  FileInfo,
   Files,
   ListOptions,
-  StoredFile,
 } from "../index.js";
 import { mapMany } from "./core.js";
 import { isFunction } from "./is.js";
@@ -35,8 +35,8 @@ import { isFunction } from "./is.js";
  *   backend, but blind to same-size edits; the right default for cross-provider
  *   mirrors.
  * - a function — full control. Receives the source and destination
- *   {@link StoredFile} metadata and returns `true` when the object should be
- *   skipped (treated as unchanged).
+ *   {@link FileInfo} and returns `true` when the object should be skipped
+ *   (treated as unchanged).
  *
  * `lastModified` is deliberately not used: the destination stamps its own upload
  * time, so it never matches the source after a sync — comparing it would
@@ -45,7 +45,7 @@ import { isFunction } from "./is.js";
 export type SyncCompare =
   | "etag"
   | "size"
-  | ((source: StoredFile, dest: StoredFile) => boolean);
+  | ((source: FileInfo, dest: FileInfo) => boolean);
 
 /**
  * A single per-key report, delivered to {@link SyncOptions.onProgress} once a
@@ -142,8 +142,8 @@ export interface SyncResult {
 const identity = (key: string): string => key;
 
 const unchanged = (
-  source: StoredFile,
-  dest: StoredFile,
+  source: FileInfo,
+  dest: FileInfo,
   compare: SyncCompare
 ): boolean => {
   if (isFunction(compare)) {
@@ -180,16 +180,16 @@ const buildWalkOptions = (
 const walkAll = async (
   files: Files,
   walk: ListOptions
-): Promise<StoredFile[]> => {
-  const out: StoredFile[] = [];
+): Promise<FileInfo[]> => {
+  const out: FileInfo[] = [];
   for await (const file of files.listAll(walk)) {
     out.push(file);
   }
   return out;
 };
 
-const indexByKey = (files: StoredFile[]): Map<string, StoredFile> => {
-  const index = new Map<string, StoredFile>();
+const indexByKey = (files: FileInfo[]): Map<string, FileInfo> => {
+  const index = new Map<string, FileInfo>();
   for (const file of files) {
     index.set(file.key, file);
   }
@@ -204,8 +204,8 @@ interface SyncPlan {
 }
 
 const partition = (
-  sources: StoredFile[],
-  destIndex: Map<string, StoredFile>,
+  sources: FileInfo[],
+  destIndex: Map<string, FileInfo>,
   transformKey: (key: string) => string,
   compare: SyncCompare
 ): SyncPlan => {
@@ -223,8 +223,8 @@ const partition = (
 // Destination keys no source key maps onto — the prune set. Independent of the
 // change comparison; computed from the key sets alone.
 const extraneousKeys = (
-  sources: StoredFile[],
-  destIndex: Map<string, StoredFile>,
+  sources: FileInfo[],
+  destIndex: Map<string, FileInfo>,
   transformKey: (key: string) => string
 ): string[] => {
   const wanted = new Set(sources.map((file) => transformKey(file.key)));
@@ -234,7 +234,7 @@ const extraneousKeys = (
 interface UploadContext {
   transformKey: (key: string) => string;
   compare: SyncCompare;
-  destIndex: Map<string, StoredFile>;
+  destIndex: Map<string, FileInfo>;
   signalOpt: { signal?: AbortSignal };
   /** Forward user metadata — `false` when the destination can't store it. */
   keepMetadata: boolean;
@@ -248,12 +248,12 @@ interface UploadContext {
 const runUploads = async (
   source: Files,
   dest: Files,
-  sources: StoredFile[],
+  sources: FileInfo[],
   ctx: UploadContext
 ): Promise<{ uploaded: string[]; skipped: string[]; errors: BulkError[] }> => {
   const skippedSet = new Set<string>();
   // One key, start to finish. Throws on failure; the caller reports it.
-  const syncKey = async (file: StoredFile): Promise<"uploaded" | "skipped"> => {
+  const syncKey = async (file: FileInfo): Promise<"uploaded" | "skipped"> => {
     const destKey = ctx.transformKey(file.key);
     const existing = ctx.destIndex.get(destKey);
     if (existing && unchanged(file, existing, ctx.compare)) {
@@ -266,7 +266,7 @@ const runUploads = async (
     const stream = body.stream();
     try {
       await dest.upload(destKey, stream, {
-        contentType: body.type,
+        contentType: body.contentType,
         ...(ctx.keepMetadata && body.metadata && { metadata: body.metadata }),
         ...ctx.signalOpt,
       });

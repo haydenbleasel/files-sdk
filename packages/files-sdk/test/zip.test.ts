@@ -51,7 +51,11 @@ const chunkedAdapter = (chunkSize: number): Adapter => {
       const file = await inner.download(key, opts);
       const bytes = new Uint8Array(await file.arrayBuffer());
       return createStoredFile(
-        { key: file.key, size: bytes.byteLength, type: file.type },
+        {
+          contentType: file.contentType,
+          key: file.key,
+          size: bytes.byteLength,
+        },
         {
           factory: () =>
             new ReadableStream<Uint8Array>({
@@ -78,7 +82,7 @@ const oversizedAdapter = (): Adapter => {
       const file = await inner.download(key, opts);
       const bytes = new Uint8Array(await file.arrayBuffer());
       return createStoredFile(
-        { key: file.key, size: 2 ** 32, type: file.type },
+        { contentType: file.contentType, key: file.key, size: 2 ** 32 },
         { data: bytes, kind: "buffer" }
       );
     },

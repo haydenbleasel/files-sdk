@@ -35,7 +35,7 @@ By default `cache()` caches the two cheap, body-free verbs - `head` and `url`. P
 cache({ operations: ["head", "url", "download"] });
 ```
 
-- **`head`** caches the metadata only. A hit returns a [`StoredFile`](/docs/api/stored-file) whose body still **lazy-fetches on access** - exactly the contract an uncached `head` has - so nothing is buffered up front.
+- **`head`** caches the [`FileInfo`](/docs/api/stored-file) it returns - metadata only, so nothing is buffered.
 - **`url`** caches the returned string, keyed per url-options signature (so a plain `url()` and a `url({ expiresIn })` cache apart). Each entry is **additionally capped at its own `expiresIn`**, so a presigned URL is never handed out past its signature. A `url()` without `expiresIn` is capped at `defaultUrlExpiresIn` (default `3600`, the SDK-wide default) - the adapter signs such calls with its own default, which the plugin can't see, so set this to match if you've configured a shorter `defaultUrlExpiresIn` on the adapter. When the URL states its own lifetime (`X-Amz-Expires` on S3 and S3-compatible adapters, `X-Goog-Expires` on GCS) and it's shorter, that wins.
 - **`download`** is **off by default**. With `"download"` enabled, only **known-length bodies at or under `maxBytes`** (default 1 MiB) are buffered and cached; anything larger - or of unknown length - streams straight through **uncached**, so streaming and [range downloads](/docs/api/download) keep working. A cached small body is re-served as a fresh, re-readable `StoredFile` with its own copy of the bytes and metadata, so a caller mutating one read can't change the next.
 

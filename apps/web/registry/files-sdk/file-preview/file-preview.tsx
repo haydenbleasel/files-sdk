@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoredFile } from "files-sdk";
+import type { FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -11,8 +11,8 @@ import { cn } from "@/lib/utils";
 export interface FilePreviewProps {
   /** A `useFiles()` instance — resolves metadata and bytes through it. */
   files: UseFilesResult;
-  /** A key string, or an already-resolved `StoredFile`. */
-  file: string | StoredFile;
+  /** A key string, or an already-resolved `FileInfo` (e.g. a `list()` item). */
+  file: string | FileInfo;
   /** Endpoint for the gateway download-proxy fallback. Default `"/api/files"`. */
   endpoint?: string;
   /**
@@ -26,7 +26,7 @@ export interface FilePreviewProps {
    * inferred one when the stored type is generic (`application/octet-stream`).
    */
   renderPreview?: (preview: {
-    file: StoredFile;
+    file: FileInfo;
     type: string;
     src?: string;
     text?: string;
@@ -35,7 +35,7 @@ export interface FilePreviewProps {
 }
 
 /** The `file` prop is either a bare key or an already-resolved record. */
-const isKey = (file: string | StoredFile): file is string =>
+const isKey = (file: string | FileInfo): file is string =>
   typeof file === "string";
 
 // Stored types that say nothing about the content, e.g. an upload nobody set a
@@ -78,8 +78,8 @@ const extensionOf = (key: string): string => {
  * when that's generic — the type its extension implies, if the preview can
  * render it.
  */
-const previewTypeOf = (file: StoredFile): string => {
-  const type = file.type.replace(/;.*/su, "").trim().toLowerCase();
+const previewTypeOf = (file: FileInfo): string => {
+  const type = file.contentType.replace(/;.*/su, "").trim().toLowerCase();
   if (!GENERIC_TYPES.has(type)) {
     return type;
   }
@@ -112,7 +112,7 @@ const hasPdfSignature = async (
  */
 const resolvePreviewType = async (
   files: UseFilesResult,
-  file: StoredFile
+  file: FileInfo
 ): Promise<string> => {
   const type = previewTypeOf(file);
   if (!GENERIC_TYPES.has(type) || file.size < PDF_SIGNATURE.length) {
@@ -213,7 +213,7 @@ export const FilePreview = ({
   className,
 }: FilePreviewProps) => {
   const key = isKey(file) ? file : file.key;
-  const [meta, setMeta] = useState<StoredFile | undefined>(
+  const [meta, setMeta] = useState<FileInfo | undefined>(
     isKey(file) ? undefined : file
   );
   const [type, setType] = useState<string>();
@@ -330,7 +330,12 @@ export const FilePreview = ({
     >
       <div className="bg-muted/30 flex min-h-40 items-center justify-center p-4">
         {renderPreview && !isLoading && !loadError && meta ? (
-          renderPreview({ file: meta, src, text, type: type ?? meta.type })
+          renderPreview({
+            file: meta,
+            src,
+            text,
+            type: type ?? meta.contentType,
+          })
         ) : (
           <Body
             error={loadError}
@@ -344,7 +349,9 @@ export const FilePreview = ({
       <figcaption className="border-border border-t px-3 py-2">
         <p className="truncate text-sm font-medium">{key}</p>
         <p className="text-muted-foreground text-xs">
-          {meta ? `${formatBytes(meta.size)} · ${meta.type || "unknown"}` : "—"}
+          {meta
+            ? `${formatBytes(meta.size)} · ${meta.contentType || "unknown"}`
+            : "—"}
           {meta?.etag ? ` · ${meta.etag}` : ""}
         </p>
       </figcaption>

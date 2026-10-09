@@ -71,8 +71,8 @@ export interface FileToolsOptions {
 export type FileTools = {
   /**
    * Paginated list of objects with optional `prefix`, `cursor`, and `limit`.
-   * Returns metadata-only entries (`key`, `size`, `type`, `lastModified`,
-   * `etag`) plus a continuation cursor.
+   * Returns metadata-only entries (`key`, `size`, `contentType`,
+   * `lastModified`, `etag`) plus a continuation cursor.
    */
   listFiles: ReturnType<typeof listFiles>;
   /**

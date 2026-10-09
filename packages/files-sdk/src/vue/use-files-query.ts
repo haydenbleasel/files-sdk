@@ -21,7 +21,7 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
-import type { ListResult, StoredFile } from "../index.js";
+import type { FileInfo, ListResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { UseFilesOptions } from "./use-files.js";
 
@@ -115,7 +115,7 @@ export const useList = (
 export const useFile = (
   key: MaybeRefOrGetter<string | undefined>,
   config?: QueryConfig
-): QueryReturn<StoredFile> => {
+): QueryReturn<FileInfo> => {
   const client = makeClient(config);
   // SAFETY: `enabled` is false whenever the key resolves to undefined, and
   // `useQuery` never invokes `run` while disabled.
@@ -130,7 +130,7 @@ export const useSearch = (
   pattern: MaybeRefOrGetter<string | RegExp | undefined>,
   opts: MaybeRefOrGetter<SearchCallOptions> = {},
   config?: QueryConfig
-): QueryReturn<StoredFile[]> => {
+): QueryReturn<FileInfo[]> => {
   const client = makeClient(config);
   // SAFETY: `enabled` is false whenever the pattern resolves to undefined, and
   // `useQuery` never invokes `run` while disabled.
@@ -144,7 +144,7 @@ export const useSearch = (
     },
     () => (config?.enabled ?? true) && toValue(pattern) !== undefined,
     async (signal) => {
-      const out: StoredFile[] = [];
+      const out: FileInfo[] = [];
       for await (const file of client.search(
         toValue(pattern) as string | RegExp,
         { ...toValue(opts), signal }

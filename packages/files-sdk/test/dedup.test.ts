@@ -4,13 +4,7 @@ import { createFilesRouter } from "../src/api/index.js";
 import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
 import { failover } from "../src/failover/index.js";
-import {
-  createFiles,
-  createStoredFile,
-  FilesError,
-  sync,
-  UploadControl,
-} from "../src/index.js";
+import { createFiles, FilesError, sync, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
@@ -170,68 +164,8 @@ describe("dedup plugin — head and metadata", () => {
   });
 });
 
-describe("dedup plugin — head and list bodies", () => {
-  test("head() body accessors read the content, not the empty pointer", async () => {
-    const files = withDedup();
-    await files.upload("a.txt", "hello world");
-    const forText = await files.head("a.txt");
-    expect(await forText.text()).toBe("hello world");
-    const forBytes = await files.head("a.txt");
-    const bytes = await forBytes.arrayBuffer();
-    expect(new TextDecoder().decode(bytes)).toBe("hello world");
-    const forStream = await files.head("a.txt", { timeout: 5000 });
-    const streamed = await new Response(forStream.stream()).text();
-    expect(streamed).toBe("hello world");
-  });
-
-  test("list() item bodies read the content", async () => {
-    const files = withDedup();
-    await files.upload("a.txt", "first");
-    await files.upload("b.txt", "second");
-    const { items } = await files.list();
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["first", "second"]);
-  });
-
-  test("list() item bodies follow the pointer on an adapter whose listing has no metadata", async () => {
-    // S3 and the S3-compatibles return no metadata from list(), so a pointer
-    // can't be recognized there; its body must still follow the pointer
-    // rather than return the empty placeholder.
-    const inner = fakeAdapter();
-    const adapter: Adapter = {
-      ...inner,
-      async list(opts) {
-        const page = await inner.list(opts);
-        return {
-          ...page,
-          items: page.items.map((file) =>
-            createStoredFile(
-              {
-                etag: file.etag,
-                key: file.key,
-                lastModified: file.lastModified,
-                size: file.size,
-                type: file.type,
-              },
-              {
-                factory: async () => new Uint8Array(await file.arrayBuffer()),
-                kind: "lazy",
-              }
-            )
-          ),
-        };
-      },
-    };
-    const files = createFiles({ adapter, plugins: [dedup()] });
-    await files.upload("a.txt", "first");
-    await createFiles({ adapter }).upload("b.txt", "plain");
-    const { items } = await files.list();
-    expect(items.map((file) => file.key)).toEqual(["a.txt", "b.txt"]);
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["first", "plain"]);
-  });
-
-  test("a head() body is fetched only when read, and cancels cleanly", async () => {
+describe("dedup plugin — head and list metadata", () => {
+  test("head() and list() return the content's info without fetching the blob", async () => {
     const inner = fakeAdapter();
     const downloads: string[] = [];
     const adapter: Adapter = {
@@ -242,21 +176,53 @@ describe("dedup plugin — head and list bodies", () => {
       },
     };
     const files = createFiles({ adapter, plugins: [dedup()] });
-    await files.upload("a.txt", "lazy");
+    await files.upload("a.txt", "hello world", { metadata: { owner: "bob" } });
     const head = await files.head("a.txt");
+    expect(Object.keys(head).toSorted()).toEqual([
+      "contentType",
+      "etag",
+      "key",
+      "lastModified",
+      "metadata",
+      "size",
+    ]);
+    expect(head).toMatchObject({
+      contentType: "text/plain; charset=utf-8",
+      key: "a.txt",
+      metadata: { owner: "bob" },
+      size: 11,
+    });
+    const { items } = await files.list();
+    expect(items).toEqual([head]);
     expect(downloads).toEqual([]);
+    // Reading the content is an explicit download, which follows the pointer.
+    expect(await bodyText(files, "a.txt")).toBe("hello world");
+  });
 
-    const stream = head.stream();
-    await Bun.sleep(0);
-    expect(downloads).toEqual([]);
-    await stream.cancel("not needed");
-    expect(downloads).toEqual([]);
-
-    const again = await files.head("a.txt");
-    const reader = again.stream().getReader();
-    await reader.read();
-    await reader.cancel("done early");
-    expect(downloads).toHaveLength(1);
+  test("list() items with no metadata pass through as the pointer", async () => {
+    // S3 and the S3-compatibles return no metadata from list(), so a pointer
+    // can't be recognized there: it reports the pointer's own size and ETag,
+    // and a download still follows the pointer.
+    const inner = fakeAdapter();
+    const adapter: Adapter = {
+      ...inner,
+      async list(opts) {
+        const page = await inner.list(opts);
+        return {
+          ...page,
+          items: page.items.map(({ metadata: _metadata, ...file }) => file),
+        };
+      },
+    };
+    const files = createFiles({ adapter, plugins: [dedup()] });
+    await files.upload("a.txt", "first");
+    await createFiles({ adapter }).upload("b.txt", "plain");
+    const { items } = await files.list();
+    expect(items.map((file) => [file.key, file.size])).toEqual([
+      ["a.txt", 0],
+      ["b.txt", 5],
+    ]);
+    expect(await bodyText(files, "a.txt")).toBe("first");
   });
 });
 

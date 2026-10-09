@@ -78,12 +78,12 @@ describe("encryption plugin — round-trips", () => {
     const files = await encrypted();
     await files.upload("typed", "hello", { contentType: "text/markdown" });
     const typed = await files.head("typed");
-    expect(typed.type).toBe("text/markdown");
+    expect(typed.contentType).toBe("text/markdown");
 
     // A string with no declared type keeps the inferred default.
     await files.upload("inferred", "hello");
     const inferred = await files.head("inferred");
-    expect(inferred.type).toBe("text/plain; charset=utf-8");
+    expect(inferred.contentType).toBe("text/plain; charset=utf-8");
   });
 });
 
@@ -162,11 +162,11 @@ describe("encryption plugin — conditional pipeline", () => {
     }
     const raw = createStoredFile(
       {
+        contentType: latest.type,
         etag: "etag-2",
         key: "secret.txt",
         metadata: latest.metadata,
         size: latest.body.byteLength,
-        type: latest.type,
       },
       { data: latest.body, kind: "buffer" }
     );
@@ -255,30 +255,36 @@ describe("encryption plugin — metadata", () => {
   });
 });
 
-describe("encryption plugin — head and list bodies", () => {
-  test("head() body accessors decrypt instead of returning ciphertext", async () => {
+describe("encryption plugin — head and list metadata", () => {
+  test("head() and list() return plain metadata with no body accessors", async () => {
     const files = await encrypted();
-    await files.upload("a.txt", "hello");
-    const forText = await files.head("a.txt");
-    expect(await forText.text()).toBe("hello");
-    const forStream = await files.head("a.txt", { timeout: 5000 });
-    expect(await new Response(forStream.stream()).text()).toBe("hello");
-  });
-
-  test("list() item bodies decrypt; plaintext siblings keep their own", async () => {
-    const adapter = fakeAdapter();
-    const files = await encrypted(adapter);
-    await files.upload("enc.txt", "secret");
-    await new Files({ adapter }).upload("plain.txt", "open");
+    await files.upload("a.txt", "hello", { metadata: { owner: "bob" } });
+    const head = await files.head("a.txt");
+    expect(Object.keys(head).toSorted()).toEqual([
+      "contentType",
+      "etag",
+      "key",
+      "lastModified",
+      "metadata",
+      "size",
+    ]);
+    expect(head).toMatchObject({
+      contentType: "text/plain; charset=utf-8",
+      key: "a.txt",
+      metadata: { owner: "bob" },
+      size: 5,
+    });
     const { items } = await files.list();
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["secret", "open"]);
+    expect(items).toEqual([head]);
+    // Reading the plaintext is an explicit download.
+    const downloaded = await files.download("a.txt");
+    expect(await downloaded.text()).toBe("hello");
   });
 
-  test("list() item bodies decrypt on an adapter whose listing has no metadata", async () => {
+  test("list() items with no metadata pass through at their stored size", async () => {
     // S3 and the S3-compatibles return no metadata from list(), so there's no
-    // envelope marker to spot; the body must still read back through the
-    // plugin rather than hand out the stored ciphertext.
+    // envelope marker to spot: the item reports the stored (ciphertext) size,
+    // and a download still decrypts.
     const inner = fakeAdapter();
     const adapter: Adapter = {
       ...inner,
@@ -286,55 +292,43 @@ describe("encryption plugin — head and list bodies", () => {
         const page = await inner.list(opts);
         return {
           ...page,
-          items: page.items.map((file) =>
-            createStoredFile(
-              {
-                etag: file.etag,
-                key: file.key,
-                lastModified: file.lastModified,
-                size: file.size,
-                type: file.type,
-              },
-              {
-                factory: async () => new Uint8Array(await file.arrayBuffer()),
-                kind: "lazy",
-              }
-            )
-          ),
+          items: page.items.map(({ metadata: _metadata, ...file }) => file),
         };
       },
     };
     const files = await encrypted(adapter);
     await files.upload("enc.txt", "secret");
-    await new Files({ adapter }).upload("plain.txt", "open");
     const { items } = await files.list();
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["secret", "open"]);
     const [enc] = items;
-    expect(await new Response(enc?.stream()).text()).toBe("secret");
+    expect(enc?.metadata).toBeUndefined();
+    expect(enc?.size).toBeGreaterThan("secret".length);
+    const downloaded = await files.download("enc.txt");
+    expect(await downloaded.text()).toBe("secret");
   });
 
-  test("a head() body surfaces decryption failures", async () => {
+  test("head() reports the declared size without decrypting", async () => {
     const adapter = fakeAdapter();
     const writer = await encrypted(adapter);
     await writer.upload("a.txt", "hello");
+    // A different key can't decrypt, but head never tries to.
     const other = await encrypted(adapter);
     const head = await other.head("a.txt");
     expect(head.size).toBe(5);
-    await expect(head.text()).rejects.toThrow(/failed to decrypt/u);
+    await expect(other.download("a.txt")).rejects.toThrow(/failed to decrypt/u);
   });
 
-  test("a cache() head hit and miss return the same plaintext body", async () => {
+  test("a cache() head hit and miss report the same plaintext metadata", async () => {
     const files = createFiles({
       adapter: fakeAdapter(),
       plugins: [cache(), encryption(await generateEncryptionKey())],
     });
-    await files.upload("a.txt", "hello");
+    await files.upload("a.txt", "hello", { metadata: { owner: "bob" } });
     const miss = await files.head("a.txt");
     const hit = await files.head("a.txt");
     expect(files.cacheStats()).toEqual({ hits: 1, misses: 1 });
-    expect(await miss.text()).toBe("hello");
-    expect(await hit.text()).toBe("hello");
+    expect(miss.size).toBe(5);
+    expect(miss.metadata).toEqual({ owner: "bob" });
+    expect(hit).toEqual(miss);
   });
 });
 

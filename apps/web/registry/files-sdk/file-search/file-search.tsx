@@ -1,6 +1,6 @@
 "use client";
 
-import type { SearchMatch, StoredFile } from "files-sdk";
+import type { FileInfo, SearchMatch } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon, SearchIcon } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -19,7 +19,7 @@ export interface FileSearchProps {
   /** Cap on results collected per search. Default `100`. */
   maxResults?: number;
   /** Called when a result row is clicked. */
-  onSelect?: (file: StoredFile) => void;
+  onSelect?: (file: FileInfo) => void;
   className?: string;
 }
 
@@ -55,7 +55,7 @@ export const FileSearch = ({
   const [query, setQuery] = useState("");
   const [match, setMatch] = useState<SearchMatch>(defaultMatch);
   const [caseInsensitive, setCaseInsensitive] = useState(true);
-  const [results, setResults] = useState<StoredFile[]>([]);
+  const [results, setResults] = useState<FileInfo[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchError, setSearchError] = useState<string>();
@@ -88,7 +88,7 @@ export const FileSearch = ({
       setResults([]);
       setSearchError(undefined);
       try {
-        const found: StoredFile[] = [];
+        const found: FileInfo[] = [];
         for await (const file of filesRef.current.search(query, {
           caseInsensitive,
           match,
@@ -196,7 +196,7 @@ export const FileSearch = ({
                   {file.key}
                 </span>
                 <span className="text-muted-foreground block text-xs">
-                  {formatBytes(file.size)} · {file.type || "unknown"}
+                  {formatBytes(file.size)} · {file.contentType || "unknown"}
                 </span>
               </span>
             </button>

@@ -119,30 +119,30 @@ export const executors = {
     if (binary) {
       return {
         content: bytesToBase64(bytes),
+        contentType: file.contentType,
         encoding: "base64" as const,
         key: file.key,
         size: bytes.byteLength,
-        type: file.type,
       };
     }
     return {
       content: new TextDecoder().decode(bytes),
+      contentType: file.contentType,
       encoding: "text" as const,
       key: file.key,
       size: bytes.byteLength,
-      type: file.type,
     };
   },
 
   getFileMetadata: async (files: Files, { key }: GetFileMetadataInput) => {
     const file = await files.head(key);
     return {
+      contentType: file.contentType,
       etag: file.etag,
       key: file.key,
       lastModified: file.lastModified,
       metadata: file.metadata,
       size: file.size,
-      type: file.type,
     };
   },
 
@@ -165,11 +165,11 @@ export const executors = {
     return {
       cursor: result.cursor,
       items: result.items.map((item) => ({
+        contentType: item.contentType,
         etag: item.etag,
         key: item.key,
         lastModified: item.lastModified,
         size: item.size,
-        type: item.type,
       })),
     };
   },

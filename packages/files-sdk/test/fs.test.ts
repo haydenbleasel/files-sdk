@@ -392,12 +392,13 @@ describe("fs adapter", () => {
       expect(info.metadata).toEqual({ a: "b" });
     });
 
-    test("lazy body still works on the StoredFile from head()", async () => {
+    test("returns a plain FileInfo with no body accessors", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
-      await files.upload("h.txt", "lazy-body");
+      await files.upload("h.txt", "no-body", { contentType: "text/plain" });
       const info = await files.head("h.txt");
-      expect(await info.text()).toBe("lazy-body");
+      expect(info.contentType).toBe("text/plain");
+      expect("text" in info).toBe(false);
     });
 
     test("head throws NotFound for missing key", async () => {
@@ -1227,17 +1228,6 @@ describe("fs adapter", () => {
       await expect(files.download("x.bin")).rejects.toMatchObject({
         code: "Provider",
       });
-    });
-
-    test("head's lazy body errors when underlying body file is removed", async () => {
-      const root = await makeRoot();
-      const files = new Files({ adapter: fsAdapter({ root }) });
-      await files.upload("h.txt", "lazy");
-      const info = await files.head("h.txt");
-      // Yank the body file out from under the lazy factory — text() should
-      // reject through mapFsError, not crash with a raw ENOENT.
-      await fsp.rm(path.join(root, "h.txt"));
-      await expect(info.text()).rejects.toMatchObject({ code: "NotFound" });
     });
   });
 

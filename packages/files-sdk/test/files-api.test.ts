@@ -160,9 +160,13 @@ describe("createFilesRouter — read verbs", () => {
   test("head / exists / url", async () => {
     const r = router({ adapter, operations: ["head", "exists", "url"] });
     const head = await r.handle(post({ key: "docs/a.txt", op: "head" }));
-    expect((await readJson<{ file: { size: number } }>(head)).file.size).toBe(
-      5
-    );
+    const { file } = await readJson<{ file: Record<string, unknown> }>(head);
+    expect(file.size).toBe(5);
+    // The wire carries `FileInfo`: `contentType`, never `type` / `name`.
+    expect(file.key).toBe("docs/a.txt");
+    expect(file.contentType).toStartWith("text/plain");
+    expect(file).not.toHaveProperty("type");
+    expect(file).not.toHaveProperty("name");
 
     expect(
       (
@@ -1357,9 +1361,12 @@ describe("createFilesRouter — upload", () => {
       put("op=upload&key=hi.txt", "hello", { "content-type": "text/plain" })
     );
     expect(res.status).toBe(200);
-    expect((await readJson<{ file: { key: string } }>(res)).file.key).toBe(
-      "hi.txt"
-    );
+    const { file } = await readJson<{ file: Record<string, unknown> }>(res);
+    expect(file.key).toBe("hi.txt");
+    expect(file.contentType).toBe("text/plain");
+    expect(file.size).toBe(5);
+    expect(file).not.toHaveProperty("type");
+    expect(file).not.toHaveProperty("name");
     expect(await createFiles({ adapter }).exists("hi.txt")).toBe(true);
   });
 

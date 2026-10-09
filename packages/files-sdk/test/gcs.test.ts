@@ -372,17 +372,10 @@ describe("gcs adapter", () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const info = await files.head("a.txt");
     expect(info.size).toBe(5);
-    expect(info.type).toBe("text/plain");
+    expect(info.contentType).toBe("text/plain");
     expect(info.etag).toBe("etag-a.txt");
+    expect(info).not.toHaveProperty("text");
     expect(downloadMock).not.toHaveBeenCalled();
-  });
-
-  test("head body is lazy — text() triggers a follow-up download()", async () => {
-    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
-    const info = await files.head("a.txt");
-    downloadMock.mockClear();
-    expect(await info.text()).toBe("hello");
-    expect(downloadMock).toHaveBeenCalledTimes(1);
   });
 
   test("exists returns true/false from the SDK tuple response", async () => {
@@ -435,7 +428,7 @@ describe("gcs adapter", () => {
     expect(fileNames).toContain("b.txt");
   });
 
-  test("list maps files into StoredFile items and forwards prefix/limit/cursor", async () => {
+  test("list maps files into FileInfo items and forwards prefix/limit/cursor", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const out = await files.list({ cursor: "tok-1", limit: 10, prefix: "a/" });
     expect(out.items.map((i) => i.key)).toEqual(["a/1.txt", "a/2.txt"]);
@@ -491,33 +484,6 @@ describe("gcs adapter", () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const out = await files.list();
     expect(out.cursor).toBeUndefined();
-  });
-
-  test("list items expose lazy bodies that fetch via file.download()", async () => {
-    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
-    const out = await files.list();
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one list item");
-    }
-    downloadMock.mockClear();
-    expect(await item.text()).toBe("hello");
-    expect(downloadMock).toHaveBeenCalledTimes(1);
-  });
-
-  test("lazy head/list bodies map a failed read (object deleted in between)", async () => {
-    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
-    const info = await files.head("a.txt");
-    const listed = await files.list();
-    const [item] = listed.items;
-    const raw = Object.assign(new Error("No such object"), { code: 404 });
-    downloadMock.mockImplementation(() => Promise.reject(raw));
-    const headError = await info.text().catch((error: unknown) => error);
-    expect(headError).toBeInstanceOf(FilesError);
-    expect(headError).toMatchObject({ cause: raw, code: "NotFound" });
-    await expect(item?.arrayBuffer()).rejects.toMatchObject({
-      code: "NotFound",
-    });
   });
 
   test("url returns publicBaseUrl when configured", async () => {

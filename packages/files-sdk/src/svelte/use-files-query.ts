@@ -18,7 +18,7 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
-import type { ListResult, StoredFile } from "../index.js";
+import type { FileInfo, ListResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { ReadableStore } from "./store.js";
 import { writable } from "./store.js";
@@ -135,7 +135,7 @@ export const useList = (
 export const useFile = (
   key: string | undefined,
   config?: QueryConfig
-): QueryReturn<StoredFile> => {
+): QueryReturn<FileInfo> => {
   const client = makeClient(config);
   // SAFETY: `enabled` is false whenever `key` is undefined, and `useQuery`
   // never invokes `run` while disabled.
@@ -148,14 +148,14 @@ export const useSearch = (
   pattern: string | RegExp | undefined,
   opts: SearchCallOptions = {},
   config?: QueryConfig
-): QueryReturn<StoredFile[]> => {
+): QueryReturn<FileInfo[]> => {
   const client = makeClient(config);
   // SAFETY: `enabled` is false whenever `pattern` is undefined, and `useQuery`
   // never invokes `run` while disabled.
   return useQuery(
     (config?.enabled ?? true) && pattern !== undefined,
     async (signal) => {
-      const out: StoredFile[] = [];
+      const out: FileInfo[] = [];
       for await (const file of client.search(pattern as string | RegExp, {
         ...opts,
         signal,

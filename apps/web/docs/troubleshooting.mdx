@@ -131,9 +131,9 @@ R2 (HTTP), MinIO, RustFS, DigitalOcean Spaces, Backblaze B2, Wasabi, Scaleway, O
 
 Server-side copy is used where the provider supports it; otherwise the adapter reads the source and writes the destination. For very large objects on adapters without server-side copy, this means bytes flow through your process - and several of them buffer the whole object in memory - so plan accordingly. The [`copy` reference](/docs/api/copy#the-read--write-fallback) lists which adapters fall back and how.
 
-### Lazy bodies in `head` and `list`
+### `head` and `list` results have no body
 
-Body accessors (`arrayBuffer`, `text`, `stream`, `blob`) on results from `head` and `list` lazy-fetch on call. A loop over `items` that touches `.arrayBuffer()` issues one GET per item. If you only want the metadata, don't touch the accessors.
+`head`, `list`, and `search` return [`FileInfo`](/docs/api/stored-file), which has no `text()` / `arrayBuffer()` / `stream()` / `blob()`. Code written against v2, where those accessors existed and lazily downloaded the object, fails to typecheck: call `download(item.key)` for the bytes instead, and read `contentType` / `key` where it read `type` / `name`.
 
 ## Debugging tips
 

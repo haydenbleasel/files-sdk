@@ -176,7 +176,7 @@ describe("appwrite adapter", () => {
     });
   });
 
-  test("list > maps files to StoredFile items", async () => {
+  test("list > maps files to FileInfo items", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -622,7 +622,7 @@ describe("appwrite adapter", () => {
     });
   });
 
-  test("head > returns lazy StoredFile that fetches on read", async () => {
+  test("head > returns metadata only, without downloading", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -630,10 +630,8 @@ describe("appwrite adapter", () => {
     const file = await files.head("file-id-123");
     expect(file.key).toBe("file-id-123");
     expect(file.size).toBe(5);
+    expect(file).not.toHaveProperty("text");
     expect(getFileDownloadMock).not.toHaveBeenCalled();
-    const text = await file.text();
-    expect(text).toBe("hello");
-    expect(getFileDownloadMock).toHaveBeenCalled();
   });
 
   test("exists > returns true when file exists", async () => {
@@ -878,16 +876,14 @@ describe("appwrite adapter", () => {
     );
   });
 
-  test("list > items expose lazy bodies that fetch on demand", async () => {
+  test("list > items are metadata only, without downloading", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
     });
     const { items } = await files.list();
+    expect(items[0]).not.toHaveProperty("text");
     expect(getFileDownloadMock).not.toHaveBeenCalled();
-    const text = await items[0]?.text();
-    expect(text).toBe("hello");
-    expect(getFileDownloadMock).toHaveBeenCalled();
   });
 
   test("list > surfaces SDK errors", async () => {

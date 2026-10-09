@@ -23,13 +23,13 @@ import type {
   DeleteManyError,
   DeleteManyOptions,
   DeleteManyResult,
+  FileInfo,
   ListResult,
   PartMeta,
   PartsResumableDriver,
   ResumableDriverOptions,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -685,18 +685,6 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
 
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures (a blob deleted in between reads as
-  // NotFound) instead of leaking a raw RestError out of `text()`.
-  const readBlobBytes = async (key: string): Promise<Uint8Array> => {
-    try {
-      const buf = await containerClient.getBlobClient(key).downloadToBuffer();
-      return bufferToUint8(buf);
-    } catch (error) {
-      throw mapAzureError(error);
-    }
-  };
-
   const buildSasUrl = async ({
     contentDisposition,
     expiresIn,
@@ -948,13 +936,13 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         }) => {
           const etag = stripEtag(props.etag);
           return {
+            contentType: props.contentType ?? DEFAULT_CONTENT_TYPE,
             ...(etag && { etag }),
             key,
             ...(props.lastModified && {
               lastModified: props.lastModified.getTime(),
             }),
             ...(props.metadata && { metadata: props.metadata }),
-            type: props.contentType ?? DEFAULT_CONTENT_TYPE,
           };
         };
         if (downloadOpts?.as === "stream") {
@@ -1041,44 +1029,37 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
           abortOpts(operationOpts?.signal)
         );
         const etag = stripEtag(props.etag);
-        return createStoredFile(
-          {
-            ...(etag && { etag }),
-            key,
-            ...(props.lastModified && {
-              lastModified: props.lastModified.getTime(),
-            }),
-            ...(props.metadata && { metadata: props.metadata }),
-            size: Number(props.contentLength ?? 0),
-            type: props.contentType ?? DEFAULT_CONTENT_TYPE,
-          },
-          { factory: () => readBlobBytes(key), kind: "lazy" }
-        );
+        return {
+          contentType: props.contentType ?? DEFAULT_CONTENT_TYPE,
+          ...(etag && { etag }),
+          key,
+          ...(props.lastModified && {
+            lastModified: props.lastModified.getTime(),
+          }),
+          ...(props.metadata && { metadata: props.metadata }),
+          size: Number(props.contentLength ?? 0),
+        };
       } catch (error) {
         throw mapAzureError(error);
       }
     },
     async list(options) {
       try {
-        const toItem = (item: BlobItemLike): StoredFile => {
+        const toItem = (item: BlobItemLike): FileInfo => {
           const props = item.properties ?? {};
-          const itemKey = item.name;
           const itemEtag = stripEtag(props.etag);
-          return createStoredFile(
-            {
-              ...(itemEtag && { etag: itemEtag }),
-              key: itemKey,
-              ...(props.lastModified && {
-                lastModified: new Date(props.lastModified).getTime(),
-              }),
-              ...(item.metadata && {
-                metadata: item.metadata,
-              }),
-              size: Number(props.contentLength ?? 0),
-              type: props.contentType ?? DEFAULT_CONTENT_TYPE,
-            },
-            { factory: () => readBlobBytes(itemKey), kind: "lazy" }
-          );
+          return {
+            contentType: props.contentType ?? DEFAULT_CONTENT_TYPE,
+            ...(itemEtag && { etag: itemEtag }),
+            key: item.name,
+            ...(props.lastModified && {
+              lastModified: new Date(props.lastModified).getTime(),
+            }),
+            ...(item.metadata && {
+              metadata: item.metadata,
+            }),
+            size: Number(props.contentLength ?? 0),
+          };
         };
         // Hierarchy listing returns both blobs and "folders" (blobPrefixes);
         // nested so the flat `list` stays simple.

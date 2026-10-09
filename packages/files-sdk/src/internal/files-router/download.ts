@@ -292,7 +292,7 @@ export const handleDownload = async (
   const headers = {
     "accept-ranges": caps.rangeRead ? "bytes" : "none",
     "content-length": String(length),
-    "content-type": file.type || "application/octet-stream",
+    "content-type": file.contentType || "application/octet-stream",
     // The body is storage content served from the app's origin: never let the
     // browser sniff it into something executable (HTML/script).
     "x-content-type-options": "nosniff",

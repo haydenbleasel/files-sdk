@@ -861,7 +861,7 @@ describe("sharepoint adapter", () => {
     });
     const file = await files.head("hello.txt");
     expect(file.size).toBe(5);
-    expect(file.type).toBe("text/plain");
+    expect(file.contentType).toBe("text/plain");
     expect(file.etag).toBe("e1");
   });
 

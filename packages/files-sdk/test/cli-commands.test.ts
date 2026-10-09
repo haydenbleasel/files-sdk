@@ -343,7 +343,7 @@ describe("cli/commands real (fs adapter)", () => {
     await uploadFile("data/report.json", '{"ok":true}', local);
     cap.stdout.length = 0;
     await runHead({ ...baseOpts(), keys: ["data/report.json"] });
-    expect(lastJson(cap.stdout).type).toBe("application/json");
+    expect(lastJson(cap.stdout).contentType).toBe("application/json");
   });
 
   test("single-key upload keeps an explicit --content-type", async () => {
@@ -357,7 +357,7 @@ describe("cli/commands real (fs adapter)", () => {
     });
     cap.stdout.length = 0;
     await runHead({ ...baseOpts(), keys: ["page.html"] });
-    expect(lastJson(cap.stdout).type).toBe("text/plain");
+    expect(lastJson(cap.stdout).contentType).toBe("text/plain");
   });
 
   test("head returns metadata JSON for an existing key", async () => {

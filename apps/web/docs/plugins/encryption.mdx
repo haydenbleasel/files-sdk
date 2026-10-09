@@ -35,9 +35,9 @@ The plugin uses **envelope encryption**, the same pattern cloud KMS services use
 
 On `download` it unwraps the DEK with your master key, decrypts the body, and hands you back a normal [`StoredFile`](/docs/api/stored-file) - with its `size` reporting the **plaintext** length and the internal metadata fields hidden.
 
-`head` and `list` report the same plaintext size without decrypting anything. Their body accessors (`text()`, `arrayBuffer()`, `stream()`, …) are lazy: reading one downloads the object back through the plugin, so it returns plaintext, never the stored ciphertext.
+`head` and `list` report the same plaintext size without decrypting anything. They return metadata only; `download` is what reads the body back through the plugin, so the bytes you get are plaintext, never the stored ciphertext.
 
-One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as encrypted, so it reports the **stored** (ciphertext) size. Its body accessors still decrypt, and `head()` and `download()` report the plaintext size as usual.
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as encrypted, so it reports the **stored** (ciphertext) size. `download()` still decrypts it, and `head()` and `download()` report the plaintext size as usual.
 
 A fresh per-object DEK means the same master key is never reused to encrypt two bodies directly, which sidesteps IV-reuse concerns at scale and leaves room for key rotation later (re-wrap the DEK without re-encrypting the body).
 
@@ -93,4 +93,4 @@ AES-GCM authenticates the whole ciphertext, so the plugin **buffers the entire b
 
 ## What it stores in metadata
 
-Each encrypted object carries a few `fsenc_`-prefixed metadata fields (the scheme marker, the wrapped DEK, the IVs, and the plaintext size). They're stripped from the `StoredFile` you get back on `download`, `head`, and `list`, so your own metadata is all you see.
+Each encrypted object carries a few `fsenc_`-prefixed metadata fields (the scheme marker, the wrapped DEK, the IVs, and the plaintext size). They're stripped from what `download`, `head`, and `list` return, so your own metadata is all you see.

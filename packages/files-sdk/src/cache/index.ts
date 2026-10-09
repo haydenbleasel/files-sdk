@@ -1,12 +1,11 @@
 import { createStoredFile, isConditionalOperation } from "../index.js";
 import type {
-  Files,
+  FileInfo,
   FilesOperation,
   FilesPlugin,
   OperationResult,
   PluginNext,
   StoredFile,
-  StoredFileMeta,
 } from "../index.js";
 import { DEFAULT_URL_EXPIRES_IN } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
@@ -36,13 +35,13 @@ const DEFAULT_OPERATIONS: readonly CacheableOperation[] = ["head", "url"];
  */
 export interface CacheRecord {
   /** Cached `head` metadata and when it goes stale (ms epoch). */
-  head?: { meta: StoredFileMeta; expiresAt: number };
+  head?: { meta: FileInfo; expiresAt: number };
   /** Cached `url` strings, keyed by their url-options signature. */
   urls?: Record<string, { value: string; expiresAt: number }>;
   /** Cached `download` bodies, keyed by their byte-range signature. */
   downloads?: Record<
     string,
-    { meta: StoredFileMeta; bytes: Uint8Array; expiresAt: number }
+    { meta: FileInfo; bytes: Uint8Array; expiresAt: number }
   >;
 }
 
@@ -184,14 +183,14 @@ const createMemoryStore = (max: number): CacheStore => {
 };
 
 /**
- * Pull the cacheable metadata off a {@link StoredFile}, with its own copy of
- * the `metadata` object — the caller keeps the original, and mutating it must
- * not reach the cached record.
+ * Pull the cacheable {@link FileInfo} off a `head` or `download` result, with
+ * its own copy of the `metadata` object — the caller keeps the original, and
+ * mutating it must not reach the cached record.
  */
-const metaOf = (file: StoredFile): StoredFileMeta => ({
+const metaOf = (file: FileInfo): FileInfo => ({
+  contentType: file.contentType,
   key: file.key,
   size: file.size,
-  type: file.type,
   ...(file.lastModified !== undefined && { lastModified: file.lastModified }),
   ...(file.etag !== undefined && { etag: file.etag }),
   ...(file.metadata !== undefined && { metadata: { ...file.metadata } }),
@@ -201,7 +200,7 @@ const metaOf = (file: StoredFile): StoredFileMeta => ({
  * A fresh copy of cached metadata for one hit. Every hit gets its own
  * `metadata` object, so a caller mutating one read can't corrupt the next.
  */
-const cloneMeta = (meta: StoredFileMeta): StoredFileMeta => ({
+const cloneMeta = (meta: FileInfo): FileInfo => ({
   ...meta,
   ...(meta.metadata !== undefined && { metadata: { ...meta.metadata } }),
 });
@@ -254,9 +253,8 @@ const rangeSignature = (range?: { start: number; end?: number }): string =>
  * the next read re-fetches.
  *
  * What's cached, and how it stays correct:
- * - **`head`** caches the metadata only. A hit returns a {@link StoredFile}
- *   whose body still lazy-fetches on access (the same contract an uncached
- *   `head` has), so nothing buffers.
+ * - **`head`** caches the {@link FileInfo} it returns — metadata only, no
+ *   body — and a hit hands out a fresh copy of it.
  * - **`url`** caches the returned string per url-options signature, and **caps
  *   each entry at its own `expiresIn`** so a presigned URL is never handed out
  *   past its signature. A call without `expiresIn` is capped at
@@ -328,17 +326,6 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
 
   const stats: CacheStats = { hits: 0, misses: 0 };
 
-  // The fully-wrapped instance, captured at construction via `extend`. A `head`
-  // cache hit lazy-fetches its body back through here, matching the uncached
-  // `head` contract (body accessors download on call).
-  let instance: Files | undefined;
-  const downloadBytes = async (key: string): Promise<Uint8Array> => {
-    // SAFETY: `extend` runs at construction, before any operation, so
-    // `instance` is always set by the time a cached `head` body is read.
-    const file = await (instance as Files).download(key);
-    return new Uint8Array(await file.arrayBuffer());
-  };
-
   /** Compute an absolute expiry, optionally capped by a verb-specific window. */
   const expiryFrom = (now: number, capMs?: number): number => {
     const base = ttl > 0 ? now + ttl : Number.POSITIVE_INFINITY;
@@ -357,16 +344,13 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   const cachedHead = async (
     op: Extract<FilesOperation, { kind: "head" }>,
     next: PluginNext
-  ): Promise<StoredFile> => {
+  ): Promise<FileInfo> => {
     const now = clock();
     const record = await store.get(op.key);
     const entry = record?.head;
     if (entry && entry.expiresAt > now) {
       stats.hits += 1;
-      return createStoredFile(cloneMeta(entry.meta), {
-        factory: () => downloadBytes(op.key),
-        kind: "lazy",
-      });
+      return cloneMeta(entry.meta);
     }
     stats.misses += 1;
     const file = await next(op);
@@ -551,23 +535,20 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
   }) as NonNullable<FilesPlugin["wrap"]>;
 
   return {
-    extend: (files) => {
-      instance = files;
-      return {
-        cacheStats: () => ({ ...stats }),
-        invalidateCache: async (key?: string) => {
-          if (key === undefined) {
-            await store.clear();
-            return;
-          }
-          await store.delete(key);
-        },
-        resetCacheStats: () => {
-          stats.hits = 0;
-          stats.misses = 0;
-        },
-      };
-    },
+    extend: () => ({
+      cacheStats: () => ({ ...stats }),
+      invalidateCache: async (key?: string) => {
+        if (key === undefined) {
+          await store.clear();
+          return;
+        }
+        await store.delete(key);
+      },
+      resetCacheStats: () => {
+        stats.hits = 0;
+        stats.misses = 0;
+      },
+    }),
     name: "cache",
     wrap,
   };

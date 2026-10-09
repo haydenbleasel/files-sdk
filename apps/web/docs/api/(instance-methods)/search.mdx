@@ -5,7 +5,7 @@ description: Find objects whose key matches a glob (default), regex, substring, 
 
 `files.search(pattern, options?)`
 
-Find objects whose **key** matches `pattern`, walking every page like [`listAll`](/docs/api/list#walking-every-page-with-listall). It's a streaming async iterable of [`StoredFile`](/docs/api/stored-file), so it stays memory-bounded on large buckets and you can `break` to stop early.
+Find objects whose **key** matches `pattern`, walking every page like [`listAll`](/docs/api/list#walking-every-page-with-listall). It's a streaming async iterable of [`FileInfo`](/docs/api/stored-file), so it stays memory-bounded on large buckets and you can `break` to stop early.
 
 ```ts lineNumbers
 // Glob is the default: `*` stays within a path segment, `?` matches one char.

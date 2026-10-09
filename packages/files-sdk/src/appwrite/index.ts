@@ -5,12 +5,12 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  FileInfo,
   ListOptions,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
   SignUploadOptions,
-  StoredFile,
   UploadOptions,
   UploadResult,
   UrlOptions,
@@ -293,9 +293,9 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
 
         return createStoredFile(
           {
+            contentType: stat.mimeType,
             key,
             size: stat.sizeOriginal,
-            type: stat.mimeType,
           },
           { data: new Uint8Array(buffer), kind: "buffer" }
         );
@@ -316,23 +316,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           bucketId: opts.bucket,
           fileId: key,
         });
-        return createStoredFile(
-          {
-            key,
-            size: stat.sizeOriginal,
-            type: stat.mimeType,
-          },
-          {
-            factory: async () => {
-              const buffer = await storage.getFileDownload({
-                bucketId: opts.bucket,
-                fileId: key,
-              });
-              return new Uint8Array(buffer);
-            },
-            kind: "lazy",
-          }
-        );
+        return {
+          contentType: stat.mimeType,
+          key,
+          size: stat.sizeOriginal,
+        };
       } catch (error) {
         throw mapAppwriteError(error);
       }
@@ -359,25 +347,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           queries,
         });
 
-        const items: StoredFile[] = response.files.map((file) =>
-          createStoredFile(
-            {
-              key: file.$id,
-              size: file.sizeOriginal,
-              type: file.mimeType,
-            },
-            {
-              factory: async () => {
-                const buffer = await storage.getFileDownload({
-                  bucketId: opts.bucket,
-                  fileId: file.$id,
-                });
-                return new Uint8Array(buffer);
-              },
-              kind: "lazy",
-            }
-          )
-        );
+        const items: FileInfo[] = response.files.map((file) => ({
+          contentType: file.mimeType,
+          key: file.$id,
+          size: file.sizeOriginal,
+        }));
 
         let nextCursor: string | undefined;
         if (response.files.length === limit) {

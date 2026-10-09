@@ -287,7 +287,7 @@ describe("r2 adapter — HTTP path", () => {
       const info = await files.head("a.txt");
       expect(info.key).toBe("a.txt");
       expect(info.size).toBe(5);
-      expect(info.type).toBe("text/plain");
+      expect(info.contentType).toBe("text/plain");
     });
 
     test("exists maps HeadObjectCommand success and 404 correctly", async () => {
@@ -1060,10 +1060,10 @@ describe("r2 adapter — Workers binding path", () => {
     });
     const out = await files.list({ prefix: "m/" });
     expect(out.items).toHaveLength(1);
-    expect(out.items[0]?.type).toBe("text/csv");
+    expect(out.items[0]?.contentType).toBe("text/csv");
     expect(out.items[0]?.metadata).toEqual({ source: "test" });
     const head = await files.head("m/report.csv");
-    expect(out.items[0]?.type).toBe(head.type);
+    expect(out.items[0]).toEqual(head);
   });
 
   test("binding list with a delimiter returns delimitedPrefixes", async () => {
@@ -1123,24 +1123,31 @@ describe("r2 adapter — Workers binding path", () => {
     }
   });
 
-  test("binding head exposes a lazy body that fetches via get()", async () => {
+  test("binding head and list return plain metadata without calling get()", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
-    await files.upload("h.txt", "lazy-body", { contentType: "text/plain" });
-    const info = await files.head("h.txt");
-    expect(await info.text()).toBe("lazy-body");
-  });
-
-  test("binding list items expose lazy bodies that fetch via get()", async () => {
-    const { bucket } = fakeBinding();
-    const files = new Files({ adapter: r2({ binding: bucket as never }) });
-    await files.upload("x/1.txt", "first", { contentType: "text/plain" });
+    await files.upload("x/1.txt", "first", {
+      contentType: "text/plain",
+      metadata: { a: "b" },
+    });
+    let gets = 0;
+    const originalGet = bucket.get;
+    bucket.get = ((...args: Parameters<typeof originalGet>) => {
+      gets += 1;
+      return originalGet(...args);
+    }) as never;
+    const expected = {
+      contentType: "text/plain",
+      etag: expect.any(String),
+      key: "x/1.txt",
+      lastModified: expect.any(Number),
+      metadata: { a: "b" },
+      size: 5,
+    };
+    expect(await files.head("x/1.txt")).toEqual(expected);
     const out = await files.list({ prefix: "x/" });
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one item");
-    }
-    expect(await item.text()).toBe("first");
+    expect(out.items).toEqual([expected]);
+    expect(gets).toBe(0);
   });
 
   test("binding copy maps put errors via mapR2Error", async () => {
@@ -1172,29 +1179,6 @@ describe("r2 adapter — Workers binding path", () => {
     } catch (error) {
       expect(error).toBe(original);
     }
-  });
-
-  test("binding head's lazy body returns empty bytes when get races and returns null", async () => {
-    const { bucket } = fakeBinding();
-    const files = new Files({ adapter: r2({ binding: bucket as never }) });
-    await files.upload("a.txt", "data", { contentType: "text/plain" });
-    // Simulate a concurrent delete: head succeeds, but the follow-up get returns null.
-    bucket.get = (() => Promise.resolve(null)) as never;
-    const info = await files.head("a.txt");
-    expect(await info.text()).toBe("");
-  });
-
-  test("binding list item's lazy body returns empty bytes when get races and returns null", async () => {
-    const { bucket } = fakeBinding();
-    const files = new Files({ adapter: r2({ binding: bucket as never }) });
-    await files.upload("a.txt", "data", { contentType: "text/plain" });
-    const out = await files.list();
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one item");
-    }
-    bucket.get = (() => Promise.resolve(null)) as never;
-    expect(await item.text()).toBe("");
   });
 
   test("binding download throws NotFound when key is missing", async () => {
@@ -1337,11 +1321,10 @@ describe("r2 adapter — Workers binding path", () => {
     }
   });
 
-  test("binding download of a body-less object yields empty bytes via the default fallback", async () => {
+  test("binding download of a body-less object yields empty bytes", async () => {
     // R2ObjectBody normally carries a `body`, but the mapper defends against
-    // a get() result that lacks one. With no body and no explicit
-    // fallbackBody (download passes none), the StoredFile resolves to empty
-    // bytes rather than throwing or hanging.
+    // a get() result that lacks one: the StoredFile resolves to empty bytes
+    // rather than throwing or hanging.
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     bucket.get = (() =>

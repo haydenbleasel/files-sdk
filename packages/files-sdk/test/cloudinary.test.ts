@@ -313,7 +313,7 @@ describe("cloudinary adapter", () => {
     expect(file.size).toBe(3);
   });
 
-  test("head > returns lazy StoredFile that fetches on read", async () => {
+  test("head > returns metadata only, without fetching the body", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(
         new Response("hello", {
@@ -328,29 +328,9 @@ describe("cloudinary adapter", () => {
     const file = await files.head("test-file");
     expect(file.key).toBe("test-file");
     expect(file.size).toBe(5);
+    expect(file.contentType).toBe("application/octet-stream");
+    expect(file).not.toHaveProperty("text");
     expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(await file.text()).toBe("hello");
-    expect(globalThis.fetch).toHaveBeenCalled();
-  });
-
-  test("head/list > a lazy body's transport failure is a mapped FilesError", async () => {
-    // The body read runs after head()/list() returned; a raw fetch failure
-    // must not escape `text()` unmapped.
-    const files = new Files({
-      adapter: cloudinary({ cloudName: CLOUD_NAME }),
-    });
-    const file = await files.head("test-file");
-    const listed = await files.list();
-    const [item] = listed.items;
-    const raw = new TypeError("fetch failed");
-    globalThis.fetch = mock(() =>
-      Promise.reject(raw)
-    ) as unknown as typeof globalThis.fetch;
-    const headError = await file.text().catch((error: unknown) => error);
-    expect(headError).toBeInstanceOf(FilesError);
-    expect(headError).toMatchObject({ cause: raw, code: "Provider" });
-    const listError = await item?.text().catch((error: unknown) => error);
-    expect(listError).toBeInstanceOf(FilesError);
   });
 
   test("exists > returns true when found", async () => {
@@ -448,7 +428,7 @@ describe("cloudinary adapter", () => {
     );
   });
 
-  test("list > maps response to StoredFile items", async () => {
+  test("list > maps response to FileInfo items", async () => {
     const files = new Files({
       adapter: cloudinary({ cloudName: CLOUD_NAME }),
     });
@@ -1080,29 +1060,6 @@ describe("cloudinary adapter", () => {
     });
     expect(resourceMock).toHaveBeenCalledTimes(1);
     expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  test("head/list > type=private lazy bodies fetch a signed download URL", async () => {
-    const seen: string[] = [];
-    globalThis.fetch = mock((url: string) => {
-      seen.push(url);
-      return Promise.resolve(new Response("hello", { status: 200 }));
-    }) as unknown as typeof globalThis.fetch;
-    const files = new Files({
-      adapter: cloudinary({ cloudName: CLOUD_NAME, type: "private" }),
-    });
-    const head = await files.head("test-file");
-    expect(await head.text()).toBe("hello");
-    const { items } = await files.list();
-    expect(await items[0]?.text()).toBe("hello");
-    expect(seen).toHaveLength(2);
-    expect(seen.every((url) => url.includes("signed=1"))).toBe(true);
-    expect(privateDownloadUrlMock).toHaveBeenCalledWith(
-      "a.txt",
-      "txt",
-      expect.objectContaining({ type: "private" })
-    );
-    expect(urlMock).not.toHaveBeenCalled();
   });
 
   test("download forwards the signal to the delivery fetch", async () => {

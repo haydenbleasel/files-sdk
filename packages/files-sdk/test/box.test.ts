@@ -798,32 +798,17 @@ describe("box adapter", () => {
     expect(f.size).toBe(3);
   });
 
-  test("head returns metadata with lazy body factory", async () => {
+  test("head returns plain metadata without touching the body", async () => {
     const files = new Files({ adapter: box(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });
-    stubFetchToServeStore();
+    const before = getDownloadFileUrlMock.mock.calls.length;
     const f = await files.head("a.txt");
+    expect(f.key).toBe("a.txt");
     expect(f.size).toBe(2);
     expect(f.etag).toMatch(/^etag_/u);
-    const beforeBody = getDownloadFileUrlMock.mock.calls.length;
-    expect(await f.text()).toBe("hi");
-    expect(getDownloadFileUrlMock.mock.calls.length).toBeGreaterThan(
-      beforeBody
-    );
-  });
-
-  test("a head() body read maps a file deleted in between to NotFound", async () => {
-    const files = new Files({ adapter: box(baseOpts) });
-    await files.upload("a.txt", "hi");
-    const f = await files.head("a.txt");
-    for (const [id, item] of store) {
-      if (item.type === "file" && item.name === "a.txt") {
-        store.delete(id);
-      }
-    }
-    const err = await f.text().catch((error: unknown) => error);
-    expect(err).toBeInstanceOf(FilesError);
-    expect((err as FilesError).code).toBe("NotFound");
+    expect(f.contentType).toBe("text/plain; charset=utf-8");
+    expect("text" in f).toBe(false);
+    expect(getDownloadFileUrlMock.mock.calls.length).toBe(before);
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {
@@ -946,7 +931,9 @@ describe("box adapter", () => {
     const filtered = await files.list({ prefix: "photos/ca" });
     expect(filtered.items.map((i) => i.key)).toEqual(["photos/cat.jpg"]);
     stubFetchToServeStore();
-    expect(await filtered.items[0]?.text()).toBe("cat");
+    const [cat] = filtered.items;
+    const got = await files.download(cat?.key ?? "");
+    expect(await got.text()).toBe("cat");
   });
 
   test("a Files client prefix lists the matching folder", async () => {
@@ -1524,19 +1511,6 @@ describe("box adapter", () => {
     await adapter._authHandle.ensureReady();
     const stored2 = await adapter.raw.auth.tokenStorage.get();
     expect(stored2).toBe(stored1);
-  });
-
-  test("lazyDownload from head() surfaces fetch errors as Provider", async () => {
-    const files = new Files({ adapter: box(baseOpts) });
-    await files.upload("a.txt", "hi");
-    const f = await files.head("a.txt");
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response(null, { status: 500 })
-      )) as unknown as typeof fetch;
-    const err = await f.text().catch((error: unknown) => error);
-    expect(err).toBeInstanceOf(FilesError);
-    expect((err as FilesError).code).toBe("Provider");
   });
 
   test("download() from a key under a missing folder throws NotFound", async () => {

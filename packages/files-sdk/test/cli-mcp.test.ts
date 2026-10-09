@@ -159,6 +159,8 @@ describe("cli/mcp tools (write-enabled)", () => {
     expect(Buffer.from(dl.data.base64 as string, "base64").toString()).toBe(
       "hello world"
     );
+    expect(dl.data.contentType).toStartWith("text/plain");
+    expect(dl.data).not.toHaveProperty("type");
   });
 
   test("capabilities reports the fs adapter's snapshot", async () => {
@@ -218,6 +220,10 @@ describe("cli/mcp tools (write-enabled)", () => {
     const single = await call(h.client, "head", { key: "a.txt" });
     expect(single.isError).toBe(false);
     expect(single.data.size).toBe(2);
+    // `FileInfo` JSON: `contentType`, no `File`-like `name` / `type`.
+    expect(single.data.contentType).toBeString();
+    expect(single.data).not.toHaveProperty("type");
+    expect(single.data).not.toHaveProperty("name");
 
     const many = await call(h.client, "head", {
       concurrency: 2,

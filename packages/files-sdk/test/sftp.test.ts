@@ -282,15 +282,16 @@ describe("sftp adapter", () => {
     expect(got.type).toBe("application/json");
   });
 
-  test("head returns metadata and a lazy body", async () => {
+  test("head returns plain metadata with no body", async () => {
     const files = newFiles();
     await files.upload("a.bin", new Uint8Array([1, 2, 3]));
     const meta = await files.head("a.bin");
-    expect(meta.size).toBe(3);
-    expect(meta.lastModified).toBe(STABLE_MTIME);
-    expect(new Uint8Array(await meta.arrayBuffer())).toEqual(
-      new Uint8Array([1, 2, 3])
-    );
+    expect(meta).toEqual({
+      contentType: "application/octet-stream",
+      key: "a.bin",
+      lastModified: STABLE_MTIME,
+      size: 3,
+    });
   });
 
   test("download streams when as=stream", async () => {

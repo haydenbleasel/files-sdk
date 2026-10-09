@@ -1,9 +1,8 @@
 import { handlers } from "../index.js";
 import type {
+  FileInfo,
   FilesOperation,
   FilesPlugin,
-  OperationOptions,
-  PluginNext,
   StoredFile,
   UploadOptions,
 } from "../index.js";
@@ -195,11 +194,10 @@ export const generateEncryptionKey = (): Promise<CryptoKey> =>
  *   `signedUpload.supported`, and `rangeRead` as `false` to match, so the
  *   `files-sdk/api` gateway proxies uploads and downloads through the
  *   instance.
- * - **`head` / `list` never decrypt eagerly** — they report the plaintext
- *   size, and their body accessors download and decrypt only when called.
- *   On adapters whose `list()` returns no metadata (S3 and the
- *   S3-compatibles), `list()` items report the stored (ciphertext) size; their
- *   bodies still decrypt.
+ * - **`head` / `list` never decrypt** — they return metadata only, reporting
+ *   the plaintext size with the internal fields hidden; read the plaintext
+ *   with `download()`. On adapters whose `list()` returns no metadata (S3 and
+ *   the S3-compatibles), `list()` items report the stored (ciphertext) size.
  * - **`copy` / `move` just work** — the wrapped DEK travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
@@ -284,92 +282,59 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
     }
     return createStoredFile(
       {
+        contentType: file.contentType,
         etag: file.etag,
         key: file.key,
         lastModified: file.lastModified,
         metadata: stripInternalMeta(metadata),
         size: plaintext.byteLength,
-        type: file.type,
       },
       { data: new Uint8Array(plaintext), kind: "buffer" }
     );
   };
 
-  /** A lazy body that reads `objectKey` back through this plugin, decrypted. */
-  const readBack =
-    (objectKey: string, next: PluginNext, options?: OperationOptions) =>
-    async (): Promise<Uint8Array> => {
-      const plain = await download(
-        { key: objectKey, kind: "download", ...(options && { options }) },
-        next
-      );
-      return new Uint8Array(await plain.arrayBuffer());
-    };
-
   /**
    * Re-report a `head` / `list` result's logical (plaintext) size and hide the
-   * internal metadata fields. Neither verb decrypts eagerly, so the body
-   * accessors are replaced with a lazy download back through this plugin —
-   * `text()` / `stream()` then yield plaintext, never the stored ciphertext.
-   * Objects this plugin didn't write pass through untouched.
+   * internal metadata fields. Neither verb decrypts — they return metadata
+   * only; reading the plaintext is a `download()`. Objects this plugin didn't
+   * write — or a `list()` item with no metadata at all, which S3 and the
+   * S3-compatibles return — pass through untouched.
    */
-  const logical = (
-    file: StoredFile,
-    next: PluginNext,
-    options?: OperationOptions
-  ): StoredFile => {
+  const logical = (file: FileInfo): FileInfo => {
     const { metadata } = file;
     if (!metadata?.[META.scheme]) {
       return file;
     }
     const size = Number.parseInt(metadata[META.size] ?? "", RADIX);
-    return createStoredFile(
-      {
-        etag: file.etag,
-        key: file.key,
-        lastModified: file.lastModified,
-        metadata: stripInternalMeta(metadata),
-        size: Number.isNaN(size) ? file.size : size,
-        type: file.type,
-      },
-      { factory: readBack(file.key, next, options), kind: "lazy" }
-    );
+    return {
+      contentType: file.contentType,
+      etag: file.etag,
+      key: file.key,
+      lastModified: file.lastModified,
+      metadata: stripInternalMeta(metadata),
+      size: Number.isNaN(size) ? file.size : size,
+    };
   };
 
-  /**
-   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
-   * return it from a listing — can't be told apart from a plaintext object, so
-   * its size is left as stored, but its body still reads back through this
-   * plugin, so an encrypted object's `text()` / `stream()` yield plaintext
-   * rather than ciphertext.
-   */
-  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
-    file.metadata === undefined
-      ? createStoredFile(
-          {
-            etag: file.etag,
-            key: file.key,
-            lastModified: file.lastModified,
-            size: file.size,
-            type: file.type,
-          },
-          { factory: readBack(file.key, next), kind: "lazy" }
-        )
-      : logical(file, next);
-
-  // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
-  // lazy body reads to a `download` (the per-verb `next` is typed to its own
-  // verb).
-  const verbs = (outer: PluginNext): NonNullable<FilesPlugin["wrap"]> =>
-    handlers({
+  return {
+    // Advertise what the plugin refuses, so `files.capabilities` (and the
+    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
+    // plans a presigned URL, a direct upload, a ranged read, or a resumable
+    // upload that would throw.
+    capabilities: (caps) => ({
+      ...caps,
+      rangeRead: false,
+      resumable: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
+    }),
+    name: "encryption",
+    wrap: handlers({
       download,
-      head: async (op, next) => logical(await next(op), outer, op.options),
+      head: async (op, next) => logical(await next(op)),
       list: async (op, next) => {
         const result = await next(op);
-        return {
-          ...result,
-          items: result.items.map((file) => listed(file, outer)),
-        };
+        return { ...result, items: result.items.map((file) => logical(file)) };
       },
       signedUploadUrl: () => {
         throw new FilesError(
@@ -419,21 +384,6 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
           "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead"
         );
       },
-    });
-
-  return {
-    // Advertise what the plugin refuses, so `files.capabilities` (and the
-    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
-    // plans a presigned URL, a direct upload, a ranged read, or a resumable
-    // upload that would throw.
-    capabilities: (caps) => ({
-      ...caps,
-      rangeRead: false,
-      resumable: false,
-      signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
     }),
-    name: "encryption",
-    wrap: (op, next) => verbs(next)(op, next),
   };
 };

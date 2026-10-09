@@ -95,8 +95,10 @@ describe("createFilesClient — round-trip", () => {
 
     const head = await client.head("notes/a.txt");
     expect(head.size).toBe(5);
-    // lazy body fetches via download
-    expect(await head.text()).toBe("alpha");
+    expect(head.contentType).toStartWith("text/plain");
+    // Metadata only — the bytes are always an explicit download().
+    expect("text" in head).toBe(false);
+    expect(await (await client.download("notes/a.txt")).text()).toBe("alpha");
 
     expect(await client.url("notes/a.txt")).toContain("memory://");
     expect(await client.exists("notes/a.txt")).toBe(true);

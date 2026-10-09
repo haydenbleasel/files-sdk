@@ -3,6 +3,7 @@ import type {
   Adapter,
   AdapterCapabilityDeclaration,
   Body,
+  FileInfo,
   DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
@@ -82,18 +83,17 @@ const compareKeys = (a: string, b: string): number => {
   return 0;
 };
 
+const toInfo = (key: string, entry: Entry): FileInfo => ({
+  contentType: entry.contentType,
+  etag: entry.etag,
+  key,
+  lastModified: entry.uploadedAt,
+  metadata: entry.metadata,
+  size: entry.bytes.byteLength,
+});
+
 const toStored = (key: string, entry: Entry): StoredFile =>
-  createStoredFile(
-    {
-      etag: entry.etag,
-      key,
-      lastModified: entry.uploadedAt,
-      metadata: entry.metadata,
-      size: entry.bytes.byteLength,
-      type: entry.contentType,
-    },
-    { data: entry.bytes, kind: "buffer" }
-  );
+  createStoredFile(toInfo(key, entry), { data: entry.bytes, kind: "buffer" });
 
 /**
  * A copy of `adapter` with some capability declarations overridden — the
@@ -179,12 +179,12 @@ export const fakeAdapter = (config?: {
         return Promise.resolve(
           createStoredFile(
             {
+              contentType: entry.contentType,
               etag: entry.etag,
               key,
               lastModified: entry.uploadedAt,
               metadata: entry.metadata,
               size: sliced.byteLength,
-              type: entry.contentType,
             },
             { data: sliced, kind: "buffer" }
           )
@@ -198,12 +198,12 @@ export const fakeAdapter = (config?: {
     has(key) {
       return store.has(key);
     },
-    head(key: string): Promise<StoredFile> {
+    head(key: string): Promise<FileInfo> {
       const entry = store.get(key);
       if (!entry) {
         throw new FilesError("NotFound", `not found: ${key}`);
       }
-      return Promise.resolve(toStored(key, entry));
+      return Promise.resolve(toInfo(key, entry));
     },
     list(opts?: ListOptions): Promise<ListResult> {
       const prefix = opts?.prefix ?? "";
@@ -227,7 +227,7 @@ export const fakeAdapter = (config?: {
           cursor: page.cursor,
           items: sorted
             .filter(([k]) => pageKeys.has(k))
-            .map(([k, e]) => toStored(k, e)),
+            .map(([k, e]) => toInfo(k, e)),
           ...(page.prefixes.length && { prefixes: page.prefixes }),
         });
       }
@@ -240,7 +240,7 @@ export const fakeAdapter = (config?: {
       const more = start + slice.length < sorted.length;
       return Promise.resolve({
         cursor: more && lastKey ? lastKey : undefined,
-        items: slice.map(([k, e]) => toStored(k, e)),
+        items: slice.map(([k, e]) => toInfo(k, e)),
       });
     },
     name: "fake",

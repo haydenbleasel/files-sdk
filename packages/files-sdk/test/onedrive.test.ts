@@ -653,22 +653,19 @@ describe("onedrive adapter", () => {
     expect(f.size).toBe(3);
   });
 
-  test("head returns metadata with lazy body factory", async () => {
+  test("head returns plain metadata without touching the body", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });
     const f = await files.head("a.txt");
-    expect(f.type).toBe("text/plain");
+    expect(f.key).toBe("a.txt");
+    expect(f.contentType).toBe("text/plain");
     expect(f.size).toBe(2);
-    // head() should not yet have requested /content — only the metadata GET.
+    expect("text" in f).toBe(false);
+    // head() never requests /content — only the metadata GET.
     const contentGets = dispatchGet.mock.calls.filter(
       (c) => typeof c[0] === "string" && (c[0] as string).endsWith("/content")
     );
     expect(contentGets.length).toBe(0);
-    expect(await f.text()).toBe("hi");
-    const after = dispatchGet.mock.calls.filter(
-      (c) => typeof c[0] === "string" && (c[0] as string).endsWith("/content")
-    );
-    expect(after.length).toBe(1);
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {
@@ -690,16 +687,6 @@ describe("onedrive adapter", () => {
     await expect(files.head("a.txt")).rejects.toMatchObject({
       code: "NotFound",
     });
-  });
-
-  test("a head() body read maps a file deleted in between to NotFound", async () => {
-    const files = new Files({ adapter: onedrive(baseOpts) });
-    await files.upload("a.txt", "hi");
-    const f = await files.head("a.txt");
-    store.delete("a.txt");
-    const err = await f.text().catch((error: unknown) => error);
-    expect(err).toBeInstanceOf(FilesError);
-    expect((err as FilesError).code).toBe("NotFound");
   });
 
   test("head and exists report a folder path as NotFound", async () => {
@@ -776,7 +763,6 @@ describe("onedrive adapter", () => {
     // The remainder after the last "/" filters by child name.
     const filtered = await files.list({ prefix: "photos/ca" });
     expect(filtered.items.map((i) => i.key)).toEqual(["photos/cat.jpg"]);
-    expect(await filtered.items[0]?.text()).toBe("x");
     // Following a returned folder prefix lists that folder.
     const nested = await files.list({ delimiter: "/", prefix: "photos/2024/" });
     expect(nested.items).toEqual([]);

@@ -8,9 +8,9 @@ import type {
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   SignedUpload,
-  StoredFile,
   UploadOptions,
   UploadResult,
   UrlOptions,
@@ -403,21 +403,6 @@ export const netlifyBlobs = (
     throw mapNetlifyError(error);
   }
 
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures instead of leaking a raw
-  // BlobsInternalError out of `text()`.
-  const readLazyBody = async (key: string): Promise<Uint8Array> => {
-    try {
-      const got = await store.get(key, { type: "arrayBuffer" });
-      if (!got) {
-        throw new FilesError("NotFound", `netlify-blobs: not found: ${key}`);
-      }
-      return new Uint8Array(got);
-    } catch (error) {
-      throw mapNetlifyError(error);
-    }
-  };
-
   const packMetadata = (
     contentType: string,
     size: number,
@@ -494,12 +479,12 @@ export const netlifyBlobs = (
           const packed = readPackedMetadata(result.metadata);
           return createStoredFile(
             {
+              contentType: packed.contentType,
               etag: result.etag,
               key,
               lastModified: packed.lastModified,
               metadata: packed.userMetadata,
               size: packed.size,
-              type: packed.contentType,
             },
             {
               factory: () => result.data,
@@ -517,6 +502,7 @@ export const netlifyBlobs = (
         const packed = readPackedMetadata(result.metadata);
         return createStoredFile(
           {
+            contentType: packed.contentType,
             etag: result.etag,
             key,
             lastModified: packed.lastModified,
@@ -524,7 +510,6 @@ export const netlifyBlobs = (
             // Prefer the actual byte length over the embedded size — those
             // can disagree if a blob was written outside the SDK.
             size: bytes.byteLength || packed.size,
-            type: packed.contentType,
           },
           { data: bytes, kind: "buffer" }
         );
@@ -556,17 +541,14 @@ export const netlifyBlobs = (
         throw new FilesError("NotFound", `netlify-blobs: not found: ${key}`);
       }
       const packed = readPackedMetadata(result.metadata);
-      return createStoredFile(
-        {
-          etag: result.etag,
-          key,
-          lastModified: packed.lastModified,
-          metadata: packed.userMetadata,
-          size: packed.size,
-          type: packed.contentType,
-        },
-        { factory: () => readLazyBody(key), kind: "lazy" }
-      );
+      return {
+        contentType: packed.contentType,
+        etag: result.etag,
+        key,
+        lastModified: packed.lastModified,
+        metadata: packed.userMetadata,
+        size: packed.size,
+      };
     },
     async list(options): Promise<ListResult> {
       // Uses the SDK's paginated iterator so a small `limit` bounds
@@ -596,26 +578,20 @@ export const netlifyBlobs = (
       const page = limit === undefined ? entries : entries.slice(0, limit);
       const cursor = page.length < entries.length ? page.at(-1) : undefined;
       const prefixes = page.filter((entry) => walk.directories.has(entry));
-      const items: StoredFile[] = [];
+      const items: FileInfo[] = [];
       for (const key of page) {
         const etag = walk.blobs.get(key);
         if (etag === undefined) {
           continue;
         }
-        items.push(
-          createStoredFile(
-            {
-              etag,
-              key,
-              // Netlify's list response only carries key + etag. Rich
-              // metadata (size, contentType, lastModified) requires a
-              // per-item head().
-              size: 0,
-              type: DEFAULT_CONTENT_TYPE,
-            },
-            { factory: () => readLazyBody(key), kind: "lazy" }
-          )
-        );
+        items.push({
+          // Netlify's list response only carries key + etag. Rich metadata
+          // (size, contentType, lastModified) requires a per-item head().
+          contentType: DEFAULT_CONTENT_TYPE,
+          etag,
+          key,
+          size: 0,
+        });
       }
       return {
         items,

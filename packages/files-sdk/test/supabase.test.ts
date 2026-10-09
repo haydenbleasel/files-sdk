@@ -522,17 +522,11 @@ describe("supabase adapter", () => {
       const files = new Files({ adapter: makeAdapter() });
       const info = await files.head("a.txt");
       expect(info.size).toBe(5);
-      expect(info.type).toBe("text/plain");
+      expect(info.contentType).toBe("text/plain");
       expect(info.etag).toBe("etag-a");
       expect(info.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
+      expect(info).not.toHaveProperty("text");
       expect(downloadResolveMock).not.toHaveBeenCalled();
-    });
-
-    test("body is lazy — text() triggers a download", async () => {
-      const info = await makeAdapter().head("a.txt");
-      downloadResolveMock.mockClear();
-      expect(await info.text()).toBe("hello");
-      expect(downloadResolveMock).toHaveBeenCalledTimes(1);
     });
 
     test("exists returns true for present keys and false for missing keys", async () => {
@@ -780,7 +774,7 @@ describe("supabase adapter", () => {
       const [first] = out.items;
       expect(first?.etag).toBe("etag-a");
       expect(first?.size).toBe(5);
-      expect(first?.type).toBe("text/plain");
+      expect(first?.contentType).toBe("text/plain");
       expect(first?.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
     });
 
@@ -797,17 +791,6 @@ describe("supabase adapter", () => {
       );
       const out = await makeAdapter().list();
       expect(out.items[0]?.metadata).toEqual({ author: "me", count: "2" });
-    });
-
-    test("items expose lazy bodies that fetch via download()", async () => {
-      const out = await makeAdapter().list();
-      const [item] = out.items;
-      if (!item) {
-        throw new Error("expected at least one item");
-      }
-      downloadResolveMock.mockClear();
-      expect(await item.text()).toBe("hello");
-      expect(downloadResolveMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1228,21 +1211,6 @@ describe("supabase adapter", () => {
       );
       const got = await makeAdapter().download("a.txt");
       expect(got.metadata).toBeUndefined();
-    });
-
-    test("head's lazy body propagates download errors as FilesError", async () => {
-      // Drives `downloadAsBytes`'s `throw mapSupabaseError(error)` path.
-      const info = await makeAdapter().head("a.txt");
-      downloadResolveMock.mockImplementationOnce(() =>
-        Promise.resolve(fail(404, "NotFound", "vanished"))
-      );
-      try {
-        await info.text();
-        throw new Error("should have thrown");
-      } catch (error) {
-        expect(error).toBeInstanceOf(FilesError);
-        expect((error as FilesError).code).toBe("NotFound");
-      }
     });
 
     test("an existing FilesError passes through unchanged", () => {

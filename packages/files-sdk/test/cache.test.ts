@@ -94,19 +94,33 @@ describe("cache plugin — head", () => {
     expect(second.etag).toBe(first.etag);
   });
 
-  test("a head cache hit lazy-fetches its body via download", async () => {
+  test("a head cache hit is plain metadata and never downloads", async () => {
     const { adapter, calls } = counting();
     const files = withCache({}, adapter);
-    await files.upload("a.txt", "hello", { metadata: { tag: "x" } });
+    await files.upload("a.txt", "hello", {
+      contentType: "text/plain",
+      metadata: { tag: "x" },
+    });
 
-    await files.head("a.txt");
+    const miss = await files.head("a.txt");
     const hit = await files.head("a.txt");
 
-    expect(hit.metadata).toEqual({ tag: "x" });
-    // The body isn't fetched until a body accessor is called.
+    expect(hit).toEqual(miss);
+    expect(Object.keys(hit).toSorted()).toEqual([
+      "contentType",
+      "etag",
+      "key",
+      "lastModified",
+      "metadata",
+      "size",
+    ]);
+    expect(hit).toMatchObject({
+      contentType: "text/plain",
+      key: "a.txt",
+      metadata: { tag: "x" },
+      size: 5,
+    });
     expect(calls.download).toEqual([]);
-    expect(await hit.text()).toBe("hello");
-    expect(calls.download).toEqual(["a.txt"]);
   });
 
   test("does not cache head when it is not in operations", async () => {
@@ -402,10 +416,10 @@ describe("cache plugin — download", () => {
       return Promise.resolve(
         createStoredFile(
           {
+            contentType: "text/plain",
             etag: "etag-1",
             key: "a.txt",
             size: body.length,
-            type: "text/plain",
           },
           { data: new TextEncoder().encode(body), kind: "buffer" }
         )

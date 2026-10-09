@@ -22,13 +22,13 @@ import { TokenCredentialAuthenticationProvider } from "@microsoft/microsoft-grap
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   MultipartOptions,
   OffsetResumableDriver,
   ResumableDriverOptions,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -492,12 +492,7 @@ interface DriveItem {
   ["@microsoft.graph.downloadUrl"]?: string;
 }
 
-interface StoredMeta {
-  size: number;
-  type: string;
-  etag?: string;
-  lastModified?: number;
-}
+type ItemMeta = Omit<FileInfo, "key" | "metadata">;
 
 // Graph collection / action response envelopes the adapter reads. Every field
 // is optional because the adapter validates presence itself.
@@ -540,13 +535,13 @@ const assertNotFolder = (key: string, item: DriveItem): void => {
   }
 };
 
-const itemToStoredMeta = (item: DriveItem): StoredMeta => ({
+const itemToMeta = (item: DriveItem): ItemMeta => ({
+  contentType: item.file?.mimeType ?? OCTET_STREAM,
   ...(item.eTag && { etag: item.eTag.replaceAll('"', "") }),
   ...(item.lastModifiedDateTime && {
     lastModified: new Date(item.lastModifiedDateTime).getTime(),
   }),
   size: Number(item.size ?? 0),
-  type: item.file?.mimeType ?? OCTET_STREAM,
 });
 
 // A refresh-token rejection from `RefreshTokenCredential`: `Unauthorized`, and
@@ -836,23 +831,6 @@ export const onedrive = (
     assertNoRelativeSegments(trimmed, "prefix");
     const fullPath = rootFolderPath ? `${rootFolderPath}/${trimmed}` : trimmed;
     return `${basePath}/root:/${encodePathSegments(fullPath)}:`;
-  };
-
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures (a file deleted in between reads as
-  // NotFound) instead of leaking a raw SDK error out of `text()`.
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    try {
-      // The Graph client types every response as `any`; `toUint8` checks the
-      // payload shape at runtime before trusting it.
-      const data: GraphContentPayload = await client
-        .api(`${itemApiPath(key)}/content`)
-        .responseType(ResponseType.ARRAYBUFFER)
-        .get();
-      return toUint8(data);
-    } catch (error) {
-      throw mapGraphError(error);
-    }
   };
 
   const pollCopyMonitor = async (monitorUrl: string): Promise<void> => {
@@ -1254,7 +1232,7 @@ export const onedrive = (
               Readable | ReadableStream<Uint8Array>
             >,
           ]);
-          const m = itemToStoredMeta(meta);
+          const m = itemToMeta(meta);
           return createStoredFile(
             { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
             {
@@ -1279,7 +1257,7 @@ export const onedrive = (
             .responseType(ResponseType.ARRAYBUFFER)
             .get() as Promise<GraphContentPayload>,
         ]);
-        const m = itemToStoredMeta(meta);
+        const m = itemToMeta(meta);
         const u8 = toUint8(bytes);
         return createStoredFile(
           { key, ...m, size: u8.byteLength },
@@ -1303,11 +1281,7 @@ export const onedrive = (
         // GET on the item path returns a `driveItem`.
         const meta = (await client.api(itemApiPath(key)).get()) as DriveItem;
         assertNotFolder(key, meta);
-        const m = itemToStoredMeta(meta);
-        return createStoredFile(
-          { key, ...m },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return { key, ...itemToMeta(meta) };
       } catch (error) {
         throw mapGraphError(error);
       }
@@ -1336,7 +1310,7 @@ export const onedrive = (
         // `/children` (and its `@odata.nextLink` continuation) returns a
         // `driveItem` collection page.
         const res = (await req.get()) as DriveItemCollection;
-        const items: StoredFile[] = [];
+        const items: FileInfo[] = [];
         const prefixes: string[] = [];
         // Classify one child into items (files) or prefixes (folders, folded
         // mode only); nested so the loop's branching stays out of `list`.
@@ -1352,12 +1326,7 @@ export const onedrive = (
             }
             return;
           }
-          items.push(
-            createStoredFile(
-              { key, ...itemToStoredMeta(item) },
-              { factory: lazyDownload(key), kind: "lazy" }
-            )
-          );
+          items.push({ key, ...itemToMeta(item) });
         };
         for (const item of res.value ?? []) {
           collect(item);

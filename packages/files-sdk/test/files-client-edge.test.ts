@@ -151,7 +151,7 @@ describe("upload edge paths", () => {
           : {
               status: 200,
               text: JSON.stringify({
-                file: { key: "good", size: 1, type: "x" },
+                file: { contentType: "x", key: "good", size: 1 },
               }),
             }
       );
@@ -184,7 +184,7 @@ describe("upload state lifecycle", () => {
                 },
               ],
             }
-          : { files: [{ key: "minted.bin", size: 3, type: "x/y" }] };
+          : { files: [{ contentType: "x/y", key: "minted.bin", size: 3 }] };
       return Promise.resolve(Response.json(body, { status: 200 }));
     }) as unknown as typeof fetch;
 
@@ -193,7 +193,7 @@ describe("upload state lifecycle", () => {
     const key = new URL(req.url).searchParams.get("key");
     return Promise.resolve({
       status: 200,
-      text: JSON.stringify({ file: { key, size: 3, type: "x" } }),
+      text: JSON.stringify({ file: { contentType: "x", key, size: 3 } }),
     });
   };
 
@@ -616,7 +616,7 @@ describe("react-native fallbacks", () => {
       return Promise.resolve({
         status: 200,
         text: JSON.stringify({
-          file: { key: "k", size, type: "application/octet-stream" },
+          file: { contentType: "application/octet-stream", key: "k", size },
         }),
       });
     };
@@ -834,7 +834,7 @@ describe("native file refs", () => {
       const body =
         payload.op === "presign"
           ? { uploads }
-          : { files: [{ key: "k", size: 13, type: "image/png" }] };
+          : { files: [{ contentType: "image/png", key: "k", size: 13 }] };
       return Promise.resolve(Response.json(body, { status: 200 }));
     }) as unknown as typeof fetch;
 
@@ -870,6 +870,8 @@ describe("native file refs", () => {
     });
     const out = await client.upload({ type: "image/png", uri: REF_URI });
     expect(out.key).toBe("k");
+    // The wire `contentType` surfaces as the outcome's `contentType`.
+    expect(out.contentType).toBe("image/png");
     expect(sent?.body).toBeInstanceOf(Blob);
     // presign info derives the name from the uri and defaults size to 0
     expect(posts[0]?.files?.[0]?.name).toBe("photo.png");
@@ -921,13 +923,14 @@ describe("native file refs", () => {
         return Promise.resolve({
           status: 200,
           text: JSON.stringify({
-            file: { key: "k", size: 13, type: "image/png" },
+            file: { contentType: "image/png", key: "k", size: 13 },
           }),
         });
       },
     });
     const out = await client.upload("k", { type: "image/png", uri: REF_URI });
     expect(out.size).toBe(13);
+    expect(out.contentType).toBe("image/png");
     expect(sent?.body).toBeInstanceOf(Blob);
     expect(sent?.headers?.["content-type"]).toBe("image/png");
   });
@@ -942,7 +945,7 @@ describe("native file refs", () => {
         return Promise.resolve({
           status: 200,
           text: JSON.stringify({
-            file: { key: "k", size: 13, type: "image/webp" },
+            file: { contentType: "image/webp", key: "k", size: 13 },
           }),
         });
       },

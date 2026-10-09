@@ -176,24 +176,16 @@ const makeFakeClient = () =>
       const rangeRequested = Boolean(
         parseRange(opts.headers, entry.bytes.length)
       );
-      if (opts.details) {
-        return Promise.resolve({
-          data: Buffer.from(bytes),
-          headers: {
-            "content-type": entry.type ?? "application/octet-stream",
-            "last-modified": STABLE_LASTMOD,
-          },
-          status: rangeRequested && !ignoresRange ? 206 : 200,
-          statusText: "OK",
-        });
-      }
-      // Non-details (lazy body): return an ArrayBuffer to exercise that path.
-      return Promise.resolve(
-        bytes.buffer.slice(
-          bytes.byteOffset,
-          bytes.byteOffset + bytes.byteLength
-        )
-      );
+      // The adapter always reads with `details: true`.
+      return Promise.resolve({
+        data: Buffer.from(bytes),
+        headers: {
+          "content-type": entry.type ?? "application/octet-stream",
+          "last-modified": STABLE_LASTMOD,
+        },
+        status: rangeRequested && !ignoresRange ? 206 : 200,
+        statusText: "OK",
+      });
     },
     moveFile(from: string, to: string) {
       const entry = store.get(from);
@@ -270,18 +262,19 @@ describe("webdav adapter", () => {
     const got = await files.download("report.csv");
     expect(got.type).toBe("text/csv");
     const meta = await files.head("report.csv");
-    expect(meta.type).toBe("text/csv");
+    expect(meta.contentType).toBe("text/csv");
   });
 
-  test("head returns metadata and a lazy body", async () => {
+  test("head returns plain metadata with no body", async () => {
     const files = newFiles();
     await files.upload("a.bin", new Uint8Array([1, 2, 3]));
     const meta = await files.head("a.bin");
-    expect(meta.size).toBe(3);
-    expect(meta.lastModified).toBe(STABLE_MTIME);
-    expect(new Uint8Array(await meta.arrayBuffer())).toEqual(
-      new Uint8Array([1, 2, 3])
-    );
+    expect(meta).toEqual({
+      contentType: "application/octet-stream",
+      key: "a.bin",
+      lastModified: STABLE_MTIME,
+      size: 3,
+    });
   });
 
   test("download streams when as=stream", async () => {
@@ -471,16 +464,6 @@ describe("webdav adapter", () => {
     );
   });
 
-  test("a lazy body read maps a provider error", async () => {
-    const files = newFiles();
-    await files.upload("lazy.txt", "hi");
-    const meta = await files.head("lazy.txt");
-    await files.delete("lazy.txt");
-    await expect(meta.arrayBuffer()).rejects.toMatchObject({
-      code: "NotFound",
-    });
-  });
-
   test("uploading a ReadableStream buffers and looks up the size", async () => {
     const files = newFiles();
     const stream = new ReadableStream<Uint8Array>({
@@ -600,7 +583,7 @@ describe("webdav edge cases (injected client)", () => {
     } as unknown as WebDAVClient;
     const files = new Files({ adapter: webdav({ client }) });
     const meta = await files.head("a.json");
-    expect(meta.type).toBe("application/json");
+    expect(meta.contentType).toBe("application/json");
     expect(meta.lastModified).toBeUndefined();
   });
 

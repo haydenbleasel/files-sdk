@@ -221,15 +221,19 @@ describe("bun-s3 adapter", () => {
     expect(await downloaded.text()).toBe("streamed");
   });
 
-  test("head returns metadata and lazily fetches the body", async () => {
+  test("head returns plain metadata", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });
-    await adapter.upload("h.txt", "lazy", { contentType: "text/custom" });
+    await adapter.upload("h.txt", "meta", { contentType: "text/custom" });
 
     const head = await adapter.head("h.txt");
-    expect(head.size).toBe(4);
-    expect(head.type).toBe("text/custom");
-    expect(await head.text()).toBe("lazy");
+    expect(head).toEqual({
+      contentType: "text/custom",
+      etag: expect.any(String),
+      key: "h.txt",
+      lastModified: client.entries.get("h.txt")?.lastModified.getTime(),
+      size: 4,
+    });
   });
 
   test("exists returns false for missing objects", async () => {
@@ -250,7 +254,7 @@ describe("bun-s3 adapter", () => {
     expect(copied.type).toBe("text/plain");
   });
 
-  test("list maps Bun S3 objects into StoredFile items with cursor", async () => {
+  test("list maps Bun S3 objects into FileInfo items with cursor", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });
     await adapter.upload("a/1.txt", "1");
@@ -260,7 +264,7 @@ describe("bun-s3 adapter", () => {
     const out = await adapter.list({ limit: 1, prefix: "a/" });
     expect(out.items.map((item) => item.key)).toEqual(["a/1.txt"]);
     expect(out.cursor).toBe("a/1.txt");
-    expect(await out.items[0]?.text()).toBe("1");
+    expect(out.items[0]?.size).toBe(1);
   });
 
   test("list with a delimiter forwards it and surfaces Bun's commonPrefixes", async () => {
@@ -645,27 +649,20 @@ describe("bun-s3 adapter", () => {
     });
   });
 
-  test("head body is lazy and fetched only when accessed", async () => {
+  test("head never opens the object body", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });
-    await adapter.upload("h-lazy.txt", "hi", { contentType: "text/plain" });
+    await adapter.upload("h-meta.txt", "hi", { contentType: "text/plain" });
 
-    let bytesCalls = 0;
+    let fileCalls = 0;
     const origFile = client.file.bind(client);
     client.file = (path) => {
-      const f = origFile(path);
-      return {
-        ...f,
-        bytes: () => {
-          bytesCalls += 1;
-          return f.bytes ? f.bytes() : Promise.resolve(new Uint8Array());
-        },
-      };
+      fileCalls += 1;
+      return origFile(path);
     };
-    const meta = await adapter.head("h-lazy.txt");
-    expect(bytesCalls).toBe(0);
-    expect(await meta.text()).toBe("hi");
-    expect(bytesCalls).toBe(1);
+    const meta = await adapter.head("h-meta.txt");
+    expect(meta.contentType).toBe("text/plain");
+    expect(fileCalls).toBe(0);
   });
 
   test("exists rethrows non-NotFound provider errors", async () => {
@@ -715,16 +712,20 @@ describe("bun-s3 adapter", () => {
     expect(second.cursor).toBeUndefined();
   });
 
-  test("list items carry parsed lastModified and lazily fetch bodies", async () => {
+  test("list items are plain metadata with a parsed lastModified", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });
     await adapter.upload("a.txt", "hi");
     const { items } = await adapter.list();
-    const [item] = items;
-    expect(item?.lastModified).toBe(
-      client.entries.get("a.txt")?.lastModified.getTime()
-    );
-    expect(await item?.text()).toBe("hi");
+    expect(items).toEqual([
+      {
+        contentType: "text/plain; charset=utf-8",
+        etag: expect.any(String),
+        key: "a.txt",
+        lastModified: client.entries.get("a.txt")?.lastModified.getTime(),
+        size: 2,
+      },
+    ]);
   });
 
   test("list infers the content type from the key, like the rest of the S3 family", async () => {
@@ -735,7 +736,7 @@ describe("bun-s3 adapter", () => {
     await adapter.upload("docs/blob", "y");
     const { items } = await adapter.list({ prefix: "docs/" });
     const types = Object.fromEntries(
-      items.map((item) => [item.key, item.type])
+      items.map((item) => [item.key, item.contentType])
     );
     expect(types["docs/report.csv"]).toBe("text/csv; charset=utf-8");
     expect(types["docs/photo.png"]).toBe("image/png");

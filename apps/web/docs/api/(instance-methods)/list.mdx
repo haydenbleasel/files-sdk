@@ -1,11 +1,11 @@
 ---
 title: list
-description: Cursor-paginated listing with a prefix filter; each item is a StoredFile with a lazy body accessor. listAll walks every page; a delimiter returns folders.
+description: Cursor-paginated listing with a prefix filter; each item is a FileInfo. listAll walks every page; a delimiter returns folders.
 ---
 
 `files.list(options?)`
 
-Cursor-paginated listing with prefix filter. Each item is a [`StoredFile`](/docs/api/stored-file) with a lazy body accessor.
+Cursor-paginated listing with prefix filter. Each item is a [`FileInfo`](/docs/api/stored-file): metadata only, with no body. Call [`download`](/docs/api/download) for an item's bytes.
 
 ```ts lineNumbers
 const { items, cursor } = await files.list({
@@ -28,7 +28,7 @@ for await (const file of files.listAll({ prefix: "avatars/" })) {
 }
 ```
 
-Each item is the same [`StoredFile`](/docs/api/stored-file) `list` yields. `prefix` scopes the walk; `limit` sets the **page size** each underlying `list` fetches (not a total cap), and a `cursor` resumes from a prior position. Every page is a real `list` call, so it honors the client `prefix`, [retries and timeouts](/docs/retries), and fires one [`onAction`](/docs/api/onaction) `list` event per page. `break` out of the loop to stop early — no further pages are fetched.
+Each item is the same [`FileInfo`](/docs/api/stored-file) `list` yields. `prefix` scopes the walk; `limit` sets the **page size** each underlying `list` fetches (not a total cap), and a `cursor` resumes from a prior position. Every page is a real `list` call, so it honors the client `prefix`, [retries and timeouts](/docs/retries), and fires one [`onAction`](/docs/api/onaction) `list` event per page. `break` out of the loop to stop early — no further pages are fetched.
 
 `listAll` runs on every adapter, since it's built on `list`. One `list` caveat carries over to the walk: the folder-based [Box](/docs/adapters/box), [OneDrive](/docs/adapters/onedrive), and [SharePoint](/docs/adapters/sharepoint) adapters list **one folder at a time** and don't recurse. `list` reads the folder that `prefix` points into (everything up to its last `/`, or the root folder when there's no prefix), so `listAll` walks every page of that folder but never descends into its subfolders. Walk each subfolder with its own `prefix`, discovering them with [`delimiter: "/"`](#listing-folders-with-delimiter).
 

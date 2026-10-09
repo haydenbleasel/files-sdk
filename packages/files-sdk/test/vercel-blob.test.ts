@@ -445,6 +445,7 @@ describe("vercel-blob adapter", () => {
     expect(info.size).toBe(5);
     expect(info.etag).toBe('"etag-a.txt"');
     expect(info.metadata).toBeUndefined();
+    expect(info).not.toHaveProperty("text");
   });
 
   test("head forwards signals to blob.head", async () => {
@@ -484,7 +485,7 @@ describe("vercel-blob adapter", () => {
     expect(toArg).toBe("b.txt");
   });
 
-  test("list maps blobs into StoredFile items", async () => {
+  test("list maps blobs into FileInfo items", async () => {
     const files = new Files({ adapter: vercelBlob() });
     const out = await files.list({ prefix: "a/" });
     expect(out.items.map((i) => i.key)).toEqual(["a/1.txt"]);
@@ -1114,67 +1115,6 @@ describe("vercel-blob adapter", () => {
     }
   });
 
-  test("head exposes a lazy body that fetches the blob URL", async () => {
-    const files = new Files({ adapter: vercelBlob() });
-    const info = await files.head("a.txt");
-    expect(await info.text()).toBe("hello");
-  });
-
-  test("list items expose lazy bodies that fetch the blob URL", async () => {
-    const files = new Files({ adapter: vercelBlob() });
-    const out = await files.list();
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one item");
-    }
-    expect(await item.text()).toBe("hello");
-  });
-
-  test("head's lazy body throws NotFound when the blob URL 404s", async () => {
-    // A blob deleted between head() and the body read must not resolve
-    // with the CDN's error page as its contents.
-    const files = new Files({ adapter: vercelBlob() });
-    const info = await files.head("a.txt");
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response("<html>gone</html>", {
-          status: 404,
-          statusText: "Not Found",
-        })
-      )) as unknown as typeof fetch;
-    const thrown = await info.text().catch((error: unknown) => error);
-    expect(thrown).toBeInstanceOf(FilesError);
-    expect((thrown as FilesError).code).toBe("NotFound");
-    expect((thrown as FilesError).message).toMatch(/404/u);
-  });
-
-  test("list items' lazy bodies throw Provider on a non-404 failure", async () => {
-    const files = new Files({ adapter: vercelBlob() });
-    const out = await files.list();
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one item");
-    }
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        new Response("denied", { status: 403, statusText: "Forbidden" })
-      )) as unknown as typeof fetch;
-    const thrown = await item.text().catch((error: unknown) => error);
-    expect(thrown).toBeInstanceOf(FilesError);
-    expect((thrown as FilesError).code).toBe("Provider");
-    expect((thrown as FilesError).message).toMatch(/403/u);
-  });
-
-  test("a public lazy body maps a transport failure to a FilesError", async () => {
-    const files = new Files({ adapter: vercelBlob() });
-    const info = await files.head("a.txt");
-    const raw = new TypeError("fetch failed");
-    globalThis.fetch = (() => Promise.reject(raw)) as unknown as typeof fetch;
-    const thrown = await info.text().catch((error: unknown) => error);
-    expect(thrown).toBeInstanceOf(FilesError);
-    expect(thrown).toMatchObject({ cause: raw, code: "Provider" });
-  });
-
   test("url throws Provider when the head response has no public URL", async () => {
     headMock.mockImplementationOnce((pathname: string) =>
       Promise.resolve({
@@ -1339,58 +1279,6 @@ describe("vercel-blob adapter", () => {
         }
       }
       expect(total).toBe(5);
-    });
-
-    test("head lazy body fetches via blob.get, not the public URL", async () => {
-      const fetchCalls: string[] = [];
-      globalThis.fetch = ((url: string | URL | Request) => {
-        fetchCalls.push(typeof url === "string" ? url : url.toString());
-        return Promise.resolve(new Response("from-public-url"));
-      }) as typeof fetch;
-      const files = new Files({ adapter: vercelBlob({ access: "private" }) });
-      const info = await files.head("a.txt");
-      expect(await info.text()).toBe("hello");
-      expect(getMock).toHaveBeenCalledTimes(1);
-      expect(fetchCalls).toEqual([]);
-    });
-
-    test("list items lazy bodies fetch via blob.get, not the public URL", async () => {
-      const fetchCalls: string[] = [];
-      globalThis.fetch = ((url: string | URL | Request) => {
-        fetchCalls.push(typeof url === "string" ? url : url.toString());
-        return Promise.resolve(new Response("from-public-url"));
-      }) as typeof fetch;
-      const files = new Files({ adapter: vercelBlob({ access: "private" }) });
-      const out = await files.list();
-      const [item] = out.items;
-      if (!item) {
-        throw new Error("expected at least one list item");
-      }
-      expect(await item.text()).toBe("hello");
-      expect(getMock).toHaveBeenCalledTimes(1);
-      expect(fetchCalls).toEqual([]);
-    });
-
-    test("head and list lazy bodies map a blob.get rejection", async () => {
-      // The body read runs after head()/list() returned, so a raw SDK error
-      // (a revoked token, say) must still surface as a mapped FilesError.
-      const files = new Files({ adapter: vercelBlob({ access: "private" }) });
-      const info = await files.head("a.txt");
-      const listed = await files.list();
-      const [item] = listed.items;
-      const raw = Object.assign(new Error("denied"), { status: 403 });
-      getMock
-        .mockImplementationOnce(() => Promise.reject(raw))
-        .mockImplementationOnce(() => Promise.reject(raw));
-      // Both reads settle before any assertion, so neither queued rejection
-      // can leak into a later test.
-      const headError = await info.text().catch((error: unknown) => error);
-      const listError = await item
-        ?.arrayBuffer()
-        .catch((error: unknown) => error);
-      expect(headError).toBeInstanceOf(FilesError);
-      expect(headError).toMatchObject({ cause: raw, code: "Unauthorized" });
-      expect(listError).toMatchObject({ code: "Unauthorized" });
     });
 
     test("url mints a presigned GET scoped to the key with a 1h default expiry", async () => {

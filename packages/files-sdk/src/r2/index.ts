@@ -11,6 +11,7 @@ import type {
   AdapterCapabilityDeclaration,
   Body,
   DownloadOptions,
+  FileInfo,
   SignUploadOptions,
   SignedUpload,
   StoredFile,
@@ -225,21 +226,26 @@ const normalizeForR2 = async (
   };
 };
 
+/** An R2 object's metadata — what `head()` and each `list()` item return. */
+const r2ObjectInfo = (obj: R2Object): FileInfo => ({
+  contentType: obj.httpMetadata?.contentType ?? DEFAULT_CONTENT_TYPE,
+  etag: obj.etag,
+  key: obj.key,
+  lastModified: obj.uploaded.getTime(),
+  metadata: obj.customMetadata,
+  size: obj.size,
+});
+
 const r2ObjectToStoredFile = (
   obj: R2Object | R2ObjectBody,
-  downloadOpts?: DownloadOptions,
-  fallbackBody?: () => Promise<Uint8Array>
+  downloadOpts?: DownloadOptions
 ): StoredFile => {
   const range = downloadOpts?.range;
   const meta = {
-    etag: obj.etag,
-    key: obj.key,
-    lastModified: obj.uploaded.getTime(),
-    metadata: obj.customMetadata,
+    ...r2ObjectInfo(obj),
     // `obj.size` is the full object size even on a ranged get; the body holds
     // only the slice, so report the slice length to match.
     size: range ? rangedSize(obj.size, range) : obj.size,
-    type: obj.httpMetadata?.contentType ?? DEFAULT_CONTENT_TYPE,
   };
   if ("body" in obj && obj.body) {
     if (downloadOpts?.as === "stream") {
@@ -257,10 +263,9 @@ const r2ObjectToStoredFile = (
       kind: "lazy",
     });
   }
-  return createStoredFile(meta, {
-    factory: fallbackBody ?? (() => Promise.resolve(new Uint8Array())),
-    kind: "lazy",
-  });
+  // An `R2ObjectBody` always carries a body; defend against a get() result
+  // without one by reading it as empty rather than throwing or hanging.
+  return createStoredFile(meta, { data: new Uint8Array(), kind: "buffer" });
 };
 
 // R2 binding errors throw with `name` (string) and `code` (number) fields.
@@ -489,13 +494,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       if (!obj) {
         throw new FilesError("NotFound", `Object not found: ${key}`);
       }
-      return r2ObjectToStoredFile(obj, undefined, async () => {
-        const got = await bucket.get(obj.key);
-        if (!got) {
-          return new Uint8Array();
-        }
-        return new Uint8Array(await got.arrayBuffer());
-      });
+      return r2ObjectInfo(obj);
     },
     async list(options) {
       let result: Awaited<ReturnType<typeof bucket.list>>;
@@ -506,39 +505,17 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
           ...(options?.cursor && { cursor: options.cursor }),
           ...(options?.delimiter && { delimiter: options.delimiter }),
           // R2 omits httpMetadata/customMetadata from list() results unless
-          // explicitly requested, which would leave every item's `type` at
-          // the octet-stream default. Requesting them makes list() report
+          // explicitly requested, which would leave every item's
+          // `contentType` at the octet-stream default. Requesting them makes list() report
           // the stored content type and metadata, matching head().
           include: ["httpMetadata", "customMetadata"],
         });
       } catch (error) {
         throw mapR2Error(error);
       }
-      const items: StoredFile[] = result.objects.map((obj) =>
-        createStoredFile(
-          {
-            etag: obj.etag,
-            key: obj.key,
-            lastModified: obj.uploaded.getTime(),
-            metadata: obj.customMetadata,
-            size: obj.size,
-            type: obj.httpMetadata?.contentType ?? DEFAULT_CONTENT_TYPE,
-          },
-          {
-            factory: async () => {
-              const got = await bucket.get(obj.key);
-              if (!got) {
-                return new Uint8Array();
-              }
-              return new Uint8Array(await got.arrayBuffer());
-            },
-            kind: "lazy",
-          }
-        )
-      );
       return {
         cursor: result.truncated ? result.cursor : undefined,
-        items,
+        items: result.objects.map(r2ObjectInfo),
         ...(result.delimitedPrefixes?.length && {
           prefixes: result.delimitedPrefixes,
         }),

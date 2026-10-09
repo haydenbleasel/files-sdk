@@ -99,7 +99,7 @@ liveDescribe("s3 adapter (live)", () => {
 
     const info = await files.head(k);
     expect(info.size).toBe(11);
-    expect(info.type).toBe("application/json");
+    expect(info.contentType).toBe("application/json");
     expect(info.metadata).toEqual({ foo: "bar" });
     await expect(files.exists(k)).resolves.toBe(true);
     await expect(files.exists(key("missing.json"))).resolves.toBe(false);

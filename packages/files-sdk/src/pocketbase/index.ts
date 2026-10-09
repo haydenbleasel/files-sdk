@@ -5,11 +5,11 @@ import type {
   Adapter,
   Body,
   ByteRange,
+  FileInfo,
   ListOptions,
   ListResult,
   SignedUpload,
   SignUploadOptions,
-  StoredFile,
   UploadOptions,
   UploadResult,
   UrlOptions,
@@ -355,29 +355,22 @@ export const pocketbase = (
     return bytes;
   };
 
-  const recordToStored = (record: FileRecord, key: string): StoredFile => {
+  const recordToInfo = (record: FileRecord, key: string): FileInfo => {
     const filename = filenameOf(record);
     const lastModified = record.updated
       ? new Date(record.updated).getTime()
       : undefined;
-    return createStoredFile(
-      {
-        key,
-        ...(lastModified !== undefined &&
-          Number.isFinite(lastModified) && { lastModified }),
-        metadata: { filename, recordId: record.id },
-        // PocketBase doesn't expose file size/type in the record JSON;
-        // surface 0/octet-stream as the documented unknown values. They stay
-        // that way — callers that need the exact size read the body
-        // (`.arrayBuffer()` / `.blob()`), or `download()` the key for both.
-        size: 0,
-        type: OCTET_STREAM,
-      },
-      {
-        factory: () => downloadBytes(record),
-        kind: "lazy",
-      }
-    );
+    return {
+      // PocketBase doesn't expose file size/type in the record JSON; surface
+      // 0/octet-stream as the documented unknown values. Callers that need
+      // the exact size or type `download()` the key.
+      contentType: OCTET_STREAM,
+      key,
+      ...(lastModified !== undefined &&
+        Number.isFinite(lastModified) && { lastModified }),
+      metadata: { filename, recordId: record.id },
+      size: 0,
+    };
   };
 
   // Write `blob` as the file for `key`: replace the file on the key's existing
@@ -411,19 +404,19 @@ export const pocketbase = (
     return records().create(formData, sendOpts(signal));
   };
 
-  // One list page as StoredFiles. The server-side `~` filter is a superset
+  // One list page as FileInfos. The server-side `~` filter is a superset
   // (see `prefixFilter`), so the exact, case-sensitive prefix match happens
   // here — a page can hold fewer than `limit` items after the narrowing.
   const pageItems = (
     pageRecords: FileRecord[],
     prefix: string | undefined
-  ): StoredFile[] => {
-    const items: StoredFile[] = [];
+  ): FileInfo[] => {
+    const items: FileInfo[] = [];
     for (const record of pageRecords) {
       const recordKey = record[keyField];
       const key = isString(recordKey) ? recordKey : record.id;
       if (!prefix || key.startsWith(prefix)) {
-        items.push(recordToStored(record, key));
+        items.push(recordToInfo(record, key));
       }
     }
     return items;
@@ -482,13 +475,13 @@ export const pocketbase = (
           : undefined;
         return createStoredFile(
           {
+            contentType: type,
             key,
             metadata: {
               filename: filenameOf(record),
               recordId: record.id,
             },
             size: bytes.byteLength,
-            type,
             ...(updated !== undefined &&
               Number.isFinite(updated) && { lastModified: updated }),
           },
@@ -507,7 +500,7 @@ export const pocketbase = (
     async head(key, operationOpts) {
       try {
         const record = await findRecord(key, operationOpts?.signal);
-        return recordToStored(record, key);
+        return recordToInfo(record, key);
       } catch (error) {
         throw mapPocketBaseError(error);
       }

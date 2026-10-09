@@ -348,7 +348,7 @@ describe("bunnyStorage adapter", () => {
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
-  test("download, stream download, head, and exists expose StoredFile fields", async () => {
+  test("download, stream download, head, and exists expose file fields", async () => {
     const files = new Files({
       adapter: bunnyStorage({
         accessKey: "key",
@@ -368,7 +368,8 @@ describe("bunnyStorage adapter", () => {
 
     const headed = await files.head("a.txt");
     expect(headed.size).toBe(5);
-    expect(await headed.text()).toBe("hello");
+    expect(headed.contentType).toBe("text/plain");
+    expect(headed).not.toHaveProperty("text");
     await expect(files.exists("a.txt")).resolves.toBe(true);
     await expect(files.exists("missing.txt")).resolves.toBe(false);
   });
@@ -396,61 +397,6 @@ describe("bunnyStorage adapter", () => {
     });
     expect(second.items.map((item) => item.key)).toEqual(["docs/b.txt"]);
     expect(second.cursor).toBeUndefined();
-  });
-
-  test("list-item lazy bodies download the file itself, not its directory listing", async () => {
-    const files = new Files({
-      adapter: bunnyStorage({
-        accessKey: "key",
-        region: "de",
-        zone: "uploads",
-      }),
-    });
-    await files.upload("docs/a.txt", "alpha");
-    await files.upload("docs/b.txt", "bravo");
-    downloadMock.mockClear();
-
-    const { items } = await files.list({ prefix: "docs/" });
-    expect(downloadMock).not.toHaveBeenCalled();
-
-    // The trap the adapter must avoid: the SDK's own `entry.data()` on a
-    // listing entry fetches `Path` (the directory), i.e. the JSON listing.
-    const entries = (await listMock.mock.results[0]?.value) as {
-      data: () => Promise<{ stream: ReadableStream<Uint8Array> }>;
-    }[];
-    const [firstEntry] = entries;
-    if (!firstEntry) {
-      throw new Error("expected a listing entry");
-    }
-    const viaData = await firstEntry.data();
-    expect(
-      new TextDecoder().decode(await bytesFromStream(viaData.stream))
-    ).toContain(DIRECTORY_LISTING_MARKER);
-    downloadMock.mockClear();
-
-    expect(await items[0]?.text()).toBe("alpha");
-    expect(await items[1]?.text()).toBe("bravo");
-    expect(downloadMock.mock.calls.map((c) => c[1])).toEqual([
-      "/docs/a.txt",
-      "/docs/b.txt",
-    ]);
-  });
-
-  test("head's lazy body downloads by the entry's full key", async () => {
-    const files = new Files({
-      adapter: bunnyStorage({
-        accessKey: "key",
-        region: "de",
-        zone: "uploads",
-      }),
-    });
-    await files.upload("docs/a.txt", "alpha");
-    downloadMock.mockClear();
-
-    const info = await files.head("docs/a.txt");
-    expect(downloadMock).not.toHaveBeenCalled();
-    expect(await info.text()).toBe("alpha");
-    expect(downloadMock.mock.calls.at(-1)?.[1]).toBe("/docs/a.txt");
   });
 
   test("list only returns immediate files from Bunny directory listings", async () => {

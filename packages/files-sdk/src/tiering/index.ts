@@ -3,6 +3,7 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  FileInfo,
   FilesOperation,
   FilesPlugin,
   ListOptions,
@@ -57,7 +58,7 @@ export interface TieringOptions {
   /**
    * The cold tier — a second {@link Adapter} the plugin drives directly (wrapped
    * in its own internal {@link Files}, so cold-tier calls get the same retry,
-   * capability gating, and `StoredFile` normalization the hot tier does). The
+   * capability gating, and result normalization the hot tier does). The
    * hot tier is the instance's own adapter, reached through the rest of the
    * onion. Configure the cold adapter with its **own** bucket / container; it
    * receives caller-facing keys (the instance `prefix` is **not** applied to
@@ -125,7 +126,7 @@ export type TieringApi = {
 interface TierRunner {
   exists: (key: string, opts?: OperationOptions) => Promise<boolean>;
   download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
-  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<FileInfo>;
   url: (key: string, opts?: UrlOptions) => Promise<string>;
   upload: (
     key: string,
@@ -197,7 +198,7 @@ const isNotFound = (cause: unknown): boolean =>
   cause instanceof FilesError && cause.code === "NotFound";
 
 /** Stable key ordering for the merged listing, matching provider sort order. */
-const byKey = (a: StoredFile, b: StoredFile): number => {
+const byKey = (a: FileInfo, b: FileInfo): number => {
   if (a.key < b.key) {
     return -1;
   }
@@ -225,7 +226,7 @@ const transferAcross = async (
     // bulk of a cross-tier copy, and without them a hung destination tier
     // would ignore the caller's abort or deadline.
     ...opts,
-    contentType: file.type,
+    contentType: file.contentType,
     ...(file.metadata &&
       Object.keys(file.metadata).length > 0 && { metadata: file.metadata }),
   };
@@ -265,7 +266,7 @@ const decodeCursor = (raw: string): ListCursor | undefined => {
 
 /** One tier's fetched (and skip-filtered) page, plus how it was queried. */
 interface TierPage {
-  items: StoredFile[];
+  items: FileInfo[];
   prefixes: string[];
   /** Provider continuation for the page, when the tier has more. */
   next?: string;
@@ -431,9 +432,9 @@ const tierOutcome = (
 };
 
 /** Interleave both tiers' emitted items, deduped (hot wins), sorted by key. */
-const mergeItems = (pages: (TierPage | undefined)[]): StoredFile[] => {
+const mergeItems = (pages: (TierPage | undefined)[]): FileInfo[] => {
   const seen = new Set<string>();
-  const items: StoredFile[] = [];
+  const items: FileInfo[] = [];
   for (const page of pages) {
     for (const file of page?.items ?? []) {
       if (!seen.has(file.key)) {

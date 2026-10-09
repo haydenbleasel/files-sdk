@@ -1,11 +1,11 @@
 import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
   AdapterCapabilities,
+  FileInfo,
   FilesOperation,
   FilesPlugin,
   ListOptions,
   ListResult,
-  OperationOptions,
   OperationResult,
   PluginNext,
   StoredFile,
@@ -90,38 +90,6 @@ const stripInternalMeta = (
 };
 
 /**
- * A body stream that opens `load()` on first read, so a `head` / `list` result
- * can expose the content without fetching it until a body accessor is called —
- * and then streams it rather than buffering.
- */
-const deferredStream = (
-  load: () => Promise<StoredFile>
-): ReadableStream<Uint8Array> => {
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  return new ReadableStream<Uint8Array>(
-    {
-      async cancel(reason) {
-        await reader?.cancel(reason);
-      },
-      async pull(controller) {
-        if (!reader) {
-          const file = await load();
-          reader = file.stream().getReader();
-        }
-        const { done, value } = await reader.read();
-        if (done) {
-          controller.close();
-          return;
-        }
-        controller.enqueue(value);
-      },
-      // No read-ahead: the blob is fetched on the first read, not on `stream()`.
-    },
-    { highWaterMark: 0 }
-  );
-};
-
-/**
  * Split a key into its path segments the way a filesystem would resolve it —
  * empty and `.` segments dropped, `..` popping its parent — lowercased, so a
  * spelling like `/.dedup//x`, `a/../.dedup/x`, or `.DEDUP/x` (the same file on
@@ -177,13 +145,13 @@ const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
  * Reads are transparent: `download` follows the pointer to the blob (ranges
  * included — blobs are stored verbatim), and `head` / `list` report the logical
  * size with the internal fields stripped, all for `upload([...])` /
- * `download([...])` bulk calls too. Their body accessors (`text()`,
- * `stream()`, …) lazily read the blob, so they return the content, never the
- * empty pointer. The reported `etag` is the content hash (the pointer's own
- * ETag is the same for every key), so it changes exactly when the content
- * does — `sync()`'s default etag comparison and `versioning()` ids stay
- * correct. Objects without this plugin's marker (pre-existing or written
- * elsewhere) pass straight through, so it's safe to enable on a mixed bucket.
+ * `download([...])` bulk calls too. `head` / `list` return metadata only,
+ * read from the pointer without fetching the blob. The reported `etag` is the
+ * content hash (the pointer's own ETag is the same for every key), so it
+ * changes exactly when the content does — `sync()`'s default etag comparison
+ * and `versioning()` ids stay correct. Objects without this plugin's marker
+ * (pre-existing or written elsewhere) pass straight through, so it's safe to
+ * enable on a mixed bucket.
  *
  * Provider-agnostic: it uses only the Web Crypto API (no native deps) and the
  * `metadata` the SDK already round-trips, so it works on any adapter that
@@ -201,7 +169,7 @@ const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
  *   does a `head` first). `head` / `list` add nothing; they read the pointer.
  *   On adapters whose `list()` returns no metadata (S3 and the
  *   S3-compatibles), `list()` items can't be recognized as pointers, so they
- *   report the pointer's own size (`0`) and ETag; their bodies still follow
+ *   report the pointer's own size (`0`) and ETag; a `download()` still follows
  *   the pointer to the content.
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET would hand out the
  *   empty pointer, and a presigned PUT would bypass content-addressing. Download
@@ -261,11 +229,12 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   const rewrap = (
     key: string,
     ref: string,
-    pointer: StoredFile,
+    pointer: FileInfo,
     blob: StoredFile
   ): StoredFile =>
     createStoredFile(
       {
+        contentType: pointer.contentType,
         // The content hash, not the pointer's own (always-empty-body) ETag.
         etag: ref,
         key,
@@ -274,7 +243,6 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         // The blob's size is the content length (the range length for a ranged
         // read); the pointer's own size is always 0.
         size: blob.size,
-        type: pointer.type,
       },
       { factory: () => blob.stream(), kind: "stream" }
     );
@@ -318,70 +286,27 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
 
   /**
    * Re-report a pointer's logical (content) size and content-hash `etag`, and
-   * hide the internal metadata fields, without fetching the blob. Used by
-   * `head` and `list`: the body accessors lazily read the blob (only when
-   * called), so they return the content rather than the empty pointer.
-   * Objects this plugin didn't write (no marker) pass through.
+   * hide the internal metadata fields, without fetching the blob — what `head`
+   * and `list` return. Objects this plugin didn't write (no marker) pass
+   * through, as does a `list()` item with no metadata at all (S3 and the
+   * S3-compatibles don't return it from a listing), which can't be told apart
+   * from a plain object.
    */
-  const logical = (
-    file: StoredFile,
-    next: PluginNext,
-    readOptions?: OperationOptions
-  ): StoredFile => {
+  const logical = (file: FileInfo): FileInfo => {
     const ref = file.metadata?.[META.ref];
     if (ref === undefined) {
       return file;
     }
     const size = Number.parseInt(file.metadata?.[META.size] ?? "", RADIX);
-    return createStoredFile(
-      {
-        etag: ref,
-        key: file.key,
-        lastModified: file.lastModified,
-        metadata: stripInternalMeta(file.metadata ?? {}),
-        size: Number.isNaN(size) ? file.size : size,
-        type: file.type,
-      },
-      {
-        factory: () =>
-          deferredStream(() =>
-            next({
-              key: blobKeyOf(ref),
-              kind: "download",
-              ...(readOptions && { options: readOptions }),
-            })
-          ),
-        kind: "stream",
-      }
-    );
+    return {
+      contentType: file.contentType,
+      etag: ref,
+      key: file.key,
+      lastModified: file.lastModified,
+      metadata: stripInternalMeta(file.metadata ?? {}),
+      size: Number.isNaN(size) ? file.size : size,
+    };
   };
-
-  /**
-   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
-   * return it from a listing — can't be told apart from a plain object, so its
-   * size and etag are left as stored, but its body still follows the pointer
-   * (a download back through this plugin), so `text()` / `stream()` return the
-   * content rather than the empty pointer.
-   */
-  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
-    file.metadata === undefined
-      ? createStoredFile(
-          {
-            etag: file.etag,
-            key: file.key,
-            lastModified: file.lastModified,
-            size: file.size,
-            type: file.type,
-          },
-          {
-            factory: () =>
-              deferredStream(() =>
-                download({ key: file.key, kind: "download" }, next)
-              ),
-            kind: "stream",
-          }
-        )
-      : logical(file, next);
 
   /**
    * Hide blob objects from listings so the store doesn't pollute `list()` —
@@ -391,8 +316,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
    */
   const hideBlobs = (
     result: ListResult,
-    listOptions: ListOptions | undefined,
-    next: PluginNext
+    listOptions: ListOptions | undefined
   ): ListResult => {
     const requested = listOptions?.prefix;
     if (
@@ -403,7 +327,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     }
     const marker = `${store}/`;
     const items = result.items.flatMap((file) =>
-      file.key.startsWith(marker) ? [] : [listed(file, next)]
+      file.key.startsWith(marker) ? [] : [logical(file)]
     );
     const prefixes = result.prefixes?.filter(
       (entry) => !entry.startsWith(marker)
@@ -524,10 +448,10 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
         return download(op, next);
       }
       case "head": {
-        return logical(await next(op), next, op.options);
+        return logical(await next(op));
       }
       case "list": {
-        return hideBlobs(await next(op), op.options, next);
+        return hideBlobs(await next(op), op.options);
       }
       case "url": {
         throw new FilesError(

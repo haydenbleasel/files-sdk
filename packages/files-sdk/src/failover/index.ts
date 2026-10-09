@@ -3,6 +3,7 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  FileInfo,
   FilesOperation,
   FilesPlugin,
   ListOptions,
@@ -64,8 +65,8 @@ export interface FailoverOptions {
    * The backup adapter(s) to fall back to, tried in order after the primary. A
    * single {@link Adapter} or an array — pass several for a multi-region failover
    * chain. Each is driven through its own internal {@link Files} (so it gets the
-   * same retry, capability gating, and `StoredFile` normalization the primary
-   * does) and receives **caller-facing keys** — the instance `prefix` is **not**
+   * same retry, capability gating, and result normalization the primary does)
+   * and receives **caller-facing keys** — the instance `prefix` is **not**
    * applied to it, so give each secondary its own bucket / container (or avoid a
    * client `prefix` on a failover instance).
    */
@@ -95,7 +96,7 @@ export interface FailoverOptions {
 interface BackendRunner {
   exists: (key: string, opts?: OperationOptions) => Promise<boolean>;
   download: (key: string, opts?: DownloadOptions) => Promise<StoredFile>;
-  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<FileInfo>;
   url: (key: string, opts?: UrlOptions) => Promise<string>;
   upload: (
     key: string,

@@ -42,7 +42,7 @@ const PDF = ascii("%PDF-1.7\n...");
 
 const typeOf = async (files: Files, key: string): Promise<string> => {
   const file = await files.head(key);
-  return file.type;
+  return file.contentType;
 };
 
 const streamOf = (...chunks: Uint8Array[]): ReadableStream<Uint8Array> =>

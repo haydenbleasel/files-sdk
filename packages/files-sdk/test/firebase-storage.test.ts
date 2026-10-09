@@ -574,8 +574,9 @@ describe("firebase-storage adapter", () => {
     });
     const info = await files.head("a.txt");
     expect(info.size).toBe(5);
-    expect(info.type).toBe("text/plain");
+    expect(info.contentType).toBe("text/plain");
     expect(info.etag).toBe("etag-a.txt");
+    expect(info).not.toHaveProperty("text");
     expect(downloadMock).not.toHaveBeenCalled();
   });
 
@@ -619,7 +620,7 @@ describe("firebase-storage adapter", () => {
     expect(fileNames).toContain("b.txt");
   });
 
-  test("list maps files into StoredFile items and forwards prefix/limit/cursor", async () => {
+  test("list maps files into FileInfo items and forwards prefix/limit/cursor", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),
     });
@@ -912,43 +913,6 @@ describe("firebase-storage adapter", () => {
       const adapter = firebaseStorage({ projectId: "p" });
       await expect(adapter.exists("a.txt")).rejects.toMatchObject({
         code: "Unauthorized",
-      });
-    });
-  });
-
-  describe("lazy body factories", () => {
-    test("head body is lazy — text() triggers a follow-up download()", async () => {
-      const adapter = firebaseStorage({ projectId: "p" });
-      const info = await adapter.head("a.txt");
-      downloadMock.mockClear();
-      expect(await info.text()).toBe("hello");
-      expect(downloadMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("list items expose lazy bodies that fetch via file.download()", async () => {
-      const adapter = firebaseStorage({ projectId: "p" });
-      const out = await adapter.list();
-      const [item] = out.items;
-      if (!item) {
-        throw new Error("expected at least one list item");
-      }
-      downloadMock.mockClear();
-      expect(await item.text()).toBe("hello");
-      expect(downloadMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("a failed lazy read is mapped (object deleted in between)", async () => {
-      const adapter = firebaseStorage({ projectId: "p" });
-      const info = await adapter.head("a.txt");
-      const listed = await adapter.list();
-      const [item] = listed.items;
-      const raw = Object.assign(new Error("No such object"), { code: 404 });
-      downloadMock.mockImplementation(() => Promise.reject(raw));
-      const headError = await info.text().catch((error: unknown) => error);
-      expect(headError).toBeInstanceOf(FilesError);
-      expect(headError).toMatchObject({ cause: raw, code: "NotFound" });
-      await expect(item?.arrayBuffer()).rejects.toMatchObject({
-        code: "NotFound",
       });
     });
   });

@@ -17,9 +17,9 @@ import type {
   ClientFileInfo,
   PresignedUpload,
   WireBulkError,
-  WireStoredFile,
+  WireFileInfo,
 } from "./protocol.js";
-import { bulkErrorToWire, storedFileToWire } from "./serialize.js";
+import { bulkErrorToWire, fileInfoToWire } from "./serialize.js";
 
 export interface UploadConfig {
   files: Files;
@@ -267,7 +267,7 @@ const completeOne = async (
   completion: { id: string; key: string },
   scope: Scope,
   unscope: (key: string) => string
-): Promise<WireStoredFile | WireBulkError> => {
+): Promise<WireFileInfo | WireBulkError> => {
   const verified = await redeem(completion.id, cfg);
   if (!verified.ok) {
     return unauthorizedEntry(verified.message, completion.key);
@@ -293,7 +293,7 @@ const completeOne = async (
         key: unscope(key),
       };
     }
-    return storedFileToWire(meta, unscope);
+    return fileInfoToWire(meta, unscope);
   } catch (error) {
     return bulkErrorToWire(FilesError.wrap(error), key, unscope);
   }
@@ -305,7 +305,7 @@ export const handleComplete = async (
   scope: Scope,
   unscope: (key: string) => string
 ): Promise<ResultModel> => {
-  const completed: WireStoredFile[] = [];
+  const completed: WireFileInfo[] = [];
   const errors: WireBulkError[] = [];
 
   for (const completion of completions) {
@@ -395,14 +395,7 @@ export const handleExplicitUpload = async (
   }
   return {
     body: {
-      file: {
-        etag: result.etag,
-        key: unscopedKey,
-        lastModified: result.lastModified,
-        name: unscopedKey,
-        size: result.size,
-        type: result.contentType,
-      },
+      file: fileInfoToWire({ ...result, key: unscopedKey }, (key) => key),
       ok: true,
     },
     kind: "json",

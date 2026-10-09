@@ -55,7 +55,7 @@ export type {
   Receipt,
   ReceiptOp,
 } from "./internal/receipts.js";
-export type { BodySource, StoredFileMeta } from "./internal/stored-file.js";
+export type { BodySource } from "./internal/stored-file.js";
 export { createStoredFile } from "./internal/stored-file.js";
 export {
   sync,
@@ -259,29 +259,47 @@ export interface UploadOptions extends OperationOptions {
   control?: UploadControl;
 }
 
-export interface UploadResult {
+/**
+ * An object's metadata, without its body — what `head()`, `list()`,
+ * `listAll()`, and `search()` return, and what `upload()` resolves to. Reading
+ * the bytes is always an explicit `download()`.
+ */
+export interface FileInfo {
   key: string;
+  /** Size in bytes. */
   size: number;
+  /** The stored `Content-Type` (`application/octet-stream` when unknown). */
   contentType: string;
   etag?: string;
+  /** Last-modified time, in milliseconds since the epoch. */
   lastModified?: number;
+  /**
+   * User metadata, where the adapter stores it and the call returns it
+   * (`head()` always does; `list()` only on adapters whose listing carries it).
+   */
+  metadata?: Record<string, string>;
 }
+
+/** What `upload()` resolves to: the stored object's {@link FileInfo}. */
+export type UploadResult = FileInfo;
 
 /** A conditional upload always returns the new strong ETag. */
 export type ConditionalUploadResult = UploadResult & { etag: string };
 
-export interface StoredFile {
+/**
+ * A downloaded object: its {@link FileInfo} plus the body, behind `File`-like
+ * accessors. `name` and `type` mirror `key` and `contentType`, so it can stand
+ * in where a `File` is expected.
+ */
+export interface StoredFile extends FileInfo {
+  /** Same as `key` (the `File`-like name). */
   name: string;
-  size: number;
+  /** Same as `contentType` (the `File`-like MIME type). */
   type: string;
-  lastModified?: number;
   arrayBuffer: () => Promise<ArrayBuffer>;
   text: () => Promise<string>;
   stream: () => ReadableStream<Uint8Array>;
   blob: () => Promise<Blob>;
-  key: string;
-  etag?: string;
-  metadata?: Record<string, string>;
 }
 
 /**
@@ -408,7 +426,7 @@ export interface ListOptions extends OperationOptions {
 }
 
 export interface ListResult {
-  items: StoredFile[];
+  items: FileInfo[];
   /**
    * Common prefixes ("folders") when {@link ListOptions.delimiter} is set —
    * full keys including the trailing delimiter, e.g. `["photos/2023/",
@@ -574,7 +592,7 @@ export interface DownloadManyResult {
 
 export interface HeadManyResult {
   /** Metadata results, in the order their keys were supplied. */
-  files: StoredFile[];
+  files: FileInfo[];
   /** Per-key failures. Omitted entirely when every key succeeded. */
   errors?: BulkError[];
 }
@@ -941,14 +959,10 @@ export interface Adapter<Raw = unknown> {
    */
   download: (key: string, opts?: AdapterDownloadOptions) => Promise<StoredFile>;
   /**
-   * Fetch metadata only — does not transfer the body.
-   *
-   * **Note:** the returned `StoredFile` still exposes `text()` /
-   * `arrayBuffer()` / `blob()` / `stream()`, but those accessors lazily
-   * issue a full GET on first use. If you only want metadata, don't call
-   * the body accessors. They are not free.
+   * Fetch metadata only — a {@link FileInfo}, with no body. Must not transfer
+   * the object's bytes.
    */
-  head: (key: string, opts?: OperationOptions) => Promise<StoredFile>;
+  head: (key: string, opts?: OperationOptions) => Promise<FileInfo>;
   /**
    * Check whether `key` exists without fetching its body.
    *
@@ -1183,7 +1197,7 @@ export interface FileHandle {
     (body: Body, opts?: UploadOptions): Promise<UploadResult>;
   };
   download: (opts?: DownloadOptions) => Promise<StoredFile>;
-  head: (opts?: OperationOptions) => Promise<StoredFile>;
+  head: (opts?: OperationOptions) => Promise<FileInfo>;
   exists: (opts?: OperationOptions) => Promise<boolean>;
   delete: (opts?: DeleteOptions) => Promise<void>;
   url: (opts?: UrlOptions) => Promise<string>;
@@ -1313,17 +1327,19 @@ export type OperationResult<O extends FilesOperation> = O extends {
   ? O extends { mode: "create" | "replace" }
     ? ConditionalUploadResult
     : UploadResult
-  : O extends { kind: "download" | "head" }
+  : O extends { kind: "download" }
     ? StoredFile
-    : O extends { kind: "exists" }
-      ? boolean
-      : O extends { kind: "list" }
-        ? ListResult
-        : O extends { kind: "url" }
-          ? string
-          : O extends { kind: "signedUploadUrl" }
-            ? SignedUpload
-            : undefined;
+    : O extends { kind: "head" }
+      ? FileInfo
+      : O extends { kind: "exists" }
+        ? boolean
+        : O extends { kind: "list" }
+          ? ListResult
+          : O extends { kind: "url" }
+            ? string
+            : O extends { kind: "signedUploadUrl" }
+              ? SignedUpload
+              : undefined;
 
 /**
  * Continue inward through the plugin onion. Call it from a `wrap` to run the
@@ -2255,7 +2271,7 @@ export class Files<A extends Adapter = Adapter> {
         return this.#run(
           op.options,
           async (attemptOpts) =>
-            this.#storedFile(await this.#adapter.head(path, attemptOpts)),
+            this.#fileInfo(await this.#adapter.head(path, attemptOpts)),
           true,
           ctx
         );
@@ -2420,7 +2436,7 @@ export class Files<A extends Adapter = Adapter> {
         const result = await this.#adapter.list({ ...attemptOpts, prefix });
         return {
           ...result,
-          items: result.items.map((item) => this.#storedFile(item)),
+          items: result.items.map((item) => this.#fileInfo(item)),
           ...(result.prefixes && {
             prefixes: result.prefixes.map((p) => this.#stripPrefix(p)),
           }),
@@ -3335,21 +3351,17 @@ export class Files<A extends Adapter = Adapter> {
 
   /**
    * Fetch metadata only — does not transfer the body. Pass one key for a
-   * single {@link StoredFile} (throws on failure), or an array for a
+   * single {@link FileInfo} (throws on failure), or an array for a
    * {@link HeadManyResult} (`files` + per-key `errors`, never throws on
-   * partial failure; honors `concurrency` / `stopOnError`).
-   *
-   * **Note:** the returned `StoredFile` still exposes `text()` /
-   * `arrayBuffer()` / `blob()` / `stream()`, but those accessors lazily
-   * issue a full GET on first use. If you only want metadata, don't call
-   * the body accessors. They are not free.
+   * partial failure; honors `concurrency` / `stopOnError`). To read the bytes,
+   * call {@link Files.download}.
    */
-  head(key: string, opts?: OperationOptions): Promise<StoredFile>;
+  head(key: string, opts?: OperationOptions): Promise<FileInfo>;
   head(keys: string[], opts?: BulkOptions): Promise<HeadManyResult>;
   head(
     keyOrKeys: string | string[],
     opts?: OperationOptions | BulkOptions
-  ): Promise<StoredFile | HeadManyResult> {
+  ): Promise<FileInfo | HeadManyResult> {
     if (Array.isArray(keyOrKeys)) {
       const keys = keyOrKeys;
       // SAFETY: the overloads pair a key array with `BulkOptions`; the
@@ -3385,7 +3397,7 @@ export class Files<A extends Adapter = Adapter> {
             if (op.kind !== "head") {
               return this.#perform(op);
             }
-            return this.#storedFile(
+            return this.#fileInfo(
               await this.#run(
                 op.options,
                 (o) => this.#adapter.head(this.#path(op.key), o),
@@ -3758,7 +3770,7 @@ export class Files<A extends Adapter = Adapter> {
    *
    * @yields {StoredFile} each stored object, one page at a time, following the cursor.
    */
-  async *listAll(opts?: ListOptions): AsyncGenerator<StoredFile, void> {
+  async *listAll(opts?: ListOptions): AsyncGenerator<FileInfo, void> {
     // `delimiter` would collapse nested keys into folders, so `listAll` would
     // silently walk only the top level. It yields objects, so strip it and
     // always walk the full tree; use `list()` directly for the folder view.
@@ -3800,12 +3812,12 @@ export class Files<A extends Adapter = Adapter> {
    * as {@link listAll}, so retries/timeouts and the `onAction` `list` hook apply
    * per page.
    *
-   * @yields {StoredFile} each matching object, following the cursor across pages.
+   * @yields {FileInfo} each matching object, following the cursor across pages.
    */
   async *search(
     pattern: string | RegExp,
     opts?: SearchOptions
-  ): AsyncGenerator<StoredFile, void> {
+  ): AsyncGenerator<FileInfo, void> {
     const {
       prefix,
       limit,
@@ -4077,6 +4089,10 @@ export class Files<A extends Adapter = Adapter> {
       key: this.#stripPrefix(file.key),
       name: this.#stripPrefix(file.name),
     };
+  }
+
+  #fileInfo(info: FileInfo): FileInfo {
+    return this.#prefix ? { ...info, key: this.#stripPrefix(info.key) } : info;
   }
 
   #uploadResult(result: UploadResult): UploadResult {

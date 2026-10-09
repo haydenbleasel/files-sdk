@@ -308,7 +308,7 @@ describe("s3 adapter", () => {
     });
     const info = await files.head("a.json");
     expect(info.size).toBe(7);
-    expect(info.type).toBe("application/json");
+    expect(info.contentType).toBe("application/json");
     expect(info.etag).toBe("h");
     expect(info.metadata).toEqual({ foo: "bar" });
     expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(1);
@@ -1036,7 +1036,7 @@ describe("s3 adapter", () => {
       adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
     });
     const out = await files.list({ prefix: "a/" });
-    expect(out.items.map((i) => i.type)).toEqual([
+    expect(out.items.map((i) => i.contentType)).toEqual([
       "text/csv; charset=utf-8",
       "image/png",
       // No extension to go on, so the generic fallback still applies
@@ -1268,68 +1268,42 @@ describe("s3 adapter", () => {
     expect(total).toBe(8);
   });
 
-  test("head's lazy body factory fetches via GetObjectCommand", async () => {
-    s3Mock
-      .on(HeadObjectCommand)
-      .resolves({ ContentLength: 5, ContentType: "text/plain", ETag: '"e"' });
-    s3Mock.on(GetObjectCommand).resolves({
-      Body: streamBody("hello") as unknown as undefined,
+  test("head() and list() items are plain FileInfo with no body", async () => {
+    const lastModified = new Date(1_700_000_000_000);
+    s3Mock.on(HeadObjectCommand).resolves({
       ContentLength: 5,
+      ContentType: "text/plain",
+      ETag: '"e"',
+      LastModified: lastModified,
+      Metadata: { foo: "bar" },
     });
-    const adapter = s3({ bucket: "b", region: "us-east-1" });
-    const info = await adapter.head("k");
-    expect(await info.text()).toBe("hello");
-    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
-  });
-
-  test("a lazy head()/list() body maps GetObject failures to FilesError", async () => {
-    s3Mock
-      .on(HeadObjectCommand)
-      .resolves({ ContentLength: 5, ContentType: "text/plain", ETag: '"e"' });
-    s3Mock.on(ListObjectsV2Command).resolves({
-      Contents: [{ ETag: '"1"', Key: "k", Size: 5 }],
-      IsTruncated: false,
-    });
-    // The object is deleted between head()/list() and the body read.
-    s3Mock.on(GetObjectCommand).rejects(
-      Object.assign(new Error("The specified key does not exist."), {
-        $metadata: { httpStatusCode: 404 },
-        name: "NoSuchKey",
-      })
-    );
-    const adapter = s3({ bucket: "b", region: "us-east-1" });
-    const info = await adapter.head("k");
-    await expect(info.text()).rejects.toMatchObject({
-      code: "NotFound",
-      name: "FilesError",
-    });
-    const {
-      items: [item],
-    } = await adapter.list();
-    await expect(item?.arrayBuffer()).rejects.toMatchObject({
-      code: "NotFound",
-      name: "FilesError",
-    });
-  });
-
-  test("list items lazily fetch their body via GetObjectCommand", async () => {
     s3Mock.on(ListObjectsV2Command).resolves({
       Contents: [
-        { ETag: '"1"', Key: "a.txt", LastModified: new Date(), Size: 5 },
+        { ETag: '"1"', Key: "a.txt", LastModified: lastModified, Size: 5 },
       ],
       IsTruncated: false,
     });
-    s3Mock.on(GetObjectCommand).resolves({
-      Body: streamBody("hello") as unknown as undefined,
-      ContentLength: 5,
-    });
     const adapter = s3({ bucket: "b", region: "us-east-1" });
+    expect(await adapter.head("k")).toEqual({
+      contentType: "text/plain",
+      etag: "e",
+      key: "k",
+      lastModified: lastModified.getTime(),
+      metadata: { foo: "bar" },
+      size: 5,
+    });
     const out = await adapter.list();
-    const [item] = out.items;
-    if (!item) {
-      throw new Error("expected at least one item");
-    }
-    expect(await item.text()).toBe("hello");
+    expect(out.items).toEqual([
+      {
+        contentType: "text/plain; charset=utf-8",
+        etag: "1",
+        key: "a.txt",
+        lastModified: lastModified.getTime(),
+        size: 5,
+      },
+    ]);
+    // Metadata calls never touch the body.
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
   });
 
   test("url forwards responseContentDisposition for forced-attachment downloads", async () => {

@@ -27,9 +27,9 @@ await (await files.download("notes.txt")).text(); // the original 10k string
 2. If the compressed form is **smaller**, it's stored, and the algorithm plus the original byte length are recorded in the object's `metadata`. If it **wouldn't shrink** - already-compressed inputs like JPEG, ZIP, or encrypted blobs - the original bytes are stored verbatim and marked `identity`, so the plugin never inflates your storage.
 3. On `download`, the recorded algorithm decompresses the body back to the original bytes and hands you a normal [`StoredFile`](/docs/api/stored-file) - with its `size` reporting the **original** length and the internal metadata fields hidden.
 
-`head` and `list` report the same original size without decompressing anything. Their body accessors (`text()`, `arrayBuffer()`, `stream()`, …) are lazy: reading one downloads the object back through the plugin, so it returns the original bytes, never the stored compressed ones.
+`head` and `list` report the same original size without decompressing anything. They return metadata only; `download` is what reads the body back through the plugin, so the bytes you get are the original bytes, never the stored compressed ones.
 
-One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as compressed, so it reports the **stored** (compressed) size. Its body accessors still decompress, and `head()` and `download()` report the original size as usual.
+One exception: on adapters whose listing carries no metadata (S3 and the S3-compatible adapters, R2 over HTTP included), a `list()` item can't be recognized as compressed, so it reports the **stored** (compressed) size. `download()` still decompresss it, and `head()` and `download()` report the original size as usual.
 
 Because the algorithm is stored per object, reads always decompress with the right one. Changing the `format` option later never breaks objects written under the old format.
 
@@ -75,4 +75,4 @@ The plugin **buffers the entire body in memory** to compare the compressed and o
 
 ## What it stores in metadata
 
-Each object this plugin writes carries two `fscmp_`-prefixed metadata fields: `fscmp_alg` (the algorithm, or `identity` when stored verbatim) and `fscmp_size` (the original, uncompressed byte length). They're stripped from the `StoredFile` you get back on `download`, `head`, and `list`, so your own metadata is all you see.
+Each object this plugin writes carries two `fscmp_`-prefixed metadata fields: `fscmp_alg` (the algorithm, or `identity` when stored verbatim) and `fscmp_size` (the original, uncompressed byte length). They're stripped from what `download`, `head`, and `list` return, so your own metadata is all you see.

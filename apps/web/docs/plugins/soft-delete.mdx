@@ -40,7 +40,7 @@ Because a move relocates whatever is **already stored**, the plugin composes cle
 
 ## Restoring
 
-`restoreTrashed(key)` moves the trashed copy back over the live key and resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring also clears the copy from the trash:
+`restoreTrashed(key)` moves the trashed copy back over the live key and resolves to the restored object's [`FileInfo`](/docs/api/stored-file). Restoring also clears the copy from the trash:
 
 ```ts lineNumbers
 await files.delete("report.pdf");

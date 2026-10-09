@@ -118,7 +118,7 @@ describe("memory adapter", () => {
           },
         });
         const head = await adapter.head("report.csv");
-        expect(head.type).toBe("text/csv");
+        expect(head.contentType).toBe("text/csv");
         expect(head.metadata).toEqual({ owner: "alice" });
         expect(adapter.raw.get("report.csv")?.cacheControl).toBe("max-age=60");
       });
@@ -178,7 +178,7 @@ describe("memory adapter", () => {
       const adapter = memory();
       await adapter.upload("a.txt", new Blob(["hey"], { type: "text/x-test" }));
       const head = await adapter.head("a.txt");
-      expect(head.type).toBe("text/x-test");
+      expect(head.contentType).toBe("text/x-test");
       expect(head.size).toBe(3);
     });
 
@@ -186,7 +186,7 @@ describe("memory adapter", () => {
       const adapter = memory();
       await adapter.upload("a.bin", new Blob(["x"]));
       const head = await adapter.head("a.bin");
-      expect(head.type).toBe("application/octet-stream");
+      expect(head.contentType).toBe("application/octet-stream");
     });
 
     test("ReadableStream body is drained", async () => {
@@ -307,12 +307,6 @@ describe("memory adapter", () => {
         throw new Error("expected a ranged chunk");
       }
       tail[0] = 77;
-      const viaHead = await adapter.head("a.bin");
-      const { value: headChunk } = await viaHead.stream().getReader().read();
-      if (!headChunk) {
-        throw new Error("expected a head chunk");
-      }
-      headChunk[2] = 55;
 
       const again = await adapter.download("a.bin");
       expect(new Uint8Array(await again.arrayBuffer())).toEqual(
@@ -330,6 +324,14 @@ describe("memory adapter", () => {
       expect(head.key).toBe("a.txt");
       expect(head.size).toBe(5);
       expect(head.etag).toMatch(/^"[0-9a-f]{8}"$/u);
+      // Plain metadata — no body accessors behind a head() result.
+      expect(Object.keys(head).toSorted()).toEqual([
+        "contentType",
+        "etag",
+        "key",
+        "lastModified",
+        "size",
+      ]);
     });
 
     test("missing key throws NotFound", async () => {
@@ -373,7 +375,7 @@ describe("memory adapter", () => {
       await adapter.copy("a.txt", "b.txt");
       const copy = await adapter.head("b.txt");
       expect(await textOf(adapter, "b.txt")).toBe("hello");
-      expect(copy.type).toBe("text/plain");
+      expect(copy.contentType).toBe("text/plain");
       expect(copy.metadata).toEqual({ k: "v" });
       // Source still present.
       expect(await adapter.exists("a.txt")).toBe(true);

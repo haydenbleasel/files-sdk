@@ -7,6 +7,7 @@ import type {
   Adapter,
   Body,
   DownloadOptions,
+  FileInfo,
   ListOptions,
   ListResult,
   OperationOptions,
@@ -296,20 +297,6 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     }
   };
 
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    try {
-      // SAFETY: without `details`, `getFileContents` resolves to the bare
-      // payload, and `format: "binary"` makes that payload bytes (Buffer or
-      // ArrayBuffer) rather than a string.
-      const data = (await client.getFileContents(keyToRemote(key), {
-        format: "binary",
-      })) as ArrayBuffer | ArrayBufferView;
-      return toUint8(data);
-    } catch (error) {
-      throw mapWebdavError(error);
-    }
-  };
-
   const adapter: WebdavAdapter = {
     capabilities: {
       delimiter: "any",
@@ -378,6 +365,8 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           const contentLength = res.headers.get("content-length");
           return createStoredFile(
             {
+              contentType:
+                res.headers.get("content-type") ?? inferTypeFromName(key),
               key,
               ...(parseLastMod(res.headers.get(LAST_MODIFIED_HEADER)) !==
                 undefined && {
@@ -386,7 +375,6 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
                 ),
               }),
               size: contentLength ? Number(contentLength) : 0,
-              type: res.headers.get("content-type") ?? inferTypeFromName(key),
             },
             {
               factory: () => stream,
@@ -418,12 +406,12 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         );
         return createStoredFile(
           {
+            contentType:
+              headerValue(result.headers, "content-type") ??
+              inferTypeFromName(key),
             key,
             ...(lastModified !== undefined && { lastModified }),
             size: bytes.byteLength,
-            type:
-              headerValue(result.headers, "content-type") ??
-              inferTypeFromName(key),
           },
           { data: bytes, kind: "buffer" }
         );
@@ -443,7 +431,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         }
       }, mapWebdavError);
     },
-    async head(key, opts2?: OperationOptions): Promise<StoredFile> {
+    async head(key, opts2?: OperationOptions): Promise<FileInfo> {
       const remote = keyToRemote(key);
       try {
         // SAFETY: without `details: true`, `stat` resolves to the bare FileStat.
@@ -454,15 +442,12 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           throw new FilesError("NotFound", `webdav: ${key} is a directory`);
         }
         const lastModified = parseLastMod(stat.lastmod);
-        return createStoredFile(
-          {
-            key,
-            ...(lastModified !== undefined && { lastModified }),
-            size: stat.size,
-            type: stat.mime ?? inferTypeFromName(key),
-          },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return {
+          contentType: stat.mime ?? inferTypeFromName(key),
+          key,
+          ...(lastModified !== undefined && { lastModified }),
+          size: stat.size,
+        };
       } catch (error) {
         throw mapWebdavError(error);
       }
@@ -472,7 +457,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
       const keys: string[] = [];
       const meta = new Map<
         string,
-        { size: number; lastModified?: number; type?: string }
+        { size: number; lastModified?: number; contentType?: string }
       >();
       const walk = async (dir: string, prefix: string): Promise<void> => {
         let entries: FileStat[];
@@ -506,7 +491,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
                 lastModified: parseLastMod(entry.lastmod),
               }),
               size: entry.size,
-              ...(entry.mime && { type: entry.mime }),
+              ...(entry.mime && { contentType: entry.mime }),
             });
           }
         }
@@ -528,19 +513,16 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         ...(options?.limit !== undefined && { limit: options.limit }),
         ...(options?.prefix !== undefined && { prefix: options.prefix }),
       });
-      const items: StoredFile[] = page.keys.map((key) => {
+      const items: FileInfo[] = page.keys.map((key) => {
         const m = meta.get(key);
-        return createStoredFile(
-          {
-            key,
-            ...(m?.lastModified !== undefined && {
-              lastModified: m.lastModified,
-            }),
-            size: m?.size ?? 0,
-            type: m?.type ?? inferTypeFromName(key),
-          },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return {
+          contentType: m?.contentType ?? inferTypeFromName(key),
+          key,
+          ...(m?.lastModified !== undefined && {
+            lastModified: m.lastModified,
+          }),
+          size: m?.size ?? 0,
+        };
       });
       return {
         items,

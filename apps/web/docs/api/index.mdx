@@ -1,6 +1,6 @@
 ---
 title: API reference
-description: The full Files SDK API - eleven unified methods plus a key-bound handle, the shared per-operation options, and the StoredFile return type.
+description: The full Files SDK API - eleven unified methods plus a key-bound handle, the shared per-operation options, and the FileInfo and StoredFile result types.
 ---
 
 The surface is small: a `Files` instance with eleven methods, plus `files.file(key)` for a key-bound handle. Each method takes one key (or an array, where bulk applies), accepts the shared `signal` / `timeout` / `retries` options, and throws a normalized `FilesError`. Each method has its own page; this page covers the pieces that cut across all of them.
@@ -55,6 +55,6 @@ await files.head("avatars/abc.png", { timeout: 2_000 });
 
 See [Timeouts](/docs/timeouts), [Retries](/docs/retries), and [Cancellation](/docs/cancellations) for how each behaves, and [Hooks](/docs/usage#hooks) to observe operations as they run.
 
-## The StoredFile type
+## The FileInfo and StoredFile types
 
-`download`, `head`, and `list` all return [`StoredFile`](/docs/api/stored-file) — a type that mirrors native `File`'s shape and adds the `key`, `etag`, and `metadata` that storage carries.
+`head`, `list`, `search`, and `upload` return [`FileInfo`](/docs/api/stored-file): an object's `key`, `size`, `contentType`, `etag`, `lastModified`, and `metadata`, with no body. `download` returns a [`StoredFile`](/docs/api/stored-file): the same fields plus native `File`'s `name` / `type` and the body accessors.

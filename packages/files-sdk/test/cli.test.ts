@@ -48,6 +48,7 @@ const fakeStoredFile = (key: string, body: string): StoredFile =>
   ({
     arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
     blob: () => Promise.resolve(new Blob([body])),
+    contentType: "text/plain",
     key,
     name: key,
     size: body.length,

@@ -16,7 +16,7 @@ const files = useFiles({
 
 ```ts lineNumbers
 // Reads
-await files.head("docs/a.txt"); // → StoredFile (lazy body)
+await files.head("docs/a.txt"); // → FileInfo (metadata, no body)
 await files.exists("docs/a.txt"); // → boolean
 await files.list({ prefix: "docs/" }); // → { items, prefixes?, cursor? }
 await files.url("img.png"); // → string (for <img src>)

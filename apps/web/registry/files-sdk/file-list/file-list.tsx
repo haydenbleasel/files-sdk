@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoredFile } from "files-sdk";
+import type { FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import {
   DownloadIcon,
@@ -27,7 +27,7 @@ export interface FileListProps {
   /** Hide the delete action. */
   readOnly?: boolean;
   /** Called when a file row is clicked. Rows are inert without it. */
-  onSelect?: (file: StoredFile) => void;
+  onSelect?: (file: FileInfo) => void;
   /** Called after a successful delete. */
   onChanged?: () => void;
   className?: string;
@@ -65,8 +65,8 @@ const IMAGE_EXTENSIONS = new Set([
   "webp",
 ]);
 
-const isImageFile = (file: StoredFile): boolean => {
-  const type = file.type.replace(/;.*/su, "").trim().toLowerCase();
+const isImageFile = (file: FileInfo): boolean => {
+  const type = file.contentType.replace(/;.*/su, "").trim().toLowerCase();
   if (!GENERIC_TYPES.has(type)) {
     return type.startsWith("image/");
   }
@@ -83,7 +83,7 @@ const Thumbnail = ({
 }: {
   canSign: boolean | undefined;
   endpoint: string;
-  file: StoredFile;
+  file: FileInfo;
   filesRef: { current: UseFilesResult };
 }) => {
   const [src, setSrc] = useState<string>();
@@ -160,7 +160,7 @@ export const FileList = ({
   onChanged,
   className,
 }: FileListProps) => {
-  const [items, setItems] = useState<StoredFile[]>([]);
+  const [items, setItems] = useState<FileInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [canSign, setCanSign] = useState<boolean>();
   const [actionError, setActionError] = useState<string>();
@@ -232,7 +232,7 @@ export const FileList = ({
     [onChanged]
   );
 
-  const download = useCallback(async (file: StoredFile) => {
+  const download = useCallback(async (file: FileInfo) => {
     setActionError(undefined);
     try {
       const downloaded = await filesRef.current.download(file.key);
@@ -323,7 +323,7 @@ export const FileList = ({
                   {item.key}
                 </span>
                 <span className="text-muted-foreground block text-xs">
-                  {formatBytes(item.size)} · {item.type || "unknown"}
+                  {formatBytes(item.size)} · {item.contentType || "unknown"}
                 </span>
               </span>
             </button>

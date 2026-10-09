@@ -32,7 +32,7 @@ const collectStream = async (
 describe("createStoredFile", () => {
   test("buffer kind exposes bytes via text/blob/arrayBuffer", async () => {
     const sf = createStoredFile(
-      { key: "a", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "a", size: 5 },
       { data: new TextEncoder().encode("hello"), kind: "buffer" }
     );
     expect(await sf.text()).toBe("hello");
@@ -45,7 +45,7 @@ describe("createStoredFile", () => {
 
   test("buffer kind: stream() returns the cached bytes when no native stream", async () => {
     const sf = createStoredFile(
-      { key: "a", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "a", size: 3 },
       { data: new TextEncoder().encode("abc"), kind: "buffer" }
     );
     const out = await collectStream(sf.stream());
@@ -55,7 +55,7 @@ describe("createStoredFile", () => {
   test("lazy kind invokes factory once and caches across reads", async () => {
     let calls = 0;
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       {
         factory: () => {
           calls += 1;
@@ -73,7 +73,7 @@ describe("createStoredFile", () => {
 
   test("stream kind: stream() returns the underlying stream on first read", async () => {
     const sf = createStoredFile(
-      { key: "k", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 5 },
       {
         factory: () =>
           new ReadableStream<Uint8Array>({
@@ -92,7 +92,7 @@ describe("createStoredFile", () => {
   test("stream kind: stream() consumes the source; text() afterwards throws", async () => {
     let factoryCalls = 0;
     const sf = createStoredFile(
-      { key: "k", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 5 },
       {
         factory: () => {
           factoryCalls += 1;
@@ -116,7 +116,7 @@ describe("createStoredFile", () => {
   test("stream kind: stream() called twice throws", () => {
     let factoryCalls = 0;
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       {
         factory: () => {
           factoryCalls += 1;
@@ -137,7 +137,7 @@ describe("createStoredFile", () => {
 
   test("stream kind: text() drains and caches; subsequent stream() uses cache", async () => {
     const sf = createStoredFile(
-      { key: "k", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 5 },
       {
         factory: () =>
           new ReadableStream<Uint8Array>({
@@ -159,7 +159,7 @@ describe("createStoredFile", () => {
     let calls = 0;
     const deferred = Promise.withResolvers<Uint8Array>();
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       {
         factory: () => {
           calls += 1;
@@ -181,7 +181,7 @@ describe("createStoredFile", () => {
   test("lazy kind: stream() during in-flight load reuses the cache promise", async () => {
     const deferred = Promise.withResolvers<Uint8Array>();
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       {
         factory: () => deferred.promise,
         kind: "lazy",
@@ -199,12 +199,12 @@ describe("createStoredFile", () => {
   test("metadata fields are surfaced on the StoredFile", () => {
     const sf = createStoredFile(
       {
+        contentType: "text/plain",
         etag: "e1",
         key: "name.txt",
         lastModified: 42,
         metadata: { foo: "bar" },
         size: 0,
-        type: "text/plain",
       },
       { data: new Uint8Array(), kind: "buffer" }
     );
@@ -251,7 +251,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
     let calls = 0;
     const native = new RealBlob(["hello"], { type: "text/plain" });
     const sf = createStoredFile(
-      { key: "k", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 5 },
       lazySource("unused"),
       () => {
         calls += 1;
@@ -271,7 +271,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
   test("stream() after a native blob() drains the Blob's bytes", async () => {
     installByteRejectingBlob();
     const sf = createStoredFile(
-      { key: "k", size: 5, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 5 },
       lazySource("unused"),
       () => Promise.resolve(new RealBlob(["hello"], { type: "text/plain" }))
     );
@@ -292,7 +292,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
   test("blob() without a native source throws a clear FilesError", async () => {
     installByteRejectingBlob();
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       lazySource("abc")
     );
     await expect(sf.blob()).rejects.toThrow(/cannot wrap bytes/u);
@@ -301,7 +301,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
   test("blob() after a byte accessor throws a clear FilesError", async () => {
     installByteRejectingBlob();
     const sf = createStoredFile(
-      { key: "k", size: 3, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 3 },
       lazySource("abc"),
       () => Promise.resolve(new RealBlob(["abc"]))
     );
@@ -324,7 +324,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
     }
     (globalThis as { FileReader?: unknown }).FileReader = FakeReader;
     const sf = createStoredFile(
-      { key: "k", size: 2, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 2 },
       lazySource("unused"),
       () => Promise.resolve({ size: 2, type: "text/plain" } as Blob)
     );
@@ -345,7 +345,7 @@ describe("createStoredFile on a byte-rejecting Blob runtime", () => {
     }
     (globalThis as { FileReader?: unknown }).FileReader = FailingReader;
     const sf = createStoredFile(
-      { key: "k", size: 2, type: "text/plain" },
+      { contentType: "text/plain", key: "k", size: 2 },
       lazySource("unused"),
       () => Promise.resolve({ size: 2, type: "text/plain" } as Blob)
     );

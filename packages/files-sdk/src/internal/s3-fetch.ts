@@ -17,12 +17,12 @@ import { AwsClient } from "aws4fetch";
 import type {
   Adapter,
   DownloadOptions,
+  FileInfo,
   ListOptions,
   ListResult,
   OperationOptions,
   SignUploadOptions,
   SignedUpload,
-  StoredFile,
   UrlOptions,
 } from "../index.js";
 import {
@@ -38,7 +38,6 @@ import {
 } from "./core.js";
 import { FilesError } from "./errors.js";
 import { inferTypeFromName } from "./mime.js";
-import type { StoredFileMeta } from "./stored-file.js";
 import { createStoredFile } from "./stored-file.js";
 
 export interface S3FetchAdapterOptions {
@@ -362,15 +361,6 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     }
   };
 
-  /** Signed GET returning the object's bytes — the lazy-body factory. */
-  const fetchBytes = async (key: string): Promise<Uint8Array> => {
-    const res = await send("GET", objectUrl(key));
-    if (!res.ok) {
-      throw await errorFromResponse(res);
-    }
-    return new Uint8Array(await mapped(() => res.arrayBuffer()));
-  };
-
   const headResponse = async (
     key: string,
     operationOpts?: OperationOptions
@@ -386,7 +376,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     return res;
   };
 
-  const responseMeta = (key: string, headers: Headers): StoredFileMeta => {
+  const responseMeta = (key: string, headers: Headers): FileInfo => {
     let metadata: Record<string, string> | undefined;
     for (const [name, value] of headers) {
       if (name.startsWith(METADATA_HEADER_PREFIX)) {
@@ -397,9 +387,9 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     const etag = stripEtag(headers.get("etag") ?? undefined);
     const lastModified = parseTimestamp(headers.get("last-modified"));
     return {
+      contentType: headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
       key,
       size: Number(headers.get("content-length") ?? 0),
-      type: headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
       ...(etag && { etag }),
       ...(lastModified !== undefined && { lastModified }),
       ...(metadata && { metadata }),
@@ -530,10 +520,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     },
     async head(key, operationOpts) {
       const res = await headResponse(key, operationOpts);
-      return createStoredFile(responseMeta(key, res.headers), {
-        factory: () => fetchBytes(key),
-        kind: "lazy",
-      });
+      return responseMeta(key, res.headers);
     },
     async list(listOpts?: ListOptions): Promise<ListResult> {
       const res = await send("GET", listQueryUrl(baseUrl, listOpts), {
@@ -543,21 +530,16 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         throw await errorFromResponse(res);
       }
       const xml = await mapped(() => res.text());
-      const items: StoredFile[] = [];
+      const items: FileInfo[] = [];
       for (const match of xml.matchAll(XML_CONTENTS_RE)) {
         const entry = parseListEntry(match.groups?.block ?? "");
         if (!entry) {
           continue;
         }
-        items.push(
-          createStoredFile(
-            // A list response carries no `Content-Type`, so approximate it from
-            // the key rather than labelling every object as a binary blob.
-            // Unknown extensions still fall back to `DEFAULT_CONTENT_TYPE`.
-            { ...entry, type: inferTypeFromName(entry.key) },
-            { factory: () => fetchBytes(entry.key), kind: "lazy" }
-          )
-        );
+        // A list response carries no `Content-Type`, so approximate it from
+        // the key rather than labelling every object as a binary blob.
+        // Unknown extensions still fall back to `DEFAULT_CONTENT_TYPE`.
+        items.push({ ...entry, contentType: inferTypeFromName(entry.key) });
       }
       const prefixes = [...xml.matchAll(XML_COMMON_PREFIX_RE)].map((match) =>
         decodeXmlText(match.groups?.value ?? "")

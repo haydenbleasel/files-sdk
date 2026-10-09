@@ -61,12 +61,11 @@ export type WireOp =
   | "restore-trashed"
   | "purge";
 
-/** Serialized `StoredFile` metadata — body is never inlined. Matches `storedFileToJson`. */
-export interface WireStoredFile {
+/** A serialized `FileInfo` — metadata only, the body is never inlined. */
+export interface WireFileInfo {
   key: string;
-  name: string;
   size: number;
-  type: string;
+  contentType: string;
   lastModified?: number;
   etag?: string;
   metadata?: Record<string, string>;
@@ -173,10 +172,10 @@ export interface PresignedUpload {
 // --- JSON responses ---
 
 export interface HeadResponse {
-  file: WireStoredFile;
+  file: WireFileInfo;
 }
 export interface HeadManyResponse {
-  files: WireStoredFile[];
+  files: WireFileInfo[];
   errors?: WireBulkError[];
 }
 export interface ExistsResponse {
@@ -198,12 +197,12 @@ export interface UrlResponse {
   url: string;
 }
 export interface ListResponse {
-  items: WireStoredFile[];
+  items: WireFileInfo[];
   prefixes?: string[];
   cursor?: string;
 }
 export interface SearchResponse {
-  matches: WireStoredFile[];
+  matches: WireFileInfo[];
   truncated: boolean;
 }
 export interface CapabilitiesResponse {
@@ -216,7 +215,7 @@ export interface PresignResponse {
   uploads: PresignedUpload[];
 }
 export interface CompleteResponse {
-  files: WireStoredFile[];
+  files: WireFileInfo[];
   errors?: WireBulkError[];
 }
 

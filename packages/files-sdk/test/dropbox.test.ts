@@ -546,25 +546,17 @@ describe("dropbox adapter", () => {
     }
   });
 
-  test("head returns metadata with lazy body factory", async () => {
+  test("head returns plain metadata without touching the body", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("a.txt", "hi", { contentType: "text/plain" });
     const f = await files.head("a.txt");
+    expect(f.key).toBe("a.txt");
     expect(f.size).toBe(2);
     expect(f.etag).toMatch(/^rev-/u);
+    // content-type is inferred from filename, not stored
+    expect(f.contentType).toBe("text/plain; charset=utf-8");
+    expect("text" in f).toBe(false);
     expect(filesDownloadMock).not.toHaveBeenCalled();
-    expect(await f.text()).toBe("hi");
-    expect(filesDownloadMock).toHaveBeenCalledTimes(1);
-  });
-
-  test("a head() body read maps a file deleted in between to NotFound", async () => {
-    const files = new Files({ adapter: dropbox(baseOpts) });
-    await files.upload("a.txt", "hi");
-    const f = await files.head("a.txt");
-    store.delete("a.txt");
-    const err = await f.text().catch((error: unknown) => error);
-    expect(err).toBeInstanceOf(FilesError);
-    expect((err as FilesError).code).toBe("NotFound");
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {

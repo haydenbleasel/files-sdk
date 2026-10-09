@@ -1134,45 +1134,10 @@ describe("azure adapter", () => {
       });
       const info = await files.head("a.txt");
       expect(info.size).toBe(5);
-      expect(info.type).toBe("text/plain");
+      expect(info.contentType).toBe("text/plain");
       expect(info.etag).toBe("etag-a");
+      expect(info).not.toHaveProperty("text");
       expect(downloadToBufferMock).not.toHaveBeenCalled();
-    });
-
-    test("body is lazy — text() triggers a follow-up download", async () => {
-      const files = new Files({
-        adapter: azure({
-          accountKey: "k",
-          accountName: ACCOUNT,
-          container: CONTAINER,
-        }),
-      });
-      const info = await files.head("a.txt");
-      downloadToBufferMock.mockClear();
-      expect(await info.text()).toBe("hello");
-      expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("a lazy body read that fails is mapped (blob deleted after head)", async () => {
-      const files = new Files({
-        adapter: azure({
-          accountKey: "k",
-          accountName: ACCOUNT,
-          container: CONTAINER,
-        }),
-      });
-      const info = await files.head("a.txt");
-      const raw = Object.assign(
-        new Error("The specified blob does not exist."),
-        {
-          details: { errorCode: "BlobNotFound" },
-          statusCode: 404,
-        }
-      );
-      downloadToBufferMock.mockImplementationOnce(() => Promise.reject(raw));
-      const thrown = await info.text().catch((error: unknown) => error);
-      expect(thrown).toBeInstanceOf(FilesError);
-      expect(thrown).toMatchObject({ cause: raw, code: "NotFound" });
     });
   });
 
@@ -1536,47 +1501,6 @@ describe("azure adapter", () => {
       });
       const out = await files.list();
       expect(out.cursor).toBeUndefined();
-    });
-
-    test("items expose lazy bodies that fetch via downloadToBuffer", async () => {
-      const files = new Files({
-        adapter: azure({
-          accountKey: "k",
-          accountName: ACCOUNT,
-          container: CONTAINER,
-        }),
-      });
-      const out = await files.list();
-      const [item] = out.items;
-      if (!item) {
-        throw new Error("expected at least one list item");
-      }
-      downloadToBufferMock.mockClear();
-      expect(await item.text()).toBe("hello");
-      expect(downloadToBufferMock).toHaveBeenCalledTimes(1);
-    });
-
-    test("a lazy item body that fails is mapped (blob deleted after list)", async () => {
-      const files = new Files({
-        adapter: azure({
-          accountKey: "k",
-          accountName: ACCOUNT,
-          container: CONTAINER,
-        }),
-      });
-      const listed = await files.list();
-      const [item] = listed.items;
-      downloadToBufferMock.mockImplementationOnce(() =>
-        Promise.reject(
-          Object.assign(new Error("gone"), {
-            details: { errorCode: "BlobNotFound" },
-            statusCode: 404,
-          })
-        )
-      );
-      await expect(item?.arrayBuffer()).rejects.toMatchObject({
-        code: "NotFound",
-      });
     });
   });
 

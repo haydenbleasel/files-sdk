@@ -3,9 +3,9 @@ import { UTApi, UTFile } from "uploadthing/server";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -59,9 +59,8 @@ export interface UploadThingAdapterOptions {
    */
   defaultUrlExpiresIn?: number;
   /**
-   * Timeout in milliseconds for the HEAD/GET fallbacks that `head()`,
-   * `download()`, and lazy bodies returned from `list()` issue against
-   * the file URL. A hung CDN response would otherwise leak a fetch that
+   * Timeout in milliseconds for the HEAD/GET fallbacks that `head()` and
+   * `download()` issue against the file URL. A hung CDN response would otherwise leak a fetch that
    * never resolves. Defaults to 300_000 (5 minutes). Pass `0` to
    * disable.
    */
@@ -359,10 +358,10 @@ export const uploadthing = (
     key: string,
     signal?: AbortSignal
   ): Promise<{
-    size: number;
-    type: string;
+    contentType: string;
     etag: string | undefined;
     lastModified: number | undefined;
+    size: number;
   }> => {
     const res = await fetchWithTimeout(
       url,
@@ -378,39 +377,13 @@ export const uploadthing = (
     const lengthHeader = res.headers.get("content-length");
     const lastModifiedHeader = res.headers.get("last-modified");
     return {
+      contentType: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
       etag: res.headers.get("etag") ?? undefined,
       lastModified: lastModifiedHeader
         ? Date.parse(lastModifiedHeader) || undefined
         : undefined,
       size: lengthHeader ? Number(lengthHeader) : 0,
-      type: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
     };
-  };
-
-  // The lazy body behind head()/list() results. head() passes the URL it
-  // already resolved; list() resolves one at read time. It runs after the
-  // operation returned, so failures are mapped here rather than escaping raw
-  // (a transport error, or an UploadThingError from signing) out of `text()`.
-  const readLazyBody = async (
-    key: string,
-    url?: string
-  ): Promise<Uint8Array> => {
-    try {
-      const res = await fetchWithTimeout(
-        url ?? (await resolveFetchUrl(key)),
-        undefined,
-        downloadTimeoutMs
-      );
-      if (!res.ok) {
-        throw new FilesError(
-          res.status === 404 ? "NotFound" : "Provider",
-          `uploadthing fetch failed: ${res.status} ${res.statusText} for ${key}`
-        );
-      }
-      return new Uint8Array(await res.arrayBuffer());
-    } catch (error) {
-      throw mapUploadThingError(error);
-    }
   };
 
   const adapter: UploadThingAdapter = {
@@ -522,13 +495,13 @@ export const uploadthing = (
       const lengthHeader = res.headers.get("content-length");
       const lastModifiedHeader = res.headers.get("last-modified");
       const meta = {
+        contentType: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
         etag: res.headers.get("etag") ?? undefined,
         key,
         lastModified: lastModifiedHeader
           ? Date.parse(lastModifiedHeader) || undefined
           : undefined,
         size: lengthHeader ? Number(lengthHeader) : 0,
-        type: res.headers.get("content-type") ?? DEFAULT_CONTENT_TYPE,
       };
       if (downloadOpts?.as === "stream" && res.body) {
         const stream = res.body;
@@ -557,16 +530,13 @@ export const uploadthing = (
       } catch (error) {
         throw mapUploadThingError(error);
       }
-      return createStoredFile(
-        {
-          etag: info.etag,
-          key,
-          lastModified: info.lastModified,
-          size: info.size,
-          type: info.type,
-        },
-        { factory: () => readLazyBody(key, url), kind: "lazy" }
-      );
+      return {
+        contentType: info.contentType,
+        etag: info.etag,
+        key,
+        lastModified: info.lastModified,
+        size: info.size,
+      };
     },
     async list(options): Promise<ListResult> {
       const limit = options?.limit;
@@ -589,21 +559,15 @@ export const uploadthing = (
       const filtered = prefix
         ? result.files.filter((f) => (f.customId ?? f.key).startsWith(prefix))
         : result.files;
-      const items: StoredFile[] = filtered.map((f) => {
+      const items: FileInfo[] = filtered.map((f) => ({
+        contentType: DEFAULT_CONTENT_TYPE,
         // We always uploaded with customId = user key, so customId is the
         // canonical identifier. Fall back to the UploadThing key if a file
         // was uploaded out-of-band without a customId.
-        const itemKey = f.customId ?? f.key;
-        return createStoredFile(
-          {
-            key: itemKey,
-            lastModified: f.uploadedAt,
-            size: f.size,
-            type: DEFAULT_CONTENT_TYPE,
-          },
-          { factory: () => readLazyBody(itemKey), kind: "lazy" }
-        );
-      });
+        key: f.customId ?? f.key,
+        lastModified: f.uploadedAt,
+        size: f.size,
+      }));
       return {
         cursor: result.hasMore
           ? String(offset + result.files.length)

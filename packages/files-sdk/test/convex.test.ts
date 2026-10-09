@@ -292,7 +292,7 @@ describe("convex adapter", () => {
   });
 
   describe("head / exists / delete", () => {
-    test("head returns metadata; body is lazy", async () => {
+    test("head returns metadata only, with no body accessors", async () => {
       const backend = makeBackend();
       const adapter = convex({ ctx: backend.actionCtx });
       const { key } = await adapter.upload("k", "head me");
@@ -300,7 +300,7 @@ describe("convex adapter", () => {
       expect(file.size).toBe("head me".length);
       expect(file.key).toBe(key);
       expect(file.etag).toBeDefined();
-      expect(await file.text()).toBe("head me");
+      expect(file).not.toHaveProperty("text");
     });
 
     test("head metadata from a query context carries lastModified", async () => {
@@ -309,9 +309,8 @@ describe("convex adapter", () => {
       const adapter = convex({ ctx: backend.queryCtx });
       const file = await adapter.head(id);
       expect(file.size).toBe(3);
+      expect(file.contentType).toBe("text/plain");
       expect(file.lastModified).toBeGreaterThan(0);
-      // No action context, so reading the body throws.
-      await expect(file.arrayBuffer()).rejects.toThrow(/action context/u);
     });
 
     test("head throws NotFound for a missing id", async () => {
@@ -433,31 +432,6 @@ describe("convex adapter", () => {
       expect(first.items[0]?.size).toBe(3);
       expect(first.items[0]?.etag).toBeDefined();
     });
-
-    test("a listed item's body is lazy and needs an action context to read", async () => {
-      const backend = makeBackend();
-      backend.put(new TextEncoder().encode("payload"), "text/plain");
-      // Listed from a query context (no ctx.storage.get), so reading the lazy
-      // body throws — exercising the list item's factory.
-      const queryAdapter = convex({ ctx: backend.queryCtx });
-      const fromQuery = await queryAdapter.list();
-      await expect(fromQuery.items[0]?.text()).rejects.toThrow(
-        /action context/u
-      );
-
-      // The same id, listed from a mutation context that also wires
-      // ctx.storage.get, resolves the lazy body to the stored bytes.
-      const actionable: ConvexCtx = {
-        db: backend.mutationCtx.db,
-        storage: {
-          ...backend.mutationCtx.storage,
-          get: backend.actionCtx.storage.get,
-        },
-      };
-      const actionableAdapter = convex({ ctx: actionable });
-      const fromActionable = await actionableAdapter.list();
-      expect(await fromActionable.items[0]?.text()).toBe("payload");
-    });
   });
 
   describe("Files integration", () => {
@@ -541,7 +515,7 @@ describe("convex adapter", () => {
       // actionCtx has no ctx.db, so metadata comes from storage.getMetadata.
       // That source carries no _creationTime, so lastModified is absent.
       expect(file.size).toBe(4);
-      expect(file.type).toBe("text/plain");
+      expect(file.contentType).toBe("text/plain");
       expect(file.lastModified).toBeUndefined();
     });
 
@@ -574,7 +548,7 @@ describe("convex adapter", () => {
       const adapter = convex({ ctx });
       const file = await adapter.head("kg000000");
       expect(file.size).toBe(0);
-      expect(file.type).toBe("application/octet-stream");
+      expect(file.contentType).toBe("application/octet-stream");
       expect(file.etag).toBeUndefined();
     });
 
@@ -611,51 +585,6 @@ describe("convex adapter", () => {
       await expect(adapter.head("kg000000")).rejects.toMatchObject({
         code: "Provider",
         message: "getUrl exploded",
-      });
-    });
-  });
-
-  describe("lazy body factory errors", () => {
-    test("reading a head() body rethrows a get() failure", async () => {
-      const ctx: ConvexCtx = {
-        storage: {
-          get: () => Promise.reject(new Error("get blew up")),
-          getMetadata: () =>
-            Promise.resolve({
-              contentType: "text/plain",
-              sha256: "abc",
-              size: 3,
-            }),
-          getUrl: () =>
-            Promise.resolve("https://fake.convex.cloud/api/storage/kg000000"),
-        },
-      };
-      const adapter = convex({ ctx });
-      const file = await adapter.head("kg000000");
-      await expect(file.arrayBuffer()).rejects.toMatchObject({
-        code: "Provider",
-        message: "get blew up",
-      });
-    });
-
-    test("reading a head() body throws NotFound when get() yields null", async () => {
-      const ctx: ConvexCtx = {
-        storage: {
-          get: () => Promise.resolve(null),
-          getMetadata: () =>
-            Promise.resolve({
-              contentType: "text/plain",
-              sha256: "abc",
-              size: 3,
-            }),
-          getUrl: () =>
-            Promise.resolve("https://fake.convex.cloud/api/storage/kg000000"),
-        },
-      };
-      const adapter = convex({ ctx });
-      const file = await adapter.head("kg000000");
-      await expect(file.arrayBuffer()).rejects.toMatchObject({
-        code: "NotFound",
       });
     });
   });

@@ -41,7 +41,7 @@ When `upload` can't infer the type from the input (an `ArrayBuffer`, typed array
 
 ## Why does the body come back empty from `head` / `list`?
 
-Body accessors on `head` and `list` results are lazy - they fetch on call. If you serialize a `StoredFile` without invoking an accessor, you get the metadata only. That's the intent; call `.arrayBuffer()` / `.text()` / `.blob()` / `.stream()` to materialize the bytes. See [Troubleshooting](/docs/troubleshooting) for the lazy-body gotcha.
+`head`, `list`, and `search` return [`FileInfo`](/docs/api/stored-file): plain metadata with no body, so it serializes as-is. Only `download` returns a body, as a `StoredFile`; call `.arrayBuffer()` / `.text()` / `.blob()` / `.stream()` on that.
 
 ## Is there a CLI?
 

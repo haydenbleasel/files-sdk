@@ -567,7 +567,7 @@ describe("pocketbase adapter", () => {
     expect(await file.text()).toBe("hello");
   });
 
-  test("head returns metadata only and is lazy on body", async () => {
+  test("head returns metadata only, without fetching the body", async () => {
     const adapter = pocketbase({
       collection: "files",
       url: "http://pb.test",
@@ -576,9 +576,10 @@ describe("pocketbase adapter", () => {
     fetchMock.mockClear();
     const info = await adapter.head("a.txt");
     expect(info.key).toBe("a.txt");
+    expect(info.contentType).toBe("application/octet-stream");
+    expect(info.size).toBe(0);
+    expect(info).not.toHaveProperty("text");
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(await info.text()).toBe("hello");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test("exists returns true for present keys and false for missing keys", async () => {

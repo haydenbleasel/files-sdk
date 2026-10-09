@@ -36,7 +36,7 @@ export interface UsageStats {
   operationsByKind: Record<(typeof KINDS)[number], number>;
   /** Bytes uploaded, summed from each upload's reported result size. */
   bytesUp: number;
-  /** Bytes read back out of `download` / `head` bodies, metered as they flow. */
+  /** Bytes read back out of `download` bodies, metered as they flow. */
   bytesDown: number;
 }
 
@@ -145,6 +145,7 @@ const meterRead = (
       countBuffered(blob.size);
       return blob;
     },
+    contentType: file.contentType,
     etag: file.etag,
     key: file.key,
     lastModified: file.lastModified,
@@ -180,11 +181,12 @@ const meterRead = (
 /**
  * Meter storage, bandwidth, and operation counts across a {@link Files}
  * instance, and surface the running totals via `files.usage()`. Every operation
- * is counted once; `upload` adds its result size to `bytesUp`, and `download` /
- * `head` wrap the returned body so the bytes you actually read add to
- * `bytesDown` — the lazy, stream-level accounting a fire-and-forget
- * {@link FilesHooks} `onAction` can't do. Pass {@link UsageOptions.group} to
- * break the totals down per tenant or prefix.
+ * is counted once; `upload` adds its result size to `bytesUp`, and `download`
+ * wraps the returned body so the bytes you actually read add to `bytesDown` —
+ * the lazy, stream-level accounting a fire-and-forget {@link FilesHooks}
+ * `onAction` can't do. `head` / `list` return metadata only, so they count as
+ * operations but move no bytes. Pass {@link UsageOptions.group} to break the
+ * totals down per tenant or prefix.
  *
  * Body-transparent: it never buffers, transforms, or reads the body itself
  * (`bytesDown` is tallied only when *you* consume it), so streaming, range
@@ -251,8 +253,8 @@ export const usage = (options: UsageOptions = {}): FilesPlugin<UsageApi> => {
       stats.bytesUp += uploaded.size ?? 0;
       return result;
     }
-    if (op.kind === "download" || op.kind === "head") {
-      // SAFETY: a download / head's `next` resolves to its `StoredFile`.
+    if (op.kind === "download") {
+      // SAFETY: a download's `next` resolves to its `StoredFile`.
       const file = result as StoredFile;
       // Re-resolve the bucket at flow time so bytes land in the current window
       // even if `resetUsage()` ran between dispatch and the body being read.

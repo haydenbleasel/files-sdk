@@ -3,7 +3,7 @@ title: File Preview
 description: A lazy preview of a single stored file — image, PDF or text — with metadata, resolving bytes only when it mounts.
 ---
 
-Previews one stored file by key (or a resolved `StoredFile`). Images prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; PDFs are downloaded and rendered from a `blob:` URL; text is fetched and shown inline. Bytes load only when the component mounts.
+Previews one stored file by key (or its resolved [`FileInfo`](/docs/api/stored-file)). Images prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; PDFs are downloaded and rendered from a `blob:` URL; text is fetched and shown inline. Bytes load only when the component mounts.
 
 <Component path="file-preview/examples/file-preview-basic" />
 
@@ -25,7 +25,7 @@ export function Preview({ fileKey }: { fileKey: string }) {
 }
 ```
 
-The footer shows the key, size, type and etag. Pass either a key string (the component `head()`s it for metadata) or an already-resolved `StoredFile` to skip that round-trip.
+The footer shows the key, size, type and etag. Pass either a key string (the component `head()`s it for metadata) or an already-resolved `FileInfo` (a `list()` item, say) to skip that round-trip.
 
 ## Files without a real content type
 
@@ -57,7 +57,7 @@ Pass `renderPreview` to replace the built-in preview with your own viewer compon
 />
 ```
 
-The callback receives the resolved `StoredFile` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.type`. PDFs arrive as a `blob:` URL; other types as a signed or proxy URL.
+The callback receives the resolved `FileInfo` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.contentType`. PDFs arrive as a `blob:` URL; other types as a signed or proxy URL.
 
 ## Props
 

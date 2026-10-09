@@ -194,18 +194,21 @@ describe("s3-fetch core — download/head/exists/delete", () => {
     expect(error.message).toBe("No such key");
   });
 
-  test("head returns metadata without a body transfer, with a lazy GET body", async () => {
+  test("head returns plain metadata without a body transfer", async () => {
     const { adapter, fake } = withFake();
     await adapter.upload("h.txt", "head me", { metadata: { a: "b" } });
     const before = fake.requests.length;
     const file = await adapter.head("h.txt");
-    expect(file.size).toBe(7);
-    expect(file.metadata).toEqual({ a: "b" });
+    expect(file).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      etag: expect.any(String),
+      key: "h.txt",
+      lastModified: expect.any(Number),
+      metadata: { a: "b" },
+      size: 7,
+    });
     expect(fake.requests.length).toBe(before + 1);
     expect(fake.requests.at(-1)?.method).toBe("HEAD");
-    // The body accessors lazily issue a signed GET.
-    expect(await file.text()).toBe("head me");
-    expect(fake.requests.at(-1)?.method).toBe("GET");
   });
 
   test("head of a missing key throws NotFound from the status alone", async () => {
@@ -295,7 +298,7 @@ describe("s3-fetch core — list", () => {
     await adapter.upload("docs/blob", "y");
     const result = await adapter.list({ prefix: "docs/" });
     const types = Object.fromEntries(
-      result.items.map((item) => [item.key, item.type])
+      result.items.map((item) => [item.key, item.contentType])
     );
     expect(types["docs/report.csv"]).toBe("text/csv; charset=utf-8");
     expect(types["docs/photo.png"]).toBe("image/png");
@@ -303,11 +306,22 @@ describe("s3-fetch core — list", () => {
     expect(types["docs/blob"]).toBe("application/octet-stream");
   });
 
-  test("list items expose a lazy body", async () => {
-    const { adapter } = withFake();
-    await adapter.upload("lazy.txt", "lazy body");
+  test("list items are plain metadata without a body transfer", async () => {
+    const { adapter, fake } = withFake();
+    await adapter.upload("plain.txt", "no body");
+    const before = fake.requests.length;
     const { items } = await adapter.list();
-    expect(await items[0]?.text()).toBe("lazy body");
+    expect(items).toEqual([
+      {
+        contentType: "text/plain; charset=utf-8",
+        etag: expect.any(String),
+        key: "plain.txt",
+        lastModified: expect.any(Number),
+        size: 7,
+      },
+    ]);
+    // One ListObjectsV2 GET, and no per-item body fetch.
+    expect(fake.requests.length).toBe(before + 1);
   });
 
   test("paginates via continuation tokens", async () => {
@@ -590,7 +604,7 @@ describe("s3-fetch core — error handling", () => {
     const file = await adapter.head("weird.txt");
     expect(file.lastModified).toBeUndefined();
     expect(file.size).toBe(3);
-    expect(file.type).toBe("application/octet-stream");
+    expect(file.contentType).toBe("application/octet-stream");
   });
 
   test("falls back to globalThis.fetch when no fetch override is given", async () => {
@@ -652,25 +666,6 @@ describe("s3-fetch core — post-dispatch failures map to FilesError", () => {
         Promise.resolve(new Response(erroringBody(), { status: 200 })),
     });
     await expectCode(adapter.list(), "Provider");
-  });
-
-  test("a lazy head() body dying mid-read maps to Provider", async () => {
-    let call = 0;
-    const adapter = makeAdapter({
-      fetch: () => {
-        call += 1;
-        return Promise.resolve(
-          call === 1
-            ? new Response(null, {
-                headers: { "content-length": "1" },
-                status: 200,
-              })
-            : new Response(erroringBody(), { status: 200 })
-        );
-      },
-    });
-    const file = await adapter.head("a.txt");
-    await expectCode(file.text(), "Provider");
   });
 
   test("signing failures in presign map to Provider", async () => {

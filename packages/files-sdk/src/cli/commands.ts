@@ -13,11 +13,11 @@ import {
   emit,
   exitCode,
   fileBodyStream,
+  fileInfoToJson,
   parseKeyValuePairs,
   parseProviderOptions,
   parseRange,
   readBody,
-  storedFileToJson,
   walkDir,
   writeBody,
   writeBodyToDir,
@@ -393,13 +393,13 @@ export const runDownload = async (opts: DownloadCmdOpts): Promise<void> => {
   await writeBody(file, { out: opts.out, stdout: opts.stdout });
   if (!opts.stdout) {
     // body went to a file; emit status to stdout in the user's chosen format
-    emit(storedFileToJson(file), opts);
+    emit(fileInfoToJson(file), opts);
   } else if (opts.verbose) {
     // body went to stdout; metadata goes to stderr so it doesn't pollute
     // the byte stream. Both modes print the JSON envelope: JSON mode honors
     // --pretty as it would on stdout, and --no-json always pretty-prints it
     // (as emit() does for humans).
-    const meta = storedFileToJson(file);
+    const meta = fileInfoToJson(file);
     if (opts.json) {
       const text = opts.pretty
         ? JSON.stringify(meta, null, 2)
@@ -426,7 +426,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
   // One key keeps the original throw-on-failure contract and output shape.
   if (opts.keys.length === 1) {
     const file = await files.head(opts.keys[0]);
-    emit(storedFileToJson(file), opts);
+    emit(fileInfoToJson(file), opts);
     return;
   }
 
@@ -436,7 +436,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
   const result = await files.head(opts.keys, buildBulkOptions(opts));
   emit(
     {
-      files: result.files.map(storedFileToJson),
+      files: result.files.map(fileInfoToJson),
       ...(result.errors && { errors: result.errors }),
     },
     opts
@@ -602,13 +602,13 @@ export const runList = async (opts: ListCmdOpts): Promise<void> => {
   // --all walks every page transparently (Files.listAll), following the cursor
   // until exhausted. The result has no `cursor` — there's nothing left to page.
   if (opts.all) {
-    const items: ReturnType<typeof storedFileToJson>[] = [];
+    const items: ReturnType<typeof fileInfoToJson>[] = [];
     for await (const file of files.listAll({
       cursor: opts.cursor,
       limit: opts.limit,
       prefix: opts.prefix,
     })) {
-      items.push(storedFileToJson(file));
+      items.push(fileInfoToJson(file));
     }
     emit({ items }, opts);
     return;
@@ -623,7 +623,7 @@ export const runList = async (opts: ListCmdOpts): Promise<void> => {
   emit(
     {
       cursor: result.cursor,
-      items: result.items.map(storedFileToJson),
+      items: result.items.map(fileInfoToJson),
       // Mirror the SDK: `prefixes` is present only when a delimiter turned up
       // folders, omitted otherwise.
       ...(result.prefixes && { prefixes: result.prefixes }),
@@ -666,7 +666,7 @@ export const runSearch = async (opts: SearchCmdOpts): Promise<void> => {
 
   // search walks every page under the (inferred or explicit) prefix, following
   // the cursor, so the result has no `cursor`. Mirrors `list --all`.
-  const items: ReturnType<typeof storedFileToJson>[] = [];
+  const items: ReturnType<typeof fileInfoToJson>[] = [];
   for await (const file of files.search(opts.pattern, {
     caseInsensitive: opts.caseInsensitive,
     limit: opts.limit,
@@ -674,7 +674,7 @@ export const runSearch = async (opts: SearchCmdOpts): Promise<void> => {
     maxResults: opts.maxResults,
     prefix: opts.prefix,
   })) {
-    items.push(storedFileToJson(file));
+    items.push(fileInfoToJson(file));
   }
   emit({ items }, opts);
 };

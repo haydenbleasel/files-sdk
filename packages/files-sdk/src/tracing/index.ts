@@ -5,12 +5,12 @@ import { isConditionalOperation } from "../index.js";
 import type {
   ConditionalActionType,
   ConditionalFilesOperation,
+  FileInfo,
   FilesOperation,
   FilesPlugin,
   ListResult,
   OperationResult,
   PluginNext,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import { isNumber } from "../internal/is.js";
@@ -96,8 +96,9 @@ const resultAttributes = (
     return { "files.size": size };
   }
   if (op.kind === "download" || op.kind === "head") {
-    // SAFETY: a download / head's `next` resolves to its `StoredFile`.
-    const { size } = result as StoredFile;
+    // SAFETY: a download's `next` resolves to its `StoredFile` and a head's to
+    // its `FileInfo` — both a `FileInfo`, which is all `size` needs.
+    const { size } = result as FileInfo;
     return isNumber(size) ? { "files.size": size } : undefined;
   }
   if (op.kind === "exists") {

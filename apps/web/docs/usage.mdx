@@ -36,7 +36,7 @@ const files = new Files({
 });
 ```
 
-Reads return a `StoredFile` - a `File`-shaped value with `key`, `etag`, and `metadata` added on top. Body accessors (`arrayBuffer`, `text`, `stream`, `blob`) are lazy on results from `head` and `list`, so listing a thousand objects doesn't fetch their bodies.
+`head`, `list`, and `search` return a [`FileInfo`](/docs/api/stored-file) - the `key`, `size`, `contentType`, `etag`, `lastModified`, and `metadata`, with no body - so listing a thousand objects never fetches their bytes. `download` returns a `StoredFile`: the same fields plus `File`'s `name` / `type` and the body accessors (`arrayBuffer`, `text`, `stream`, `blob`).
 
 ## Quick start
 

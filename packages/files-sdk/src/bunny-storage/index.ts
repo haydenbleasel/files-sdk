@@ -4,6 +4,7 @@ import * as BunnyStorageSDK from "@bunny.net/storage-sdk";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   SignedUpload,
   StoredFile,
@@ -169,52 +170,36 @@ const keyFromStorageFile = (
   return `${directory}/${name}`;
 };
 
+const toFileInfo = (entry: BunnyStorageSDK.file.StorageFile): FileInfo => ({
+  contentType: entry.contentType || "application/octet-stream",
+  etag: entry.checksum ?? undefined,
+  key: keyFromStorageFile(entry),
+  lastModified: entry.lastChanged?.getTime(),
+  size: entry.length,
+});
+
 const toStoredFile = (
-  client: BunnyStorageClient,
   entry: BunnyStorageSDK.file.StorageFile,
-  body?:
-    | { kind: "lazy" }
+  body:
     | { kind: "buffer"; data: Uint8Array }
     | {
         kind: "stream";
         stream: ReadableStream<Uint8Array> | BunnyDownloadStream;
       }
 ): StoredFile => {
-  const meta = {
-    etag: entry.checksum ?? undefined,
-    key: keyFromStorageFile(entry),
-    lastModified: entry.lastChanged?.getTime(),
-    size: entry.length,
-    type: entry.contentType || "application/octet-stream",
-  };
-  if (body?.kind === "buffer") {
+  const meta = toFileInfo(entry);
+  if (body.kind === "buffer") {
     return createStoredFile(
       { ...meta, size: body.data.byteLength },
       { data: body.data, kind: "buffer" }
     );
   }
-  if (body?.kind === "stream") {
-    // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class
-    // as the global one; only the declarations differ (see `streamFromBytes`).
-    const stream = body.stream as ReadableStream<Uint8Array>;
-    return createStoredFile(meta, {
-      factory: () => stream,
-      kind: "stream",
-    });
-  }
-  // Download by the entry's full key rather than through `entry.data()`:
-  // for listing entries the SDK builds `data` from `Path`, which is the
-  // *containing directory*, so it would fetch the directory listing instead
-  // of the file body.
+  // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class
+  // as the global one; only the declarations differ (see `streamFromBytes`).
+  const stream = body.stream as ReadableStream<Uint8Array>;
   return createStoredFile(meta, {
-    factory: async () => {
-      const result = await BunnyStorageSDK.file.download(
-        client,
-        toBunnyPath(meta.key)
-      );
-      return bytesFromStream(result.stream);
-    },
-    kind: "lazy",
+    factory: () => stream,
+    kind: "stream",
   });
 };
 
@@ -413,12 +398,12 @@ export const bunnyStorage = (
         const entry = await BunnyStorageSDK.file.get(client, toBunnyPath(key));
         const result = await entry.data();
         if (downloadOpts?.as === "stream") {
-          return toStoredFile(client, entry, {
+          return toStoredFile(entry, {
             kind: "stream",
             stream: result.stream,
           });
         }
-        return toStoredFile(client, entry, {
+        return toStoredFile(entry, {
           data: await bytesFromStream(result.stream),
           kind: "buffer",
         });
@@ -434,8 +419,7 @@ export const bunnyStorage = (
     },
     async head(key) {
       try {
-        return toStoredFile(
-          client,
+        return toFileInfo(
           await BunnyStorageSDK.file.get(client, toBunnyPath(key))
         );
       } catch (error) {
@@ -454,14 +438,14 @@ export const bunnyStorage = (
           client,
           listDirectoryForPrefix(prefix)
         );
-        const files: StoredFile[] = [];
+        const files: FileInfo[] = [];
         for (const entry of entries) {
           if (entry.isDirectory) {
             continue;
           }
-          const stored = toStoredFile(client, entry);
-          if (!prefix || stored.key.startsWith(prefix)) {
-            files.push(stored);
+          const info = toFileInfo(entry);
+          if (!prefix || info.key.startsWith(prefix)) {
+            files.push(info);
           }
         }
         const start = Number.isFinite(offset) && offset > 0 ? offset : 0;

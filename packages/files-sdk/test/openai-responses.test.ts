@@ -402,14 +402,14 @@ describe("createResponsesFileTools", () => {
       call("getFileMetadata", { key: "report.txt" })
     );
     const meta = JSON.parse(out.output) as {
+      contentType: string;
       key: string;
       size: number;
-      type: string;
       metadata?: Record<string, string>;
     };
     expect(meta.key).toBe("report.txt");
     expect(meta.size).toBe("payload".length);
-    expect(meta.type).toBe("text/plain");
+    expect(meta.contentType).toBe("text/plain");
     expect(meta.metadata).toEqual({ tenant: "acme" });
   });
 

@@ -9,6 +9,7 @@ import type {
   DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
+  FileInfo,
   ListOptions,
   ListResult,
   OffsetResumableDriver,
@@ -324,15 +325,6 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     }
   };
 
-  const lazyDownload = (key: string) => (): Promise<Uint8Array> =>
-    run(undefined, async (client) => {
-      // SAFETY: `get()` without a destination resolves to a Buffer; the
-      // string / WritableStream members of its return type only apply when a
-      // `dst` path or stream is passed.
-      const buf = (await client.get(keyToRemote(key))) as Buffer;
-      return bufferToUint8(buf);
-    });
-
   const adapter: SftpAdapter = {
     // No `uploadProgress` — see `upload()` below for why.
     capabilities: {
@@ -353,8 +345,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       // the client over a single connection. Buffers the whole object — see
       // the adapter docs for the large-file caveat.
       await run(opts2?.signal, async (client) => {
-        // SAFETY: `get()` without a destination resolves to a Buffer (see
-        // `lazyDownload`).
+        // SAFETY: `get()` without a destination resolves to a Buffer; the
+        // string / WritableStream members of its return type only apply when
+        // a `dst` path or stream is passed.
         const buf = (await client.get(fromRemote)) as Buffer;
         await ensureParentDir(client, toRemote);
         await client.put(buf, toRemote);
@@ -433,12 +426,12 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           signal?.addEventListener("abort", onAbort, { once: true });
           return createStoredFile(
             {
+              contentType: inferTypeFromName(key),
               key,
               ...(Number.isFinite(stat.modifyTime) && {
                 lastModified: stat.modifyTime,
               }),
               size: range ? rangedSize(stat.size, range) : stat.size,
-              type: inferTypeFromName(key),
             },
             {
               factory: () => toWebStream(nodeStream),
@@ -461,18 +454,18 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           bytes = await collectStream(toWebStream(nodeStream));
         } else {
           // SAFETY: `get()` without a destination resolves to a Buffer (see
-          // `lazyDownload`).
+          // `copy()`).
           const buf = (await client.get(remote)) as Buffer;
           bytes = bufferToUint8(buf);
         }
         return createStoredFile(
           {
+            contentType: inferTypeFromName(key),
             key,
             ...(Number.isFinite(stat.modifyTime) && {
               lastModified: stat.modifyTime,
             }),
             size: bytes.byteLength,
-            type: inferTypeFromName(key),
           },
           { data: bytes, kind: "buffer" }
         );
@@ -494,24 +487,21 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         mapSftpError
       );
     },
-    head(key, opts2?: OperationOptions): Promise<StoredFile> {
+    head(key, opts2?: OperationOptions): Promise<FileInfo> {
       const remote = keyToRemote(key);
       return run(opts2?.signal, async (client) => {
         const stat = await client.stat(remote);
         if (stat.isDirectory) {
           throw new FilesError("NotFound", `sftp: ${key} is a directory`);
         }
-        return createStoredFile(
-          {
-            key,
-            ...(Number.isFinite(stat.modifyTime) && {
-              lastModified: stat.modifyTime,
-            }),
-            size: stat.size,
-            type: inferTypeFromName(key),
-          },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return {
+          contentType: inferTypeFromName(key),
+          key,
+          ...(Number.isFinite(stat.modifyTime) && {
+            lastModified: stat.modifyTime,
+          }),
+          size: stat.size,
+        };
       });
     },
     list(options?: ListOptions): Promise<ListResult> {
@@ -570,20 +560,17 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           ...(options?.limit !== undefined && { limit: options.limit }),
           ...(options?.prefix !== undefined && { prefix: options.prefix }),
         });
-        const items: StoredFile[] = page.keys.map((key) => {
+        const items: FileInfo[] = page.keys.map((key) => {
           const m = meta.get(key);
-          return createStoredFile(
-            {
-              key,
-              ...(m &&
-                Number.isFinite(m.modifyTime) && {
-                  lastModified: m.modifyTime,
-                }),
-              size: m?.size ?? 0,
-              type: inferTypeFromName(key),
-            },
-            { factory: lazyDownload(key), kind: "lazy" }
-          );
+          return {
+            contentType: inferTypeFromName(key),
+            key,
+            ...(m &&
+              Number.isFinite(m.modifyTime) && {
+                lastModified: m.modifyTime,
+              }),
+            size: m?.size ?? 0,
+          };
         });
         return {
           items,

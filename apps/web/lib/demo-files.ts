@@ -3,6 +3,7 @@ import type {
   DeleteManyResult,
   DownloadManyResult,
   ExistsManyResult,
+  FileInfo,
   HeadManyResult,
   ListResult,
   StoredFile,
@@ -111,33 +112,38 @@ const SAMPLE: SampleObject[] = [
   { age: 7, key: "changelog.txt", size: 3140, type: "text/plain" },
 ];
 
-const storedFile = (
-  key: string,
-  size = 0,
-  type = "application/octet-stream",
-  lastModified = NOW,
-  text = ""
-): StoredFile => ({
-  arrayBuffer: () => new Blob([text]).arrayBuffer(),
-  blob: () => Promise.resolve(new Blob([text], { type })),
-  key,
-  lastModified,
-  name: key.split("/").at(-1) ?? key,
-  size,
-  stream: () => new Blob([text]).stream(),
-  text: () => Promise.resolve(text),
-  type,
+// What head()/list()/search() return: metadata only, no body accessors.
+const sampleToInfo = (s: SampleObject): FileInfo => ({
+  contentType: s.type,
+  key: s.key,
+  lastModified: NOW - s.age * DAY,
+  size: s.size,
 });
 
-const sampleToStored = (s: SampleObject): StoredFile =>
-  storedFile(s.key, s.size, s.type, NOW - s.age * DAY, s.text);
+// Guess a plausible sample for an arbitrary key (head/download of anything).
+const inferSample = (key: string): SampleObject =>
+  SAMPLE.find((s) => s.key === key) ?? {
+    age: 0,
+    key,
+    size: 128_000,
+    type: "application/octet-stream",
+  };
 
-// Guess a plausible StoredFile for an arbitrary key (head/download of anything).
+const inferInfo = (key: string): FileInfo => sampleToInfo(inferSample(key));
+
+// What download() returns: the metadata plus `File`-like body accessors.
 const inferStored = (key: string): StoredFile => {
-  const match = SAMPLE.find((s) => s.key === key);
-  return match
-    ? sampleToStored(match)
-    : storedFile(key, 128_000, "application/octet-stream");
+  const sample = inferSample(key);
+  const text = sample.text ?? "";
+  return {
+    ...sampleToInfo(sample),
+    arrayBuffer: () => new Blob([text]).arrayBuffer(),
+    blob: () => Promise.resolve(new Blob([text], { type: sample.type })),
+    name: key,
+    stream: () => new Blob([text]).stream(),
+    text: () => Promise.resolve(text),
+    type: sample.type,
+  };
 };
 
 const list = (opts?: ListCallOptions): Promise<ListResult> => {
@@ -149,15 +155,15 @@ const list = (opts?: ListCallOptions): Promise<ListResult> => {
     under = SAMPLE;
   }
   if (!delimiter) {
-    return Promise.resolve({ items: under.map(sampleToStored) });
+    return Promise.resolve({ items: under.map(sampleToInfo) });
   }
-  const items: StoredFile[] = [];
+  const items: FileInfo[] = [];
   const prefixes = new Set<string>();
   for (const s of under) {
     const rest = s.key.slice(prefix.length);
     const cut = rest.indexOf(delimiter);
     if (cut === -1) {
-      items.push(sampleToStored(s));
+      items.push(sampleToInfo(s));
     } else {
       prefixes.add(prefix + rest.slice(0, cut + 1));
     }
@@ -204,7 +210,12 @@ function upload(
       })),
     });
   }
-  return Promise.resolve(storedFile("demo/uploaded.txt", 2048, "text/plain"));
+  return Promise.resolve({
+    contentType: "text/plain",
+    key: "demo/uploaded.txt",
+    lastModified: NOW,
+    size: 2048,
+  });
 }
 
 function download(key: string): Promise<StoredFile>;
@@ -220,14 +231,12 @@ function download(
   );
 }
 
-function head(key: string): Promise<StoredFile>;
+function head(key: string): Promise<FileInfo>;
 function head(keys: string[]): Promise<HeadManyResult>;
-function head(target: string | string[]): Promise<StoredFile | HeadManyResult> {
+function head(target: string | string[]): Promise<FileInfo | HeadManyResult> {
   log("head", target);
   return Promise.resolve(
-    Array.isArray(target)
-      ? { files: target.map(inferStored) }
-      : inferStored(target)
+    Array.isArray(target) ? { files: target.map(inferInfo) } : inferInfo(target)
   );
 }
 
@@ -266,7 +275,7 @@ export const demoFiles: UseFilesResult = {
   list,
   async *listAll() {
     for (const s of SAMPLE) {
-      yield sampleToStored(s);
+      yield sampleToInfo(s);
     }
   },
   move: (from: string, to: string) => {
@@ -281,15 +290,15 @@ export const demoFiles: UseFilesResult = {
   reset: () => log("reset"),
   restoreTrashed: (key: string) => {
     log("restoreTrashed", key);
-    return Promise.resolve(inferStored(key));
+    return Promise.resolve(inferInfo(key));
   },
   restoreVersion: (key: string) => {
     log("restoreVersion", key);
-    return Promise.resolve(inferStored(key));
+    return Promise.resolve(inferInfo(key));
   },
   async *search() {
     for (const s of SAMPLE.slice(0, 5)) {
-      yield sampleToStored(s);
+      yield sampleToInfo(s);
     }
   },
   signedUploadUrl: (key: string) => {

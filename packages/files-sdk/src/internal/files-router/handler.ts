@@ -6,7 +6,7 @@
 // type it touches is `Request` — forwarded opaquely to `authorize` — so the
 // dispatch itself stays framework-free and is driven by constructing requests.
 
-import type { Files, SearchMatch, StoredFile } from "../../index.js";
+import type { FileInfo, Files, SearchMatch } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
 import { FilesError, isDispositionUnsupported } from "../errors.js";
 import { globPrefix } from "../glob.js";
@@ -34,11 +34,11 @@ import type {
   ClientFileInfo,
   FilesOperation,
   WireBulkError,
+  WireFileInfo,
   WireFileVersion,
-  WireStoredFile,
   WireTrashedFile,
 } from "./protocol.js";
-import { bulkErrorToWire, storedFileToWire } from "./serialize.js";
+import { bulkErrorToWire, fileInfoToWire } from "./serialize.js";
 import type { UploadConfig } from "./upload.js";
 import {
   boundQuery,
@@ -254,7 +254,7 @@ const searchScoped = (
     signal: AbortSignal | undefined;
     unscope: (key: string) => string;
   }
-): AsyncIterable<StoredFile> => {
+): AsyncIterable<FileInfo> => {
   const paging = {
     ...(q.limit && { limit: q.limit }),
     signal: q.signal,
@@ -372,11 +372,11 @@ interface PluginMethods {
       etag?: string;
     }[]
   >;
-  restoreVersion?: (key: string, versionId?: string) => Promise<StoredFile>;
+  restoreVersion?: (key: string, versionId?: string) => Promise<FileInfo>;
   trashed?: () => Promise<
     { key: string; size: number; lastModified?: number; etag?: string }[]
   >;
-  restoreTrashed?: (key: string) => Promise<StoredFile>;
+  restoreTrashed?: (key: string) => Promise<FileInfo>;
   purge?: (key?: string) => Promise<void>;
 }
 
@@ -441,7 +441,7 @@ const dispatchJson = async (
       const file = await ctx.files.head(scopeKey(scope.prefix, key), {
         signal,
       });
-      return json({ file: storedFileToWire(file, unscoper(scope)) });
+      return json({ file: fileInfoToWire(file, unscoper(scope)) });
     }
     case "head-many": {
       const keys = keyBatch(ctx, body);
@@ -460,7 +460,7 @@ const dispatchJson = async (
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
-        files: result.files.map((f) => storedFileToWire(f, unscope)),
+        files: result.files.map((f) => fileInfoToWire(f, unscope)),
         ...(errors && { errors }),
       });
     }
@@ -608,7 +608,7 @@ const dispatchJson = async (
         }),
       });
       return json({
-        items: result.items.map((f) => storedFileToWire(f, unscope)),
+        items: result.items.map((f) => fileInfoToWire(f, unscope)),
         ...(result.prefixes && { prefixes: result.prefixes.map(unscope) }),
         ...(result.cursor && { cursor: result.cursor }),
       });
@@ -660,7 +660,7 @@ const dispatchJson = async (
         ctx.maxSearchResults
       );
       const unscope = unscoper(scope);
-      const matches: WireStoredFile[] = [];
+      const matches: WireFileInfo[] = [];
       let truncated = false;
       for await (const file of searchScoped(ctx, scope, {
         caseInsensitive,
@@ -676,7 +676,7 @@ const dispatchJson = async (
           truncated = true;
           break;
         }
-        matches.push(storedFileToWire(file, unscope));
+        matches.push(fileInfoToWire(file, unscope));
       }
       return json({ matches, truncated });
     }
@@ -769,7 +769,7 @@ const dispatchJson = async (
         scopeKey(scope.prefix, key),
         versionId
       );
-      return json({ file: storedFileToWire(file, unscoper(scope)) });
+      return json({ file: fileInfoToWire(file, unscoper(scope)) });
     }
     case "trashed": {
       const scope = await authorizeOp(ctx, {
@@ -806,7 +806,7 @@ const dispatchJson = async (
         return notConfigured("softDelete");
       }
       const file = await plugin.restoreTrashed(scopeKey(scope.prefix, key));
-      return json({ file: storedFileToWire(file, unscoper(scope)) });
+      return json({ file: fileInfoToWire(file, unscoper(scope)) });
     }
     case "purge": {
       requireOrigin(ctx, parsed);

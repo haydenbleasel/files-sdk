@@ -1,6 +1,6 @@
 "use client";
 
-import type { StoredFile } from "files-sdk";
+import type { FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import {
   ChevronRightIcon,
@@ -29,7 +29,7 @@ export interface FileBrowserProps {
    */
   onNavigate?: (prefix: string) => void;
   /** Called when a file row (not a folder) is clicked. */
-  onSelect?: (file: StoredFile) => void;
+  onSelect?: (file: FileInfo) => void;
   /** Called after a successful copy/rename/move/delete from a row's actions menu. */
   onChanged?: () => void;
   /** Hide the per-file actions menu. */
@@ -103,7 +103,7 @@ export const FileBrowser = ({
 }: FileBrowserProps) => {
   const [prefix, setPrefix] = useState(initialPrefix);
   const [folders, setFolders] = useState<string[]>([]);
-  const [items, setItems] = useState<StoredFile[]>([]);
+  const [items, setItems] = useState<FileInfo[]>([]);
   const [cursor, setCursor] = useState<string | undefined>();
   const [isLoading, setIsLoading] = useState(true);
   const [listError, setListError] = useState<string>();
@@ -310,7 +310,7 @@ export const FileBrowser = ({
                   {fileLabel(item.key, prefix)}
                 </span>
                 <span className="text-muted-foreground block text-xs">
-                  {formatBytes(item.size)} · {item.type || "unknown"}
+                  {formatBytes(item.size)} · {item.contentType || "unknown"}
                 </span>
               </span>
             </button>

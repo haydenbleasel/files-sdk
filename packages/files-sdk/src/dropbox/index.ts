@@ -12,13 +12,13 @@ import type {
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   MultipartOptions,
   OffsetResumableDriver,
   ResumableDriverOptions,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -431,22 +431,17 @@ const normalizeBody = async (
 // FTP/SFTP adapters, which have the same gap) so callers don't get
 // `application/octet-stream` for everything.
 
-interface FileMeta {
-  size: number;
-  type: string;
-  etag?: string;
-  lastModified?: number;
-}
+type FileMeta = Omit<FileInfo, "key" | "metadata">;
 
 const fileMetaFromDropbox = (item: files.FileMetadata): FileMeta => {
   const ms = item.server_modified
     ? new Date(item.server_modified).getTime()
     : undefined;
   return {
+    contentType: inferTypeFromName(item.name ?? ""),
     ...(item.rev && { etag: item.rev }),
     ...(ms !== undefined && Number.isFinite(ms) && { lastModified: ms }),
     size: item.size ?? 0,
-    type: inferTypeFromName(item.name ?? ""),
   };
 };
 
@@ -778,19 +773,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     }
     const prefix = `${rootFolderPath}/`;
     return inner.startsWith(prefix) ? inner.slice(prefix.length) : inner;
-  };
-
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures (a file deleted in between reads as
-  // NotFound) instead of leaking a raw SDK error out of `text()`.
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    try {
-      await authHandle.ensureAccessToken();
-      const res = await client.filesDownload({ path: keyToPath(key) });
-      return await downloadResultToBytes(res.result);
-    } catch (error) {
-      throw mapDropboxError(error);
-    }
   };
 
   const createPublicSharedLink = async (
@@ -1242,11 +1224,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
             `dropbox: ${key} is not a file (tag=${item[".tag"]})`
           );
         }
-        const meta = fileMetaFromDropbox(item);
-        return createStoredFile(
-          { key, ...meta },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return { key, ...fileMetaFromDropbox(item) };
       } catch (error) {
         throw mapDropboxError(error);
       }
@@ -1283,7 +1261,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
               req(options?.signal)
             );
         const { result } = res;
-        const items: StoredFile[] = [];
+        const items: FileInfo[] = [];
         const prefixes: string[] = [];
         // Classify one entry into items (files) or prefixes (folders, folded
         // mode only); nested so the loop's branching stays out of `list`.
@@ -1303,12 +1281,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           if (entry[".tag"] !== "file") {
             return;
           }
-          items.push(
-            createStoredFile(
-              { key, ...fileMetaFromDropbox(entry) },
-              { factory: lazyDownload(key), kind: "lazy" }
-            )
-          );
+          items.push({ key, ...fileMetaFromDropbox(entry) });
         };
         for (const entry of result.entries) {
           collect(entry);

@@ -1,5 +1,6 @@
 import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
+  FileInfo,
   Files,
   FilesOperation,
   FilesPlugin,
@@ -7,7 +8,6 @@ import type {
   ListResult,
   OperationResult,
   PluginNext,
-  StoredFile,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 
@@ -50,11 +50,11 @@ export type SoftDeleteApi = {
   trashed: () => Promise<TrashedFile[]>;
   /**
    * Bring a soft-deleted object back to its original key, removing it from the
-   * trash. Resolves to the restored {@link StoredFile} (via `head`). Throws when
-   * nothing is trashed for `key`. A live object at `key` (e.g. one re-created
-   * after the delete) is overwritten.
+   * trash. Resolves to the restored key's {@link FileInfo} (via `head`). Throws
+   * when nothing is trashed for `key`. A live object at `key` (e.g. one
+   * re-created after the delete) is overwritten.
    */
-  restoreTrashed: (key: string) => Promise<StoredFile>;
+  restoreTrashed: (key: string) => Promise<FileInfo>;
   /**
    * Permanently delete a trashed object — the one for `key`, or the **entire**
    * trash when `key` is omitted. Idempotent: purging a key with nothing trashed
@@ -208,7 +208,7 @@ export const softDelete = (
     return out;
   };
 
-  const restore = async (files: Files, key: string): Promise<StoredFile> => {
+  const restore = async (files: Files, key: string): Promise<FileInfo> => {
     const trashKey = trashKeyFor(key);
     if (!(await files.exists(trashKey))) {
       throw new FilesError(

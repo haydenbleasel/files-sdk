@@ -1,6 +1,7 @@
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
@@ -172,18 +173,20 @@ const defer = <T>(fn: () => T): Promise<T> => {
   }
 };
 
+const toInfo = (key: string, entry: MemoryEntry): FileInfo => ({
+  contentType: entry.contentType,
+  etag: entry.etag,
+  key,
+  lastModified: entry.lastModified,
+  // Clone on the way out too, so a caller mutating the returned metadata
+  // can't reach back into the stored entry.
+  ...(entry.metadata && { metadata: { ...entry.metadata } }),
+  size: entry.bytes.byteLength,
+});
+
 const toStored = (key: string, entry: MemoryEntry): StoredFile =>
   createStoredFile(
-    {
-      etag: entry.etag,
-      key,
-      lastModified: entry.lastModified,
-      // Clone on the way out too, so a caller mutating the returned
-      // StoredFile's metadata can't reach back into the stored entry.
-      ...(entry.metadata && { metadata: { ...entry.metadata } }),
-      size: entry.bytes.byteLength,
-      type: entry.contentType,
-    },
+    toInfo(key, entry),
     // Copy the bytes out as well. `arrayBuffer()` copies on its own, but
     // `stream()` enqueues the buffer it was given, so handing out the store's
     // own array would let a reader mutate a chunk and corrupt the stored
@@ -306,13 +309,13 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         );
         return createStoredFile(
           {
+            contentType: entry.contentType,
             etag: entry.etag,
             key,
             lastModified: entry.lastModified,
-            // Cloned out, same as toStored — see the note there.
+            // Cloned out, same as toInfo — see the note there.
             ...(entry.metadata && { metadata: { ...entry.metadata } }),
             size: sliced.byteLength,
-            type: entry.contentType,
           },
           { data: sliced, kind: "buffer" }
         );
@@ -322,7 +325,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       return Promise.resolve(store.has(key));
     },
     head(key) {
-      return defer(() => toStored(key, getOrThrow(key)));
+      return defer(() => toInfo(key, getOrThrow(key)));
     },
     list(options): Promise<ListResult> {
       const prefix = options?.prefix ?? "";
@@ -347,7 +350,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         const pageKeys = new Set(page.items);
         return Promise.resolve({
           items: sorted.flatMap(([key, entry]) =>
-            pageKeys.has(key) ? [toStored(key, entry)] : []
+            pageKeys.has(key) ? [toInfo(key, entry)] : []
           ),
           ...(page.cursor && { cursor: page.cursor }),
           ...(page.prefixes.length && { prefixes: page.prefixes }),
@@ -359,7 +362,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       const lastKey = slice.at(-1)?.[0];
       const more = start + slice.length < sorted.length;
       return Promise.resolve({
-        items: slice.map(([key, entry]) => toStored(key, entry)),
+        items: slice.map(([key, entry]) => toInfo(key, entry)),
         ...(more && lastKey && { cursor: lastKey }),
       });
     },

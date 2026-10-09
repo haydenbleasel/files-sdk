@@ -9,11 +9,11 @@ import { pathToFileURL } from "node:url";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -462,33 +462,19 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
   const root = path.resolve(opts.root);
   const { urlBaseUrl } = opts;
 
-  const storedFromSidecar = (
+  const infoFromSidecar = (
     key: string,
-    bodyPath: string,
     sidecar: Sidecar | undefined,
     size: number,
     mtimeMs: number
-  ): StoredFile => {
-    const meta = {
-      ...(sidecar?.etag && { etag: sidecar.etag }),
-      key,
-      lastModified: sidecar?.lastModified ?? mtimeMs,
-      ...(sidecar?.metadata && { metadata: sidecar.metadata }),
-      size,
-      type: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
-    };
-    return createStoredFile(meta, {
-      factory: async () => {
-        try {
-          const buf = await fsp.readFile(bodyPath);
-          return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-        } catch (error) {
-          throw mapFsError(error);
-        }
-      },
-      kind: "lazy",
-    });
-  };
+  ): FileInfo => ({
+    contentType: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
+    ...(sidecar?.etag && { etag: sidecar.etag }),
+    key,
+    lastModified: sidecar?.lastModified ?? mtimeMs,
+    ...(sidecar?.metadata && { metadata: sidecar.metadata }),
+    size,
+  });
 
   return {
     capabilities: {
@@ -561,11 +547,11 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
         const baseMeta = {
+          contentType: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
           ...(sidecar?.etag && { etag: sidecar.etag }),
           key,
           lastModified: sidecar?.lastModified ?? stat.mtimeMs,
           ...(sidecar?.metadata && { metadata: sidecar.metadata }),
-          type: sidecar?.contentType ?? DEFAULT_CONTENT_TYPE,
         };
         const range = downloadOpts?.range;
         // Node's createReadStream takes inclusive `start`/`end` byte offsets,
@@ -630,13 +616,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         const realBodyPath = await realpathUnderRoot(root, bodyPath, key);
         const stat = await fsp.stat(realBodyPath);
         const sidecar = await readSidecar(bodyPath);
-        return storedFromSidecar(
-          key,
-          realBodyPath,
-          sidecar,
-          stat.size,
-          stat.mtimeMs
-        );
+        return infoFromSidecar(key, sidecar, stat.size, stat.mtimeMs);
       } catch (error) {
         throw mapFsError(error);
       }
@@ -666,7 +646,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         ...(prefix && { prefix }),
         ...(cursor !== undefined && { cursor }),
       });
-      const items: StoredFile[] = [];
+      const items: FileInfo[] = [];
       for (const key of page.keys) {
         const bodyPath = path.join(root, ...key.split("/"));
         try {
@@ -674,9 +654,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           const stat = await fsp.stat(bodyPath);
           // eslint-disable-next-line no-await-in-loop -- sidecar read follows this key's stat within the same page iteration.
           const sidecar = await readSidecar(bodyPath);
-          items.push(
-            storedFromSidecar(key, bodyPath, sidecar, stat.size, stat.mtimeMs)
-          );
+          items.push(infoFromSidecar(key, sidecar, stat.size, stat.mtimeMs));
         } catch (error) {
           // A file that vanished between walk and stat — skip rather
           // than fail the whole list. Matches how cloud listings behave

@@ -4,12 +4,7 @@ import { createFilesRouter } from "../src/api/index.js";
 import { compression } from "../src/compression/index.js";
 import type { CompressionFormat } from "../src/compression/index.js";
 import { failover } from "../src/failover/index.js";
-import {
-  createStoredFile,
-  Files,
-  FilesError,
-  UploadControl,
-} from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
@@ -73,11 +68,11 @@ describe("compression plugin — round-trips", () => {
     const files = compressed();
     await files.upload("typed", TEXT, { contentType: "text/markdown" });
     const typed = await files.head("typed");
-    expect(typed.type).toBe("text/markdown");
+    expect(typed.contentType).toBe("text/markdown");
 
     await files.upload("inferred", TEXT);
     const inferred = await files.head("inferred");
-    expect(inferred.type).toBe("text/plain; charset=utf-8");
+    expect(inferred.contentType).toBe("text/plain; charset=utf-8");
   });
 
   test("supports deflate and deflate-raw formats", async () => {
@@ -116,8 +111,6 @@ describe("compression plugin — incompressible data", () => {
     const meta = await files.head("rand.bin");
     expect(meta.size).toBe(4096);
     expect(meta.metadata).toBeUndefined();
-    // The stored bytes already are the original, so head's body is too.
-    expect(new Uint8Array(await meta.arrayBuffer())).toEqual(random);
   });
 });
 
@@ -161,30 +154,36 @@ describe("compression plugin — metadata", () => {
   });
 });
 
-describe("compression plugin — head and list bodies", () => {
-  test("head() body accessors decompress instead of returning gzip bytes", async () => {
+describe("compression plugin — head and list metadata", () => {
+  test("head() and list() return plain metadata with no body accessors", async () => {
     const files = compressed();
-    await files.upload("a.txt", TEXT);
-    const forText = await files.head("a.txt");
-    expect(await forText.text()).toBe(TEXT);
-    const forStream = await files.head("a.txt", { timeout: 5000 });
-    expect(await new Response(forStream.stream()).text()).toBe(TEXT);
-  });
-
-  test("list() item bodies decompress; plaintext siblings keep their own", async () => {
-    const adapter = fakeAdapter();
-    const files = compressed(adapter);
-    await files.upload("zip.txt", TEXT);
-    await new Files({ adapter }).upload("plain.txt", "open");
+    await files.upload("a.txt", TEXT, { metadata: { owner: "bob" } });
+    const head = await files.head("a.txt");
+    expect(Object.keys(head).toSorted()).toEqual([
+      "contentType",
+      "etag",
+      "key",
+      "lastModified",
+      "metadata",
+      "size",
+    ]);
+    expect(head).toMatchObject({
+      contentType: "text/plain; charset=utf-8",
+      key: "a.txt",
+      metadata: { owner: "bob" },
+      size: TEXT.length,
+    });
     const { items } = await files.list();
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["open", TEXT]);
+    expect(items).toEqual([head]);
+    // Reading the original bytes is an explicit download.
+    const downloaded = await files.download("a.txt");
+    expect(await downloaded.text()).toBe(TEXT);
   });
 
-  test("list() item bodies decompress on an adapter whose listing has no metadata", async () => {
+  test("list() items with no metadata pass through at their stored size", async () => {
     // S3 and the S3-compatibles return no metadata from list(), so there's no
-    // algorithm marker to spot; the body must still read back through the
-    // plugin rather than hand out the stored gzip bytes.
+    // algorithm marker to spot: the item reports the stored (compressed)
+    // size, and a download still decompresses.
     const inner = fakeAdapter();
     const adapter: Adapter = {
       ...inner,
@@ -192,30 +191,18 @@ describe("compression plugin — head and list bodies", () => {
         const page = await inner.list(opts);
         return {
           ...page,
-          items: page.items.map((file) =>
-            createStoredFile(
-              {
-                etag: file.etag,
-                key: file.key,
-                lastModified: file.lastModified,
-                size: file.size,
-                type: file.type,
-              },
-              {
-                factory: async () => new Uint8Array(await file.arrayBuffer()),
-                kind: "lazy",
-              }
-            )
-          ),
+          items: page.items.map(({ metadata: _metadata, ...file }) => file),
         };
       },
     };
     const files = compressed(adapter);
     await files.upload("zip.txt", TEXT);
-    await new Files({ adapter }).upload("plain.txt", "open");
     const { items } = await files.list();
-    const texts = await Promise.all(items.map((file) => file.text()));
-    expect(texts).toEqual(["open", TEXT]);
+    const [zip] = items;
+    expect(zip?.metadata).toBeUndefined();
+    expect(zip?.size).toBeLessThan(TEXT.length);
+    const downloaded = await files.download("zip.txt");
+    expect(await downloaded.text()).toBe(TEXT);
   });
 });
 

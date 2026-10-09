@@ -3,7 +3,7 @@ import { PassThrough, Readable, Writable } from "node:stream";
 import type { ConnectionOptions as TLSConnectionOptions } from "node:tls";
 
 import { Client } from "basic-ftp";
-import type { FileInfo } from "basic-ftp";
+import type { FileInfo as FtpFileInfo } from "basic-ftp";
 
 import type {
   Adapter,
@@ -12,6 +12,7 @@ import type {
   DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
+  FileInfo,
   ListOptions,
   ListResult,
   OffsetResumableDriver,
@@ -195,7 +196,7 @@ const listedInParent = async (
   remote: string
 ): Promise<boolean> => {
   const { dir, base } = splitRemote(remote);
-  let entries: FileInfo[];
+  let entries: FtpFileInfo[];
   try {
     entries = await client.list(dir);
   } catch (error) {
@@ -432,13 +433,6 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     }
   };
 
-  const lazyDownload = (key: string) => async (): Promise<Uint8Array> => {
-    const buf = await run(undefined, (client) =>
-      downloadToBuffer(client, keyToRemote(key))
-    );
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  };
-
   const adapter: FtpAdapter = {
     capabilities: {
       delimiter: "any",
@@ -522,10 +516,10 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           const lastModified = await tryLastMod(client, remote);
           return createStoredFile(
             {
+              contentType: inferTypeFromName(key),
               key,
               ...(lastModified !== undefined && { lastModified }),
               size: bytes.byteLength,
-              type: inferTypeFromName(key),
             },
             { data: bytes, kind: "buffer" }
           );
@@ -564,10 +558,10 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           });
           return createStoredFile(
             {
+              contentType: inferTypeFromName(key),
               key,
               ...(lastModified !== undefined && { lastModified }),
               size,
-              type: inferTypeFromName(key),
             },
             {
               factory: () => toWebStream(pass),
@@ -590,10 +584,10 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         );
         return createStoredFile(
           {
+            contentType: inferTypeFromName(key),
             key,
             ...(lastModified !== undefined && { lastModified }),
             size: bytes.byteLength,
-            type: inferTypeFromName(key),
           },
           { data: bytes, kind: "buffer" }
         );
@@ -609,21 +603,18 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         mapFtpError
       );
     },
-    head(key, opts2?: OperationOptions): Promise<StoredFile> {
+    head(key, opts2?: OperationOptions): Promise<FileInfo> {
       const remote = keyToRemote(key);
       return run(opts2?.signal, async (client) => {
         const size = await client.size(remote);
         // oxlint-disable-next-line react-doctor/server-sequential-independent-await -- single FTP control connection cannot multiplex; these commands must run one at a time
         const lastModified = await tryLastMod(client, remote);
-        return createStoredFile(
-          {
-            key,
-            ...(lastModified !== undefined && { lastModified }),
-            size,
-            type: inferTypeFromName(key),
-          },
-          { factory: lazyDownload(key), kind: "lazy" }
-        );
+        return {
+          contentType: inferTypeFromName(key),
+          key,
+          ...(lastModified !== undefined && { lastModified }),
+          size,
+        };
       });
     },
     list(options?: ListOptions): Promise<ListResult> {
@@ -631,7 +622,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         const keys: string[] = [];
         const meta = new Map<string, { size: number; lastModified?: number }>();
         const walk = async (dir: string, prefix: string): Promise<void> => {
-          let entries: FileInfo[];
+          let entries: FtpFileInfo[];
           try {
             entries = await client.list(dir);
           } catch (error) {
@@ -682,19 +673,16 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           ...(options?.limit !== undefined && { limit: options.limit }),
           ...(options?.prefix !== undefined && { prefix: options.prefix }),
         });
-        const items: StoredFile[] = page.keys.map((key) => {
+        const items: FileInfo[] = page.keys.map((key) => {
           const m = meta.get(key);
-          return createStoredFile(
-            {
-              key,
-              ...(m?.lastModified !== undefined && {
-                lastModified: m.lastModified,
-              }),
-              size: m?.size ?? 0,
-              type: inferTypeFromName(key),
-            },
-            { factory: lazyDownload(key), kind: "lazy" }
-          );
+          return {
+            contentType: inferTypeFromName(key),
+            key,
+            ...(m?.lastModified !== undefined && {
+              lastModified: m.lastModified,
+            }),
+            size: m?.size ?? 0,
+          };
         });
         return {
           items,

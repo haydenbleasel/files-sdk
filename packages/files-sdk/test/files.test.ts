@@ -574,7 +574,7 @@ describe("Files class", () => {
 
     const meta = await file.head();
     expect(meta.key).toBe("handle.txt");
-    expect(meta.type).toBe("text/plain");
+    expect(meta.contentType).toBe("text/plain");
 
     const downloaded = await file.download();
     expect(await downloaded.text()).toBe("hello");
@@ -1192,12 +1192,12 @@ describe("Files class", () => {
 
     const head = await files.head(uploaded.key);
     expect(head.key).toBe("123");
-    // `name` aliases the key and must be stripped alongside it.
-    expect(head.name).toBe("123");
     expect(await files.exists(uploaded.key)).toBe(true);
 
     const downloaded = await files.download(uploaded.key);
     expect(downloaded.key).toBe("123");
+    // `name` aliases the key and must be stripped alongside it.
+    expect(downloaded.name).toBe("123");
     expect(downloaded.name).toBe("123");
     expect(await downloaded.text()).toBe("avatar");
   });
@@ -2067,7 +2067,7 @@ const signalAwareAdapter = (chunkDelay: number): Adapter => {
       });
       return Promise.resolve(
         createStoredFile(
-          { key, size: 1, type: "application/octet-stream" },
+          { contentType: "application/octet-stream", key, size: 1 },
           { factory: () => body, kind: "stream" }
         )
       );
@@ -2584,5 +2584,39 @@ describe("SDK-side gates", () => {
     const ok = await files.upload("/ok.txt", "fine");
     expect(ok.key).toBe("ok.txt");
     expect(adapter.has("users/ok.txt")).toBe(true);
+  });
+});
+
+describe("metadata results", () => {
+  test("head, list, listAll, and search return plain FileInfo with no body", async () => {
+    const files = new Files({ adapter: fakeAdapter(), prefix: "p" });
+    await files.upload("a.txt", "hi", { contentType: "text/plain" });
+    const expected = {
+      contentType: "text/plain",
+      etag: expect.any(String),
+      key: "a.txt",
+      lastModified: expect.any(Number),
+      size: 2,
+    };
+    const info = await files.head("a.txt");
+    expect(info).toEqual(expected);
+    const { items } = await files.list();
+    const [item] = items;
+    expect(item).toEqual(expected);
+    for (const result of [info, item]) {
+      expect(result).not.toHaveProperty("text");
+      expect(result).not.toHaveProperty("stream");
+      expect(result).not.toHaveProperty("name");
+    }
+    expect(await Array.fromAsync(files.listAll())).toEqual([expected]);
+    expect(await Array.fromAsync(files.search("*.txt"))).toEqual([expected]);
+    // The body is always an explicit download, which keeps the File-like aliases.
+    const file = await files.download("a.txt");
+    expect(file).toMatchObject({
+      ...expected,
+      name: "a.txt",
+      type: "text/plain",
+    });
+    expect(await file.text()).toBe("hi");
   });
 });

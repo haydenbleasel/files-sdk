@@ -1,7 +1,8 @@
 // Public client-facing option/result types for `createFilesClient` and the
-// React `useFiles` hook. Where a shape already exists on the SDK (`StoredFile`,
-// `ListResult`, the bulk result types, `SignedUpload`, `AdapterCapabilities`)
-// it is reused verbatim so the browser surface is identical to the server SDK.
+// React `useFiles` hook. Where a shape already exists on the SDK (`FileInfo`,
+// `StoredFile`, `ListResult`, the bulk result types, `SignedUpload`,
+// `AdapterCapabilities`) it is reused verbatim so the browser surface is
+// identical to the server SDK.
 
 import type {
   AdapterCapabilities,
@@ -9,6 +10,7 @@ import type {
   DeleteManyResult,
   DownloadManyResult,
   ExistsManyResult,
+  FileInfo,
   HeadManyResult,
   ListResult,
   SearchMatch,
@@ -107,13 +109,8 @@ export interface UploadManyCallOptions extends BulkCallOptions {
   onProgress?: UploadProgressCallback;
 }
 
-export interface UploadOutcome {
-  key: string;
-  size: number;
-  type: string;
-  etag?: string;
-  lastModified?: number;
-}
+/** What a client upload resolves to: the stored object's {@link FileInfo}, as on the server. */
+export type UploadOutcome = FileInfo;
 
 /**
  * A React Native file reference — the `{ uri, name, type }` shape Expo's
@@ -199,7 +196,7 @@ export interface FilesClient {
   };
 
   head: {
-    (key: string, opts?: CallOptions): Promise<StoredFile>;
+    (key: string, opts?: CallOptions): Promise<FileInfo>;
     (keys: string[], opts?: BulkCallOptions): Promise<HeadManyResult>;
   };
 
@@ -221,11 +218,11 @@ export interface FilesClient {
     opts: SignUploadCallOptions
   ) => Promise<SignedUpload>;
   list: (opts?: ListCallOptions) => Promise<ListResult>;
-  listAll: (opts?: ListCallOptions) => AsyncGenerator<StoredFile, void>;
+  listAll: (opts?: ListCallOptions) => AsyncGenerator<FileInfo, void>;
   search: (
     pattern: string | RegExp,
     opts?: SearchCallOptions
-  ) => AsyncGenerator<StoredFile, void>;
+  ) => AsyncGenerator<FileInfo, void>;
   capabilities: (opts?: CallOptions) => Promise<AdapterCapabilities>;
 
   // Plugin verbs — resolve only when the server gateway exposes the matching
@@ -236,8 +233,8 @@ export interface FilesClient {
     key: string,
     versionId?: string,
     opts?: CallOptions
-  ) => Promise<StoredFile>;
+  ) => Promise<FileInfo>;
   trashed: (opts?: CallOptions) => Promise<TrashedFile[]>;
-  restoreTrashed: (key: string, opts?: CallOptions) => Promise<StoredFile>;
+  restoreTrashed: (key: string, opts?: CallOptions) => Promise<FileInfo>;
   purge: (key?: string, opts?: CallOptions) => Promise<void>;
 }

@@ -1,5 +1,6 @@
 import type {
   Adapter,
+  FileInfo,
   OffsetResumableDriver,
   ResumableUploadSession,
   StoredFile,
@@ -228,24 +229,21 @@ const stripEtag = (etag: string | undefined): string | undefined =>
 const bytesFromFile = async (file: BunS3FileLike): Promise<Uint8Array> =>
   file.bytes ? file.bytes() : new Uint8Array(await file.arrayBuffer());
 
+const infoFromStat = (key: string, stat: BunS3Stats): FileInfo => ({
+  contentType: stat.type || DEFAULT_CONTENT_TYPE,
+  etag: stripEtag(stat.etag),
+  key,
+  lastModified: stat.lastModified.getTime(),
+  size: stat.size,
+});
+
 const storedFromStat = (
   key: string,
   stat: BunS3Stats,
   body:
     | { kind: "buffer"; data: Uint8Array }
-    | { kind: "lazy"; factory: () => Promise<Uint8Array> }
     | { kind: "stream"; factory: () => ReadableStream<Uint8Array> }
-): StoredFile =>
-  createStoredFile(
-    {
-      etag: stripEtag(stat.etag),
-      key,
-      lastModified: stat.lastModified.getTime(),
-      size: stat.size,
-      type: stat.type || DEFAULT_CONTENT_TYPE,
-    },
-    body
-  );
+): StoredFile => createStoredFile(infoFromStat(key, stat), body);
 
 // Bun's `S3Stats` exposes its fields as prototype getters, so `{ ...stat }`
 // copies none of them (`lastModified` comes back undefined). Copy each field
@@ -421,10 +419,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     },
     async head(key) {
       try {
-        return storedFromStat(key, await client.stat(key), {
-          factory: () => bytesFromFile(client.file(key)),
-          kind: "lazy",
-        });
+        return infoFromStat(key, await client.stat(key));
       } catch (error) {
         throw mapBunS3Error(error);
       }
@@ -437,30 +432,24 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           ...(options?.cursor && { continuationToken: options.cursor }),
           ...(options?.delimiter && { delimiter: options.delimiter }),
         });
-        const items = (result.contents ?? []).map((obj) => {
+        const items = (result.contents ?? []).map((obj): FileInfo => {
           const lastModified = obj.lastModified
             ? new Date(obj.lastModified).getTime()
             : undefined;
-          return createStoredFile(
-            {
-              etag: stripEtag(obj.eTag),
-              key: obj.key,
-              lastModified:
-                lastModified === undefined || Number.isNaN(lastModified)
-                  ? undefined
-                  : lastModified,
-              size: obj.size ?? 0,
-              // A list response carries no `Content-Type`, so approximate it
-              // from the key like the rest of the S3 family (`s3()`,
-              // `s3Fetch()`) instead of labelling every object a binary blob.
-              // Unknown extensions still fall back to `DEFAULT_CONTENT_TYPE`.
-              type: inferTypeFromName(obj.key),
-            },
-            {
-              factory: () => bytesFromFile(client.file(obj.key)),
-              kind: "lazy",
-            }
-          );
+          return {
+            // A list response carries no `Content-Type`, so approximate it
+            // from the key like the rest of the S3 family (`s3()`,
+            // `s3Fetch()`) instead of labelling every object a binary blob.
+            // Unknown extensions still fall back to `DEFAULT_CONTENT_TYPE`.
+            contentType: inferTypeFromName(obj.key),
+            etag: stripEtag(obj.eTag),
+            key: obj.key,
+            lastModified:
+              lastModified === undefined || Number.isNaN(lastModified)
+                ? undefined
+                : lastModified,
+            size: obj.size ?? 0,
+          };
         });
         const prefixes = (result.commonPrefixes ?? []).map((p) => p.prefix);
         return {

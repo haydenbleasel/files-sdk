@@ -8,11 +8,11 @@ import { GoogleAuth, JWT, OAuth2Client } from "google-auth-library";
 import type {
   Adapter,
   Body,
+  FileInfo,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
   SignedUpload,
-  StoredFile,
   UploadResult,
 } from "../index.js";
 import {
@@ -448,13 +448,7 @@ const overwriteProps = (
   return merged as AppProperties;
 };
 
-interface StoredMeta {
-  size: number;
-  type: string;
-  etag?: string;
-  lastModified?: number;
-  metadata?: Record<string, string>;
-}
+type FileMeta = Omit<FileInfo, "key">;
 
 // The subset of a Drive `files` resource the resumable finalize response
 // carries (restricted to the `fields` requested at session initiation).
@@ -466,7 +460,7 @@ interface ResumableUploadResult {
   modifiedTime?: string;
 }
 
-const fileToStoredMeta = (file: drive_v3.Schema$File): StoredMeta => {
+const fileToMeta = (file: drive_v3.Schema$File): FileMeta => {
   const props: Record<string, string> = file.appProperties ?? {};
   const userMeta: Record<string, string> = {};
   for (const [k, v] of Object.entries(props)) {
@@ -479,13 +473,13 @@ const fileToStoredMeta = (file: drive_v3.Schema$File): StoredMeta => {
   }
   const ct = props[CONTENT_TYPE_PROP] ?? file.mimeType ?? OCTET_STREAM;
   return {
+    contentType: ct,
     ...(file.md5Checksum && { etag: file.md5Checksum }),
     ...(file.modifiedTime && {
       lastModified: new Date(file.modifiedTime).getTime(),
     }),
     ...(Object.keys(userMeta).length > 0 && { metadata: userMeta }),
     size: Number(file.size ?? 0),
-    type: ct,
   };
 };
 
@@ -702,25 +696,6 @@ export const googleDrive = (
     );
   };
 
-  // The lazy body behind head()/list() results runs after the operation has
-  // returned, so it maps its own failures (a file deleted in between reads as
-  // NotFound) instead of leaking a raw SDK error out of `text()`.
-  const lazyDownload = (fileId: string) => async (): Promise<Uint8Array> => {
-    try {
-      const res = await driveClient.files.get(
-        { ...sharedDriveParams, alt: "media", fileId },
-        { responseType: "arraybuffer" }
-      );
-      // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
-      // resolves `data` with the file's bytes, not the `Schema$File` the
-      // generated types declare; `toUint8` checks the shape at runtime.
-      const payload = res.data as DriveMediaPayload;
-      return toUint8(payload);
-    } catch (error) {
-      throw mapDriveError(error);
-    }
-  };
-
   return {
     capabilities: {
       cacheControl: true,
@@ -839,7 +814,7 @@ export const googleDrive = (
           if (range) {
             assertRangeHonored(mediaRes.status, PROVIDER);
           }
-          const m = fileToStoredMeta(metaRes.data);
+          const m = fileToMeta(metaRes.data);
           // SAFETY: with `alt: "media"` + `responseType: "stream"` gaxios
           // resolves `data` with a Node Readable of the file's bytes, not the
           // `Schema$File` the generated types declare.
@@ -873,7 +848,7 @@ export const googleDrive = (
         if (range) {
           assertRangeHonored(mediaRes.status, PROVIDER);
         }
-        const m = fileToStoredMeta(metaRes.data);
+        const m = fileToMeta(metaRes.data);
         // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
         // resolves `data` with the file's bytes, not the `Schema$File` the
         // generated types declare; `toUint8` checks the shape at runtime.
@@ -911,11 +886,7 @@ export const googleDrive = (
           },
           signalOpts(operationOpts?.signal)
         );
-        const m = fileToStoredMeta(res.data);
-        return createStoredFile(
-          { key, ...m },
-          { factory: lazyDownload(fileId), kind: "lazy" }
-        );
+        return { key, ...fileToMeta(res.data) };
       } catch (error) {
         throw mapDriveError(error);
       }
@@ -923,19 +894,11 @@ export const googleDrive = (
     async list(options): Promise<ListResult> {
       try {
         const q = `'${escapeQueryValue(rootFolderId)}' in parents and trashed=false`;
-        const toItem = (
-          f: drive_v3.Schema$File,
-          fsdkKey: string
-        ): StoredFile => {
-          const m = fileToStoredMeta(f);
-          const fileId = f.id ?? "";
-          if (fileId) {
-            fileIdCache.set(fsdkKey, fileId);
+        const toItem = (f: drive_v3.Schema$File, fsdkKey: string): FileInfo => {
+          if (f.id) {
+            fileIdCache.set(fsdkKey, f.id);
           }
-          return createStoredFile(
-            { key: fsdkKey, ...m },
-            { factory: lazyDownload(fileId), kind: "lazy" }
-          );
+          return { key: fsdkKey, ...fileToMeta(f) };
         };
         const keyOf = (f: drive_v3.Schema$File): string | undefined =>
           f.appProperties?.[KEY_PROP];
@@ -997,7 +960,7 @@ export const googleDrive = (
           signalOpts(options?.signal)
         );
         const driveFiles = res.data.files ?? [];
-        const items: StoredFile[] = [];
+        const items: FileInfo[] = [];
         for (const f of driveFiles) {
           const fsdkKey = keyOf(f);
           if (

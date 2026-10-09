@@ -7,13 +7,13 @@ import type {
   Adapter,
   Body,
   ByteRange,
+  FileInfo,
   ListOptions,
   ListResult,
   OffsetResumableDriver,
   ResumableUploadSession,
   SignUploadOptions,
   SignedUpload,
-  StoredFile,
   UploadOptions,
   UploadResult,
   UrlOptions,
@@ -53,8 +53,8 @@ export interface CloudinaryAdapterOptions {
   /**
    * Cloudinary API secret. Falls back to `CLOUDINARY_API_SECRET` or the value
    * parsed out of `CLOUDINARY_URL`. Required for `signedUploadUrl()` and for
-   * private/authenticated `url()` signing and reads (`download()` and lazy
-   * `head()`/`list()` bodies fetch through a signed URL for those types).
+   * private/authenticated `url()` signing and reads (`download()` fetches
+   * through a signed URL for those types).
    */
   apiSecret?: string;
   /**
@@ -225,6 +225,18 @@ const resolveContentType = (
   return "application/octet-stream";
 };
 
+// What `head()` and `list()` return for an asset (and the metadata half of a
+// `download()`), keyed by the caller's key rather than `public_id`.
+const toFileInfo = (resource: CloudinaryResource, key: string): FileInfo => ({
+  contentType: resolveContentType(resource),
+  ...(resource.etag && { etag: resource.etag }),
+  key,
+  ...(resource.created_at && {
+    lastModified: new Date(resource.created_at).getTime(),
+  }),
+  size: resource.bytes ?? 0,
+});
+
 export const cloudinaryAdapter = (
   opts: CloudinaryAdapterOptions = {}
 ): CloudinaryAdapter => {
@@ -318,40 +330,29 @@ export const cloudinaryAdapter = (
       ? buildDeliveryUrl(key)
       : buildSignedDeliveryUrl(key, format, signedUrlExpiresIn);
 
-  // `signal` is only threaded when `download()` calls this inline; the
-  // head()/list() factories invoke it lazily (outside any operation scope) and
-  // pass none, matching how the other adapters leave deferred bodies unsigned.
-  // Those lazy reads run after the operation returned, so failures are mapped
-  // here rather than escaping raw (a transport error) out of `text()`.
-  const lazyDownload =
-    (
-      key: string,
-      format: string | undefined,
-      signal?: AbortSignal,
-      range?: ByteRange
-    ) =>
-    async (): Promise<Uint8Array> => {
-      try {
-        const url = readUrl(key, format);
-        const res = await fetch(url, {
-          ...(signal && { signal }),
-          ...(range && { headers: rangeRequestHeaders(range) }),
-        });
-        if (!res.ok) {
-          throw new FilesError(
-            res.status === 404 ? "NotFound" : "Provider",
-            `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
-          );
-        }
-        if (range) {
-          assertRangeHonored(res.status, "cloudinary");
-        }
-        const buf = await res.arrayBuffer();
-        return new Uint8Array(buf);
-      } catch (error) {
-        throw mapCloudinaryError(error);
-      }
-    };
+  // `download()`'s body read. Its caller maps failures (a transport error,
+  // a non-OK status) through `mapCloudinaryError`.
+  const readBytes = async (
+    key: string,
+    format: string | undefined,
+    signal: AbortSignal | undefined,
+    range: ByteRange | undefined
+  ): Promise<Uint8Array> => {
+    const res = await fetch(readUrl(key, format), {
+      ...(signal && { signal }),
+      ...(range && { headers: rangeRequestHeaders(range) }),
+    });
+    if (!res.ok) {
+      throw new FilesError(
+        res.status === 404 ? "NotFound" : "Provider",
+        `cloudinary: download failed for "${key}" (${res.status} ${res.statusText})`
+      );
+    }
+    if (range) {
+      assertRangeHonored(res.status, "cloudinary");
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  };
 
   return {
     capabilities: {
@@ -414,30 +415,25 @@ export const cloudinaryAdapter = (
         if (type === "upload") {
           [resource, bytes] = await Promise.all([
             resourcePromise,
-            lazyDownload(key, undefined, downloadOpts?.signal, range)(),
+            readBytes(key, undefined, downloadOpts?.signal, range),
           ]);
         } else {
           resource = await resourcePromise;
-          bytes = await lazyDownload(
+          bytes = await readBytes(
             key,
             resource.format,
             downloadOpts?.signal,
             range
-          )();
+          );
         }
         return createStoredFile(
           {
-            ...(resource.etag && { etag: resource.etag }),
-            key,
-            ...(resource.created_at && {
-              lastModified: new Date(resource.created_at).getTime(),
-            }),
+            ...toFileInfo(resource, key),
             // `resource.bytes` is the full asset size — for a ranged read the
             // bytes we actually fetched are authoritative.
             size: range
               ? bytes.byteLength
               : (resource.bytes ?? bytes.byteLength),
-            type: resolveContentType(resource),
           },
           { data: bytes, kind: "buffer" }
         );
@@ -461,40 +457,15 @@ export const cloudinaryAdapter = (
           resource_type: resourceType,
           type,
         });
-        return createStoredFile(
-          {
-            ...(resource.etag && { etag: resource.etag }),
-            key,
-            ...(resource.created_at && {
-              lastModified: new Date(resource.created_at).getTime(),
-            }),
-            size: resource.bytes ?? 0,
-            type: resolveContentType(resource),
-          },
-          { factory: lazyDownload(key, resource.format), kind: "lazy" }
-        );
+        return toFileInfo(resource, key);
       } catch (error) {
         throw mapCloudinaryError(error);
       }
     },
     async list(listOpts?: ListOptions): Promise<ListResult> {
       try {
-        const toStored = (resource: CloudinaryResource): StoredFile =>
-          createStoredFile(
-            {
-              ...(resource.etag && { etag: resource.etag }),
-              key: resource.public_id,
-              ...(resource.created_at && {
-                lastModified: new Date(resource.created_at).getTime(),
-              }),
-              size: resource.bytes ?? 0,
-              type: resolveContentType(resource),
-            },
-            {
-              factory: lazyDownload(resource.public_id, resource.format),
-              kind: "lazy",
-            }
-          );
+        const toItem = (resource: CloudinaryResource): FileInfo =>
+          toFileInfo(resource, resource.public_id);
         // resources() lists every public_id under the prefix (recursively),
         // with no native folder mode that matches our API, so gather them all
         // and synthesize the common prefixes in memory. Nested so the flat
@@ -528,7 +499,7 @@ export const cloudinaryAdapter = (
           // every lookup hits.
           return {
             items: page.items.map((key) =>
-              toStored(byKey.get(key) as CloudinaryResource)
+              toItem(byKey.get(key) as CloudinaryResource)
             ),
             ...(page.cursor && { cursor: page.cursor }),
             ...(page.prefixes.length && { prefixes: page.prefixes }),
@@ -546,7 +517,7 @@ export const cloudinaryAdapter = (
           ...(listOpts?.prefix && { prefix: listOpts.prefix }),
           ...(listOpts?.cursor && { next_cursor: listOpts.cursor }),
         });
-        const items: StoredFile[] = (response.resources ?? []).map(toStored);
+        const items: FileInfo[] = (response.resources ?? []).map(toItem);
         return {
           ...(response.next_cursor && { cursor: response.next_cursor }),
           items,

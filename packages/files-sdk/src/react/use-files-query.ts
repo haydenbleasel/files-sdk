@@ -14,7 +14,7 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
-import type { ListResult, StoredFile } from "../index.js";
+import type { FileInfo, ListResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { isFunction } from "../internal/is.js";
 import type { UseFilesOptions } from "./use-files.js";
@@ -132,7 +132,7 @@ export const useList = (
 export const useFile = (
   key: string | undefined,
   config?: QueryConfig
-): QueryResult<StoredFile> => {
+): QueryResult<FileInfo> => {
   const client = useClient(config);
   const enabled = (config?.enabled ?? true) && key !== undefined;
   // SAFETY: `enabled` is false whenever `key` is undefined, and `useQuery`
@@ -149,7 +149,7 @@ export const useSearch = (
   pattern: string | RegExp | undefined,
   opts: SearchCallOptions = {},
   config?: QueryConfig
-): QueryResult<StoredFile[]> => {
+): QueryResult<FileInfo[]> => {
   const client = useClient(config);
   const enabled = (config?.enabled ?? true) && pattern !== undefined;
   const key = JSON.stringify({
@@ -167,7 +167,7 @@ export const useSearch = (
   return useQuery(
     key,
     async (signal) => {
-      const out: StoredFile[] = [];
+      const out: FileInfo[] = [];
       for await (const file of client.search(pattern as string | RegExp, {
         ...opts,
         signal,

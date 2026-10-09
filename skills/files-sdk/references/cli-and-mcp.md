@@ -1,6 +1,6 @@
 # CLI & MCP server
 
-`files-sdk` ships a `files` binary at full parity with the SDK, plus a built-in MCP server. Same adapters, same `FilesError` codes, same `StoredFile` shape — JSON-by-default output and stdin/stdout streaming.
+`files-sdk` ships a `files` binary at full parity with the SDK, plus a built-in MCP server. Same adapters, same `FilesError` codes, same `FileInfo` shape — JSON-by-default output and stdin/stdout streaming.
 
 ## Install & select a provider
 

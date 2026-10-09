@@ -1,9 +1,8 @@
 import { handlers } from "../index.js";
 import type {
+  FileInfo,
   FilesOperation,
   FilesPlugin,
-  OperationOptions,
-  PluginNext,
   StoredFile,
   UploadOptions,
 } from "../index.js";
@@ -98,19 +97,24 @@ const stripInternalMeta = (
 };
 
 /**
- * Re-report a stored file's logical (uncompressed) size and hide the internal
- * metadata fields, without touching the body. Used for verbatim-stored
- * (`identity`) objects, whose stored bytes already are the original. Objects
- * this plugin didn't write pass through untouched.
+ * Re-report an object's logical (uncompressed) size and hide the internal
+ * metadata fields — what `head` / `list` return, and the bookkeeping fix for a
+ * verbatim-stored (`identity`) download, whose stored bytes already are the
+ * original. Objects this plugin didn't write — or a `list()` item with no
+ * metadata at all, which S3 and the S3-compatibles return — pass through
+ * untouched.
  */
-const correctMeta = (file: StoredFile): StoredFile => {
+const logical = (file: FileInfo): FileInfo => {
   const { metadata } = file;
   if (!metadata?.[META.alg]) {
     return file;
   }
   const size = Number.parseInt(metadata[META.size] ?? "", RADIX);
   return {
-    ...file,
+    contentType: file.contentType,
+    etag: file.etag,
+    key: file.key,
+    lastModified: file.lastModified,
     metadata: stripInternalMeta(metadata),
     size: Number.isNaN(size) ? file.size : size,
   };
@@ -151,11 +155,11 @@ const correctMeta = (file: StoredFile): StoredFile => {
  *   reports `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` as
  *   `false` to match, so the `files-sdk/api` gateway proxies uploads and
  *   downloads through the instance.
- * - **`head` / `list` never decompress eagerly** — they report the original
- *   size, and their body accessors download and decompress only when called.
- *   On adapters whose `list()` returns no metadata (S3 and the
- *   S3-compatibles), `list()` items report the stored (compressed) size; their
- *   bodies still decompress.
+ * - **`head` / `list` never decompress** — they return metadata only,
+ *   reporting the original size with the internal fields hidden; read the
+ *   original bytes with `download()`. On adapters whose `list()` returns no
+ *   metadata (S3 and the S3-compatibles), `list()` items report the stored
+ *   (compressed) size.
  * - **`copy` / `move` just work** — the algorithm marker travels with the object.
  * - Objects without this plugin's marker (pre-existing or written elsewhere)
  *   **pass through** on read, so it's safe to enable on a mixed bucket.
@@ -198,7 +202,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       return file;
     }
     if (alg === IDENTITY) {
-      return correctMeta(file);
+      const { metadata, size } = logical(file);
+      return { ...file, metadata, size };
     }
     if (!FORMATS.has(alg)) {
       throw new FilesError(
@@ -224,98 +229,36 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
     }
     return createStoredFile(
       {
+        contentType: file.contentType,
         etag: file.etag,
         key: file.key,
         lastModified: file.lastModified,
         metadata: stripInternalMeta(file.metadata ?? {}),
         size: original.byteLength,
-        type: file.type,
       },
       { data: original, kind: "buffer" }
     );
   };
 
-  /** A lazy body that reads `key` back through this plugin, decompressed. */
-  const readBack =
-    (key: string, next: PluginNext, readOptions?: OperationOptions) =>
-    async (): Promise<Uint8Array> => {
-      const original = await download(
-        {
-          key,
-          kind: "download",
-          ...(readOptions && { options: readOptions }),
-        },
-        next
-      );
-      return new Uint8Array(await original.arrayBuffer());
-    };
-
-  /**
-   * Re-report a `head` / `list` result's logical (uncompressed) size and hide
-   * the internal metadata fields. Neither verb decompresses eagerly, so a
-   * compressed object's body accessors are replaced with a lazy download back
-   * through this plugin — `text()` / `stream()` then yield the original bytes,
-   * never the stored compressed ones. Verbatim-stored objects keep their own
-   * body (it already is the original); objects this plugin didn't write pass
-   * through untouched.
-   */
-  const logical = (
-    file: StoredFile,
-    next: PluginNext,
-    readOptions?: OperationOptions
-  ): StoredFile => {
-    const alg = file.metadata?.[META.alg];
-    if (!alg || alg === IDENTITY) {
-      return correctMeta(file);
-    }
-    const { metadata, size } = correctMeta(file);
-    return createStoredFile(
-      {
-        etag: file.etag,
-        key: file.key,
-        lastModified: file.lastModified,
-        metadata,
-        size,
-        type: file.type,
-      },
-      { factory: readBack(file.key, next, readOptions), kind: "lazy" }
-    );
-  };
-
-  /**
-   * A `list()` item with no metadata at all — S3 and the S3-compatibles don't
-   * return it from a listing — can't be told apart from an uncompressed
-   * object, so its size is left as stored, but its body still reads back
-   * through this plugin, so a compressed object's `text()` / `stream()` yield
-   * the original bytes rather than the compressed ones.
-   */
-  const listed = (file: StoredFile, next: PluginNext): StoredFile =>
-    file.metadata === undefined
-      ? createStoredFile(
-          {
-            etag: file.etag,
-            key: file.key,
-            lastModified: file.lastModified,
-            size: file.size,
-            type: file.type,
-          },
-          { factory: readBack(file.key, next), kind: "lazy" }
-        )
-      : logical(file, next);
-
-  // `next` is taken from the raw `wrap` so `head` / `list` can re-route their
-  // lazy body reads to a `download` (the per-verb `next` is typed to its own
-  // verb).
-  const verbs = (outer: PluginNext): NonNullable<FilesPlugin["wrap"]> =>
-    handlers({
+  return {
+    // Advertise what the plugin refuses, so `files.capabilities` (and the
+    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
+    // plans a presigned URL, a direct upload, a ranged read, or a resumable
+    // upload that would throw.
+    capabilities: (caps) => ({
+      ...caps,
+      rangeRead: false,
+      resumable: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
+    }),
+    name: "compression",
+    wrap: handlers({
       download,
-      head: async (op, next) => logical(await next(op), outer, op.options),
+      head: async (op, next) => logical(await next(op)),
       list: async (op, next) => {
         const result = await next(op);
-        return {
-          ...result,
-          items: result.items.map((file) => listed(file, outer)),
-        };
+        return { ...result, items: result.items.map((file) => logical(file)) };
       },
       signedUploadUrl: () => {
         throw new FilesError(
@@ -365,21 +308,6 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
           "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead"
         );
       },
-    });
-
-  return {
-    // Advertise what the plugin refuses, so `files.capabilities` (and the
-    // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
-    // plans a presigned URL, a direct upload, a ranged read, or a resumable
-    // upload that would throw.
-    capabilities: (caps) => ({
-      ...caps,
-      rangeRead: false,
-      resumable: false,
-      signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
     }),
-    name: "compression",
-    wrap: (op, next) => verbs(next)(op, next),
   };
 };

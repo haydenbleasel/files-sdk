@@ -3,7 +3,7 @@ import { mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
-import type { ByteRange, StoredFile } from "../index.js";
+import type { ByteRange, FileInfo, StoredFile } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
@@ -375,23 +375,25 @@ export const parseProviderOptions = (
   return decoded as GlobalCliOptions;
 };
 
-/** The metadata-only projection of a {@link StoredFile} (no body accessors). */
-export interface StoredFileJson {
+/**
+ * The JSON projection of a {@link FileInfo} — what `head`, `list`, `search`
+ * and `download` print. Built field by field, so a downloaded
+ * {@link StoredFile}'s body accessors and `name`/`type` aliases never leak in.
+ */
+export interface FileInfoJson {
+  contentType: string;
   etag?: string;
   key: string;
   lastModified?: number;
   metadata?: Record<string, string>;
-  name: string;
   size: number;
-  type: string;
 }
 
-export const storedFileToJson = (f: StoredFile): StoredFileJson => ({
+export const fileInfoToJson = (f: FileInfo): FileInfoJson => ({
+  contentType: f.contentType,
   etag: f.etag,
   key: f.key,
   lastModified: f.lastModified,
   metadata: f.metadata,
-  name: f.name,
   size: f.size,
-  type: f.type,
 });

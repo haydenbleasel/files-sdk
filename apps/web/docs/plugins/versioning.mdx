@@ -51,7 +51,7 @@ await files.upload("report.pdf", v2); // overwrites; v1 is snapshotted
 await files.restoreVersion("report.pdf"); // back to v1
 ```
 
-A restore **snapshots the current bytes first**, so it's itself reversible - you can always roll forward again. It resolves to the restored [`StoredFile`](/docs/api/stored-file). Restoring works after a delete too, since the delete was snapshotted:
+A restore **snapshots the current bytes first**, so it's itself reversible - you can always roll forward again. It resolves to the restored object's [`FileInfo`](/docs/api/stored-file). Restoring works after a delete too, since the delete was snapshotted:
 
 ```ts lineNumbers
 await files.delete("report.pdf");

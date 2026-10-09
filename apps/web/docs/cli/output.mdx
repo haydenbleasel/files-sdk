@@ -8,7 +8,7 @@ Every command emits one JSON line on success (except `download --stdout`, which 
 ```bash lineNumbers
 # JSON output is the default — pipe straight to jq.
 $ files --provider fs --root /tmp/store head reports/q1.pdf
-{"etag":"\"9feb94ca37e5d155\"","key":"reports/q1.pdf","lastModified":1778881504647,"name":"reports/q1.pdf","size":48213,"type":"application/pdf"}
+{"contentType":"application/pdf","etag":"\"9feb94ca37e5d155\"","key":"reports/q1.pdf","lastModified":1778881504647,"size":48213}
 
 # Errors go to stderr with a stable error code. Exit codes:
 #   0  ok

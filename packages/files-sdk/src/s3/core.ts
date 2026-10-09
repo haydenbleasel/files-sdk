@@ -13,6 +13,7 @@ import type {
   CopyCondition,
   DeleteManyOptions,
   DeleteManyResult,
+  FileInfo,
   MultipartOptions,
   OperationOptions,
   PartMeta,
@@ -890,22 +891,6 @@ export const createS3Adapter = (
     : mapS3Error;
   const providerLabel = opts.defaultProviderMessage ?? "S3 error";
 
-  // The lazy body behind `head()` / `list()` items: a GetObject issued when
-  // the caller first reads it, long after the method's own try/catch has
-  // returned — so it maps its own failures (a key deleted in between reads as
-  // NotFound, like the fetch engine's lazy body), rather than leaking a raw
-  // SDK exception out of `text()` / `arrayBuffer()`.
-  const fetchBytes = async (key: string): Promise<Uint8Array> => {
-    try {
-      const get = await client.send(
-        new GetObjectCommand({ Bucket: bucket, Key: key })
-      );
-      return (await get.Body?.transformToByteArray()) ?? new Uint8Array();
-    } catch (error) {
-      throw wrapErr(error);
-    }
-  };
-
   const signGet = (
     key: string,
     expiresIn: number,
@@ -974,9 +959,9 @@ export const createS3Adapter = (
   ): Promise<StoredFile> => {
     const baseMeta = {
       ...meta,
+      contentType: result.ContentType ?? DEFAULT_CONTENT_TYPE,
       lastModified: result.LastModified?.getTime(),
       metadata: result.Metadata,
-      type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
     };
     if (downloadOpts?.as === "stream") {
       const stream = result.Body?.transformToWebStream();
@@ -1319,17 +1304,14 @@ export const createS3Adapter = (
             ? { abortSignal: operationOpts.signal }
             : undefined
         );
-        return createStoredFile(
-          {
-            etag: stripEtag(result.ETag),
-            key,
-            lastModified: result.LastModified?.getTime(),
-            metadata: result.Metadata,
-            size: Number(result.ContentLength ?? 0),
-            type: result.ContentType ?? DEFAULT_CONTENT_TYPE,
-          },
-          { factory: () => fetchBytes(key), kind: "lazy" }
-        );
+        return {
+          contentType: result.ContentType ?? DEFAULT_CONTENT_TYPE,
+          etag: stripEtag(result.ETag),
+          key,
+          lastModified: result.LastModified?.getTime(),
+          metadata: result.Metadata,
+          size: Number(result.ContentLength ?? 0),
+        };
       } catch (error) {
         throw wrapErr(error);
       }
@@ -1346,22 +1328,19 @@ export const createS3Adapter = (
           }),
           options?.signal ? { abortSignal: options.signal } : undefined
         );
-        const items: StoredFile[] = (result.Contents ?? []).map((obj) => {
+        const items: FileInfo[] = (result.Contents ?? []).map((obj) => {
           const objKey = obj.Key ?? "";
-          return createStoredFile(
-            {
-              etag: stripEtag(obj.ETag),
-              key: objKey,
-              lastModified: obj.LastModified?.getTime(),
-              size: Number(obj.Size ?? 0),
-              // `ListObjectsV2` carries no `Content-Type`, so approximate it
-              // from the key rather than labelling every object as a binary
-              // blob. Unknown extensions still fall back to
-              // `DEFAULT_CONTENT_TYPE`.
-              type: inferTypeFromName(objKey),
-            },
-            { factory: () => fetchBytes(objKey), kind: "lazy" }
-          );
+          return {
+            // `ListObjectsV2` carries no `Content-Type`, so approximate it
+            // from the key rather than labelling every object as a binary
+            // blob. Unknown extensions still fall back to
+            // `DEFAULT_CONTENT_TYPE`.
+            contentType: inferTypeFromName(objKey),
+            etag: stripEtag(obj.ETag),
+            key: objKey,
+            lastModified: obj.LastModified?.getTime(),
+            size: Number(obj.Size ?? 0),
+          };
         });
         const prefixes = (result.CommonPrefixes ?? [])
           .map((p) => p.Prefix)

@@ -203,17 +203,25 @@ describe("createFileTools", () => {
     expect(upload.etag).toBeTruthy();
 
     const list = (await exec(tools.listFiles, {})) as {
-      items: { key: string; size: number }[];
+      items: { contentType: string; key: string; size: number }[];
       cursor?: string;
     };
     expect(list.items.map((i) => i.key)).toEqual(["report.txt"]);
     expect(list.items[0]?.size).toBe("hello world".length);
+    expect(list.items[0]?.contentType).toBe("text/plain");
+    expect(list.items[0]).not.toHaveProperty("type");
 
     const meta = (await exec(tools.getFileMetadata, {
       key: "report.txt",
-    })) as { metadata?: Record<string, string>; size: number };
+    })) as {
+      contentType: string;
+      metadata?: Record<string, string>;
+      size: number;
+    };
     expect(meta.metadata).toEqual({ tenant: "acme" });
     expect(meta.size).toBe("hello world".length);
+    expect(meta.contentType).toBe("text/plain");
+    expect(meta).not.toHaveProperty("type");
   });
 
   test("downloadFile returns UTF-8 text by default", async () => {
@@ -223,12 +231,15 @@ describe("createFileTools", () => {
 
     const result = (await exec(tools.downloadFile, { key: "a.txt" })) as {
       content: string;
+      contentType: string;
       encoding: "text" | "base64";
       size: number;
     };
     expect(result.encoding).toBe("text");
     expect(result.content).toBe("hello");
     expect(result.size).toBe(5);
+    expect(result.contentType).toBeString();
+    expect(result).not.toHaveProperty("type");
   });
 
   test("downloadFile with binary=true returns base64 bytes that round-trip", async () => {

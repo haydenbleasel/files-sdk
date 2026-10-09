@@ -495,21 +495,13 @@ describe("netlify-blobs adapter", () => {
     getWithMetadataMock.mockClear();
     const info = await files.head("a.txt");
     expect(info.size).toBe(5);
-    expect(info.type).toBe("text/plain");
+    expect(info.contentType).toBe("text/plain");
     expect(info.etag).toBe('"etag-1"');
     expect(info.metadata?.uploadedBy).toBe("alice");
+    expect(info).not.toHaveProperty("text");
     expect(getMock).not.toHaveBeenCalled();
     expect(getWithMetadataMock).not.toHaveBeenCalled();
     expect(getMetadataMock).toHaveBeenCalledTimes(1);
-  });
-
-  test("head exposes a lazy body that fetches on first read", async () => {
-    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    await files.upload("a.txt", "hello", { contentType: "text/plain" });
-    const info = await files.head("a.txt");
-    getMock.mockClear();
-    expect(await info.text()).toBe("hello");
-    expect(getMock).toHaveBeenCalledTimes(1);
   });
 
   test("head maps null result to NotFound", async () => {
@@ -580,7 +572,7 @@ describe("netlify-blobs adapter", () => {
     expect(deleteMock).toHaveBeenCalledTimes(2);
   });
 
-  test("list returns items with key + etag and lazy bodies", async () => {
+  test("list returns metadata-only items with key + etag", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     await files.upload("a/1.txt", "one", { contentType: "text/plain" });
     await files.upload("a/2.txt", "two", { contentType: "text/plain" });
@@ -597,10 +589,9 @@ describe("netlify-blobs adapter", () => {
     // List entries are intentionally returned with size 0 / octet-stream —
     // Netlify's list response only carries key + etag.
     expect(first.size).toBe(0);
-    expect(first.type).toBe("application/octet-stream");
+    expect(first.contentType).toBe("application/octet-stream");
     expect(first.etag).toBe('"etag-1"');
-    // Lazy body fetches via store.get.
-    expect(await first.text()).toBe("one");
+    expect(first).not.toHaveProperty("text");
   });
 
   test("list with a delimiter requests directories and dedupes them", async () => {
@@ -1070,7 +1061,7 @@ describe("netlify-blobs adapter", () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     const info = await files.head("legacy.bin");
     expect(info.size).toBe(0);
-    expect(info.type).toBe("application/octet-stream");
+    expect(info.contentType).toBe("application/octet-stream");
   });
 
   test("adapter exposes the underlying store via raw", () => {
@@ -1149,22 +1140,6 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
-  test("head's lazy body throws NotFound if the blob is gone before the lazy fetch", async () => {
-    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    await files.upload("a.txt", "hello");
-    const info = await files.head("a.txt");
-    // Simulate the blob disappearing between head() and the lazy body
-    // accessor — store.get returns null.
-    backing.delete("a.txt");
-    try {
-      await info.text();
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("NotFound");
-    }
-  });
-
   test("list iterator throwing is mapped to FilesError", async () => {
     listMock.mockImplementationOnce(() => ({
       [Symbol.asyncIterator]() {
@@ -1188,43 +1163,6 @@ describe("netlify-blobs adapter", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
       expect((error as FilesError).code).toBe("Provider");
-    }
-  });
-
-  test("head and list lazy bodies map a store.get rejection", async () => {
-    // A rejected token surfaces from the body read, after head()/list()
-    // returned; it must still be a mapped FilesError, not a raw SDK error.
-    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    await files.upload("a.txt", "hello");
-    const info = await files.head("a.txt");
-    const listed = await files.list();
-    const [item] = listed.items;
-    const raw = internalError(401, "token expired");
-    getMock
-      .mockImplementationOnce(() => Promise.reject(raw))
-      .mockImplementationOnce(() => Promise.reject(raw));
-    // Both reads settle before any assertion, so neither queued rejection
-    // can leak into a later test.
-    const headError = await info.text().catch((error: unknown) => error);
-    const listError = await item
-      ?.arrayBuffer()
-      .catch((error: unknown) => error);
-    expect(headError).toBeInstanceOf(FilesError);
-    expect(headError).toMatchObject({ cause: raw, code: "Unauthorized" });
-    expect(listError).toMatchObject({ code: "Unauthorized" });
-  });
-
-  test("list item's lazy body throws NotFound if the blob is gone before the lazy fetch", async () => {
-    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
-    await files.upload("a.txt", "hello");
-    const out = await files.list();
-    backing.delete("a.txt");
-    try {
-      await out.items[0]?.text();
-      throw new Error("should have thrown");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("NotFound");
     }
   });
 
@@ -1256,6 +1194,6 @@ describe("netlify-blobs adapter", () => {
     const info = await files.head("anything.txt");
     expect(info.metadata).toBeUndefined();
     expect(info.size).toBe(0);
-    expect(info.type).toBe("application/octet-stream");
+    expect(info.contentType).toBe("application/octet-stream");
   });
 });

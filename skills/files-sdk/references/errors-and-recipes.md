@@ -81,7 +81,7 @@ If you actually want "best effort, log and move on," catch `FilesError` and insp
 
 ## The `head()` accessor footgun
 
-`head(key)` returns a `StoredFile`. The metadata fields (`size`, `type`, `etag`, `lastModified`, `metadata`) are populated immediately, but `text()` / `arrayBuffer()` / `blob()` / `stream()` **lazily issue a full GET on first use**. If all you want is metadata, don't touch the body accessors — they are not free.
+`head(key)` returns a `FileInfo` (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`) with **no body** — the same shape as `list` / `search` items. To read the bytes, call `download(key)`, which returns a `StoredFile` (the same fields plus `name` / `type` and `text()` / `arrayBuffer()` / `blob()` / `stream()`). Before v3, head/list results had lazy body accessors; code calling `.text()` on them must switch to `download`.
 
 ## URL key encoding
 

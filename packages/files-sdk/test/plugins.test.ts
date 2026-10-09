@@ -78,7 +78,7 @@ describe("plugin onion — wrap composition", () => {
     const files = new Files({ adapter: fakeAdapter(), plugins: [setType] });
     await files.upload("k.txt", "v");
     const meta = await files.head("k.txt");
-    expect(meta.type).toBe("text/x-test");
+    expect(meta.contentType).toBe("text/x-test");
   });
 
   test("a wrap can veto an op and the adapter is never called", async () => {

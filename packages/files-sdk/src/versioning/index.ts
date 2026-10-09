@@ -1,5 +1,6 @@
 import { isConditionalOperation, rejectConditional } from "../index.js";
 import type {
+  FileInfo,
   Files,
   FilesOperation,
   FilesPlugin,
@@ -7,7 +8,6 @@ import type {
   ListResult,
   OperationResult,
   PluginNext,
-  StoredFile,
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 
@@ -56,11 +56,11 @@ export type VersioningApi = {
    * omitted (an undo of the last change). The current bytes are snapshotted
    * first, so a restore is itself reversible; with a `limit`, the oldest
    * versions are pruned only after the restore lands, so restoring the oldest
-   * kept version always works. Resolves to the restored {@link StoredFile}
+   * kept version always works. Resolves to the restored key's {@link FileInfo}
    * (via `head`). Throws when the key has no versions, or the given
    * `versionId` doesn't exist.
    */
-  restoreVersion: (key: string, versionId?: string) => Promise<StoredFile>;
+  restoreVersion: (key: string, versionId?: string) => Promise<FileInfo>;
 };
 
 export interface VersioningOptions {
@@ -124,7 +124,7 @@ const padTime = (ms: number): string => ms.toString().padStart(TIME_WIDTH, "0");
  * Ids written by earlier releases (`<modified>-<etag>`) still parse, and sort
  * before every newer id: their leading time predates the upgrade.
  */
-const versionId = (file: StoredFile, takenAt: number): string => {
+const versionId = (file: FileInfo, takenAt: number): string => {
   const tag =
     (file.etag ?? "").replaceAll(/[^a-zA-Z0-9]/gu, "").slice(0, ETAG_WIDTH) ||
     "x";
@@ -299,7 +299,7 @@ export const versioning = (
     if (isUnversioned(key)) {
       return false;
     }
-    let current: StoredFile;
+    let current: FileInfo;
     try {
       current = await next({ key, kind: "head" });
     } catch (error) {
@@ -399,7 +399,7 @@ export const versioning = (
     files: Files,
     key: string,
     requested?: string
-  ): Promise<StoredFile> => {
+  ): Promise<FileInfo> => {
     let id = requested;
     if (id !== undefined && id.includes("/")) {
       // A slash would address into a nested key's version dir (a version of
