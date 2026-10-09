@@ -78,8 +78,10 @@ const adapter = vercelBlob({
   // Credentials are optional — the adapter resolves them in the same order
   // the upstream SDK does:
   //   1. explicit `token` (RW or client token) — always wins
-  //   2. OIDC pair (`oidcToken` + `storeId`, option or env)
-  //   3. `BLOB_READ_WRITE_TOKEN` env
+  //   2. `oidcToken` option + `storeId` (option or `BLOB_STORE_ID`)
+  //   3. OIDC from the environment: `BLOB_STORE_ID`, with the token found by
+  //      @vercel/blob (request header on Vercel Functions, or VERCEL_OIDC_TOKEN)
+  //   4. `BLOB_READ_WRITE_TOKEN` env
   // token: process.env.BLOB_READ_WRITE_TOKEN,
   // oidcToken: loadOidcToken(),
   // storeId: loadStoreId(),
@@ -91,7 +93,7 @@ const adapter = vercelBlob({
 
 A few things to know:
 
-- **OIDC is preferred on Vercel.** When the Blob store is connected to a project, Vercel auto-injects `VERCEL_OIDC_TOKEN` (short-lived, auto-rotated) and `BLOB_STORE_ID`. The adapter uses both automatically — no `BLOB_READ_WRITE_TOKEN` required. Off Vercel, or if OIDC isn't configured, the RW token still works as before.
+- **OIDC is preferred on Vercel.** When the Blob store is connected to a project, the deployment gets `BLOB_STORE_ID` and a short-lived, auto-rotated OIDC token. On Vercel Functions that token arrives per request (`x-vercel-oidc-token` header), not in `process.env`, so the adapter passes just the store id and lets `@vercel/blob` read the token — `vercelBlob()` needs no options and no `BLOB_READ_WRITE_TOKEN`. Locally, `vercel env pull` writes `VERCEL_OIDC_TOKEN` (12-hour lifetime; `@vercel/blob` ≥ 2.5 refreshes it in a `vercel link`ed project). Off Vercel, use `BLOB_READ_WRITE_TOKEN`.
 - **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either).
 - **Explicit `token` always wins** over OIDC env vars, mirroring the SDK. Set it only when you actually want to override.
 - **`access` is fixed at construction.** A single `Files` instance is unambiguously public or private. Need both? Instantiate two adapters.

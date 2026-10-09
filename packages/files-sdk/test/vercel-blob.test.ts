@@ -190,8 +190,9 @@ const assertOidc = (opts: AuthOpts | undefined) => {
   if (!opts) {
     throw new Error("expected options to be passed");
   }
+  // Env OIDC: just the store id; the SDK finds the token itself.
   expect(opts.token).toBeUndefined();
-  expect(opts.oidcToken).toBe("oidc-token");
+  expect(opts.oidcToken).toBeUndefined();
   expect(opts.storeId).toBe("abc123store");
 };
 
@@ -294,18 +295,39 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
-  test("only one OIDC env var (no token) still throws — partial config", () => {
-    // OIDC needs both `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID`. With only one
-    // set and no RW token, the adapter must surface this at construction
-    // instead of falling through to anonymous calls that 401 at runtime.
+  test("an OIDC token with no store id (and no RW token) throws — partial config", () => {
+    // OIDC needs a store id. With only `VERCEL_OIDC_TOKEN` and no RW token,
+    // the adapter must surface this at construction.
     delete process.env.BLOB_READ_WRITE_TOKEN;
     process.env.VERCEL_OIDC_TOKEN = "oidc-token";
     expect(() => vercelBlob()).toThrow(/credentials/iu);
     delete process.env.VERCEL_OIDC_TOKEN;
-    process.env.BLOB_STORE_ID = "abc123store";
-    expect(() => vercelBlob()).toThrow(/credentials/iu);
-    delete process.env.BLOB_STORE_ID;
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
+  });
+
+  test("a store id alone defers the OIDC token to the SDK (Vercel Functions)", async () => {
+    // On Vercel Functions the OIDC token arrives in the request's
+    // `x-vercel-oidc-token` header, not `process.env`, so `BLOB_STORE_ID` is
+    // all the adapter sees. It passes just the store id and lets
+    // `@vercel/blob` read the token from the request context.
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    process.env.BLOB_STORE_ID = "abc123store";
+    try {
+      const files = new Files({ adapter: vercelBlob() });
+      putMock.mockClear();
+      await files.upload("a.txt", "hello");
+      const opts = putMock.mock.calls[0]?.[2] as {
+        oidcToken?: string;
+        storeId?: string;
+        token?: string;
+      };
+      expect(opts.storeId).toBe("abc123store");
+      expect(opts.oidcToken).toBeUndefined();
+      expect(opts.token).toBeUndefined();
+    } finally {
+      delete process.env.BLOB_STORE_ID;
+      process.env.BLOB_READ_WRITE_TOKEN = "test-token";
+    }
   });
 
   test("upload calls blob.put with the right options", async () => {
@@ -1473,7 +1495,9 @@ describe("vercel-blob adapter", () => {
       expect(() => vercelBlob()).not.toThrow();
     });
 
-    test("upload passes oidcToken + storeId instead of token when in OIDC mode", async () => {
+    test("upload passes the storeId and leaves the env OIDC token to the SDK", async () => {
+      // The SDK reads the token itself: the request's x-vercel-oidc-token
+      // header first, then VERCEL_OIDC_TOKEN, refreshing an expired local one.
       delete process.env.BLOB_READ_WRITE_TOKEN;
       process.env.VERCEL_OIDC_TOKEN = "oidc-token";
       process.env.BLOB_STORE_ID = "abc123store";
@@ -1485,11 +1509,11 @@ describe("vercel-blob adapter", () => {
       }
       const opts = firstCall[2] as AuthOpts;
       expect(opts.token).toBeUndefined();
-      expect(opts.oidcToken).toBe("oidc-token");
+      expect(opts.oidcToken).toBeUndefined();
       expect(opts.storeId).toBe("abc123store");
     });
 
-    test("re-resolves rotating OIDC credentials for each operation", async () => {
+    test("never pins a rotating env OIDC token", async () => {
       delete process.env.BLOB_READ_WRITE_TOKEN;
       process.env.VERCEL_OIDC_TOKEN = "oidc-before-rotation";
       process.env.BLOB_STORE_ID = "abc123store";
@@ -1502,9 +1526,10 @@ describe("vercel-blob adapter", () => {
       if (!firstCall) {
         throw new Error("expected put to have been called");
       }
+      // The SDK reads the rotated token on the call; nothing captured the old one.
       const opts = firstCall[2] as AuthOpts;
       expect(opts.token).toBeUndefined();
-      expect(opts.oidcToken).toBe("oidc-after-rotation");
+      expect(opts.oidcToken).toBeUndefined();
       expect(opts.storeId).toBe("abc123store");
     });
 
@@ -1572,7 +1597,7 @@ describe("vercel-blob adapter", () => {
       }
       const opts = firstCall[2] as AuthOpts;
       expect(opts.token).toBeUndefined();
-      expect(opts.oidcToken).toBe("oidc-token");
+      expect(opts.oidcToken).toBeUndefined();
       expect(opts.storeId).toBe("abc123store");
     });
 
@@ -1609,7 +1634,7 @@ describe("vercel-blob adapter", () => {
       const o = getOpts as AuthOpts & { access: string };
       expect(o.access).toBe("private");
       expect(o.token).toBeUndefined();
-      expect(o.oidcToken).toBe("oidc-token");
+      expect(o.oidcToken).toBeUndefined();
       expect(o.storeId).toBe("abc123store");
     });
 

@@ -46,9 +46,11 @@ export interface VercelBlobAdapterOptions {
    *
    * OIDC tokens are short-lived and auto-rotated, so they remove the risk
    * that a long-lived `BLOB_READ_WRITE_TOKEN` leaks from your codebase
-   * or environment. To activate OIDC, **both** `oidcToken` and `storeId`
-   * must be available (option or env) and `token` must be unset — that
-   * matches the upstream SDK's resolution order.
+   * or environment. OIDC needs a `storeId` (option or `BLOB_STORE_ID`) and
+   * no `token`. On Vercel Functions, where the token arrives per request in
+   * the `x-vercel-oidc-token` header rather than in `process.env`, the
+   * store id alone is enough: `@vercel/blob` reads the token from the
+   * request. That matches the upstream SDK's resolution order.
    *
    * Pass `oidcToken` explicitly when your framework doesn't load
    * `.env.local` into `process.env` automatically (Vite, etc.) — the
@@ -377,20 +379,21 @@ export const vercelBlob = (
   const explicitStoreId = config.storeId;
   const resolveAuth = (): BlobAuthOptions => {
     const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
-    const oidcToken = explicitOidcToken ?? readEnv("VERCEL_OIDC_TOKEN");
+    const envOidcToken = readEnv("VERCEL_OIDC_TOKEN");
     const resolvedStoreId = explicitStoreId ?? readEnv("BLOB_STORE_ID");
 
     // Mirrors the upstream SDK's resolution order:
     //   1. explicit `token` (RW or client token) — wins over OIDC
-    //   2. OIDC pair (`oidcToken` + `storeId`, either option or env)
+    //   2. OIDC (`storeId` from option or env, with an `oidcToken` option or
+    //      an OIDC token the SDK finds itself)
     //   3. `BLOB_READ_WRITE_TOKEN` env
     if (explicitToken) {
       return { token: explicitToken };
     }
-    if (oidcToken && resolvedStoreId) {
-      return { oidcToken, storeId: resolvedStoreId };
-    }
     if (explicitOidcToken) {
+      if (resolvedStoreId) {
+        return { oidcToken: explicitOidcToken, storeId: resolvedStoreId };
+      }
       // An explicit `oidcToken` option (vs one picked up from the env) is an
       // unambiguous request for OIDC. With no resolvable `storeId`, don't fall
       // through to `BLOB_READ_WRITE_TOKEN` — that would silently swap the auth
@@ -401,12 +404,23 @@ export const vercelBlob = (
         "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
       );
     }
+    // Implicit OIDC: hand over just the store id and let `@vercel/blob` find
+    // the token, rather than pinning `VERCEL_OIDC_TOKEN` here. On Vercel
+    // Functions the fresh token arrives per request in the
+    // `x-vercel-oidc-token` header (the env copy can be missing or stale), and
+    // the SDK reads that first, then the env. From 2.5 it also refreshes an
+    // expired local token from `vercel env pull`. A store id with neither
+    // token nor RW token is still OIDC: the token may only exist per request,
+    // and with none there the SDK throws "No blob credentials found".
+    if (resolvedStoreId && (envOidcToken || !envToken)) {
+      return { storeId: resolvedStoreId };
+    }
     if (envToken) {
       return { token: envToken };
     }
     throw new FilesError(
       "Provider",
-      "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set both VERCEL_OIDC_TOKEN and BLOB_STORE_ID."
+      "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from VERCEL_OIDC_TOKEN or, on Vercel Functions, the request)."
     );
   };
 

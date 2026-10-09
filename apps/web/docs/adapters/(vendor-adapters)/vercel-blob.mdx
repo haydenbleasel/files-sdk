@@ -1,6 +1,6 @@
 ---
 title: Vercel Blob
-description: Vercel Blob. Prefers auto-rotating Vercel OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID), falls back to BLOB_READ_WRITE_TOKEN, or pass credentials manually.
+description: Store files in Vercel Blob with files-sdk. Authenticate with OIDC on Vercel (BLOB_STORE_ID, no secret) or a BLOB_READ_WRITE_TOKEN anywhere, in public or private mode, with signed URLs.
 ---
 
 ## Installation
@@ -13,34 +13,85 @@ files-sdk @vercel/blob
 
 ## Usage
 
-On Vercel, the adapter prefers Vercel's **OIDC authentication** when `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` are present (both are auto-injected when the Blob store is connected to the project). OIDC tokens rotate automatically, so they remove the risk that a long-lived secret leaks from the codebase or environment. Off Vercel - or if OIDC isn't configured - the adapter falls back to `BLOB_READ_WRITE_TOKEN`. An explicit `token` option always wins.
-
 ```ts lineNumbers
 import { Files } from "files-sdk";
 import { vercelBlob } from "files-sdk/vercel-blob";
 
-// On Vercel: VERCEL_OIDC_TOKEN + BLOB_STORE_ID are auto-injected when the
-// Blob store is connected to the project (OIDC, recommended). Off Vercel,
-// or as a fallback, BLOB_READ_WRITE_TOKEN is used.
+// On Vercel, the connected Blob store authenticates through OIDC. Anywhere
+// else, set BLOB_READ_WRITE_TOKEN. No options needed for either.
 const files = new Files({ adapter: vercelBlob() });
+
+await files.upload("avatars/abc.png", file);
+const url = await files.url("avatars/abc.png");
 ```
 
-Pass `oidcToken` and `storeId` directly for runtimes that don't expose `process.env` (Vite, etc.), or to bypass env detection entirely:
+## Authentication
+
+Vercel Blob takes one of two credentials, and the adapter picks whichever it finds without any options:
+
+| Credential | Comes from | Use it for |
+| --- | --- | --- |
+| **OIDC** (recommended) | `BLOB_STORE_ID`, plus a short-lived token Vercel issues per deployment | Code running on Vercel |
+| **Read-write token** | `BLOB_READ_WRITE_TOKEN` (`vercel_blob_rw_…`) | Scripts, CI, and servers outside Vercel |
+
+### OIDC on Vercel
+
+OIDC needs no secret in your code or your environment variables. Connect the Blob store to the project in the Vercel dashboard, and the deployment gets `BLOB_STORE_ID` plus an OIDC token that Vercel rotates on its own. On Vercel Functions the token arrives with each request, in the `x-vercel-oidc-token` header, rather than as an environment variable. The adapter hands just the store id to `@vercel/blob`, which reads the current token from the request, so `vercelBlob()` works the same at module scope as inside a handler.
+
+Because the token is short-lived, a leaked one stops working within hours, where a leaked read-write token works until you rotate it by hand.
+
+### Read-write token
+
+A read-write token grants full access to one store and doesn't expire. Find it on the store's page in the Vercel dashboard (Storage, then your Blob store), or run `vercel env pull` in a linked project to write it to `.env.local`. Set it as `BLOB_READ_WRITE_TOKEN`, or pass it as `token`:
 
 ```ts lineNumbers
-// Frameworks that don't load .env.local into process.env (Vite, etc.)
-// need OIDC credentials passed explicitly.
+const files = new Files({
+  adapter: vercelBlob({ token: process.env.BLOB_READ_WRITE_TOKEN }),
+});
+```
+
+Keep it on the server. To let a browser upload, hand it a [signed upload URL](#signed-urls) or put the [gateway](/docs/ui/server/gateway) in front of the adapter, and never ship the token itself.
+
+### Local development
+
+`vercel env pull` writes `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` to `.env.local`, so OIDC works locally too. The local token expires after 12 hours. `@vercel/blob` 2.5 and later refresh it automatically in a project linked with `vercel link`; on 2.4, run `vercel env pull` again. A read-write token in `.env.local` works as well and never expires.
+
+If your framework doesn't load `.env.local` into `process.env` (Vite, for example), pass the values explicitly:
+
+```ts lineNumbers
 const files = new Files({
   adapter: vercelBlob({
-    oidcToken: loadOidcToken(),
-    storeId: loadStoreId(),
+    oidcToken: import.meta.env.VERCEL_OIDC_TOKEN,
+    storeId: import.meta.env.BLOB_STORE_ID,
   }),
 });
 ```
 
-`downloadTimeoutMs` bounds the body reads issued by `download()` and the lazy bodies returned from `head()`/`list()` (the public-URL fetch, or `blob.get()` in private mode). Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
+An explicit `oidcToken` is used as given, so it isn't refreshed.
+
+### Which credential wins
+
+The adapter follows `@vercel/blob`'s own order:
+
+1. A `token` option.
+2. An `oidcToken` option, with `storeId` (option or `BLOB_STORE_ID`).
+3. OIDC from the environment: `BLOB_STORE_ID` with a token from the request header or `VERCEL_OIDC_TOKEN`.
+4. `BLOB_READ_WRITE_TOKEN`.
+
+With `BLOB_STORE_ID` and `BLOB_READ_WRITE_TOKEN` both set and no OIDC token in the environment, the read-write token is used.
+
+### Credential errors
+
+- `vercelBlob adapter: missing credentials` is thrown when the adapter is created with none of `token`, `oidcToken`, `BLOB_READ_WRITE_TOKEN`, or `BLOB_STORE_ID` available. Off Vercel, set `BLOB_READ_WRITE_TOKEN`. On Vercel, check that the Blob store is connected to the project and environment you deployed.
+- `` `oidcToken` was passed but no `storeId` was found `` means OIDC was requested explicitly without a store id. Pass `storeId` or set `BLOB_STORE_ID`.
+- `No blob credentials found` comes from `@vercel/blob` on the first call when only `BLOB_STORE_ID` is set and no OIDC token arrives, typically code running outside Vercel. Pull a fresh `VERCEL_OIDC_TOKEN` with `vercel env pull`, or use a read-write token.
+- A `401` or `Unauthorized` error with OIDC locally usually means the local token expired. Run `vercel env pull` again, or upgrade to `@vercel/blob` 2.5 or later.
+
+## Public and private blobs
 
 `access` selects public or private blobs and is fixed at construction. Defaults to `"public"`. With `access: "private"`, uploads use Vercel's private mode and reads route through `blob.get()` with whichever credentials the adapter resolved (OIDC or read-write token) instead of a public URL fetch. There is no permanent public URL for private blobs, so `url()` mints a [Vercel Signed URL](https://vercel.com/docs/vercel-blob/vercel-signed-urls) instead - a presigned GET scoped to that key that expires after `expiresIn` seconds (1 hour by default, `defaultUrlExpiresIn` changes the default). Need both? Use two adapters.
+
+`downloadTimeoutMs` bounds the body reads issued by `download()` and the lazy bodies returned from `head()`/`list()` (the public-URL fetch, or `blob.get()` in private mode). Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
 
 ## Signed URLs
 
