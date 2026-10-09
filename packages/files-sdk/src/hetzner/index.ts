@@ -61,13 +61,13 @@ export const hetzner = (opts: HetznerAdapterOptions): HetznerAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'hetzner adapter: missing region. Pass `region` (e.g. "fsn1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "hetzner adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set HCLOUD_ACCESS_KEY_ID + HCLOUD_SECRET_ACCESS_KEY."
     );
   }

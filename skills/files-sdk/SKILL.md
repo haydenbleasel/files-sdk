@@ -206,10 +206,10 @@ See [references/client-uploads.md](references/client-uploads.md).
 
 Every adapter error is wrapped in `FilesError` (re-exported from `files-sdk`). It has:
 
-- `.code` of type `FilesErrorCode`: `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Provider"`.
+- `.code` of type `FilesErrorCode`: `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Invalid" | "Unsupported" | "Provider"`. `Invalid` means the call is wrong (bad key, range, option, config, or a `validation()` rejection); `Unsupported` means this adapter/mode/plugin can't do it (check `files.capabilities`); `Provider` means the backend or transport failed.
 - `.aborted` — `true` when the failure came from a [cancellation or timeout](#instance-options) (still `code: "Provider"`); this flag, not the code, is how you tell an abort from a real provider failure.
 - `.cause` — the underlying provider error (may carry request IDs/headers; don't blindly `JSON.stringify` it across a trust boundary).
-- `.permanent` — `true` for deterministic SDK-side rejections (an option the adapter can't honor, a fail-closed plugin). Still `code: "Provider"`, but never retried, and the `failover` plugin doesn't fail over on them.
+- `.permanent` — `true` when the same call can only fail the same way: always for `Invalid`, `Unsupported`, and `ReadOnly`, and for deterministic `Provider` failures (a host that ignores `Range`, corrupt stored data). Never retried, and the `failover` plugin doesn't fail over on them.
 
 Catch `FilesError` at the boundary; branch on `.code`. Only non-permanent `Provider` failures are retried. See [references/errors-and-recipes.md](references/errors-and-recipes.md).
 

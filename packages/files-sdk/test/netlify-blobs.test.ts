@@ -266,6 +266,9 @@ describe("netlify-blobs adapter", () => {
     expect(() =>
       netlifyBlobs({} as unknown as Parameters<typeof netlifyBlobs>[0])
     ).toThrow(/name/iu);
+    expect(() =>
+      netlifyBlobs({} as unknown as Parameters<typeof netlifyBlobs>[0])
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("uses getStore by default with explicit siteID + token from env", () => {
@@ -624,7 +627,7 @@ describe("netlify-blobs adapter", () => {
   test("netlify-blobs only supports the / delimiter", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
     });
   });
 
@@ -841,14 +844,14 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
-  test("url() throws Provider with a netlify-specific message", async () => {
+  test("url() throws Unsupported with a netlify-specific message", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     try {
       await files.url("a.txt");
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(/url\(\)|public URL/u);
     }
   });
@@ -869,14 +872,14 @@ describe("netlify-blobs adapter", () => {
     });
   });
 
-  test("signedUploadUrl throws Provider", async () => {
+  test("signedUploadUrl throws Unsupported", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     try {
       await files.signedUploadUrl("a.txt", { expiresIn: 60 });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(/signed upload|presigned/u);
     }
   });

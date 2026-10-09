@@ -590,7 +590,7 @@ describe("cli/commands real (fs adapter)", () => {
         expiresIn: 60,
         key: "up.bin",
       })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
   });
 
   test("download with --out writes file and emits metadata JSON to stdout", async () => {
@@ -778,16 +778,16 @@ describe("cli/commands conditional flags", () => {
     await fsp.writeFile(local, "payload");
     await expect(
       runUpload({ ...baseOpts(), file: local, ifNoneMatch: true, key: "k" })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(fsp.stat(path.join(root, "k"))).rejects.toThrow();
 
     await runUpload({ ...baseOpts(), file: local, key: "k" });
     await expect(
       runDownload({ ...baseOpts(), ifMatch: "abc", keys: ["k"], stdout: true })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       runDelete({ ...baseOpts(), ifMatch: "abc", keys: ["k"] })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       runCopy({
         ...baseOpts(),
@@ -796,7 +796,7 @@ describe("cli/commands conditional flags", () => {
         ifNoneMatch: true,
         to: "k2",
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     // The unconditional object is untouched and no copy was made.
     expect(await fsp.readFile(path.join(root, "k"), "utf-8")).toBe("payload");
     await expect(fsp.stat(path.join(root, "k2"))).rejects.toThrow();

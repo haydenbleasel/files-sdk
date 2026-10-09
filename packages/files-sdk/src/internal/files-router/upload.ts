@@ -214,10 +214,15 @@ export const handlePresign = async (
           signal: cfg.signal,
           ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
         });
-      } catch {
+      } catch (error) {
         // A refusal the capabilities didn't predict (a per-call limit such as
         // a `minSize` the provider can't bind) still has a working path: the
-        // proxy, which enforces size and type itself.
+        // proxy, which enforces size and type itself. A backend failure or an
+        // abort is a real error, so it surfaces instead of being masked.
+        const { code } = FilesError.wrap(error);
+        if (code !== "Unsupported" && code !== "Invalid") {
+          throw error;
+        }
         target = proxyTarget(cfg, id, file.type);
       }
     } else {

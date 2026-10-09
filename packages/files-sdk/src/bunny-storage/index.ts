@@ -83,11 +83,8 @@ const toBunnyPath = (key: string): string => {
   // than an object. No stored object can carry such a segment, so reject it.
   if (trimmed.split("/").some((segment) => DOT_SEGMENT.test(segment))) {
     throw new FilesError(
-      "Provider",
-      `bunnyStorage: key must not contain . or .. path segments: ${JSON.stringify(key)}`,
-      undefined,
-      // The same key fails the same way on every attempt: never retried.
-      { permanent: true }
+      "Invalid",
+      `bunnyStorage: key must not contain . or .. path segments: ${JSON.stringify(key)}`
     );
   }
   return `/${trimmed}`;
@@ -298,7 +295,7 @@ const parseRegion = (
   }
   if (!VALID_REGIONS.has(region)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `bunnyStorage adapter: unsupported region "${region}". Pass one of ${[...VALID_REGIONS].join(", ")}.`
     );
   }
@@ -322,7 +319,7 @@ const buildClient = (opts: BunnyStorageAdapterOptions): BunnyStorageClient => {
   );
   if (!zone || !accessKey || !region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "bunnyStorage adapter: missing credentials. Pass `zone` + `accessKey` + `region`, or set BUNNY_STORAGE_ZONE / BUNNY_STORAGE_ACCESS_KEY / BUNNY_STORAGE_REGION (also accepted: STORAGE_ZONE / STORAGE_ACCESS_KEY / STORAGE_REGION, the names used in the Bunny SDK's README example)."
     );
   }
@@ -484,7 +481,7 @@ export const bunnyStorage = (
     signedUploadUrl(_key, _opts): Promise<SignedUpload> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "bunnyStorage: signed upload URLs are not available. Bunny Storage writes go through the Storage API with an AccessKey header; upload server-side via the SDK or proxy through your application."
         )
       );
@@ -536,7 +533,7 @@ export const bunnyStorage = (
       }
       if (!publicBaseUrl) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "bunnyStorage: url() requires `publicBaseUrl` (for example a Bunny Pull Zone or custom CDN hostname). The Storage API URL itself requires an AccessKey header and cannot be handed out as a public URL."
         );
       }

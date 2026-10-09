@@ -63,13 +63,13 @@ export const exoscale = (opts: ExoscaleAdapterOptions): ExoscaleAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'exoscale adapter: missing region. Pass `region` (e.g. "ch-gva-2"). Exoscale calls these "zones".'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "exoscale adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set EXOSCALE_API_KEY + EXOSCALE_API_SECRET."
     );
   }

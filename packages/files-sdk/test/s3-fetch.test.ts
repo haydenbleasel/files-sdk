@@ -132,7 +132,7 @@ describe("s3-fetch core — upload", () => {
     const { adapter } = withFake();
     const error = await expectCode(
       adapter.upload("big.bin", "x", { multipart: true }),
-      "Provider"
+      "Unsupported"
     );
     expect(error.message).toMatch(/multipart uploads are not supported/u);
     expect(error.permanent).toBe(true);
@@ -472,7 +472,7 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     const eightDays = 8 * 24 * 60 * 60;
     const urlError = await expectCode(
       adapter.url("a.txt", { expiresIn: eightDays }),
-      "Provider"
+      "Invalid"
     );
     expect(urlError.message).toMatch(
       /^R2 error: presigned URLs must expire within 604800 seconds/u
@@ -480,12 +480,12 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(urlError.permanent).toBe(true);
     await expectCode(
       adapter.signedUploadUrl("a.txt", { expiresIn: eightDays }),
-      "Provider"
+      "Invalid"
     );
     // A too-long default fails the same way; exactly one week still signs.
     await expectCode(
       makeAdapter({ defaultUrlExpiresIn: eightDays }).url("a.txt"),
-      "Provider"
+      "Invalid"
     );
     const week = new URL(await adapter.url("a.txt", { expiresIn: 604_800 }));
     expect(week.searchParams.get("X-Amz-Expires")).toBe("604800");
@@ -502,7 +502,7 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     const adapter = makeAdapter({ providerLabel: "R2 error" });
     const error = await expectCode(
       adapter.signedUploadUrl("a.bin", { expiresIn: 60, maxSize: 1024 }),
-      "Provider"
+      "Unsupported"
     );
     expect(error.message).toMatch(/^R2 error: `maxSize` requires/u);
     expect(error.permanent).toBe(true);
@@ -616,7 +616,7 @@ describe("s3-fetch core — dot-segment keys fail closed", () => {
     const { adapter, fake } = withFake();
     const error = await expectCode(
       adapter.upload("a/../b.txt", "x"),
-      "Provider"
+      "Invalid"
     );
     expect(error.permanent).toBe(true);
     expect(error.message).toMatch(/cannot address/u);
@@ -625,13 +625,13 @@ describe("s3-fetch core — dot-segment keys fail closed", () => {
 
   test("url with a `.` segment rejects", async () => {
     const { adapter } = withFake();
-    const error = await expectCode(adapter.url("./x.txt"), "Provider");
+    const error = await expectCode(adapter.url("./x.txt"), "Invalid");
     expect(error.message).toMatch(/aws-sdk client/u);
   });
 
   test("copy refuses dot segments in the source key", async () => {
     const { adapter, fake } = withFake();
-    await expectCode(adapter.copy("../evil.txt", "safe.txt"), "Provider");
+    await expectCode(adapter.copy("../evil.txt", "safe.txt"), "Invalid");
     expect(fake.requests.length).toBe(0);
   });
 });

@@ -590,6 +590,7 @@ const stubFetchToServeStore = () => {
 describe("box adapter", () => {
   test("missing auth throws at construction", () => {
     expect(() => box({})).toThrow(/missing auth/iu);
+    expect(() => box({})).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("multiple auth methods throw at construction", () => {
@@ -599,11 +600,20 @@ describe("box adapter", () => {
         developerToken: "tok",
       })
     ).toThrow(/exactly one/iu);
+    expect(() =>
+      box({
+        ccg: { clientId: "c", clientSecret: "s", enterpriseId: "e" },
+        developerToken: "tok",
+      })
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("ccg without enterpriseId or userId throws", () => {
     expect(() => box({ ccg: { clientId: "c", clientSecret: "s" } })).toThrow(
       /enterpriseId.*userId/iu
+    );
+    expect(() => box({ ccg: { clientId: "c", clientSecret: "s" } })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
     );
   });
 
@@ -881,12 +891,12 @@ describe("box adapter", () => {
     // `delimiter: "slash"` lets the Files wrapper refuse it up front…
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(/only the "\/" delimiter/u),
     });
     // …and the adapter still guards a direct call.
     await expect(box(baseOpts).list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(/^box: only supports the "\/" delimiter/u),
     });
   });
@@ -1031,7 +1041,10 @@ describe("box adapter", () => {
     await files.upload("a.txt", "hi");
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/u),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -1041,7 +1054,10 @@ describe("box adapter", () => {
     const files = new Files({ adapter: box(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 3600 })
-    ).rejects.toThrow(/signedUploadUrl is not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/signedUploadUrl is not supported/iu),
+    });
   });
 
   test("rootFolderId nests virtual keys under the configured folder", async () => {
@@ -1161,10 +1177,10 @@ describe("box adapter", () => {
     expect(r.size).toBe(view.byteLength);
   });
 
-  test("upload of an empty key throws Provider", async () => {
+  test("upload of an empty key throws Invalid", async () => {
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.upload("/", "x")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -1597,7 +1613,7 @@ describe("box adapter", () => {
   test("splitKey throws on a key that is only slashes", async () => {
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.upload("///", "hi")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -1857,7 +1873,10 @@ describe("box resumable uploads (in-process)", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/in-process only/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/in-process only/u),
+    });
   });
 
   test("metadata is rejected", async () => {
@@ -1880,6 +1899,9 @@ describe("box resumable uploads (in-process)", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 });

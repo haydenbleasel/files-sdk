@@ -5,10 +5,10 @@ const parseSessionUrl = (value: string, label: string): URL => {
   try {
     url = new URL(value);
   } catch (error) {
-    throw new FilesError("Provider", `${label} must be an absolute URL`, error);
+    throw new FilesError("Invalid", `${label} must be an absolute URL`, error);
   }
   if (url.username || url.password) {
-    throw new FilesError("Provider", `${label} must not include credentials`);
+    throw new FilesError("Invalid", `${label} must not include credentials`);
   }
   return url;
 };
@@ -23,11 +23,11 @@ export const trustedHttpsSessionUrl = (
 ): string => {
   const url = parseSessionUrl(value, label);
   if (url.protocol !== "https:") {
-    throw new FilesError("Provider", `${label} must use HTTPS`);
+    throw new FilesError("Invalid", `${label} must use HTTPS`);
   }
   if (!trustedHosts.some((host) => isHostOrSubdomain(url.hostname, host))) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `${label} host is not trusted for resumable uploads`
     );
   }
@@ -42,17 +42,17 @@ export const sameOriginSessionUrl = (
   const baseUrl = parseSessionUrl(base, `${label} base`);
   const url = new URL(value, baseUrl);
   if (url.username || url.password) {
-    throw new FilesError("Provider", `${label} must not include credentials`);
+    throw new FilesError("Invalid", `${label} must not include credentials`);
   }
   if (url.origin !== baseUrl.origin) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `${label} origin does not match the configured resumable endpoint`
     );
   }
   if (!url.pathname.startsWith(baseUrl.pathname)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `${label} path is outside the configured resumable endpoint`
     );
   }

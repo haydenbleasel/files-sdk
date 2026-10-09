@@ -53,7 +53,7 @@ const normalizeDir = (prefix: string): string => {
   const normalized = prefix.replaceAll(/^\/+|(?<!\/)\/+$/gu, "");
   if (normalized.length === 0) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "dedup: prefix must not be empty or all slashes"
     );
   }
@@ -142,10 +142,8 @@ const resolvedSegments = (key: string): string[] => {
 /** Refuse a caller write that would land in the blob store. */
 const rejectStoreWrite = (verb: string, key: string): never => {
   throw new FilesError(
-    "Provider",
-    `dedup: ${verb} into the content store ("${key}") is refused — blobs are written only by the plugin, and overwriting one would change what every pointer to it returns`,
-    undefined,
-    { permanent: true }
+    "Invalid",
+    `dedup: ${verb} into the content store ("${key}") is refused — blobs are written only by the plugin, and overwriting one would change what every pointer to it returns`
   );
 };
 
@@ -533,18 +531,14 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       }
       case "url": {
         throw new FilesError(
-          "Provider",
-          "dedup: url() would return a link to the pointer (an empty placeholder), not the content; download through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "dedup: url() would return a link to the pointer (an empty placeholder), not the content; download through the Files instance instead"
         );
       }
       case "signedUploadUrl": {
         throw new FilesError(
-          "Provider",
-          "dedup: signedUploadUrl() bypasses content-addressing (the client writes directly, never through the plugin); upload through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "dedup: signedUploadUrl() bypasses content-addressing (the client writes directly, never through the plugin); upload through the Files instance instead"
         );
       }
       // copy / move relocate the pointer (sharing the blob); delete drops it;

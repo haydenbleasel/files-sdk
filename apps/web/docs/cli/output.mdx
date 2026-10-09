@@ -13,9 +13,10 @@ $ files --provider fs --root /tmp/store head reports/q1.pdf
 # Errors go to stderr with a stable error code. Exit codes:
 #   0  ok
 #   1  NotFound (or exists → false)
-#   2  Provider / unknown error, or a usage error (unknown flag, missing option)
+#   2  a usage error: Invalid, Unsupported, ReadOnly, an unknown flag, a missing option
 #   3  Unauthorized
 #   4  Conflict
+#   5  Provider: the backend or transport failed (safe to retry)
 $ files --provider fs --root /tmp/store head nope.txt
 {"error":{"code":"NotFound","message":"ENOENT: no such file or directory, lstat '/tmp/store/nope.txt'"}}
 $ echo $?

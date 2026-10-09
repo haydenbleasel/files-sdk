@@ -65,7 +65,7 @@ validation({ key: (key) => key.startsWith(`${tenantId}/`) });
 
 ## Telling failures apart
 
-Every rejection is a `ValidationError` - a regular `FilesError` (`code: "Provider"`) with a `reason` discriminant of `"size"`, `"type"`, or `"key"` - so you can branch on which rule failed without parsing the message:
+Every rejection is a `ValidationError` - a regular `FilesError` (`code: "Invalid"`, so it's never retried) with a `reason` discriminant of `"size"`, `"type"`, or `"key"` - so you can branch on which rule failed without parsing the message:
 
 ```ts lineNumbers
 import { ValidationError } from "files-sdk/validation";

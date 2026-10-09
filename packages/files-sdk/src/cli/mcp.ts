@@ -60,7 +60,7 @@ export const resolveMcpDownloadCap = (maxBytes?: number): number => {
   const cap = maxBytes ?? DEFAULT_MCP_DOWNLOAD_MAX_BYTES;
   if (cap > MAX_MCP_DOWNLOAD_BYTES) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `maxBytes must be less than or equal to ${MAX_MCP_DOWNLOAD_BYTES} — use the CLI to stream larger bodies`
     );
   }
@@ -74,7 +74,7 @@ export const mcpDownloadSize = (
 
 const mcpDownloadTooLarge = (key: string, size: number | string, cap: number) =>
   new FilesError(
-    "Provider",
+    "Invalid",
     `object "${key}" is ${size} bytes, exceeds maxBytes=${cap} — use the CLI to stream large bodies`
   );
 
@@ -140,7 +140,7 @@ const encodeUploadBody = (text?: string, base64?: string): Uint8Array => {
   if (base64 !== undefined) {
     return new Uint8Array(Buffer.from(base64, "base64"));
   }
-  throw new FilesError("Provider", "expected either `text` or `base64` body");
+  throw new FilesError("Invalid", "expected either `text` or `base64` body");
 };
 
 // Conditional predicates, mirroring the SDK's `condition` option shapes. The
@@ -290,7 +290,7 @@ export const buildMcpServer = async (
         try {
           if (text !== undefined && base64 !== undefined) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "`text` and `base64` are mutually exclusive — pass exactly one"
             );
           }
@@ -446,10 +446,8 @@ export const buildMcpServer = async (
           if (Array.isArray(key)) {
             if (condition !== undefined) {
               throw new FilesError(
-                "Provider",
-                "`condition` applies to a single key — bulk delete does not support conditional predicates",
-                undefined,
-                { permanent: true }
+                "Invalid",
+                "`condition` applies to a single key — bulk delete does not support conditional predicates"
               );
             }
             return ok(
@@ -547,7 +545,7 @@ export const buildMcpServer = async (
         if (all) {
           if (delimiter !== undefined) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "`delimiter` lists one folder level and `all` walks the whole tree — pass one, not both"
             );
           }

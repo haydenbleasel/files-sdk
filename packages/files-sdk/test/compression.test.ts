@@ -234,7 +234,7 @@ describe("compression plugin — resumable uploads", () => {
     const failure = await files
       .upload("a.txt", TEXT, { control })
       .catch((error: unknown) => error);
-    expect(failure).toMatchObject({ code: "Provider", permanent: true });
+    expect(failure).toMatchObject({ code: "Unsupported", permanent: true });
     expect((failure as Error).message).toMatch(
       /resumable uploads are not supported by the "compression" plugin/u
     );

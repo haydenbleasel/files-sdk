@@ -12,7 +12,7 @@ import { FilesError } from "./errors.js";
  * that would be left uncoupled from the native compare-and-set. A plugin with
  * that kind of out-of-band mutation must veto the modes it cannot make atomic;
  * this is the one shape every bundled plugin uses for it, so the resulting
- * `FilesError` is uniform: `Provider`-coded, `permanent`, and worded as
+ * `FilesError` is uniform: `Unsupported`-coded (so `permanent`), and worded as
  * `<plugin>: conditional <kind> is unsupported because <reason>`.
  *
  * @throws {FilesError} always
@@ -23,9 +23,7 @@ export const rejectConditional = (
   reason: string
 ): never => {
   throw new FilesError(
-    "Provider",
-    `${plugin}: conditional ${op.kind} is unsupported because ${reason}`,
-    undefined,
-    { permanent: true }
+    "Unsupported",
+    `${plugin}: conditional ${op.kind} is unsupported because ${reason}`
   );
 };

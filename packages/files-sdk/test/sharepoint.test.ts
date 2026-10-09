@@ -132,7 +132,12 @@ const CREDS = {
 
 describe("sharepoint adapter", () => {
   test("construction > missing auth throws", () => {
-    expect(() => sharepoint({ siteId: "site-1" })).toThrow(/missing auth/u);
+    expect(() => sharepoint({ siteId: "site-1" })).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/missing auth/u),
+      })
+    );
   });
 
   test("construction > exposes name and raw", () => {
@@ -223,7 +228,7 @@ describe("sharepoint adapter", () => {
       hostname: "site-1",
     });
     await expect(adapter.list()).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("DoesNotExist"),
     });
     await expect(adapter.list()).rejects.toMatchObject({
@@ -580,7 +585,10 @@ describe("sharepoint adapter", () => {
     });
     await expect(
       files.signedUploadUrl("big.bin", { expiresIn: 3600, maxSize: 1024 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
     expect(lastCalls.some((c) => c.path.endsWith("/createUploadSession"))).toBe(
       false
     );
@@ -595,19 +603,22 @@ describe("sharepoint adapter", () => {
     });
     await expect(
       files.signedUploadUrl("big.bin", { expiresIn: 3600, minSize: 1 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
     expect(lastCalls.some((c) => c.path.endsWith("/createUploadSession"))).toBe(
       false
     );
   });
 
-  test("siteUrl > non-URL string throws Provider", async () => {
+  test("siteUrl > non-URL string throws Invalid", async () => {
     const adapter = sharepoint({
       clientCredentials: CREDS,
       siteUrl: "not a url",
     });
     await expect(adapter.list()).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("not a valid URL"),
     });
   });
@@ -702,10 +713,10 @@ describe("sharepoint adapter", () => {
     expect(result.items).toEqual([]);
   });
 
-  test("resolution > missing site selector throws Provider on first call", async () => {
+  test("resolution > missing site selector throws Invalid on first call", async () => {
     const adapter = sharepoint({ clientCredentials: CREDS });
     await expect(adapter.list()).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("site selection required"),
     });
   });
@@ -1023,7 +1034,10 @@ describe("sharepoint adapter", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("big.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("upload > abort discards the session through the lazy driver", async () => {
@@ -1135,7 +1149,7 @@ describe("sharepoint adapter", () => {
       }),
     });
     await expect(files.url("k")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("url()"),
     });
   });
@@ -1206,7 +1220,7 @@ describe("sharepoint adapter", () => {
           "https://graph.microsoft.com/v1.0/drives/d/root/children?$skiptoken=abc",
       })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("cursor"),
     });
     expect(lastCalls).toEqual([]);

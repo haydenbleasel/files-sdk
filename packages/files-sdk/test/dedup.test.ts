@@ -482,7 +482,7 @@ describe("dedup plugin — store prefix is write-protected", () => {
     const [blobKey = ""] = blobKeys(adapter);
 
     await expect(files.upload(blobKey, "I do NOT agree")).rejects.toMatchObject(
-      { code: "Provider", permanent: true }
+      { code: "Invalid", permanent: true }
     );
     await expect(files.upload(blobKey, "x")).rejects.toThrow(
       /upload into the content store/u
@@ -676,7 +676,7 @@ describe("dedup plugin — conditional policy", () => {
     await files.upload("k.txt", "second");
     await expect(
       files.delete("k.txt", { condition: { etag: etag as string } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     const survived = await files.download("k.txt");
     expect(await survived.text()).toBe("second");
   });

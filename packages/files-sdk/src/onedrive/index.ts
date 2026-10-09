@@ -309,7 +309,7 @@ const assertNoRelativeSegments = (path: string, label: string): void => {
       .some((segment) => segment === "." || segment === "..")
   ) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `onedrive: ${label} must not contain . or .. path segments`
     );
   }
@@ -345,7 +345,7 @@ const GRAPH_API_VERSION_PREFIX = "/v1.0";
 
 const throwListCursorRootMismatch = (): never => {
   throw new FilesError(
-    "Provider",
+    "Invalid",
     "onedrive: list cursor does not match this adapter root"
   );
 };
@@ -747,7 +747,7 @@ const resolveBasePath = (opts: OneDriveAdapterOptions): string => {
   );
   if (targets.length > 1) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "onedrive: pass at most one of `driveId`, `siteId`, `userId`."
     );
   }
@@ -762,7 +762,7 @@ const resolveBasePath = (opts: OneDriveAdapterOptions): string => {
   }
   if (usesClientCredentialsAuth(opts)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "onedrive: clientCredentials auth requires `driveId`, `siteId`, or `userId` — `/me/drive` is not available without an interactive user."
     );
   }
@@ -780,13 +780,13 @@ export const onedrive = (
   ].filter((v) => v !== undefined && v !== null);
   if (explicitAuthOptions.length === 0 && !hasEnvAuth()) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "onedrive adapter: missing auth. Pass `clientCredentials`, `oauth`, `accessToken`, or `client`. Env fallbacks: ONEDRIVE_ACCESS_TOKEN, or ONEDRIVE_TENANT_ID + ONEDRIVE_CLIENT_ID + ONEDRIVE_CLIENT_SECRET."
     );
   }
   if (explicitAuthOptions.length > 1) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "onedrive adapter: pass exactly one of `clientCredentials`, `oauth`, `accessToken`, or `client`."
     );
   }
@@ -803,7 +803,7 @@ export const onedrive = (
     const authProvider = buildAuthProvider(opts);
     if (!authProvider) {
       // Unreachable — explicit auth shape count guarantees one branch matched.
-      throw new FilesError("Provider", "onedrive: failed to build auth");
+      throw new FilesError("Invalid", "onedrive: failed to build auth");
     }
     const clientOpts: ClientOptions = { authProvider };
     client = Client.initWithMiddleware(clientOpts);
@@ -995,13 +995,13 @@ export const onedrive = (
       adopt(session: ResumableUploadSession) {
         if (session.provider !== "onedrive") {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `Cannot resume a ${session.provider} session on a OneDrive adapter.`
           );
         }
         if (session.itemPath !== key) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "Resume token does not match this upload's item path."
           );
         }
@@ -1384,13 +1384,13 @@ export const onedrive = (
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       if (signOpts.maxSize !== undefined || signOpts.minSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "onedrive: `maxSize` and `minSize` are not supported for signed upload URLs. Graph upload sessions do not enforce a server-side content-length-range policy; enforce size limits at your application gateway / proxy before issuing the session URL."
         );
       }
       if (signOpts.contentType !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "onedrive: `contentType` is not supported for signed upload URLs. A Graph upload session doesn't bind a Content-Type (Graph infers the file's type from its name), so a Content-Type header would only be advisory; omit `contentType`, or validate it at your application gateway / proxy before issuing the session URL."
         );
       }
@@ -1473,7 +1473,7 @@ export const onedrive = (
       }
       if (!publicByDefault) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "onedrive: url() requires the adapter to be constructed with `publicByDefault: true`. Graph has no signed URL primitive — use download() for private files."
         );
       }

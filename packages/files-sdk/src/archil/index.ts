@@ -123,33 +123,33 @@ const resolveConfig = (opts: ArchilAdapterOptions): ResolvedConfig => {
 
   if (!diskId) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "archil adapter: missing `bucket` (disk id) or a `disk` instance."
     );
   }
   if (!region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "archil adapter: missing `region`. Pass `region` (e.g. aws-us-east-1), a `disk` instance, or set ARCHIL_REGION."
     );
   }
   const endpoint = endpointForRegion(region);
   if (!endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `archil adapter: unknown region "${region}". Expected the form <cloud>-<geo>, e.g. aws-us-east-1.`
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "archil adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set ARCHIL_S3_ACCESS_KEY_ID + ARCHIL_S3_SECRET_ACCESS_KEY."
     );
   }
   const { branch } = opts;
   if (branch !== undefined && (branch === "" || branch.includes("/"))) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `archil adapter: invalid branch ${JSON.stringify(branch)} (must be non-empty and contain no "/").`
     );
   }

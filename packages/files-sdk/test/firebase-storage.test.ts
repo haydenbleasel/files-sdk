@@ -223,6 +223,9 @@ describe("firebase-storage adapter", () => {
 
   test("missing bucket and projectId throws at construction", () => {
     expect(() => firebaseStorage()).toThrow(/bucket/u);
+    expect(() => firebaseStorage()).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("derives default bucket from projectId", () => {

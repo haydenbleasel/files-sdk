@@ -26,7 +26,7 @@ try {
 - **`cause`** — the original provider error, untouched. Reach into it for provider-specific detail: `@aws-sdk` errors, for instance, carry a request ID and HTTP status on `$metadata` and a typed `name` like `NoSuchKey`.
 - **`aborted`** — `true` when the failure came from a [cancellation](/docs/cancellations) or a [timeout](/docs/timeouts) rather than the provider. Both surface as `code: "Provider"`, so this flag is how you tell an abort apart from a genuine provider failure.
 - **`timedOut`** — `true` when the abort came from a configured [`timeout`](/docs/timeouts) rather than your own `signal`. A timeout sets `aborted` too, so check `timedOut` to tell "the backend hung" apart from "the caller cancelled".
-- **`permanent`** — `true` when a `Provider` failure is deterministic, so re-issuing the same request can only fail the same way (a host that ignores `Range`, an option the adapter can't honor). Such failures are not [retried](/docs/retries). Every rejection the SDK raises itself before provider I/O carries it: an unsupported `range`, `metadata`, `cacheControl`, `delimiter`, or `control` on an adapter that can't honor it, a malformed range or condition, and an invalid key.
+- **`permanent`** — `true` when re-issuing the same request can only fail the same way, so it's not [retried](/docs/retries). Always `true` for `Invalid`, `Unsupported`, and `ReadOnly`; set on a `Provider` failure only when it's deterministic (a host that ignores `Range`, corrupt stored data).
 - **`applied`** — `true` when a [conditional](/docs/conditional-operations) mutation committed at the provider before the call rejected (an awaited plugin threw after `next()`, or a post-commit check failed). The object changed even though you got an error; `appliedEtag` carries the committed generation for uploads. Reconcile with an exact read instead of retrying the same predicate. Never set on a veto or a provider failure.
 
 ## Codes
@@ -35,9 +35,13 @@ try {
 - `"Unauthorized"` — credentials missing, expired, or insufficient for the operation.
 - `"Conflict"` — a precondition failed, e.g. a conditional write that lost a race.
 - `"ReadOnly"` — the operation tried to mutate a read-only `Files` instance.
-- `"Provider"` — anything else, including network failures, throttling, timeouts, and aborts. Inspect `cause` for the underlying error.
+- `"Invalid"` — the call itself is wrong: an empty or `..` key, a malformed range, ETag, or condition, a contradictory option, bad constructor config, or a file a [`validation()`](/docs/plugins/validation) rule rejects. Fix the call; retrying it can't help.
+- `"Unsupported"` — the call is well-formed, but this adapter (in this mode, with these plugins) can't do it: a `range` on an adapter without range reads, `metadata` on Vercel Blob, `url()` under [`encryption()`](/docs/plugins/encryption), a `signedUploadUrl()` `maxSize` the provider can't enforce. Check [`files.capabilities`](/docs/capabilities) to branch before calling.
+- `"Provider"` — the backend or transport failed: network errors, throttling, 5xx responses, timeouts, and aborts. Inspect `cause` for the underlying error.
 
-Codes are derived from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`) plus one SDK-native code: `ReadOnly` for write attempts against `new Files({ readonly: true })` or `files.readonly()`. Everything else maps to `Provider`. Only `Provider` failures are [retried](/docs/retries), and not when they're `aborted` or `permanent`; the rest are deterministic and returned to you immediately.
+`NotFound`, `Unauthorized`, `Conflict`, and `Provider` come from the provider's own error code and HTTP status (`404` → `NotFound`, `401` / `403` → `Unauthorized`, `409` / `412` → `Conflict`, everything else → `Provider`). `ReadOnly`, `Invalid`, and `Unsupported` are the SDK's own, raised before any provider I/O wherever the SDK can tell. Only `Provider` failures are [retried](/docs/retries), and not when they're `aborted` or `permanent`; the rest are deterministic and returned to you immediately.
+
+Through the [gateway](/docs/ui/server/gateway), `Invalid` is answered as a `422` with the wire code `Validation` and `Unsupported` as a `422` with the wire code `Unsupported`; the browser client turns both back into the matching `FilesError` code.
 
 ## Errors in bulk operations
 

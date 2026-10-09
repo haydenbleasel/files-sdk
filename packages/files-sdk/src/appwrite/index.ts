@@ -106,11 +106,8 @@ const APPWRITE_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$/u;
 const assertAppwriteKey = (key: string, label = "key"): void => {
   if (!APPWRITE_KEY_RE.test(key)) {
     throw new FilesError(
-      "Provider",
-      `appwrite: ${label} "${key}" is not a valid Appwrite file ID — must be 1-36 chars, start with [a-zA-Z0-9], and use only [a-zA-Z0-9._-] (no slashes).`,
-      undefined,
-      // The same key fails the same way on every attempt: never retried.
-      { permanent: true }
+      "Invalid",
+      `appwrite: ${label} "${key}" is not a valid Appwrite file ID — must be 1-36 chars, start with [a-zA-Z0-9], and use only [a-zA-Z0-9._-] (no slashes).`
     );
   }
 };
@@ -134,7 +131,7 @@ const toInputFile = async (
 ): Promise<InputFile> => {
   if (!isSupportedBody(body)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "Unsupported body type for Appwrite adapter"
     );
   }
@@ -203,7 +200,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
 
     if (!projectId) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         "Appwrite adapter requires a projectId or an existing client"
       );
     }
@@ -411,7 +408,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       const requireConfig = () => {
         if (!(endpoint && projectId && apiKey)) {
           throw new FilesError(
-            "Provider",
+            "Unsupported",
             "appwrite: resumable uploads require an API key with endpoint/projectId — a pre-built `client` doesn't expose its key."
           );
         }
@@ -420,7 +417,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       const requireSession = () => {
         if (!session) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "appwrite: resumable upload not started."
           );
         }
@@ -430,13 +427,13 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         adopt(adopted: ResumableUploadSession) {
           if (adopted.provider !== "appwrite") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${adopted.provider} session on an appwrite adapter.`
             );
           }
           if (adopted.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -578,7 +575,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
     signedUploadUrl: (_key: string, _opts: SignUploadOptions) =>
       Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "appwrite: signedUploadUrl is not supported. Appwrite has no presigned upload primitive — use a JWT or the client SDK for direct uploads."
         )
       ),
@@ -604,7 +601,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       if (!opts.public) {
         return Promise.reject(
           new FilesError(
-            "Provider",
+            "Unsupported",
             "appwrite: url() is not supported. Appwrite SDKs cannot mint signed read URLs with API keys — set { public: true } on the adapter for a public bucket to return a permanent view URL."
           )
         );
@@ -612,7 +609,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
       if (!endpoint || !projectId) {
         return Promise.reject(
           new FilesError(
-            "Provider",
+            "Unsupported",
             "appwrite: missing endpoint or projectId required for URL generation"
           )
         );

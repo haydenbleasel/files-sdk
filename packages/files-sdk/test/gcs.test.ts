@@ -159,6 +159,9 @@ beforeEach(() => {
 describe("gcs adapter", () => {
   test("missing bucket throws at construction", () => {
     expect(() => gcs({ bucket: "" })).toThrow(/bucket/u);
+    expect(() => gcs({ bucket: "" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("construction with no credentials lets the SDK fall back to ADC", () => {
@@ -1204,7 +1207,10 @@ describe("gcs resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a s3/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a s3/u),
+    });
   });
 
   test("resuming a mismatched bucket/key throws", async () => {
@@ -1217,6 +1223,9 @@ describe("gcs resumable uploads", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 });

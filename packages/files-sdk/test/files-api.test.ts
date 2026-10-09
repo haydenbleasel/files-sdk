@@ -1851,11 +1851,11 @@ describe("createFilesRouter — request signal", () => {
         signal: presign.signal,
       })
     );
-    // the aborted signing call falls back to the proxy target
-    const { uploads } = await readJson<{
-      uploads: { target: { url: string } }[];
-    }>(res);
-    expect(first(uploads).target.url).toContain("op=proxy");
+    // the signing call sees the abort, which surfaces (the client is gone)
+    // rather than being masked as a proxy fallback
+    expect(res.status).toBe(500);
+    const { error } = await readJson<{ error: { message: string } }>(res);
+    expect(error.message).toMatch(/aborted/iu);
 
     const adapter = memory();
     await seed(adapter, "done.txt", "hi");

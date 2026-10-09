@@ -61,13 +61,13 @@ export const idriveE2 = (opts: IdriveE2AdapterOptions): IdriveE2Adapter => {
 
   if (!opts.endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "idrive-e2 adapter: missing endpoint. Pass `endpoint` (copy it from the iDrive e2 dashboard under Access Keys → Endpoint)."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "idrive-e2 adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set IDRIVE_E2_ACCESS_KEY_ID + IDRIVE_E2_SECRET_ACCESS_KEY."
     );
   }

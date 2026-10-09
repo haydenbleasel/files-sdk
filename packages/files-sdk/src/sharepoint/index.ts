@@ -126,7 +126,7 @@ const parseSiteUrl = (url: string) => {
     parsed = new URL(url);
   } catch {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `sharepoint: siteUrl "${url}" is not a valid URL.`
     );
   }
@@ -179,7 +179,7 @@ const buildOneDriveAuthOptions = (
     return { clientCredentials: envCreds };
   }
   throw new FilesError(
-    "Provider",
+    "Invalid",
     "sharepoint: missing auth. Pass `clientCredentials`, `oauth`, `accessToken`, or `client`. Env fallbacks: SHAREPOINT_ACCESS_TOKEN, or SHAREPOINT_TENANT_ID + SHAREPOINT_CLIENT_ID + SHAREPOINT_CLIENT_SECRET (or the ONEDRIVE_ equivalents)."
   );
 };
@@ -193,7 +193,7 @@ const buildResolverClient = (
   const authProvider = buildAuthProvider(authOpts);
   if (!authProvider) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "sharepoint: failed to build Graph auth provider — credentials missing."
     );
   }
@@ -231,7 +231,7 @@ const resolveSiteId = async (
   }
   if (!hostname) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "sharepoint: site selection required. Pass `siteId`, `siteUrl`, or `hostname` (with optional `sitePath`)."
     );
   }
@@ -269,7 +269,7 @@ const resolveDriveId = async (
       .flatMap((d) => (d.name ? [d.name] : []))
       .join(", ");
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `sharepoint: document library "${documentLibrary}" not found on site. Available libraries: ${available || "(none)"}`
     );
   }
@@ -282,10 +282,17 @@ const relabelError = (cause: unknown) => {
     isString(cause.message) &&
     cause.message.includes("OneDrive error")
   ) {
+    // Keep the flags: a relabeled abort, timeout, or deterministic failure
+    // must still read as one, or retry and failover would misjudge it.
     return new FilesError(
       cause.code,
       cause.message.replaceAll("OneDrive error", "SharePoint error"),
-      cause.cause
+      cause.cause,
+      {
+        aborted: cause.aborted,
+        permanent: cause.permanent,
+        timedOut: cause.timedOut,
+      }
     );
   }
   return cause;

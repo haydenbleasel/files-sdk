@@ -93,13 +93,13 @@ export const s3Fetch = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
 
   if (!opts.endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "s3-fetch adapter: missing endpoint. Pass `endpoint` (e.g. https://s3.us-east-1.amazonaws.com)."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "s3-fetch adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (there is no credential chain on this client)."
     );
   }

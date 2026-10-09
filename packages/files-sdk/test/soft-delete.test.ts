@@ -406,7 +406,7 @@ describe("soft-delete plugin — conditional policy", () => {
       mode: "match",
     };
     await expect(wrap(live, next)).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       permanent: true,
     });
     expect(forwarded).toHaveLength(1);

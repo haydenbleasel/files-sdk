@@ -699,7 +699,10 @@ describe("memory resumable uploads (in-process)", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/in-process only/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/in-process only/u),
+    });
   });
 
   test("resuming a non-memory token throws", async () => {
@@ -712,6 +715,9 @@ describe("memory resumable uploads (in-process)", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 });

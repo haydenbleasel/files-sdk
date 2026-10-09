@@ -64,7 +64,7 @@ export const yandex = (opts: YandexAdapterOptions): YandexAdapter => {
 
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "yandex adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set YANDEX_ACCESS_KEY_ID + YANDEX_SECRET_ACCESS_KEY."
     );
   }

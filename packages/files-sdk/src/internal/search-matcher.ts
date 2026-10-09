@@ -231,14 +231,14 @@ export const buildSearchMatcher = (
       regexp = new RegExp(pattern, caseInsensitive ? "iu" : "u");
     } catch (error) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `search pattern is not a valid regular expression: ${pattern}`,
         error
       );
     }
   }
   if (!isSafeSearchRegex(regexp)) {
-    throw new FilesError("Provider", "search pattern is too complex");
+    throw new FilesError("Invalid", "search pattern is too complex");
   }
   return (key) => {
     regexp.lastIndex = 0;

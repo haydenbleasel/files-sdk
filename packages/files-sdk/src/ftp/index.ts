@@ -301,7 +301,7 @@ const resolveConnection = (opts: FtpAdapterOptions): Resolved => {
   const host = opts.host ?? readEnv("FTP_HOST");
   if (!host) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "ftp adapter: missing connection. Pass `host` (and `user` / `password`), set FTP_HOST / FTP_USERNAME / FTP_PASSWORD, or pass a pre-connected `client`."
     );
   }
@@ -739,13 +739,13 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "ftp") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on an ftp adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -831,7 +831,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     signedUploadUrl(_key, _signOpts): Promise<SignedUpload> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "ftp: signedUploadUrl() is not supported. FTP has no presigned-upload concept — use upload(), or inject a pre-connected `client` for batch transfers."
         )
       );
@@ -891,7 +891,7 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "ftp: url() requires `publicBaseUrl`. FTP serves no HTTP and has no signing primitive; configure `publicBaseUrl` to point at an HTTP server fronting the same tree, or use download()."
       );
     },

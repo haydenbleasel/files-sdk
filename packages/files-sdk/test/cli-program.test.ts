@@ -403,7 +403,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
       await expect(run("head", "k")).rejects.toThrow("__exit:2");
       expect(cap.exits).toEqual([2]);
       const payload = JSON.parse(cap.stderr.join(""));
-      expect(payload.error.code).toBe("Provider");
+      expect(payload.error.code).toBe("Invalid");
       expect(payload.error.message).toContain("--provider is required");
     } finally {
       if (prev !== undefined) {
@@ -426,7 +426,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
       )
     ).rejects.toThrow("__exit:2");
     const payload = JSON.parse(cap.stderr.join(""));
-    expect(payload.error.code).toBe("Provider");
+    expect(payload.error.code).toBe("Invalid");
     expect(payload.error.message).toContain("invalid JSON in --config-json");
   });
 
@@ -449,7 +449,7 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
         )
       ).rejects.toThrow("__exit:2");
       expect(cap.stderr.join("")).toStartWith(
-        "error (Provider): invalid JSON in --config-json"
+        "error (Invalid): invalid JSON in --config-json"
       );
     }
   });

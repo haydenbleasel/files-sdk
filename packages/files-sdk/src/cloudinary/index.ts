@@ -172,7 +172,7 @@ const resolveConfig = (
     opts.apiSecret ?? readEnv("CLOUDINARY_API_SECRET") ?? envParsed.apiSecret;
   if (!cloudName) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "cloudinary: missing cloudName. Pass `cloudName` (and `apiKey`/`apiSecret` for non-public ops) or set CLOUDINARY_CLOUD_NAME or CLOUDINARY_URL."
     );
   }
@@ -578,7 +578,7 @@ export const cloudinaryAdapter = (
       // before a resumable upload ever reaches here.
       if (!(apiKey && apiSecret)) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "cloudinary: resumable uploads require both apiKey and apiSecret."
         );
       }
@@ -592,7 +592,7 @@ export const cloudinaryAdapter = (
       const requireSession = () => {
         if (!session) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "cloudinary: resumable upload not started."
           );
         }
@@ -602,13 +602,13 @@ export const cloudinaryAdapter = (
         adopt(adopted: ResumableUploadSession) {
           if (adopted.provider !== "cloudinary") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${adopted.provider} session on a cloudinary adapter.`
             );
           }
           if (adopted.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -744,13 +744,13 @@ export const cloudinaryAdapter = (
     ): Promise<SignedUpload> {
       if (!apiKey || !apiSecret) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "cloudinary: signedUploadUrl requires both apiKey and apiSecret. Pass them at construction or set CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET / CLOUDINARY_URL."
         );
       }
       if (signOpts.maxSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "cloudinary: `maxSize` is not supported for signed upload URLs. Cloudinary upload signatures do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded signed upload."
         );
       }
@@ -758,7 +758,7 @@ export const cloudinaryAdapter = (
       // bound into the signature, so fail closed like `maxSize`.
       if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "cloudinary: `minSize` is not supported for signed upload URLs. Cloudinary upload signatures have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
         );
       }
@@ -766,7 +766,7 @@ export const cloudinaryAdapter = (
       // the format from the bytes), so a `contentType` would only be advisory.
       if (signOpts.contentType) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "cloudinary: `contentType` is not supported for signed upload URLs. Cloudinary detects the format from the uploaded bytes and has no Content-Type field to bind into the upload signature; omit `contentType`, or restrict formats with an upload preset's `allowed_formats`."
         );
       }

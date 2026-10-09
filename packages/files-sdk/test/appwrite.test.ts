@@ -122,6 +122,9 @@ describe("appwrite adapter", () => {
           }),
         })
     ).toThrow("Appwrite adapter requires a projectId or an existing client");
+    expect(() => appwrite({ bucket: BUCKET })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("construction > initializes with env vars", () => {
@@ -247,7 +250,10 @@ describe("appwrite adapter", () => {
     ).rejects.toThrow(/responseContentDisposition/u);
     await expect(
       files.url("file-123", { responseContentDisposition: "inline" })
-    ).rejects.toThrow(/responseContentDisposition/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/u),
+    });
     await expectDispositionRefusal(
       files.url("file-123", { responseContentDisposition: "inline" })
     );
@@ -281,7 +287,12 @@ describe("appwrite adapter", () => {
         contentType: "text/plain",
         expiresIn: 3600,
       })
-    ).rejects.toThrow(/appwrite: signedUploadUrl is not supported/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(
+        /appwrite: signedUploadUrl is not supported/u
+      ),
+    });
   });
 
   test("error mapping > 404 maps to NotFound", async () => {
@@ -563,7 +574,7 @@ describe("appwrite adapter", () => {
     expect(result.key).toBe("file-id-123");
   });
 
-  test("upload > unsupported body type throws Provider error", async () => {
+  test("upload > unsupported body type throws Invalid error", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -573,7 +584,7 @@ describe("appwrite adapter", () => {
       expect.unreachable();
     } catch (error: unknown) {
       expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Invalid");
       expect((error as FilesError).message).toContain("Unsupported body type");
     }
   });
@@ -726,7 +737,7 @@ describe("appwrite adapter", () => {
     );
   });
 
-  test("upload > rejects cacheControl with Provider error", async () => {
+  test("upload > rejects cacheControl with Unsupported error", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -734,13 +745,13 @@ describe("appwrite adapter", () => {
     await expect(
       files.upload("k", "data", { cacheControl: "max-age=60" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("`cacheControl` is not supported"),
     });
     expect(createFileMock).not.toHaveBeenCalled();
   });
 
-  test("upload > rejects non-empty metadata with Provider error", async () => {
+  test("upload > rejects non-empty metadata with Unsupported error", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
       adapter: appwrite({ bucket: BUCKET }),
@@ -748,7 +759,7 @@ describe("appwrite adapter", () => {
     await expect(
       files.upload("k", "data", { metadata: { owner: "alice" } })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("`metadata` is not supported"),
     });
     expect(createFileMock).not.toHaveBeenCalled();
@@ -769,7 +780,7 @@ describe("appwrite adapter", () => {
       adapter: appwrite({ bucket: BUCKET }),
     });
     await expect(files.upload("has/slash", "data")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("not a valid Appwrite file ID"),
     });
     expect(createFileMock).not.toHaveBeenCalled();
@@ -788,7 +799,7 @@ describe("appwrite adapter", () => {
       }),
     });
     const invalid = expect.objectContaining({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("not a valid Appwrite file ID"),
       // Deterministic: `retries` must not re-send it.
       permanent: true,
@@ -899,7 +910,7 @@ describe("appwrite adapter", () => {
       public: true,
     });
     await expect(bareAdapter.url("k")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("missing endpoint or projectId"),
     });
   });
@@ -1180,7 +1191,10 @@ describe("appwrite resumable uploads (chunked)", () => {
     });
     await expect(
       files.upload("x", "data", { control: new UploadControl() })
-    ).rejects.toThrow(/require an API key/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/require an API key/u),
+    });
   });
 
   test("metadata and cacheControl are rejected", async () => {
@@ -1210,7 +1224,10 @@ describe("appwrite resumable uploads (chunked)", () => {
     };
     await expect(
       files.upload("doc", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 
   test("resuming a non-appwrite token throws", async () => {

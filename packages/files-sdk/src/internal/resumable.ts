@@ -386,7 +386,7 @@ export const toByteSource = (body: Body): ByteSource => {
       },
     };
   }
-  throw new FilesError("Provider", STREAM_BODY_MESSAGE);
+  throw new FilesError("Invalid", STREAM_BODY_MESSAGE);
 };
 
 const inferContentType = (body: Body, hint?: string): string => {
@@ -749,7 +749,7 @@ export const runResumableUpload = async (
   const state = stateOf(opts.control);
   if (state.consumed) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "This UploadControl has already driven an upload. Use a fresh UploadControl (or UploadControl.from(token)) per upload."
     );
   }

@@ -180,27 +180,24 @@ const aliasesSidecarPath = (resolved: string): boolean => {
 // `../../etc/passwd` resolves outside `root`. We compare the resolved path
 // against `root` to reject those before any fs operation runs. Without
 // this check, `download("../../../etc/passwd")` would happily exfiltrate
-// from the host filesystem. Every rejection here is `permanent`: the same key
-// fails the same way on every attempt, so `retries` must not re-send it.
+// from the host filesystem. Every rejection here is `Invalid` (so `permanent`):
+// the same key fails the same way on every attempt, so `retries` must not
+// re-send it.
 const resolveKeyPath = (root: string, key: string): string => {
   const resolved = path.resolve(root, key);
   const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(rootWithSep)) {
     throw new FilesError(
-      "Provider",
-      `fs: key escapes adapter root: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `fs: key escapes adapter root: ${JSON.stringify(key)}`
     );
   }
   // Disallow keys that map directly to the root (empty segment after
   // resolve) — there's no meaningful body at the root path itself.
   if (resolved === root) {
     throw new FilesError(
-      "Provider",
-      "fs: key resolves to the adapter root directory",
-      undefined,
-      { permanent: true }
+      "Invalid",
+      "fs: key resolves to the adapter root directory"
     );
   }
   // The adapter stores per-object metadata in a sidecar at
@@ -211,10 +208,8 @@ const resolveKeyPath = (root: string, key: string): string => {
   // that resolves to a sidecar path so the namespace stays unambiguous.
   if (aliasesSidecarPath(resolved)) {
     throw new FilesError(
-      "Provider",
-      `fs: keys ending in ${SIDECAR_SUFFIX}, ${RESUMABLE_SUFFIX}, or ${TEMP_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `fs: keys ending in ${SIDECAR_SUFFIX}, ${RESUMABLE_SUFFIX}, or ${TEMP_SUFFIX} are reserved for adapter sidecars: ${JSON.stringify(key)}`
     );
   }
   return resolved;
@@ -234,10 +229,8 @@ const realpathUnderRoot = async (
     : realRoot + path.sep;
   if (realTarget !== realRoot && !realTarget.startsWith(rootWithSep)) {
     throw new FilesError(
-      "Provider",
-      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `fs: key resolves outside adapter root: ${JSON.stringify(key)}`
     );
   }
   return realTarget;
@@ -464,7 +457,7 @@ const compareKeys = (a: string, b: string): number => {
 
 export const fs = (opts: FsAdapterOptions): FsAdapter => {
   if (!opts.root) {
-    throw new FilesError("Provider", "fs adapter: missing `root` directory.");
+    throw new FilesError("Invalid", "fs adapter: missing `root` directory.");
   }
   const root = path.resolve(opts.root);
   const { urlBaseUrl } = opts;
@@ -735,13 +728,13 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "fs") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on an fs adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -753,7 +746,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
           // against a different adapter root.
           if (session.tempPath !== tempPath) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token's temp path does not match this adapter's root."
             );
           }
@@ -868,7 +861,7 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       resolveKeyPath(root, key);
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "fs: signedUploadUrl() is not supported. The fs adapter has no built-in upload server, signer, or verifier, so it cannot bind expiresIn, contentType, maxSize, or minSize into an upload capability. Upload through files.upload() or through an application route that enforces those controls server-side."
         )
       );

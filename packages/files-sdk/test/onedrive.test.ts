@@ -350,7 +350,12 @@ afterEach(() => {
 
 describe("onedrive adapter", () => {
   test("missing auth throws at construction", () => {
-    expect(() => onedrive({})).toThrow(/missing auth/iu);
+    expect(() => onedrive({})).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/missing auth/iu),
+      })
+    );
   });
 
   test("multiple auth shapes throws at construction", () => {
@@ -359,7 +364,12 @@ describe("onedrive adapter", () => {
         accessToken: "x",
         client: fakeClient as never,
       })
-    ).toThrow(/exactly one/iu);
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/exactly one/iu),
+      })
+    );
   });
 
   test("clientCredentials without driveId/siteId/userId throws", () => {
@@ -371,7 +381,14 @@ describe("onedrive adapter", () => {
           tenantId: "t",
         },
       })
-    ).toThrow(/driveId.*siteId.*userId|interactive user/iu);
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(
+          /driveId.*siteId.*userId|interactive user/iu
+        ),
+      })
+    );
   });
 
   test("multiple drive targets throws", () => {
@@ -381,7 +398,12 @@ describe("onedrive adapter", () => {
         driveId: "d1",
         siteId: "s1",
       })
-    ).toThrow(/at most one/iu);
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/at most one/iu),
+      })
+    );
   });
 
   test("an explicit target ignores env targets instead of counting them", async () => {
@@ -410,7 +432,12 @@ describe("onedrive adapter", () => {
         "/sites/env-site/drive/root:/a.txt:/content"
       );
       process.env.ONEDRIVE_DRIVE_ID = "env-drive";
-      expect(() => onedrive(baseOpts)).toThrow(/at most one/iu);
+      expect(() => onedrive(baseOpts)).toThrow(
+        expect.objectContaining({
+          code: "Invalid",
+          message: expect.stringMatching(/at most one/iu),
+        })
+      );
     } finally {
       delete process.env.ONEDRIVE_SITE_ID;
       delete process.env.ONEDRIVE_DRIVE_ID;
@@ -782,7 +809,7 @@ describe("onedrive adapter", () => {
   test("a prefix with dot segments is rejected", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await expect(files.list({ prefix: "../x/" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
     expect(dispatchGet).not.toHaveBeenCalled();
   });
@@ -823,7 +850,7 @@ describe("onedrive adapter", () => {
           "https://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc",
       })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("cursor"),
     });
     expect(dispatchGet).not.toHaveBeenCalled();
@@ -1020,7 +1047,10 @@ describe("onedrive adapter", () => {
   test("url throws when publicByDefault is false", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "hi");
-    await expect(files.url("a.txt")).rejects.toThrow(/publicByDefault/u);
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicByDefault/u),
+    });
   });
 
   test("url throws on responseContentDisposition", async () => {
@@ -1030,7 +1060,10 @@ describe("onedrive adapter", () => {
     await files.upload("a.txt", "hi");
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/u),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -1071,13 +1104,13 @@ describe("onedrive adapter", () => {
   test("only the / delimiter is accepted", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(/only the "\/" delimiter/u),
     });
     await expect(
       onedrive(baseOpts).list({ delimiter: "|" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(
         /^onedrive: only supports the "\/" delimiter/u
       ),
@@ -1105,7 +1138,10 @@ describe("onedrive adapter", () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 3600, maxSize: 1024 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
     expect(dispatchPost).not.toHaveBeenCalled();
   });
 
@@ -1118,7 +1154,10 @@ describe("onedrive adapter", () => {
         contentType: "text/plain",
         expiresIn: 3600,
       })
-    ).rejects.toThrow(/contentType.*not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/contentType.*not supported/iu),
+    });
     expect(dispatchPost).not.toHaveBeenCalled();
   });
 
@@ -1126,7 +1165,10 @@ describe("onedrive adapter", () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 3600, minSize: 1 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
     expect(dispatchPost).not.toHaveBeenCalled();
   });
 
@@ -1142,7 +1184,12 @@ describe("onedrive adapter", () => {
   test("rootFolderPath rejects dot segments in configured roots and keys", async () => {
     expect(() =>
       onedrive({ ...baseOpts, rootFolderPath: "../SDK Storage" })
-    ).toThrow(/rootFolderPath must not contain/u);
+    ).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/rootFolderPath must not contain/u),
+      })
+    );
 
     const files = new Files({
       adapter: onedrive({ ...baseOpts, rootFolderPath: "SDK Storage" }),
@@ -1357,7 +1404,10 @@ describe("onedrive resumable uploads", () => {
         control: UploadControl.from(token),
         multipart: { partSize: CHUNK },
       })
-    ).rejects.toThrow(/not trusted/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/not trusted/u),
+    });
   });
 
   test("an empty body takes the simple PUT and drops the unused session", async () => {
@@ -1519,7 +1569,10 @@ describe("onedrive resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched item path throws", async () => {
@@ -1531,6 +1584,9 @@ describe("onedrive resumable uploads", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/item path/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/item path/u),
+    });
   });
 });

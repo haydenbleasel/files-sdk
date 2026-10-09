@@ -1449,20 +1449,10 @@ export type ExtensionsOf<P extends readonly FilesPlugin[]> =
 // under `failover()` — re-sent to another backend.
 const assertValidKey = (key: string, label = "key"): void => {
   if (!isString(key) || key.length === 0) {
-    throw new FilesError(
-      "Provider",
-      `${label} must be a non-empty string`,
-      undefined,
-      { permanent: true }
-    );
+    throw new FilesError("Invalid", `${label} must be a non-empty string`);
   }
   if (key.includes("\0")) {
-    throw new FilesError(
-      "Provider",
-      `${label} must not contain null bytes`,
-      undefined,
-      { permanent: true }
-    );
+    throw new FilesError("Invalid", `${label} must not contain null bytes`);
   }
 };
 
@@ -1472,10 +1462,8 @@ const assertCanonicalStrongEtag: (
 ) => asserts etag is string = (etag, label = "etag") => {
   if (!isString(etag)) {
     throw new FilesError(
-      "Provider",
-      `${label} must be a canonical bare strong ETag`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `${label} must be a canonical bare strong ETag`
     );
   }
   const invalidLength = etag.length === 0 || etag.length > 1024;
@@ -1494,10 +1482,8 @@ const assertCanonicalStrongEtag: (
     return;
   }
   throw new FilesError(
-    "Provider",
-    `${label} must be a canonical bare strong ETag`,
-    undefined,
-    { permanent: true }
+    "Invalid",
+    `${label} must be a canonical bare strong ETag`
   );
 };
 
@@ -1567,12 +1553,7 @@ const toOperationOptions = (
 };
 
 const invalidCondition = (operation: string): never => {
-  throw new FilesError(
-    "Provider",
-    `${operation} condition is malformed`,
-    undefined,
-    { permanent: true }
-  );
+  throw new FilesError("Invalid", `${operation} condition is malformed`);
 };
 
 // The snapshots take the option's declared type but still validate the value
@@ -1656,10 +1637,8 @@ const assertNoBulkCondition = (
     return;
   }
   throw new FilesError(
-    "Provider",
-    `${operation} does not support conditional predicates`,
-    undefined,
-    { permanent: true }
+    "Invalid",
+    `${operation} does not support conditional predicates`
   );
 };
 
@@ -1672,17 +1651,13 @@ const assertConditionalUploadOptions = (
     return;
   }
   throw new FilesError(
-    "Provider",
-    "conditional uploads do not support multipart or resumable controls",
-    undefined,
-    { permanent: true }
+    "Invalid",
+    "conditional uploads do not support multipart or resumable controls"
   );
 };
 
 const unreachableOperation = (_op: never): never => {
-  throw new FilesError("Provider", "unsupported Files operation", undefined, {
-    permanent: true,
-  });
+  throw new FilesError("Invalid", "unsupported Files operation");
 };
 
 /**
@@ -1727,10 +1702,8 @@ const conditionalOperationFingerprint = (
 const assertNoRelativeSegments = (key: string, label = "key"): void => {
   if (key.split("/").some((segment) => segment === "." || segment === "..")) {
     throw new FilesError(
-      "Provider",
-      `${label} must not contain . or .. path segments`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `${label} must not contain . or .. path segments`
     );
   }
 };
@@ -1787,9 +1760,7 @@ const normalizePrefix = (prefix: string | undefined): string => {
     return "";
   }
   if (!isString(prefix)) {
-    throw new FilesError("Provider", "prefix must be a string", undefined, {
-      permanent: true,
-    });
+    throw new FilesError("Invalid", "prefix must be a string");
   }
   // The `(?<!\/)` before the trailing-slash run anchors each match to the
   // first slash of the run, so the engine can't re-attempt at every slash —
@@ -1970,13 +1941,13 @@ export class Files<A extends Adapter = Adapter> {
         // `then` key would make the instance thenable and corrupt `await files`.
         if (key === "then" || key in Files.prototype) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `plugin "${plugin.name}": extension "${key}" collides with an existing Files member`
           );
         }
         if (contributed.has(key)) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `plugin "${plugin.name}": extension "${key}" collides with another plugin's extension`
           );
         }
@@ -2025,10 +1996,8 @@ export class Files<A extends Adapter = Adapter> {
       const rejectIntroducedConditional: InternalNext = (nextOp) => {
         if (isConditionalOperation(nextOp)) {
           throw new FilesError(
-            "Provider",
-            "a plugin cannot introduce a conditional predicate into an ordinary operation",
-            undefined,
-            { permanent: true }
+            "Invalid",
+            "a plugin cannot introduce a conditional predicate into an ordinary operation"
           );
         }
         return base(nextOp);
@@ -2070,9 +2039,7 @@ export class Files<A extends Adapter = Adapter> {
     let nativeUploadEtag: string | undefined;
 
     const rejectViolation = (message: string, cause?: unknown): never => {
-      const error = new FilesError("Provider", message, cause, {
-        permanent: true,
-      });
+      const error = new FilesError("Invalid", message, cause);
       violation ??= error;
       throw error;
     };
@@ -2213,10 +2180,8 @@ export class Files<A extends Adapter = Adapter> {
       if (result.etag !== nativeUploadEtag) {
         throw applied(
           new FilesError(
-            "Provider",
-            "a plugin cannot replace the ETag returned by a conditional upload",
-            undefined,
-            { permanent: true }
+            "Invalid",
+            "a plugin cannot replace the ETag returned by a conditional upload"
           )
         );
       }
@@ -2749,10 +2714,8 @@ export class Files<A extends Adapter = Adapter> {
     let caps = this.#adapterCapabilities();
     if (!allows(caps)) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: ${unsupported} this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: ${unsupported} this adapter`
       );
     }
     for (const plugin of this.#plugins ?? []) {
@@ -2760,10 +2723,8 @@ export class Files<A extends Adapter = Adapter> {
         caps = plugin.capabilities(caps);
         if (!allows(caps)) {
           throw new FilesError(
-            "Provider",
-            `${unsupported} the "${plugin.name}" plugin`,
-            undefined,
-            { permanent: true }
+            "Unsupported",
+            `${unsupported} the "${plugin.name}" plugin`
           );
         }
       }
@@ -2963,10 +2924,8 @@ export class Files<A extends Adapter = Adapter> {
       (opts?.control !== undefined || isMultipartRequested(opts?.multipart))
     ) {
       throw new FilesError(
-        "Provider",
-        "conditional uploads do not support multipart or resumable controls",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "conditional uploads do not support multipart or resumable controls"
       );
     }
     const nativeConditionalUpload = (() => {
@@ -3124,10 +3083,8 @@ export class Files<A extends Adapter = Adapter> {
   ): Promise<UploadResult> {
     if (!this.#adapter.resumableUpload) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
       );
     }
     const driver = this.#adapter.resumableUpload(path, {
@@ -3281,26 +3238,20 @@ export class Files<A extends Adapter = Adapter> {
     const { start, end } = range;
     if (!Number.isInteger(start) || start < 0) {
       throw new FilesError(
-        "Provider",
-        "range.start must be a non-negative integer",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "range.start must be a non-negative integer"
       );
     }
     if (end !== undefined && (!Number.isInteger(end) || end < start)) {
       throw new FilesError(
-        "Provider",
-        "range.end must be an integer greater than or equal to range.start",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "range.end must be an integer greater than or equal to range.start"
       );
     }
     if (this.#declared().rangeRead !== true) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: range downloads are not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: range downloads are not supported by this adapter`
       );
     }
   }
@@ -3323,18 +3274,14 @@ export class Files<A extends Adapter = Adapter> {
       this.#declared().metadata !== true
     ) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: \`metadata\` is not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: \`metadata\` is not supported by this adapter`
       );
     }
     if (opts?.cacheControl && this.#declared().cacheControl !== true) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: \`cacheControl\` is not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: \`cacheControl\` is not supported by this adapter`
       );
     }
   }
@@ -4092,10 +4039,8 @@ export class Files<A extends Adapter = Adapter> {
 
   #unsupportedConditional(operation: string): never {
     throw new FilesError(
-      "Provider",
-      `${this.#adapter.name}: ${operation} are not supported by this adapter`,
-      undefined,
-      { permanent: true }
+      "Unsupported",
+      `${this.#adapter.name}: ${operation} are not supported by this adapter`
     );
   }
 
@@ -4104,28 +4049,19 @@ export class Files<A extends Adapter = Adapter> {
       return;
     }
     if (opts.delimiter === "") {
-      throw new FilesError(
-        "Provider",
-        "delimiter must be a non-empty string",
-        undefined,
-        { permanent: true }
-      );
+      throw new FilesError("Invalid", "delimiter must be a non-empty string");
     }
     const support = normalizeDelimiterSupport(this.#declared().delimiter);
     if (support === false) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: directory-style listing (delimiter) is not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: directory-style listing (delimiter) is not supported by this adapter`
       );
     }
     if (!delimiterAllowed(support, opts.delimiter)) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: only the "/" delimiter is supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: only the "/" delimiter is supported by this adapter`
       );
     }
   }

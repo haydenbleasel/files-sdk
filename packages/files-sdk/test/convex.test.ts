@@ -166,6 +166,9 @@ describe("convex adapter", () => {
       expect(() => convex({} as ConvexAdapterOptions)).toThrow(
         /`ctx` is required/u
       );
+      expect(() => convex({} as ConvexAdapterOptions)).toThrow(
+        expect.objectContaining({ code: "Invalid" })
+      );
     });
 
     test("exposes name and ctx as raw", () => {
@@ -251,10 +254,10 @@ describe("convex adapter", () => {
       const files = new Files({ adapter: convex({ ctx: actionCtx }) });
       await expect(
         files.upload("k", "x", { metadata: { a: "b" } })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
       await expect(
         files.upload("k", "x", { cacheControl: "max-age=60" })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
     });
   });
 
@@ -263,7 +266,7 @@ describe("convex adapter", () => {
       const { mutationCtx } = makeBackend();
       const adapter = convex({ ctx: mutationCtx });
       await expect(adapter.upload("k", "x")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Unsupported",
       });
       await expect(adapter.download("kg000000")).rejects.toThrow(
         /requires an action context/u
@@ -273,9 +276,10 @@ describe("convex adapter", () => {
     test("list requires a query/mutation context (ctx.db)", async () => {
       const { actionCtx } = makeBackend();
       const adapter = convex({ ctx: actionCtx });
-      await expect(adapter.list()).rejects.toThrow(
-        /requires a query or mutation/u
-      );
+      await expect(adapter.list()).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/requires a query or mutation/u),
+      });
     });
 
     test("signedUploadUrl requires a writer context", async () => {
@@ -283,7 +287,7 @@ describe("convex adapter", () => {
       const adapter = convex({ ctx: queryCtx });
       await expect(
         adapter.signedUploadUrl("k", { expiresIn: 60 })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
     });
   });
 
@@ -360,7 +364,7 @@ describe("convex adapter", () => {
       const { key } = await adapter.upload("k", "x");
       await expect(
         adapter.url(key, { responseContentDisposition: "attachment" })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
       await expectDispositionRefusal(
         adapter.url(key, { responseContentDisposition: "attachment" })
       );
@@ -400,7 +404,10 @@ describe("convex adapter", () => {
     test("is unsupported", async () => {
       const { actionCtx } = makeBackend();
       const adapter = convex({ ctx: actionCtx });
-      await expect(adapter.copy("a", "b")).rejects.toThrow(/not supported/u);
+      await expect(adapter.copy("a", "b")).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/not supported/u),
+      });
     });
   });
 

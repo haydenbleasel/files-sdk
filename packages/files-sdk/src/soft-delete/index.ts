@@ -85,7 +85,7 @@ const normalizeDir = (prefix: string): string => {
   const normalized = prefix.replaceAll(/^\/+|(?<!\/)\/+$/gu, "");
   if (normalized.length === 0) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "softDelete: prefix must not be empty or all slashes"
     );
   }
@@ -212,7 +212,7 @@ export const softDelete = (
     const trashKey = trashKeyFor(key);
     if (!(await files.exists(trashKey))) {
       throw new FilesError(
-        "Provider",
+        "NotFound",
         `softDelete: nothing trashed for "${key}"`
       );
     }

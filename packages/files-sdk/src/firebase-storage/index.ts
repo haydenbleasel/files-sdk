@@ -247,7 +247,7 @@ const resolveBucketName = (
     return `${projectId}.firebasestorage.app`;
   }
   throw new FilesError(
-    "Provider",
+    "Invalid",
     "firebase-storage adapter: missing bucket. Pass `bucket` (e.g. `<project>.firebasestorage.app`) or set FIREBASE_STORAGE_BUCKET."
   );
 };

@@ -253,6 +253,13 @@ describe("bunnyStorage adapter", () => {
         zone: "uploads",
       })
     ).toThrow(/unsupported region/u);
+    expect(() =>
+      bunnyStorage({
+        accessKey: "key",
+        region: "mars" as never,
+        zone: "uploads",
+      })
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("upload writes through the Bunny SDK and rounds-trips metadata", async () => {
@@ -334,10 +341,10 @@ describe("bunnyStorage adapter", () => {
     });
     await expect(
       files.upload("a.txt", "hi", { cacheControl: "max-age=60" })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
     await expect(
       files.upload("a.txt", "hi", { metadata: { owner: "me" } })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
@@ -549,7 +556,7 @@ describe("bunnyStorage adapter", () => {
     await files.upload("x/keep.txt", "keep");
     uploadMock.mockClear();
     const rejected = expect.objectContaining({
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining(
         "must not contain . or .. path segments"
       ),
@@ -587,7 +594,7 @@ describe("bunnyStorage adapter", () => {
       }),
     });
     await expect(privateFiles.url("a.txt")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
     });
 
     const publicFiles = new Files({
@@ -603,7 +610,7 @@ describe("bunnyStorage adapter", () => {
     );
     await expect(
       publicFiles.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
     await expectDispositionRefusal(
       publicFiles.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -638,10 +645,10 @@ describe("bunnyStorage adapter", () => {
     const files = new Files({ adapter });
     await expect(
       adapter.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
   });
 
   test("constructs from STORAGE_* aliases used in the Bunny SDK README", () => {

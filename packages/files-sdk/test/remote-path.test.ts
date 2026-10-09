@@ -51,6 +51,7 @@ describe("joinRemotePath", () => {
         throw new Error("expected a throw");
       } catch (error) {
         expect(error).toBeInstanceOf(FilesError);
+        expect((error as FilesError).code).toBe("Invalid");
         expect((error as FilesError).permanent).toBe(true);
       }
     }
@@ -68,7 +69,7 @@ describe("joinRemotePath", () => {
     try {
       joinRemotePath("/uploads", key);
     } catch (error) {
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Invalid");
       expect((error as FilesError).message).toMatch(/null byte/u);
     }
   });
@@ -82,9 +83,12 @@ describe("resumable staging paths", () => {
     expect(isStagingPath("a/b.fls-part.bin")).toBe(false);
   });
 
-  test("assertNotStagingPath throws Provider on a staging path only", () => {
+  test("assertNotStagingPath throws Invalid on a staging path only", () => {
     expect(() => assertNotStagingPath("ftp", "up/x.fls-part", "x")).toThrow(
       /ftp: keys ending in \.fls-part are reserved/u
+    );
+    expect(() => assertNotStagingPath("ftp", "up/x.fls-part", "x")).toThrow(
+      expect.objectContaining({ code: "Invalid" })
     );
     expect(() => assertNotStagingPath("sftp", "up/x.bin", "x")).not.toThrow();
   });

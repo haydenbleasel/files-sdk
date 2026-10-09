@@ -184,10 +184,8 @@ const MAX_ETAG_LENGTH = 1024;
 const assertCanonicalEtag = (etag: string): string => {
   if (etag.length > MAX_ETAG_LENGTH || !CANONICAL_ETAG.test(etag)) {
     throw new FilesError(
-      "Provider",
-      "s3 adapter: conditional ETags must be canonical bare strong values",
-      undefined,
-      { permanent: true }
+      "Invalid",
+      "s3 adapter: conditional ETags must be canonical bare strong values"
     );
   }
   return etag;
@@ -309,10 +307,8 @@ const conditionalRequestGuard =
     const request = args.request as BuiltRequest;
     if (!(allowAnyHost || isAwsHost(request.hostname ?? ""))) {
       throw new FilesError(
-        "Provider",
-        `s3 adapter: conditional requests are only sent to AWS S3, but this client resolves to ${request.hostname ?? "an unknown host"}; pass \`conditional: true\` to opt an S3-compatible endpoint in`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `s3 adapter: conditional requests are only sent to AWS S3, but this client resolves to ${request.hostname ?? "an unknown host"}; pass \`conditional: true\` to opt an S3-compatible endpoint in`
       );
     }
     const sent = new Set(
@@ -321,10 +317,8 @@ const conditionalRequestGuard =
     for (const [, header] of expected) {
       if (!sent.has(header)) {
         throw new FilesError(
-          "Provider",
-          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; conditional requests need 3.919.0 or newer`,
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          `s3 adapter: the installed @aws-sdk/client-s3 did not serialize ${header}; conditional requests need 3.919.0 or newer`
         );
       }
     }
@@ -344,18 +338,14 @@ const assertConditionalUploadOptions = (
     | undefined;
   if (isMultipartRequested(untrusted?.multipart)) {
     throw new FilesError(
-      "Provider",
-      "s3 adapter: conditional multipart uploads are not supported",
-      undefined,
-      { permanent: true }
+      "Invalid",
+      "s3 adapter: conditional multipart uploads are not supported"
     );
   }
   if (untrusted?.control !== undefined) {
     throw new FilesError(
-      "Provider",
-      "s3 adapter: resumable upload control is not supported for conditional uploads",
-      undefined,
-      { permanent: true }
+      "Invalid",
+      "s3 adapter: resumable upload control is not supported for conditional uploads"
     );
   }
 };
@@ -364,9 +354,10 @@ const assertConditionalUploadOptions = (
 // upload needs the multipart/progress path: `multipart`, `onProgress`, or a
 // `ReadableStream` body of unknown length. Loaded lazily so it isn't required
 // by callers who only do plain single-request PutObject uploads; surfaces a
-// clear error when missing. `permanent`: a missing module fails every attempt
-// the same way, so `retries` must not re-issue the upload. Exported (with an
-// injectable importer) only so the missing-peer path is testable.
+// clear error when missing. `Unsupported` (so never retried): a missing module
+// fails every attempt the same way, so `retries` must not re-issue the upload.
+// Exported (with an injectable importer) only so the missing-peer path is
+// testable.
 //
 // The `import()` is awaited directly inside the `try` on purpose — see
 // `loadS3Sdk` in ../internal/s3-engine.ts: it is the shape that lets a bundler
@@ -380,10 +371,9 @@ export const loadLibStorage = async (
       : await import("@aws-sdk/lib-storage");
   } catch (error) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       "Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'. Install it to use the `multipart` or `onProgress` options, or to upload a `ReadableStream` body of unknown length.",
-      error,
-      { permanent: true }
+      error
     );
   }
 };
@@ -527,13 +517,13 @@ const createS3ResumableDriver = (
     adopt(session: ResumableUploadSession) {
       if (session.provider !== "s3") {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           `Cannot resume a ${session.provider} session on an S3 adapter.`
         );
       }
       if (session.bucket !== bucket || session.key !== key) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "Resume token does not match this upload's bucket/key."
         );
       }
@@ -686,10 +676,8 @@ const SIGV4_MAX_EXPIRES_IN = 604_800;
 const assertSigV4ExpiresIn = (label: string, expiresIn: number): void => {
   if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
     throw new FilesError(
-      "Provider",
-      `${label}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `${label}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
     );
   }
 };
@@ -850,7 +838,7 @@ export const createS3Adapter = (
     opts.region ?? readEnv("AWS_REGION") ?? readEnv("AWS_DEFAULT_REGION");
   if (!region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "s3 adapter: missing region. Pass `region` or set AWS_REGION."
     );
   }
@@ -1060,10 +1048,8 @@ export const createS3Adapter = (
       normalized.contentLength === undefined
     ) {
       throw new FilesError(
-        "Provider",
-        "s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first"
       );
     }
     const total = normalized.contentLength ?? 0;

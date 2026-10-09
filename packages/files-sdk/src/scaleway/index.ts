@@ -60,13 +60,13 @@ export const scaleway = (opts: ScalewayAdapterOptions): ScalewayAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'scaleway adapter: missing region. Pass `region` (e.g. "fr-par").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "scaleway adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set SCW_ACCESS_KEY + SCW_SECRET_KEY."
     );
   }

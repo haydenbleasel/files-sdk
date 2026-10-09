@@ -11,6 +11,8 @@ describe("rewrapMcpLoadError", () => {
     expect(result).not.toBe(original);
     expect(result.message).toContain("@modelcontextprotocol/sdk");
     expect((result as Error & { cause?: unknown }).cause).toBe(original);
+    // A setup problem, so the CLI exits as for a usage error, not a backend one.
+    expect(result).toMatchObject({ code: "Unsupported" });
   });
 
   test("MODULE_NOT_FOUND (CJS-style) is also rewrapped", () => {

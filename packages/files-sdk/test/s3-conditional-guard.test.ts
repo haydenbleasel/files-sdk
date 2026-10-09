@@ -171,7 +171,7 @@ describe("s3 adapter — conditional header guard", () => {
       .catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(FilesError);
-    expect((failure as FilesError).code).toBe("Provider");
+    expect((failure as FilesError).code).toBe("Unsupported");
     expect((failure as FilesError).permanent).toBe(true);
     expect((failure as Error).message).toMatch(
       /did not serialize if-none-match/u
@@ -191,13 +191,13 @@ describe("s3 adapter — conditional header guard", () => {
           source: { etag: "src" },
         }
       )
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(copySent).toHaveLength(0);
 
     const putSent: SentRequest[] = [];
     await expect(
       native(adapterOver(putSent, "if-match")).replace("k", "body", "old")
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(putSent).toHaveLength(0);
   });
 
@@ -222,6 +222,7 @@ describe("s3 adapter — conditional header guard", () => {
       .create("k", "body")
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(FilesError);
+    expect((failure as FilesError).code).toBe("Unsupported");
     expect((failure as FilesError).permanent).toBe(true);
     expect((failure as Error).message).toMatch(
       /only sent to AWS S3.*localhost.*conditional: true/u

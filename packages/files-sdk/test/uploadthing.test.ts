@@ -211,6 +211,9 @@ describe("uploadthing adapter", () => {
   test("token missing apiKey/appId throws at construction", () => {
     process.env.UPLOADTHING_TOKEN = btoa(JSON.stringify({ apiKey: "x" }));
     expect(() => uploadthing()).toThrow(/apiKey or appId/u);
+    expect(() => uploadthing()).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
     process.env.UPLOADTHING_TOKEN = TEST_TOKEN;
   });
 
@@ -544,7 +547,7 @@ describe("uploadthing adapter", () => {
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(
         /responseContentDisposition/u
       );
@@ -668,7 +671,10 @@ describe("uploadthing adapter", () => {
         expiresIn: 60,
         maxSize: 10_000_000,
       })
-    ).rejects.toThrow(/maxSize.*not supported/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*not supported/u),
+    });
   });
 
   test("signedUploadUrl rejects a positive minSize but accepts minSize 0", async () => {

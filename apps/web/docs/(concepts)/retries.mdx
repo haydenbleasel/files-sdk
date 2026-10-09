@@ -19,9 +19,9 @@ await files.upload("avatars/abc.png", file, { retries: 0 });
 
 Only `Provider` failures — transient things like network blips, throttling, and 5xx responses. The classified codes are returned to you immediately, because retrying them can't help:
 
-- `NotFound`, `Unauthorized`, and `Conflict` are deterministic — the same call fails the same way.
+- `NotFound`, `Unauthorized`, and `Conflict` are deterministic — the same call fails the same way. So are `Invalid` and `Unsupported`, which the SDK raises itself, usually before any provider I/O.
 - Aborts and [timeouts](/docs/timeouts) are never retried; retrying a cancelled call would defeat the cancellation.
-- `Provider` failures flagged [`permanent`](/docs/api/errors#properties) are deterministic too (a host that ignores `Range`, an option the adapter can't honor), so they aren't retried either.
+- `Provider` failures flagged [`permanent`](/docs/api/errors#properties) are deterministic too (a host that ignores `Range`, corrupt stored data), so they aren't retried either.
 - Uploads from a `ReadableStream` are never retried, because a consumed stream can't be safely replayed. Buffered bodies (`File`, `Blob`, `ArrayBuffer`, `Uint8Array`, `string`) retry normally.
 
 See [Errors](/docs/api/errors) for how codes are assigned.

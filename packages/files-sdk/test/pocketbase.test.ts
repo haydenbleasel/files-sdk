@@ -402,6 +402,9 @@ describe("pocketbase adapter", () => {
 
   test("missing url and no client throws at construction", () => {
     expect(() => pocketbase({ collection: "files" })).toThrow(/url/u);
+    expect(() => pocketbase({ collection: "files" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("constructs from env fallbacks", () => {
@@ -758,7 +761,12 @@ describe("pocketbase adapter", () => {
     await adapter.upload("a.txt", "hello");
     await expect(
       adapter.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition.*not supported/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(
+        /responseContentDisposition.*not supported/u
+      ),
+    });
     await expectDispositionRefusal(
       adapter.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -799,7 +807,10 @@ describe("pocketbase adapter", () => {
     });
     await expect(
       adapter.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toThrow(/signedUploadUrl is not supported/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/signedUploadUrl is not supported/u),
+    });
   });
 
   test("admin auth runs once on first authenticated call", async () => {
@@ -938,7 +949,10 @@ describe("pocketbase adapter", () => {
           // A symbol is not a supported Body shape.
           Symbol("nope") as unknown as Parameters<typeof adapter.upload>[1]
         )
-      ).rejects.toThrow(/Unsupported body type/u);
+      ).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/Unsupported body type/u),
+      });
     });
 
     test("download propagates a non-OK fetch as a Provider error", async () => {
@@ -1081,9 +1095,10 @@ describe("pocketbase adapter", () => {
         collection: "files",
         url: "http://pb.test",
       });
-      await expect(adapter.list({ cursor: "-1" })).rejects.toThrow(
-        /invalid list cursor/u
-      );
+      await expect(adapter.list({ cursor: "-1" })).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/invalid list cursor/u),
+      });
     });
 
     test("list wraps underlying getList errors", async () => {

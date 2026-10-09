@@ -197,7 +197,7 @@ const resolveConnection = (opts: SftpAdapterOptions): Resolved => {
   const username = opts.username ?? readEnv("SFTP_USERNAME");
   if (!(host && username)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "sftp adapter: missing connection. Pass `host` + `username` (and `password` or `privateKey`), set SFTP_HOST / SFTP_USERNAME / SFTP_PASSWORD / SFTP_PRIVATE_KEY, or pass a pre-connected `client`."
     );
   }
@@ -625,13 +625,13 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "sftp") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on an sftp adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -711,7 +711,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     signedUploadUrl(_key, _signOpts): Promise<SignedUpload> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "sftp: signedUploadUrl() is not supported. SFTP has no presigned-upload concept — use upload(), or inject a pre-connected `client` for batch transfers."
         )
       );
@@ -764,7 +764,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "sftp: url() requires `publicBaseUrl`. SFTP serves no HTTP and has no signing primitive; configure `publicBaseUrl` to point at an HTTP server fronting the same tree, or use download()."
       );
     },

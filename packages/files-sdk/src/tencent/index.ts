@@ -64,13 +64,13 @@ export const tencent = (opts: TencentAdapterOptions): TencentAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'tencent adapter: missing region. Pass `region` (e.g. "ap-guangzhou").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "tencent adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set TENCENT_SECRET_ID + TENCENT_SECRET_KEY."
     );
   }

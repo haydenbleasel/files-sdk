@@ -339,7 +339,7 @@ const cacheControlSeconds = (value: string): string => {
   }
   if (seconds === undefined) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       `supabase: cacheControl "${value}" is not supported — Supabase stores only a max-age. Pass "max-age=<seconds>" (optionally with "public").`
     );
   }
@@ -364,7 +364,7 @@ const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
     readEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   if (!url || !key) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "supabase adapter: missing credentials. Pass `client` (an existing SupabaseClient or StorageClient), or `url` + `key`. Env fallbacks: SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY / SUPABASE_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY."
     );
   }
@@ -501,7 +501,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
   const { bucket, public: isPublic, publicBaseUrl } = opts;
   if (!bucket) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "supabase adapter: missing bucket. Pass `bucket`."
     );
   }
@@ -808,7 +808,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       const requireTus = () => {
         if (!tus) {
           throw new FilesError(
-            "Provider",
+            "Unsupported",
             "supabase: resumable uploads require `url` + `key` (not the pre-built `client` escape hatch)."
           );
         }
@@ -817,7 +817,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       const requireUri = () => {
         if (!uri) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "supabase: resumable upload has no session."
           );
         }
@@ -832,13 +832,13 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "supabase") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on a supabase adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -955,7 +955,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // takes for the same gap.
       if (signOpts.maxSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "supabase: `maxSize` is not supported. Supabase signed upload URLs have no server-enforced size limit equivalent to S3's content-length-range policy. Set the bucket-level file size limit in the Supabase dashboard, or enforce the limit at your application gateway before issuing the signed URL."
         );
       }
@@ -963,7 +963,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // Supabase equivalent, so fail closed like `maxSize`.
       if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "supabase: `minSize` is not supported. Supabase signed upload URLs have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
         );
       }
@@ -973,7 +973,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // forbids — throw, as Azure does.
       if (signOpts.contentType !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "supabase: `contentType` is not supported for signed upload URLs. Supabase signed upload tokens don't bind the request Content-Type, so restrict types with the bucket's allowed MIME types in the Supabase dashboard, or validate at your application gateway before issuing the signed URL."
         );
       }

@@ -52,6 +52,7 @@ export const httpStatus = (code: WireErrorCode): number => {
     case "Conflict": {
       return 409;
     }
+    case "Unsupported":
     case "Validation": {
       return 422;
     }
@@ -74,6 +75,14 @@ const wireCodeFromFilesError = (code: FilesErrorCode): WireErrorCode => {
     }
     case "ReadOnly": {
       return "ReadOnly";
+    }
+    // A malformed call is the client's to fix, like the gateway's own
+    // request validation; an unsupported one is a 422 the client can branch on.
+    case "Invalid": {
+      return "Validation";
+    }
+    case "Unsupported": {
+      return "Unsupported";
     }
     default: {
       return "Provider";

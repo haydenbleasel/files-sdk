@@ -249,7 +249,7 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
   const secondaries = normalizeSecondaries(options?.secondaries);
   if (secondaries.length === 0) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "failover: at least one secondary adapter is required"
     );
   }

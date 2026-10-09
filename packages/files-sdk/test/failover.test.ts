@@ -239,7 +239,7 @@ describe("failover — the primary is the source of truth", () => {
     await expect(
       files.upload("a.txt", "x", { metadata: { user: "1" } })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: "fake: `metadata` is not supported by this adapter",
       permanent: true,
     });

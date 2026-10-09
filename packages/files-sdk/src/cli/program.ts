@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import { Command, Option } from "commander";
 
+import { FilesError } from "../internal/errors.js";
 import { isObject } from "../internal/is.js";
 import {
   runCapabilities,
@@ -94,9 +95,12 @@ const parseDestination = (raw?: string): GlobalCliOptions | undefined =>
 export const rewrapMcpLoadError = <C>(cause: C): Error | C => {
   const code = isObject(cause) && "code" in cause ? cause.code : undefined;
   if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-    return new Error(
+    // `Unsupported`: a setup problem in this install, not a backend failure,
+    // so it exits like a usage error.
+    return new FilesError(
+      "Unsupported",
       "the `mcp` subcommand requires `@modelcontextprotocol/sdk` — install it with `npm install @modelcontextprotocol/sdk`",
-      { cause }
+      cause
     );
   }
   return cause;

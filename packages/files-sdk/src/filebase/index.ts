@@ -63,7 +63,7 @@ export const filebase = (opts: FilebaseAdapterOptions): FilebaseAdapter => {
 
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "filebase adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set FILEBASE_ACCESS_KEY_ID + FILEBASE_SECRET_ACCESS_KEY."
     );
   }

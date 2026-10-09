@@ -99,7 +99,7 @@ const attachment = await files.url("uploads/user-file.html", {
 });
 ```
 
-Presigned URLs live at most 7 days, the SigV4 limit; a longer `expiresIn` throws a `Provider` error instead of returning a URL Hetzner would reject.
+Presigned URLs live at most 7 days, the SigV4 limit; a longer `expiresIn` throws an `Invalid` error instead of returning a URL Hetzner would reject.
 
 ### Public buckets and custom domains
 

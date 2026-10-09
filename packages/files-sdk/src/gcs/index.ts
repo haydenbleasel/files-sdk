@@ -194,7 +194,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
   const { bucket: bucketName, publicBaseUrl } = opts;
   if (!bucketName) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "gcs adapter: missing bucket. Pass `bucket`."
     );
   }

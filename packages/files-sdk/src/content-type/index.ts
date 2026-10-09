@@ -441,10 +441,8 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
     if (sniffed === undefined) {
       if (onUnknown === "reject") {
         throw new FilesError(
-          "Provider",
-          `contentType: could not identify the contents of "${op.key}" from its signature`,
-          undefined,
-          { permanent: true }
+          "Invalid",
+          `contentType: could not identify the contents of "${op.key}" from its signature`
         );
       }
       return { ...op, body };
@@ -458,10 +456,8 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
     }
     if (onMismatch === "reject" && declared !== GENERIC) {
       throw new FilesError(
-        "Provider",
-        `contentType: "${op.key}" is declared "${declared}" but its bytes are "${sniffed}"`,
-        undefined,
-        { permanent: true }
+        "Invalid",
+        `contentType: "${op.key}" is declared "${declared}" but its bytes are "${sniffed}"`
       );
     }
     return { ...op, body, options: { ...op.options, contentType: sniffed } };

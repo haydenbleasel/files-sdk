@@ -100,13 +100,13 @@ export const minio = (opts: MinioAdapterOptions): MinioAdapter => {
 
   if (!opts.endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "minio adapter: missing endpoint. Pass `endpoint` (e.g. http://localhost:9000)."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "minio adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set MINIO_ACCESS_KEY_ID + MINIO_SECRET_ACCESS_KEY."
     );
   }

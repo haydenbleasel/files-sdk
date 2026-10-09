@@ -120,7 +120,7 @@ const buildUploadCondition = (opts: {
 }): UploadCondition | undefined => {
   if (opts.ifNoneMatch && opts.ifMatch !== undefined) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--if-match and --if-none-match are mutually exclusive"
     );
   }
@@ -151,13 +151,13 @@ const buildCopyCondition = (opts: {
   }
   if (hasCreate && hasReplace) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--if-none-match and --dest-if-match are mutually exclusive"
     );
   }
   if (ifMatch === undefined || !(hasCreate || hasReplace)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "a conditional copy needs --if-match <source etag> and either --if-none-match or --dest-if-match <etag>"
     );
   }
@@ -174,7 +174,7 @@ const buildCopyCondition = (opts: {
 
 const SINGLE_KEY_CONDITION = (flag: string, verb: string): FilesError =>
   new FilesError(
-    "Provider",
+    "Invalid",
     `${flag} applies to a single key; conditional ${verb} has no bulk form`
   );
 
@@ -230,7 +230,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
   if (opts.dir !== undefined) {
     if (opts.key !== undefined || opts.file !== undefined || opts.stdin) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         "--dir cannot be combined with a <key>, --file, or --stdin"
       );
     }
@@ -239,7 +239,7 @@ export const runUpload = async (opts: UploadCmdOpts): Promise<void> => {
 
   if (opts.key === undefined) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "expected a <key> (or --dir to upload a directory)"
     );
   }
@@ -306,19 +306,19 @@ const runDownloadMany = async (
   // has no meaning across many keys. Both are single-key only.
   if (opts.out !== undefined || opts.stdout) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--out / --stdout download a single key; use --out-dir for many"
     );
   }
   if (range !== undefined) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--range is only supported when downloading a single key"
     );
   }
   if (opts.outDir === undefined) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "expected --out-dir <dir> when downloading multiple keys"
     );
   }
@@ -592,7 +592,7 @@ export const runList = async (opts: ListCmdOpts): Promise<void> => {
   // dropping one — mirrors how the SDK's listAll ignores delimiter.
   if (opts.all && opts.delimiter !== undefined) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--delimiter lists one folder level and --all walks the whole tree — pass one, not both"
     );
   }
@@ -725,7 +725,7 @@ export const runSignUpload = async (opts: SignUploadCmdOpts): Promise<void> => {
   // and requiredOption enforces presence — only the sign check is left.
   if (opts.expiresIn <= 0) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "--expires-in must be a positive number of seconds"
     );
   }

@@ -68,13 +68,13 @@ export const wasabi = (opts: WasabiAdapterOptions): WasabiAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'wasabi adapter: missing region. Pass `region` (e.g. "us-east-1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "wasabi adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set WASABI_ACCESS_KEY_ID + WASABI_SECRET_ACCESS_KEY."
     );
   }

@@ -130,7 +130,7 @@ const files = new Files({
 
 ## Signed uploads and `maxSize`
 
-[`signedUploadUrl()`](/docs/api/signed-upload-url) returns a presigned **PUT** URL. Unlike S3, R2 does **not** implement the S3 `POST Object` API, so it has no `content-length-range` policy to enforce an upload size cap at the bucket. Passing `maxSize` throws a `Provider` error rather than handing back a POST form that R2 would reject with `501 Not Implemented` at upload time.
+[`signedUploadUrl()`](/docs/api/signed-upload-url) returns a presigned **PUT** URL. Unlike S3, R2 does **not** implement the S3 `POST Object` API, so it has no `content-length-range` policy to enforce an upload size cap at the bucket. Passing `maxSize` throws an `Unsupported` error (and `capabilities.signedUpload.maxSize` is `false`) rather than handing back a POST form that R2 would reject with `501 Not Implemented` at upload time.
 
 ```ts lineNumbers
 // ✅ presigned PUT — the browser uploads with fetch(url, { method: "PUT", body: file })

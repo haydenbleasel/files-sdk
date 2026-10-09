@@ -63,9 +63,17 @@ The call tried to write through a read-only `Files` instance created with `new F
 - Writes are blocked uniformly: `upload`, `delete`, `copy`, `move`, `signedUploadUrl`, plus the equivalent `file(key)` helpers.
 - `files.raw` is not governed by this flag. If the mutation came through `raw`, the SDK's read-only guard will not see it.
 
+### `Invalid`
+
+The call itself is wrong: an empty, null-byte, or `..` key, a malformed range, ETag, or condition, options that contradict each other, missing or bad constructor config, or a file a [`validation()`](/docs/plugins/validation) rule rejects. The message says which. Retrying can't help; fix the call.
+
+### `Unsupported`
+
+The call is fine, but this adapter can't do it in its current mode, or an installed plugin refuses it: a `range` on an adapter without range reads, `metadata` where the provider has no metadata field, `url()` without a `publicBaseUrl` on FTP/SFTP/WebDAV, a `maxSize` a presigned upload can't enforce, `url()` under `encryption()`. Check [`files.capabilities`](/docs/capabilities) before calling, or see the gotchas below.
+
 ### `Provider`
 
-The catch-all. Network errors, malformed responses, provider outages, and anything that doesn't map cleanly to the codes above. `cause` has the original.
+The backend or transport failed: network errors, malformed responses, throttling, provider outages, timeouts, and aborts. These are the only failures [retried](/docs/retries) (unless `permanent`). `cause` has the original.
 
 ## Adapter-specific gotchas
 
@@ -174,7 +182,7 @@ files --provider r2 --bucket uploads --dry-run delete reports/q1.pdf
 # → {"action":"delete","dryRun":true,"provider":"r2","keys":["reports/q1.pdf"]}
 ```
 
-Exit codes are stable: `0` ok, `1` `NotFound` (or `exists → false`), `2` `Provider`, `3` `Unauthorized`, `4` `Conflict`.
+Exit codes are stable: `0` ok, `1` `NotFound` (or `exists → false`), `2` a usage error (`Invalid`, `Unsupported`, `ReadOnly`, a bad flag), `3` `Unauthorized`, `4` `Conflict`, `5` `Provider`.
 
 ### Swap to the `fs` adapter
 

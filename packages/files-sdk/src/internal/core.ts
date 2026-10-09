@@ -179,10 +179,8 @@ export const assertSlashDelimiter = (
     // `permanent`: a validation failure inside the retryable adapter call —
     // the delimiter won't become supported on a retry.
     throw new FilesError(
-      "Provider",
-      `${providerLabel}: only supports the "/" delimiter for folder listing`,
-      undefined,
-      { permanent: true }
+      "Unsupported",
+      `${providerLabel}: only supports the "/" delimiter for folder listing`
     );
   }
 };

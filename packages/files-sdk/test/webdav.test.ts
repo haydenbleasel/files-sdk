@@ -442,10 +442,10 @@ describe("webdav adapter", () => {
   test("keys that escape the root are rejected", async () => {
     const files = newFiles();
     await expect(files.upload("../escape.txt", "x")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
     await expect(files.download("../escape.txt")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -497,7 +497,10 @@ describe("webdav adapter", () => {
 
   test("url requires publicBaseUrl, else throws", async () => {
     const files = newFiles();
-    await expect(files.url("a.txt")).rejects.toThrow(/publicBaseUrl/iu);
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicBaseUrl/iu),
+    });
 
     const withBase = newFiles({ publicBaseUrl: "https://cdn.example.com" });
     expect(await withBase.url("dir/a.txt")).toBe(
@@ -505,7 +508,10 @@ describe("webdav adapter", () => {
     );
     await expect(
       withBase.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/iu),
+    });
     await expectDispositionRefusal(
       withBase.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -515,7 +521,10 @@ describe("webdav adapter", () => {
     const files = newFiles();
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/publicBaseUrl/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicBaseUrl/iu),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -525,7 +534,10 @@ describe("webdav adapter", () => {
     const files = newFiles();
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toThrow(/not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/not supported/iu),
+    });
   });
 
   test("declares its capabilities", () => {
@@ -756,12 +768,18 @@ describe("webdav connection config", () => {
 
   test("missing connection config throws at construction", () => {
     expect(() => webdav()).toThrow(/missing connection/iu);
+    expect(() => webdav()).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("an unknown authType throws", () => {
     expect(() =>
       webdav({ authType: "nope" as never, baseUrl: "https://dav.example.com" })
     ).toThrow(/unknown authType/iu);
+    expect(() =>
+      webdav({ authType: "nope" as never, baseUrl: "https://dav.example.com" })
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 });
 

@@ -329,7 +329,7 @@ const mapR2Error = (cause: unknown): FilesError => {
 const assertNoMaxSize = (signOpts: SignUploadOptions): void => {
   if (signOpts.maxSize !== undefined) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       "r2: `maxSize` is not supported. Cloudflare R2 does not implement the S3 POST Object API, so it has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway before issuing the URL, or omit `maxSize` and accept the unbounded presigned PUT."
     );
   }
@@ -383,7 +383,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   const getSigner = (): S3FetchAdapter => {
     if (!hybrid) {
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "r2 binding: signing requires either `publicBaseUrl` (for url()) or HTTP credentials (`accountId` or `endpoint`, plus `accessKeyId`, `secretAccessKey`, `bucket`) for presigned URLs. See https://developers.cloudflare.com/r2/api/s3/tokens/."
       );
     }
@@ -617,7 +617,7 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         });
       }
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "r2 binding: url() requires either `publicBaseUrl` (e.g. an r2.dev or custom domain bound to the bucket) or HTTP credentials for presigned URLs. See https://developers.cloudflare.com/r2/buckets/public-buckets/."
       );
     },
@@ -637,13 +637,13 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : undefined);
   if (!endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "r2 adapter: missing accountId. Pass `accountId`, set R2_ACCOUNT_ID, or pass an explicit `endpoint`."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "r2 adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY."
     );
   }

@@ -101,7 +101,7 @@ export interface AzureAdapterOptions {
   /**
    * Pre-issued SAS token (with or without leading `?`). When set without
    * `accountKey`, `url()` and `signedUploadUrl()` cannot mint new SAS — they
-   * throw a Provider error. Reading/writing/listing still works as long as
+   * throw an `Unsupported` error. Reading/writing/listing still works as long as
    * the SAS has the relevant permissions. Falls back to
    * `AZURE_STORAGE_SAS_TOKEN` when no explicit auth option is passed.
    */
@@ -308,13 +308,13 @@ const createAzureResumableDriver = (
     adopt(session: ResumableUploadSession) {
       if (session.provider !== "azure") {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           `Cannot resume a ${session.provider} session on an Azure adapter.`
         );
       }
       if (session.container !== container || session.blob !== key) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "Resume token does not match this upload's container/blob."
         );
       }
@@ -562,7 +562,7 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
 
   const accountName = resolveAccountName(opts);
   if (!accountName) {
-    throw new FilesError("Provider", MISSING_CREDENTIALS_MESSAGE);
+    throw new FilesError("Invalid", MISSING_CREDENTIALS_MESSAGE);
   }
 
   const endpoint = opts.endpoint ?? defaultEndpoint(accountName);
@@ -617,7 +617,7 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
 const requireSigner = (signer: AzureSasSigner | undefined): AzureSasSigner => {
   if (!signer) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       "azure: cannot sign URLs without a shared key or User Delegation SAS credential. Construct the adapter with `accountKey` + `accountName`, a `connectionString` that contains an account key, or `credential` + `accountName`; or set `publicBaseUrl` for a public container."
     );
   }
@@ -675,7 +675,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
   const { container, publicBaseUrl } = opts;
   if (!container) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "azure adapter: missing container. Pass `container`."
     );
   }
@@ -734,7 +734,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
 
     if (expiresIn > USER_DELEGATION_SAS_MAX_SECONDS) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `azure: \`expiresIn\` of ${expiresIn}s exceeds the ${USER_DELEGATION_SAS_MAX_SECONDS}s (7-day) maximum for a User Delegation SAS, which cannot outlive the delegation key that signs it. Request a shorter expiry, or sign with an account key (\`accountKey\` or a connection string) for longer-lived URLs.`
       );
     }
@@ -1161,7 +1161,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       // responseContentDisposition.
       if (signOpts.maxSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "azure: `maxSize` is not supported. Azure SAS has no server-enforced upload size limit equivalent to S3's content-length-range policy. Enforce the limit at your application gateway / proxy before issuing the SAS, or omit `maxSize` and accept the unbounded PUT."
         );
       }
@@ -1169,13 +1169,13 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       // SAS equivalent, so fail closed like `maxSize`.
       if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "azure: `minSize` is not supported. Azure SAS has no minimum upload size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway / proxy."
         );
       }
       if (signOpts.contentType !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "azure: `contentType` is not supported for signed upload URLs. Azure SAS does not bind the request Content-Type into the signature, so validate it at your application gateway / proxy before issuing the SAS."
         );
       }

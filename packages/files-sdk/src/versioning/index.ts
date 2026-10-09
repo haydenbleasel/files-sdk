@@ -102,7 +102,7 @@ const normalizeDir = (prefix: string): string => {
   const normalized = prefix.replaceAll(/^\/+|(?<!\/)\/+$/gu, "");
   if (normalized.length === 0) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "versioning: prefix must not be empty or all slashes"
     );
   }
@@ -228,7 +228,7 @@ export const versioning = (
   const { limit } = options;
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `versioning: limit must be a positive integer, received ${limit}`
     );
   }
@@ -405,7 +405,7 @@ export const versioning = (
       // A slash would address into a nested key's version dir (a version of
       // "a/b" via restore("a", "b/<id>")) — never a version of `key` itself.
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `versioning: invalid versionId "${id}" — version ids never contain "/"`
       );
     }
@@ -414,7 +414,7 @@ export const versioning = (
       const [newest] = all;
       if (!newest) {
         throw new FilesError(
-          "Provider",
+          "NotFound",
           `versioning: no versions to restore for "${key}"`
         );
       }
@@ -423,7 +423,7 @@ export const versioning = (
     const versionKey = `${versionsDirFor(key)}${id}`;
     if (!(await files.exists(versionKey))) {
       throw new FilesError(
-        "Provider",
+        "NotFound",
         `versioning: no version "${id}" for "${key}"`
       );
     }

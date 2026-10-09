@@ -25,7 +25,7 @@ export const isStagingPath = (path: string): boolean =>
   path.toLowerCase().endsWith(RESUMABLE_STAGING_SUFFIX);
 
 /**
- * Throw `Provider` when a write would land on a resumable-upload staging path.
+ * Throw `Invalid` when a write would land on a resumable-upload staging path.
  * Reads and deletes of such a path stay allowed, so a stray staging file can
  * still be inspected or cleaned up.
  */
@@ -36,10 +36,8 @@ export const assertNotStagingPath = (
 ): void => {
   if (isStagingPath(remote)) {
     throw new FilesError(
-      "Provider",
-      `${adapter}: keys ending in ${RESUMABLE_STAGING_SUFFIX} are reserved for in-progress resumable uploads: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `${adapter}: keys ending in ${RESUMABLE_STAGING_SUFFIX} are reserved for in-progress resumable uploads: ${JSON.stringify(key)}`
     );
   }
 };
@@ -62,7 +60,7 @@ export const trimSlashes = (s: string): string => {
 
 /**
  * Split a virtual key into clean path segments. Drops empty and `.` segments,
- * and throws `Provider` on a `..` segment or an embedded null byte — those are
+ * and throws `Invalid` on a `..` segment or an embedded null byte — those are
  * the shapes that would let a key escape the adapter root or break the
  * underlying protocol command — and on a key with no segment left (`"/"`,
  * `"."`, `"./"`), which would address the root directory itself rather than
@@ -71,10 +69,8 @@ export const trimSlashes = (s: string): string => {
 const normalizeKeySegments = (key: string): string[] => {
   if (key.includes("\0")) {
     throw new FilesError(
-      "Provider",
-      `key must not contain null bytes: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `key must not contain null bytes: ${JSON.stringify(key)}`
     );
   }
   const segments: string[] = [];
@@ -84,10 +80,8 @@ const normalizeKeySegments = (key: string): string[] => {
     }
     if (segment === "..") {
       throw new FilesError(
-        "Provider",
-        `key escapes adapter root: ${JSON.stringify(key)}`,
-        undefined,
-        { permanent: true }
+        "Invalid",
+        `key escapes adapter root: ${JSON.stringify(key)}`
       );
     }
     segments.push(segment);
@@ -97,10 +91,8 @@ const normalizeKeySegments = (key: string): string[] => {
     // WebDAV a DELETE (or MOVE) of the root collection takes everything under
     // it, recursively.
     throw new FilesError(
-      "Provider",
-      `key must name an object below the adapter root: ${JSON.stringify(key)}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `key must name an object below the adapter root: ${JSON.stringify(key)}`
     );
   }
   return segments;

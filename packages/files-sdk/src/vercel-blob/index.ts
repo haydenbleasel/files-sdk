@@ -197,10 +197,8 @@ const cacheControlMaxAge = (header: string): number => {
   const maxAge = parseCacheControlMaxAge(header);
   if (maxAge === undefined) {
     throw new FilesError(
-      "Provider",
-      `vercel-blob: \`cacheControl\` "${header}" cannot be represented. Vercel Blob only stores a max-age (\`cacheControlMaxAge\`), so pass a value with a \`max-age=<seconds>\` directive, e.g. "public, max-age=3600".`,
-      undefined,
-      { permanent: true }
+      "Unsupported",
+      `vercel-blob: \`cacheControl\` "${header}" cannot be represented. Vercel Blob only stores a max-age (\`cacheControlMaxAge\`), so pass a value with a \`max-age=<seconds>\` directive, e.g. "public, max-age=3600".`
     );
   }
   return maxAge;
@@ -306,9 +304,7 @@ const MISSING_CREDENTIALS_MESSAGE =
 // Nothing to authenticate with. Flagged permanent: re-sending the request
 // can't produce a credential, so `retries` must not re-issue it.
 const missingCredentials = (cause?: unknown): FilesError =>
-  new FilesError("Provider", MISSING_CREDENTIALS_MESSAGE, cause, {
-    permanent: true,
-  });
+  new FilesError("Invalid", MISSING_CREDENTIALS_MESSAGE, cause);
 
 // `@vercel/blob` throws a bare `BlobError` with this message when its own
 // lookup finds no credential at call time (unchanged from 2.4 through 2.8).
@@ -428,10 +424,8 @@ export const vercelBlob = (
       // scheme out from under the caller. Upstream `resolveBlobAuth` throws here
       // too, ahead of its own read-write-token fallback.
       throw new FilesError(
-        "Provider",
-        "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC.",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
       );
     }
     // Implicit OIDC: hand over just the store id and let `@vercel/blob` pick
@@ -788,7 +782,7 @@ export const vercelBlob = (
       const requireSession = () => {
         if (!session) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "vercel-blob: resumable upload not started."
           );
         }
@@ -814,13 +808,13 @@ export const vercelBlob = (
         adopt(adopted: ResumableUploadSession) {
           if (adopted.provider !== PROVIDER) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${adopted.provider} session on a vercel-blob adapter.`
             );
           }
           if (adopted.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -930,7 +924,7 @@ export const vercelBlob = (
       // reject. `0` (and the default) ask for nothing we can't deliver.
       if (signOpts.minSize !== undefined && signOpts.minSize > 0) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "vercel-blob: `minSize` is not supported. Vercel presigned uploads enforce a maximum size (`maxSize`) but have no minimum-size constraint; pass `minSize: 0` or omit it, and reject empty uploads at your application gateway."
         );
       }

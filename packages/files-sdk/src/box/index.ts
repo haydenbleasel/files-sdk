@@ -268,13 +268,13 @@ interface SplitKey {
 const splitKey = (key: string): SplitKey => {
   const trimmed = trimSlashes(key);
   if (!trimmed) {
-    throw new FilesError("Provider", "box: key must not be empty");
+    throw new FilesError("Invalid", "box: key must not be empty");
   }
   const parts = trimmed.split("/").filter((p) => p.length > 0);
   const leaf = parts.pop() ?? "";
   if (!leaf) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `box: key "${key}" has no file name segment`
     );
   }
@@ -427,7 +427,7 @@ const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
   const explicit = countAuthMethods(opts);
   if (explicit > 1) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "box adapter: pass exactly one of `developerToken`, `oauth`, `ccg`, or `jwt`."
     );
   }
@@ -464,7 +464,7 @@ const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
     const { clientId, clientSecret, enterpriseId, userId } = opts.ccg;
     if (!enterpriseId && !userId) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         "box adapter: ccg auth requires either `enterpriseId` or `userId`."
       );
     }
@@ -491,7 +491,7 @@ const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
   }
 
   throw new FilesError(
-    "Provider",
+    "Invalid",
     "box adapter: missing auth. Pass `client`, `developerToken`, `oauth`, `ccg`, or `jwt`. Env fallback: BOX_DEVELOPER_TOKEN."
   );
 };
@@ -1125,7 +1125,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
           uploadId === undefined ? undefined : pending.get(uploadId);
         if (!entry) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "box: resumable session not found — box uploads are in-process only (commit needs a whole-file digest) and can't resume in a new instance."
           );
         }
@@ -1135,13 +1135,13 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "box") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on a box adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -1207,7 +1207,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
       // misrepresents.
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "box: signedUploadUrl is not supported. Box uploads require a multipart POST with an `attributes` JSON part; this doesn't fit the SDK's PUT/POST-form contract. Use upload() server-side, or the Box UI Elements / Box Content Uploader for browser flows."
         )
       );

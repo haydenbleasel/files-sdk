@@ -66,13 +66,13 @@ export const ibmCos = (opts: IbmCosAdapterOptions): IbmCosAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'ibm-cos adapter: missing region. Pass `region` (e.g. "us-south").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "ibm-cos adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set IBM_COS_ACCESS_KEY_ID + IBM_COS_SECRET_ACCESS_KEY."
     );
   }

@@ -65,13 +65,13 @@ export const backblazeB2 = (
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'backblaze-b2 adapter: missing region. Pass `region` (e.g. "us-west-002").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "backblaze-b2 adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set B2_APPLICATION_KEY_ID + B2_APPLICATION_KEY."
     );
   }

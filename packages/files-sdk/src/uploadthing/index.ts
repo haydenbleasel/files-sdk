@@ -120,7 +120,7 @@ const decodeToken = (token: string): DecodedToken => {
       : Buffer.from(token, "base64").toString("utf-8");
   } catch (error) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "uploadthing: UPLOADTHING_TOKEN is not valid base64",
       error
     );
@@ -130,7 +130,7 @@ const decodeToken = (token: string): DecodedToken => {
     parsed = JSON.parse(json);
   } catch (error) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "uploadthing: UPLOADTHING_TOKEN does not decode to JSON",
       error
     );
@@ -141,7 +141,7 @@ const decodeToken = (token: string): DecodedToken => {
     !isString(parsed.appId)
   ) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "uploadthing: UPLOADTHING_TOKEN missing apiKey or appId"
     );
   }
@@ -317,7 +317,7 @@ export const uploadthing = (
   const token = config.token ?? readEnv("UPLOADTHING_TOKEN");
   if (!token) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "uploadthing adapter: missing token. Pass `token` or set UPLOADTHING_TOKEN."
     );
   }
@@ -625,7 +625,7 @@ export const uploadthing = (
       // caps rather than returning a URL whose limit is only advisory.
       if (options.maxSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "uploadthing: `maxSize` is not supported for signed upload URLs. UploadThing UFS presigned PUT URLs do not expose a server-enforced content-length-range policy; enforce the limit through your application gateway or omit `maxSize` and accept the unbounded PUT."
         );
       }
@@ -633,7 +633,7 @@ export const uploadthing = (
       // UFS equivalent, so fail closed like `maxSize`.
       if (options.minSize !== undefined && options.minSize > 0) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "uploadthing: `minSize` is not supported for signed upload URLs. UploadThing UFS presigned PUT URLs have no minimum-size constraint; pass `minSize: 0` or omit it, and reject small uploads at your application gateway."
         );
       }

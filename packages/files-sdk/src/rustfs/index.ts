@@ -112,13 +112,13 @@ export const rustfs = (opts: RustfsAdapterOptions): RustfsAdapter => {
 
   if (!opts.endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "rustfs adapter: missing endpoint. Pass `endpoint` (e.g. http://localhost:9000)."
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "rustfs adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set RUSTFS_ACCESS_KEY_ID + RUSTFS_SECRET_ACCESS_KEY (or the server's RUSTFS_ACCESS_KEY + RUSTFS_SECRET_KEY)."
     );
   }

@@ -62,13 +62,13 @@ export const akamai = (opts: AkamaiAdapterOptions): AkamaiAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'akamai adapter: missing region. Pass `region` (e.g. "us-iad-1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "akamai adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set AKAMAI_ACCESS_KEY_ID + AKAMAI_SECRET_ACCESS_KEY."
     );
   }

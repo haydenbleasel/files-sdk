@@ -68,14 +68,14 @@ const pickProvider = (opts: GlobalCliOptions): string => {
   const name = opts.provider ?? process.env.FILES_SDK_PROVIDER;
   if (!name) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `--provider is required (or set FILES_SDK_PROVIDER). One of: ${PROVIDER_NAMES.join(", ")}`
     );
   }
   // Own keys only: `in` would also accept prototype names like `toString`.
   if (!Object.hasOwn(PROVIDERS, name)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `unknown provider "${name}". One of: ${PROVIDER_NAMES.join(", ")}`
     );
   }
@@ -127,7 +127,7 @@ export const loadFiles = async (
   const provider = pickProvider(opts);
   const entry = PROVIDERS[provider];
   if (!entry) {
-    throw new FilesError("Provider", `unknown provider "${provider}"`);
+    throw new FilesError("Invalid", `unknown provider "${provider}"`);
   }
   try {
     const adapter = await entry.load(toProviderOpts(opts));

@@ -1,13 +1,37 @@
 import { isObject } from "./is.js";
 
+/**
+ * What went wrong, as one of:
+ *
+ * - `NotFound` / `Unauthorized` / `Conflict` — the provider's answer.
+ * - `ReadOnly` — a write on a read-only instance.
+ * - `Invalid` — the call itself is wrong: a malformed argument, a
+ *   contradictory option, or bad constructor config. Fix the call.
+ * - `Unsupported` — the call is well-formed, but this adapter (in this mode,
+ *   with these plugins) can't do it. Check `files.capabilities` first.
+ * - `Provider` — the backend or transport failed. The only retried code.
+ */
 export type FilesErrorCode =
   | "NotFound"
   | "Unauthorized"
   | "Conflict"
   | "ReadOnly"
+  | "Invalid"
+  | "Unsupported"
   | "Provider";
 
-export type ProviderFilesErrorCode = Exclude<FilesErrorCode, "ReadOnly">;
+/** The codes a provider's own response maps to. */
+export type ProviderFilesErrorCode = Exclude<
+  FilesErrorCode,
+  "ReadOnly" | "Invalid" | "Unsupported"
+>;
+
+/** Codes that can only fail the same way again, whatever `permanent` says. */
+const DETERMINISTIC_CODES: ReadonlySet<FilesErrorCode> = new Set([
+  "Invalid",
+  "ReadOnly",
+  "Unsupported",
+]);
 
 // Edge, Node and client-framework entries are bundled in separate passes, so a
 // consumer can load more than one copy of this class (`files-sdk` and
@@ -36,10 +60,10 @@ export class FilesError extends Error {
   readonly timedOut: boolean;
   /**
    * `true` when the failure is deterministic — re-issuing the identical
-   * request can only fail the same way (a host that ignores `Range`, a
-   * delimiter the provider can't honor). `Provider`-coded errors are
-   * otherwise presumed transient and retried; this flag opts a specific
-   * failure out of that.
+   * request can only fail the same way. Always `true` for `Invalid`,
+   * `Unsupported`, and `ReadOnly`. `Provider`-coded errors are otherwise
+   * presumed transient and retried; this flag opts a specific one out of that
+   * (a host that ignores `Range`, corrupt stored data).
    */
   readonly permanent: boolean;
   /**
@@ -82,7 +106,7 @@ export class FilesError extends Error {
     this.code = code;
     this.aborted = opts?.aborted === true;
     this.timedOut = opts?.timedOut === true;
-    this.permanent = opts?.permanent === true;
+    this.permanent = opts?.permanent === true || DETERMINISTIC_CODES.has(code);
     this.applied = opts?.applied === true;
     if (opts?.appliedEtag !== undefined) {
       this.appliedEtag = opts.appliedEtag;
@@ -136,15 +160,13 @@ const DISPOSITION_UNSUPPORTED_BRAND = /* @__PURE__ */ Symbol.for(
 );
 
 /**
- * The `Provider` error an adapter throws from `url()` when it cannot honor
- * `responseContentDisposition`. It is `permanent` (the identical call can only
- * be refused again, so it is neither retried nor failed over), and branded so
- * {@link isDispositionUnsupported} can recognize it across bundle copies.
+ * The `Unsupported` error an adapter throws from `url()` when it cannot honor
+ * `responseContentDisposition` (so it is `permanent`: neither retried nor
+ * failed over), branded so {@link isDispositionUnsupported} can recognize it
+ * across bundle copies.
  */
 export const dispositionUnsupported = (message: string): FilesError => {
-  const error = new FilesError("Provider", message, undefined, {
-    permanent: true,
-  });
+  const error = new FilesError("Unsupported", message);
   // Non-enumerable, like the class brand, so it stays off the wire.
   Object.defineProperty(error, DISPOSITION_UNSUPPORTED_BRAND, { value: true });
   return error;

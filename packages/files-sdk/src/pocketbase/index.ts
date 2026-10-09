@@ -146,7 +146,7 @@ const buildClient = (opts: PocketBaseAdapterOptions): PocketBaseClient => {
   const url = opts.url ?? readEnv("POCKETBASE_URL");
   if (!url) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "pocketbase adapter: missing url. Pass `client` (an existing PocketBase instance), `url`, or set POCKETBASE_URL."
     );
   }
@@ -178,7 +178,7 @@ const toUploadBlob = async (
 ): Promise<UploadBlob> => {
   if (!isSupportedBody(body)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "Unsupported body type for PocketBase adapter"
     );
   }
@@ -225,7 +225,7 @@ export const pocketbase = (
 ): PocketBaseAdapter => {
   if (!opts.collection) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "pocketbase adapter: missing collection. Pass `collection`."
     );
   }
@@ -522,7 +522,7 @@ export const pocketbase = (
           : 1;
         if (!Number.isFinite(page) || page < 1) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `pocketbase: invalid list cursor "${listOpts?.cursor}" — expected a positive integer page number.`
           );
         }
@@ -559,7 +559,7 @@ export const pocketbase = (
     ): Promise<SignedUpload> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "pocketbase: signedUploadUrl is not supported. PocketBase has no presigned upload primitive — uploads always go through the authenticated API; mint a short-lived auth token for the client instead."
         )
       );

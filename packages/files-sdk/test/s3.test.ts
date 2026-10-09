@@ -575,18 +575,18 @@ describe("s3 adapter", () => {
       files.upload("created.txt", "body", {
         condition: { type: "create" },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.upload("replaced.txt", "body", {
         condition: { etag: "old-etag", type: "replace" },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.download("record.txt", { condition: { etag: "exact-etag" } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.delete("record.txt", { condition: { etag: "delete-etag" } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.copy("from.txt", "to.txt", {
         condition: {
@@ -594,7 +594,7 @@ describe("s3 adapter", () => {
           source: { etag: "source-etag" },
         },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(s3Mock.calls()).toHaveLength(0);
   });
 
@@ -913,13 +913,13 @@ describe("s3 adapter", () => {
 
     await expect(
       conditional.create("multipart.bin", "body", multipart)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     await expect(
       conditional.create("controlled.bin", "body", controlled)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     await expect(
       conditional.create("stream.bin", stream)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     expect(s3Mock.calls()).toHaveLength(0);
     expect(FakeUpload.instances).toBe(0);
   });
@@ -931,19 +931,19 @@ describe("s3 adapter", () => {
 
     await expect(
       conditional.replace("record.txt", "body", '"already-quoted"')
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     await expect(
       conditional.exactRead("record.txt", "W/weak-etag")
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     await expect(
       conditional.delete("record.txt", "first,second")
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     await expect(
       conditional.copy.run("from", "to", {
         destination: { type: "create" },
         source: { etag: "*" },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     expect(s3Mock.calls()).toHaveLength(0);
   });
 
@@ -1629,7 +1629,7 @@ describe("s3 adapter", () => {
       (error: unknown) => error
     );
     expect(urlError).toBeInstanceOf(FilesError);
-    expect((urlError as FilesError).code).toBe("Provider");
+    expect((urlError as FilesError).code).toBe("Invalid");
     expect((urlError as FilesError).permanent).toBe(true);
     expect((urlError as FilesError).message).toMatch(
       /^Wasabi error: presigned URLs must expire within 604800 seconds/u
@@ -1751,6 +1751,13 @@ describe("s3 adapter", () => {
     delete process.env.AWS_DEFAULT_REGION;
     try {
       expect(() => s3({ bucket: "x" })).toThrow(/region/u);
+      let thrown: unknown;
+      try {
+        s3({ bucket: "x" });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toMatchObject({ code: "Invalid", permanent: true });
     } finally {
       if (oldRegion) {
         process.env.AWS_REGION = oldRegion;
@@ -1925,7 +1932,7 @@ describe("s3 adapter", () => {
       loadLibStorage(() => Promise.reject(missing))
     ).rejects.toMatchObject({
       cause: missing,
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("@aws-sdk/lib-storage"),
       permanent: true,
     });

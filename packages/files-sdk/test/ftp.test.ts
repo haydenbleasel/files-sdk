@@ -501,7 +501,7 @@ describe("ftp adapter", () => {
   test("keys that escape the root are rejected", async () => {
     const files = newFiles();
     await expect(files.upload("../escape.txt", "x")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -517,7 +517,10 @@ describe("ftp adapter", () => {
 
   test("url requires publicBaseUrl, else throws", async () => {
     const files = newFiles();
-    await expect(files.url("a.txt")).rejects.toThrow(/publicBaseUrl/iu);
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicBaseUrl/iu),
+    });
 
     const withBase = newFiles({ publicBaseUrl: "https://cdn.example.com" });
     expect(await withBase.url("dir/a.txt")).toBe(
@@ -529,7 +532,10 @@ describe("ftp adapter", () => {
     const files = newFiles();
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toThrow(/not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/not supported/iu),
+    });
   });
 
   test("declares its capabilities", () => {
@@ -558,6 +564,7 @@ describe("ftp adapter", () => {
 
   test("missing host throws at construction", () => {
     expect(() => ftp({})).toThrow(/missing connection/iu);
+    expect(() => ftp({})).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("raw exposes the injected client", () => {
@@ -685,7 +692,10 @@ describe("ftp edge cases (injected client)", () => {
     const files = newFiles({ publicBaseUrl: "https://cdn.example.com" });
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/iu),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -695,7 +705,10 @@ describe("ftp edge cases (injected client)", () => {
     const files = newFiles();
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/iu),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -1204,7 +1217,10 @@ describe("ftp resumable uploads", () => {
   test("keys ending in the staging suffix are reserved for writes", async () => {
     const files = newFiles();
     await files.upload("src.txt", "s");
-    await expect(files.upload("x.fls-part", "x")).rejects.toThrow(/reserved/u);
+    await expect(files.upload("x.fls-part", "x")).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/reserved/u),
+    });
     await expect(files.copy("src.txt", "d/y.FLS-PART")).rejects.toThrow(
       /reserved/u
     );
@@ -1213,7 +1229,10 @@ describe("ftp resumable uploads", () => {
     );
     await expect(
       files.upload("r.fls-part", "data", { control: new UploadControl() })
-    ).rejects.toThrow(/reserved/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/reserved/u),
+    });
     // Reads and deletes of a stray staging file still work.
     store.set("stray.fls-part", Buffer.from("p"));
     const stray = await files.download("stray.fls-part");
@@ -1252,7 +1271,10 @@ describe("ftp resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched key throws", async () => {
@@ -1260,6 +1282,9 @@ describe("ftp resumable uploads", () => {
     const token: ResumableUploadSession = { key: "other.bin", provider: "ftp" };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 });

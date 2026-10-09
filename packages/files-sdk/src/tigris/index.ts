@@ -63,7 +63,7 @@ export const tigris = (opts: TigrisAdapterOptions): TigrisAdapter => {
 
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "tigris adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set TIGRIS_ACCESS_KEY_ID + TIGRIS_SECRET_ACCESS_KEY."
     );
   }

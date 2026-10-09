@@ -386,7 +386,7 @@ describe("vercel-blob adapter", () => {
     await expect(
       files.upload("a.txt", "hello", { cacheControl: "no-store" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(/cacheControl.*no-store/u),
       permanent: true,
     });
@@ -518,7 +518,7 @@ describe("vercel-blob adapter", () => {
   test("vercel-blob only supports the / delimiter", async () => {
     const files = new Files({ adapter: vercelBlob() });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
     });
   });
 
@@ -678,14 +678,14 @@ describe("vercel-blob adapter", () => {
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
-  test("url with responseContentDisposition throws Provider (no Content-Disposition primitive)", async () => {
+  test("url with responseContentDisposition throws Unsupported (no Content-Disposition primitive)", async () => {
     const files = new Files({ adapter: vercelBlob() });
     try {
       await files.url("a.txt", { responseContentDisposition: "attachment" });
       throw new Error("should have thrown");
     } catch (error) {
       expect(error).toBeInstanceOf(FilesError);
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(
         /responseContentDisposition|signing primitive/u
       );
@@ -807,7 +807,7 @@ describe("vercel-blob adapter", () => {
         throw new Error("should have thrown");
       } catch (error) {
         expect(error).toBeInstanceOf(FilesError);
-        expect((error as FilesError).code).toBe("Provider");
+        expect((error as FilesError).code).toBe("Unsupported");
         expect((error as FilesError).message).toMatch(/minSize/u);
       }
       expect(issueSignedTokenMock).not.toHaveBeenCalled();
@@ -1475,7 +1475,7 @@ describe("vercel-blob adapter", () => {
         await files.url("a.txt", { responseContentDisposition: "attachment" });
         throw new Error("should have thrown");
       } catch (error) {
-        expect((error as FilesError).code).toBe("Provider");
+        expect((error as FilesError).code).toBe("Unsupported");
       }
       expect(issueSignedTokenMock).not.toHaveBeenCalled();
     });
@@ -1587,6 +1587,9 @@ describe("vercel-blob adapter", () => {
       // auth scheme out from under them. Mirrors upstream, which throws here.
       expect(() => vercelBlob({ oidcToken: "explicit-oidc" })).toThrow(
         /storeId/iu
+      );
+      expect(() => vercelBlob({ oidcToken: "explicit-oidc" })).toThrow(
+        expect.objectContaining({ code: "Invalid" })
       );
     });
 
@@ -2173,7 +2176,7 @@ describe("vercel-blob resumable uploads", () => {
         cacheControl: "no-cache",
         control: new UploadControl(),
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(createMultipartUploadMock).not.toHaveBeenCalled();
   });
 
@@ -2298,7 +2301,10 @@ describe("vercel-blob resumable uploads", () => {
     };
     await expect(
       files.upload("big.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 
   test("resuming a non-vercel-blob token throws", async () => {

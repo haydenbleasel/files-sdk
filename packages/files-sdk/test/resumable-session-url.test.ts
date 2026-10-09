@@ -5,6 +5,8 @@ import {
   trustedHttpsSessionUrl,
 } from "../src/internal/resumable-session-url.js";
 
+const invalid = { code: "Invalid", permanent: true };
+
 describe("trustedHttpsSessionUrl", () => {
   const trusted = ["storage.example.com"];
 
@@ -59,6 +61,19 @@ describe("trustedHttpsSessionUrl", () => {
         trusted
       )
     ).toThrow("session URL host is not trusted for resumable uploads");
+  });
+
+  test("every rejection is a permanent Invalid error", () => {
+    for (const value of [
+      "/relative",
+      "https://user:pass@storage.example.com/u/1",
+      "http://storage.example.com/u/1",
+      "https://evil.example.net/u/1",
+    ]) {
+      expect(() =>
+        trustedHttpsSessionUrl(value, "session URL", trusted)
+      ).toThrow(expect.objectContaining(invalid));
+    }
   });
 });
 
@@ -117,5 +132,20 @@ describe("sameOriginSessionUrl", () => {
         "session URL"
       )
     ).toThrow("session URL path is outside the configured resumable endpoint");
+  });
+
+  test("every rejection is a permanent Invalid error", () => {
+    expect(() =>
+      sameOriginSessionUrl("session/1", "not a url", "session URL")
+    ).toThrow(expect.objectContaining(invalid));
+    for (const value of [
+      "https://user:pass@api.example.com/resumable/session/1",
+      "https://other.example.com/resumable/session/1",
+      "https://api.example.com/admin/session/1",
+    ]) {
+      expect(() => sameOriginSessionUrl(value, base, "session URL")).toThrow(
+        expect.objectContaining(invalid)
+      );
+    }
   });
 });

@@ -409,10 +409,10 @@ describe("sftp adapter", () => {
   test("keys that escape the root are rejected", async () => {
     const files = newFiles();
     await expect(files.upload("../escape.txt", "x")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
     await expect(files.download("../escape.txt")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -428,7 +428,10 @@ describe("sftp adapter", () => {
 
   test("url requires publicBaseUrl, else throws", async () => {
     const files = newFiles();
-    await expect(files.url("a.txt")).rejects.toThrow(/publicBaseUrl/iu);
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicBaseUrl/iu),
+    });
 
     const withBase = newFiles({ publicBaseUrl: "https://cdn.example.com" });
     expect(await withBase.url("dir/a.txt")).toBe(
@@ -436,7 +439,10 @@ describe("sftp adapter", () => {
     );
     await expect(
       withBase.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/iu),
+    });
     await expectDispositionRefusal(
       withBase.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -446,7 +452,10 @@ describe("sftp adapter", () => {
     const files = newFiles();
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/publicBaseUrl/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicBaseUrl/iu),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -456,7 +465,10 @@ describe("sftp adapter", () => {
     const files = newFiles();
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toThrow(/not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/not supported/iu),
+    });
   });
 
   test("declares its capabilities", () => {
@@ -486,6 +498,9 @@ describe("sftp adapter", () => {
 
   test("missing connection config throws at construction", () => {
     expect(() => sftp({ host: "h" })).toThrow(/missing connection/iu);
+    expect(() => sftp({ host: "h" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("raw exposes the injected client", () => {
@@ -1033,7 +1048,10 @@ describe("sftp resumable uploads", () => {
   test("keys ending in the staging suffix are reserved for writes", async () => {
     const files = newFiles();
     await files.upload("src.txt", "s");
-    await expect(files.upload("x.fls-part", "x")).rejects.toThrow(/reserved/u);
+    await expect(files.upload("x.fls-part", "x")).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/reserved/u),
+    });
     await expect(files.copy("src.txt", "d/y.FLS-PART")).rejects.toThrow(
       /reserved/u
     );
@@ -1042,7 +1060,10 @@ describe("sftp resumable uploads", () => {
     );
     await expect(
       files.upload("r.fls-part", "data", { control: new UploadControl() })
-    ).rejects.toThrow(/reserved/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/reserved/u),
+    });
   });
 
   test("metadata is rejected", async () => {
@@ -1075,7 +1096,10 @@ describe("sftp resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched key throws", async () => {
@@ -1086,6 +1110,9 @@ describe("sftp resumable uploads", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 });

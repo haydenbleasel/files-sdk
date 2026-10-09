@@ -314,7 +314,12 @@ const restoreEnv = (key: string, value: string | undefined): void => {
 
 describe("google-drive adapter", () => {
   test("missing auth throws at construction", () => {
-    expect(() => googleDrive({} as never)).toThrow(/missing auth/iu);
+    expect(() => googleDrive({} as never)).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/missing auth/iu),
+      })
+    );
   });
 
   test("env-var fallback uses GOOGLE_DRIVE_CLIENT_EMAIL + GOOGLE_DRIVE_PRIVATE_KEY", () => {
@@ -448,7 +453,10 @@ describe("google-drive adapter", () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await expect(
       files.upload("a.txt", "hi", { metadata: { fsdkInjected: "bad" } })
-    ).rejects.toThrow(/reserved/iu);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/reserved/iu),
+    });
   });
 
   test("upload with publicByDefault grants anyone-reader permission", async () => {
@@ -728,7 +736,10 @@ describe("google-drive adapter", () => {
   test("url throws when publicByDefault is false", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("a.txt", "hi");
-    await expect(files.url("a.txt")).rejects.toThrow(/publicByDefault/u);
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/publicByDefault/u),
+    });
   });
 
   test("url throws on responseContentDisposition (always unsupported)", async () => {
@@ -738,7 +749,10 @@ describe("google-drive adapter", () => {
     await files.upload("a.txt", "hi");
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/u),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -889,13 +903,13 @@ describe("google-drive adapter", () => {
     });
   });
 
-  test("keys and metadata that overflow Drive's 124-byte appProperty cap fail permanently up front", async () => {
+  test("keys and metadata that overflow Drive's 124-byte appProperty cap fail as Invalid up front", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     // `fsdkKey` is 7 bytes, leaving 117 for the key itself.
     await files.upload("k".repeat(117), "ok");
     const tooLong = "k".repeat(118);
     const expected = {
-      code: "Provider",
+      code: "Invalid",
       message: expect.stringContaining("124-byte"),
       permanent: true,
     };
@@ -927,14 +941,20 @@ describe("google-drive adapter", () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60, maxSize: 1024 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
   });
 
   test("signedUploadUrl rejects minSize because Drive sessions cannot enforce it", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1 })
-    ).rejects.toThrow(/maxSize.*minSize|content-length-range/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
+    });
   });
 
   test("signedUploadUrl throws when adapter constructed with `client` escape hatch", async () => {
@@ -946,7 +966,10 @@ describe("google-drive adapter", () => {
     });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 60 })
-    ).rejects.toThrow(/escape hatch|client/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/escape hatch|client/iu),
+    });
   });
 
   test("declares its capabilities", () => {
@@ -1447,7 +1470,10 @@ describe("google-drive resumable uploads", () => {
         control: UploadControl.from(token),
         multipart: { partSize: CHUNK },
       })
-    ).rejects.toThrow(/not trusted/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/not trusted/u),
+    });
   });
 
   test("abort discards the session via DELETE", async () => {
@@ -1556,7 +1582,10 @@ describe("google-drive resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched key throws", async () => {
@@ -1568,6 +1597,9 @@ describe("google-drive resumable uploads", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 });

@@ -157,21 +157,28 @@ describe("cli/io fail", () => {
     expect(cap.exits).toEqual([4]);
   });
 
-  test("Provider / unknown -> exit 2", () => {
+  test("Provider -> exit 5", () => {
     expect(() => fail(new FilesError("Provider", "p"), out)).toThrow(
-      "__exit:2"
+      "__exit:5"
     );
-    expect(cap.exits).toEqual([2]);
+    expect(cap.exits).toEqual([5]);
   });
 
-  test("plain Error (non-FilesError) reports code=Provider, exits 2", () => {
-    expect(() => fail(new Error("boom"), out)).toThrow("__exit:2");
+  test("Invalid / Unsupported / ReadOnly -> exit 2, like a usage error", () => {
+    for (const code of ["Invalid", "Unsupported", "ReadOnly"] as const) {
+      expect(() => fail(new FilesError(code, "x"), out)).toThrow("__exit:2");
+    }
+    expect(cap.exits).toEqual([2, 2, 2]);
+  });
+
+  test("plain Error (non-FilesError) reports code=Provider, exits 5", () => {
+    expect(() => fail(new Error("boom"), out)).toThrow("__exit:5");
     const payload = JSON.parse(cap.stderr.join(""));
     expect(payload.error).toEqual({ code: "Provider", message: "boom" });
   });
 
   test("non-Error thrown value is stringified", () => {
-    expect(() => fail("scalar", out)).toThrow("__exit:2");
+    expect(() => fail("scalar", out)).toThrow("__exit:5");
     const payload = JSON.parse(cap.stderr.join(""));
     expect(payload.error.message).toBe("scalar");
   });
@@ -191,7 +198,7 @@ describe("cli/io fail", () => {
     const err = new FilesError("Provider", "stacky");
     expect(() =>
       fail(err, { json: true, pretty: false, verbose: true })
-    ).toThrow("__exit:2");
+    ).toThrow("__exit:5");
     const payload = JSON.parse(cap.stderr.join(""));
     expect(typeof payload.error.stack).toBe("string");
     expect(payload.error.stack.length).toBeGreaterThan(0);
@@ -199,7 +206,7 @@ describe("cli/io fail", () => {
     cap.stderr.length = 0;
     expect(() =>
       fail(err, { json: false, pretty: false, verbose: true })
-    ).toThrow("__exit:2");
+    ).toThrow("__exit:5");
     const text = cap.stderr.join("");
     expect(text.startsWith("error (Provider): stacky\n")).toBe(true);
     expect(text.includes("FilesError")).toBe(true);

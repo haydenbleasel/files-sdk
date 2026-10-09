@@ -165,7 +165,7 @@ const resolveAuthType = (value: string | undefined): AuthType | undefined => {
   const mapped = AUTH_TYPES[value as WebdavAuthType];
   if (!mapped) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `webdav: unknown authType ${JSON.stringify(value)}. Expected one of ${Object.keys(AUTH_TYPES).join(", ")}.`
     );
   }
@@ -238,7 +238,7 @@ const resolveClient = (opts: WebdavAdapterOptions): WebDAVClient => {
     opts.baseUrl ?? readEnv("WEBDAV_URL") ?? readEnv("WEBDAV_BASE_URL");
   if (!baseUrl) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "webdav adapter: missing connection. Pass `baseUrl` (and `username` / `password`), set WEBDAV_URL / WEBDAV_USERNAME / WEBDAV_PASSWORD, or pass a pre-configured `client`."
     );
   }
@@ -571,7 +571,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     signedUploadUrl(_key, _signOpts): Promise<SignedUpload> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "webdav: signedUploadUrl() is not supported. WebDAV has no presigned-upload concept — use upload()."
         )
       );
@@ -618,7 +618,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "webdav: url() requires `publicBaseUrl`. A WebDAV GET needs authentication and the protocol has no signing primitive; configure `publicBaseUrl` to point at an HTTP server fronting the same tree, or use download()."
       );
     },

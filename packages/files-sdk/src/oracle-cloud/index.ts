@@ -75,19 +75,19 @@ export const oracleCloud = (
 
   if (!opts.namespace) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "oracle-cloud adapter: missing namespace. Pass `namespace` (find it under Profile → Tenancy → Object Storage Namespace, or via `oci os ns get`)."
     );
   }
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'oracle-cloud adapter: missing region. Pass `region` (e.g. "us-ashburn-1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "oracle-cloud adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set OCI_ACCESS_KEY_ID + OCI_SECRET_ACCESS_KEY."
     );
   }

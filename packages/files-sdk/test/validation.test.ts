@@ -321,11 +321,11 @@ describe("validation plugin — error discrimination", () => {
     expect((error as ValidationError).reason).toBe("key");
   });
 
-  test("stays a FilesError with code Provider for existing catches", async () => {
+  test("is a FilesError with code Invalid, so it is never retried", async () => {
     const files = withValidation({ maxSize: 10 });
     const error = await caught(files.upload("big.txt", "x".repeat(20)));
     expect(error).toBeInstanceOf(FilesError);
-    expect((error as FilesError).code).toBe("Provider");
+    expect((error as FilesError).code).toBe("Invalid");
     expect((error as Error).name).toBe("ValidationError");
   });
 

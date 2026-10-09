@@ -65,7 +65,7 @@ const asRawBody = (
 ): Blob | Uint8Array<ArrayBuffer> | null => {
   if (isNativeFileRef(body)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "a NativeFileRef body requires a presigned-POST target; resolve it to a Blob first"
     );
   }

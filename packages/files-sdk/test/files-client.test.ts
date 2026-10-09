@@ -182,6 +182,51 @@ describe("createFilesClient — round-trip", () => {
     });
   });
 
+  test("Invalid and Unsupported round-trip as 422s with their own codes", async () => {
+    const refusing: Adapter = {
+      ...fakeAdapter(),
+      head: (key) =>
+        Promise.reject(
+          new FilesError(
+            key === "bad" ? "Invalid" : "Unsupported",
+            `refused ${key}`
+          )
+        ),
+    };
+    const client = clientFor(refusing);
+    await expect(client.head("bad")).rejects.toMatchObject({
+      code: "Invalid",
+      permanent: true,
+    });
+    await expect(client.head("nope")).rejects.toMatchObject({
+      code: "Unsupported",
+      permanent: true,
+    });
+    // Bulk results carry each error's own code, revived the same way.
+    const bulk = await client.head(["bad", "nope"]);
+    expect(bulk.errors?.map((e) => e.error.code)).toEqual([
+      "Invalid",
+      "Unsupported",
+    ]);
+  });
+
+  test("a wire code this client doesn't know degrades to Provider", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: (() =>
+        Promise.resolve(
+          Response.json(
+            { error: { code: "FromTheFuture", message: "new" } },
+            { status: 418 }
+          )
+        )) as unknown as typeof fetch,
+    });
+    await expect(client.head("k")).rejects.toMatchObject({
+      code: "Provider",
+      message: "new",
+    });
+  });
+
   test("auth headers are sent (lazy)", async () => {
     let seen = "";
     const router = createFilesRouter({

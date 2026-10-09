@@ -24,7 +24,8 @@ describe("client error mapping", () => {
     ["ReadOnly", 403, "ReadOnly"],
     ["Unauthorized", 401, "Unauthorized"],
     ["Forbidden", 403, "Unauthorized"],
-    ["Validation", 422, "Provider"],
+    ["Validation", 422, "Invalid"],
+    ["Unsupported", 422, "Unsupported"],
     ["Mystery", 500, "Provider"],
   ];
   for (const [wire, status, mapped] of cases) {

@@ -62,13 +62,13 @@ export const vultr = (opts: VultrAdapterOptions): VultrAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'vultr adapter: missing region. Pass `region` (e.g. "ewr1").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "vultr adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set VULTR_ACCESS_KEY_ID + VULTR_SECRET_ACCESS_KEY."
     );
   }

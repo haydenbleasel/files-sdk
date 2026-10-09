@@ -60,13 +60,13 @@ export const digitaloceanSpaces = (
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'digitalocean-spaces adapter: missing region. Pass `region` (e.g. "nyc3").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "digitalocean-spaces adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set DO_SPACES_KEY + DO_SPACES_SECRET."
     );
   }

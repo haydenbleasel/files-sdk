@@ -161,6 +161,9 @@ describe("cloudinary adapter", () => {
           adapter: cloudinary({}),
         })
     ).toThrow(/missing cloudName/u);
+    expect(() => cloudinary({})).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("construction > picks up CLOUDINARY_URL", () => {
@@ -231,7 +234,7 @@ describe("cloudinary adapter", () => {
     await expect(
       files.upload("k", "data", { cacheControl: "max-age=60" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("cacheControl"),
     });
   });
@@ -243,7 +246,7 @@ describe("cloudinary adapter", () => {
     await expect(
       files.upload("k", "data", { metadata: { owner: "alice" } })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("metadata"),
     });
   });
@@ -528,7 +531,7 @@ describe("cloudinary adapter", () => {
     await expect(
       files.url("test-file", { responseContentDisposition: "attachment" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("responseContentDisposition"),
     });
     await expectDispositionRefusal(
@@ -696,7 +699,7 @@ describe("cloudinary adapter", () => {
     await expect(
       files.signedUploadUrl("k", { expiresIn: 3600 })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining("apiSecret"),
     });
   });
@@ -714,7 +717,10 @@ describe("cloudinary adapter", () => {
         expiresIn: 3600,
         maxSize: 1024,
       })
-    ).rejects.toThrow(/maxSize.*not supported/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/maxSize.*not supported/u),
+    });
     expect(apiSignRequestMock).not.toHaveBeenCalled();
   });
 
@@ -1304,7 +1310,10 @@ describe("cloudinary resumable uploads (chunked)", () => {
     const files = new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME }) });
     await expect(
       files.upload("x", "data", { control: new UploadControl() })
-    ).rejects.toThrow(/require both apiKey and apiSecret/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/require both apiKey and apiSecret/u),
+    });
   });
 
   test("metadata and cacheControl are rejected", async () => {
@@ -1342,7 +1351,10 @@ describe("cloudinary resumable uploads (chunked)", () => {
     };
     await expect(
       files.upload("doc", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 
   test("resuming a non-cloudinary token throws", async () => {

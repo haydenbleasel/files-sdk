@@ -186,10 +186,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
   ): Promise<StoredFile> => {
     if (op.options?.range) {
       throw new FilesError(
-        "Provider",
-        `compression: range downloads are unsupported on compressed objects ("${op.key}")`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `compression: range downloads are unsupported on compressed objects ("${op.key}")`
       );
     }
     const file = await next(op);
@@ -321,10 +319,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       },
       signedUploadUrl: () => {
         throw new FilesError(
-          "Provider",
-          "compression: signedUploadUrl() bypasses compression (the client would store uncompressed bytes); upload through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "compression: signedUploadUrl() bypasses compression (the client would store uncompressed bytes); upload through the Files instance instead"
         );
       },
       upload: async (op, next) => {
@@ -332,10 +328,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
           op.options;
         if (uploadOptions?.control) {
           throw new FilesError(
-            "Provider",
-            `compression: resumable uploads (\`control\`) are unsupported ("${op.key}") — compressed output isn't byte-for-byte stable across runtimes or versions, so a session resumed in another process could splice two different compressed streams into an object that can't be decompressed; upload without \`control\``,
-            undefined,
-            { permanent: true }
+            "Unsupported",
+            `compression: resumable uploads (\`control\`) are unsupported ("${op.key}") — compressed output isn't byte-for-byte stable across runtimes or versions, so a session resumed in another process could splice two different compressed streams into an object that can't be decompressed; upload without \`control\``
           );
         }
         const normalized = await normalizeBody(
@@ -367,10 +361,8 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       },
       url: () => {
         throw new FilesError(
-          "Provider",
-          "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "compression: url() returns a link to compressed bytes that clients receive as-is (no Content-Encoding) and cannot read; download through the Files instance instead"
         );
       },
     });

@@ -72,6 +72,12 @@ export const exitCode = (code: string): number => {
     case "Conflict": {
       return 4;
     }
+    // The backend failed: distinct from a usage error, so a script can retry
+    // this one and fix the command for the others.
+    case "Provider": {
+      return 5;
+    }
+    // `Invalid`, `Unsupported`, `ReadOnly`, and CLI usage errors.
     default: {
       return 2;
     }
@@ -144,7 +150,7 @@ export const readBody = async (source: BodySource): Promise<ResolvedBody> => {
     };
   }
   if (!source.file) {
-    throw new FilesError("Provider", "expected --file <path> or --stdin");
+    throw new FilesError("Invalid", "expected --file <path> or --stdin");
   }
   const stats = await stat(source.file);
   return {
@@ -168,7 +174,7 @@ export const writeBody = async (
     return;
   }
   if (!dest.out) {
-    throw new FilesError("Provider", "expected --out <path> or --stdout");
+    throw new FilesError("Invalid", "expected --out <path> or --stdout");
   }
   await pipeline(toNodeReadable(file.stream()), createWriteStream(dest.out));
 };
@@ -251,7 +257,7 @@ export const writeBodyToDir = async (
   const dest = path.resolve(root, file.key);
   if (dest !== root && !dest.startsWith(root + path.sep)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `refusing to write key outside --out-dir: ${file.key}`
     );
   }
@@ -271,7 +277,7 @@ export const parseKeyValuePairs = (
     const idx = p.indexOf("=");
     if (idx === -1) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `--metadata expects key=value, got: ${p}`
       );
     }
@@ -298,7 +304,7 @@ export const parseRange = (raw?: string): ByteRange | undefined => {
   const match = /^(?<start>\d+)-(?<end>\d*)$/u.exec(raw);
   if (!match) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `--range expects start-end or start- (bytes, 0-based, inclusive), got: ${raw}`
     );
   }
@@ -327,7 +333,7 @@ export const parseJson = (
     // sync `--to`, and blaming --config-json there sends them debugging the
     // wrong flag.
     const detail = error instanceof Error ? error.message : String(error);
-    throw new FilesError("Provider", `invalid JSON in ${flag}: ${detail}`);
+    throw new FilesError("Invalid", `invalid JSON in ${flag}: ${detail}`);
   }
 };
 
@@ -345,7 +351,7 @@ export const parseJsonObject = (
     return undefined;
   }
   if (!isJsonObject(decoded)) {
-    throw new FilesError("Provider", `${flag} must be a JSON object`);
+    throw new FilesError("Invalid", `${flag} must be a JSON object`);
   }
   return decoded;
 };
@@ -360,7 +366,7 @@ export const parseProviderOptions = (
 ): GlobalCliOptions => {
   const decoded = parseJsonObject(raw, flag);
   if (decoded === undefined) {
-    throw new FilesError("Provider", `${flag} must be a JSON object`);
+    throw new FilesError("Invalid", `${flag} must be a JSON object`);
   }
   // SAFETY: the operator's JSON is trusted to mirror the global flags — the
   // same trust the flags themselves get. `loadFiles` rejects an unknown

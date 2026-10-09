@@ -270,7 +270,7 @@ const assertNoReservedMetadata = (
   for (const k of Object.keys(metadata)) {
     if (k.startsWith(RESERVED_METADATA_PREFIX)) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `google-drive: metadata key '${k}' is reserved (the '${RESERVED_METADATA_PREFIX}' prefix is used by the adapter for bookkeeping).`
       );
     }
@@ -280,7 +280,7 @@ const assertNoReservedMetadata = (
 // Drive caps each custom property at 124 bytes of UTF-8, key and value
 // together. An oversized one fails the whole request with a 400 that would
 // otherwise be retried as a transient Provider error, so reject it up front
-// with a permanent error that names the limit.
+// with an `Invalid` (never retried) error that names the limit.
 const MAX_APP_PROPERTY_BYTES = 124;
 
 const utf8Length = (value: string): number =>
@@ -291,10 +291,8 @@ const assertAppPropertiesFit = (props: Record<string, string>): void => {
     const size = utf8Length(name) + utf8Length(value);
     if (size > MAX_APP_PROPERTY_BYTES) {
       throw new FilesError(
-        "Provider",
-        `google-drive: appProperty '${name}' is ${size} bytes (UTF-8 key + value), over Drive's ${MAX_APP_PROPERTY_BYTES}-byte limit per property. Keys are stored in '${KEY_PROP}', so a key can be at most ${MAX_APP_PROPERTY_BYTES - utf8Length(KEY_PROP)} bytes; each metadata key + value (and the content type / cacheControl) must fit in ${MAX_APP_PROPERTY_BYTES} bytes.`,
-        undefined,
-        { permanent: true }
+        "Invalid",
+        `google-drive: appProperty '${name}' is ${size} bytes (UTF-8 key + value), over Drive's ${MAX_APP_PROPERTY_BYTES}-byte limit per property. Keys are stored in '${KEY_PROP}', so a key can be at most ${MAX_APP_PROPERTY_BYTES - utf8Length(KEY_PROP)} bytes; each metadata key + value (and the content type / cacheControl) must fit in ${MAX_APP_PROPERTY_BYTES} bytes.`
       );
     }
   }
@@ -566,7 +564,7 @@ export const googleDrive = (
   );
   if (!haveExplicit && !hasEnvAuth()) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "google-drive adapter: missing auth. Pass `credentials`, `keyFilename`, `oauth`, or `client`. Env fallbacks: GOOGLE_DRIVE_CLIENT_EMAIL + GOOGLE_DRIVE_PRIVATE_KEY, or GOOGLE_DRIVE_KEY_FILE."
     );
   }
@@ -583,7 +581,7 @@ export const googleDrive = (
     const built = buildAuth(opts);
     if (!built) {
       // Unreachable — the guard above guarantees explicit or env auth.
-      throw new FilesError("Provider", "google-drive: failed to build auth");
+      throw new FilesError("Invalid", "google-drive: failed to build auth");
     }
     authForTokens = built;
     // SAFETY: `@googleapis/drive` accepts a google-auth-library
@@ -1037,7 +1035,7 @@ export const googleDrive = (
           assertAppPropertiesFit(nextProps);
           if (!authForTokens) {
             throw new FilesError(
-              "Provider",
+              "Unsupported",
               "google-drive: resumable uploads require `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
             );
           }
@@ -1120,13 +1118,13 @@ export const googleDrive = (
         resume(session: ResumableUploadSession): string {
           if (session.provider !== PROVIDER) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on a google-drive adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -1143,13 +1141,13 @@ export const googleDrive = (
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       if (signOpts.maxSize !== undefined || signOpts.minSize !== undefined) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "google-drive: `maxSize` and `minSize` are not supported for signed upload URLs. Drive resumable upload sessions do not enforce a server-side content-length-range policy; enforce size limits at your application gateway / proxy before issuing the session URL."
         );
       }
       if (!authForTokens) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "google-drive: signedUploadUrl() requires `credentials`, `keyFilename`, or `oauth` — not the pre-built `client` escape hatch."
         );
       }
@@ -1300,7 +1298,7 @@ export const googleDrive = (
       }
       if (!publicByDefault) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "google-drive: url() requires the adapter to be constructed with `publicByDefault: true`. Drive has no signed URL primitive — use download() for private files."
         );
       }

@@ -390,7 +390,7 @@ export const netlifyBlobs = (
 ): NetlifyBlobsAdapter => {
   if (!opts.name || !isString(opts.name)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "netlifyBlobs adapter: `name` is required."
     );
   }
@@ -627,7 +627,7 @@ export const netlifyBlobs = (
     raw: store,
     signedUploadUrl(_key, _opts): Promise<SignedUpload> {
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "netlify-blobs: signed upload URLs are not available. Netlify Blobs has no presigned upload primitive — upload via the SDK or proxy through your application."
       );
     },
@@ -660,7 +660,7 @@ export const netlifyBlobs = (
     },
     url(_key, _urlOpts?: UrlOptions): Promise<string> {
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         "netlify-blobs: url() is not supported. Netlify Blobs has no public URL primitive — use download() to read the body via the SDK with the token."
       );
     },

@@ -62,13 +62,13 @@ export const alibaba = (opts: AlibabaAdapterOptions): AlibabaAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'alibaba adapter: missing region. Pass `region` (e.g. "cn-hangzhou").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "alibaba adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set ALIBABA_ACCESS_KEY_ID + ALIBABA_ACCESS_KEY_SECRET."
     );
   }

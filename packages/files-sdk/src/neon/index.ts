@@ -56,7 +56,7 @@ export const neon = (opts: NeonAdapterOptions): NeonAdapter => {
   const endpoint = opts.endpoint ?? readEnv("AWS_ENDPOINT_URL_S3");
   if (!endpoint) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "neon adapter: missing endpoint. Pass `endpoint` or set AWS_ENDPOINT_URL_S3 (injected by `neon dev` / `neon env pull`)."
     );
   }
@@ -71,7 +71,7 @@ export const neon = (opts: NeonAdapterOptions): NeonAdapter => {
   // would be dropped and the credential chain silently used in its place.
   if (Boolean(opts.accessKeyId) !== Boolean(opts.secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "neon adapter: pass `accessKeyId` and `secretAccessKey` together, or neither to use the AWS credential chain (the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY that `neon dev` / `neon env pull` inject)."
     );
   }

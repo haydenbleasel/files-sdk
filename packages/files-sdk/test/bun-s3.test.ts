@@ -348,7 +348,7 @@ describe("bun-s3 adapter", () => {
 
     await expect(
       adapter.signedUploadUrl("up.txt", { expiresIn: 60, maxSize: 1024 })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
   });
 
   test("url and signedUploadUrl reject expiresIn past the SigV4 one-week cap", async () => {
@@ -375,18 +375,18 @@ describe("bun-s3 adapter", () => {
       (error_: unknown) => error_
     );
     expect(urlError).toBeInstanceOf(FilesError);
-    expect((urlError as FilesError).code).toBe("Provider");
+    expect((urlError as FilesError).code).toBe("Invalid");
     expect((urlError as FilesError).permanent).toBe(true);
     expect((urlError as FilesError).message).toMatch(
       /^Bun S3 error: presigned URLs must expire within 604800 seconds/u
     );
     await expect(
       adapter.signedUploadUrl("k.txt", { expiresIn: eightDays })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     // A too-long default fails the same way.
     await expect(
       bunS3({ client, defaultUrlExpiresIn: eightDays }).url("k.txt")
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Invalid" });
     expect(presigned).toBe(0);
 
     // Exactly one week still signs, and a public URL ignores expiresIn.
@@ -425,7 +425,7 @@ describe("bun-s3 adapter", () => {
       (error_: unknown) => error_
     );
     expect(error).toBeInstanceOf(FilesError);
-    expect((error as FilesError).code).toBe("Provider");
+    expect((error as FilesError).code).toBe("Unsupported");
     expect((error as FilesError).permanent).toBe(true);
     expect((error as FilesError).message).toMatch(
       /contentType.*not supported/u
@@ -989,7 +989,10 @@ describe("bun-s3 resumable uploads (in-process)", () => {
     };
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/in-process only/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/in-process only/u),
+    });
   });
 
   test("metadata and cacheControl are rejected", async () => {
@@ -1022,6 +1025,9 @@ describe("bun-s3 resumable uploads (in-process)", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("x.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 });

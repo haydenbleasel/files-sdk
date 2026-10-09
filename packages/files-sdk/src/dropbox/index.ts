@@ -639,7 +639,7 @@ const resolveAuth = (opts: DropboxAdapterOptions): ResolvedAuth => {
 
   if (explicitToken !== undefined && explicitRefresh) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "dropbox adapter: pass exactly one of `accessToken` or `refreshToken` (with `appKey`)."
     );
   }
@@ -658,7 +658,7 @@ const resolveAuth = (opts: DropboxAdapterOptions): ResolvedAuth => {
   if (explicitRefresh) {
     if (!opts.refreshToken || !opts.appKey) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         "dropbox adapter: refresh-token auth requires both `refreshToken` and `appKey`."
       );
     }
@@ -704,7 +704,7 @@ const resolveAuth = (opts: DropboxAdapterOptions): ResolvedAuth => {
   }
 
   throw new FilesError(
-    "Provider",
+    "Invalid",
     "dropbox adapter: missing auth. Pass `client`, `accessToken`, or `refreshToken` + `appKey`. Env fallbacks: DROPBOX_ACCESS_TOKEN, or DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET)."
   );
 };
@@ -1005,13 +1005,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       adopt(adopted: ResumableUploadSession) {
         if (adopted.provider !== "dropbox") {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `Cannot resume a ${adopted.provider} session on a Dropbox adapter.`
           );
         }
         if (adopted.path !== path) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "Resume token does not match this upload's path."
           );
         }
@@ -1340,7 +1340,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       // method our contract misrepresents.
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "dropbox: signedUploadUrl is not supported. Dropbox's temporary upload link uses POST with a raw body, which doesn't fit the SDK's PUT/POST-form contract. Use upload() or `adapter.raw.filesGetTemporaryUploadLink(...)` directly."
         )
       );
@@ -1417,7 +1417,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
       if (!publicByDefault && expiresIn > MAX_TEMPORARY_LINK_DURATION) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           `dropbox: \`expiresIn\` of ${expiresIn}s exceeds the ${MAX_TEMPORARY_LINK_DURATION}s (4h) maximum for Dropbox temporary links. Use \`publicByDefault: true\` for a permanent shared link.`
         );
       }

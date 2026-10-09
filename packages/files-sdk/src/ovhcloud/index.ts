@@ -69,13 +69,13 @@ export const ovhcloud = (opts: OvhcloudAdapterOptions): OvhcloudAdapter => {
 
   if (!opts.region) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       'ovhcloud adapter: missing region. Pass `region` (e.g. "gra").'
     );
   }
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "ovhcloud adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set OVH_ACCESS_KEY_ID + OVH_SECRET_ACCESS_KEY."
     );
   }

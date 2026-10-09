@@ -27,10 +27,8 @@ const SIGV4_MAX_EXPIRES_IN = 604_800;
 const expiresInError = (expiresIn: number): FilesError | undefined =>
   expiresIn > SIGV4_MAX_EXPIRES_IN
     ? new FilesError(
-        "Provider",
-        `Bun S3 error: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
-        undefined,
-        { permanent: true }
+        "Invalid",
+        `Bun S3 error: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
       )
     : undefined;
 
@@ -280,7 +278,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     );
     if (conflicting.length > 0) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `bun-s3 adapter: when \`client\` is provided, the client owns its bucket/region/credentials. Remove these conflicting options: ${conflicting.join(", ")}.`
       );
     }
@@ -299,7 +297,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       ).Bun;
       if (!bun?.S3Client) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "bun-s3 adapter: Bun.S3Client is only available in the Bun runtime. Pass `client: Bun.s3` or run under Bun."
         );
       }
@@ -486,7 +484,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           uploadId === undefined ? undefined : pending.get(uploadId);
         if (!entry) {
           throw new FilesError(
-            "Provider",
+            "Unsupported",
             "bun-s3: resumable session not found — bun-s3 uploads are in-process only and can't resume in a new instance."
           );
         }
@@ -496,13 +494,13 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "bun-s3") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on a bun-s3 adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
@@ -572,7 +570,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       if (signOpts.maxSize !== undefined) {
         return Promise.reject(
           new FilesError(
-            "Provider",
+            "Unsupported",
             "bun-s3 adapter: `maxSize` is not supported because Bun.s3 exposes presigned URLs, not S3 POST policy fields."
           )
         );
@@ -584,10 +582,8 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       if (signOpts.contentType !== undefined) {
         return Promise.reject(
           new FilesError(
-            "Provider",
-            "bun-s3 adapter: `contentType` is not supported because Bun.s3 presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use the `s3()` or `s3Fetch()` adapter, which sign it.",
-            undefined,
-            { permanent: true }
+            "Unsupported",
+            "bun-s3 adapter: `contentType` is not supported because Bun.s3 presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use the `s3()` or `s3Fetch()` adapter, which sign it."
           )
         );
       }

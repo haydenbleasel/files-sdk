@@ -417,6 +417,11 @@ describe("onedrive auth construction", () => {
   });
 
   test("missing auth + no env vars throws", () => {
-    expect(() => onedrive()).toThrow(/missing auth/iu);
+    expect(() => onedrive()).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: expect.stringMatching(/missing auth/iu),
+      })
+    );
   });
 });

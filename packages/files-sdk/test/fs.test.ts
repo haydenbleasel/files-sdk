@@ -57,6 +57,9 @@ describe("fs adapter", () => {
       expect(() => fsAdapter({} as unknown as { root: string })).toThrow(
         /missing `root`/u
       );
+      expect(() => fsAdapter({} as unknown as { root: string })).toThrow(
+        expect.objectContaining({ code: "Invalid" })
+      );
     });
 
     test("exposes name and resolved root", async () => {
@@ -126,18 +129,18 @@ describe("fs adapter", () => {
         files.upload("created.txt", "body", {
           condition: { type: "create" },
         })
-      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
       await expect(
         files.upload("replaced.txt", "body", {
           condition: { etag: "old-etag", type: "replace" },
         })
-      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
       await expect(
         files.download("record.txt", { condition: { etag: "read-etag" } })
-      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
       await expect(
         files.delete("record.txt", { condition: { etag: "delete-etag" } })
-      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
       await expect(
         files.copy("from.txt", "to.txt", {
           condition: {
@@ -145,7 +148,7 @@ describe("fs adapter", () => {
             source: { etag: "source-etag" },
           },
         })
-      ).rejects.toMatchObject({ code: "Provider", permanent: true });
+      ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
 
       expect(upload).toHaveBeenCalledTimes(0);
       expect(download).toHaveBeenCalledTimes(0);
@@ -783,7 +786,7 @@ describe("fs adapter", () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
       await expect(files.download("../outside.txt")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
     });
 
@@ -808,13 +811,13 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
 
       await expect(files.download("link.txt")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.head("link.txt")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.exists("link.txt")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
     });
 
@@ -882,12 +885,12 @@ describe("fs adapter", () => {
       await expect(
         files.download("../tenant-b/secret.txt")
       ).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(
         files.upload("../tenant-b/pwn.txt", "pwn")
       ).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(
         fsp.readFile(path.join(root, "tenant-b", "pwn.txt"), "utf-8")
@@ -935,13 +938,14 @@ describe("fs adapter", () => {
         calls = 0;
         // eslint-disable-next-line no-await-in-loop -- each key's single attempt is asserted in turn
         await expect(files.download(key, { retries })).rejects.toMatchObject({
-          code: "Provider",
+          code: "Invalid",
           permanent: true,
         });
         expect(calls).toBe(1);
       }
       // A key resolving to the root itself is permanent too.
       await expect(adapter.head("sub/..")).rejects.toMatchObject({
+        code: "Invalid",
         permanent: true,
       });
     });
@@ -950,7 +954,7 @@ describe("fs adapter", () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
       await expect(files.upload("../../etc/passwd", "x")).rejects.toMatchObject(
-        { code: "Provider" }
+        { code: "Invalid" }
       );
     });
 
@@ -958,7 +962,7 @@ describe("fs adapter", () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
       await expect(files.download("/etc/passwd")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
     });
 
@@ -967,7 +971,7 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
       await files.upload("a.txt", "x");
       await expect(files.copy("a.txt", "../outside.txt")).rejects.toMatchObject(
-        { code: "Provider" }
+        { code: "Invalid" }
       );
     });
 
@@ -977,7 +981,7 @@ describe("fs adapter", () => {
       // "." resolves to the root directory — there's no body at the root,
       // so this should be rejected before any fs operation runs.
       await expect(files.download(".")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
     });
 
@@ -990,29 +994,29 @@ describe("fs adapter", () => {
       // and delete("x.txt.meta.json") would wipe x.txt's sidecar. Reject
       // at the boundary instead.
       await expect(files.upload("x.txt.meta.json", "x")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.download("x.txt.meta.json")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.head("x.txt.meta.json")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.exists("x.txt.meta.json")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(files.delete("x.txt.meta.json")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(
         files.copy("a.txt", "a.txt.meta.json")
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Invalid" });
       await expect(files.url("x.txt.meta.json")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
       });
       await expect(
         files.signedUploadUrl("x.txt.meta.json", { expiresIn: 60 })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Invalid" });
     });
 
     test("rejects sidecar-suffix variants that alias on the host filesystem", async () => {
@@ -1035,11 +1039,11 @@ describe("fs adapter", () => {
       for (const variant of variants) {
         // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per sidecar-collision variant
         await expect(files.upload(variant, "x")).rejects.toMatchObject({
-          code: "Provider",
+          code: "Invalid",
         });
         // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per sidecar-collision variant
         await expect(files.delete(variant)).rejects.toMatchObject({
-          code: "Provider",
+          code: "Invalid",
         });
       }
     });
@@ -1096,7 +1100,7 @@ describe("fs adapter", () => {
       });
       await expect(
         files.url("a.txt", { responseContentDisposition: "attachment" })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
       await expectDispositionRefusal(
         files.url("a.txt", { responseContentDisposition: "attachment" })
       );
@@ -1107,7 +1111,7 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
       await expect(
         files.url("a.txt", { responseContentDisposition: "attachment" })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
       await expectDispositionRefusal(
         files.url("a.txt", { responseContentDisposition: "attachment" })
       );
@@ -1120,7 +1124,7 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
       await expect(
         files.signedUploadUrl("a.txt", { expiresIn: 60 })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
     });
 
     test("throws even with urlBaseUrl because upload controls are not signed", async () => {
@@ -1137,7 +1141,7 @@ describe("fs adapter", () => {
           expiresIn: 60,
           maxSize: 1024,
         })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
     });
 
     test("validates key path even without urlBaseUrl", async () => {
@@ -1150,7 +1154,7 @@ describe("fs adapter", () => {
       });
       await expect(
         files.signedUploadUrl("../escape", { expiresIn: 60 })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Invalid" });
     });
   });
 
@@ -1457,7 +1461,10 @@ describe("fs resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("a.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("a key ending in the reserved partial suffix is rejected", async () => {

@@ -178,10 +178,8 @@ const encodeKey = (key: string): string =>
         // and `..` can escape the bucket under path-style addressing. No
         // encoding survives normalization; fail closed instead.
         throw new FilesError(
-          "Provider",
-          `key contains a "${segment}" path segment, which the fetch client cannot address — URL normalization would silently target a different key. Rename the key, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`,
-          undefined,
-          { permanent: true }
+          "Invalid",
+          `key contains a "${segment}" path segment, which the fetch client cannot address — URL normalization would silently target a different key. Rename the key, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`
         );
       }
       return encodeURIComponent(segment);
@@ -419,10 +417,8 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
   ): Promise<string> => {
     if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
       throw new FilesError(
-        "Provider",
-        `${providerLabel}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`,
-        undefined,
-        { permanent: true }
+        "Invalid",
+        `${providerLabel}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
       );
     }
     const url = new URL(objectUrl(key));
@@ -580,13 +576,12 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     raw: client,
     async signedUploadUrl(key, signOpts: SignUploadOptions) {
       if (signOpts.maxSize !== undefined) {
-        // `permanent`: enforcing maxSize needs a presigned POST policy, which
-        // this client deliberately doesn't implement — retrying can't help.
+        // `Unsupported`: enforcing maxSize needs a presigned POST policy,
+        // which this client deliberately doesn't implement — retrying can't
+        // help.
         throw new FilesError(
-          "Provider",
-          `${providerLabel}: \`maxSize\` requires a presigned POST policy, which the fetch client does not implement. Enforce the limit at your application gateway before issuing the URL, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`,
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          `${providerLabel}: \`maxSize\` requires a presigned POST policy, which the fetch client does not implement. Enforce the limit at your application gateway before issuing the URL, or use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack).`
         );
       }
       const url = await presign("PUT", key, signOpts.expiresIn, {
@@ -604,14 +599,12 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     },
     async upload(key, body, uploadOpts) {
       if (isMultipartRequested(uploadOpts?.multipart)) {
-        // `permanent`: fail loudly instead of silently buffering what the
+        // `Unsupported`: fail loudly instead of silently buffering what the
         // caller asked to chunk — a single PUT caps at 5 GB and buffering a
         // body that size is exactly what multipart exists to avoid.
         throw new FilesError(
-          "Provider",
-          `${providerLabel}: multipart uploads are not supported by the fetch client (bodies go up as a single PUT). Use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack), or upload in a single request under the 5 GB PUT cap.`,
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          `${providerLabel}: multipart uploads are not supported by the fetch client (bodies go up as a single PUT). Use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack), or upload in a single request under the 5 GB PUT cap.`
         );
       }
       const { data, contentType } = await normalizeBody(

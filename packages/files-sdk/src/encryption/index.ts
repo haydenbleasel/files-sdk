@@ -66,10 +66,8 @@ type DownloadOp = Extract<FilesOperation, { kind: "download" }>;
 const importRawKey = (bytes: Uint8Array): Promise<CryptoKey> => {
   if (!RAW_KEY_BYTES.has(bytes.byteLength)) {
     throw new FilesError(
-      "Provider",
-      `encryption: a raw key must be 16, 24, or 32 bytes, received ${bytes.byteLength}`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `encryption: a raw key must be 16, 24, or 32 bytes, received ${bytes.byteLength}`
     );
   }
   return crypto.subtle.importKey(
@@ -250,10 +248,8 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
   ): Promise<StoredFile> => {
     if (op.options?.range) {
       throw new FilesError(
-        "Provider",
-        `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `encryption: range downloads are unsupported on encrypted objects ("${op.key}")`
       );
     }
     const file = await next(op);
@@ -377,10 +373,8 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       },
       signedUploadUrl: () => {
         throw new FilesError(
-          "Provider",
-          "encryption: signedUploadUrl() bypasses at-rest encryption (the client would store unencrypted bytes); upload through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "encryption: signedUploadUrl() bypasses at-rest encryption (the client would store unencrypted bytes); upload through the Files instance instead"
         );
       },
       upload: async (op, next) => {
@@ -388,10 +382,8 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
           op.options;
         if (uploadOptions?.control) {
           throw new FilesError(
-            "Provider",
-            `encryption: resumable uploads (\`control\`) are unsupported ("${op.key}") — each upload encrypts under a fresh random data key, so a session resumed in another process would splice two different ciphertexts into an object that can't be decrypted; upload without \`control\``,
-            undefined,
-            { permanent: true }
+            "Unsupported",
+            `encryption: resumable uploads (\`control\`) are unsupported ("${op.key}") — each upload encrypts under a fresh random data key, so a session resumed in another process would splice two different ciphertexts into an object that can't be decrypted; upload without \`control\``
           );
         }
         const normalized = await normalizeBody(
@@ -423,10 +415,8 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       },
       url: () => {
         throw new FilesError(
-          "Provider",
-          "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead"
         );
       },
     });

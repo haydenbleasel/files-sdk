@@ -79,13 +79,13 @@ export const createGcsResumableDriver = (params: {
     resume(session: ResumableUploadSession): string {
       if (session.provider !== "gcs") {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           `Cannot resume a ${session.provider} session on a GCS/Firebase adapter.`
         );
       }
       if (session.bucket !== bucket || session.key !== key) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "Resume token does not match this upload's bucket/key."
         );
       }

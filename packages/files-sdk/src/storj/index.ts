@@ -64,7 +64,7 @@ export const storj = (opts: StorjAdapterOptions): StorjAdapter => {
 
   if (!(accessKeyId && secretAccessKey)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "storj adapter: missing credentials. Pass `accessKeyId` + `secretAccessKey` or set STORJ_ACCESS_KEY_ID + STORJ_SECRET_ACCESS_KEY."
     );
   }

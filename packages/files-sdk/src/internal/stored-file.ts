@@ -38,7 +38,7 @@ const streamFromPromise = (
 
 const consumedError = (): FilesError =>
   new FilesError(
-    "Provider",
+    "Invalid",
     "StoredFile body was already consumed via stream(). For multi-format access, call text()/arrayBuffer()/blob() before stream() — those drain into a cache."
   );
 
@@ -167,7 +167,7 @@ export const createStoredFile = (
         // React Native, after the bytes were already materialized (a byte
         // accessor ran first, or the source has no native Blob form).
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "this runtime's Blob cannot wrap bytes (React Native). Call blob() before text()/arrayBuffer(), or read the download with arrayBuffer() instead.",
           error
         );

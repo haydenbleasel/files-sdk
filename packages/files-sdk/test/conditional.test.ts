@@ -328,18 +328,18 @@ describe("native conditional operations", () => {
     });
     await expect(
       files.upload("a", "v", { condition: { type: "create" } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.upload("a", "v", {
         condition: { etag: "etag", type: "replace" },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.download("a", { condition: { etag: "etag" } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.delete("a", { condition: { etag: "etag" } })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     await expect(
       files.copy("a", "b", {
         condition: {
@@ -347,7 +347,7 @@ describe("native conditional operations", () => {
           source: { etag: "etag" },
         },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(upload).not.toHaveBeenCalled();
     expect(download).not.toHaveBeenCalled();
     expect(deleteOne).not.toHaveBeenCalled();
@@ -375,7 +375,7 @@ describe("native conditional operations", () => {
           source: { etag: "etag" },
         },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
     expect(partialRun).not.toHaveBeenCalled();
   });
 
@@ -388,7 +388,7 @@ describe("native conditional operations", () => {
           files.upload("a", "v", {
             condition: { etag, type: "replace" },
           })
-        ).rejects.toMatchObject({ code: "Provider", permanent: true })
+        ).rejects.toMatchObject({ code: "Invalid", permanent: true })
       )
     );
     expect(harness.calls.replace).toHaveLength(0);
@@ -412,7 +412,7 @@ describe("native conditional operations", () => {
         Reflect.set(options, "condition", invalid);
         return expect(
           files.upload(`upload-${index}`, "plaintext", options)
-        ).rejects.toMatchObject({ code: "Provider", permanent: true });
+        ).rejects.toMatchObject({ code: "Invalid", permanent: true });
       })
     );
 
@@ -420,12 +420,12 @@ describe("native conditional operations", () => {
     Reflect.set(downloadOptions, "condition", false);
     await expect(
       files.download("download", downloadOptions)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
 
     const deleteOptions = {};
     Reflect.set(deleteOptions, "condition", 0);
     await expect(files.delete("delete", deleteOptions)).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       permanent: true,
     });
 
@@ -436,7 +436,7 @@ describe("native conditional operations", () => {
     });
     await expect(
       files.copy("source", "destination", copyOptions)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
 
     expect(ordinaryUpload).not.toHaveBeenCalled();
     expect(ordinaryDownload).not.toHaveBeenCalled();
@@ -469,30 +469,30 @@ describe("native conditional operations", () => {
         condition: { type: "create" },
         multipart: true,
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
 
     const uploadItem = { body: "v", key: "bulk-upload" };
     Reflect.set(uploadItem, "condition", { type: "create" });
     await expect(files.upload([uploadItem])).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       permanent: true,
     });
     const uploadOptions = {};
     Reflect.set(uploadOptions, "condition", { type: "create" });
     await expect(
       files.upload([{ body: "v", key: "bulk-options" }], uploadOptions)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
 
     const downloadOptions = {};
     Reflect.set(downloadOptions, "condition", { etag: "etag" });
     await expect(
       files.download(["bulk-download"], downloadOptions)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     const deleteOptions = {};
     Reflect.set(deleteOptions, "condition", { etag: "etag" });
     await expect(
       files.delete(["bulk-delete"], deleteOptions)
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
 
     expect(harness.calls.create).toHaveLength(0);
     expect(upload).not.toHaveBeenCalled();
@@ -517,7 +517,7 @@ describe("conditional option handling", () => {
         condition: { type: "create" },
         multipart: { partSize: 5 * 1024 * 1024 },
       })
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Invalid", permanent: true });
     expect(harness.calls.create).toEqual(["a"]);
   });
 
@@ -666,7 +666,7 @@ describe("conditional plugin boundary", () => {
     expect(failure).toBeInstanceOf(FilesError);
     expect(failure).toMatchObject({
       applied: false,
-      code: "Provider",
+      code: "Unsupported",
       message:
         "mirror: conditional delete is unsupported because the mirror write cannot share one native compare-and-set",
       permanent: true,

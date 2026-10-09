@@ -69,6 +69,17 @@ const mapCode = (code: string): FilesErrorCode => {
     case "ReadOnly": {
       return "ReadOnly";
     }
+    // The gateway's request validation, and an SDK `Invalid` error (which
+    // bulk results carry by their own code).
+    case "Invalid":
+    case "Validation": {
+      return "Invalid";
+    }
+    case "Unsupported": {
+      return "Unsupported";
+    }
+    // Includes any code a newer gateway adds, so an older client degrades
+    // to the generic failure instead of crashing.
     default: {
       return "Provider";
     }
@@ -78,7 +89,6 @@ const mapCode = (code: string): FilesErrorCode => {
 const reviveError = (wire: WireFilesError): FilesError =>
   new FilesError(mapCode(wire.code), wire.message, undefined, {
     aborted: wire.aborted,
-    permanent: wire.code === "Validation",
     timedOut: wire.timedOut,
   });
 

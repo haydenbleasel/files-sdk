@@ -21,7 +21,7 @@ export type ValidationReason = "key" | "size" | "type";
 
 /**
  * Thrown by {@link validation} when a write fails one of its rules. A regular
- * {@link FilesError} (`code: "Provider"`) with a {@link ValidationReason}
+ * {@link FilesError} (`code: "Invalid"`) with a {@link ValidationReason}
  * discriminant, so callers can branch on *which* rule failed without parsing
  * the message:
  *
@@ -37,7 +37,7 @@ export type ValidationReason = "key" | "size" | "type";
  *
  * Note the `signedUploadUrl()` fail-closed throw is **not** a
  * `ValidationError` — that's the plugin refusing an unenforceable operation,
- * not the file failing a rule.
+ * not the file failing a rule (it has `code: "Unsupported"`).
  */
 export class ValidationError extends FilesError {
   readonly reason: ValidationReason;
@@ -45,7 +45,7 @@ export class ValidationError extends FilesError {
   constructor(reason: ValidationReason, message: string) {
     // Permanent: the same write can only fail the same rule again, so it's
     // never retried — or re-sent by `failover()` to a backend that skips it.
-    super("Provider", message, undefined, { permanent: true });
+    super("Invalid", message);
     this.name = "ValidationError";
     this.reason = reason;
   }
@@ -295,10 +295,8 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
         assertKey(op.key);
         if (hasBodyRule) {
           throw new FilesError(
-            "Provider",
-            "validation: signedUploadUrl() bypasses size and type checks (the client uploads directly, never through the plugin); upload through the Files instance to enforce them",
-            undefined,
-            { permanent: true }
+            "Unsupported",
+            "validation: signedUploadUrl() bypasses size and type checks (the client uploads directly, never through the plugin); upload through the Files instance to enforce them"
           );
         }
         return next(op);

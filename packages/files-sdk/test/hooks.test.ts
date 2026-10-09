@@ -154,21 +154,21 @@ describe("Files hooks", () => {
     });
 
     await expect(files.download("")).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
       message: "key must be a non-empty string",
     });
 
     expect(recorder.order).toEqual(["error:download", "action:download:error"]);
     expect(recorder.errors[0]).toMatchObject({
       error: expect.objectContaining({
-        code: "Provider",
+        code: "Invalid",
         message: "key must be a non-empty string",
       }),
       key: "",
       type: "download",
     });
     expect(recorder.actions[0]).toMatchObject({
-      error: expect.objectContaining({ code: "Provider" }),
+      error: expect.objectContaining({ code: "Invalid" }),
       key: "",
       status: "error",
       type: "download",

@@ -39,7 +39,7 @@ Each adapter's Compatibility section marks whether it copies natively, falls bac
 
 ## Providers without copy
 
-Some backends have no way to copy to a caller-chosen key. Convex, for instance, assigns immutable storage ids, so `copy` throws `FilesError` with `code: "Provider"` rather than silently misbehaving. When you need the operation anyway, `download()` the source and `upload()` it back under a new key, or reach for the [escape hatch](/docs/escape-hatch).
+Some backends have no way to copy to a caller-chosen key. Convex, for instance, assigns immutable storage ids, so `copy` throws `FilesError` with `code: "Unsupported"` rather than silently misbehaving. When you need the operation anyway, `download()` the source and `upload()` it back under a new key, or reach for the [escape hatch](/docs/escape-hatch).
 
 ## Options
 

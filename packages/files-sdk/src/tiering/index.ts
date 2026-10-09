@@ -523,10 +523,10 @@ const mergePrefixes = (pages: (TierPage | undefined)[]): string[] => {
  */
 export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
   if (!options?.cold) {
-    throw new FilesError("Provider", "tiering: a cold adapter is required");
+    throw new FilesError("Invalid", "tiering: a cold adapter is required");
   }
   if (!isFunction(options.route)) {
-    throw new FilesError("Provider", "tiering: a route function is required");
+    throw new FilesError("Invalid", "tiering: a route function is required");
   }
   const { route } = options;
   const fallback = options.fallback ?? false;
@@ -659,7 +659,7 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     const parsed = fresh ? undefined : decodeCursor(rawCursor);
     if (!fresh && parsed === undefined) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         "tiering: invalid list cursor — pass back the cursor a tiering list returned"
       );
     }

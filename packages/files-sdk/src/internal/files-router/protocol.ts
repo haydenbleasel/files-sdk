@@ -259,6 +259,7 @@ export type WireErrorCode =
   | "Conflict"
   | "ReadOnly"
   | "Validation"
+  | "Unsupported"
   | "Provider";
 
 export type WireErrorReason =

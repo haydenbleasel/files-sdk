@@ -288,6 +288,9 @@ describe("supabase adapter", () => {
       expect(() => supabase({ bucket: BUCKET })).toThrow(
         /missing credentials/u
       );
+      expect(() => supabase({ bucket: BUCKET })).toThrow(
+        expect.objectContaining({ code: "Invalid" })
+      );
     });
 
     test("constructs StorageClient with /storage/v1 suffix", () => {
@@ -732,7 +735,7 @@ describe("supabase adapter", () => {
     test("rejects a non-slash delimiter", async () => {
       await expect(
         makeAdapter().list({ delimiter: "|" })
-      ).rejects.toMatchObject({ code: "Provider" });
+      ).rejects.toMatchObject({ code: "Unsupported" });
     });
 
     test("emits the V2 cursor when the server reports more", async () => {
@@ -898,7 +901,10 @@ describe("supabase adapter", () => {
       const adapter = makeAdapter();
       await expect(
         adapter.url("a.txt", { responseContentDisposition: "inline" })
-      ).rejects.toThrow(/only force an attachment/u);
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/only force an attachment/u),
+      });
       await expectDispositionRefusal(
         adapter.url("a.txt", { responseContentDisposition: "inline" })
       );
@@ -960,7 +966,10 @@ describe("supabase adapter", () => {
           contentType: "image/png",
           expiresIn: 60,
         })
-      ).rejects.toThrow(/`contentType` is not supported/u);
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringMatching(/`contentType` is not supported/u),
+      });
       expect(createSignedUploadUrlMock).not.toHaveBeenCalled();
     });
 
@@ -1650,7 +1659,10 @@ describe("supabase resumable uploads (TUS)", () => {
     });
     await expect(
       files.upload("x", "data", { control: new UploadControl() })
-    ).rejects.toThrow(/require `url` \+ `key`/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/require `url` \+ `key`/u),
+    });
   });
 
   test("a session response missing Location throws", async () => {
@@ -1723,7 +1735,10 @@ describe("supabase resumable uploads (TUS)", () => {
     };
     await expect(
       files.upload("file", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 
   test("resuming a non-supabase token throws", async () => {

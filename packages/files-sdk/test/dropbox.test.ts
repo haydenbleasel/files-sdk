@@ -346,17 +346,26 @@ afterEach(() => {
 describe("dropbox adapter", () => {
   test("missing auth throws at construction", () => {
     expect(() => dropbox({})).toThrow(/missing auth/iu);
+    expect(() => dropbox({})).toThrow(
+      expect.objectContaining({ code: "Invalid" })
+    );
   });
 
   test("accessToken + refreshToken throws at construction", () => {
     expect(() =>
       dropbox({ accessToken: "x", appKey: "a", refreshToken: "r" })
     ).toThrow(/exactly one/iu);
+    expect(() =>
+      dropbox({ accessToken: "x", appKey: "a", refreshToken: "r" })
+    ).toThrow(expect.objectContaining({ code: "Invalid" }));
   });
 
   test("refreshToken without appKey throws at construction", () => {
     expect(() => dropbox({ refreshToken: "r" })).toThrow(
       /refreshToken.*appKey/iu
+    );
+    expect(() => dropbox({ refreshToken: "r" })).toThrow(
+      expect.objectContaining({ code: "Invalid" })
     );
   });
 
@@ -661,14 +670,14 @@ describe("dropbox adapter", () => {
     // `delimiter: "slash"` lets the Files wrapper refuse it up front…
     const files = new Files({ adapter: dropbox(baseOpts) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(/only the "\/" delimiter/u),
     });
     // …and the adapter still guards a direct call.
     await expect(
       dropbox(baseOpts).list({ delimiter: "|" })
     ).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringMatching(
         /^dropbox: only supports the "\/" delimiter/u
       ),
@@ -733,7 +742,10 @@ describe("dropbox adapter", () => {
     await files.upload("a.txt", "hi");
     await expect(
       files.url("a.txt", { responseContentDisposition: "attachment" })
-    ).rejects.toThrow(/responseContentDisposition/u);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/responseContentDisposition/u),
+    });
     await expectDispositionRefusal(
       files.url("a.txt", { responseContentDisposition: "attachment" })
     );
@@ -742,9 +754,12 @@ describe("dropbox adapter", () => {
   test("url throws when expiresIn exceeds 4-hour cap", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("a.txt", "hi");
-    await expect(files.url("a.txt", { expiresIn: 86_400 })).rejects.toThrow(
-      /14400|4h|maximum/u
-    );
+    await expect(
+      files.url("a.txt", { expiresIn: 86_400 })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/14400|4h|maximum/u),
+    });
   });
 
   test("permanent-link modes ignore expiresIn instead of capping it", async () => {
@@ -802,7 +817,10 @@ describe("dropbox adapter", () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await expect(
       files.signedUploadUrl("a.txt", { expiresIn: 3600 })
-    ).rejects.toThrow(/signedUploadUrl is not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/signedUploadUrl is not supported/iu),
+    });
   });
 
   test("rootFolderPath nests virtual keys under the configured folder", async () => {
@@ -1726,7 +1744,10 @@ describe("dropbox resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("doc.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched path throws", async () => {
@@ -1740,7 +1761,10 @@ describe("dropbox resumable uploads", () => {
     };
     await expect(
       files.upload("doc.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/does not match/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
+    });
   });
 });
 

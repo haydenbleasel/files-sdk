@@ -702,7 +702,7 @@ describe("r2 adapter — Workers binding path", () => {
     expect(got.type).toBe("text/plain");
   });
 
-  test("url() with responseContentDisposition on a plain binding throws Provider", async () => {
+  test("url() with responseContentDisposition on a plain binding throws Unsupported", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     await files.upload("a.txt", "x");
@@ -710,7 +710,7 @@ describe("r2 adapter — Workers binding path", () => {
       await files.url("a.txt", { responseContentDisposition: "attachment" });
       throw new Error("should have thrown");
     } catch (error) {
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(/HTTP credentials/u);
     }
     await expectDispositionRefusal(
@@ -718,25 +718,25 @@ describe("r2 adapter — Workers binding path", () => {
     );
   });
 
-  test("signedUploadUrl from a plain binding throws Provider", async () => {
+  test("signedUploadUrl from a plain binding throws Unsupported", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     try {
       await files.signedUploadUrl("a.txt", { expiresIn: 60 });
       throw new Error("should have thrown");
     } catch (error) {
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
     }
   });
 
-  test("url() from a plain binding (no publicBaseUrl, no HTTP creds) throws Provider", async () => {
+  test("url() from a plain binding (no publicBaseUrl, no HTTP creds) throws Unsupported", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });
     try {
       await files.url("a.txt");
       throw new Error("should have thrown");
     } catch (error) {
-      expect((error as FilesError).code).toBe("Provider");
+      expect((error as FilesError).code).toBe("Unsupported");
       expect((error as FilesError).message).toMatch(
         /publicBaseUrl|HTTP credentials/u
       );
@@ -798,7 +798,7 @@ describe("r2 adapter — Workers binding path", () => {
     expect(new Files({ adapter: hybrid }).capabilities.signedUrl).toEqual(cap);
     await expect(
       hybrid.url("a.txt", { expiresIn: 604_801 })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Invalid" });
     expect(
       new Files({ adapter: makeAdapter() }).capabilities.signedUrl
     ).toEqual(cap);

@@ -144,7 +144,7 @@ const DECODER = new TextDecoder();
 const assertFits = (value: number, what: string): void => {
   if (value >= MAX_UINT32) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       `zip: ${what} exceeds 4 GiB, which needs ZIP64 — unsupported by this plugin`
     );
   }
@@ -201,7 +201,7 @@ const clampDosTime = (epochMs: number | undefined): number =>
  */
 const assertSafeEntryName = (name: string, byteLength: number): void => {
   const reject = (why: string): never => {
-    throw new FilesError("Provider", `zip: entry name "${name}" ${why}`);
+    throw new FilesError("Invalid", `zip: entry name "${name}" ${why}`);
   };
   if (byteLength > MAX_UINT16) {
     reject("is longer than the ZIP format's 65535-byte limit");
@@ -247,7 +247,7 @@ const resolveEntries = async (
   // count lives in a ZIP64 record".
   if (keys.length >= MAX_UINT16) {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       `zip: ${keys.length} entries reach the ZIP format's limit of 65535 — ZIP64 is unsupported by this plugin`
     );
   }
@@ -257,7 +257,7 @@ const resolveEntries = async (
     assertSafeEntryName(name, ENCODER.encode(name).byteLength);
     if (seen.has(name)) {
       throw new FilesError(
-        "Provider",
+        "Invalid",
         `zip: two keys map to the same entry name "${name}" — disambiguate via the name option`
       );
     }
@@ -391,14 +391,14 @@ interface ParsedEntry {
 
 const corrupt = (key: string, why: string, cause?: unknown): FilesError =>
   new FilesError(
-    "Provider",
+    "Invalid",
     `zip: "${key}" is not a valid ZIP archive (${why})`,
     cause
   );
 
 const zip64Unsupported = (key: string): FilesError =>
   new FilesError(
-    "Provider",
+    "Unsupported",
     `zip: "${key}" is a ZIP64 archive, which is unsupported by this plugin`
   );
 
@@ -443,7 +443,7 @@ const parseCentralDirectory = (
     const flags = view.getUint16(at + 8, true);
     if ((flags & FLAG_ENCRYPTED) !== 0) {
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         `zip: "${key}" contains encrypted entries, which are unsupported`
       );
     }
@@ -559,7 +559,7 @@ const extractEntry = async (
   const data = bytes.subarray(start, start + entry.compressedSize);
   if (entry.size > maxEntrySize) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       `zip: entry "${entry.name}" in "${key}" exceeds the configured unzip size limit`
     );
   }
@@ -577,7 +577,7 @@ const extractEntry = async (
     }
   } else {
     throw new FilesError(
-      "Provider",
+      "Unsupported",
       `zip: entry "${entry.name}" in "${key}" uses unsupported compression method ${entry.method}`
     );
   }
@@ -665,7 +665,7 @@ export const zip = (): FilesPlugin<ZipApi> => ({
         const entries = parseCentralDirectory(bytes, key);
         if (entries.length > maxEntries) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             `zip: "${key}" has ${entries.length} entries, exceeding the configured unzip entry limit`
           );
         }
@@ -691,7 +691,7 @@ export const zip = (): FilesPlugin<ZipApi> => ({
           // same rule `zip()` applies when writing.
           if (seen.has(entry.name)) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `zip: "${key}" has more than one entry named "${entry.name}"`
             );
           }
@@ -699,7 +699,7 @@ export const zip = (): FilesPlugin<ZipApi> => ({
           totalSize += entry.size;
           if (totalSize > maxTotalSize) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `zip: "${key}" exceeds the configured unzip total size limit`
             );
           }

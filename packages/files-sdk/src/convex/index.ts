@@ -139,7 +139,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
   // context, so feature-detect the one member every context must carry.
   if (!ctx || !isFunction(ctx.storage?.getUrl)) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "convex adapter: `ctx` is required. Pass the Convex function context — `convex({ ctx })` — from inside an action, mutation, or query."
     );
   }
@@ -189,7 +189,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
   const loadBytes = async (key: ConvexStorageId): Promise<Uint8Array> => {
     if (!isFunction(storage.get)) {
       throw new FilesError(
-        "Provider",
+        "Unsupported",
         `convex: reading a file body ${REQUIRES_ACTION}`
       );
     }
@@ -217,7 +217,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     copy(_from, _to): Promise<void> {
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "convex: copy() is not supported. Convex assigns immutable storage ids and cannot copy to a caller-chosen key — download() the source and upload() it back, then track the new id."
         )
       );
@@ -226,7 +226,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     async delete(key) {
       if (!isFunction(storage.delete)) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "convex: delete() requires a mutation or action context (ctx.storage.delete); it is unavailable in queries."
         );
       }
@@ -245,7 +245,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     async download(key): Promise<StoredFile> {
       if (!isFunction(storage.get)) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           `convex: download() ${REQUIRES_ACTION}`
         );
       }
@@ -325,7 +325,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
     async list(options): Promise<ListResult> {
       if (!ctx.db) {
         throw new FilesError(
-          "Provider",
+          "Unsupported",
           "convex: list() requires a query or mutation context (ctx.db.system); it is unavailable in actions. Call files.list() from a Convex query or mutation."
         );
       }
@@ -370,14 +370,14 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       if (!isFunction(storage.generateUploadUrl)) {
         return Promise.reject(
           new FilesError(
-            "Provider",
+            "Unsupported",
             "convex: signedUploadUrl() requires a mutation or action context (ctx.storage.generateUploadUrl); it is unavailable in queries."
           )
         );
       }
       return Promise.reject(
         new FilesError(
-          "Provider",
+          "Unsupported",
           "convex: signedUploadUrl() is not supported. Convex generateUploadUrl() cannot bind the caller's key, expiresIn, maxSize, minSize, or contentType into the issued upload capability; upload through a Convex action with files.upload() instead."
         )
       );
@@ -387,7 +387,10 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       // (this adapter declares neither `metadata` nor `cacheControl`)
       // — Convex's _storage table is fixed to contentType/sha256/size.
       if (!isFunction(storage.store)) {
-        throw new FilesError("Provider", `convex: upload() ${REQUIRES_ACTION}`);
+        throw new FilesError(
+          "Unsupported",
+          `convex: upload() ${REQUIRES_ACTION}`
+        );
       }
       // The caller-supplied `key` is ignored: Convex assigns the id. It is
       // returned as `UploadResult.key`.

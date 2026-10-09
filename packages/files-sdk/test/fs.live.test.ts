@@ -138,6 +138,6 @@ liveDescribe("fs adapter (live)", () => {
         contentType: "text/plain",
         expiresIn: 60,
       })
-    ).rejects.toMatchObject({ code: "Provider" });
+    ).rejects.toMatchObject({ code: "Unsupported" });
   });
 });

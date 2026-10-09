@@ -4,7 +4,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import type { CreateFilesRouterOptions } from "../src/api/index.js";
 import { createFilesRouter } from "../src/api/index.js";
 import type { Adapter } from "../src/index.js";
-import { createFiles } from "../src/index.js";
+import { createFiles, FilesError } from "../src/index.js";
 import {
   signToken,
   verifyToken,
@@ -24,12 +24,11 @@ const signing = (maxExpiresIn?: number): Adapter =>
     },
   });
 
-const throwingSign = (): Adapter => ({
+const throwingSign = (refusal: Error): Adapter => ({
   ...withCapabilities(fakeAdapter(), {
     signedUpload: { contentType: true, maxSize: true, supported: true },
   }),
-  signedUploadUrl: () =>
-    Promise.reject(new Error("cannot enforce size at the signature")),
+  signedUploadUrl: () => Promise.reject(refusal),
 });
 
 const mk = (
@@ -258,23 +257,36 @@ describe("origin checks", () => {
 });
 
 describe("upload edges", () => {
-  test("presign falls back to proxy when signing throws (and clamps expiry)", async () => {
-    const router = mk({
-      adapter: throwingSign(),
-      allowedOrigins: () => true,
-      authorize: () => ({ maxExpiresIn: 60 }),
-      operations: ["upload"],
-    });
-    const res = await router.handle(
-      post({
-        files: [{ name: "noext", size: 3, type: "text/plain" }],
-        op: "presign",
+  test("presign falls back to proxy when signing refuses, and surfaces a failure", async () => {
+    const presign = (error: Error) =>
+      mk({
+        adapter: throwingSign(error),
+        allowedOrigins: () => true,
+        authorize: () => ({ maxExpiresIn: 60 }),
+        operations: ["upload"],
+      }).handle(
+        post({
+          files: [{ name: "noext", size: 3, type: "text/plain" }],
+          op: "presign",
+        })
+      );
+    // A deterministic refusal the capabilities didn't predict has a working
+    // path: the proxy.
+    const targets = await Promise.all(
+      (["Unsupported", "Invalid"] as const).map(async (code) => {
+        const res = await presign(new FilesError(code, "can't bind that"));
+        const { uploads } = (await res.json()) as {
+          uploads: { target: { url: string } }[];
+        };
+        return first(uploads).target.url;
       })
     );
-    const { uploads } = (await res.json()) as {
-      uploads: { target: { url: string } }[];
-    };
-    expect(first(uploads).target.url).toContain("op=proxy");
+    for (const url of targets) {
+      expect(url).toContain("op=proxy");
+    }
+    // A backend failure is a real error, not a reason to proxy.
+    const failed = await presign(new Error("storage is down"));
+    expect(failed.status).toBe(500);
   });
 
   test("presign follows signedUpload: what it can't bind goes through the proxy", async () => {

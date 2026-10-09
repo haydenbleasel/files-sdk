@@ -489,6 +489,9 @@ describe("azure adapter", () => {
       expect(() =>
         azure({ accountKey: "k", accountName: ACCOUNT, container: "" })
       ).toThrow(/container/u);
+      expect(() =>
+        azure({ accountKey: "k", accountName: ACCOUNT, container: "" })
+      ).toThrow(expect.objectContaining({ code: "Invalid" }));
     });
 
     test("missing credentials throws with a helpful message", () => {
@@ -1804,6 +1807,7 @@ describe("azure adapter", () => {
         .catch((error) => error);
       expect(rejection).toBeInstanceOf(FilesError);
       expect((rejection as FilesError).message).toMatch(/7-day/u);
+      expect((rejection as FilesError).code).toBe("Invalid");
       expect(getUserDelegationKeyMock).not.toHaveBeenCalled();
       await expect(
         adapter.signedUploadUrl("a.txt", { expiresIn: SEVEN_DAYS_S + 1 })
@@ -2023,6 +2027,7 @@ describe("azure adapter", () => {
       } catch (error) {
         expect(error).toBeInstanceOf(FilesError);
         expect((error as FilesError).message).toMatch(/maxSize/u);
+        expect((error as FilesError).code).toBe("Unsupported");
       }
     });
 
@@ -2514,7 +2519,10 @@ describe("azure resumable uploads", () => {
     } as ResumableUploadSession;
     await expect(
       files.upload("big.bin", "data", { control: UploadControl.from(token) })
-    ).rejects.toThrow(/Cannot resume a gcs/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/Cannot resume a gcs/u),
+    });
   });
 
   test("resuming a mismatched container/blob throws", async () => {

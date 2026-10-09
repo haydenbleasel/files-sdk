@@ -349,7 +349,7 @@ describe("useFiles", () => {
     });
     const [entry] = result.current.uploads;
     expect(entry?.status).toBe("error");
-    expect(entry?.error?.code).toBe("Provider");
+    expect(entry?.error?.code).toBe("Invalid");
     expect(result.current.isUploading).toBe(false);
   });
 

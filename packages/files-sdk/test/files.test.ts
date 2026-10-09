@@ -747,7 +747,7 @@ describe("Files class", () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("a/1.txt", "1");
     await expect(files.list({ delimiter: "/" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Unsupported",
     });
   });
 
@@ -756,7 +756,7 @@ describe("Files class", () => {
       adapter: fakeAdapter({ supportsDelimiter: true }),
     });
     await expect(files.list({ delimiter: "" })).rejects.toMatchObject({
-      code: "Provider",
+      code: "Invalid",
     });
   });
 
@@ -2287,7 +2287,7 @@ describe("capability gates run before plugins", () => {
     const failure = await files
       .download("a.txt", { range: { start: 0 } })
       .catch((error: unknown) => error);
-    expect(failure).toMatchObject({ code: "Provider", permanent: true });
+    expect(failure).toMatchObject({ code: "Unsupported", permanent: true });
     expect((failure as Error).message).toBe(
       'range downloads are not supported by the "no-ranges" plugin'
     );
@@ -2464,49 +2464,50 @@ describe("SDK-side gates", () => {
       }),
     });
     await files.upload("r.txt", "0123456789");
-    const permanent = { code: "Provider", permanent: true };
+    // A capability the adapter lacks is `Unsupported`; a malformed call is
+    // `Invalid`. Both are permanent, so neither is retried.
+    const unsupported = { code: "Unsupported", permanent: true };
+    const invalid = { code: "Invalid", permanent: true };
     await expect(
       files.download("r.txt", { range: { start: 0 } })
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(unsupported);
     await expect(
       new Files({ adapter: fakeAdapter({ supportsRange: true }) }).download(
         "r.txt",
         { range: { start: -1 } }
       )
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(invalid);
     await expect(
       new Files({ adapter: fakeAdapter({ supportsRange: true }) }).download(
         "r.txt",
         { range: { end: 0, start: 2 } }
       )
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(invalid);
     await expect(
       bare.upload("m.txt", "x", { metadata: { a: "1" } })
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(unsupported);
     await expect(
       bare.upload("c.txt", "x", { cacheControl: "no-store" })
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(unsupported);
     await expect(files.list({ delimiter: "/" })).rejects.toMatchObject(
-      permanent
+      unsupported
     );
-    await expect(files.list({ delimiter: "" })).rejects.toMatchObject(
-      permanent
-    );
+    await expect(files.list({ delimiter: "" })).rejects.toMatchObject(invalid);
     await expect(
       files.upload("big.bin", "x", { control: new UploadControl() })
-    ).rejects.toMatchObject(permanent);
-    await expect(files.upload("", "x")).rejects.toMatchObject(permanent);
-    await expect(files.download("a\0b")).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(unsupported);
+    await expect(files.upload("", "x")).rejects.toMatchObject(invalid);
+    await expect(files.download("a\0b")).rejects.toMatchObject(invalid);
     await expect(
       new Files({ adapter: fakeAdapter(), prefix: "users" }).download("../x")
-    ).rejects.toMatchObject(permanent);
+    ).rejects.toMatchObject(invalid);
     expect(
       () =>
         new Files({
           adapter: fakeAdapter(),
           prefix: 42 as unknown as string,
         })
-    ).toThrow(expect.objectContaining(permanent));
+    ).toThrow(expect.objectContaining(invalid));
   });
 
   test("a plugin-injected range is gated on bulk downloads too", async () => {

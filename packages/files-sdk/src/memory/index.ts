@@ -383,7 +383,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
           uploadId === undefined ? undefined : pending.get(uploadId);
         if (!entry) {
           throw new FilesError(
-            "Provider",
+            "Invalid",
             "memory: resumable session not found — memory uploads are in-process only and can't resume in a new instance."
           );
         }
@@ -393,13 +393,13 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         adopt(session: ResumableUploadSession) {
           if (session.provider !== "memory") {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               `Cannot resume a ${session.provider} session on a memory adapter.`
             );
           }
           if (session.key !== key) {
             throw new FilesError(
-              "Provider",
+              "Invalid",
               "Resume token does not match this upload's key."
             );
           }
