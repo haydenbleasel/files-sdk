@@ -172,14 +172,13 @@ export default defineConfig({
     // than `/docs`: only the root tab hides the other tabs' sections from its
     // sidebar, so the general pages (installation, usage, concepts, …) don't
     // repeat every area as a sidebar group. `href` keeps it linking to /docs.
-    // The AI pages have no tab and sit in the Docs sidebar.
+    // The AI and CLI pages have no tab and sit in the Docs sidebar.
     tabs: [
       { href: "/docs", label: "Docs", path: "/" },
       { label: "API", path: "/docs/api" },
       { label: "Adapters", path: "/docs/adapters" },
       { label: "Plugins", path: "/docs/plugins" },
       { label: "UI", path: "/docs/ui" },
-      { label: "CLI", path: "/docs/cli" },
       { label: "Changelog", path: "/changelog" },
     ],
   },
