@@ -20,7 +20,7 @@ Design intent that decides most API questions:
 - **Common subset, not lowest common denominator.** Core exposes only what every adapter can do cleanly. Provider-specific features go behind `files.raw` (the native client). "Use `raw`" beats "add it to the core".
 - **Fail loud, never degrade silently.** If an adapter can't honor an option (`range`, `delimiter`, `metadata`, `cacheControl`, `control`), the `Files` wrapper throws before any provider I/O (and before any plugin runs), gated on the adapter's declared `capabilities` object. Plugins that can't enforce a guarantee fail closed.
 - **Web-standard I/O.** Bodies are `Blob`/`File`/`ReadableStream`/bytes/`string`. No provider types leak into the public surface.
-- **Errors are normalized** to `FilesError` with codes `NotFound | Unauthorized | Conflict | Provider` (plus the SDK-native `ReadOnly`), original error in `cause`.
+- **Errors are normalized** to `FilesError`, original error in `cause`. A provider's answer maps to `NotFound | Unauthorized | Conflict | Provider` (`ProviderFilesErrorCode`); the SDK itself throws `Invalid` (the call is wrong: bad argument, contradictory option, bad config), `Unsupported` (well-formed, but this adapter/mode/plugin stack can't do it), and `ReadOnly`. Those three are deterministic, never retried, and map to a gateway `422` (`ReadOnly` → `403`); only `Provider` retries. Don't throw `Provider` for a refusal.
 - **Optional peers are never bundled and never statically imported** from a path that a consumer might take without installing them. See "Bundling".
 
 ## Commands
