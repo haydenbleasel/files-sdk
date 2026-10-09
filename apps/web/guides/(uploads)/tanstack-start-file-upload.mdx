@@ -1,0 +1,281 @@
+---
+title: Upload files in TanStack Start with server routes and streaming
+description: A TanStack Start server route that sends uploads straight from the browser to S3 under a size-capped POST policy, or streams them through your server.
+sidebar:
+  label: TanStack Start uploads
+seo:
+  title: TanStack Start file uploads and streaming
+related:
+  - /guides/presigned-upload-validation
+  - /guides/nextjs-r2-file-upload
+  - /guides/vercel-large-file-upload
+  - /docs/ui/server/tanstack-start
+  - /docs/adapters/s3
+---
+
+One route at `/api/files`, mounted with `files-sdk/tanstack-start`, handles both upload styles. With `upload(file)`, the route signs an S3 `POST` form and S3 itself enforces the size cap when the browser sends the file. With `upload(key, file)`, the file goes to the route, and the gateway pipes the request body into an S3 multipart upload a few parts at a time. Default to the first, and use the second only when the bytes must pass through your server.
+
+The catch is server functions. TanStack Start parses a `multipart/form-data` server function call with `request.formData()` before your validator runs, so a file sent that way is read in full before your code can check its size. Send file bytes to a server route, not a server function.
+
+## Before you start
+
+- An AWS account with an S3 bucket (this guide calls it `uploads`) and credentials whose policy allows `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:AbortMultipartUpload` on the bucket's objects, plus `s3:ListBucket` on the bucket.
+- A TanStack Start app with an auth library that can resolve the signed-in user from request headers.
+- A long-running Node.js server deployment. The streamed path keeps a connection open for the whole upload, which serverless hosts limit (see [Limits and tradeoffs](#limits-and-tradeoffs)).
+- Written against files-sdk 2.6, `@tanstack/react-start` 1.168, `@tanstack/react-router` 1.170, and React 19.3.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
+```
+
+`@aws-sdk/s3-presigned-post` builds the `POST` policy for the direct path. `@aws-sdk/lib-storage` uploads a stream of unknown length as multipart, which the streamed path needs.
+
+## Choose an upload path
+
+Both paths go through the same route and the same `authorize` hook. They differ in where the bytes travel and what enforces the limits.
+
+|  | `upload(file)` (keyless) | `upload(key, file)` (keyed) |
+| --- | --- | --- |
+| Requests | Presign to `/api/files`, `POST` to S3, then complete | One `PUT /api/files?op=upload&key=…` |
+| Bytes through your server | No | Yes, streamed |
+| Who picks the key | The server: `<prefix><uuid>.<ext>` | The client, inside its `keyPrefix` |
+| `maxUploadSize` enforced by | S3, through the policy's `content-length-range` | The gateway, which counts bytes and aborts |
+| Content-Type | Bound by the policy to the type the browser claimed | Whatever header the browser sends |
+| Bucket CORS rule | Required | Not needed |
+| Server memory per upload | None | A few 5 MiB parts at a time |
+
+Pick the keyed path when the bytes must pass through code you run: a plugin that reads the body, such as [`contentType()`](/docs/plugins/content-type) sniffing or [`encryption()`](/docs/plugins/encryption), a bucket the browser can't reach, or a bucket where you can't add a CORS rule. Otherwise the keyless path costs your server nothing per byte.
+
+## Add the credentials
+
+```bash title=".env"
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+# Signs the presign → complete token. Generate with: openssl rand -hex 32
+FILES_API_SECRET=a-long-random-string
+```
+
+The S3 adapter uses the AWS credential chain, so on infrastructure with an IAM role you can leave the two `AWS_*` keys out. Set `FILES_API_SECRET` to the same value on every instance. Without it, each process signs upload tokens with its own random secret, and a complete request that lands on a different instance fails with `upload token signature`.
+
+## Mount the gateway as a server route
+
+A route file with a `server.handlers` object and no component is an API route in TanStack Start. `createRouteHandler` from `files-sdk/tanstack-start` returns that object: `GET` serves downloads, `POST` the JSON operations, and `PUT` the upload bytes.
+
+```ts title="src/routes/api/files.ts" lineNumbers
+import { createFileRoute } from "@tanstack/react-router";
+import { FilesError, createFiles } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { s3 } from "files-sdk/s3";
+import { createRouteHandler } from "files-sdk/tanstack-start";
+
+import { getSession } from "../../lib/auth";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+// The verbs this app's UI calls. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "download",
+  "delete",
+]);
+
+const router = createFilesRouter({
+  files,
+  maxUploadSize: 100 * 1024 * 1024, // 100 MiB, on both upload paths
+  authorize: async ({ operation, key, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    // A keyed upload streams through this server. Keep it to one folder.
+    if (operation === "upload" && key && !key.startsWith("videos/")) {
+      throw new FilesError("ReadOnly", "Streamed uploads go under videos/");
+    }
+    return { keyPrefix: `users/${session.user.id}/`, maxExpiresIn: 300 };
+  },
+});
+
+export const Route = createFileRoute("/api/files")({
+  server: { handlers: createRouteHandler(router) },
+});
+```
+
+`getSession` stands in for your auth library: Better Auth's `auth.api.getSession({ headers })`, Clerk's request helpers, or your own cookie check. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+What the route does with each request:
+
+- **`authorize` runs first, every time.** Throw a `FilesError`: `Unauthorized` becomes a `401` and `ReadOnly` a `403`. A plain `Error` becomes a `500`. [Authorization](/docs/ui/server/authorization) covers the rest of the returned constraint.
+- **`key` tells the two paths apart.** A presign request authorizes as `upload` with no `key`, because the server mints it. A keyed `PUT` authorizes as `upload` with the client's key, before the prefix is added. The hook above lets users stream only into `videos/`.
+- **`maxUploadSize` applies to both paths.** On the keyless path it goes into the S3 policy. On the keyed path the gateway counts bytes as they stream.
+- **TanStack Start doesn't read the body for you.** Its server-route dispatch passes the `Request` to your handler untouched, and the gateway hands `request.body` to the adapter as a stream.
+
+## Let the browser POST to S3
+
+With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. The policy inside those fields fixes the key, requires the `Content-Type` the browser claimed, and allows between 1 byte and `maxUploadSize`. S3 checks each condition when the form arrives.
+
+The browser sends that form cross-origin, so the bucket needs a CORS rule. In the S3 console, open the bucket's **Permissions** tab and edit **Cross-origin resource sharing (CORS)**:
+
+```json lineNumbers
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://app.example.com"],
+    "AllowedMethods": ["POST"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+`POST` is the only method the browser uses against S3 here. The upload is sent with `XMLHttpRequest` so it can report progress, and an `XMLHttpRequest` with upload listeners always sends a preflight `OPTIONS` first. That preflight is what this rule answers. Downloads are top-level navigations to a signed URL, which need no CORS rule.
+
+## Build the upload page
+
+```tsx title="src/routes/files.tsx" lineNumbers
+import { createFileRoute } from "@tanstack/react-router";
+import { useFiles, useList } from "files-sdk/react";
+import type { ChangeEvent } from "react";
+
+export const Route = createFileRoute("/files")({
+  component: FilesPage,
+});
+
+function FilesPage() {
+  const files = useFiles();
+  const list = useList({ limit: 100 });
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const selected = [...(event.target.files ?? [])];
+    event.target.value = "";
+    // Keyless: presign, then the browser POSTs straight to S3.
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    list.refetch();
+  }
+
+  return (
+    <main>
+      <label>
+        Upload files
+        <input multiple onChange={onSelect} type="file" />
+      </label>
+
+      <ul>
+        {files.uploads.map((upload, index) => (
+          <li key={`${upload.name}-${index}`}>
+            {upload.name}: {upload.status}
+            {upload.status === "uploading" &&
+              ` ${Math.round(upload.progress * 100)}%`}
+            {upload.error && ` (${upload.error.message})`}
+          </li>
+        ))}
+      </ul>
+
+      {list.error && <p role="alert">{list.error.message}</p>}
+      <ul>
+        {list.data?.items.map((item) => (
+          <li key={item.key}>
+            <a
+              href={`/api/files?op=download&key=${encodeURIComponent(item.key)}`}
+            >
+              {item.key}
+            </a>{" "}
+            ({item.size} bytes)
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+`useFiles` talks to `/api/files` by default. Each `upload(file)` runs presign, the `POST` to S3, and complete, and keeps one entry in `files.uploads` that moves from `"uploading"` to `"success"`, `"error"`, or `"aborted"`. The listed keys are relative to the user's prefix, and the download link gets a `302` to a presigned S3 `GET` that lives at most 300 seconds. [React](/docs/ui/client/react) documents the rest of the hook.
+
+## Stream an upload through your server
+
+Give `upload` a key and it skips presign. The browser sends one `PUT` to `/api/files` with the file as the body. Add a handler like this to `FilesPage` and attach it to a second file input:
+
+```tsx lineNumbers
+async function onSelectVideo(event: ChangeEvent<HTMLInputElement>) {
+  const selected = [...(event.target.files ?? [])];
+  event.target.value = "";
+  // Keyed: one PUT to /api/files, streamed through the server to S3.
+  await Promise.allSettled(
+    selected.map((file) =>
+      files.upload(`videos/${crypto.randomUUID()}.mp4`, file)
+    )
+  );
+  list.refetch();
+}
+```
+
+Here is what the server does with that `PUT`, from the gateway and adapter source:
+
+1. The gateway checks `authorize` and the request's origin. If `Content-Length` is larger than `maxUploadSize`, it answers `422` with `upload exceeds maxUploadSize` before reading the body.
+2. It pipes `request.body` through a byte counter and passes the stream to `files.upload()`. The counter errors the stream once the total passes `maxUploadSize`.
+3. The S3 adapter sees a stream with no known length and hands it to `@aws-sdk/lib-storage`. lib-storage cuts the stream into 5 MiB parts and keeps up to four part uploads running, so server memory holds a few parts at a time rather than the whole file.
+4. If the stream errors, because the limit tripped or the connection dropped, the adapter aborts the multipart upload (`leavePartsOnError: false`), so no partial object is left behind. On success, it reads the stored size back with a `HeadObject`.
+
+Against a local MinIO server with an 8 MiB limit, a 6 MiB streamed upload landed as a two-part multipart object. An 11 MiB stream sent without `Content-Length` returned `422` `upload exceeds maxUploadSize`, and neither the object nor an unfinished multipart upload remained in the bucket.
+
+The upload holds a server connection for as long as it takes the browser to send the file, and every byte crosses your server's network twice: in from the browser, out to S3.
+
+## Why not a server function with FormData
+
+This is the pattern the server-function docs suggest for forms, and it works for small files:
+
+```ts title="src/lib/upload-file.ts" lineNumbers
+import { createServerFn } from "@tanstack/react-start";
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = createFiles({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+
+// The whole request body is parsed before this validator runs.
+export const uploadFile = createServerFn({ method: "POST" })
+  .validator((data: FormData) => data)
+  .handler(async ({ data }) => {
+    const file = data.get("file");
+    if (!(file instanceof File)) {
+      throw new Error("Expected a file");
+    }
+    await files.upload(`uploads/${crypto.randomUUID()}`, file);
+  });
+```
+
+In `@tanstack/start-server-core` 1.169, the version `@tanstack/react-start` 1.168 installs, the server-function handler checks the request's `Content-Type`. For `multipart/form-data` or `application/x-www-form-urlencoded`, it calls `await request.formData()` and only then invokes your function. `formData()` resolves after the entire body has arrived, so the whole file is held before your validator can look at its size, and a size check in the validator runs too late to save the memory. Passing that `File` to `files.upload()` then reads it into a byte array for the S3 request.
+
+TanStack's open feature request [TanStack/router#5704](https://github.com/TanStack/router/issues/5704) asks for access to the raw body in server functions. Until something like it ships, keep file bytes out of server functions. Server functions are fine for the small JSON calls around an upload, such as saving the returned key to a database record.
+
+## Limits and tradeoffs
+
+- **The policy checks the claimed type, not the bytes.** On the keyless path, S3 stores the object with the `Content-Type` the browser declared and rejects a form that changes it, but a file of HTML labelled `image/png` passes. The keyed path stores whatever header the browser sends. To decide the type from the bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
+- **Keep `maxUploadSize` set.** Without it, the S3 adapter signs a presigned `PUT` instead of a `POST`. That `PUT` has no size limit, and in files-sdk 2.6 its signature doesn't cover `Content-Type` either, so the browser can store any type. (The `PUT` also needs `PUT` and the `Content-Type` header in the CORS rule.)
+- **Body-reading plugins turn keyless uploads into proxied ones.** `contentType()`, and `validation()` with a size or type rule, refuse to sign upload URLs because they can't inspect bytes they never see. The gateway falls back to its proxy path when signing fails, so `upload(file)` then streams through your server too.
+- **Complete checks size but doesn't delete.** After a direct upload, the complete step `head`s the object and reports one larger than `maxUploadSize` as an error, but leaves it in the bucket. With S3's policy in place that case shouldn't arise, but it's why the policy matters.
+- **Keyed uploads can overwrite.** A user can `PUT` to a key they already wrote. Check `key` in `authorize`, or generate unique keys on the client as above.
+- **Serverless hosts cap request bodies.** On Vercel, function request bodies are limited to 4.5 MB, so the streamed path fails above that. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side. The keyless path never sends file bytes to the function.
+- **Cloudflare Workers can't run `@aws-sdk/client-s3`**, which needs a `DOMParser`. [`s3Fetch()`](/docs/adapters/s3-fetch) runs there, but it has no `POST` policy and buffers streamed bodies, so neither path above carries over unchanged.
+- **Crashed uploads leave parts.** If the server process dies mid-stream, the abort never runs. Add a lifecycle rule that aborts incomplete multipart uploads after a day or two.
+
+## Troubleshooting
+
+**`upload failed (400)` on a keyless upload.** S3 rejected the form, usually because the file is over `maxUploadSize` (S3's code is `EntityTooLarge`) or empty (`EntityTooSmall`). The policy is working. Check `file.size` in the browser first for a friendlier message.
+
+**`upload failed (403)` on a keyless upload.** S3 refused the form's signature or a policy condition. The form expired, the server clock is off, or a field such as `Content-Type` was changed after signing.
+
+**`network error during upload` and a CORS error in the console.** The preflight to S3 didn't match a rule. Check that the page's exact origin is in `AllowedOrigins` and `POST` is in `AllowedMethods`.
+
+**`upload exceeds maxUploadSize` on a keyed upload.** The gateway refused it, either up front from `Content-Length` or partway through the stream.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** The keyed path always streams. Install `@aws-sdk/lib-storage`.
+
+**Keyed uploads fail intermittently with `undefined is not a function` under `bun --bun`.** Bun 1.3 fails reading a request body through an async generator, which is how lib-storage reads streams. [files-sdk#96](https://github.com/haydenbleasel/files-sdk/issues/96) traced it; Bun 1.4 or running the dev server under Node fixes it.
+
+**`<img>` tags pointing at `/api/files?op=download` break in development only.** The nitro dev server can 404 image requests to a catch-all route before your handler runs ([files-sdk#131](https://github.com/haydenbleasel/files-sdk/issues/131)). Add `"url"` to the allowed operations, get a signed URL with `files.url(key)`, and use it as the `src`.

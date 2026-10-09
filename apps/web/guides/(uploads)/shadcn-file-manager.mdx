@@ -1,0 +1,314 @@
+---
+title: Build a shadcn file manager with uploads, folders, previews, and progress
+description: One page of Files SDK shadcn components that browses folders, uploads into them with progress, previews files, pages long folders, and retries failures.
+sidebar:
+  label: shadcn file manager
+seo:
+  title: Build a shadcn file manager
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/multi-tenant-file-storage
+  - /guides/vercel-large-file-upload
+  - /docs/ui/components/file-browser
+  - /docs/ui/client/react
+---
+
+Five registry components share one `useFiles()` instance. File Browser lists folders with a delimiter listing and pages with **Load more**, Dropzone uploads into the open folder, Upload Progress shows each transfer, File Preview renders the selected file, and File Actions gives every row download, copy, rename, move, and delete. Your gateway's `authorize` hook scopes every call to the signed-in user, so the page only ever sees keys relative to that user's prefix.
+
+Two parts need code of your own. File Browser keeps the open folder in internal state, so you add a small `onNavigate` prop to tell the dropzone where to upload. And an upload into a folder uses an explicit key, which streams the bytes through your route instead of straight to storage; on Vercel that caps each file at 4.5 MB. [Choose where uploads go](#choose-where-uploads-go) covers the tradeoff.
+
+## Before you start
+
+- A Next.js App Router app with [shadcn/ui](https://ui.shadcn.com/docs/installation/next) initialized. The components import from `@/components/ui` and `@/lib/utils`.
+- The storage setup from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload): `lib/files.ts`, the `R2_*` and `FILES_API_SECRET` variables, and the bucket's CORS rule, with `GET` added to `AllowedMethods`. File Preview and the Download action fetch files from JavaScript, and that `fetch` follows the gateway's redirect to R2. Any signing adapter's bucket needs the same rule.
+- An auth library that can resolve the signed-in user on the server.
+- Written against files-sdk 2.6, Next.js 16.4, React 19.3, and the registry components as published on files-sdk.dev. The page below was rendered under happy-dom against the gateway and the memory adapter to check the folder, pagination, upload, retry, and error flows. It hasn't been run against R2.
+
+## Install the components
+
+```bash
+npx shadcn@latest add https://files-sdk.dev/r/file-browser.json https://files-sdk.dev/r/dropzone.json https://files-sdk.dev/r/upload-progress.json https://files-sdk.dev/r/file-preview.json
+```
+
+The files land in `components/files-sdk/`. Each registry item declares `files-sdk` and `lucide-react` as npm dependencies and the shadcn primitives it uses (`button`, `progress`, `dialog`, `dropdown-menu`, `input`) as registry dependencies. File Browser also depends on [File Actions](/docs/ui/components/file-actions), its per-row menu, so you don't add that one separately.
+
+The components are your source code now. You'll edit one of them in a minute.
+
+## Scope the gateway to the signed-in user
+
+The [Next.js R2 guide](/guides/nextjs-r2-file-upload#mount-the-gateway) walks through the gateway. The file manager needs the same route with a different list of verbs and one extra constraint:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+// Every verb the file manager's components call, and nothing else.
+const ALLOWED = new Set<FilesOperation>([
+  "capabilities",
+  "list",
+  "head",
+  "url",
+  "download",
+  "upload",
+  "copy",
+  "move",
+  "delete",
+]);
+
+const router = createFilesRouter({
+  files,
+  authorize: async ({ operation, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    return {
+      keyPrefix: `users/${session.user.id}/`,
+      maxExpiresIn: 300,
+      maxResults: 50,
+    };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+- **`capabilities` is on the list on purpose.** File Browser asks for it once on mount to decide between a folder listing and a flat one, and File Preview asks before it shows an image. `authorize` runs for `capabilities` like any other verb. If it throws, File Browser falls back to a folder listing, but File Preview shows the error (`capabilities is not allowed`) where the image should be.
+- **`maxResults` sets the page size.** File Browser doesn't pass a `limit`, so without it each page holds up to the gateway's `maxListLimit`, 1,000 entries by default. With `50`, a folder of 60 files shows 50 rows and a **Load more** button that fetches the other 10.
+- **`keyPrefix` keeps users apart.** Every key the components send gets `users/<id>/` prepended on the server, and every key they receive has it stripped. [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what the gateway returns when a user tries to reach outside their prefix.
+
+## Report the open folder from File Browser
+
+File Browser tracks the open folder in its own `useState` and exposes no prop that reports it, so the page can't tell the dropzone where to upload. Add one to `components/files-sdk/file-browser.tsx`: a prop on `FileBrowserProps`, and an effect after the component's `prefix` state.
+
+```tsx lineNumbers
+export interface FileBrowserProps {
+  // …the existing props
+  /** Called with the open folder's prefix on mount and whenever it changes. */
+  onNavigate?: (prefix: string) => void;
+}
+
+export const FileBrowser = ({
+  // …the existing props
+  onNavigate,
+}: FileBrowserProps) => {
+  const [prefix, setPrefix] = useState(initialPrefix);
+
+  useEffect(() => {
+    onNavigate?.(prefix);
+  }, [onNavigate, prefix]);
+
+  // …the rest of the component, unchanged
+```
+
+`useEffect` is already imported in that file. Re-adding the component with the CLI's `--overwrite` flag replaces your copy, so reapply this change if you do.
+
+## Build the page
+
+```tsx title="app/files/file-manager.tsx" lineNumbers
+"use client";
+
+import type { StoredFile } from "files-sdk";
+import { type UseFilesResult, useFiles } from "files-sdk/react";
+import { useEffect, useRef, useState } from "react";
+
+import {
+  Dropzone,
+  DropzoneContent,
+  DropzoneEmptyState,
+  DropzoneError,
+} from "@/components/files-sdk/dropzone";
+import { FileBrowser } from "@/components/files-sdk/file-browser";
+import { FilePreview } from "@/components/files-sdk/file-preview";
+import { UploadProgress } from "@/components/files-sdk/upload-progress";
+import { Button } from "@/components/ui/button";
+
+const MAX_BYTES = 25 * 1024 * 1024;
+
+function uploadSummary(files: UseFilesResult): string {
+  if (files.isUploading) {
+    return "Uploading…";
+  }
+  const done = files.uploads.filter((u) => u.status === "success").length;
+  const failed = files.uploads.filter((u) => u.status === "error").length;
+  if (done + failed === 0) {
+    return "";
+  }
+  return failed ? `${done} uploaded, ${failed} failed` : `${done} uploaded`;
+}
+
+export function FileManager() {
+  const files = useFiles();
+  const [folder, setFolder] = useState("");
+  const [selected, setSelected] = useState<StoredFile | null>(null);
+  const [listVersion, setListVersion] = useState(0);
+
+  // Re-list the open folder once a batch of uploads settles.
+  const wasUploading = useRef(false);
+  useEffect(() => {
+    if (wasUploading.current && !files.isUploading) {
+      setListVersion((version) => version + 1);
+    }
+    wasUploading.current = files.isUploading;
+  }, [files.isUploading]);
+
+  const failed = files.uploads.filter((upload) => upload.status === "error");
+
+  async function retryFailed() {
+    const retries = failed.flatMap((upload) =>
+      upload.file instanceof Blob
+        ? [{ file: upload.file, key: upload.key, type: upload.type }]
+        : []
+    );
+    files.reset(); // clears the finished rows, including the failed ones
+    await Promise.allSettled(
+      retries.map(({ file, key, type }) =>
+        key
+          ? files.upload(key, file, { contentType: type })
+          : files.upload(file)
+      )
+    );
+  }
+
+  return (
+    <div className="grid gap-6 md:grid-cols-[1fr_20rem]">
+      <section aria-label="Files" className="flex flex-col gap-4">
+        <Dropzone
+          files={files}
+          maxFiles={10}
+          maxSize={MAX_BYTES}
+          prefix={folder}
+        >
+          <DropzoneEmptyState />
+          <DropzoneContent />
+          <DropzoneError />
+        </Dropzone>
+
+        <UploadProgress files={files} />
+
+        {failed.length > 0 && !files.isUploading && (
+          <Button onClick={retryFailed} type="button" variant="outline">
+            Retry {failed.length} failed{" "}
+            {failed.length === 1 ? "upload" : "uploads"}
+          </Button>
+        )}
+
+        <p aria-live="polite" className="sr-only">
+          {uploadSummary(files)}
+        </p>
+
+        <FileBrowser
+          files={files}
+          initialPrefix={folder}
+          key={listVersion}
+          onChanged={() => setSelected(null)}
+          onNavigate={setFolder}
+          onSelect={setSelected}
+        />
+      </section>
+
+      <aside aria-label="Preview">
+        {selected ? (
+          <FilePreview file={selected} files={files} />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Select a file to preview it.
+          </p>
+        )}
+      </aside>
+    </div>
+  );
+}
+```
+
+```tsx title="app/files/page.tsx" lineNumbers
+import { FileManager } from "./file-manager";
+
+export default function FilesPage() {
+  return (
+    <main className="mx-auto max-w-5xl p-6">
+      <h1 className="mb-6 text-xl font-semibold">Files</h1>
+      <FileManager />
+    </main>
+  );
+}
+```
+
+Render the page behind your sign-in. How the pieces connect:
+
+- **One `useFiles()` instance.** Upload Progress reads the hook's `uploads` and `progress`, so it shows every upload the dropzone starts without any wiring between them.
+- **Folders.** `onNavigate` keeps `folder` in sync with the breadcrumb, and the dropzone's `prefix` follows it. Folder rows are the `prefixes` of a `list({ delimiter: "/" })`; on adapters with no folder concept, File Browser lists every key under the path instead and says so.
+- **Refreshing after uploads.** File Browser re-lists when you navigate and after its own row actions, but it doesn't know about uploads. The effect watches `files.isUploading` and bumps `listVersion` when a batch settles. The new `key` remounts File Browser, which opens `initialPrefix`, the folder the user was in.
+- **Previews.** `onSelect` hands over the `StoredFile` from the listing, and passing that object (not a key string) to File Preview saves a `head` request. Images load from a signed URL, PDFs are downloaded and shown from a `blob:` URL, and text renders inline. [File Preview](/docs/ui/components/file-preview#why-pdfs-use-a-blob-url) explains why PDFs take the long way. `onChanged` clears the selection after a rename, move, or delete, since the file may no longer be there.
+
+## Choose where uploads go
+
+Dropzone picks its upload path from `prefix`, and the two paths behave differently:
+
+| Open folder | What Dropzone calls | Stored key | Where the bytes go |
+| --- | --- | --- | --- |
+| The root (`prefix` is `""`) | `files.upload(file)` | `<uuid>.<ext>`, minted by the server | Browser to R2, on a presigned `PUT` |
+| A folder, such as `docs/` | `files.upload("docs/" + file.name, file, { contentType })` | `docs/<original name>` | Browser to your route, then to R2 |
+
+That table has consequences for a file manager:
+
+- **Root uploads get random names.** The gateway mints keyless keys, so a file dropped at the root shows up as something like `0353547a-….txt`. Users can rename it from the actions menu.
+- **Folder uploads overwrite.** An explicit-key upload is a plain write, so dropping `report.pdf` into a folder that already has one replaces it without asking. Call `files.exists()` first if that matters.
+- **Folder uploads pass through your server.** On Vercel, function request bodies are capped at 4.5 MB, so larger files fail with a `413`. The R2 adapter's `fetch` engine also buffers each streamed body in memory before writing it. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side.
+- **Progress measures a different hop.** For a folder upload, the bar tracks bytes reaching your route, so it can sit at 100% while your server finishes writing to R2. For a root upload, it tracks bytes reaching R2.
+- **CORS differs.** Root uploads are cross-origin `PUT`s to R2 and need the bucket's CORS rule. Folder uploads are same-origin requests to `/api/files`.
+
+On both paths the dropzone uploads one file at a time, and the client reports progress from `XMLHttpRequest` upload events. If your users upload large files or you deploy to a platform with a request body limit, keep uploads at the root and let users file them into folders with **Move**.
+
+## Retry failed uploads
+
+A failed upload stays in `files.uploads` with `status: "error"`, its `error`, and its original `file`. That's enough to send it again. `retryFailed` collects those entries, clears the finished rows with `files.reset()`, and uploads each file again:
+
+- A folder upload already has its `key`, so the retry writes the same `docs/<name>`.
+- A root upload that failed before the presign step has no key and retries as a keyless upload. One that failed after the presign step already holds a server-minted key, so its retry sends the bytes through your route to that key.
+
+Files the dropzone refuses before uploading, because they don't match `accept` or exceed `maxSize`, never become `uploads` entries, so **Retry** can't resend them. One rough edge: `DropzoneError` keeps showing the failure from the dropzone's last batch until the user drops or picks another file. It doesn't know about retries started outside it, while Upload Progress does.
+
+`maxSize` is a check in the browser that gives fast feedback, not a limit. To enforce one, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
+
+## Show errors where they happen
+
+Each component reports its own failures:
+
+- **Listing.** A failed `list` shows `Couldn't list this folder:` and the message, with a **Try again** button, in a `role="alert"` block. File Browser never shows a failed listing as an empty folder.
+- **Uploads.** Upload Progress marks the row `Failed:` with the message, `DropzoneError` summarizes the batch, and the page adds the **Retry** button.
+- **Copy, rename, move, and delete.** The File Actions dialog stays open and shows the error, so the user can fix the destination and try again.
+- **Download from the actions menu.** This one has no UI of its own. The error only reaches `files.error`, which holds the last error from any verb. If you render it, expect it to repeat errors the components already show.
+
+## Keyboard and screen readers
+
+The upload works without a mouse. The dropzone is a native `<button type="button">`, so it's in the tab order, and Enter or Space activates it. Activating it calls `click()` on a hidden file input, the [pattern MDN documents](https://developer.mozilla.org/en-US/docs/Web/API/File_API/Using_files_from_web_applications#using_hidden_file_input_elements_using_the_click_method), which opens the system file picker. Dragging is optional. While uploads run, the button gets `aria-disabled="true"` and ignores activation but stays focusable. Folder rows, breadcrumbs (a `nav` with `aria-current="page"` on the open folder), file rows, and **Load more** are native buttons too, and the File Actions menu and dialogs are keyboard-operable shadcn primitives.
+
+Some states aren't announced:
+
+- The dropzone's prompt, success summary, and error summary are the button's content, so a screen reader reads them as the button's name when focus lands on it. When they change, nothing is announced. Neither `DropzoneError` nor Upload Progress uses a live region.
+- Upload Progress renders each bar as a `role="progressbar"` with a value but no accessible name, so the bars aren't tied to their files.
+- Every row's menu trigger is labeled `Actions`, so the triggers can't be told apart by file.
+
+The page works around the first two with its `aria-live="polite"` summary, which announces "Uploading…" and then the number of files uploaded and failed. For the menu triggers, edit File Actions to include the key in its screen-reader label.
+
+## Troubleshooting
+
+**The image preview shows `capabilities is not allowed`.** `authorize` refused the `capabilities` operation. Add it to the allowed verbs.
+
+**Text and PDF previews or the Download action fail with `Failed to fetch`, and the console shows a CORS error for an R2 URL.** The gateway redirected the `fetch` to a signed R2 URL, and the bucket's CORS rule doesn't allow `GET`. Add it to `AllowedMethods`.
+
+**Uploads into folders fail with a `413` on Vercel.** The file exceeds the 4.5 MB [function request body limit](https://vercel.com/docs/errors/function_payload_too_large). Upload at the root, where bytes go straight to R2.
+
+**Root uploads fail with `network error during upload`.** The browser blocked the cross-origin `PUT` to R2. Check the bucket's CORS rule as described in the [Next.js R2 guide](/guides/nextjs-r2-file-upload#let-the-browser-put-to-r2).
+
+**`Couldn't list this folder: Sign in to manage files`.** `getSession` returned `null`, so the gateway answered `401`. Check that the session cookie reaches route handlers.

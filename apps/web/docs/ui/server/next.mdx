@@ -1,6 +1,9 @@
 ---
 title: Next.js
 description: Mount the Files gateway in the Next.js App Router. createRouteHandler returns { GET, POST, PUT }, and the same handler runs on Node and the Edge runtime.
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/vercel-large-file-upload
 ---
 
 `files-sdk/next` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in the Next.js App Router. `createRouteHandler` returns `{ GET, POST, PUT }` — `GET` serves downloads, `POST` the JSON verbs, and `PUT` the upload byte path. The handler is Web-native (`Request`/`Response`, `crypto.subtle`, `ReadableStream`), so the same route runs on **Node and the Edge runtime**.

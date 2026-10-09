@@ -142,6 +142,7 @@ Conventions:
 ## Docs
 
 - Edit `apps/web/docs/` (MDX, one `meta.ts` per folder, `(group)` folders for sidebar sections). Never edit `packages/files-sdk/docs/`; it's regenerated on every build.
+- Guides (`/guides`) live in `apps/web/guides/`, one `(section)` folder per sidebar section. Add a new guide's slug to its section's `meta.ts`.
 - Callouts are `:::` fences.
 - If your change is user-facing, also update `skills/files-sdk/SKILL.md` (and the relevant `references/*.md`) so agents get the same information.
 

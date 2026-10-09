@@ -105,6 +105,7 @@ Notes:
 
 - **Source of truth is `apps/web/docs/`** (MDX + `meta.ts` per folder, `(group)` folders for sidebar sections). `packages/files-sdk/docs/` is a gitignored copy made at build time. Never edit the copy.
 - Callouts are `:::` fences. Inline SVG `<title>` becomes the page title in Blume; avoid it.
+- **Guides live in `apps/web/guides/`** (served at `/guides/*`, not copied into the package): long-form walkthroughs of one complete workflow each, in `(section)` folders whose `meta.ts` order drives both the sidebar and the `/guides` hub (`pages/guides/index.astro`, which reads the sidebar, so there's no list to maintain). A guide links to reference pages rather than restating them. When a behavior a guide describes changes, update the guide too: `grep -rl` the API name under `apps/web/guides`.
 - User-facing changes also update `skills/files-sdk/SKILL.md` (and the matching `references/*.md`) and `.github/CONTRIBUTING.md` where the adapter/plugin lists live.
 - `apps/web/lib/adapters.tsx` re-exports `files-sdk/providers` and only feeds the homepage adapter count; there is no separate list to maintain. Adapter docs are the hand-written MDX pages (`/docs/adapters` redirects to the S3 page), so a new adapter still needs its page (checklist step 7).
 

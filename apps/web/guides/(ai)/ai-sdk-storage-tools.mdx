@@ -1,0 +1,332 @@
+---
+title: Give an AI SDK agent access to S3 or R2 with approval-gated storage tools
+description: An AI SDK 7 agent lists, reads, and proposes changes to one user's files in S3 or R2, and every write waits until the user approves it in the chat.
+sidebar:
+  label: AI SDK storage tools
+seo:
+  title: AI SDK storage tools with write approval
+related:
+  - /guides/ai-sdk-file-attachments
+  - /docs/ai/vercel
+  - /docs/readonly
+  - /docs/plugins/signed-url-policy
+  - /guides/multi-tenant-file-storage
+---
+
+`createFileTools` from `files-sdk/ai-sdk` turns a `Files` instance into eight AI SDK tools. The tools have no scope of their own, so build that instance per request from the session, with the user's prefix, and the agent can reach that user's keys and nothing else. The four write tools need approval by default: the agent pauses, the chat shows the exact input, and nothing touches the bucket until the user says yes. A declined write never runs.
+
+The catch is that in a `useChat` app the client sends the conversation back on every turn, approvals included. Without `experimental_toolApprovalSecret`, a client can approve an input other than the one it was shown, and that input runs. [Sign approvals](#sign-approvals) closes the gap.
+
+## Before you start
+
+- An R2 bucket and API token (see the [R2 adapter](/docs/adapters/r2)), or an S3 bucket.
+- A Next.js App Router app with an auth library that resolves the signed-in user on the server.
+- A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key and a model that supports tool calling. An AI SDK provider instance works in place of the Gateway model ID.
+- Written against files-sdk 2.6, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
+
+```package-install
+files-sdk ai @ai-sdk/react zod
+```
+
+```bash title=".env.local"
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+AI_GATEWAY_API_KEY=your-gateway-key
+# A Gateway model ID ("creator/model") that supports tool calling
+AI_MODEL=creator/model
+# Signs tool approvals. Generate with: openssl rand -base64 32
+TOOL_APPROVAL_SECRET=a-long-random-string
+```
+
+## What the agent gets
+
+| Tool | Calls | Needs approval |
+| --- | --- | --- |
+| `listFiles` | `files.list({ prefix, cursor, limit })` | No |
+| `getFileMetadata` | `files.head(key)` | No |
+| `downloadFile` | `files.head(key)`, then `files.download(key)` | No |
+| `getFileUrl` | `files.url(key, { expiresIn, responseContentDisposition })` | No |
+| `uploadFile` | `files.upload(key, content, options)` | Yes |
+| `deleteFile` | `files.delete(key)` | Yes |
+| `copyFile` | `files.copy(from, to)` | Yes |
+| `signUploadUrl` | `files.signedUploadUrl(key, options)` | Yes |
+
+`downloadFile` returns UTF-8 text, or base64 with `binary: true`. Its `maxBytes` defaults to 1 MiB and its input schema stops at 10 MiB; the tool checks `head()` before transferring and enforces the cap again on the bytes it reads. `uploadFile` replaces whatever is at the key. `signUploadUrl` is gated even though no bytes move, because the URL grants upload permission until it expires. There's no move, search, or exists tool. The [Vercel AI SDK reference](/docs/ai/vercel) has every option.
+
+## Scope the tools to the signed-in user
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { signedUrlPolicy } from "files-sdk/signed-url-policy";
+
+const adapter = r2({ bucket: "uploads", client: "fetch" });
+
+/** Everything the agent can reach: one user's keys, and nothing else. */
+export function filesForUser(userId: string) {
+  return createFiles({
+    adapter,
+    prefix: `users/${userId}`,
+    // getFileUrl passes the model's expiresIn through; cap it here.
+    plugins: [signedUrlPolicy({ maxExpiresIn: 300 })],
+  });
+}
+```
+
+The tools take no bucket or prefix option. Everything comes from the `Files` you hand them, so with `prefix: "users/42"`:
+
+- Every key the model sends resolves under `users/42/`. A key with `.` or `..` segments throws `key must not contain . or .. path segments` before any request.
+- The `prefix` the model passes to `listFiles` is appended to the instance prefix, so it can narrow a listing but not widen it, and results come back with `users/42/` stripped. See [Prefixes](/docs/prefixes).
+- [`signedUrlPolicy`](/docs/plugins/signed-url-policy) clamps the `expiresIn` the model picks for `getFileUrl` to 300 seconds and forces `Content-Disposition: attachment`. Without it, the model's number goes straight to `files.url()`.
+
+Run against the memory adapter, `listFiles` with `prefix: "../bob/"` returned no items, `getFileMetadata` on `../bob/reports/secret.csv` threw the error above, and a `getFileUrl` call asking for 604800 seconds reached the adapter as 300 seconds with `attachment`.
+
+On S3, swap `r2(...)` for `s3({ bucket: "uploads" })` from `files-sdk/s3`, which needs `@aws-sdk/client-s3` ([S3 adapter](/docs/adapters/s3)). Use your auth library's stable user ID for the prefix, never a value from the request. [Isolate each user's files in a multi-tenant application](/guides/multi-tenant-file-storage) covers team and tenant layouts.
+
+## Build the agent
+
+```ts title="lib/agent.ts" lineNumbers
+import { isStepCount, ToolLoopAgent, type InferAgentUIMessage } from "ai";
+import type { Files } from "files-sdk";
+import { createFileTools } from "files-sdk/ai-sdk";
+
+export function createStorageAgent(files: Files) {
+  const model = process.env.AI_MODEL; // an AI Gateway ID: "creator/model"
+  const secret = process.env.TOOL_APPROVAL_SECRET;
+  if (!model || !secret) {
+    throw new Error("Set AI_MODEL and TOOL_APPROVAL_SECRET");
+  }
+  return new ToolLoopAgent({
+    model,
+    instructions: [
+      "You work with the signed-in user's files.",
+      "When a tool execution is not approved, do not retry it.",
+    ].join("\n"),
+    // Spread into a plain object: TypeScript won't match the FileTools
+    // interface against ai@7's ToolSet index signature.
+    tools: { ...createFileTools({ files }) },
+    stopWhen: isStepCount(10),
+    // Binds each approval to the exact tool call and input the user saw.
+    experimental_toolApprovalSecret: secret,
+  });
+}
+
+export type StorageAgentMessage = InferAgentUIMessage<
+  ReturnType<typeof createStorageAgent>
+>;
+```
+
+The agent is built per request because its tools close over that request's `Files`. Constructing one makes no network calls.
+
+The spread is a typing workaround. `createFileTools` returns an interface, and TypeScript won't assign an interface to the AI SDK's `ToolSet` index signature, so passing it directly fails to compile against `ai` 7. Spreading copies the same tool objects, approval settings included.
+
+`ToolLoopAgent` runs up to 20 steps by default; listing, reading, and writing fit in far fewer, so `isStepCount(10)` caps the loop lower. The instruction not to retry declined tools comes from the [AI SDK's approval docs](https://ai-sdk.dev/docs/agents/tool-approvals), which recommend it to stop repeated requests for the same action.
+
+## Serve it from a route
+
+```ts title="app/api/agent/route.ts" lineNumbers
+import { createAgentUIStreamResponse } from "ai";
+
+import { createStorageAgent } from "@/lib/agent";
+import { getSession } from "@/lib/auth";
+import { filesForUser } from "@/lib/files";
+
+export const maxDuration = 60;
+
+export async function POST(req: Request) {
+  const session = await getSession(req.headers);
+  if (!session) {
+    return Response.json({ error: "Sign in" }, { status: 401 });
+  }
+  const { messages } = await req.json();
+  // Scope comes from the session, never from the request body.
+  const agent = createStorageAgent(filesForUser(session.user.id));
+  return createAgentUIStreamResponse({ agent, uiMessages: messages });
+}
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check) and is assumed to take request headers and return `{ user: { id: string } }` or `null`. `createAgentUIStreamResponse` validates the incoming messages against the agent's tools, converts them to model messages, and streams the result.
+
+## Answer approvals in the chat
+
+```tsx title="app/agent/agent-chat.tsx" lineNumbers
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import {
+  DefaultChatTransport,
+  getToolName,
+  isToolUIPart,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+} from "ai";
+import { useState, type FormEvent } from "react";
+
+import type { StorageAgentMessage } from "@/lib/agent";
+
+export function AgentChat() {
+  const [input, setInput] = useState("");
+  const { messages, sendMessage, addToolApprovalResponse, status } =
+    useChat<StorageAgentMessage>({
+      transport: new DefaultChatTransport({ api: "/api/agent" }),
+      // Resubmit once every approval in the last message has an answer.
+      sendAutomaticallyWhen:
+        lastAssistantMessageIsCompleteWithApprovalResponses,
+    });
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    sendMessage({ text: input });
+    setInput("");
+  }
+
+  return (
+    <div>
+      {messages.map((message) => (
+        <div key={message.id}>
+          {message.parts.map((part, index) => {
+            if (part.type === "text") {
+              return <p key={index}>{part.text}</p>;
+            }
+            if (!isToolUIPart(part)) {
+              return null;
+            }
+            const name = getToolName(part);
+            switch (part.state) {
+              case "approval-requested":
+                return (
+                  <div key={part.toolCallId}>
+                    <p>Allow {name}?</p>
+                    <pre>{JSON.stringify(part.input, null, 2)}</pre>
+                    <button
+                      onClick={() =>
+                        addToolApprovalResponse({
+                          id: part.approval.id,
+                          approved: true,
+                        })
+                      }
+                      type="button"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() =>
+                        addToolApprovalResponse({
+                          id: part.approval.id,
+                          approved: false,
+                        })
+                      }
+                      type="button"
+                    >
+                      Deny
+                    </button>
+                  </div>
+                );
+              case "output-denied":
+                return <p key={part.toolCallId}>Declined: {name}</p>;
+              case "output-error":
+                return (
+                  <p key={part.toolCallId}>
+                    {name} failed: {part.errorText}
+                  </p>
+                );
+              case "output-available":
+                return <p key={part.toolCallId}>Done: {name}</p>;
+              default:
+                return <p key={part.toolCallId}>Running: {name}</p>;
+            }
+          })}
+        </div>
+      ))}
+
+      <form onSubmit={onSubmit}>
+        <input onChange={(e) => setInput(e.target.value)} value={input} />
+        <button disabled={status !== "ready"} type="submit">
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+Show the full `input` in the approval prompt. For `uploadFile` that's the key and the content the model wants to write, and it's what the user is agreeing to.
+
+A write moves through these message parts, as the [AI SDK 7 approval docs](https://ai-sdk.dev/docs/agents/tool-approvals) define them:
+
+1. **The model calls a write tool.** Read tools run without asking. For `uploadFile`, the AI SDK doesn't call `execute`; it records an approval request and the loop stops. The UI receives a `tool-uploadFile` part with `state: "approval-requested"`, the parsed `input`, and `approval.id` (plus `approval.signature` when a secret is set).
+2. **The user answers.** `addToolApprovalResponse({ id, approved })` moves the part to `approval-responded`. Once every request in the last message has an answer, `lastAssistantMessageIsCompleteWithApprovalResponses` returns `true` and `useChat` resubmits.
+3. **The server acts on the answer.** `convertToModelMessages` turns that part into an assistant `tool-call` and `tool-approval-request`, followed by a tool message carrying the `tool-approval-response`. If it was approved, the AI SDK checks the input against the tool's schema, runs `execute`, and the part becomes `output-available`. If it was declined, `execute` never runs: the model gets a tool result of type `execution-denied`, the part becomes `output-denied`, and the model continues in text.
+
+This route and agent were run locally against the memory adapter, with a scripted `MockLanguageModelV4` from `ai/test` standing in for the model. It calls `listFiles`, then `downloadFile`, then `uploadFile`; it's a test double, not a model transcript. After a denial, the `uploadFile` result the model received was `{"type":"execution-denied"}` and the bucket held the same single object as before. After an approval, the new key was in the bucket.
+
+## Sign approvals
+
+In the default `useChat` setup the client sends the whole conversation each turn, and the server rebuilds tool calls and approvals from it. The AI SDK re-checks the input against the tool's schema, but on its own it can't tell whether the input that comes back is the input the user saw. `experimental_toolApprovalSecret` HMAC-signs each approval request over the tool name, the tool call ID, and the input, and rejects an approval whose signature doesn't match ([security considerations](https://ai-sdk.dev/docs/agents/tool-approvals#security-considerations)).
+
+The local run tested this by approving the `uploadFile` call and then changing its `key` before resubmitting. With no secret set, the changed key was written. With the secret set, the server threw `AI_InvalidToolApprovalSignatureError` (`invalid signature`), the client received an error chunk, and nothing was written.
+
+Every instance that serves the route needs the same secret, because one instance can issue the approval and another verify it. Keep it server-side. The option is prefixed `experimental_`, so check the AI SDK release notes when you upgrade.
+
+## Keep the approval defaults in force
+
+The write tools set `needsApproval: true`. AI SDK 7 deprecates that tool property in favor of a `toolApproval` setting on the agent or call, but still honors it as a fallback. How the two combine in `ai` 7.0.99:
+
+| `toolApproval` you pass | What the file tools do |
+| --- | --- |
+| None | `needsApproval` applies, so writes wait for approval. |
+| An object naming some tools | Named tools follow your setting. The rest fall back to `needsApproval`. |
+| A function | It decides for every tool, and `needsApproval` is ignored. Returning `undefined` runs the tool without approval. |
+
+:::warning
+A `toolApproval` function that returns `undefined` for tools it doesn't recognize turns off approval for every file write. In the local run, `toolApproval: ({ toolCall }) => (toolCall.toolName === "deleteFile" ? "user-approval" : undefined)` let `uploadFile` write without asking. Return `"user-approval"` for the write tools, or pass an object instead.
+:::
+
+To relax one write on purpose, use `requireApproval`. Write tools you leave out stay gated:
+
+```ts lineNumbers
+const files = filesForUser(session.user.id);
+const tools = createFileTools({
+  files,
+  requireApproval: { uploadFile: false },
+});
+```
+
+An ungated `uploadFile` can overwrite any key in scope. [`versioning()`](/docs/plugins/versioning) keeps the previous version when that happens.
+
+## Read-only agents
+
+For an agent that only browses and summarizes, remove writes in two places:
+
+```ts lineNumbers
+const files = filesForUser(session.user.id).readonly();
+const tools = createFileTools({ files, readOnly: true });
+```
+
+`readOnly: true` drops the four write tools, so the model never sees them. `readonly()` makes every write on the instance throw `Cannot call upload() on a read-only Files instance.` (code `ReadOnly`), which still holds if someone later adds a write tool by hand. [Read-only](/docs/readonly) lists what stays allowed.
+
+## OpenAI and Claude agent SDKs
+
+The same eight tools ship for two other agent SDKs, with the same defaults. Build them from the same per-request `filesForUser()`.
+
+- **`files-sdk/openai`**: `createResponsesFileTools({ files })` returns `{ definitions, execute, needsApproval }` for the Responses API. `execute(call, { approved: true })` runs a gated write; without `approved`, the output is an `approvalRequired` error and nothing runs. `createAgentsFileTools({ files })` returns a record for `new Agent({ tools: Object.values(tools) })`, and gated writes surface as Agents SDK interruptions. See [OpenAI](/docs/ai/openai).
+- **`files-sdk/claude`**: `createClaudeFileTools({ files })` returns `{ mcpServers, allowedTools, canUseTool, needsApproval, server, serverName }` for the Claude Agent SDK. Tools are named `mcp__files__<tool>`. Gated writes are left out of `allowedTools`, so each call reaches `canUseTool`; the bundled one denies them, along with any tool not on its server. See [Claude](/docs/ai/claude).
+
+## Limits
+
+- **File contents leave your server.** Whatever `downloadFile` returns goes to the model provider, and in this setup back to the browser, which resends it every turn. Persisting the conversation on the server, as [the attachments guide](/guides/ai-sdk-file-attachments) does, stops the browser round trip.
+- **Large and binary files are a poor fit.** `downloadFile` stops at 10 MiB, and base64 content uses up context quickly. Let the agent hand the user a `getFileUrl` link instead.
+- **Instructions aren't enforcement.** The prefix and the approval gate are what limit the agent. A system prompt asking it to stay in a folder isn't.
+- **R2 can't cap `signUploadUrl`.** If the model passes `maxSize`, the R2 adapter throws ``r2: `maxSize` is not supported.``, and an approved URL without it accepts any single-part size.
+
+## Troubleshooting
+
+**`Type 'FileTools' is not assignable to type 'ToolSet'.`** with `Index signature for type 'string' is missing in type 'FileTools'.` You passed `createFileTools({ files })` straight to `tools`. Spread it into a new object as `lib/agent.ts` does. The read-only set doesn't hit this.
+
+**`AI_InvalidToolApprovalSignatureError` with `invalid signature`.** The tool name, call ID, or input changed after the approval request was signed, or two instances use different `TOOL_APPROVAL_SECRET` values. With `missing signature`, the approval request was issued without a secret, for example by an instance that didn't have it set.
+
+**Writes run without an approval prompt.** Something overrides `needsApproval`: a `toolApproval` function returning `undefined`, a `toolApproval` entry for that tool, or `requireApproval: false`.
+
+**The agent reports `File "…" is … bytes which exceeds the maxBytes limit of 1048576.`** That's `downloadFile`'s default cap, returned to the model as a tool error. The model can retry with a larger `maxBytes`, up to 10 MiB.
+
+**The chat shows `An error occurred.`** `createAgentUIStreamResponse` hides server error details from the client by default. The real error is in your server logs.

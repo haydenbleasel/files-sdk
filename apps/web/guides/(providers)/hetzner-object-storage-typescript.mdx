@@ -1,0 +1,295 @@
+---
+title: "Use Hetzner Object Storage from TypeScript: endpoints, uploads, and signed URLs"
+description: Connect TypeScript to a Hetzner bucket in fsn1, nbg1, or hel1, upload files, share private ones through signed URLs, and set the CORS rule browser uploads need.
+sidebar:
+  label: Hetzner Object Storage
+seo:
+  title: Hetzner Object Storage from TypeScript
+related:
+  - /docs/adapters/hetzner
+  - /guides/nextjs-r2-file-upload
+  - /guides/presigned-upload-validation
+  - /guides/resume-s3-multipart-upload
+  - /docs/api/url
+---
+
+Pass the bucket's location code as `region` and `hetzner()` derives the rest. `region: "fsn1"` gives the endpoint `https://fsn1.your-objectstorage.com`, and the adapter addresses your bucket at `https://<bucket>.fsn1.your-objectstorage.com`. Keys come from `HCLOUD_ACCESS_KEY_ID` and `HCLOUD_SECRET_ACCESS_KEY`, and private files go out through presigned URLs that expire.
+
+Browser uploads take two more steps. The bucket needs a CORS rule, which you set through the S3 API, as Hetzner's own how-to does. And if you want a size cap on presigned uploads, test it first: Files SDK enforces one with an S3 `POST` policy, and Hetzner doesn't document whether it accepts `POST` uploads.
+
+## Before you start
+
+- A Hetzner account with a bucket (this guide calls it `uploads`) in one of the Object Storage locations.
+- S3 credentials from the Hetzner Console: open your project, go to **Security → S3 Credentials**, and select **Generate credentials**. [Hetzner shows the secret key once](https://docs.hetzner.com/storage/object-storage/getting-started/generating-s3-keys/), so save it before you close the window. By default a key pair works on every bucket in the same project; [bucket policies](https://docs.hetzner.com/storage/object-storage/faq/s3-credentials/) narrow that.
+- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, Node.js 24, and Hetzner's documentation as of October 2026.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+`hetzner()` runs on the AWS SDK. Add `@aws-sdk/lib-storage` too if you use `multipart`, `onProgress`, or upload a `ReadableStream` of unknown length.
+
+## Endpoints, locations, and bucket URLs
+
+Hetzner Object Storage runs in three European locations. The location code is part of every hostname:
+
+| Location | `region` | S3 endpoint | Bucket URL |
+| --- | --- | --- | --- |
+| Falkenstein | `fsn1` | `https://fsn1.your-objectstorage.com` | `https://<bucket>.fsn1.your-objectstorage.com` |
+| Nuremberg | `nbg1` | `https://nbg1.your-objectstorage.com` | `https://<bucket>.nbg1.your-objectstorage.com` |
+| Helsinki | `hel1` | `https://hel1.your-objectstorage.com` | `https://<bucket>.hel1.your-objectstorage.com` |
+
+Hetzner's [overview](https://docs.hetzner.com/storage/object-storage/overview/) lists the endpoints, and its [S3 tools guide](https://docs.hetzner.com/storage/object-storage/getting-started/using-s3-api-tools/) says the endpoint has to include the bucket's location. The two columns do different jobs:
+
+- **The endpoint** is what an S3 client is configured with. `hetzner()` builds it from `region`, so you don't pass it.
+- **The bucket URL** is where objects live, and the host every request and signed URL uses. Bucket names are [unique across all Hetzner customers and locations](https://docs.hetzner.com/storage/object-storage/faq/buckets-objects/), and the name becomes part of this hostname.
+
+`region` also serves as the SigV4 signing region: a signed URL's `X-Amz-Credential` ends in `/fsn1/s3/aws4_request`.
+
+Two configurations look plausible and aren't:
+
+- **The bucket URL as `endpoint`.** The adapter prepends the bucket again and signs for `uploads.uploads.fsn1.your-objectstorage.com`. Leave `endpoint` unset; it's only for routing through your own proxy.
+- **`forcePathStyle: true`.** It moves the bucket into the path (`fsn1.your-objectstorage.com/uploads/<key>`). Hetzner's AWS CLI example switches to virtual-hosted addressing before it creates presigned URLs, and `hetzner()` already uses virtual-hosted addressing by default, so leave the option off.
+
+## Configure the adapter
+
+```bash title=".env"
+HCLOUD_ACCESS_KEY_ID=your-access-key
+HCLOUD_SECRET_ACCESS_KEY=your-secret-key
+```
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { hetzner } from "files-sdk/hetzner";
+
+export const files = createFiles({
+  adapter: hetzner({
+    bucket: "uploads",
+    region: "fsn1", // the bucket's location: fsn1, nbg1, or hel1
+  }),
+});
+```
+
+The adapter reads only those two environment variables. `region` and `bucket` have no environment fallback; without a `region`, the adapter throws ``hetzner adapter: missing region. Pass `region` (e.g. "fsn1").`` at construction. Keep the variables server-side; nothing here belongs in browser code.
+
+## Upload files
+
+```ts title="scripts/upload-report.ts" lineNumbers
+import { readFile } from "node:fs/promises";
+
+import { files } from "../lib/files";
+
+const bytes = await readFile("./q3-report.pdf");
+
+const result = await files.upload("reports/2026/q3.pdf", bytes, {
+  contentType: "application/pdf",
+  metadata: { "uploaded-by": "billing-job" },
+});
+
+console.log(result.key, result.size, result.etag);
+```
+
+Hetzner allows up to 8 kB of metadata per object and up to 5 GB in a single `PUT`. For anything over 100 MB, Hetzner [strongly recommends multipart uploads](https://docs.hetzner.com/storage/object-storage/faq/general/). Pass `multipart` and stream the file from disk:
+
+```ts title="scripts/upload-large.ts" lineNumbers
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
+
+import { files } from "../lib/files";
+
+const path = "./backup-2026-10-08.tar.gz";
+const { size } = await stat(path);
+
+await files.upload(
+  "backups/2026-10-08.tar.gz",
+  Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>,
+  {
+    contentType: "application/gzip",
+    multipart: { partSize: 16 * 1024 * 1024, concurrency: 4 },
+    onProgress: ({ loaded }) => {
+      console.log(`${Math.round((loaded / size) * 100)}%`);
+    },
+  }
+);
+```
+
+Up to `partSize × concurrency` (64 MiB here) sits in memory at once. Hetzner caps an upload at 10,000 parts and an object at 5 TB, so raise `partSize` for very large files. Hetzner also [closes a connection](https://docs.hetzner.com/storage/object-storage/troubleshooting/http-400/) that sends no data for 60 seconds. Files SDK doesn't retry a failed stream upload as a whole, because a stream can't be read twice. To pick up where a long upload stopped, give it a known-length body such as a `Blob` and a resumable `control`, as in [Resume an S3 multipart upload after a process restart](/guides/resume-s3-multipart-upload).
+
+## Share private files with signed URLs
+
+Buckets are private by default. To hand one file to a signed-in user, check the session, then redirect to a short-lived presigned `GET`:
+
+```ts title="src/download.ts" lineNumbers
+import { getSession } from "../lib/auth";
+import { files } from "../lib/files";
+
+const SAFE_NAME = /^[\w.-]+$/;
+
+export async function handleDownload(request: Request): Promise<Response> {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in first", { status: 401 });
+  }
+
+  const name = new URL(request.url).searchParams.get("name") ?? "";
+  if (!SAFE_NAME.test(name)) {
+    return new Response("Bad file name", { status: 400 });
+  }
+
+  // The key comes from the session, never from the client.
+  const key = `reports/${session.user.id}/${name}`;
+  if (!(await files.exists(key))) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const url = await files.url(key, {
+    expiresIn: 300,
+    responseContentDisposition: `attachment; filename="${name}"`,
+  });
+  return Response.redirect(url, 302);
+}
+```
+
+`getSession` stands in for your auth library (Better Auth, Clerk, Auth.js, or your own cookie check); this example assumes it takes request headers and returns `{ user: { id: string } }` or `null`. The handler takes a Web `Request`, so it drops into a Next.js route handler, Hono, or `Bun.serve`.
+
+What the signed URL carries:
+
+- **The bucket host.** The URL is for `https://uploads.fsn1.your-objectstorage.com/reports/…` and signs the `host` header, so it only works on that hostname. Pointing a proxy domain at it breaks the signature.
+- **An expiry.** `expiresIn` is in seconds; without it, `url()` uses the adapter's `defaultUrlExpiresIn` of 3600. The SDK refuses more than 7 days with `Hetzner error: presigned URLs must expire within 604800 seconds (7 days), the SigV4 limit`.
+- **A download disposition.** `responseContentDisposition` asks the server to send `Content-Disposition: attachment`, so browsers save the file instead of rendering it on the bucket's origin.
+
+If every object in a bucket can be public, Hetzner can make the bucket public in the Console, and anyone can then read `https://<bucket>.<location>.your-objectstorage.com/<key>`. Set `publicBaseUrl` to that origin and `url()` returns permanent links without signing. Hetzner doesn't support [custom domains](https://docs.hetzner.com/storage/object-storage/supported-actions/) on buckets directly; its how-to guides put a CNAME or reverse proxy in front instead, and that proxy's origin is what goes in `publicBaseUrl`.
+
+For a full browser app, the gateway from `files-sdk/api` does this check-then-redirect for you. The [Next.js guide's route](/guides/nextjs-r2-file-upload#mount-the-gateway) works with this `files` instance unchanged.
+
+## Let browsers upload directly
+
+A browser that `PUT`s to a presigned URL is making a cross-origin request to the bucket host, so the bucket needs a CORS rule. Hetzner supports `PutBucketCors`, and its [CORS how-to](https://docs.hetzner.com/storage/object-storage/howto-protect-objects/cors/) applies rules with the AWS CLI or s3cmd. From TypeScript, `files.raw` is the adapter's own `S3Client`, already pointed at your location:
+
+```ts title="scripts/set-cors.ts" lineNumbers
+import { GetBucketCorsCommand, PutBucketCorsCommand } from "@aws-sdk/client-s3";
+
+import { files } from "../lib/files";
+
+// files.raw is the adapter's S3Client, already pointed at the fsn1 endpoint.
+await files.raw.send(
+  new PutBucketCorsCommand({
+    Bucket: "uploads",
+    CORSConfiguration: {
+      CORSRules: [
+        {
+          AllowedOrigins: ["http://localhost:3000", "https://app.example.com"],
+          AllowedMethods: ["PUT"],
+          AllowedHeaders: ["Content-Type"],
+          MaxAgeSeconds: 3600,
+        },
+      ],
+    },
+  })
+);
+
+const { CORSRules } = await files.raw.send(
+  new GetBucketCorsCommand({ Bucket: "uploads" })
+);
+console.log(JSON.stringify(CORSRules, null, 2));
+```
+
+With the AWS CLI, put the same rule in `cors.json` as `{ "CORSRules": [ … ] }` and run:
+
+```bash
+aws s3api put-bucket-cors --bucket uploads \
+  --cors-configuration file://cors.json \
+  --endpoint-url https://fsn1.your-objectstorage.com --region fsn1
+```
+
+List exact origins (scheme, host, and port), not `*`. Then send a preflight to the bucket host. Hetzner's how-to checks its `GET` rule with a similar curl request; for uploads, ask about `PUT`:
+
+```bash
+curl -i -X OPTIONS "https://uploads.fsn1.your-objectstorage.com/cors-check" \
+  -H "Origin: http://localhost:3000" \
+  -H "Access-Control-Request-Method: PUT" \
+  -H "Access-Control-Request-Headers: content-type"
+```
+
+A matching rule answers with `Access-Control-Allow-Origin: http://localhost:3000`.
+
+With the rule in place, mint upload URLs on the server, after your own session check. The gateway's presign step does this for you; called directly it looks like this:
+
+```ts title="lib/presign.ts" lineNumbers
+import { files } from "./files";
+
+// Call this only for a signed-in user; the key stays under their prefix.
+export function presignAvatarUpload(userId: string) {
+  // Resolves to { method: "PUT", url, headers: { "Content-Type": "image/png" } }
+  return files.signedUploadUrl(`users/${userId}/${crypto.randomUUID()}.png`, {
+    expiresIn: 300,
+    contentType: "image/png",
+  });
+}
+```
+
+The browser sends the file to `url` with `headers`. In files-sdk 2.6, the `PUT` URL from `hetzner()` signs only `host`, so the `Content-Type` is advisory: a client can store a different type under the key than the one you asked for. If you serve uploads from a public bucket, read the stored type with `files.head(key)` before you trust it, and keep downloads on `attachment` as above.
+
+### Size limits need a POST policy
+
+A presigned `PUT` can't limit how many bytes arrive. Passing `maxSize` to `signedUploadUrl()`, or `maxUploadSize` to the gateway, switches `hetzner()` to an S3 `POST` policy with a `content-length-range` condition. The result is `{ method: "POST", url: "https://uploads.fsn1.your-objectstorage.com/", fields }`, and the client posts a form to the bucket.
+
+Hetzner's [list of supported actions](https://docs.hetzner.com/storage/object-storage/supported-actions/) doesn't mention `POST` uploads either way. Run this against your bucket before you depend on it:
+
+```ts title="scripts/check-post-policy.ts" lineNumbers
+import { files } from "../lib/files";
+
+const key = "checks/post-policy.txt";
+const target = await files.signedUploadUrl(key, {
+  expiresIn: 60,
+  contentType: "text/plain",
+  maxSize: 1024,
+});
+if (target.method !== "POST") {
+  throw new Error("Expected a POST policy");
+}
+
+// One upload under the 1 KiB limit, one over it.
+for (const size of [100, 2048]) {
+  const form = new FormData();
+  for (const [name, value] of Object.entries(target.fields)) {
+    form.append(name, value);
+  }
+  form.append("file", new Blob(["x".repeat(size)], { type: "text/plain" }));
+  const res = await fetch(target.url, { method: "POST", body: form });
+  console.log(`${size} bytes: ${res.status}`, (await res.text()).slice(0, 200));
+}
+
+await files.delete(key);
+```
+
+Against a local MinIO server, which implements `POST` policies, the script printed `204` for 100 bytes and `400` with `EntityTooLarge` for 2,048. On Hetzner, the same pair means the limit is enforced. Two successes mean the policy is ignored; two failures mean `POST` uploads aren't accepted.
+
+If the check passes, add `POST` to the rule's `AllowedMethods`, since browser uploads now arrive as form posts. If it fails, don't set `maxUploadSize` on a Hetzner gateway. The gateway only falls back to proxying when signing throws, and signing a `POST` policy succeeds, so every browser upload would fail at the bucket instead. Check sizes after upload, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land), or proxy uploads through your own route. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) compares the options across providers.
+
+## Troubleshooting
+
+Separate signing problems from CORS problems first. Replay the request with curl, which ignores CORS: if curl fails too, it's signing or addressing; if curl succeeds and only the browser fails, it's CORS.
+
+### Signing and addressing
+
+**`403` from the bucket.** Read the `<Code>` in the XML body curl prints. For `SignatureDoesNotMatch`, check that the secret belongs to the access key ID, that nothing changed the URL after signing (re-encoding the key, adding query parameters), and that the request still goes to the bucket host the URL was signed for.
+
+**A URL that worked earlier now fails.** It has probably expired. Signed URLs live for `expiresIn` seconds from the `X-Amz-Date` in the URL. Mint a new one when you need it rather than storing them.
+
+**`getaddrinfo ENOTFOUND uploads.eu-central.your-objectstorage.com`.** `region` isn't a location code, so the host doesn't exist. Use `fsn1`, `nbg1`, or `hel1`, matching the bucket's location.
+
+**Requests for `uploads.uploads.fsn1.your-objectstorage.com`.** The bucket URL was passed as `endpoint`. Remove `endpoint`.
+
+**`400 Bad Request` with "Your browser sent an invalid request."** Hetzner [rejects requests](https://docs.hetzner.com/storage/object-storage/troubleshooting/http-400/) whose `Host` header isn't the bucket's domain, which happens behind a custom domain or a misconfigured proxy. The same page lists connections idle for 60 seconds as the other cause.
+
+**`503` under load.** Hetzner's [FAQ](https://docs.hetzner.com/storage/object-storage/faq/general/) describes temporary limits in Nuremberg that answer `503` when exceeded, and warns that clients without retry logic may abort. The AWS SDK client inside `hetzner()` already retries a few times with backoff, so a `503` that still reaches you means sustained load. Spread bursts out: Hetzner allows up to 750 requests per second per bucket and per source IP.
+
+### CORS
+
+**`network error during upload` from `files-sdk/client`, with a CORS error in the console.** The browser blocked the request. Run the curl preflight above with your page's exact origin. If `Access-Control-Allow-Origin` is missing, the rule doesn't cover that origin, method, or `Content-Type`. Read back what Hetzner stored with `GetBucketCorsCommand` or `aws s3api get-bucket-cors`.
+
+**Uploads fail only after you set `maxUploadSize`.** The gateway switched to `POST` policies. Either the bucket's CORS rule lacks `POST`, or Hetzner refused the form. Run the check script above to tell which.
+
+**`upload failed (403)` from the client.** The bucket answered with CORS headers and refused the request, so the rule matched and the cause is on the signing side above.

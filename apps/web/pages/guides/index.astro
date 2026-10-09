@@ -1,0 +1,194 @@
+---
+// The guides hub (/guides). The guides themselves are MDX under guides/, one
+// `(section)` folder per sidebar section, so this page reads the sections, their
+// order, and their guides from the generated sidebar rather than a second list:
+// a new guide shows up here as soon as it lands in a folder. Each guide's full
+// title and description come from its route (the sidebar row carries the short
+// `sidebar.label`). The list is also emitted as schema.org ItemList structured
+// data, so search and answer engines read it as a collection of the guides it
+// links to.
+import Icon from "blume/components/Icon.astro";
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import { componentSlug } from "blume/components/slug.ts";
+import data from "blume:data";
+
+import FinalCta from "@/components/home/final-cta.astro";
+import Footer from "@/components/home/footer.astro";
+
+type NavNode = (typeof data.navigation.sidebar)[number];
+type NavGroup = Extract<NavNode, { kind: "group" }>;
+
+const { config } = data;
+const route = "/guides";
+// Custom pages get no site-title suffix, so it's spelled out like the docs'.
+const pageTitle = "Guides - Files SDK";
+const pageDescription =
+  "Complete storage workflows with Files SDK: browser uploads to R2 and S3, private downloads, AI attachments and agent tools, provider setup, and migrations.";
+
+const isGroup = (node: NavNode): node is NavGroup => node.kind === "group";
+
+// The guides folder's group, wherever the tree nests it.
+const findGuides = (nodes: NavNode[]): NavGroup | undefined => {
+  for (const node of nodes) {
+    if (isGroup(node)) {
+      if (node.path === route && node.children.every(isGroup)) {
+        return node;
+      }
+      const found = findGuides(node.children);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return undefined;
+};
+
+const routes = new Map(data.routes.map((entry) => [entry.path, entry]));
+const sections = (findGuides(data.navigation.sidebar)?.children ?? [])
+  .filter(isGroup)
+  .map((section) => ({
+    guides: section.children.flatMap((node) => {
+      const entry = node.kind === "page" ? routes.get(node.route) : undefined;
+      return entry
+        ? [
+            {
+              description: entry.description ?? "",
+              href: entry.path,
+              title: entry.title,
+            },
+          ]
+        : [];
+    }),
+    id: componentSlug(section.label),
+    title: section.label,
+  }))
+  .filter((section) => section.guides.length > 0);
+
+const guides = sections.flatMap((section) => section.guides);
+const itemList = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "ItemList",
+  itemListElement: guides.map((guide, index) => ({
+    "@type": "ListItem",
+    name: guide.title,
+    position: index + 1,
+    url: config.site ? new URL(guide.href, config.site).href : guide.href,
+  })),
+  name: "Files SDK guides",
+}).replaceAll("<", "\\u003c");
+---
+
+<PageLayout
+  analytics={config.analytics}
+  appleIcon={config.appleIcon}
+  banner={config.banner}
+  clientData={{
+    config: data.config,
+    navigation: data.navigation,
+    page: { route, title: pageTitle },
+  }}
+  favicon={config.favicon}
+  fontCssVars={data.fontCssVars}
+  logo={config.logo}
+  navigation={data.navigation}
+  ogEnabled={config.og.enabled}
+  page={{ description: pageDescription, route, title: pageTitle }}
+  searchEnabled={config.search.enabled}
+  site={{ title: config.title, description: config.description }}
+  siteUrl={config.site}
+  structuredDataEnabled={config.structuredData}
+  themeMode={config.theme.mode}
+  ui={data.ui}
+>
+  <div class="isolate">
+    <section class="overflow-x-clip">
+      <div class="mx-auto max-w-7xl px-6 pt-14 pb-16 sm:pt-20 sm:pb-20 lg:px-8">
+        <h1
+          class="max-w-[16ch] font-display text-6xl font-semibold tracking-tighter text-balance text-neutral-950 sm:text-7xl lg:text-8xl dark:text-white"
+        >
+          Build the <span
+            class="dog-ear -ml-[0.04em] inline-block bg-highlighter px-[0.12em] pb-[0.04em] text-neutral-950 [--fold-color:var(--color-neutral-950)] [--fold:0.28em] dark:[--fold-color:var(--color-white)]"
+            >whole thing.</span
+          >
+        </h1>
+        <p
+          class="mt-10 max-w-[56ch] text-xl/8 text-pretty text-neutral-600 dark:text-neutral-400"
+        >
+          The docs cover each method, adapter, and component on its own. Each
+          guide here connects them into one working storage feature, from the
+          bucket's setup to the browser, and says plainly where a provider
+          can't do what you need.
+        </p>
+
+        <nav aria-label="Guide sections" class="mt-12">
+          <ul class="flex flex-wrap gap-2" role="list">
+            {
+              sections.map((section) => (
+                <li>
+                  <a
+                    class="inline-flex h-9 items-center border border-neutral-950/15 px-3 font-mono text-sm text-neutral-950 hover:bg-neutral-950/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:border-white/15 dark:text-white dark:hover:bg-white/5 dark:focus-visible:outline-white"
+                    href={`#${section.id}`}
+                  >
+                    {section.title}
+                  </a>
+                </li>
+              ))
+            }
+          </ul>
+        </nav>
+      </div>
+    </section>
+
+    {
+      sections.map((section) => (
+        <section
+          aria-labelledby={section.id}
+          class="scroll-mt-16 border-t border-neutral-950/5 dark:border-white/10"
+        >
+          <div class="mx-auto max-w-7xl px-6 py-16 sm:py-20 lg:px-8">
+            <h2
+              class="font-display text-3xl font-semibold tracking-tight text-balance text-neutral-950 sm:text-4xl dark:text-white"
+              id={section.id}
+            >
+              {section.title}
+            </h2>
+            <ul
+              class="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+              role="list"
+            >
+              {section.guides.map((guide) => (
+                <li class="flex">
+                  <a
+                    class="group flex w-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:focus-visible:outline-white"
+                    href={guide.href}
+                  >
+                    <article class="dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 [--fold-color:var(--color-highlighter)] [--fold:--spacing(6)] group-hover:border-neutral-950/35 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25">
+                      <h3 class="pr-6 font-display text-xl font-semibold tracking-tight text-balance text-neutral-950 dark:text-white">
+                        {guide.title}
+                      </h3>
+                      <p class="mt-3 text-base/7 text-pretty text-neutral-600 sm:text-sm/6 dark:text-neutral-400">
+                        {guide.description}
+                      </p>
+                      <span class="mt-auto inline-flex items-center gap-1.5 pt-6 text-base font-semibold text-neutral-950 sm:text-sm dark:text-white">
+                        Read the guide
+                        <Icon class="size-4 shrink-0" name="arrow-right" />
+                      </span>
+                    </article>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      ))
+    }
+
+    <FinalCta />
+  </div>
+  {
+    config.structuredData && (
+      <script is:inline set:html={itemList} type="application/ld+json" />
+    )
+  }
+  <Footer slot="footer" />
+</PageLayout>

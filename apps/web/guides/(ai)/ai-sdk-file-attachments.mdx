@@ -1,0 +1,556 @@
+---
+title: Add persistent, private file attachments to an AI SDK chat app
+description: Users attach images and PDFs to an AI SDK 7 chat. Files stay in a private bucket, and each message stores only a key that is re-authorized on every read.
+sidebar:
+  label: AI SDK chat attachments
+seo:
+  title: Private file attachments in AI SDK chat
+related:
+  - /guides/ai-sdk-storage-tools
+  - /guides/nextjs-r2-file-upload
+  - /docs/ui/client/react
+  - /docs/ui/server/authorization
+  - /docs/prefixes
+---
+
+The browser uploads straight to R2 through the Files SDK gateway, and the message keeps only the key, in a `data-attachment` part. Every later read goes back through your server: images load through the gateway's session check, and the chat route mints a fresh signed URL (or reads the bytes) each time it sends the conversation to the model. A stored key grants nothing on its own and never expires.
+
+The decision that matters is how the model receives each file. A short-lived signed URL keeps the bytes off your server, but only when the provider fetches that URL for that media type. Otherwise your server reads the bytes, after `head()` confirms the size. [Signed URL or bytes](#signed-url-or-bytes) covers when each fits.
+
+## Before you start
+
+- An R2 bucket, API token, and CORS rule, set up as in [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload). This guide reuses its gateway and skips the CORS and `FILES_API_SECRET` details.
+- A Next.js App Router app with server-side auth, and a database table for chats.
+- A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key and a model that accepts images and PDFs. An AI SDK provider instance works in place of the Gateway model ID.
+- Written against files-sdk 2.6, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
+
+```package-install
+files-sdk ai @ai-sdk/react zod
+```
+
+```bash title=".env.local"
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+FILES_API_SECRET=a-long-random-string
+AI_GATEWAY_API_KEY=your-gateway-key
+# A Gateway model ID ("creator/model") that accepts images and PDFs
+AI_MODEL=creator/model
+```
+
+## How an attachment moves
+
+| Step | Path | What happens |
+| --- | --- | --- |
+| Attach | Browser → `/api/files` → R2 | `useFiles().upload(file)` presigns, `PUT`s to R2, and completes. The gateway picks the key (`3f1c….png`) under `users/<id>/`. |
+| Send | Browser → `/api/chat` | The message carries `{ key, filename, mediaType }`. The route `head()`s the key under the sender's prefix, then saves the message. |
+| Answer | `/api/chat` → model | Each attachment in the conversation becomes a file part: a five-minute signed URL, or the bytes. None of it is saved. |
+| Reopen | Browser → page → `/api/files` | The page checks the chat's owner. Each image loads through the gateway, which checks the session and redirects to a newly signed URL. |
+
+Uploads use the gateway rather than a server action because of where the bytes go. Server Actions [cap request bodies at 1 MB by default](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions#bodysizelimit) and carry every byte through your function. The gateway signs a `PUT`, so the file goes from the browser to R2 with progress, and the server chooses the key.
+
+## Set up storage and the gateway
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+
+const adapter = r2({ bucket: "uploads", client: "fetch" });
+
+/** The gateway's instance. Its `authorize` scopes each request to one user. */
+export const files = createFiles({ adapter });
+
+/** Server-side reads for one user: keys resolve under `users/<id>/` only. */
+export function filesForUser(userId: string) {
+  return createFiles({ adapter, prefix: `users/${userId}` });
+}
+```
+
+`filesForUser` is for your own server code. With `prefix: "users/42"`, `head("3f1c….png")` reads `users/42/3f1c….png`, a key with `.` or `..` segments throws before any request, and another user's key comes back `NotFound` ([Prefixes](/docs/prefixes)). Import this module only from server code; `import "server-only"` makes an accidental client import fail the build.
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+// Attaching needs `upload`; showing attachments needs `download`.
+const ALLOWED = new Set<FilesOperation>(["upload", "download"]);
+
+const router = createFilesRouter({
+  files,
+  authorize: async ({ operation, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to attach files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    return { keyPrefix: `users/${session.user.id}/`, maxExpiresIn: 300 };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+This is the R2 guide's gateway with a shorter allow-list: `list`, `delete`, and every other operation get a `403`. `getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check) and is assumed to take request headers and return `{ user: { id: string } }` or `null`.
+
+## Define what a message stores
+
+```ts title="lib/chat-types.ts" lineNumbers
+import type { UIMessage } from "ai";
+
+/** What a message stores for each attachment: a key, never a URL or bytes. */
+export interface Attachment {
+  key: string; // relative to the user's prefix, as the gateway returned it
+  filename: string;
+  mediaType: string;
+}
+
+export type ChatMessage = UIMessage<never, { attachment: Attachment }>;
+```
+
+The key is relative, as `upload()` returned it; the gateway strips the user's prefix from everything it sends back. The server overwrites `mediaType` with what storage reports.
+
+The AI SDK's built-in `file` part requires a `url`, and `convertToModelMessages` passes that URL to the model as it is, so persisting one means persisting something that expires. A custom data part holds any shape, and `convertToModelMessages` drops it unless you pass [`convertDataPart`](https://ai-sdk.dev/docs/reference/ai-sdk-ui/convert-to-model-messages), which is where your server decides what the model receives.
+
+Older code used `experimental_attachments`, an array of `{ url, … }` entries on each message, which AI SDK 5 replaced with parts in `message.parts` ([migration guide](https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0)). Those persisted URLs are what this design removes.
+
+## Check and resolve attachments on the server
+
+```ts title="lib/attachments.ts" lineNumbers
+import type { FilePart, TextPart } from "ai";
+import { FilesError, type Files, type StoredFile } from "files-sdk";
+import { z } from "zod";
+
+import type { Attachment } from "./chat-types";
+
+const MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
+const ALLOWED_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+]);
+// Types your model fetches by URL. Everything else is sent as bytes.
+const SEND_AS_URL = new Set(ALLOWED_TYPES);
+// Longer than the chat route's maxDuration, so every step can fetch it.
+const URL_EXPIRES_IN = 300;
+
+export const attachmentSchema = z.object({
+  // Only keys shaped like the ones the gateway mints: a UUID plus extension.
+  key: z.string().regex(/^[0-9a-f-]{36}(\.[a-z0-9]+)?$/),
+  filename: z.string().max(255),
+  mediaType: z.string(),
+});
+
+/** head() the key. null if it isn't under this user's prefix or breaks a rule. */
+async function usable(files: Files, key: string): Promise<StoredFile | null> {
+  try {
+    const stored = await files.head(key);
+    const ok = stored.size <= MAX_BYTES && ALLOWED_TYPES.has(stored.type);
+    return ok ? stored : null;
+  } catch (error) {
+    if (error instanceof FilesError && error.code === "NotFound") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Check a new attachment against storage, not against what the client sent. */
+export async function checkAttachment(
+  files: Files,
+  attachment: Attachment
+): Promise<Attachment | null> {
+  const stored = await usable(files, attachment.key);
+  return stored && { ...attachment, mediaType: stored.type };
+}
+
+/** Build what the model receives for one attachment on this request. */
+export async function toModelPart(
+  files: Files,
+  { key, filename }: Attachment
+): Promise<FilePart | TextPart> {
+  const stored = await usable(files, key);
+  if (!stored) {
+    return { type: "text", text: `[${filename} is unavailable]` };
+  }
+  const mediaType = stored.type;
+  if (SEND_AS_URL.has(mediaType)) {
+    const url = await files.url(key, { expiresIn: URL_EXPIRES_IN });
+    return { type: "file", data: new URL(url), filename, mediaType };
+  }
+  const file = await files.download(key, { as: "stream" });
+  const data = await readAtMost(file.stream(), MAX_BYTES);
+  return { type: "file", data, filename, mediaType };
+}
+
+/** Buffer a stream, giving up as soon as it passes `limit` bytes. */
+async function readAtMost(stream: ReadableStream<Uint8Array>, limit: number) {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      throw new Error(`Attachment is larger than ${limit} bytes`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+```
+
+Every read starts with [`head()`](/docs/api/head) in `usable()`, so no bytes move before the size and type are known:
+
+- **When a message arrives**, `checkAttachment` confirms the key exists under the sender's prefix, is at most 10 MiB, and has an allowed type, and returns the type storage recorded rather than the one the client sent.
+- **Each time the model needs the file**, `toModelPart` checks again. Signing a URL doesn't touch the bucket, so a deleted file would otherwise get a URL the provider can't fetch. The model gets a short note instead.
+- **On the bytes path**, `download(key, { as: "stream" })` returns before the body is read, and `readAtMost` stops at the cap even if the object changed after `head()`. On this adapter a plain `download()` buffers the whole body before it returns, which is too late to check.
+
+`attachmentSchema` accepts only keys shaped like the gateway's, a UUID plus an extension, so `../alice/…` or a full `users/42/…` key fails before any storage call.
+
+## Handle chat requests
+
+```ts title="app/api/chat/route.ts" lineNumbers
+import {
+  convertToModelMessages,
+  createIdGenerator,
+  createUIMessageStreamResponse,
+  safeValidateUIMessages,
+  streamText,
+  toUIMessageStream,
+  type FilePart,
+  type TextPart,
+} from "ai";
+
+import { chatModel } from "@/lib/ai";
+import {
+  attachmentSchema,
+  checkAttachment,
+  toModelPart,
+} from "@/lib/attachments";
+import { getSession } from "@/lib/auth";
+import { loadChat, saveChat } from "@/lib/chat-store";
+import type { ChatMessage } from "@/lib/chat-types";
+import { filesForUser } from "@/lib/files";
+
+export const maxDuration = 60;
+
+export async function POST(req: Request) {
+  const session = await getSession(req.headers);
+  if (!session) {
+    return Response.json({ error: "Sign in" }, { status: 401 });
+  }
+
+  const { id, message } = await req.json();
+  const chat = await loadChat(id);
+  // One answer for "no such chat" and "not your chat".
+  if (!chat || chat.userId !== session.user.id) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // History comes from your database; only `message` comes from the client.
+  const validated = await safeValidateUIMessages<ChatMessage>({
+    messages: [...chat.messages, message],
+    dataSchemas: { attachment: attachmentSchema },
+  });
+  if (!validated.success) {
+    return Response.json({ error: "Invalid message" }, { status: 400 });
+  }
+  const messages = validated.data;
+  const latest = messages.at(-1);
+  if (latest?.role !== "user") {
+    return Response.json({ error: "Expected a user message" }, { status: 400 });
+  }
+
+  const files = filesForUser(session.user.id);
+
+  for (const part of latest.parts) {
+    if (part.type !== "data-attachment") {
+      continue;
+    }
+    const checked = await checkAttachment(files, part.data);
+    if (!checked) {
+      return Response.json(
+        { error: `Can't attach ${part.data.filename}` },
+        { status: 400 }
+      );
+    }
+    part.data = checked;
+  }
+
+  // Fresh URLs (or bytes) for every attachment in the conversation.
+  const modelParts = new Map<string, FilePart | TextPart>();
+  for (const { parts } of messages) {
+    for (const part of parts) {
+      if (part.type === "data-attachment" && !modelParts.has(part.data.key)) {
+        modelParts.set(part.data.key, await toModelPart(files, part.data));
+      }
+    }
+  }
+
+  const result = streamText({
+    model: chatModel(),
+    messages: await convertToModelMessages<ChatMessage>(messages, {
+      convertDataPart: (part) =>
+        part.type === "data-attachment"
+          ? modelParts.get(part.data.key)
+          : undefined,
+    }),
+  });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({
+      stream: result.stream,
+      originalMessages: messages,
+      generateMessageId: createIdGenerator({ prefix: "msg", size: 16 }),
+      onEnd: ({ messages: updated }) => saveChat(id, updated),
+    }),
+  });
+}
+```
+
+```ts title="lib/ai.ts" lineNumbers
+/** An AI Gateway model ID ("creator/model") that accepts images and PDFs. */
+export function chatModel(): string {
+  const id = process.env.AI_MODEL;
+  if (!id) {
+    throw new Error("Set AI_MODEL to an AI Gateway model ID");
+  }
+  return id;
+}
+```
+
+Three things in the route carry the design:
+
+- **History comes from your database.** The client sends only the new message, so it can't rewrite an earlier one or slip a key into it. The ownership check returns the same `404` for a missing chat and someone else's.
+- **Attachments resolve on every turn.** The loop rebuilds a model part for each attachment in the conversation, so no URL is older than the request that uses it.
+- **Only keys are saved.** `onEnd` persists the `data-attachment` parts as they are; the URLs exist only in the request to the model.
+
+`loadChat(id)` and `saveChat(id, messages)` stand in for your database; `loadChat` returns `{ id, userId, messages }` or `null`. The [AI SDK persistence guide](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-message-persistence) covers creating chats and why `generateMessageId` gives saved assistant messages server-side IDs.
+
+## Show a conversation again
+
+```tsx title="app/chat/[id]/page.tsx" lineNumbers
+import { headers } from "next/headers";
+import { notFound } from "next/navigation";
+
+import { getSession } from "@/lib/auth";
+import { loadChat } from "@/lib/chat-store";
+
+import { Chat } from "./chat";
+
+export default async function ChatPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const session = await getSession(await headers());
+  const chat = await loadChat(id);
+  if (!session || !chat || chat.userId !== session.user.id) {
+    notFound();
+  }
+  return <Chat id={id} initialMessages={chat.messages} />;
+}
+```
+
+```tsx title="app/chat/[id]/chat.tsx" lineNumbers
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { useFiles } from "files-sdk/react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
+
+import type { Attachment, ChatMessage } from "@/lib/chat-types";
+
+export function Chat({
+  id,
+  initialMessages,
+}: {
+  id: string;
+  initialMessages: ChatMessage[];
+}) {
+  const files = useFiles();
+  const [input, setInput] = useState("");
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const { messages, sendMessage, status } = useChat<ChatMessage>({
+    id,
+    messages: initialMessages,
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      // The server loads history itself; send only the new message.
+      prepareSendMessagesRequest: ({ messages }) => ({
+        body: { id, message: messages.at(-1) },
+      }),
+    }),
+  });
+
+  async function onPick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    // A failed upload is also reported on `files.error`.
+    const uploaded = await files.upload(file).catch(() => null);
+    if (!uploaded) {
+      return;
+    }
+    setPending((list) => [
+      ...list,
+      { key: uploaded.key, filename: file.name, mediaType: uploaded.type },
+    ]);
+  }
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    sendMessage({
+      parts: [
+        ...pending.map((data) => ({ type: "data-attachment" as const, data })),
+        { type: "text", text: input },
+      ],
+    });
+    setInput("");
+    setPending([]);
+  }
+
+  return (
+    <div>
+      {messages.map((message) => (
+        <div key={message.id}>
+          {message.parts.map((part, index) => {
+            if (part.type === "text") {
+              return <p key={index}>{part.text}</p>;
+            }
+            if (part.type === "data-attachment") {
+              return <AttachmentView attachment={part.data} key={index} />;
+            }
+            return null;
+          })}
+        </div>
+      ))}
+
+      <form onSubmit={onSubmit}>
+        {files.error && <p role="alert">{files.error.message}</p>}
+        <input
+          accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"
+          disabled={files.isUploading}
+          onChange={onPick}
+          type="file"
+        />
+        {pending.map((a) => (
+          <span key={a.key}>{a.filename}</span>
+        ))}
+        <input onChange={(e) => setInput(e.target.value)} value={input} />
+        <button
+          disabled={status !== "ready" || files.isUploading}
+          type="submit"
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function AttachmentView({ attachment }: { attachment: Attachment }) {
+  // The gateway checks the session on every request and redirects to a
+  // freshly signed URL, so this link never expires in an open tab.
+  const href = `/api/files?op=download&key=${encodeURIComponent(attachment.key)}`;
+  if (attachment.mediaType.startsWith("image/")) {
+    return <img alt={attachment.filename} src={href} width={240} />;
+  }
+  return <a href={href}>{attachment.filename}</a>;
+}
+```
+
+The page repeats the ownership check because it's a separate entry point from the route.
+
+Attachment links point at your gateway, built from the key at render time. Each load of `/api/files?op=download&key=…` runs `authorize`, resolves the key under that user's prefix, and `302`s to an R2 URL that expires within 300 seconds. Images display even though the gateway asks for `Content-Disposition: attachment`; a PDF link downloads. Signed URLs minted in the page would expire in a tab left open, and the images would break.
+
+## Signed URL or bytes
+
+`SEND_AS_URL` in `lib/attachments.ts` decides, per media type, which path `toModelPart` takes.
+
+|  | Signed URL | Bytes from your server |
+| --- | --- | --- |
+| Who reads the bucket | The model provider (or the AI Gateway), over the internet | Your route, through `files.download()` |
+| Bucket reachable from the internet | Required for the URL's lifetime | Not required: private networks and a local MinIO work |
+| Memory in your function | None, if the model fetches the URL itself | Up to the cap per attachment, on every turn |
+| Request to the provider | A URL per file | The file itself, base64-encoded by most provider APIs (about a third larger) |
+| Holds a credential to the file | The provider, until the URL expires | Nobody outside your server |
+| Typical failure | The provider can't reach the URL, or it expires mid-request | The request exceeds the provider's size limit |
+
+Each AI SDK model declares which URLs it passes on in `supportedUrls`, per media type. When a file's URL isn't listed, the AI SDK downloads the file in your process before calling the provider, under its own 2 GiB default limit rather than yours. Check `await model.supportedUrls` for your model. What the provider packages declare:
+
+| Model | URLs it passes to the provider |
+| --- | --- |
+| AI Gateway model ID string (`@ai-sdk/gateway` 4.0) | All of them. Vercel's [file input docs](https://vercel.com/docs/ai-gateway/inputs-and-tools/file-input) only ask that the provider can retrieve the URL without your app's session; they don't say whether the Gateway fetches it for a provider that can't. |
+| OpenAI Responses (`@ai-sdk/openai` 4.0) | `image/*` and `application/pdf` over `http(s)` |
+| OpenAI Chat Completions (`@ai-sdk/openai` 4.0) | `image/*` only |
+| Anthropic ([provider source](https://github.com/vercel/ai/blob/main/packages/anthropic/src/anthropic-provider.ts)) | `image/*` and `application/pdf` over `http(s)` |
+| Google Generative AI | Google Files API and YouTube URLs; [its provider docs](https://ai-sdk.dev/providers/ai-sdk-providers/google-generative-ai) say the AI SDK downloads any other URL |
+
+Use signed URLs when the bucket is on the public internet (R2 and S3 are) and the model fetches the type. Send bytes when you develop against a local or private endpoint, when the model doesn't fetch a type, or when no third party should hold a link to the file. To switch, remove types from `SEND_AS_URL`. Keep `URL_EXPIRES_IN` above `maxDuration`: a multi-step response makes several provider calls with the same messages, and the URL has to outlast the last one.
+
+A third option is `uploadFile` from `ai`, which copies the file into a provider's own Files API (Anthropic, Google, OpenAI, and xAI) and returns a `providerReference` you can store next to the key. It saves re-sending the file every turn, but ties the conversation to that provider and leaves a copy there under its retention rules. See [File uploads](https://ai-sdk.dev/docs/ai-sdk-core/file-uploads).
+
+## How the isolation holds
+
+These results come from running this guide's gateway and chat route locally against the memory adapter, with a scripted `MockLanguageModelV4` from `ai/test` in place of a real model. They show what the app's code does, not how R2 behaves.
+
+| Attempt | Stopped by | Response |
+| --- | --- | --- |
+| Signed out | `getSession` | `401` |
+| Bob posts to Alice's chat ID | Ownership check in the route | `404` `Not found` |
+| Bob attaches Alice's key in his own chat | `head()` under `users/bob/` finds nothing | `400` `Can't attach x.png` |
+| Bob attaches `../alice/<key>` | `attachmentSchema` | `400` `Invalid message` |
+| Bob loads `/api/files?op=download&key=<Alice's key>` | Gateway `keyPrefix`: the key resolves to `users/bob/<key>` | `404` (see below) |
+| Bob loads the same with `../alice/<key>` | Gateway key validation | `422` |
+| Alice attaches an 11 MiB PDF | `head()` size check | `400` `Can't attach big.pdf` |
+| Alice's client labels a PNG `image/gif` | `checkAttachment` | Stored and sent as `image/png` |
+
+The memory adapter can't sign, so its gateway proxies downloads and answers the cross-user request itself. On R2 the gateway redirects without checking that the object exists: Bob gets a `302` to a signed URL for `users/bob/<key>`, which R2 answers with a `404`. Either way he never gets a URL for Alice's object.
+
+The same run showed each turn minting a new URL for an earlier attachment, and a file deleted from storage reaching the model as `[cat.png is unavailable]` rather than as a dead URL.
+
+## Limits
+
+- **Size is enforced when a file is attached, not when it's uploaded.** An R2 presigned `PUT` can't cap size, so an oversized upload still lands in the bucket; `checkAttachment` only refuses to use it. [Limit upload size](/guides/nextjs-r2-file-upload#limit-upload-size) covers proxying uploads or cleaning up.
+- **The stored type is what the browser declared.** The allow-list rejects types you don't accept, not files whose bytes don't match their label. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) covers checking the bytes.
+- **Every turn re-sends every attachment.** On the URL path that's a `HEAD` and a signature per file. On the bytes path it's a full read, so five 10 MiB PDFs in one conversation means 50 MiB read per request. Cap attachments per conversation if that adds up.
+- **Regenerating isn't handled.** With this transport, `regenerate()` sends the last user message again and the route appends it a second time. Send the trigger in the body and trim the stored history instead, as the [persistence guide](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-message-persistence) shows.
+
+For a model that browses and changes stored files itself, rather than reading what a user attached, see [approval-gated storage tools](/guides/ai-sdk-storage-tools).
+
+## Troubleshooting
+
+**`AI_DownloadError: URL with IP address 127.0.0.1 is not allowed`** (or `URL with hostname localhost is not allowed`). The model doesn't fetch that URL, so the AI SDK tried to download it, and its downloader refuses local and private addresses. This happens when you sign URLs against a local MinIO. Send bytes in development.
+
+**The provider says it couldn't fetch or download the file.** The bucket isn't reachable from the provider, or the URL expired before a later step used it. Raise `URL_EXPIRES_IN` above `maxDuration`, or send bytes for that type.
+
+**`400` with `Can't attach …`.** `head()` found no object under the sender's prefix (the upload never completed, or the key belongs to someone else), or the file is over 10 MiB or not an allowed type.
+
+**`400` with `Invalid message`.** The attachment failed `attachmentSchema`, often because the client sent a full `users/<id>/…` key instead of the relative key `upload()` returned.
+
+**Images break after a reload.** Check the `/api/files` request in the browser's network panel. A `401` means the session cookie isn't reaching the route handler. A `302` followed by a `404` from R2 means the object isn't under the signed-in user's prefix: it was deleted, or the conversation belongs to someone else.
+
+**`upload token signature` when attaching.** Presign and complete were verified with different secrets. Set the same `FILES_API_SECRET` everywhere the route runs.

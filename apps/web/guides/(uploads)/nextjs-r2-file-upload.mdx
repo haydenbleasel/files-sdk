@@ -1,0 +1,312 @@
+---
+title: Build a Next.js file uploader with Cloudflare R2
+description: Signed-in users upload from a Next.js app straight to a private R2 bucket with progress, then download only their own files through short-lived signed URLs.
+sidebar:
+  label: Next.js uploads to R2
+related:
+  - /guides/r2-cors-presigned-url-errors
+  - /guides/presigned-upload-validation
+  - /guides/vercel-large-file-upload
+  - /docs/ui/server/next
+  - /docs/adapters/r2
+---
+
+Your server never carries the file bytes. One Next.js route checks the session, mints a key under that user's prefix, and signs a short-lived `PUT` URL, and the browser sends the file to R2 directly while it reports progress. Downloads work the same way: the route checks the session and redirects to a signed `GET` URL, so each user reaches their own files and nobody else's.
+
+The catch is size limits. R2 doesn't implement S3's `POST` upload policies, so a presigned URL can't cap how many bytes a client sends. If you need a hard limit, you either route uploads through your server or check each object after it lands. [Limit upload size](#limit-upload-size) covers both.
+
+## Before you start
+
+- A Cloudflare account with R2 enabled, a bucket (this guide calls it `uploads`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** on that bucket. The token gives you an access key ID and secret access key; your account ID is on the R2 overview page.
+- A Next.js App Router app with an auth library that can resolve the signed-in user on the server.
+- Written against files-sdk 2.6, Next.js 16.4, and React 19.3.
+
+```package-install
+files-sdk
+```
+
+That's the only package. The R2 adapter's `client: "fetch"` engine signs requests with [aws4fetch](https://github.com/mhart/aws4fetch) and Web Crypto, so you don't need any `@aws-sdk/*` packages for this setup.
+
+## How an upload flows
+
+`files-sdk/react` and the gateway in `files-sdk/api` share a three-step protocol. You don't call these steps yourself; `upload(file)` runs them. Knowing them makes the setup and the errors easier to follow.
+
+| Step | Request | What happens |
+| --- | --- | --- |
+| 1. Presign | Browser → `POST /api/files` | Your `authorize` hook runs. The gateway mints a key like `users/42/3f1c….pdf`, asks R2 for a presigned `PUT` URL, and signs an HMAC token for the key. |
+| 2. Upload | Browser → R2 | The browser `PUT`s the file to the presigned URL with `XMLHttpRequest`, which reports upload progress. This is a cross-origin request, so the bucket needs a CORS rule. |
+| 3. Complete | Browser → `POST /api/files` | The gateway verifies the token, `head`s the object in R2, and returns its key, size, type, and ETag. |
+
+The server chooses the key, so a client can't overwrite another user's file or pick a path outside its prefix.
+
+## Add the credentials
+
+```bash title=".env.local"
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+# Signs the presign → complete token. Generate with: openssl rand -hex 32
+FILES_API_SECRET=a-long-random-string
+```
+
+The R2 adapter reads the three `R2_*` variables itself. `FILES_API_SECRET` matters more than it looks. Without it, the gateway falls back to a random secret per process and logs a warning. That works on one dev server, but in production the presign and complete requests can land on different instances. The complete step then fails with `upload token signature`.
+
+None of these variables has a `NEXT_PUBLIC_` prefix, and none should. They stay on the server.
+
+## Create the storage instance
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+
+export const files = createFiles({
+  adapter: r2({ bucket: "uploads", client: "fetch" }),
+});
+```
+
+Import this module only from server code: route handlers, server actions, and server components. If you use the [`server-only`](https://nextjs.org/docs/app/getting-started/server-and-client-components#preventing-environment-poisoning) package, add `import "server-only"` at the top so an accidental client import fails the build.
+
+## Mount the gateway
+
+One route handler serves every file operation the browser needs. `authorize` runs before each one: it rejects anonymous requests, allows only the operations your UI uses, and scopes every key to the signed-in user.
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+// The verbs this app's UI calls. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "url",
+  "download",
+  "delete",
+]);
+
+const router = createFilesRouter({
+  files,
+  authorize: async ({ operation, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    return {
+      keyPrefix: `users/${session.user.id}/`,
+      maxExpiresIn: 300,
+    };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library: Auth.js's `auth()`, Clerk's `auth()`, Better Auth's `auth.api.getSession({ headers })`, or your own cookie check. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+A few details in that file are deliberate:
+
+- **Throw a `FilesError`, not a plain `Error`.** The gateway maps `Unauthorized` to `401` and `ReadOnly` to `403`. Any other thrown error becomes a `500`.
+- **`keyPrefix` is enforced on the server.** When the browser asks for `report.pdf`, the gateway reads `users/42/report.pdf`. Keys that try to climb out with `..` are rejected, and `list` results come back with the prefix stripped. See [Authorization](/docs/ui/server/authorization) for the rest of the constraint object.
+- **`maxExpiresIn: 300`** caps how long any signed URL from this route lives. The gateway's own default is also 300 seconds, but a client can ask for longer. The cap is what stops it.
+- **Origins.** State-changing requests must come from the route's own origin by default. That's right when the page and the API share a domain; add `allowedOrigins` only if they don't.
+
+## Let the browser PUT to R2
+
+Step 2 is a cross-origin `PUT` from your site to `<account-id>.r2.cloudflarestorage.com`, so the bucket needs a CORS rule allowing it. In the Cloudflare dashboard, open the bucket, go to **Settings → CORS Policy**, and add:
+
+```json lineNumbers
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://app.example.com"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["Content-Type"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Each part of this rule matches something the upload sends:
+
+- **`PUT`** is the only method the browser uses against R2 in this guide. Downloads are top-level navigations to a signed URL, and those aren't CORS requests. Add `GET` only if you call `download()` from JavaScript, because that `fetch` follows the redirect to R2.
+- **`Content-Type`** is the one header the upload sends. The `fetch` engine signs the file's type into the URL, so the browser has to send that exact header, and R2 rejects a different one.
+- **`AllowedOrigins`** lists exact origins (scheme, host, and port, no path). Cloudflare allows wildcards, but [CORS failures on R2](/guides/r2-cors-presigned-url-errors) are rarely fixed by widening this list. Don't reach for `*`.
+
+[Cloudflare's CORS docs](https://developers.cloudflare.com/r2/buckets/cors/) say changes can take up to 30 seconds to apply. To check the rule before you touch the UI, send the preflight request yourself:
+
+```bash
+curl -i -X OPTIONS "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com/uploads/cors-check" \
+  -H "Origin: http://localhost:3000" \
+  -H "Access-Control-Request-Method: PUT" \
+  -H "Access-Control-Request-Headers: content-type"
+```
+
+A matching rule answers with `Access-Control-Allow-Origin: http://localhost:3000`. If that header is missing, fix the rule before you go further.
+
+## Build the upload page
+
+`useFiles` talks to `/api/files` by default. Its `upload(file)` runs all three steps and keeps per-file state you can render. `useList` fetches the current user's files and refetches on demand.
+
+```tsx title="app/files/file-manager.tsx" lineNumbers
+"use client";
+
+import type { ChangeEvent } from "react";
+import { useFiles, useList } from "files-sdk/react";
+
+export function FileManager() {
+  const files = useFiles();
+  const list = useList({ limit: 100 });
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const selected = [...(event.target.files ?? [])];
+    event.target.value = "";
+    // Each rejection is also recorded on its `files.uploads` entry.
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    list.refetch();
+  }
+
+  return (
+    <section>
+      <label>
+        Upload files
+        <input multiple onChange={onSelect} type="file" />
+      </label>
+
+      <ul>
+        {files.uploads.map((upload, index) => (
+          <li key={`${upload.name}-${index}`}>
+            {upload.name}: {upload.status}
+            {upload.status === "uploading" &&
+              ` ${Math.round(upload.progress * 100)}%`}
+            {upload.error && ` (${upload.error.message})`}
+          </li>
+        ))}
+      </ul>
+
+      {list.error && <p role="alert">{list.error.message}</p>}
+      <ul>
+        {list.data?.items.map((item) => (
+          <li key={item.key}>
+            <a
+              href={`/api/files?op=download&key=${encodeURIComponent(item.key)}`}
+            >
+              {item.key}
+            </a>{" "}
+            ({item.size} bytes)
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+Render it from a server component that's already behind your sign-in:
+
+```tsx title="app/files/page.tsx" lineNumbers
+import { FileManager } from "./file-manager";
+
+export default function FilesPage() {
+  return <FileManager />;
+}
+```
+
+`files.uploads` gets one entry per file. Each entry moves from `"uploading"` to `"success"`, `"error"` (with `error` set to a `FilesError`), or `"aborted"`, and `progress` runs from 0 to 1. `files.abort()` cancels everything in flight, and `files.reset()` clears finished entries.
+
+The listed keys are relative. `item.key` is `3f1c….pdf`, not `users/42/3f1c….pdf`, because the gateway strips the prefix on the way out.
+
+## Download privately
+
+The download link in that component is a plain anchor:
+
+```text
+/api/files?op=download&key=3f1c….pdf
+```
+
+When the user clicks it, the browser sends their session cookie with the same-origin request. `authorize` runs for the `download` operation, and the gateway responds with a `302` to a presigned R2 `GET` URL that expires in at most 300 seconds. The bucket stays private and you never store a public URL. A link copied into another browser is just a request to your route, which refuses it without a session.
+
+The gateway signs the URL with a `response-content-disposition=attachment` override, asking R2 to send `Content-Disposition: attachment` so the browser saves the file instead of rendering it at R2's origin. Cloudflare's [S3 compatibility table](https://developers.cloudflare.com/r2/api/s3/api/) doesn't list the `response-*` overrides, so confirm the header once on your bucket with `curl -sI "<signed url>"` before you rely on it. To display images inline, call `files.url(key)` from the client and use the result as an `<img src>`. To render other types inline, have `authorize` return `disposition: "inline"` for the keys and content types you trust. [The gateway docs](/docs/ui/server/gateway#how-downloads-flow) explain why `attachment` is the default.
+
+## Limit upload size
+
+A presigned `PUT` URL on R2 signs the key, the content type, and the expiry, but not the size. R2 [doesn't support presigned `POST`](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), which is the S3 feature that carries a `content-length-range` policy. Files SDK won't pretend otherwise: `signedUploadUrl()` on R2 throws if you pass `maxSize`. Without a limit of your own, a client can send any single-part upload R2 accepts, which is [up to 5 GiB](https://developers.cloudflare.com/r2/platform/limits/).
+
+Checking `file.size` in the browser before calling `upload` gives users a fast error message, but anyone can skip it. For a limit that holds, pick one of these two options.
+
+### Option 1: route uploads through your server
+
+Set `maxUploadSize` on the gateway:
+
+```ts title="app/api/files/route.ts" lineNumbers
+const router = createFilesRouter({
+  files,
+  maxUploadSize: 25 * 1024 * 1024, // 25 MiB
+  authorize,
+});
+```
+
+On R2 this changes the upload path, not just the limit. The gateway asks R2 for a presigned URL with `maxSize`, R2's adapter refuses, and the gateway falls back to its proxy target. The browser then `PUT`s the bytes to `/api/files`. The gateway counts the bytes as they stream through and aborts past the limit, so an oversized file never finishes landing in R2.
+
+The cost is that every byte now passes through your server. Two consequences:
+
+- On Vercel, function request bodies are capped at 4.5 MB, so proxied uploads over that size fail. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side.
+- The `fetch` engine buffers a streamed body in memory before its single `PUT`. For large proxied uploads on a long-running Node server, switch the adapter to `client: "aws-sdk"` and install `@aws-sdk/client-s3`, `@aws-sdk/lib-storage`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner`. `lib-storage` streams the body to R2 as a multipart upload.
+
+### Option 2: keep direct uploads and check after they land
+
+Keep the presigned path and check each object before your app relies on it. The gateway's complete step reports the stored size but won't delete an oversized object for you. Do that when the client hands the key to your app, for example when it attaches the file to a record:
+
+```ts title="app/files/actions.ts" lineNumbers
+"use server";
+
+import { headers } from "next/headers";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+const MAX_BYTES = 25 * 1024 * 1024;
+
+export async function attachUpload(key: string) {
+  const session = await getSession(await headers());
+  if (!session) {
+    throw new Error("Not signed in");
+  }
+  // Rebuild the full key server-side; never trust a client-supplied prefix.
+  const fullKey = `users/${session.user.id}/${key}`;
+  const stored = await files.head(fullKey);
+  if (stored.size > MAX_BYTES) {
+    await files.delete(fullKey);
+    throw new Error("File is larger than 25 MiB");
+  }
+  // Save fullKey, stored.size, and stored.type with the record here.
+  return { key, size: stored.size, type: stored.type };
+}
+```
+
+This doesn't stop the upload. The bytes reach R2 before your check runs, so you pay for the write, and the object exists until you delete it. It does stop an oversized file from entering your app. Objects nobody ever attaches can be cleaned up with an [object lifecycle rule](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) on a staging prefix.
+
+[Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) compares what S3, R2, and Vercel Blob can each enforce, and covers checking the actual bytes rather than the claimed content type.
+
+## Deploy
+
+- Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `FILES_API_SECRET` in your host's environment for every environment that uploads. Preview deployments need them too.
+- Add each deployed origin to the bucket's `AllowedOrigins`, including preview domains if you test uploads there.
+- On Vercel, direct uploads never touch the function's 4.5 MB body limit. Only the proxied path from option 1 does.
+
+## Troubleshooting
+
+**`network error during upload` in the browser, and a CORS error in the console.** The browser blocked the `PUT` to R2. Usually the origin isn't in `AllowedOrigins`, or `Content-Type` is missing from `AllowedHeaders`. Run the `curl` preflight above. An expired presigned URL can also look like this: R2 answers `403` without CORS headers, so the browser reports a CORS failure. [Fix Cloudflare R2 CORS and presigned URL 403 errors](/guides/r2-cors-presigned-url-errors) walks through each cause.
+
+**`upload failed (403)`.** R2 rejected the signature. Check that the bucket name and account ID on the server match the bucket you configured, and that the request reached R2 well inside the URL's lifetime.
+
+**`upload token signature` on complete.** Presign and complete were verified with different secrets. Set `FILES_API_SECRET` to the same value everywhere the route runs.
+
+**`401` from `/api/files`.** `getSession` returned `null` for that request. Check that the session cookie reaches route handlers, for example that it isn't scoped to a different path.
+
+**The listed keys don't match what's in the bucket.** That's the prefix being stripped. The bucket holds `users/<id>/<key>`, and the browser sees `<key>`.

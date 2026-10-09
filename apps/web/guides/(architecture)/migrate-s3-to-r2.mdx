@@ -1,0 +1,378 @@
+---
+title: Migrate S3 files to R2 and verify the result
+description: Copy an S3 bucket to Cloudflare R2 with a script that records failures, retries only those keys, checks every object by checksum, and plans a rollback.
+sidebar:
+  label: Migrate S3 to R2
+related:
+  - /docs/api/transfer
+  - /docs/api/sync
+  - /docs/adapters/r2
+  - /guides/unified-storage-api-typescript
+---
+
+Try Cloudflare's own migration services first. Super Slurper copies a bucket in bulk from Cloudflare's side, and Sippy copies objects into R2 as your app reads them. A Files SDK script earns its place when you need something they don't give you: keys rewritten on the way, Cache-Control carried across explicitly, a cutover your deploy controls, or a verification report you produce yourself.
+
+The script here uses `transfer()` to stream every object from S3 to R2, writes the keys that failed to a manifest, retries only those, and then checks every object on both sides by size, type, metadata, Cache-Control, and a SHA-256 it computes itself. It doesn't compare ETags, because they differ across providers and part sizes even when the bytes match. It also copies a snapshot, so freeze writes to the bucket before you start. Nothing here makes the move zero-downtime or guarantees it loses nothing; the verification step is how you find out.
+
+## Before you start
+
+- AWS credentials that can list and read the source bucket (`s3:ListBucket`, `s3:GetObject`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with Object Read & Write on the destination bucket, set as `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. This guide calls both buckets `uploads`.
+- Node 22.18 or later, or Bun, on a machine with good bandwidth to both providers. Every byte streams through it.
+- Written against files-sdk 2.6 and `@aws-sdk/client-s3` 3.1148.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+`@aws-sdk/lib-storage` matters here. `transfer()` hands each body to the destination as a stream of unknown length, and the AWS SDK engine uploads such streams as multipart through lib-storage. R2's `fetch` engine would buffer each object in memory before a single `PUT`, so the script sets `client: "aws-sdk"`.
+
+## Cloudflare's tools or a script
+
+|  | [Super Slurper](https://developers.cloudflare.com/r2/data-migration/super-slurper/) | [Sippy](https://developers.cloudflare.com/r2/data-migration/sippy/) | Files SDK script |
+| --- | --- | --- | --- |
+| How it copies | A bulk job that Cloudflare runs | On demand, when a `GetObject` misses in R2 | A process you run, streaming through your machine |
+| Metadata | Custom metadata is preserved | Only `x-amz-meta-*` user metadata | Content type and user metadata; Cache-Control with the plugin below |
+| Existing objects in R2 | Overwrite (default) or skip | Served from R2 once copied | Overwrite (default) or skip with `overwrite: false` |
+| Limits Cloudflare documents | Objects over 1 TB, and objects in Glacier tiers other than Instant Retrieval, are skipped | Changes to a source object after its first copy aren't reflected | Whatever your machine and network sustain |
+| Key rewrites | Prefix selection only | No | `transformKey` |
+
+Cloudflare's [migration strategies](https://developers.cloudflare.com/r2/data-migration/migration-strategies/) combine the two for buckets that are still being written to: enable Sippy, point the app at R2, then run Super Slurper with "skip existing". Both pages say ETags aren't guaranteed to match after migration. Super Slurper's page doesn't say whether it copies Cache-Control, so check before you rely on it.
+
+For a straight copy of a bucket you can pause, Super Slurper is less work than anything below. You can still run this guide's [verification script](#verify-every-object) afterwards; it doesn't care how the objects got there.
+
+## Freeze writes first
+
+`transfer()` lists the whole source before it copies anything. An object written after that listing isn't copied, and an object deleted after it fails with `NotFound`. Put the app into a state where nothing writes to the bucket for the length of the copy. If the app talks to storage through Files SDK, constructing its instance with `readonly: true` makes every write throw a `ReadOnly` `FilesError` instead of landing in a bucket you're about to leave. See [Read-only](/docs/readonly).
+
+## Configure both sides
+
+These instances belong to the migration scripts only. Your app keeps its own `Files` instance.
+
+```ts title="migrate/storage.ts" lineNumbers
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { Files, handlers } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { mapS3Error, s3 } from "files-sdk/s3";
+
+export const SOURCE_BUCKET = "uploads";
+export const DEST_BUCKET = "uploads";
+
+// Credentials come from the AWS credential chain.
+export const source = new Files({
+  adapter: s3({ bucket: SOURCE_BUCKET, region: "us-east-1" }),
+  retries: 3,
+});
+
+// The S3 client under a Files instance. r2() on its aws-sdk engine loads
+// the client lazily, so call any method on that instance first.
+export const s3ClientOf = (files: Files): S3Client => {
+  if (!(files.raw instanceof S3Client)) {
+    throw new Error("Expected an adapter backed by @aws-sdk/client-s3");
+  }
+  return files.raw;
+};
+
+// StoredFile has no Cache-Control field, so read it from the native client.
+export const cacheControlOf = async (
+  files: Files,
+  bucket: string,
+  key: string
+): Promise<string | undefined> => {
+  try {
+    const head = await s3ClientOf(files).send(
+      new HeadObjectCommand({ Bucket: bucket, Key: key })
+    );
+    return head.CacheControl;
+  } catch (error) {
+    // Raw client errors aren't FilesErrors; normalize before branching.
+    const err = mapS3Error(error);
+    if (err.code === "NotFound") {
+      return undefined;
+    }
+    throw err;
+  }
+};
+
+export const dest = new Files({
+  // Reads R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY.
+  adapter: r2({ bucket: DEST_BUCKET, client: "aws-sdk" }),
+  retries: 3,
+  plugins: [
+    {
+      // transfer() doesn't carry Cache-Control. Copy it from the source
+      // object onto each upload. Assumes source and destination keys match.
+      name: "carry-cache-control",
+      wrap: handlers({
+        upload: async (op, next) => {
+          const cacheControl = await cacheControlOf(
+            source,
+            SOURCE_BUCKET,
+            op.key
+          );
+          return next(
+            cacheControl
+              ? { ...op, options: { ...op.options, cacheControl } }
+              : op
+          );
+        },
+      }),
+    },
+  ],
+});
+```
+
+**Why the plugin.** `transfer()` carries the body, content type, and user metadata. It doesn't carry Cache-Control, because a `StoredFile` has no field for it; neither `head()` nor `download()` returns it. If your objects never set Cache-Control, delete the plugin. If they do, the plugin wraps every upload on the destination, reads the source object's `Cache-Control` with one `HeadObject` through [`files.raw`](/docs/escape-hatch), and passes it as the upload's `cacheControl` option. That's one extra request per key. If you remap keys with `transformKey`, map `op.key` back to the source key before the lookup.
+
+**Retries.** `retries: 3` covers listing and opening each download. The plugin's `HeadObject` goes through the native client, which applies the AWS SDK's own retries. The upload leg is a stream, and Files SDK never replays a stream, so a failed upload lands in the failure manifest instead of retrying.
+
+## Copy with a failure manifest
+
+```ts title="migrate/migrate.ts" lineNumbers
+import { mkdir, writeFile } from "node:fs/promises";
+
+import { transfer } from "files-sdk";
+
+import { dest, source } from "./storage";
+
+const result = await transfer(source, dest, {
+  concurrency: 16,
+  onProgress: ({ done, total }) => {
+    if (done % 1000 === 0) {
+      console.log(`${done}/${total}`);
+    }
+  },
+});
+
+const failed = (result.errors ?? []).map(({ key, error }) => ({
+  key,
+  code: error.code,
+  message: error.message,
+}));
+
+await mkdir("migration", { recursive: true });
+await writeFile("migration/failed.json", JSON.stringify(failed, null, 2));
+console.log(
+  `${result.transferred.length} transferred, ${failed.length} failed`
+);
+```
+
+`transfer()` doesn't throw when some keys fail. Successes come back in `transferred` and failures in `errors`, each with its key and a normalized [`FilesError`](/docs/api/errors). `onProgress` fires only for keys that transferred or were skipped, so with failures `done` never reaches `total`. Rely on the summary line, not the last progress line.
+
+`concurrency` is how many objects stream at once. A large object's upload holds up to four 5 MiB parts in memory (lib-storage's defaults, which Files SDK keeps), so 16 large objects in flight can hold around 320 MiB. Lower it on a small machine.
+
+## Retry only the failed keys
+
+```ts title="migrate/retry.ts" lineNumbers
+import { readFile, writeFile } from "node:fs/promises";
+
+import { FilesError } from "files-sdk";
+
+import { dest, source } from "./storage";
+
+interface Failure {
+  key: string;
+  code: string;
+  message: string;
+}
+
+const failed: Failure[] = JSON.parse(
+  await readFile("migration/failed.json", "utf8")
+);
+const stillFailing: Failure[] = [];
+
+for (const { key } of failed) {
+  try {
+    // The same three things transfer() carries: body, type, metadata.
+    const file = await source.download(key, { as: "stream" });
+    await dest.upload(key, file.stream(), {
+      contentType: file.type,
+      ...(file.metadata && { metadata: file.metadata }),
+    });
+    console.log(`ok    ${key}`);
+  } catch (error) {
+    const err = FilesError.wrap(error);
+    // NotFound here means the key was deleted from the source after the walk.
+    stillFailing.push({ key, code: err.code, message: err.message });
+    console.log(`fail  ${key} (${err.code})`);
+  }
+}
+
+await writeFile("migration/failed.json", JSON.stringify(stillFailing, null, 2));
+console.log(
+  `${failed.length - stillFailing.length} recovered, ${stillFailing.length} still failing`
+);
+```
+
+The retry goes through the same `dest` instance, so the Cache-Control plugin applies to it too. Run it until the manifest is empty or holds only keys you've decided about. A `NotFound` that persists means the object no longer exists at the source, which is a question for the app, not the script. Re-running `transfer()` with `overwrite: false` also fills the gaps, but it lists the whole bucket and sends one `exists()` per key to get there.
+
+## Verify every object
+
+```ts title="migrate/verify.ts" lineNumbers
+import { createHash } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+
+import type { Files, StoredFile } from "files-sdk";
+
+import {
+  DEST_BUCKET,
+  SOURCE_BUCKET,
+  cacheControlOf,
+  dest,
+  source,
+} from "./storage";
+
+const listKeys = async (files: Files): Promise<Map<string, StoredFile>> => {
+  const all = new Map<string, StoredFile>();
+  for await (const file of files.listAll()) {
+    all.set(file.key, file);
+  }
+  return all;
+};
+
+// Stream the object and hash it. ETags can't be compared across providers.
+const inspect = async (files: Files, bucket: string, key: string) => {
+  const file = await files.download(key, { as: "stream" });
+  const hash = createHash("sha256");
+  for await (const chunk of file.stream()) {
+    hash.update(chunk);
+  }
+  return {
+    size: file.size,
+    type: file.type,
+    metadata: JSON.stringify(Object.entries(file.metadata ?? {}).sort()),
+    cacheControl: await cacheControlOf(files, bucket, key),
+    sha256: hash.digest("hex"),
+  };
+};
+
+const [from, to] = await Promise.all([listKeys(source), listKeys(dest)]);
+const missing = [...from.keys()].filter((key) => !to.has(key));
+const extra = [...to.keys()].filter((key) => !from.has(key));
+const common = [...from.keys()].filter((key) => to.has(key));
+
+const mismatches: {
+  key: string;
+  field: string;
+  source: unknown;
+  dest: unknown;
+}[] = [];
+let next = 0;
+const worker = async () => {
+  while (next < common.length) {
+    const key = common[next++]!;
+    const [a, b] = await Promise.all([
+      inspect(source, SOURCE_BUCKET, key),
+      inspect(dest, DEST_BUCKET, key),
+    ]);
+    for (const field of Object.keys(a) as (keyof typeof a)[]) {
+      if (a[field] !== b[field]) {
+        mismatches.push({ key, field, source: a[field], dest: b[field] });
+      }
+    }
+  }
+};
+await Promise.all(Array.from({ length: 8 }, worker));
+
+const report = { checked: common.length, missing, extra, mismatches };
+await writeFile("migration/verify.json", JSON.stringify(report, null, 2));
+console.log(
+  `${common.length} checked, ${missing.length} missing, ${extra.length} extra, ${mismatches.length} mismatches`
+);
+process.exitCode = missing.length || mismatches.length ? 1 : 0;
+```
+
+What it compares, and why each check reads where it does:
+
+- **Key sets** come from `listAll()` on both sides: `missing` is in S3 but not R2, `extra` the reverse.
+- **Size, type, and metadata** come from `download()`, not `list()`. S3's `ListObjectsV2` returns no content type or metadata, so a listed `StoredFile` guesses its `type` from the key's extension and has no `metadata` at all.
+- **SHA-256** is computed from the bytes on both sides. **ETags aren't compared.** A multipart object's ETag depends on how it was split into parts, and R2 [documents its own multipart ETag format](https://developers.cloudflare.com/r2/objects/multipart-objects/), so identical bytes can carry different ETags.
+
+The cost is real: the script downloads every object from both buckets once more. AWS bills that as S3 data transfer out, and both providers count the reads as requests. For a large bucket, compare sizes, types, and metadata everywhere and hash a random sample, or hash only the keys that matter most.
+
+`sync()` with `dryRun: true` is a cheap drift check that lists both sides without downloading. Use `compare: "size"`: the default `"etag"` comparison flags multipart objects as changed even when their bytes match.
+
+```ts
+const plan = await sync(source, dest, { dryRun: true, compare: "size" });
+// plan.uploaded lists keys that are new or a different size in S3.
+```
+
+### What a local run showed
+
+The scripts above ran against two buckets on a local MinIO server, with `r2()` pointed at MinIO through its `endpoint` option as a stand-in for R2. Nothing here says how R2 itself behaves. The fixture was 206 objects: text and JSON with user metadata, an image with `Cache-Control: public, max-age=31536000, immutable`, an empty file, a key with spaces and accents, a 20 MiB object uploaded in 8 MiB parts, and 200 small files. Two test-only plugins, not part of the scripts above, made one destination upload fail and deleted one source key after the listing.
+
+- `migrate.ts` reported 204 transferred and 2 failed: the injected failure as `Provider`, the deleted key as `NotFound`.
+- `verify.ts` then found 1 missing key and no mismatches across the other 204.
+- `retry.ts` recovered the injected failure and kept the deleted key as `NotFound`. A second `verify.ts` found 205 checked, nothing missing, and no mismatches.
+- The 20 MiB object's ETag ended in `-3` in the source and `-4` in the destination, because the destination upload used lib-storage's 5 MiB parts. Both copies hashed to the same SHA-256.
+- A plain `transfer()` without the plugin left the image with no Cache-Control. With the plugin, it arrived intact.
+- `sync()` dry runs reported 0 keys to upload with `compare: "size"`, and 1 (the 20 MiB object) with the default `"etag"`.
+
+## Cut over, and keep a way back
+
+1. **Freeze writes** as above, and note the time.
+2. **Copy, retry, verify** until `verify.ts` exits with code 0, or until every remaining entry is one you've accepted.
+3. **Check for drift** right before switching, with the `sync()` dry run. It should plan no uploads.
+4. **Switch the app** to R2 and lift the freeze.
+5. **Leave the S3 bucket alone** for a rollback window. Signed S3 URLs the app issued before the switch keep working until they expire, and any absolute S3 URLs stored in your database need rewriting before the bucket goes away.
+6. **Delete the S3 bucket** only after the window closes.
+
+A flag in the app's storage module turns the freeze, the switch, and the switch back into environment changes:
+
+```ts title="lib/files.ts" lineNumbers
+import { Files } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { s3 } from "files-sdk/s3";
+
+// STORAGE=r2 after the cutover; STORAGE_READONLY=1 during the freeze.
+export const files = new Files({
+  adapter:
+    process.env.STORAGE === "r2"
+      ? r2({ bucket: "uploads" })
+      : s3({ bucket: "uploads", region: "us-east-1" }),
+  readonly: process.env.STORAGE_READONLY === "1",
+});
+```
+
+To roll back, writes made to R2 after the cutover have to go back to S3 first. Run this with the cutover time, check the dry run, then run it for real and switch the flag back:
+
+```ts title="migrate/rollback.ts" lineNumbers
+import { sync } from "files-sdk";
+
+import { dest, source } from "./storage";
+
+// When the app switched to R2, as an ISO timestamp.
+const cutoverAt = Date.parse(process.env.CUTOVER_AT ?? "");
+if (Number.isNaN(cutoverAt)) {
+  throw new Error(
+    "Set CUTOVER_AT to the cutover time, e.g. 2026-10-08T22:00:00Z"
+  );
+}
+
+// Copy what the app wrote to R2 after the cutover back to S3. Objects R2
+// hasn't touched since the cutover are skipped.
+const plan = await sync(dest, source, {
+  dryRun: process.argv.includes("--dry-run"),
+  compare: (r2File, s3File) =>
+    r2File.size === s3File.size && (r2File.lastModified ?? 0) < cutoverAt,
+});
+console.log(`upload ${plan.uploaded.length}, skip ${plan.skipped.length}`);
+for (const { key, error } of plan.errors ?? []) {
+  console.log(`fail  ${key} (${error.code})`);
+}
+```
+
+The custom `compare` skips an object only when it's the same size and R2 last modified it before the cutover, so a same-size edit made on R2 afterwards still goes back. In the local run, after one new key and one same-size edit on the R2 stand-in, the dry run planned exactly those two uploads and skipped the other 204. This direction doesn't carry Cache-Control, and it doesn't delete anything: objects deleted on R2 after the cutover stay in S3 unless you add `prune: true`, which deletes every S3 key that R2 doesn't have. Dry-run that before you trust it.
+
+:::warning
+Switching the flag back without this sync hides every object the app wrote to R2 since the cutover. The app reads S3 again, and those objects aren't there.
+:::
+
+## Troubleshooting
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'.`** Every transfer fails with this when lib-storage isn't installed, because each body arrives as a stream. Install `@aws-sdk/lib-storage`.
+
+**Many `NotFound` entries in `failed.json`.** Objects were deleted from the source after the listing, so writes weren't frozen. Freeze them, then decide whether those keys should exist at all. `retry.ts` keeps reporting them until they do.
+
+**`Expected an adapter backed by @aws-sdk/client-s3`.** `cacheControlOf` ran against an R2 instance on the `fetch` engine, or before the lazy `S3Client` loaded. Keep `client: "aws-sdk"` on the destination and call another method on it first, as `verify.ts` does with `download()`.
+
+**`cacheControl` mismatches on every key that has one.** The destination was written without the plugin, by an earlier run or by another tool. Re-upload those keys through the `dest` instance, for example by listing them in `failed.json` and running `retry.ts`.

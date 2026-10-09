@@ -1,0 +1,302 @@
+---
+title: Stream private video from S3 or R2 with HTTP Range requests
+description: A Next.js video player for private S3 or R2 objects that seeks with 206 range responses, using signed URLs or a session-checked proxy route.
+sidebar:
+  label: Private video streaming
+seo:
+  title: Stream private video from S3 or R2
+related:
+  - /guides/vercel-blob-private-downloads
+  - /guides/multi-tenant-file-storage
+  - /docs/ui/server/gateway
+  - /docs/api/download
+---
+
+A `<video>` element seeks by asking for byte ranges: it sends `Range: bytes=…`, and a server that supports ranges answers `206 Partial Content` with only that slice. S3 and R2 both honor `Range` on `GetObject`, signed URLs included, so the cheapest private player gives the element a signed URL and lets storage serve every range. When you need the session checked on every request, the Files SDK gateway can proxy the ranges instead (`downloadMode: "proxy"`) and answer the `206`s itself.
+
+The catch is the signed URL's lifetime. Storage checks the signature on each request, and the browser reuses the same URL for every seek. A URL that expires mid-video breaks the next seek, so it has to outlive the viewing session, and a long-lived URL works for anyone who copies it.
+
+## Before you start
+
+- A private S3 or R2 bucket with your videos (this guide uses an S3 bucket called `videos` and keys like `lessons/intro.mp4`), and server-side credentials for it.
+- A Next.js App Router app with an auth library that resolves the signed-in user on the server.
+- Written against files-sdk 2.6, Next.js 16.4, and React 19.3. Browser behavior described below was observed in Chrome 154 against a local MinIO server; check it in the other browsers you support.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+On R2, use `r2({ bucket: "videos" })` from `files-sdk/r2` instead. Both adapters sign `GET` URLs and serve ranges, and everything below applies to either.
+
+## How a video seeks
+
+You don't write any range code for the signed-URL paths. It helps to know what goes over the wire when something breaks:
+
+1. The element opens the file with `Range: bytes=0-`. A `206` response with `Content-Range: bytes 0-30084138/30084139` tells it the server can serve slices and how big the file is.
+2. On a seek to a part it hasn't buffered, it sends a new request such as `Range: bytes=17334272-`.
+3. If the server ignores `Range` and answers `200` with the whole file, the video still plays from the start. In Chrome, the element then reports nothing as seekable, and dragging the playhead snaps back.
+
+[MDN's range request guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Range_requests) covers `Accept-Ranges`, `206`, `416`, and `If-Range` in general. S3 serves [one range per request](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html), and every media request in the local Chrome test asked for exactly one.
+
+## Pick a delivery path
+
+|  | Signed URL in the page | Gateway redirect | Gateway proxy |
+| --- | --- | --- | --- |
+| `<video src>` | A signed storage URL | `/api/videos?op=download&key=…` | `/api/videos?op=download&key=…` |
+| Who answers the range requests | S3 or R2 | S3 or R2, after one `302` | Your server |
+| When access is checked | When the page renders | Each time the element loads `src` | On every range request |
+| URL expiry matters | Yes | Yes, but a reload of `src` recovers | No |
+| Video bytes through your server | None | None | All of them |
+| Works without signed URLs | No | No | Yes, but seeking needs range support |
+
+Start with the gateway redirect for an app player: the page holds a URL that's useless without a session, and storage still does the byte serving. Use the proxy when access must be re-checked on every request, or when the adapter can't sign URLs.
+
+## Set up the storage client
+
+```ts title="lib/files.ts" lineNumbers
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+export const files = new Files({
+  // Credentials come from the AWS credential chain.
+  adapter: s3({ bucket: "videos", region: "us-east-1" }),
+});
+```
+
+Upload videos with their real type, for example `files.upload("lessons/intro.mp4", file, { contentType: "video/mp4" })`. Storage sends back the stored `Content-Type` on every range response.
+
+The examples use two placeholders from `@/lib/auth`. `getSession(headers)` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check) and returns `{ user: { id: string } }` or `null`. `canWatch(userId, key)` stands in for your entitlement check, such as a purchases or enrollments table, and returns a boolean.
+
+## Option 1: put a signed URL in the page
+
+A server component checks the session, signs a URL, and renders it:
+
+```tsx title="app/lessons/[id]/page.tsx" lineNumbers
+import { headers } from "next/headers";
+import { notFound, redirect } from "next/navigation";
+
+import { canWatch, getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+export default async function LessonPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  if (!/^[\w-]+$/.test(id)) {
+    notFound();
+  }
+  const session = await getSession(await headers());
+  if (!session) {
+    redirect("/sign-in");
+  }
+  const key = `lessons/${id}.mp4`;
+  if (!(await canWatch(session.user.id, key))) {
+    notFound();
+  }
+
+  // Long enough to cover the viewing session, pauses and seeks included.
+  const src = await files.url(key, { expiresIn: 4 * 60 * 60 });
+
+  return <video controls playsInline preload="metadata" src={src} />;
+}
+```
+
+The page is dynamic because it reads request headers, so every visit signs a fresh URL. The trade-off is that the URL itself is the credential. "Copy video address" hands someone a link that plays for up to four hours without a session.
+
+## Option 2: redirect through the gateway
+
+Mount a download-only gateway route. `operations` refuses every other verb before `authorize` runs, and `authorize` checks the session and the entitlement:
+
+```ts title="app/api/videos/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { canWatch, getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+const router = createFilesRouter({
+  files,
+  operations: ["download"],
+  // How long each redirect's signed URL lives.
+  defaultExpiresIn: 4 * 60 * 60,
+  authorize: async ({ req, key }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to watch");
+    }
+    if (!key || !(await canWatch(session.user.id, `lessons/${key}`))) {
+      // 404 rather than 403, so the route doesn't confirm the video exists.
+      throw new FilesError("NotFound", "Video not found");
+    }
+    return { keyPrefix: "lessons/" };
+  },
+});
+
+export const { GET } = createRouteHandler(router);
+```
+
+The player points at the route and recovers from an expired URL by loading `src` again, which makes the gateway sign a fresh one:
+
+```tsx title="app/lessons/[id]/video-player.tsx" lineNumbers
+"use client";
+
+import { useRef } from "react";
+
+export function VideoPlayer({ src }: { src: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const retried = useRef(false);
+
+  function recover() {
+    const video = ref.current;
+    // An expired signed URL surfaces as a network error. Retry once.
+    if (
+      !video ||
+      retried.current ||
+      video.error?.code !== MediaError.MEDIA_ERR_NETWORK
+    ) {
+      return;
+    }
+    retried.current = true;
+    const resumeAt = video.currentTime;
+    video.addEventListener(
+      "loadedmetadata",
+      () => {
+        video.currentTime = resumeAt;
+      },
+      { once: true }
+    );
+    video.src = src;
+  }
+
+  return (
+    <video
+      controls
+      onError={recover}
+      onPlaying={() => {
+        retried.current = false;
+      }}
+      playsInline
+      preload="metadata"
+      ref={ref}
+      src={src}
+    />
+  );
+}
+```
+
+The lesson page renders the player with the route's URL. The route does the access check, so the page signs nothing:
+
+```tsx title="app/lessons/[id]/page.tsx" lineNumbers
+import { VideoPlayer } from "./video-player";
+
+export default async function LessonPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const key = encodeURIComponent(`${id}.mp4`);
+  return <VideoPlayer src={`/api/videos?op=download&key=${key}`} />;
+}
+```
+
+The element's first request goes to your route with the user's session cookie, since it's same-origin. `authorize` runs, and the gateway answers `302` with `Cache-Control: private, no-store` and a signed URL that expires in `defaultExpiresIn` seconds. The client can't ask for a longer one on this path.
+
+In Chrome 154 against local MinIO, the gateway saw exactly one request per load: the opening `Range: bytes=0-`. Every later range request, including seeks, went straight to the signed storage URL. With a deliberately short 20-second lifetime, a seek after expiry stalled while Chrome retried the expired URL for about 30 seconds, then fired `error` with `MEDIA_ERR_NETWORK`. The recovery above then reloaded through the gateway (a second `302` in the route's log) and resumed at the same position.
+
+The signed URL asks storage to send `Content-Disposition: attachment`, the gateway's default for downloads. Chrome played the video normally with it; the header matters only when someone opens the URL directly, where it forces a download.
+
+## Option 3: proxy every range through the gateway
+
+Add `downloadMode: "proxy"` to the `createFilesRouter` options in `app/api/videos/route.ts`, and keep the same player. `defaultExpiresIn` no longer matters, because nothing is signed.
+
+Now every range request reaches your route. `authorize` runs each time, the gateway `head`s the object, parses `Range`, and streams the slice from storage with a `206`. Nothing expires mid-video, and revoking access takes effect on the next request.
+
+You pay for that in requests and bandwidth. Each browser request costs an `authorize` call, a `HEAD`, and a ranged `GET` against storage, and the bytes flow through your server. In the local Chrome test, a single seek produced six range requests to the route. On serverless hosts, check how your plan bills function duration and bandwidth for long streamed responses before you send video through it.
+
+## Inspect the responses with curl
+
+Point curl at the route with a session cookie and a `Range` header. Against a local MinIO bucket through the proxy path, with a 30 MB test video, the responses looked like this (trimmed to the relevant headers):
+
+```bash
+curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=0-1023" \
+  "http://localhost:3000/api/videos?op=download&key=intro.mp4"
+```
+
+```text
+HTTP/1.1 206 Partial Content
+Accept-Ranges: bytes
+Content-Type: video/mp4
+X-Content-Type-Options: nosniff
+ETag: 30a467c8fcee8008b13945d39d5856fc
+Content-Disposition: attachment
+Content-Range: bytes 0-1023/30084139
+Content-Length: 1024
+```
+
+A range that starts past the end gets a `416` with the real size:
+
+```bash
+curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=40000000-" \
+  "http://localhost:3000/api/videos?op=download&key=intro.mp4"
+```
+
+```text
+HTTP/1.1 416 Range Not Satisfiable
+Content-Range: bytes */30084139
+Content-Length: 0
+```
+
+`If-Range` guards against splicing two versions of a file. Send the `ETag` from an earlier response: while it still matches, you get the `206`. If the object changed, you get `200 OK` and the whole new file. The S3 adapters strip the quotes from ETags, so the header arrives bare, and the gateway accepts the validator quoted or bare. In the Chrome test, the browser echoed the bare value back in `If-Range` on a seek and got its `206`. A weak validator (`W/"…"`) never matches.
+
+```bash
+curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=0-1023" \
+  -H 'If-Range: "30a467c8fcee8008b13945d39d5856fc"' \
+  "http://localhost:3000/api/videos?op=download&key=intro.mp4"
+```
+
+The proxy answers a malformed or multi-range header (`bytes=0-1,5-6`) with a plain `200` and the whole file. A suffix range (`bytes=-1000`) gets the last 1,000 bytes.
+
+On the redirect path, the same command shows the `302` and its `Location`, because curl only follows redirects when you pass `-L`. Request the `Location` URL with a `Range` header to see storage answer the `206` itself.
+
+## How long the signed URL must live
+
+- **Cover the session, not the video.** Viewers pause, scrub back, and leave tabs open. Pick a lifetime from how long people watch, then decide how long a leaked link may keep working. With the gateway redirect, the player's reload recovers from expiry, so you can choose a shorter lifetime than the signed-URL-in-page option needs.
+- **Storage checks the expiry per request.** AWS documents that [a download already in progress continues past the expiry, but a restarted one fails](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html#PresignedUrl-Expiration). Every seek is a restarted request.
+- **The ceiling is seven days** for SigV4 URLs, on [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html#who-presigned-url) and [R2](https://developers.cloudflare.com/r2/api/s3/presigned-urls/). The S3 and R2 adapters throw for a longer `expiresIn` rather than return a URL storage would refuse.
+- **Temporary credentials cut it shorter.** A URL signed with role or STS credentials stops working when those credentials expire, whatever `expiresIn` says. [AWS's FAQ](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html#PresignedUrlFAQ) notes that ECS task credentials typically rotate every 1 to 6 hours and an `AssumeRole` session lasts 1 hour by default. If your server signs with a role, the role session is your real maximum.
+- **Cap it per user if you need to.** `authorize` can return `maxExpiresIn`, which clamps the redirect's lifetime below `defaultExpiresIn`.
+
+## CORS
+
+A plain `<video src>` makes no CORS request. [MDN's `crossorigin` reference](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/crossorigin) says that without the attribute the browser doesn't use CORS, so a video from your bucket's domain plays without any bucket CORS rule. Add `crossorigin` only when you need it, for example to draw frames onto a `<canvas>` without tainting it. Then the bucket needs a CORS rule that allows `GET` from your origin. The proxy path is same-origin and needs no rule at all.
+
+## Where range requests don't work
+
+Range support depends on the adapter. These adapters report `files.capabilities.rangeRead` as `false`, and `download({ range })` throws on them: Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, and Vercel Blob in private mode. Every S3-compatible adapter, R2 included, supports ranges.
+
+Through the gateway's proxy path, a non-range adapter meets the browser's opening `Range: bytes=0-`, and `onUnsupportedRange` decides what happens. The last column comes from a local Chrome test against an in-memory store with range support turned off:
+
+| `onUnsupportedRange` | Response to `Range: bytes=0-` | What Chrome did |
+| --- | --- | --- |
+| `"reject"` (default) | `416` | Failed to load: `MEDIA_ERR_SRC_NOT_SUPPORTED`, `DEMUXER_ERROR_COULD_NOT_OPEN` |
+| `"ignore"` | `200` with the whole file | Played from the start; seeking snapped back to 0 |
+
+For short clips, `"ignore"` is acceptable. For anything people seek through, serve video from a range-capable store. For private Vercel Blob files, [Share private Vercel Blob files](/guides/vercel-blob-private-downloads) covers what the adapter offers instead.
+
+This guide covers progressive playback of a single file. Adaptive streaming (HLS or DASH, with multiple renditions and a manifest) is a separate kind of product, with its own packaging and players.
+
+## Troubleshooting
+
+**The video never loads, and the route logs a `416` for `bytes=0-`.** The adapter can't serve ranges and the gateway is rejecting them. Set `onUnsupportedRange: "ignore"` or move the videos to a range-capable store.
+
+**The video plays, but the seek bar doesn't work.** Something answered `200` instead of `206`. Run the curl check against each hop: your route, the signed URL, and any CDN or proxy in front of them.
+
+**Seeking stalls after a while, then `MEDIA_ERR_NETWORK`.** The signed URL expired, or the credentials that signed it did. Reload through the gateway as in the player above, raise the lifetime, or check whether your server signs with short-lived role credentials.
+
+**A `403` from storage on the signed URL.** The signature is stale or invalid. A local MinIO server answered an expired URL with `AccessDenied` and `Request has expired`. Sign a new URL rather than reusing one from a cached page.
+
+**`401` from `/api/videos`.** `getSession` returned `null` for the media request. The request is same-origin, so the browser sends cookies with it; check that the session cookie's `Path` covers `/api/videos`.

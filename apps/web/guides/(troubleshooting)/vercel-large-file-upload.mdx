@@ -1,0 +1,298 @@
+---
+title: Fix Vercel's 413 upload error with direct-to-storage uploads
+description: Stop FUNCTION_PAYLOAD_TOO_LARGE by signing uploads in a small Vercel Function request and sending the file from the browser straight to Vercel Blob or R2.
+sidebar:
+  label: Vercel 413 upload error
+seo:
+  title: Fix Vercel's 413 FUNCTION_PAYLOAD_TOO_LARGE
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/vercel-blob-authentication
+  - /guides/presigned-upload-validation
+  - /guides/vercel-blob-private-downloads
+  - /docs/adapters/vercel-blob
+---
+
+Vercel caps a function's request body at 4.5 MB and answers anything larger with `413 FUNCTION_PAYLOAD_TOO_LARGE`. No Next.js setting raises that cap, so the file has to go around the function. The function's job shrinks to a few hundred bytes of JSON per upload: check the session, pick a key, return a signed URL.
+
+The trap is that some Files SDK setups route the bytes back through the function without telling you. The gateway proxies every keyless upload to a public Vercel Blob store, and on R2, setting `maxUploadSize` turns presigned uploads into proxied ones. [Check which path your uploads take](#check-which-path-gateway-uploads-take) before you deploy.
+
+## Before you start
+
+- A Next.js App Router app on Vercel, with an auth library that can resolve the signed-in user on the server.
+- A Vercel Blob store connected to the project. This guide uses a private store; the upload code also works with a public one. For R2 instead, set up a bucket, token, and CORS rule as in [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload).
+- Written against files-sdk 2.6, Next.js 16.4, React 19.3, and `@vercel/blob` 2.8.
+
+```package-install
+files-sdk @vercel/blob @vercel/oidc
+```
+
+Inside a Vercel Function, the project's OIDC token arrives with each request, and in files-sdk 2.6 the Blob adapter only reads it from the environment. So this guide creates the `Files` instance per request with a `getFiles()` helper that passes the token in. [Set up Vercel Blob authentication](/guides/vercel-blob-authentication#use-oidc-on-vercel) explains why, and covers local development and servers outside Vercel.
+
+## Why the upload fails
+
+This route handles small files anywhere, and fails on Vercel once a file passes about 4.5 MB:
+
+```ts title="app/api/upload/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { getFiles } from "@/lib/files";
+
+// Fails on Vercel for any request body over 4.5 MB.
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return Response.json({ error: "Sign in to upload" }, { status: 401 });
+  }
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    return Response.json({ error: "Expected a file" }, { status: 400 });
+  }
+  const key = `users/${session.user.id}/${crypto.randomUUID()}`;
+  const files = await getFiles();
+  await files.upload(key, file);
+  return Response.json({ key });
+}
+```
+
+`getSession` stands in for your auth library: Auth.js's `auth()`, Clerk's `auth()`, Better Auth's `auth.api.getSession({ headers })`, or your own cookie check. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+[Vercel's function limits](https://vercel.com/docs/functions/limitations#request-body-size) put the maximum payload for "the request body or the response body of a Vercel Function" at 4.5 MB, and a request over it gets [`413: FUNCTION_PAYLOAD_TOO_LARGE`](https://vercel.com/docs/errors/function_payload_too_large). A `multipart/form-data` body also carries boundaries and part headers, so a file a little under 4.5 MB can still fail.
+
+Raising a framework limit doesn't help. `experimental.serverActions.bodySizeLimit` is [Next.js's own cap on Server Action bodies](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions) (1 MB by default). It doesn't touch route handlers, and no Next.js option moves Vercel's 4.5 MB platform limit.
+
+## Sign the upload in a small request
+
+The replacement route receives the file's size and type as JSON, checks the session, mints a key, and returns a presigned `PUT` URL. Your function never sees the file.
+
+```ts title="lib/files.ts" lineNumbers
+import { getVercelOidcToken } from "@vercel/oidc";
+import { createFiles } from "files-sdk";
+import { vercelBlob } from "files-sdk/vercel-blob";
+
+// Call inside each request: on Vercel the OIDC token arrives with it.
+export async function getFiles() {
+  return createFiles({
+    adapter: vercelBlob({
+      access: "private",
+      oidcToken: await getVercelOidcToken(),
+    }),
+  });
+}
+```
+
+```ts title="app/api/uploads/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { getSession } from "@/lib/auth";
+import { getFiles } from "@/lib/files";
+
+const MAX_BYTES = 100 * 1024 * 1024; // 100 MiB
+const ALLOWED_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "application/pdf",
+  "video/mp4",
+]);
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return Response.json({ error: "Sign in to upload" }, { status: 401 });
+  }
+
+  const { size, type } = (await request.json()) as {
+    size?: unknown;
+    type?: unknown;
+  };
+  if (typeof type !== "string" || !ALLOWED_TYPES.has(type)) {
+    return Response.json({ error: "File type not allowed" }, { status: 415 });
+  }
+  // A fast, friendly rejection. The real limit is maxSize below.
+  if (typeof size !== "number" || size > MAX_BYTES) {
+    return Response.json({ error: "File is too large" }, { status: 413 });
+  }
+
+  // The server picks the key, so a client can't write outside its prefix.
+  const id = crypto.randomUUID();
+  const key = `users/${session.user.id}/${id}`;
+  try {
+    const files = await getFiles();
+    const upload = await files.signedUploadUrl(key, {
+      expiresIn: 300,
+      contentType: type,
+      maxSize: MAX_BYTES,
+    });
+    return Response.json({ id, upload });
+  } catch (error) {
+    const message =
+      error instanceof FilesError ? error.message : "Could not sign upload";
+    return Response.json({ error: message }, { status: 500 });
+  }
+}
+```
+
+On Vercel Blob, `signedUploadUrl()` issues a token scoped to that one key and the `put` operation, then signs a `PUT` URL with it ([Vercel Signed URLs](https://vercel.com/docs/vercel-blob/vercel-signed-urls)). `contentType` becomes `allowedContentTypes` and `maxSize` becomes `maximumSizeInBytes`, and Vercel's CDN rejects an upload that breaks either. The `size` check in the route only produces a nicer error; the client could lie about `size`, but it can't get past `maximumSizeInBytes`.
+
+The same call works for public and private stores. Vercel has no minimum-size constraint, so passing a positive `minSize` throws. Check for empty files in your app if that matters.
+
+## Send the file from the browser
+
+```tsx title="app/upload/upload-form.tsx" lineNumbers
+"use client";
+
+import type { SignedUpload } from "files-sdk";
+import { type ChangeEvent, useState } from "react";
+
+async function uploadFile(file: File): Promise<string> {
+  // 1. A small JSON request to your function: size and type only.
+  const signed = await fetch("/api/uploads", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ size: file.size, type: file.type }),
+  });
+  if (!signed.ok) {
+    const { error } = (await signed.json()) as { error: string };
+    throw new Error(error);
+  }
+  const { id, upload } = (await signed.json()) as {
+    id: string;
+    upload: SignedUpload;
+  };
+  if (upload.method !== "PUT") {
+    throw new Error("Expected a presigned PUT");
+  }
+
+  // 2. The file goes from the browser to storage. Your function never sees it.
+  const stored = await fetch(upload.url, {
+    method: "PUT",
+    headers: upload.headers,
+    body: file,
+  });
+  if (!stored.ok) {
+    throw new Error(`Upload failed (${stored.status})`);
+  }
+  return id;
+}
+
+export function UploadForm() {
+  const [status, setStatus] = useState("");
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    setStatus(`Uploading ${file.name}…`);
+    try {
+      const id = await uploadFile(file);
+      setStatus(`Uploaded ${id}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Upload failed");
+    }
+  }
+
+  return (
+    <section>
+      <input onChange={onSelect} type="file" />
+      <p role="status">{status}</p>
+    </section>
+  );
+}
+```
+
+`upload.headers` carries the `Content-Type` the URL was signed for, so the `PUT` must send it unchanged. `fetch` doesn't report upload progress; switch the `PUT` to `XMLHttpRequest` and listen to `xhr.upload`'s `progress` event if you need a progress bar.
+
+The browser only ever sees the `id`. Before you save it against a record, rebuild the full key from the session on the server, `head` it, and check the stored size. The R2 guide's [`attachUpload` action](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land) does exactly that, and works with the Blob adapter once it gets its instance from `getFiles()`.
+
+## Use R2 instead of Blob
+
+Swap the adapter and drop `maxSize`. R2 credentials are plain environment variables, so one module-scope instance is fine; keeping the `getFiles()` signature means the routes don't change:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+
+const files = createFiles({
+  adapter: r2({ bucket: "uploads", client: "fetch" }),
+});
+
+export async function getFiles() {
+  return files;
+}
+```
+
+R2 has no presigned `POST`, so it can't enforce a size on an upload URL. The adapter throws ``r2: `maxSize` is not supported`` rather than sign a URL that ignores it, so remove `maxSize` from the `signedUploadUrl` call. The `fetch` engine binds `contentType` into the signature, so R2 still refuses a different type. R2 also needs a CORS rule that allows the `PUT` from your origin, which [the R2 uploader guide](/guides/nextjs-r2-file-upload#let-the-browser-put-to-r2) walks through. For a size limit that holds, check each object after it lands, as in that guide's [Limit upload size](/guides/nextjs-r2-file-upload#limit-upload-size) section.
+
+## Check which path gateway uploads take
+
+If you use the Files SDK gateway (`createFilesRouter` with `files-sdk/next`) and `useFiles().upload(file)`, the gateway decides per request whether the browser uploads to storage or to your function. It asks the adapter for a presigned URL, and if the adapter can't sign or throws for any reason, it returns a proxy target, a `PUT` to `/api/files?op=proxy`, without an error. On Vercel, a proxied upload over 4.5 MB fails, and `useFiles` reports it as `upload failed (413)`.
+
+| Setup | Where the bytes go |
+| --- | --- |
+| Vercel Blob, private store | Straight to Blob. `maxUploadSize` becomes `maximumSizeInBytes`. |
+| Vercel Blob, public store | Your function, with or without `maxUploadSize`. The gateway only presigns when `capabilities.signedUrl.supported` is `true`, which Vercel Blob reports only in private mode. |
+| R2, no `maxUploadSize` | Straight to R2. |
+| R2 with `maxUploadSize` | Your function. R2 refuses `maxSize`, so the gateway falls back. |
+| Any adapter plus `validation()` with a size or type rule, or `contentType()` | Your function. Those plugins refuse to sign URLs. |
+| `upload(key, file)` with an explicit key | Always your function. |
+
+On a public Blob store, use the route in this guide instead of the gateway's keyless upload. On R2, take `maxUploadSize` off the gateway and check sizes after upload. To see which path a deployment takes, open the browser's network panel and look at where the large `PUT` goes: a storage host means direct, `/api/files?op=proxy` means your function. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation#what-the-gateway-does-with-maxuploadsize) has the same table for more adapters.
+
+## Downloads go through the function too
+
+The gateway serves `GET /api/files?op=download` one of two ways. When the adapter can sign URLs (R2, private Blob), it redirects to a signed URL and storage serves the bytes. When it can't (public Blob), it proxies: every byte streams through your function. Vercel lists the 4.5 MB cap for response bodies as well, though its [guide to the body size limit](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions) says streamed responses aren't subject to it, and the gateway streams. Either way, a proxied download keeps the function running for the whole transfer. For public Blob files, link to the permanent URL from `files.url(key)` instead.
+
+On a private Blob store, the gateway's download redirect currently fails: it asks `files.url()` for a `Content-Disposition` override that Vercel Blob URLs can't carry, and the adapter throws. Serve downloads from your own route until that's fixed:
+
+```ts title="app/api/files/download/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { getFiles } from "@/lib/files";
+
+export async function GET(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return Response.json({ error: "Sign in to download" }, { status: 401 });
+  }
+  const id = new URL(request.url).searchParams.get("id");
+  // The upload route mints bare UUIDs; refuse anything else.
+  if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+    return Response.json({ error: "Invalid id" }, { status: 400 });
+  }
+  // A presigned GET for this one blob, valid for five minutes.
+  const files = await getFiles();
+  const url = await files.url(`users/${session.user.id}/${id}`, {
+    expiresIn: 300,
+  });
+  return Response.redirect(url, 302);
+}
+```
+
+The key is rebuilt from the session, so a user can only reach their own blobs. The signed URL can't carry a `Content-Disposition` override, so the upload route's type allowlist matters: it is what keeps HTML and SVG out of the store.
+
+## When Vercel's client upload is simpler
+
+`@vercel/blob/client` has its own direct-upload flow: [`upload()` with `handleUpload()`](https://vercel.com/docs/vercel-blob/client-upload), or `uploadPresigned()` with `handleUploadPresigned()` on Vercel Signed URLs. Use it instead of this guide's route when:
+
+- **Blob is your only store and files are large.** Vercel [recommends multipart uploads above 100 MB](https://vercel.com/docs/vercel-blob/usage-and-pricing#size-limits). Its client splits the file, uploads parts in parallel, and retries failed parts with `multipart: true`. This guide's single presigned `PUT` doesn't.
+- **You want a completion callback.** `onUploadCompleted` runs on your server after Vercel stores the blob, so you can write the database record there. Blob can't reach `localhost`, so it needs a tunnel in development.
+- **You want progress without writing XHR code.** The client takes an `onUploadProgress` callback.
+
+`handleUpload()` needs `BLOB_READ_WRITE_TOKEN` to generate client tokens. `handleUploadPresigned()` works with OIDC and verifies its callback with `BLOB_WEBHOOK_PUBLIC_KEY`.
+
+Keep the Files SDK route when the same server code has to work with R2 or S3, or when the rest of your app already uses Files SDK for `head`, `list`, `delete`, and signed downloads.
+
+## Troubleshooting
+
+**Still `413 FUNCTION_PAYLOAD_TOO_LARGE` after switching.** Something still sends the file to a function. Find the large request in the network panel. If it's `/api/files?op=proxy` or `/api/files?op=upload`, see [the gateway table](#check-which-path-gateway-uploads-take).
+
+**`upload failed (413)` in `useFiles().uploads`.** The gateway proxied the upload and Vercel refused the body. Same cause as above.
+
+**``vercel-blob: `minSize` is not supported``.** You passed a positive `minSize`. Vercel Blob has no minimum; omit it and check for empty files in your app.
+
+**``r2: `maxSize` is not supported``.** R2 can't enforce a size on a presigned URL. Remove `maxSize` and check the size after upload.
+
+**The `PUT` to Blob is rejected.** Vercel refuses a `PUT` whose `Content-Type` isn't the signed type, or whose body is larger than `maximumSizeInBytes`. Send `upload.headers` as returned, and check `file.size` before you request the URL.
+
+**``vercel-blob: `responseContentDisposition` is not supported`` from `/api/files`.** The gateway's private-store download or `url` operation hit the bug above. Use the download route from this guide.

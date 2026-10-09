@@ -1,0 +1,341 @@
+---
+title: Upload files to Bunny Storage and serve them through a Pull Zone
+description: Stream browser uploads through your server into a Bunny Storage zone, serve them from your Pull Zone hostname, and purge the edge cache when a file changes.
+sidebar:
+  label: Bunny Storage and Pull Zones
+seo:
+  title: Bunny Storage uploads through a Pull Zone
+related:
+  - /docs/adapters/bunny-storage
+  - /docs/ui/server/gateway
+  - /docs/plugins/content-type
+  - /guides/vercel-large-file-upload
+  - /guides/nextjs-r2-file-upload
+---
+
+Bunny Storage has no presigned uploads. Every write is an authenticated call to the Storage API with the zone's password, so browser uploads have to pass through your server: a Next.js route receives the bytes and streams them into the storage zone with `files-sdk/bunny-storage`. Reads go the other way, through a Pull Zone. Its URLs need no credentials, so your pages put them straight into `<img src>`, and the password never leaves the server.
+
+That split decides what this setup is for. Pull Zone URLs are public and permanent, which suits avatars, product photos, and other media meant to be seen, not private documents. Every uploaded byte crosses your server, so your host's request limits apply. And Bunny keeps serving its cached copy of a file after you change it, until the cache entry expires or you purge it.
+
+## Before you start
+
+- A bunny.net account with a **Storage Zone**. Note its name, its primary region, and the password from **Access → API / HTTP** in the zone's settings.
+- A **Pull Zone** whose origin type is **Bunny Storage Zone**, pointing at that zone, as in Bunny's [storage quickstart](https://bunny.net/docs/storage/quickstart). Use its `*.b-cdn.net` hostname or add a [custom hostname](https://bunny.net/docs/cdn/custom-hostname) such as `media.example.com`.
+- Your account **API key** from [Account → API Key](https://bunny.net/docs/account/api-keys), for purging. It's a different key from the storage zone password.
+- A Next.js App Router app with an auth library that can resolve the signed-in user on the server.
+- Written against files-sdk 2.6, `@bunny.net/storage-sdk` 0.3.2, Next.js 16.4, and React 19.3.
+
+```package-install
+files-sdk @bunny.net/storage-sdk
+```
+
+This is Bunny Storage, the file store. Bunny Stream, the video product, has its own libraries, API keys, and upload API, and none of this guide applies to it.
+
+## Two URLs for every file
+
+Each file you store has an address on the Storage API and another on the Pull Zone. They aren't interchangeable:
+
+|  | Storage API | Pull Zone |
+| --- | --- | --- |
+| Example | `https://storage.bunnycdn.com/app-media/users/42/9f2c….png` | `https://media.example.com/users/42/9f2c….png` |
+| Authentication | `AccessKey` header carrying the zone password | None |
+| Who calls it | Your server, through the adapter | Browsers |
+| What it does | Upload, download, list, delete | Serve the file from Bunny's edge cache |
+
+Bunny requires the `AccessKey` header on every Storage API request, and a link can't carry a header, so a Storage API URL is useless to a browser even before you consider that the header is the zone password. The adapter's `url()` returns the Pull Zone form, built from the `publicBaseUrl` you give it.
+
+The Storage API host depends on the zone's primary region. Bunny's [HTTP API docs](https://bunny.net/docs/storage/http) list them, and the adapter picks one from the `region` code:
+
+| `region` | Location     | Storage API host           |
+| -------- | ------------ | -------------------------- |
+| `de`     | Frankfurt    | `storage.bunnycdn.com`     |
+| `uk`     | London       | `uk.storage.bunnycdn.com`  |
+| `ny`     | New York     | `ny.storage.bunnycdn.com`  |
+| `la`     | Los Angeles  | `la.storage.bunnycdn.com`  |
+| `sg`     | Singapore    | `sg.storage.bunnycdn.com`  |
+| `se`     | Stockholm    | `se.storage.bunnycdn.com`  |
+| `br`     | São Paulo    | `br.storage.bunnycdn.com`  |
+| `jh`     | Johannesburg | `jh.storage.bunnycdn.com`  |
+| `syd`    | Sydney       | `syd.storage.bunnycdn.com` |
+
+Use the zone's primary region, not a replication region. Bunny's docs list a wrong region hostname as one cause of a `401`.
+
+## Configure the adapter
+
+```bash title=".env.local"
+BUNNY_STORAGE_ZONE=app-media
+BUNNY_STORAGE_ACCESS_KEY=your-storage-zone-password
+BUNNY_STORAGE_REGION=de
+# Account API key, used only for purges (your own variable name).
+BUNNY_API_KEY=your-account-api-key
+# Signs the gateway's upload tokens. Generate with: openssl rand -hex 32
+FILES_API_SECRET=a-long-random-string
+```
+
+The adapter reads the three `BUNNY_STORAGE_*` variables itself and checks the region against the SDK's list when it's created. None of these values may reach the browser, so none gets a `NEXT_PUBLIC_` prefix. The storage zone password can read, overwrite, and delete every file in the zone.
+
+There's no environment variable for `publicBaseUrl`, so pass the Pull Zone origin in code:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { bunnyStorage } from "files-sdk/bunny-storage";
+import { contentType } from "files-sdk/content-type";
+import { validation } from "files-sdk/validation";
+
+export const files = createFiles({
+  // zone, accessKey, and region come from the BUNNY_STORAGE_* variables.
+  adapter: bunnyStorage({ publicBaseUrl: "https://media.example.com" }),
+  plugins: [
+    // Store only what the bytes prove to be an image.
+    contentType({ onMismatch: "reject", onUnknown: "reject" }),
+    validation({
+      allowedTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    }),
+  ],
+});
+```
+
+The two plugins matter more on Bunny than on most providers. A file on the Pull Zone is served with the type it was stored under, and Bunny can't attach a `Content-Disposition: attachment` to a download the way a signed S3 URL can: `url()` throws if you ask for one. If an uploaded "image" is really HTML, the Pull Zone hostname would serve it as a page. [`contentType()`](/docs/plugins/content-type) reads the first bytes and rejects any upload whose bytes don't match its declared type, or that it can't identify at all. [`validation()`](/docs/plugins/validation) then allows only image types. Keep them in that order; the plugin docs explain why the reverse lets mislabeled files through.
+
+## Route browser uploads through your server
+
+The gateway from `files-sdk/api` handles the browser side: it authorizes the request, picks the key, and streams the body into storage.
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+const router = createFilesRouter({
+  files,
+  // Browsers only upload. Listing, URLs, and deletes happen in server code.
+  operations: ["upload"],
+  maxUploadSize: 10 * 1024 * 1024, // 10 MiB
+  authorize: async ({ req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to upload");
+    }
+    return { keyPrefix: `users/${session.user.id}/` };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library: Auth.js, Clerk, Better Auth, or your own cookie check. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+You don't configure a proxy anywhere. The client's `upload(file)` starts by asking the gateway for an upload target. The gateway offers a presigned URL only when `files.capabilities.signedUrl.supported` is true, and the Bunny adapter reports `false`, so the gateway answers with its own proxy URL (`/api/files?op=proxy&token=…`) instead. The browser `PUT`s the file there, the gateway checks the token and streams the request body into `files.upload()`, and a final `complete` call `head`s the stored file. Against a mocked Storage API, that sequence returned a proxy target, stored the file under `users/42/<uuid>.png`, and completed with its size and type.
+
+The rest of the configuration:
+
+- **`operations: ["upload"]`** is the gateway's allow-list. Any other operation gets `403 operation not allowed`. The page reads the list on the server and deletes go through a server action, so the browser needs nothing else.
+- **`maxUploadSize`** is enforced while the bytes stream through: the gateway counts them and aborts past the limit with `422 upload exceeds maxSize`, before the upload to Bunny finishes. Files SDK passes the stream to Bunny's SDK as it arrives, so a 10 MiB file isn't held in memory first.
+- **`FILES_API_SECRET`** signs the token that ties the proxy `PUT` to the key the gateway chose. Without it, each server instance invents its own secret and logs a warning, and an upload that lands on a different instance fails.
+
+A server action can do the same job for small files, but Next.js [limits action request bodies to 1 MB by default](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions#bodysizelimit) and parses the whole form in memory. The gateway's route handler has neither limit.
+
+## Show the files from the Pull Zone
+
+The page lists the signed-in user's files on the server and renders their Pull Zone URLs. `files.url()` joins `publicBaseUrl` and the key without a network call.
+
+```tsx title="app/media/page.tsx" lineNumbers
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+import { deleteMedia } from "./actions";
+import { Uploader } from "./uploader";
+
+export default async function MediaPage() {
+  const session = await getSession(await headers());
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  const { items } = await files.list({
+    limit: 100,
+    prefix: `users/${session.user.id}/`,
+  });
+  // Pull Zone URLs: built from publicBaseUrl, no network call.
+  const media = await Promise.all(
+    items.map(async (item) => ({
+      key: item.key,
+      src: await files.url(item.key),
+    }))
+  );
+
+  return (
+    <main>
+      <Uploader />
+      <ul>
+        {media.map((item) => (
+          <li key={item.key}>
+            <img alt="" src={item.src} width={160} />
+            <form action={deleteMedia}>
+              <input name="key" type="hidden" value={item.key} />
+              <button type="submit">Delete</button>
+            </form>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+```tsx title="app/media/uploader.tsx" lineNumbers
+"use client";
+
+import { useRouter } from "next/navigation";
+import type { ChangeEvent } from "react";
+import { useFiles } from "files-sdk/react";
+
+export function Uploader() {
+  const router = useRouter();
+  const files = useFiles();
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const selected = [...(event.target.files ?? [])];
+    event.target.value = "";
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    router.refresh(); // re-render the server component's list
+  }
+
+  return (
+    <section>
+      <input accept="image/*" multiple onChange={onSelect} type="file" />
+      <ul>
+        {files.uploads.map((upload, index) => (
+          <li key={`${upload.name}-${index}`}>
+            {upload.name}: {upload.status}
+            {upload.status === "uploading" &&
+              ` ${Math.round(upload.progress * 100)}%`}
+            {upload.error && ` (${upload.error.message})`}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+Progress measures the upload to your server. An entry reaches `"success"` only after the `complete` step, which runs once the server has finished writing to Bunny.
+
+Why not ask the gateway for the URL instead? Its `url` operation always passes a `Content-Disposition` to `files.url()`, which the Bunny adapter can't honor, so in files-sdk 2.6 that call fails with a `500`; calling `files.url()` in server code avoids it.
+
+To check delivery, request a file through the Pull Zone:
+
+```bash
+curl -I https://media.example.com/users/42/9f2c….png
+```
+
+Expect a `200` with the `content-type` you stored. The same path on `storage.bunnycdn.com` without an `AccessKey` header should be refused, which confirms the zone isn't readable without the password.
+
+## Set cache policy on the Pull Zone, then purge on change
+
+The adapter has no per-object cache setting. Passing `cacheControl` to `upload()` throws ``bunny-storage: `cacheControl` is not supported by this adapter`` before any request is sent, and `metadata` fails the same way. Cache lifetimes belong to the Pull Zone: its **Caching** settings set the default, and [Edge Rules](https://bunny.net/docs/cdn/edge-rules) can override it with the **Override Cache Time** and **Override Browser Cache Time** actions, for example by file extension.
+
+Bunny's [purge docs](https://bunny.net/docs/cdn/purge-cache) are direct about what follows: the CDN doesn't watch your storage for changes, and a cached file stays cached until its lifetime runs out or it's evicted. That leaves two ways to change what a URL serves.
+
+**Give each version a new key.** The gateway already does this: every upload gets a fresh UUID key, so a new image means a new URL and nothing stale can be served. Store the current key in your database and point pages at it. This is the right default, and it needs no purging at all.
+
+**Keep a stable key and purge after writing.** When the URL itself must stay the same, as with an avatar at a fixed path, overwrite the file and then purge that URL with Bunny's [Purge URL endpoint](https://bunny.net/docs/api-reference/core/purge/purge-url):
+
+```ts title="lib/purge.ts" lineNumbers
+// Uses the account API key, not the storage zone password.
+export async function purgeUrl(url: string) {
+  const res = await fetch(
+    `https://api.bunny.net/purge?${new URLSearchParams({ url })}`,
+    {
+      headers: { AccessKey: process.env.BUNNY_API_KEY ?? "" },
+      method: "POST",
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Bunny purge failed with ${res.status} for ${url}`);
+  }
+}
+```
+
+```ts title="app/media/actions.ts" lineNumbers
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+import { purgeUrl } from "@/lib/purge";
+
+async function userPrefix() {
+  const session = await getSession(await headers());
+  if (!session) {
+    throw new Error("Not signed in");
+  }
+  return `users/${session.user.id}/`;
+}
+
+export async function deleteMedia(form: FormData) {
+  const prefix = await userPrefix();
+  const key = String(form.get("key"));
+  if (!key.startsWith(prefix)) {
+    throw new Error("Not your file");
+  }
+  await files.delete(key);
+  // Storage is updated; now drop the copy the edge may still serve.
+  await purgeUrl(await files.url(key));
+  revalidatePath("/media");
+}
+
+export async function replaceAvatar(form: FormData) {
+  const file = form.get("file");
+  if (!(file instanceof File)) {
+    throw new Error("Attach an image");
+  }
+  // A stable key, so the same URL now has new bytes behind it.
+  const key = `${await userPrefix()}avatar`;
+  await files.upload(key, file);
+  await purgeUrl(await files.url(key));
+  revalidatePath("/media");
+}
+```
+
+Deletes need the purge as much as overwrites do: removing a file from storage doesn't remove the copy at the edge. Call `replaceAvatar` from a `<form>` with a file input named `file`; as a server action it's subject to the 1 MB default body limit, so raise `serverActions.bodySizeLimit` if your avatars can be larger. A few details in that file:
+
+- **Write first, then purge.** If the purge ran first, a request in between could cache the old file again.
+- **Check the key against the session's prefix.** The hidden form field comes from the browser. The adapter also rejects keys containing `.` or `..` segments, which could otherwise address a directory, and a directory delete on Bunny is recursive.
+- **A failed purge doesn't undo the write.** The file in storage has already changed; only the edge copy is stale. Log the failure and retry it. URL purges are rate-limited per account (about 300 a minute for exact URLs, per the purge docs), and the API answers `429` when you exceed it.
+- **A purge clears Bunny's cache, not your visitors' browsers.** If the Pull Zone tells browsers to cache for a day, a visitor may see the old avatar for a day. Keep the browser cache time short for anything served from a stable key, or version the key.
+
+## What Bunny Storage can't do here
+
+`files.capabilities` reports `false` for every optional feature on this adapter: `signedUrl`, `rangeRead`, `metadata`, `cacheControl`, `delimiter`, `multipart`, `uploadProgress`, and `serverSideCopy`. In this setup that means:
+
+- **No direct uploads.** `signedUploadUrl()` always rejects with `bunnyStorage: signed upload URLs are not available…`, so the bytes cross your server. On Vercel, function request bodies are capped at 4.5 MB, which caps each file on this path; [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side. For larger files, run the upload route on a host without that limit.
+- **No private delivery through the adapter.** `url()` returns a permanent public URL and ignores `expiresIn`. Bunny's Pull Zones support [token authentication](https://bunny.net/docs/cdn/security/token-authentication) for expiring links, but Files SDK doesn't generate those tokens; you'd sign them yourself. For files that must stay private, a provider with signed URLs is the simpler fit.
+- **Directory listings, not prefix scans.** `list({ prefix })` lists one directory and filters it, so `prefix: "users/"` won't return files under `users/42/`, and `delimiter` throws. Keep each user's files in one directory, as the gateway's `keyPrefix` does.
+- **No range reads or server-side copies.** `download(key, { range })` throws, and `copy()` downloads the source and uploads it again. Browsers fetch media from the Pull Zone, so neither touches the delivery path.
+
+Bunny also offers an [S3-compatible API](https://bunny.net/docs/storage/s3), in public preview at the time of writing, that supports presigned URLs. It can only be turned on when a storage zone is created, and the `files-sdk/bunny-storage` adapter doesn't use it. Files SDK isn't tested against it, so if you want direct uploads that way, evaluate it on a new zone first.
+
+## Troubleshooting
+
+**`bunnyStorage adapter: missing credentials.`** The full message lists the options and the `BUNNY_STORAGE_*` variables. One of zone, access key, or region is missing where the server runs. It's thrown when `lib/files.ts` loads.
+
+**`bunnyStorage adapter: unsupported region "fra". Pass one of de, uk, ny, la, sg, se, br, jh, syd.`** The region must be one of the SDK's codes, not a city name or a hostname.
+
+**`Unauthorized access to storage zone: app-media`** (code `Unauthorized`). The Storage API returned `401`. Check that `BUNNY_STORAGE_ACCESS_KEY` is the zone password, not the account API key, and that `BUNNY_STORAGE_REGION` is the zone's primary region.
+
+**`500` with `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`.** The `contentType()` plugin refused an upload whose bytes don't match its declared type. Nothing was stored. A file it can't identify fails with `could not identify the contents`, and a recognized type that isn't on the list, such as a BMP, fails `validation()` with `is not one of the allowed types`. The gateway reports these plugin rejections as `500`, so show `upload.error.message` rather than relying on the status code.
+
+**`500` with ``bunnyStorage: `responseContentDisposition` is not supported`` from `/api/files`.** Something called the gateway's `url` operation, which forces a disposition. Build URLs with `files.url()` in server code instead.
+
+**The old image keeps showing after an overwrite.** The edge or the browser still has the previous copy. Purge the URL, or give the new version a new key.
+
+**`Bunny purge failed with 401`.** The purge used the storage zone password. The purge API takes the account API key.

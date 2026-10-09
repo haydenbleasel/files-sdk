@@ -1,0 +1,387 @@
+---
+title: Isolate each tenant's files in a multi-tenant application
+description: Keep two tenants in one bucket apart with server-derived key prefixes, and see exactly what the gateway returns when one tenant reaches for the other's files.
+sidebar:
+  label: Multi-tenant isolation
+seo:
+  title: Multi-tenant file storage in one bucket
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/shadcn-file-manager
+  - /docs/ui/server/authorization
+  - /docs/prefixes
+  - /docs/ui/server/multiple-buckets
+---
+
+Derive each tenant's key prefix from the session on the server, and return it from the gateway's `authorize` hook as `keyPrefix`. The gateway prepends it to every key the browser sends, refuses keys that try to climb out with `..`, and strips it from everything it returns. A tenant has no way to name another tenant's object, and the table below shows what happens when one tries.
+
+The catch is where that boundary lives. It's in your application, not in the bucket. To the storage provider, `orgs/acme/` is the start of a string and nothing more, and anything that holds the bucket credentials, a signed URL, or an upload token goes around the gateway entirely. [When a shared bucket isn't enough](#when-a-shared-bucket-isnt-enough) covers separate buckets and provider-side permissions.
+
+## Before you start
+
+- A Files SDK gateway in your app. This guide reuses the Next.js route and `lib/files.ts` from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload). The policy works the same with any adapter and any [framework binding](/docs/ui/server/gateway#other-frameworks).
+- A session that carries a stable tenant ID. A tenant can be a user or an organization; this guide uses organizations, and the code is identical with `session.user.id`.
+- Written against files-sdk 2.6 and Next.js 16.4. The results below come from running the gateway in Bun against the memory adapter, and the signing-adapter differences from a local MinIO server.
+
+## Derive the prefix from the session
+
+Put the policy in its own module so the route and a test can share it:
+
+```ts title="lib/files-policy.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import type { Authorize, FilesOperation } from "files-sdk/api";
+
+export interface Session {
+  user: { id: string; orgId: string };
+}
+
+// Allow only the verbs your UI calls. This guide allows every core verb so
+// the isolation table below covers all of them.
+const ALLOWED = new Set<FilesOperation>([
+  "capabilities",
+  "list",
+  "search",
+  "head",
+  "exists",
+  "download",
+  "url",
+  "upload",
+  "delete",
+  "copy",
+  "move",
+  "signedUploadUrl",
+]);
+
+export function tenantPolicy(
+  getSession: (headers: Headers) => Promise<Session | null>
+): Authorize {
+  return async ({ operation, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    return {
+      keyPrefix: `orgs/${session.user.orgId}/`,
+      maxExpiresIn: 300,
+    };
+  };
+}
+```
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+import { tenantPolicy } from "@/lib/files-policy";
+
+const router = createFilesRouter({
+  files,
+  authorize: tenantPolicy(getSession),
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id, orgId } }` or `null`.
+
+Three rules keep the prefix trustworthy:
+
+- **Only the session decides it.** Never build the prefix from a query parameter, header, or body field the browser controls. `authorize` also receives the client's `key`; use it for per-key rules, never to choose the prefix.
+- **Use an immutable, opaque ID.** If the prefix is a slug or display name a tenant can change, a tenant that renames itself to a former tenant's slug inherits that tenant's files. Error messages also echo the full storage key (`unsafe key: orgs/acme/../…`), so a tenant can see its own prefix. Don't put anything private, like an email address, in it.
+- **The trailing slash is handled for you.** The gateway normalizes `orgs/acme` to `orgs/acme/` before using it, so `acme` never matches `acme-co`. The tenants below were picked so that one name is a string prefix of the other.
+
+## What one tenant can reach
+
+The bucket holds `orgs/acme/report.pdf` and `orgs/acme-co/secret.txt`. A signed-in `acme` user sends each request straight to the gateway (the same JSON and query strings `useFiles` sends, but hand-built, the way an attacker would) and tries two ways to reach `acme-co`'s file: a traversal key and the full storage key.
+
+| Operation | Traversal: `../acme-co/secret.txt` | Full key: `orgs/acme-co/secret.txt` | What the full key touched |
+| --- | --- | --- | --- |
+| `list` (as `prefix`) | `422` | `200`, `items: []` | listed `orgs/acme/orgs/acme-co/` |
+| `search` | `422` as `prefix`; `200`, no matches as a glob | `200`, no matches as a glob or regex | walked `orgs/acme/` only |
+| `head`, `exists` | `422` | `404` | looked up `orgs/acme/orgs/acme-co/secret.txt` |
+| `download` | `422`, also when sent as `%2E%2E%2F…` | `404` | the same lookup |
+| `url` | `422` | `404` | the same lookup |
+| `upload` with a key | `422` | `200` | wrote `orgs/acme/orgs/acme-co/secret.txt` |
+| `upload` without a key | a file named `../../acme-co/secret.txt` was stored as `<uuid>.txt` | not applicable | wrote `orgs/acme/<uuid>.txt` |
+| `delete` | `422` | `200` | deleted `orgs/acme/orgs/acme-co/secret.txt`, which didn't exist |
+| `delete` with a key list | `422` for the whole batch if any key traverses | `200`, both keys reported in `deleted` | the same, per key |
+| `copy` | `422` as source or destination | source: `404`; destination: `200` | destination: wrote `orgs/acme/orgs/acme-co/planted.pdf` |
+| `move` | `422` as source or destination | source: `404`; destination: `200` | destination: moved `acme`'s file to `orgs/acme/orgs/acme-co/report.pdf` |
+| `signedUploadUrl` | `422` | `200` | signed a `PUT` for `orgs/acme/orgs/acme-co/secret.txt`, expiring in 300 seconds |
+
+Every request without a session got `401`. After the run, `orgs/acme-co/` held exactly what it started with.
+
+Three kinds of result show up in that table:
+
+- **`422 Validation`** means the gateway refused the key before calling storage. It prepends the prefix first and then rejects the result if it contains a `.` or `..` segment or a NUL byte, so `../acme-co/secret.txt` becomes `orgs/acme/../acme-co/secret.txt` and stops there. Query strings are decoded before the check, so `%2E%2E%2F` is caught too. A double-encoded `%252E%252E%252F` or a backslash path (`..\acme-co\secret.txt`) isn't a traversal in object storage at all; both came back `404` as literal keys under `orgs/acme/`.
+- **`404` and empty lists** mean the full storage key was treated as a relative key. `orgs/acme-co/secret.txt` becomes `orgs/acme/orgs/acme-co/secret.txt`, which doesn't exist.
+- **`200` on a write** means the write happened inside `acme`'s own prefix. That includes `delete`: deleting a key that doesn't exist succeeds, on the memory adapter and against a local MinIO server alike. A `200` from a cross-tenant delete doesn't mean anything was deleted, which is why the last column comes from listing the bucket afterwards, not from the responses.
+
+Keyless uploads can't be steered at all. The server mints the key from the tenant prefix, a random UUID, and the file's extension; the client's file name contributes nothing else. Tampering with the key in the `complete` step changes nothing either, because the signed upload token carries the real key.
+
+On a signing adapter, two rows look different. The memory adapter can't sign URLs, so `url` and `download` look the object up and answer `404`. S3, R2, and MinIO sign without a lookup: against a local MinIO server, `url` returned `200` with a signed URL and `download` returned a `302`, both pointing at `orgs/acme/orgs/acme-co/secret.txt`. Fetching that URL returned `404 NoSuchKey`. Either way, the URL can only point inside the caller's prefix.
+
+## Keep the check in your test suite
+
+The table comes from a script like this one. It mounts the real policy over the memory adapter, reads the session from a test header, and asserts on both the status codes and the bucket's contents afterwards:
+
+```ts title="scripts/check-tenant-isolation.ts" lineNumbers
+import assert from "node:assert/strict";
+
+import { createFiles } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { memory } from "files-sdk/memory";
+
+import { tenantPolicy } from "../lib/files-policy";
+
+const files = createFiles({ adapter: memory() });
+await files.upload("orgs/acme/report.pdf", "acme report");
+await files.upload("orgs/acme-co/secret.txt", "acme-co only");
+
+// The production policy, with the session read from a test header.
+const router = createFilesRouter({
+  files,
+  secret: "test-only-secret",
+  authorize: tenantPolicy(async (headers) => {
+    const orgId = headers.get("x-test-org");
+    return orgId ? { user: { id: "test-user", orgId } } : null;
+  }),
+});
+
+const endpoint = "https://app.example.com/api/files";
+const as = (orgId: string | null) => (url: string, init: RequestInit) =>
+  router.handle(
+    new Request(url, {
+      ...init,
+      headers: { ...(orgId && { "x-test-org": orgId }), ...init.headers },
+    })
+  );
+const post = (body: object): RequestInit => ({
+  body: JSON.stringify(body),
+  headers: { "content-type": "application/json" },
+  method: "POST",
+});
+const acme = as("acme");
+const json = (body: object) => acme(endpoint, post(body));
+const query = (params: Record<string, string>) =>
+  `${endpoint}?${new URLSearchParams(params)}`;
+
+const traversal = "../acme-co/secret.txt";
+const fullKey = "orgs/acme-co/secret.txt";
+const put: RequestInit = { body: "overwritten", method: "PUT" };
+
+// [label, request from an acme user, expected status]
+const cases: [string, () => Promise<Response>, number][] = [
+  ["list", () => json({ op: "list", prefix: "../acme-co/" }), 422],
+  ["head", () => json({ op: "head", key: traversal }), 422],
+  ["head full key", () => json({ op: "head", key: fullKey }), 404],
+  ["download", () => acme(query({ op: "download", key: traversal }), {}), 422],
+  ["upload", () => acme(query({ op: "upload", key: traversal }), put), 422],
+  ["delete", () => json({ op: "delete", key: traversal }), 422],
+  ["copy out", () => json({ op: "copy", from: traversal, to: "x.txt" }), 422],
+  [
+    "copy in",
+    () => json({ op: "copy", from: "report.pdf", to: traversal }),
+    422,
+  ],
+  [
+    "move full key",
+    () => json({ op: "move", from: fullKey, to: "x.txt" }),
+    404,
+  ],
+  [
+    "sign upload",
+    () => json({ op: "signed-upload-url", key: traversal, expiresIn: 60 }),
+    422,
+  ],
+  ["no session", () => as(null)(endpoint, post({ op: "list" })), 401],
+];
+
+for (const [label, send, expected] of cases) {
+  const res = await send();
+  assert.equal(res.status, expected, `${label}: ${await res.text()}`);
+}
+
+// Whatever the responses said, acme-co's prefix must be exactly as it was.
+const after = await files.list({ prefix: "orgs/acme-co/" });
+assert.deepEqual(
+  after.items.map((file) => file.key),
+  [fullKey]
+);
+const stored = await files.download(fullKey);
+assert.equal(await stored.text(), "acme-co only");
+
+console.log(`${cases.length} cross-tenant requests behaved as expected`);
+```
+
+Run it with `bun scripts/check-tenant-isolation.ts`, or move the cases into your test runner. It needs no credentials or network, so it can run on every change to the policy. Requests without an `Origin` header pass the gateway's [origin check](/docs/ui/server/authorization#origin--csrf), which is why the script doesn't set one.
+
+## A prefix is only a naming convention
+
+Storage providers don't know what a tenant is. A prefix is the first part of a key, and the gateway only enforces it for requests that go through the gateway. Any server code holding the unscoped `files` instance can read every tenant, and a string prefix without a trailing slash matches more than you meant:
+
+```ts
+await files.list({ prefix: "orgs/acme" });
+// Returned orgs/acme/… and also orgs/acme-co/report.pdf and orgs/acme-co/secret.txt
+```
+
+For server code that works on behalf of one tenant, such as background jobs, server actions, or webhook handlers, build a scoped instance instead of passing raw keys around:
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+
+import { files } from "@/lib/files";
+
+export function tenantFiles(orgId: string) {
+  return createFiles({ adapter: files.adapter, prefix: `orgs/${orgId}` });
+}
+```
+
+A [constructor `prefix`](/docs/prefixes) matches on a path boundary, so `orgs/acme` never lists `orgs/acme-co/`. It returns keys relative to the prefix, and it refuses keys with `.` or `..` segments (`key must not contain . or .. path segments`). Add `.readonly()` for code that should never write.
+
+## The gateway is an application boundary
+
+`authorize` controls what the gateway will do for a browser. It can't control what happens without the gateway:
+
+- **Bucket credentials reach every tenant.** The R2 token or AWS keys in your server environment can read and write all of `orgs/`. A leaked key, or any server route that calls `files` directly, skips `authorize` completely.
+- **Signed URLs are bearer tokens.** The URL behind a `download` redirect or a `url` call works for anyone who has it until it expires. The gateway can't revoke it.
+- **Upload tokens are bearer tokens too.** The token `presign` returns is bound to the minted key and the endpoint, not to the session. The `PUT` that redeems it doesn't run `authorize`, so anyone holding the token can write that one key until it expires. Replaying one tenant's token from another tenant's session wrote into the first tenant's prefix.
+
+Short lifetimes limit the last two, and provider-side permissions limit the first.
+
+## Default lifetime vs enforced ceiling
+
+These settings sound alike but do different jobs:
+
+| Setting | Where it goes | What it does |
+| --- | --- | --- |
+| `defaultExpiresIn` (default 300 seconds) | `createFilesRouter` | The lifetime the gateway uses when the browser doesn't ask for one. A browser can ask for more. |
+| `maxExpiresIn` | returned from `authorize` | A per-request ceiling on gateway `url` and `download` URLs, signed upload URLs, and upload tokens. |
+| `signedUrlPolicy({ maxExpiresIn })` | first in `plugins` | A ceiling on every `url()` and `signedUploadUrl()` on that `Files` instance, including server code that never touches the gateway. |
+| `defaultUrlExpiresIn` (3600 seconds on S3 and R2) | adapter options | The lifetime server code gets from `files.url(key)` without `expiresIn`. |
+
+With no ceiling, a `url` request asking for `expiresIn: 604800` got exactly that: seven days, the most SigV4 signing allows on S3 and R2. With `maxExpiresIn: 300` from `authorize`, the same request got 300 seconds (`X-Amz-Expires=300` against MinIO). A request for less than the ceiling keeps its shorter lifetime.
+
+To cap server-side calls as well, add the [`signedUrlPolicy()`](/docs/plugins/signed-url-policy) plugin. Put it first in `plugins`, so it rewrites the options before any other plugin or the adapter sees them:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { signedUrlPolicy } from "files-sdk/signed-url-policy";
+
+export const files = createFiles({
+  adapter: r2({ bucket: "uploads", client: "fetch" }),
+  plugins: [signedUrlPolicy({ maxExpiresIn: 300 })],
+});
+```
+
+A call without `expiresIn` is pinned to the cap, and a longer request is clamped to it. The plugin also forces `Content-Disposition: attachment` on `url()` by default. On adapters that can't set a response disposition, such as Vercel Blob or an R2 binding without HTTP credentials, that makes `url()` throw; pass `disposition: false` there to keep only the expiry cap.
+
+## Throw a `FilesError` from `authorize`
+
+The gateway maps a thrown `FilesError` to its status code. Anything else becomes a `500`:
+
+| `authorize` throws | Response |
+| --- | --- |
+| `new Error("Not signed in")` | `500`, `{"error":{"code":"Provider","message":"Not signed in"}}` |
+| `new FilesError("Unauthorized", …)` | `401` |
+| `new FilesError("ReadOnly", …)` | `403` |
+| `new FilesError("NotFound", …)` | `404` |
+
+A `500` tells the browser that storage failed, not that the user is signed out, so your UI shows the wrong error. A plain error's message also reaches the browser as-is. If your session lookup can throw (a database timeout, say), catch it in `authorize` and throw a `FilesError` with a message you're happy to show.
+
+## Delete a tenant's data
+
+When a tenant leaves, list everything under its prefix and delete it in bulk:
+
+```ts title="lib/delete-tenant.ts" lineNumbers
+import { createFiles } from "files-sdk";
+
+import { files } from "@/lib/files";
+
+export async function deleteTenantFiles(orgId: string) {
+  // Same adapter, scoped to one tenant: keys come back relative to orgs/<id>/.
+  const tenant = createFiles({
+    adapter: files.adapter,
+    prefix: `orgs/${orgId}`,
+  });
+
+  const keys: string[] = [];
+  for await (const file of tenant.listAll()) {
+    keys.push(file.key);
+  }
+  const { deleted, errors } = await tenant.delete(keys);
+  return { deleted: deleted.length, failed: errors ?? [] };
+}
+```
+
+The bulk [`delete`](/docs/api/delete) doesn't throw when individual keys fail; it reports them in `errors`, so check that and run it again. Two places can still hold the tenant's data afterwards:
+
+- **Bucket versioning.** On a versioned S3 bucket, `DeleteObject` without a version ID [inserts a delete marker](https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html) and keeps the old versions. Remove those versions or expire them with a lifecycle rule.
+- **The `versioning()` and `softDelete()` plugins.** They keep their copies outside the tenant prefix by default, under `.versions/orgs/<id>/…` and `.trash/orgs/<id>/…`. Delete those prefixes too.
+
+## When a shared bucket isn't enough
+
+A shared bucket with gateway prefixes suits many tenants with the same settings, where your application is the only thing that touches storage. Move isolation down into the provider when a bug in your server code mustn't be able to cross tenants, or when tenants need different settings.
+
+| Approach | What enforces isolation | Use it when |
+| --- | --- | --- |
+| Shared bucket, `keyPrefix` from `authorize` (this guide) | Your gateway | Tenants share settings and only your app reaches storage. |
+| Shared bucket, credentials scoped to a prefix | The provider | You want server code to be unable to cross tenants. On AWS, a [policy on `s3:prefix` and the object ARN](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_home-directory-console.html) or an STS [session policy](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html#policies_session) limits a credential to one prefix. R2's [temporary credentials](https://developers.cloudflare.com/r2/api/s3/temporary-credentials/) can be limited to `prefixes`. |
+| Bucket per tenant, selected by a `files` factory | Your factory, plus the provider if each bucket has its own credentials | Tenants need their own lifecycle rules, versioning, CORS, encryption, region, or cost reporting. |
+
+To use prefix-scoped credentials from Files SDK, build each request's instance in a `files` factory (below). `s3()` accepts `credentials` with a `sessionToken`, so it can take temporary credentials; `r2()` takes only an access key ID and secret.
+
+Bucket-level settings apply to every tenant in a shared bucket; [AWS's multi-tenant patterns](https://aws.amazon.com/blogs/storage/design-patterns-for-multi-tenant-access-control-on-amazon-s3/) compare the options in more depth. Buckets also have quotas: S3 allows [10,000 general purpose buckets per account by default](https://docs.aws.amazon.com/AmazonS3/latest/userguide/BucketRestrictions.html), raisable through Service Quotas, and R2 allows [1,000,000 per account](https://developers.cloudflare.com/r2/platform/limits/).
+
+For a bucket per tenant, give `createFilesRouter` a factory instead of an instance. It runs on every request, before `authorize`, and receives the same `Request`:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFiles, FilesError } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+import { r2 } from "files-sdk/r2";
+import { signedUrlPolicy } from "files-sdk/signed-url-policy";
+
+import { getSession } from "@/lib/auth";
+
+// One Files instance per tenant bucket, built on first use.
+const byOrg = new Map<string, ReturnType<typeof filesForOrg>>();
+
+function filesForOrg(orgId: string) {
+  return createFiles({
+    adapter: r2({ bucket: `tenant-${orgId}`, client: "fetch" }),
+    plugins: [signedUrlPolicy({ maxExpiresIn: 300 })],
+  });
+}
+
+const router = createFilesRouter({
+  files: async (req) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    const { orgId } = session.user;
+    let files = byOrg.get(orgId);
+    if (!files) {
+      files = filesForOrg(orgId);
+      byOrg.set(orgId, files);
+    }
+    return files;
+  },
+  operations: ["list", "head", "download", "url", "upload", "delete"],
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+The gateway is still deny-by-default with a factory, so it needs `operations` or `authorize`. This version has no `authorize`, which means no `maxExpiresIn`; the `signedUrlPolicy()` plugin on each instance provides the ceiling instead. A factory that throws a `FilesError` gets the same status mapping as `authorize`. Create each bucket when you provision the tenant; the adapter doesn't create buckets.
+
+A factory also works for a shared bucket: return `tenantFiles(orgId)` from the [section above](#a-prefix-is-only-a-naming-convention), and the `Files` instance enforces the prefix instead of `keyPrefix`. Against the same probes it gave the same results: `422` for traversal keys and `404` for full storage keys.
+
+A bucket per tenant only becomes a provider-enforced boundary when each instance uses credentials limited to its own bucket. R2 API tokens with object permissions [can be scoped to specific buckets](https://developers.cloudflare.com/r2/api/tokens/). With one token for every bucket, isolation still rests on the factory picking the right bucket, the same trust you place in `keyPrefix`. The [multiple buckets](/docs/ui/server/multiple-buckets) page covers choosing an instance from the request when the choice isn't tied to the session.

@@ -1,6 +1,8 @@
 ---
 title: Hetzner Object Storage
 description: Use Hetzner Object Storage from Node.js - endpoint from the fsn1, nbg1, or hel1 location, HCLOUD_* keys, uploads, listing, and presigned URLs.
+related:
+  - /guides/hetzner-object-storage-typescript
 ---
 
 `files-sdk/hetzner` connects to [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/) through its S3-compatible API. It wraps the [`s3()` adapter](/docs/adapters/s3) and fills in the Hetzner endpoint from your bucket's location, so you only pass a bucket name, a location code, and an S3 key pair.

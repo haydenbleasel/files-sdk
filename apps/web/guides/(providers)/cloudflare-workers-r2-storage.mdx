@@ -1,0 +1,385 @@
+---
+title: "Use R2 in Cloudflare Workers: bindings, the S3 API, and presigned uploads"
+description: A Worker that reads and writes R2 through its binding, signs presigned URLs with an R2 API token, and lets browsers upload straight to the bucket.
+sidebar:
+  label: R2 in Workers
+seo:
+  title: "R2 in Cloudflare Workers: bindings and S3 API"
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/r2-cors-presigned-url-errors
+  - /docs/adapters/r2
+  - /docs/adapters/s3-fetch
+  - /docs/ui/server/gateway
+---
+
+Give `r2()` the Worker's R2 binding and every read and write goes through it, with no S3 credentials and no signed HTTP requests. A binding can't sign URLs, though, so pass an R2 API token's access key and secret next to it. In this hybrid mode the binding still does the I/O, and the keys sign the presigned `PUT` and `GET` URLs that let browsers upload to and download from the bucket directly.
+
+Two things catch people on Workers. Wrangler resolves the `@aws-sdk/*` imports behind the adapter's optional `"aws-sdk"` engine at build time, so a Worker that never uses them still fails to build until you install or alias them. And the binding only stores streams whose length it knows up front, which rules out the gateway's `maxUploadSize` whenever the Worker writes an upload itself.
+
+## Before you start
+
+- A Cloudflare account with R2, a bucket (this guide calls it `uploads`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** on that bucket. Hybrid signing uses the token's access key ID and secret access key. Your account ID is on the R2 overview page.
+- A Worker project with Wrangler. The examples type `env` by hand with `@cloudflare/workers-types`; `npx wrangler types` can generate the same `Env` interface.
+- A way to resolve the signed-in user from a request. This guide calls it `getSession(request)` and assumes it returns `{ user: { id: string } }` or `null`. It stands in for your auth library: Better Auth, Clerk, Auth.js, or your own session cookie.
+- Written against files-sdk 2.6, Wrangler 4.148, and the `2026-10-01` compatibility date.
+
+```package-install
+files-sdk
+```
+
+## Choose how the Worker reaches R2
+
+`files-sdk/r2` runs in four configurations, and the options you pass pick one:
+
+|  | Binding only | Binding + credentials (hybrid) | S3 API, `client: "fetch"` | S3 API, `client: "aws-sdk"` |
+| --- | --- | --- | --- | --- |
+| Options | `binding` | `binding`, `bucket`, `accountId`, `accessKeyId`, `secretAccessKey` | `bucket`, `accountId`, `accessKeyId`, `secretAccessKey` | Same, plus `client: "aws-sdk"` |
+| Reads and writes | Binding | Binding | Signed `fetch` to the S3 API | AWS SDK over the S3 API |
+| `url()` and `signedUploadUrl()` | Throw (`url()` only returns unsigned `publicBaseUrl` links) | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` |
+| Resumable `control` | Throws | Throws | Throws | Supported |
+| `multipart` option | Ignored, one `put` | Ignored, one `put` | Throws | Supported |
+| Bulk `delete([...])` | One binding call per key | One binding call per key | One `DELETE` request per key | Batched `DeleteObjects` |
+| Stream of unknown length | Rejected by the runtime | Rejected by the runtime | Buffered in memory, then one `PUT` | Uploaded in parts |
+| Bundles the AWS SDK | No | No | No | Yes, and needs a `DOMParser` polyfill |
+
+On every configuration, `signedUploadUrl()` returns a presigned `PUT` and throws if you pass `maxSize`, because R2 has no `POST` upload policies. Inside a Worker, the S3 API modes default to `client: "fetch"`.
+
+- **Hybrid** fits most Workers that serve a browser app: Worker code uses the binding, and file bytes go between the browser and R2 without passing through the Worker. The rest of this guide builds it.
+- **Binding only** works when the browser never needs a URL of its own. Uploads and downloads stream through the Worker, and each upload has to fit Workers' [request body limit](https://developers.cloudflare.com/workers/platform/limits/) (100 MB on the Free and Pro plans). In files-sdk 2.6 the gateway's `url` operation fails in this mode, because it always asks for a `Content-Disposition`, which only a signed URL can carry. Leave `url` out of the operations you allow.
+- **`client: "fetch"`** is for a Worker with no binding to the bucket, such as a bucket in another account. Each call is an HTTP subrequest.
+- **`client: "aws-sdk"`** only earns its weight when Worker code needs resumable or multipart uploads, and its XML parsing needs a `DOMParser` that workerd doesn't provide ([details](/docs/adapters/r2#default-inside-cloudflare-workers)). Test it under `wrangler dev` before you rely on it.
+
+When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with its own [`createMultipartUpload()` and multi-key `delete()`](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+
+## Configure Wrangler
+
+```jsonc title="wrangler.jsonc" lineNumbers
+{
+  "name": "uploads-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "uploads",
+    },
+  ],
+  "vars": {
+    "R2_ACCOUNT_ID": "your-account-id",
+  },
+  // files-sdk/r2 loads the AWS SDK with import() for its optional
+  // "aws-sdk" engine. Wrangler resolves those imports at build time, so
+  // point them at a stub this Worker never loads.
+  "alias": {
+    "@aws-sdk/client-s3": "./src/no-aws-sdk.ts",
+    "@aws-sdk/lib-storage": "./src/no-aws-sdk.ts",
+    "@aws-sdk/s3-presigned-post": "./src/no-aws-sdk.ts",
+    "@aws-sdk/s3-request-presigner": "./src/no-aws-sdk.ts",
+  },
+}
+```
+
+```ts title="src/no-aws-sdk.ts" lineNumbers
+// Wrangler aliases the AWS SDK packages to this file (see wrangler.jsonc).
+// The binding and fetch paths never load them; if something does, fail loudly.
+throw new Error(
+  'The AWS SDK is aliased away in wrangler.jsonc. Use the R2 binding or client: "fetch".'
+);
+```
+
+The `alias` block is the part people miss. The adapter only loads the AWS SDK when the `"aws-sdk"` engine runs, which the binding never does. Wrangler's bundler still resolves every `import()` it can see, so without the alias and without the packages installed, the build stops:
+
+```text
+✘ [ERROR] Could not resolve "@aws-sdk/client-s3"
+
+    To fix this, you can add an entry to "alias" in your Wrangler configuration.
+```
+
+The same error repeats for `lib-storage` and both presigners. Installing the four packages also fixes the build, but then they're bundled without ever running. A `wrangler deploy --dry-run` of this guide's Worker reported 1,282 KiB (240 KiB gzipped) with the packages installed and 353 KiB (78 KiB gzipped) with the alias. The stub throws on purpose, following Wrangler's [runtime-error alias pattern](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling-issues): if something does reach for the AWS SDK, you get a clear message instead of an `undefined` constructor.
+
+Store the token's keys and the gateway's token secret as [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/). Each command prompts for the value and deploys a new version of the Worker right away (use `wrangler versions secret put` with gradual deployments):
+
+```bash
+npx wrangler secret put R2_ACCESS_KEY_ID
+npx wrangler secret put R2_SECRET_ACCESS_KEY
+npx wrangler secret put FILES_API_SECRET
+```
+
+For `wrangler dev`, put the same three names in a `.dev.vars` file next to `wrangler.jsonc` and keep it out of git. The account ID isn't a secret, so it lives in `vars`.
+
+For a bucket created with the EU jurisdiction, add `"jurisdiction": "eu"` to the binding, and pass `endpoint: "https://<account-id>.eu.r2.cloudflarestorage.com"` to `r2()` instead of `accountId`. Cloudflare's [data location docs](https://developers.cloudflare.com/r2/reference/data-location/) require the jurisdiction in both places.
+
+## Create the storage instance
+
+```ts title="src/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+
+export interface Env {
+  UPLOADS: R2Bucket;
+  R2_ACCOUNT_ID: string;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
+  FILES_API_SECRET: string;
+}
+
+export function createStorage(env: Env) {
+  return createFiles({
+    adapter: r2({
+      // Reads and writes go through the binding.
+      binding: env.UPLOADS,
+      // These four turn on hybrid signing for url() and signedUploadUrl().
+      // `bucket` must name the same bucket as the binding's `bucket_name`.
+      bucket: "uploads",
+      accountId: env.R2_ACCOUNT_ID,
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    }),
+  });
+}
+```
+
+Hybrid mode needs all four of `bucket`, `accountId` (or `endpoint`), `accessKeyId`, and `secretAccessKey`. Leave one out and the adapter quietly stays binding-only. Nothing fails until `url()` or `signedUploadUrl()` throws `r2 binding: signing requires either…`.
+
+`bucket` and `bucket_name` have to agree because they're used separately. The binding is tied to the bucket in `wrangler.jsonc`, while the signer builds `https://<account-id>.r2.cloudflarestorage.com/<bucket>/<key>` from the option. If they differ, browsers upload to one bucket and the Worker reads from another.
+
+## Mount the gateway
+
+The gateway from `files-sdk/api` serves the browser's uploads, listings, and downloads from one endpoint. `env` only arrives with a request, so build the router per request. Building it makes no network calls.
+
+```ts title="src/router.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+
+import { getSession } from "./auth";
+import { createStorage, type Env } from "./files";
+
+// The verbs the browser may call. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "url",
+  "download",
+  "delete",
+]);
+
+export function createRouter(env: Env) {
+  return createFilesRouter({
+    files: createStorage(env),
+    // Pass the secret explicitly. The fallback reads process.env, which a
+    // Worker only has with Node.js compatibility turned on.
+    secret: env.FILES_API_SECRET,
+    authorize: async ({ operation, req }) => {
+      const session = await getSession(req);
+      if (!session) {
+        throw new FilesError("Unauthorized", "Sign in to manage files");
+      }
+      if (!ALLOWED.has(operation)) {
+        throw new FilesError("ReadOnly", `${operation} is not allowed`);
+      }
+      return { keyPrefix: `users/${session.user.id}/`, maxExpiresIn: 300 };
+    },
+  });
+}
+```
+
+```ts title="src/index.ts" lineNumbers
+import { putAvatar } from "./avatar";
+import type { Env } from "./files";
+import { createRouter } from "./router";
+
+export default {
+  async fetch(request, env) {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/api/files") {
+      return createRouter(env).handle(request);
+    }
+    if (pathname === "/api/avatar" && request.method === "PUT") {
+      return putAvatar(request, env);
+    }
+    return new Response("Not found", { status: 404 });
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+`putAvatar` comes later, in [Write from Worker code](#write-from-worker-code). The `authorize` hook works the same way as in the [Next.js guide](/guides/nextjs-r2-file-upload#mount-the-gateway): throw `FilesError` to refuse, and return a `keyPrefix` to confine each user to their own keys.
+
+Pass `secret` even if you set `FILES_API_SECRET`. The gateway's fallback reads `process.env`, which a Worker only has with Node.js compatibility enabled. Without either, each isolate picks its own random secret, and a complete request that lands on a different isolate from its presign fails with `upload token signature`.
+
+In hybrid mode, each request takes this path. The presign and download responses below are what this Worker returned under `wrangler dev`:
+
+- **Presign** returns a `PUT` target on `<account-id>.r2.cloudflarestorage.com/uploads/users/<id>/…` with `X-Amz-SignedHeaders=content-type;host`. The browser must send the exact `Content-Type` it asked for, and the client does.
+- **Upload** goes from the browser to R2. The Worker never sees the bytes.
+- **Complete** `head`s the new object through the binding and reports its size and type.
+- **Download** returns a `302` to a presigned `GET` that asks R2 for `Content-Disposition: attachment` and expires in 300 seconds.
+
+The gateway checks `Origin` on writes (a presign from another site got `403` with `origin not allowed`) and sends no CORS headers of its own. Serve the page from the Worker's hostname, for example with [Workers static assets](https://developers.cloudflare.com/workers/static-assets/). `allowedOrigins` only relaxes the origin check; it doesn't make the endpoint callable cross-origin.
+
+With Hono, reuse `createRouter` and read `env` from the context:
+
+```ts title="src/index.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/hono";
+import { Hono } from "hono";
+
+import type { Env } from "./files";
+import { createRouter } from "./router";
+
+const app = new Hono<{ Bindings: Env }>();
+
+app.all("/api/files", (c) => createRouteHandler(createRouter(c.env))(c));
+
+export default app;
+```
+
+## Let browsers PUT to the bucket
+
+Direct uploads are cross-origin requests from your page to the S3 API hostname, so the bucket needs a CORS rule. With Wrangler, the rule file uses its own shape:
+
+```json title="cors.json" lineNumbers
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["http://localhost:8787", "https://app.example.com"],
+        "methods": ["PUT"],
+        "headers": ["Content-Type"]
+      },
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+```bash
+npx wrangler r2 bucket cors set uploads --file cors.json
+npx wrangler r2 bucket cors list uploads
+```
+
+`http://localhost:8787` is `wrangler dev`'s default origin. The [Next.js guide](/guides/nextjs-r2-file-upload#let-the-browser-put-to-r2) explains each field and shows a `curl` preflight that checks the rule. If uploads still fail, [Fix Cloudflare R2 CORS and presigned URL 403 errors](/guides/r2-cors-presigned-url-errors) walks through every cause.
+
+## Upload from the page
+
+`files-sdk/client` runs the three-step upload: presign, `PUT` to R2, complete. With the page on the Worker's own origin, its default endpoint `/api/files` is already right.
+
+```ts title="public/upload.ts" lineNumbers
+import { createFilesClient } from "files-sdk/client";
+
+// Same origin as the Worker, so the default endpoint (/api/files) works.
+const client = createFilesClient();
+
+const input = document.querySelector<HTMLInputElement>("#file");
+const status = document.querySelector<HTMLOutputElement>("#status");
+
+input?.addEventListener("change", async () => {
+  const file = input.files?.[0];
+  if (!file || !status) {
+    return;
+  }
+  try {
+    const uploaded = await client.upload(file, {
+      onProgress: ({ fraction }) => {
+        status.value = `${Math.round(fraction * 100)}%`;
+      },
+    });
+    status.value = `Stored as ${uploaded.key} (${uploaded.size} bytes)`;
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : "Upload failed";
+  }
+});
+```
+
+Bundle it with your front-end tooling. With React, `useFiles()` from `files-sdk/react` talks to the same endpoint, and the [Next.js guide's component](/guides/nextjs-r2-file-upload#build-the-upload-page) works unchanged against this Worker.
+
+## Write from Worker code
+
+Worker code calls the same `files` methods, and they go through the binding. The one rule to know is about streams. The binding's `put()` accepts a `ReadableStream` only when workerd knows its length: a request or response body with a `Content-Length`, or the readable side of a `FixedLengthStream`. Anything else fails with:
+
+```text
+Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)
+```
+
+A request body with a declared length passes straight through, which also makes the length a size limit you can enforce before writing anything:
+
+```ts title="src/avatar.ts" lineNumbers
+import { getSession } from "./auth";
+import { createStorage, type Env } from "./files";
+
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const AVATAR_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+export async function putAvatar(request: Request, env: Env) {
+  const session = await getSession(request);
+  if (!session) {
+    return new Response("Sign in first", { status: 401 });
+  }
+
+  const length = Number(request.headers.get("content-length"));
+  if (!request.body || !Number.isSafeInteger(length) || length <= 0) {
+    return new Response("Content-Length required", { status: 411 });
+  }
+  if (length > MAX_AVATAR_BYTES) {
+    return new Response("Avatars are limited to 2 MiB", { status: 413 });
+  }
+  const type = request.headers.get("content-type") ?? "";
+  if (!AVATAR_TYPES.has(type)) {
+    return new Response("Send a PNG, JPEG, or WebP image", { status: 415 });
+  }
+
+  // request.body has a known length, so the binding can store it as it
+  // streams in. Don't pass onProgress here: it wraps the stream and the
+  // binding then rejects it.
+  const files = createStorage(env);
+  await files.upload(`avatars/${session.user.id}`, request.body, {
+    contentType: type,
+  });
+  return new Response(null, { status: 204 });
+}
+```
+
+A chunked request has no `Content-Length`, so it gets `411` here rather than a failed `put()`. The comment about `onProgress` matters: on an adapter that doesn't report progress itself, `upload()` counts a stream's bytes by wrapping it, and the wrapped stream has no known length. Under `wrangler dev`, a `request.body` upload with `onProgress` failed with the error above.
+
+For a stream you build yourself, such as a body piped through a `TransformStream`, wrap it in a `FixedLengthStream` when you know the final length:
+
+```ts lineNumbers
+const { readable, writable } = new FixedLengthStream(length);
+// Don't await: the upload reads the other end.
+transformed.pipeTo(writable);
+await files.upload(key, readable);
+```
+
+The runtime raises an error if more or fewer bytes than `length` pass through. When you can't know the length, buffer the body (an `ArrayBuffer` or `Blob` always works), keeping Workers' 128 MB memory limit in mind.
+
+## Limit upload size
+
+Don't set `maxUploadSize` on a gateway whose `files` writes through the binding. The gateway enforces the limit by piping the request body through a `TransformStream` that counts bytes, and the output of that stream has no known length. In hybrid mode it also changes the upload path: `signedUploadUrl()` throws on `maxSize`, so the gateway falls back to proxying the upload through the Worker.
+
+Under `wrangler dev` with its local R2 simulation, a gateway with `maxUploadSize: 1 MiB` failed every upload under the limit with `500` and the known-length error, and refused a 2 MiB upload with `422` (`upload exceeds maxSize`) because its `Content-Length` was already over. Nothing under the limit ever got stored. That holds for binding-only and hybrid configurations alike.
+
+To cap sizes on a binding-backed Worker, pick one:
+
+- **Upload through your own route.** Check `Content-Length` before calling `files.upload(key, request.body)`, as `putAvatar` does. The body can't run past its declared length, so the check holds. The bytes pass through the Worker, within the request body limit for your plan.
+- **Keep direct uploads and check after they land.** The gateway's complete step reports the stored size but doesn't delete anything. `head` the key when your app first uses it and delete it if it's too large, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land). In this Worker, that `head` and `delete` go through the binding.
+
+## Develop locally
+
+`wrangler dev` connects bindings to a [local simulation](https://developers.cloudflare.com/workers/development-testing/) by default, but hybrid-signed URLs always point at the real bucket on `<account-id>.r2.cloudflarestorage.com`. A browser upload during local development therefore lands in your real `uploads` bucket, while the complete step `head`s the key in the empty local simulation and reports `NotFound`.
+
+Set `"remote": true` on the binding while you develop uploads, so the binding and the signed URLs reach the same bucket. Remote bindings change real data, so point both `bucket_name` and the adapter's `bucket` at a development bucket rather than production.
+
+## Troubleshooting
+
+**`Could not resolve "@aws-sdk/client-s3"` from `wrangler deploy` or `wrangler dev`.** The `alias` block is missing or names a stub path that doesn't exist. Add it as shown in [Configure Wrangler](#configure-wrangler).
+
+**`Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)`.** A stream of unknown length reached the binding. Look for `maxUploadSize` on the gateway, `onProgress` on a stream upload, or a body you piped through a `TransformStream`.
+
+**`r2 binding: signing requires either…` or `r2 binding: url() requires either…`.** Hybrid mode is off because one of `bucket`, `accountId`, `accessKeyId`, or `secretAccessKey` is missing. A secret that was never set with `wrangler secret put` arrives as `undefined`.
+
+**``r2 binding: `responseContentDisposition` requires signing…`` from the gateway.** The Worker is binding-only and something called the `url` operation, which always asks for a disposition. Add the hybrid credentials, or drop `url` from the allowed operations.
+
+**`r2-binding: pause-able/resumable uploads are not supported by this adapter`.** `UploadControl` needs the `"aws-sdk"` engine. On the binding, upload in one request, or drive R2's multipart API through `files.raw`.
+
+**`upload token signature` on complete.** The presign and complete requests used different secrets. Pass `secret: env.FILES_API_SECRET` to `createFilesRouter`.
+
+**`network error during upload` in the browser.** The browser blocked the `PUT` to R2: usually the CORS rule, sometimes an expired URL. See [Fix Cloudflare R2 CORS and presigned URL 403 errors](/guides/r2-cors-presigned-url-errors).

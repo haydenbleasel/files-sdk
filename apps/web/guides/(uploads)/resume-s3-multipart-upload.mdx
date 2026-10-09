@@ -1,0 +1,323 @@
+---
+title: Resume an S3 multipart upload after a process restart
+description: A Node or Bun uploader that saves its S3 multipart session to disk, survives a crash or Ctrl-C, and finishes from the parts S3 already holds.
+sidebar:
+  label: Resume S3 uploads
+seo:
+  title: Resume an S3 multipart upload after restart
+related:
+  - /docs/resumable
+  - /docs/multipart
+  - /docs/adapters/s3
+  - /docs/escape-hatch
+---
+
+Pass an `UploadControl` to `files.upload()` on the `s3()` adapter and the SDK drives S3's multipart API directly. Write `control.toJSON()` to disk as soon as the session exists. After a crash, rebuild the control with `UploadControl.from(token)` and call `upload()` again with the same key and the same file. The SDK asks S3 which parts it already has (`ListParts`) and uploads only the rest.
+
+The catch is that S3 keeps parts, not proof of what they contain. Resuming with a different file of the same length completes without an error and stitches two files into one object. Checking that the file is unchanged is your job. Abandoned sessions also keep their parts, and S3 bills you for them, until something aborts them.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `uploads`), `AWS_REGION` set to its region, and credentials the AWS credential chain can find. The upload needs `s3:PutObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload`, and `s3:GetObject` (the SDK `HEAD`s the object after completing). AWS lists which action covers which call in [multipart upload permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html#mpuAndPermissions).
+- Node 22.18 or later, or Bun. Node runs the `.ts` files directly because [type stripping](https://nodejs.org/api/typescript.html) is on by default from 22.18, and the script opens the file with [`fs.openAsBlob`](https://nodejs.org/api/fs.html#fsopenasblobpath-options), which is stable from 22.17.
+- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, Node 24.14, and Bun 1.4.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+`files-sdk/s3` imports all three AWS packages. You don't need `@aws-sdk/lib-storage` here: resumable uploads call `CreateMultipartUpload`, `UploadPart`, and `CompleteMultipartUpload` themselves rather than going through lib-storage, which never exposes the upload ID.
+
+## What gets saved, and what S3 keeps
+
+The token is small. For S3 it holds five fields:
+
+```json lineNumbers
+{
+  "provider": "s3",
+  "bucket": "uploads",
+  "key": "backups/db.tar",
+  "uploadId": "EXAMPLE-UPLOAD-ID",
+  "partSize": 8388608
+}
+```
+
+S3 holds everything else: each stored part's number, size, and ETag. On resume, the SDK:
+
+1. Checks that the token's bucket and key match this upload, then adopts its upload ID and part size.
+2. Calls `ListParts` and keeps each part whose number and size match how the current file slices at that part size.
+3. Uploads the missing parts, retrying each one on its own under the call's `retries` policy.
+4. Calls `CompleteMultipartUpload` with every part's ETag, then `HeadObject` for the final size and type.
+
+The token doesn't record part ETags, so a resume completes from what `ListParts` reports. That's a trade-off worth knowing: AWS's [multipart overview](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html) recommends completing from your own record of part numbers and ETags rather than from a listing.
+
+## Write the uploader
+
+```ts title="upload.ts" lineNumbers
+import { openAsBlob, writeFileSync } from "node:fs";
+import { readFile, rm, stat } from "node:fs/promises";
+
+import {
+  Files,
+  FilesError,
+  UploadControl,
+  type ResumableUploadSession,
+} from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const [path, key] = process.argv.slice(2);
+if (!path || !key) {
+  console.error("Usage: bun upload.ts <file> <key>");
+  process.exit(1);
+}
+
+const files = new Files({
+  adapter: s3({
+    bucket: "uploads",
+    // Region and credentials come from AWS_REGION and the AWS credential chain.
+    // S3_ENDPOINT points the script at MinIO or another S3-compatible server.
+    ...(process.env.S3_ENDPOINT && {
+      endpoint: process.env.S3_ENDPOINT,
+      forcePathStyle: true,
+    }),
+  }),
+});
+
+interface Checkpoint {
+  key: string;
+  size: number;
+  mtimeMs: number;
+  session: ResumableUploadSession;
+}
+
+const checkpointPath = `${path}.upload.json`;
+const { size, mtimeMs } = await stat(path);
+
+const loadCheckpoint = async (): Promise<Checkpoint | undefined> => {
+  let saved: Checkpoint;
+  try {
+    saved = JSON.parse(await readFile(checkpointPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  // Resume only the same key with the same bytes. The SDK can't tell whether
+  // the file changed, so this check is yours to make.
+  if (saved.key === key && saved.size === size && saved.mtimeMs === mtimeMs) {
+    return saved;
+  }
+  console.warn(
+    "Checkpoint belongs to another key or file version; ignoring it."
+  );
+  return undefined;
+};
+
+const saved = await loadCheckpoint();
+const control = saved ? UploadControl.from(saved.session) : new UploadControl();
+
+// Ctrl-C cancels through `signal`, which keeps the multipart upload alive.
+const stop = new AbortController();
+process.once("SIGINT", () => stop.abort());
+
+let checkpointed = Boolean(saved);
+const body = await openAsBlob(path); // a lazy, file-backed Blob
+
+try {
+  const result = await files.upload(key, body, {
+    control,
+    contentType: "application/octet-stream",
+    multipart: { partSize: 8 * 1024 * 1024, concurrency: 4 },
+    signal: stop.signal,
+    onProgress: ({ loaded, total = size }) => {
+      // The first callback fires once the session exists: persist it now,
+      // before any part is in flight.
+      const session = control.toJSON();
+      if (!checkpointed && session) {
+        const checkpoint: Checkpoint = { key, mtimeMs, session, size };
+        writeFileSync(checkpointPath, JSON.stringify(checkpoint));
+        checkpointed = true;
+      }
+      console.log(`${((loaded / total) * 100).toFixed(1)}%`);
+    },
+  });
+  await rm(checkpointPath, { force: true });
+  console.log(`Uploaded ${result.key} (${result.size} bytes)`);
+} catch (error) {
+  if (error instanceof FilesError && error.aborted) {
+    console.log("Stopped. Run the same command again to resume.");
+    process.exit(130);
+  }
+  if (saved && error instanceof FilesError && error.code === "NotFound") {
+    // The multipart upload was aborted, completed, or expired server-side.
+    await rm(checkpointPath, { force: true });
+    console.error(
+      "The saved upload no longer exists. Run again to start over."
+    );
+    process.exit(1);
+  }
+  throw error;
+}
+```
+
+The parts that matter:
+
+- **When the token is written.** `control.toJSON()` is `undefined` until `CreateMultipartUpload` returns, and the session is created asynchronously, so reading it right after calling `upload()` gets nothing. The first `onProgress` call fires after the session exists and before any part is sent, so the script writes the checkpoint there, synchronously.
+- **The body.** `openAsBlob` returns a `Blob` backed by the file, and the SDK slices it lazily, so only the parts in flight sit in memory (part size × concurrency, 32 MiB here). Node's docs say reads from that `Blob` fail if the file changes after it was opened, which covers edits during a run. The size and `mtimeMs` check covers edits between runs.
+- **Ctrl-C.** Aborting through `signal` cancels in-flight parts and rejects with a `FilesError` whose `aborted` is `true`, but leaves the multipart upload on S3 so the next run can resume it.
+- **A dead session.** If the upload ID no longer exists, `ListParts` fails and the SDK throws `NotFound`. The script deletes the stale checkpoint so the next run starts a new upload.
+
+## Interrupt it and resume
+
+Run it, kill it partway, and run the same command again:
+
+```bash
+node upload.ts ./db.tar backups/db.tar    # or: bun upload.ts ./db.tar backups/db.tar
+# kill it mid-transfer: Ctrl-C, or kill -9 from another terminal
+node upload.ts ./db.tar backups/db.tar
+```
+
+To see what S3 kept between the two runs, ask it directly. `files.raw` is the adapter's `S3Client`, so the [escape hatch](/docs/escape-hatch) is one `send` away:
+
+```ts title="parts.ts" lineNumbers
+import { readFile } from "node:fs/promises";
+
+import { ListPartsCommand } from "@aws-sdk/client-s3";
+import { Files, type ResumableUploadSession } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+
+const { session } = JSON.parse(
+  await readFile(`${process.argv[2]}.upload.json`, "utf8")
+) as { session: ResumableUploadSession };
+
+if (session.provider !== "s3") {
+  throw new Error(`Not an S3 session: ${session.provider}`);
+}
+
+// One page holds up to 1,000 parts; enough for this check.
+const page = await files.raw.send(
+  new ListPartsCommand({
+    Bucket: session.bucket,
+    Key: session.key,
+    UploadId: session.uploadId,
+  })
+);
+const parts = page.Parts ?? [];
+console.log(
+  `${parts.length} parts stored:`,
+  parts.map((part) => `${part.PartNumber} (${part.Size} B)`).join(", ")
+);
+```
+
+Against a local MinIO server, with a 300 MiB file of random bytes cut into 38 parts of 8 MiB:
+
+- **`kill -9` at 32%.** The script had printed 12 confirmed parts, but `ListParts` showed 13. One part finished on the server after the last progress line and before the process died. The next run started its progress at 34.7%, which is exactly 13 parts, uploaded the other 25, and completed. The SHA-256 of the downloaded object matched the local file.
+- **Ctrl-C at 21%.** The script exited with code 130 and `ListParts` showed 8 parts. The parts in flight were cancelled, not finished. The next run started at 21.3% and completed with a matching hash.
+
+MinIO isn't S3, but the sequence of calls is the same S3 API, and the server's part list is what the resume trusts in both cases.
+
+## Keep the key and the bytes the same
+
+- **The key.** The token is bound to its bucket and key. Resuming under another key throws `Resume token does not match this upload's bucket/key.` The key includes the `Files` instance's `prefix`, so changing the prefix between runs counts as a different key.
+- **The bytes.** The SDK checks only that each stored part has the size this file's slicing expects. It doesn't fingerprint content. In the local MinIO run, resuming a token with a different 300 MiB file completed without an error, and the resulting object's SHA-256 matched neither file. If size and modification time aren't strong enough for your files, store a hash of the first and last few MiB in the checkpoint and compare that.
+- **The part size.** S3 needs every part except the last to be at least 5 MiB, and [R2 requires all parts except the last to be the same size](https://developers.cloudflare.com/r2/objects/multipart-objects/). The SDK pins the part size in the token, and on resume the token's value replaces whatever `multipart.partSize` you pass. In the local run, resuming an 8 MiB session with `partSize: 16 * 1024 * 1024` still sliced at 8 MiB, and the final ETag ended in `-38`. You can change `concurrency` between runs; it isn't pinned.
+- **The body type.** A `ReadableStream` is rejected before any request: `Pausable/resumable uploads require a body with a known length (File, Blob, ArrayBuffer, typed array, or string), not a ReadableStream — a stream can't be re-read to resume.` If your data arrives as a stream, write it to a temporary file first, or use plain [`multipart`](/docs/multipart), which streams but can't resume.
+
+## Stop, cancel, and clean up
+
+There are four ways to stop an upload, and they leave S3 in different states:
+
+| Call | Where | Multipart upload on S3 | Resumable? |
+| --- | --- | --- | --- |
+| `control.pause()`, then `control.resume()` | Same process | Kept | Yes |
+| Abort the `signal` you passed (Ctrl-C above) | Same process | Kept | Yes, from the token |
+| `await control.abort()` | Same process, while `upload()` is running | Aborted with `AbortMultipartUpload` | No |
+| `UploadControl.from(token).abort()` | A new process | **Kept** | Yes, until something else aborts it |
+
+The last row catches people. `abort()` can only discard a session that the control is currently driving. A control rebuilt from a token and never passed to `upload()` has nothing to discard. In the local MinIO run, calling `abort()` on such a control set its status to `"aborted"` and cleared its token, and `ListParts` still returned every part. To cancel a saved upload from a fresh process, call `AbortMultipartUpload` yourself:
+
+```ts title="cancel.ts" lineNumbers
+import { readFile, rm } from "node:fs/promises";
+
+import { AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
+import { Files, type ResumableUploadSession } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+
+const checkpointPath = `${process.argv[2]}.upload.json`;
+const { session } = JSON.parse(await readFile(checkpointPath, "utf8")) as {
+  session: ResumableUploadSession;
+};
+if (session.provider !== "s3") {
+  throw new Error(`Not an S3 session: ${session.provider}`);
+}
+
+await files.raw.send(
+  new AbortMultipartUploadCommand({
+    Bucket: session.bucket,
+    Key: session.key,
+    UploadId: session.uploadId,
+  })
+);
+await rm(checkpointPath);
+console.log(`Discarded upload ${session.uploadId} for ${session.key}`);
+```
+
+When you call `control.abort()` in-process, `await` it before deleting your checkpoint. The `upload()` promise can reject before the `AbortMultipartUpload` request finishes. AWS also notes that [part uploads still in progress can succeed after an abort](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html), so an abort issued mid-part may leave a part behind.
+
+### Abort abandoned uploads with a lifecycle rule
+
+A crashed uploader that never runs again leaves its parts in the bucket. AWS keeps them [with no expiry](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html) and bills them as storage until the upload is completed or aborted. Add a rule with the [`AbortIncompleteMultipartUpload`](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html) action:
+
+```json title="lifecycle.json" lineNumbers
+{
+  "Rules": [
+    {
+      "ID": "abort-incomplete-uploads",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}
+```
+
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket uploads \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+Pick the number of days to be longer than any resume you want to support. Once the rule aborts a session, the next resume of that token fails with `NotFound`, which the uploader above handles by starting over. The rule never touches completed objects.
+
+R2 already has a default rule: per Cloudflare's [object lifecycle docs](https://developers.cloudflare.com/r2/buckets/object-lifecycles/), buckets expire multipart uploads seven days after initiation, and you can set a different `AbortIncompleteMultipartUpload` rule per prefix.
+
+## Which adapters can resume after a restart
+
+| Adapter | `control` |
+| --- | --- |
+| `s3()` and the S3-compatible wrappers that use it (Spaces, Wasabi, B2, Tigris, Hetzner, …) | Resumes across processes |
+| `r2()` with `client: "aws-sdk"` (the default outside Workers), `minio()` and `rustfs()` on their `aws-sdk` engine | Resumes across processes |
+| `r2()` with `client: "fetch"`, the R2 Workers binding, `s3Fetch()`, MinIO and RustFS on `client: "fetch"` | Throws, for example `r2-http-fetch: pause-able/resumable uploads are not supported by this adapter` |
+| `bunS3()`, `memory()`, Box | Pause and resume in-process only; the token can't be resumed elsewhere |
+
+GCS, Azure, Dropbox, OneDrive, Vercel Blob, and several others resume across processes through their own protocols. [Resumable uploads](/docs/resumable#what-each-adapter-does) lists every adapter. If you branch at runtime, note that `files.capabilities.multipart` is `true` for the in-process-only adapters too, so it tells you whether `control` works, not whether a token survives a restart.
+
+## A process restart isn't a browser reload
+
+A Node or Bun process restarts with the same file on disk. The checkpoint holds the path's size and modification time, so the script can reopen the file and confirm it's the one it was uploading.
+
+A reloaded browser tab has the token, if you stored it, but not the file. A `File` handle doesn't survive a reload, so the user has to pick the file again, and you compare its `name`, `size`, and `lastModified` with what you saved before resuming. There's a second limit in files-sdk 2.6: the browser bindings (`useFiles` and `createFilesClient`) don't accept an `UploadControl`. They upload each file with one presigned request or through your gateway. Running `s3()` itself in a browser would mean shipping AWS credentials to it, so don't. Resumable uploads with this SDK belong in processes that hold credentials: CLIs, workers, backup jobs, and desktop apps' main processes.
+
+## Troubleshooting
+
+**`Resume token does not match this upload's bucket/key.`** The checkpoint belongs to another key, or the `Files` instance's `prefix` or bucket changed. Delete the checkpoint, or run with the original key.
+
+**`NotFound` when resuming.** The upload ID is gone: it was completed, aborted, or expired by a lifecycle rule. MinIO's message reads `The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.` Start a new upload.
+
+**`This UploadControl has already driven an upload.`** Each control drives one `upload()` call. Build a new one with `new UploadControl()` or `UploadControl.from(token)` for every attempt.
+
+**The object completed but its contents are wrong.** The file changed between runs and kept its length. Nothing at the S3 layer catches this. Tighten the checkpoint's identity check, then delete the object and upload it again.
+
+**`pause-able/resumable uploads are not supported by this adapter`.** The adapter has no resumable driver. On R2, MinIO, or RustFS outside Cloudflare Workers, switch to `client: "aws-sdk"` and install the `@aws-sdk/*` packages.

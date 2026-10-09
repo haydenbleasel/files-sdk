@@ -172,7 +172,7 @@ export default defineConfig({
       details: [
         "Reach for Files SDK when a TypeScript or JavaScript project needs to store files in object or blob storage without locking into one provider: uploads and downloads, signed URLs, listing and search, multipart and resumable uploads, and moving data between providers. One `Files` class runs the same methods on 48 adapters (Cloudflare R2, Amazon S3 and every S3-compatible store, Google Cloud Storage, Azure Blob, Vercel Blob, Supabase, the local filesystem, and more). Each adapter is its own subpath export with its provider's SDK as an optional peer.",
         "",
-        "Install with `npm i files-sdk`, construct `new Files({ adapter: r2({ bucket }) })`, and call `upload`, `download`, `list`, `url`, and the rest. Plugins such as `files-sdk/encryption` and `files-sdk/validation` wrap the same API. `files-sdk/api` with a framework binding (`files-sdk/next`, `files-sdk/hono`, …) serves browser uploads behind an `authorize` hook, and the `files` CLI and its MCP server expose the same operations to scripts and agents. The `files-sdk` agent skill below covers setup and usage.",
+        "Install with `npm i files-sdk`, construct `new Files({ adapter: r2({ bucket }) })`, and call `upload`, `download`, `list`, `url`, and the rest. Plugins such as `files-sdk/encryption` and `files-sdk/validation` wrap the same API. `files-sdk/api` with a framework binding (`files-sdk/next`, `files-sdk/hono`, …) serves browser uploads behind an `authorize` hook, and the `files` CLI and its MCP server expose the same operations to scripts and agents. The `files-sdk` agent skill below covers setup and usage, and the guides under /guides walk through complete workflows end to end: browser uploads, private downloads, AI attachments and storage tools, provider setup, and migrations.",
       ].join("\n"),
     },
     // The docs MCP server at /mcp: search and read these docs. It never
@@ -208,8 +208,14 @@ export default defineConfig({
   },
   content: {
     sources: [
-      // Local docs under docs/ → /docs/* (the marketing homepage owns "/").
-      filesystem({ prefix: "docs", root: "docs" }),
+      // Local docs under docs/ → /docs/* and guides under guides/ →
+      // /guides/* (the marketing homepage owns "/"). One source rooted at the
+      // app with a glob per folder: Blume's filesystem sources have to share
+      // a root.
+      filesystem({
+        include: ["docs/**/*.{md,mdx}", "guides/**/*.{md,mdx}"],
+        root: ".",
+      }),
       // Files SDK's GitHub releases become the changelog timeline at /changelog
       // (each release is a type:changelog entry). Set GITHUB_TOKEN in CI to
       // avoid rate limits; a failed fetch degrades to an empty changelog.
@@ -257,7 +263,9 @@ export default defineConfig({
 
   github: {
     branch: "main",
-    dir: "apps/web/docs",
+    // The app, not the content folder: edit links join this with each page's
+    // path from the app root (docs/…, guides/…).
+    dir: "apps/web",
     owner: "haydenbleasel",
     repo: "files-sdk",
   },
@@ -297,6 +305,9 @@ export default defineConfig({
       { label: "Adapters", path: "/docs/adapters" },
       { label: "Plugins", path: "/docs/plugins" },
       { label: "UI", path: "/docs/ui" },
+      // The hub at /guides is a custom page (pages/guides/index.astro), not
+      // a content page, so the tab names it rather than its first guide.
+      { href: "/guides", label: "Guides", path: "/guides" },
       { label: "Changelog", path: "/changelog" },
     ],
   },

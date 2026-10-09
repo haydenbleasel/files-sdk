@@ -1,0 +1,146 @@
+---
+title: Fix Cloudflare R2 CORS and presigned URL 403 errors
+description: Tell a CORS rule problem from a rejected signature when browser uploads to R2 fail, and fix each cause, from origin mismatches to expired presigned URLs.
+sidebar:
+  label: R2 CORS and 403 errors
+seo:
+  title: Fix R2 CORS and presigned URL 403 errors
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/cloudflare-workers-r2-storage
+  - /docs/adapters/r2
+  - /docs/api/signed-upload-url
+---
+
+A browser upload to a presigned R2 URL fails in one of two ways in the Files SDK client: `network error during upload` when the browser blocked the response, or `upload failed (403)` when R2's refusal reached your code. The first usually means the bucket's CORS rule doesn't match the request, but not always. R2 sends an expired URL's `403` without CORS headers, so the browser reports that as a CORS failure too.
+
+Start by taking the browser out of the loop. curl ignores CORS, so replaying the `PUT` with curl tells you whether R2 accepts the request at all, and a preflight sent with an `Origin` header tells you whether your rule matches. Every cause below falls on one side of that split.
+
+## Before you start
+
+- The failing upload's request URL, copied from the browser's network panel. It's the `PUT` to `<account-id>.r2.cloudflarestorage.com`.
+- The exact origin of the page that sent it: scheme, host, and port.
+- Access to the bucket's CORS policy, in the dashboard under **Settings → CORS Policy** or with `npx wrangler r2 bucket cors list <bucket>`.
+- Written against files-sdk 2.6 and Cloudflare's R2 documentation as of October 2026.
+
+Treat the URL as a secret while you debug. Cloudflare [describes presigned URLs as bearer tokens](https://developers.cloudflare.com/r2/api/s3/presigned-urls/): anyone holding one can use it until it expires.
+
+## What the client sends to R2
+
+`upload(file)` in `files-sdk/client` and `files-sdk/react` presigns through your gateway, sends the bytes, then calls complete. The request that reaches R2 is small:
+
+- **Method:** `PUT`. R2 doesn't support presigned `POST` uploads, so it's always a `PUT`, and a `PUT` always triggers a CORS preflight.
+- **Headers:** `Content-Type`, set to the type the gateway signed, and nothing else. The signature travels in the query string (`X-Amz-Signature`, `X-Amz-Expires`, and so on), so there's no `Authorization` header and no `x-amz-*` header. Headers you configure on `createFilesClient({ headers })` go to your gateway, never to R2.
+- **Errors:** the client sends with `XMLHttpRequest`. When the browser blocks the request or its response, the request fires `error` and the client throws `network error during upload`. When R2 answers with a status the browser lets it read, any status outside `2xx` becomes `upload failed (<status>)`.
+
+Check where the `PUT` went before you go further. If it went to your own `/api/files?op=proxy&token=…` instead of R2, the gateway fell back to proxying the upload through your server, and the bucket's CORS rule isn't involved. On R2, setting `maxUploadSize` on the gateway causes that fallback.
+
+## Replay the upload with curl
+
+Run both commands against the URL from the network panel. Use the same `Content-Type` the browser sent, and a small test file, because the first command really uploads it to that key.
+
+```bash
+URL='https://<account-id>.r2.cloudflarestorage.com/uploads/users/42/3f1c….pdf?X-Amz-Algorithm=…'
+
+# 1. Does R2 accept the request? curl sends no Origin, so CORS doesn't apply.
+curl -i -X PUT "$URL" \
+  -H "Content-Type: application/pdf" \
+  --data-binary @test.pdf
+
+# 2. Does the CORS rule match your page?
+curl -i -X OPTIONS "$URL" \
+  -H "Origin: https://app.example.com" \
+  -H "Access-Control-Request-Method: PUT" \
+  -H "Access-Control-Request-Headers: content-type"
+```
+
+Keep the single quotes around the URL; its query string is full of `&`. Then read the two results together:
+
+| `PUT` with curl | Preflight | Where the problem is |
+| --- | --- | --- |
+| `200` | No `Access-Control-Allow-Origin` | The CORS rule. Go to [Fix the CORS rule](#fix-the-cors-rule). |
+| `200` | `Access-Control-Allow-Origin` with your origin | The rule matches this request. Compare it with the browser's own preflight, then see [The rule is right but uploads still fail](#the-rule-is-right-but-uploads-still-fail). |
+| `403` with an XML body | Either | R2 rejects the request itself. Go to [Read R2's 403](#read-r2s-403). |
+
+[Cloudflare's CORS docs](https://developers.cloudflare.com/r2/buckets/cors/) note that requests without an `Origin` header never get CORS headers back. That's why the first command can succeed while the browser fails, and why the second command needs `-H "Origin: …"` to show anything.
+
+## Fix the CORS rule
+
+The [Next.js guide](/guides/nextjs-r2-file-upload#let-the-browser-put-to-r2) has the base policy for these uploads: your origins, `PUT`, and `Content-Type`. When the preflight comes back without `Access-Control-Allow-Origin`, one of these parts doesn't cover the request.
+
+### The origin doesn't match
+
+An origin without a wildcard must match the request's `Origin` header exactly. Cloudflare's rules for `AllowedOrigins`:
+
+- An origin is `scheme://host[:port]`, with no path and no trailing slash. `https://app.example.com/` is invalid.
+- `http://localhost:3000`, `http://127.0.0.1:3000`, and `http://localhost:5173` are three different origins. Ports can't contain wildcards, so list each local port you use.
+- A pattern can hold one `*`: `https://*.example.com` matches `https://app.example.com`, but not `https://example.com`.
+
+For preview deployments, add one narrow pattern for their hostnames instead of `*`. A wildcard of `*` lets scripts on any site use a leaked presigned URL against your bucket. It also fixes none of the causes further down, which show the same browser error and have nothing to do with origins.
+
+### The method or a header isn't allowed
+
+`AllowedMethods` needs `PUT`. A download link that redirects to a presigned `GET` is a top-level navigation, not a CORS request, so `GET` is only needed if your JavaScript fetches the file itself.
+
+`AllowedHeaders` must cover every header listed in the browser's preflight `Access-Control-Request-Headers`. From the Files SDK client that's only `content-type`. If your own code sends the `PUT` and adds headers, such as `x-amz-meta-*` metadata or `Cache-Control`, list each one. To confirm a header problem, repeat the curl preflight without `-H "Access-Control-Request-Headers: content-type"`. If `Access-Control-Allow-Origin` appears now, the header list is what's missing.
+
+You don't need `ExposeHeaders` for these uploads. The client only reads the status of R2's response, and the complete step reads the object's size and ETag on the server.
+
+### The rule is right but uploads still fail
+
+- **Wait for it to apply.** Cloudflare says CORS changes can take up to 30 seconds to propagate.
+- **Check the bucket.** The rule has to be on the bucket in the URL's path. For a bucket in the EU jurisdiction, pass `--jurisdiction eu` to the Wrangler command.
+- **Compare preflights.** In the network panel, open the browser's `OPTIONS` request and copy its `Origin` and `Access-Control-Request-Headers` into your curl preflight. A header your curl command didn't send is the usual difference.
+- **Check the `PUT` response.** If the preflight passes and the `PUT` itself is blocked, the response to the `PUT` had no CORS headers. That's R2 rejecting the request, which the next section covers.
+
+## Read R2's 403
+
+When curl's `PUT` fails, the XML body's `<Code>` names the cause. The codes below are from [R2's error code list](https://developers.cloudflare.com/r2/api/error-codes/).
+
+### `ExpiredRequest`
+
+"Presigned URL or request signature has expired." R2 doesn't include CORS headers on this response, so in the browser it looks exactly like a CORS failure, and the client reports `network error during upload`.
+
+The URL carries its own clock: `X-Amz-Date` is when it was signed (UTC), and `X-Amz-Expires` is how many seconds it lives. The gateway signs for 300 seconds by default and clamps that to `authorize`'s `maxExpiresIn`. Look for something that holds on to a URL: a retry that replays an old target, or a custom flow that presigns when the page loads and uploads much later. `upload(file)` presigns right before it sends, so calling it again gets a fresh URL. If uploads legitimately start late, raise the gateway's `defaultExpiresIn` a little, along with the `maxExpiresIn` that caps it, rather than reusing URLs.
+
+### `SignatureDoesNotMatch`
+
+"Request signature does not match calculated signature." R2 recomputed the signature from the request it received and got a different answer. Three things cause it:
+
+- **A different `Content-Type` than the one signed.** Cloudflare's [presigned URL docs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/) say an upload with a different type fails this way. That applies when the URL's `X-Amz-SignedHeaders` includes `content-type`, which is the case for the `fetch` engine (`client: "fetch"`, the default inside Workers) and for hybrid signing in a Worker. The Files SDK client always sends the signed type. Your own code might not: `fetch(url, { method: "PUT", body: file })` sends the file's own type, so pass the `headers` that `signedUploadUrl()` returned. With `client: "aws-sdk"`, files-sdk 2.6 signs only `host` (check `X-Amz-SignedHeaders`), so the signature doesn't catch a mismatched type and this cause can't produce the error.
+- **A URL changed after signing.** Cloudflare lists the key, the operation, and the expiry. In practice that's a key re-encoded on the way to the browser, a query parameter added or reordered by your code, or an upload URL used with a method other than `PUT`.
+- **The wrong secret.** The access key ID and secret come from different tokens, or the secret was rotated on one server and not another.
+
+Cloudflare doesn't document whether this `403` carries CORS headers. Check the response in the network panel: with `Access-Control-Allow-Origin`, the client reports `upload failed (403)`; without it, `network error during upload`.
+
+### `AccessDenied` or `401 Unauthorized`
+
+`AccessDenied` means "insufficient permissions for the requested operation", and a `401 Unauthorized` means "missing or invalid authentication credentials". For uploads, the first usually means the token is read-only or scoped to another bucket, and the second a revoked or mistyped access key ID. Give the token **Object Read & Write** on this bucket.
+
+Signing happens on your server without contacting R2, so a bad token doesn't fail at presign. It fails at the `PUT`, in the browser, which is why it can look like an upload problem rather than a credentials one.
+
+### The wrong endpoint
+
+The adapter signs path-style URLs: `https://<account-id>.r2.cloudflarestorage.com/<bucket>/<key>`. Check each part of the failing URL:
+
+- **Account ID.** It must match the one on your R2 overview page. A typo in `R2_ACCOUNT_ID` sends the request to an endpoint where your token doesn't work.
+- **Bucket.** `NoSuchBucket` means "the specified bucket does not exist" at that endpoint. Check the `bucket` you pass to `r2()`.
+- **Jurisdiction.** A bucket created in the EU jurisdiction is reached through `https://<account-id>.eu.r2.cloudflarestorage.com`, and Cloudflare's [data location docs](https://developers.cloudflare.com/r2/reference/data-location/) require the jurisdiction in the S3 endpoint. Pass that URL as `endpoint` to `r2()`; it replaces `accountId`.
+
+### Custom domains
+
+Presigned URLs only work on the S3 API domain; Cloudflare says they can't be used with custom domains. Files SDK never signs for one. `signedUploadUrl()` always targets `<account-id>.r2.cloudflarestorage.com`, and when you set `publicBaseUrl`, `url()` returns a plain, unsigned `${publicBaseUrl}/${key}` link. So if a URL you expected to be presigned starts with your custom domain, it came from `publicBaseUrl`. Rewriting a presigned URL's host to your domain breaks the signature.
+
+Cloudflare's [troubleshooting page](https://developers.cloudflare.com/r2/platform/troubleshooting/) covers CORS errors on custom-domain reads: a `cf-mitigated` header means a WAF rule blocked the request, and a missing `cf-cache-status` points at Hotlink Protection. Those apply to public reads through your domain, not to presigned uploads.
+
+## Cause at a glance
+
+| Cause | curl `PUT` | Files SDK client error |
+| --- | --- | --- |
+| Origin, method, or header not in the rule | `200` | `network error during upload` |
+| Rule not applied yet, or on another bucket | `200` | `network error during upload` |
+| Expired URL | `403 ExpiredRequest` | `network error during upload` |
+| Signed `Content-Type` differs | `403 SignatureDoesNotMatch` | `upload failed (403)` or `network error during upload` |
+| URL modified, or wrong secret | `403 SignatureDoesNotMatch` | Same as above |
+| Token lacks access, or key revoked | `403 AccessDenied` or `401` | `upload failed (…)` or `network error during upload` |
+| Wrong bucket, account, or jurisdiction | Error from that endpoint | Depends on the response's CORS headers |

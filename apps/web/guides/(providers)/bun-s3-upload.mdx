@@ -1,0 +1,423 @@
+---
+title: "Upload files to S3 with Bun: native S3Client, presigned URLs, and SDK tradeoffs"
+description: One Bun file server written twice, with Bun's own S3Client and with Files SDK, covering browser uploads and when to move to the s3() adapter instead.
+sidebar:
+  label: Bun S3 uploads
+seo:
+  title: "Bun S3 uploads: native client vs Files SDK"
+related:
+  - /docs/adapters/bun-s3
+  - /docs/adapters/s3
+  - /guides/presigned-upload-validation
+  - /guides/unified-storage-api-typescript
+---
+
+Bun has an S3 client built in. `new Bun.S3Client()` writes, reads, lists, deletes, and presigns objects with nothing to install, and for a Bun server that stores files and hands browsers presigned URLs, it's enough. `files-sdk/bun-s3` runs the same client behind the `Files` API, so your calls and errors match every other Files SDK adapter, and anything Bun can't do throws instead of being quietly dropped.
+
+Both stop short at the same place: presigned uploads. Bun signs only the `Host` header of a presigned URL, so the URL fixes neither the content type nor the size of what gets uploaded. `bun-s3` therefore refuses `contentType` and `maxSize` rather than return a URL that looks constrained. When S3 itself has to enforce limits on browser uploads, move to `files-sdk/s3` and its POST policies.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `uploads`) and credentials that can put, get, and delete objects in it, plus `s3:ListBucket` so missing keys come back as `404` rather than `403`.
+- Bun 1.4. Written against Bun 1.4.2, files-sdk 2.6, and `@aws-sdk/*` 3.1148 for the `s3()` section.
+- Credentials in the environment. Bun reads `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, and `S3_ENDPOINT`, and falls back to the `AWS_*` names when they're unset. The AWS SDK behind `s3()` reads only the `AWS_*` names, so use those and one `.env` serves all three versions:
+
+```bash title=".env"
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+AWS_REGION=us-east-1
+```
+
+Bun loads `.env` on its own and, [per its docs](https://bun.sh/docs/runtime/s3#credentials), reads these variables at initialization rather than through `process.env`, so setting them later from code has no effect. Pass credentials to the client if you need to.
+
+Every route below calls `getSession(req)`. It stands in for your auth library (Better Auth, Clerk, Auth.js, or your own cookie check) and returns `{ user: { id: string } }` or `null`.
+
+## The app
+
+Three routes, the same in every version:
+
+| Route | What it does |
+| --- | --- |
+| `POST /files` | Server upload. The request body goes to S3 under `users/<userId>/<uuid>`. |
+| `GET /files/:id` | Redirects the owner to a presigned `GET` URL that lives 60 seconds. |
+| `POST /uploads` | Returns a presigned upload URL for a new key. The browser sends the file there directly. |
+
+The server picks every key. The browser only ever sends back an ID, which has to match the UUID pattern and is joined to the signed-in user's prefix, so a request can't name another user's object or a path with `..` in it.
+
+## Version 1: Bun's S3Client
+
+```ts title="server-native.ts" lineNumbers
+import { S3Client } from "bun";
+
+import { getSession } from "./auth";
+
+// Credentials, region, and endpoint come from S3_* or AWS_* variables.
+const s3 = new S3Client({ bucket: "uploads" });
+const ID = /^[0-9a-f-]{36}$/;
+
+Bun.serve({
+  port: Number(process.env.PORT ?? 3000),
+  routes: {
+    // Server upload: the request body goes straight to S3.
+    "/files": {
+      POST: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const id = crypto.randomUUID();
+        const size = await s3.write(`users/${session.user.id}/${id}`, req, {
+          type: req.headers.get("content-type") ?? "application/octet-stream",
+        });
+        return Response.json({ id, size });
+      },
+    },
+
+    // Download: redirect to a presigned GET that lives one minute.
+    "/files/:id": {
+      GET: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        if (!ID.test(req.params.id)) {
+          return new Response("Not found", { status: 404 });
+        }
+        const key = `users/${session.user.id}/${req.params.id}`;
+        if (!(await s3.exists(key))) {
+          return new Response("Not found", { status: 404 });
+        }
+        return Response.redirect(s3.presign(key, { expiresIn: 60 }), 302);
+      },
+    },
+
+    // Browser upload, step 1: a presigned PUT for a key the server picks.
+    "/uploads": {
+      POST: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const id = crypto.randomUUID();
+        const url = s3.presign(`users/${session.user.id}/${id}`, {
+          expiresIn: 300,
+          method: "PUT",
+        });
+        return Response.json({ id, url });
+      },
+    },
+  },
+});
+```
+
+`s3.write()` accepts the `Request` itself as the body and resolves to the number of bytes written. `presign()` makes no network call; it signs locally. Two of its defaults are worth overriding: a bare `presign(key)` signs a `GET` valid for 24 hours, and Bun's `new Response(s3.file(key))` shortcut answers with a `302` to a URL that, in Bun 1.4.2, lived 15 minutes. Passing `expiresIn` keeps the lifetime yours.
+
+## Version 2: Files SDK with bun-s3
+
+```ts title="server.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { bunS3 } from "files-sdk/bun-s3";
+
+import { getSession } from "./auth";
+
+// Same client underneath: bunS3() builds a Bun.S3Client from these options
+// and Bun's S3_* / AWS_* variables.
+const files = createFiles({ adapter: bunS3({ bucket: "uploads" }) });
+const ID = /^[0-9a-f-]{36}$/;
+
+Bun.serve({
+  port: Number(process.env.PORT ?? 3000),
+  routes: {
+    "/files": {
+      POST: async (req) => {
+        const session = await getSession(req);
+        if (!session || !req.body) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const id = crypto.randomUUID();
+        const stored = await files.upload(
+          `users/${session.user.id}/${id}`,
+          req.body,
+          { contentType: req.headers.get("content-type") ?? undefined }
+        );
+        return Response.json({ id, size: stored.size });
+      },
+    },
+
+    "/files/:id": {
+      GET: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        if (!ID.test(req.params.id)) {
+          return new Response("Not found", { status: 404 });
+        }
+        const key = `users/${session.user.id}/${req.params.id}`;
+        if (!(await files.exists(key))) {
+          return new Response("Not found", { status: 404 });
+        }
+        return Response.redirect(await files.url(key, { expiresIn: 60 }), 302);
+      },
+    },
+
+    "/uploads": {
+      POST: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const id = crypto.randomUUID();
+        const { url } = await files.signedUploadUrl(
+          `users/${session.user.id}/${id}`,
+          { expiresIn: 300 }
+        );
+        return Response.json({ id, url });
+      },
+    },
+  },
+});
+```
+
+Against a local MinIO server, both files behaved the same: uploads stored the body, the owner got a `302` to a 60-second URL, another user got `404`, and a browser-style `PUT` to the minted URL landed. The differences are in the edges:
+
+- **Errors.** A missing key makes Bun's client throw an `S3Error` with S3's own code (`NoSuchKey`). `bun-s3` throws a `FilesError` with code `NotFound`, the same code `s3()`, `r2()`, `gcs()`, and the rest throw. Missing credentials surface as Bun's `ERR_S3_MISSING_CREDENTIALS` natively and as an `Unauthorized` `FilesError` through the adapter.
+- **URL lifetime.** `files.url()` defaults to one hour and throws above seven days. Bun signs a longer `expiresIn` without complaint, but [SigV4 caps `X-Amz-Expires`](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html) at seven days, so S3 won't honor that URL.
+- **Moving later.** Swapping `bunS3()` for another adapter leaves every route as it is.
+
+## Upload from the browser
+
+The browser asks your server for a URL, then sends the file to S3 itself, so the bytes never pass through Bun:
+
+```ts title="upload.ts" lineNumbers
+// Runs in the browser, served from the same origin as the Bun server.
+export async function uploadFile(file: File): Promise<string> {
+  const res = await fetch("/uploads", { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`Could not start the upload (${res.status})`);
+  }
+  const { id, url } = (await res.json()) as { id: string; url: string };
+
+  const put = await fetch(url, {
+    body: file,
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    method: "PUT",
+  });
+  if (!put.ok) {
+    throw new Error(`Upload failed (${put.status})`);
+  }
+  return id;
+}
+```
+
+The `PUT` goes to S3's origin, not yours, so the bucket needs a [CORS rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/cors.html) that allows it:
+
+```json lineNumbers
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://app.example.com"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["Content-Type"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+The `Content-Type` the browser sends becomes the object's stored type. Nothing checks it, which is the subject of the next section.
+
+## Why bun-s3 refuses contentType and maxSize
+
+A presigned URL is a signature over one request: the method, the path, the query string, and the headers named in its `X-Amz-SignedHeaders` parameter. S3 recomputes the signature from the incoming request and rejects a mismatch. [AWS requires](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html) only `host` and any `x-amz-*` headers to be signed. Anything else the client sends is outside the signature and can be any value.
+
+Bun's presigned URLs sign `host` and nothing else. The `type` option on `presign()` doesn't sign a header; [Bun's docs](https://bun.sh/docs/runtime/s3#presigning-urls) describe it as setting `response-content-type` in the URL, which shapes the response to a `GET` and has no effect on a `PUT`. Against a local MinIO server, a URL presigned with `method: "PUT", type: "image/png"` carried `X-Amz-SignedHeaders=host`, accepted a `PUT` with `Content-Type: text/html`, and stored the object as `text/html`.
+
+Size is the same story with no option at all. A presigned `PUT` carries no size limit, so the client can send anything up to S3's single-request maximum. S3 caps upload sizes through [POST policies](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-HTTPPOSTForms.html) and their `content-length-range` condition, and Bun doesn't create them.
+
+Handing back a URL plus a `Content-Type` header to send would look like a guarantee and constrain nothing, so `bun-s3` throws instead:
+
+- ``bun-s3 adapter: `contentType` is not supported because Bun.s3 presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use the `s3()` or `s3Fetch()` adapter, which sign it.``
+- ``bun-s3 adapter: `maxSize` is not supported because Bun.s3 exposes presigned URLs, not S3 POST policy fields.``
+
+:::warning
+The first message overstates `s3()`. In files-sdk 2.6, `s3()` presigned `PUT` URLs don't sign `Content-Type` either, because the AWS SDK's presigner leaves it out of the signature by default. Against MinIO, a type mismatch was accepted by an `s3()` `PUT` URL and rejected with `403` by an `s3Fetch()` one. To enforce a type on a `PUT`, use `s3Fetch()`. To enforce type and size together, use `s3()` with `maxSize`, covered below.
+:::
+
+The [`useFiles` gateway](/docs/ui/server/bun) runs into the same refusal. When the browser reports a file's type, the gateway passes it to `signedUploadUrl()`, `bun-s3` throws, and the gateway falls back to proxying that upload through your server. With `bun-s3`, most gateway uploads go through Bun rather than straight to S3.
+
+## Check uploads after they land
+
+With `bun-s3`, the server can still check each object before your app trusts it. Have the browser report the ID when its `PUT` finishes, and verify it on the server:
+
+```ts lineNumbers
+// server.ts: import FilesError from "files-sdk", and add these constants.
+const MAX_BYTES = 10 * 1024 * 1024;
+const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "application/pdf"]);
+
+// server.ts: add this entry to `routes`.
+"/uploads/:id/complete": {
+  POST: async (req) => {
+    const session = await getSession(req);
+    if (!session) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    if (!ID.test(req.params.id)) {
+      return new Response("Not found", { status: 404 });
+    }
+    const key = `users/${session.user.id}/${req.params.id}`;
+
+    let stored;
+    try {
+      stored = await files.head(key);
+    } catch (error) {
+      if (error instanceof FilesError && error.code === "NotFound") {
+        return new Response("Upload not found", { status: 404 });
+      }
+      throw error;
+    }
+
+    // `type` is the Content-Type the browser sent, not a check of the bytes.
+    if (stored.size > MAX_BYTES || !ALLOWED_TYPES.has(stored.type)) {
+      await files.delete(key);
+      return new Response("File rejected", { status: 422 });
+    }
+    // Save key, stored.size, and stored.type with your record here.
+    return Response.json({ id: req.params.id, size: stored.size, type: stored.type });
+  },
+},
+```
+
+Against local MinIO, with the limit lowered to 1 KiB for the test, a 512-byte PNG passed, a 4 KiB one and a `text/html` one were deleted with `422`, and an ID that was never uploaded got `404`.
+
+This keeps bad files out of your app, not out of the bucket. The bytes are stored and billed before the check runs, `stored.type` is still the type the browser claimed, and an upload nobody completes stays until something removes it (an [S3 lifecycle rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html) on the prefix, for example). To check the actual bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
+
+## Switch to s3() when S3 has to enforce limits
+
+`files-sdk/s3` uses the AWS SDK, which can create POST policies. With `maxSize`, `signedUploadUrl()` returns a form instead of a `PUT` URL, and S3 checks the size and the declared type itself:
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
+```
+
+`@aws-sdk/lib-storage` is only needed for `POST /files`: `s3()` sends a stream body of unknown length as a multipart upload through it. In `server.ts`, change the adapter and the `/uploads` route:
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+import { getSession } from "./auth";
+
+// AWS SDK credential chain: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, an IAM
+// role, or a shared profile. Region from AWS_REGION.
+const files = createFiles({ adapter: s3({ bucket: "uploads" }) });
+const ID = /^[0-9a-f-]{36}$/;
+
+const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "application/pdf"]);
+const MAX_BYTES = 10 * 1024 * 1024;
+
+Bun.serve({
+  port: Number(process.env.PORT ?? 3000),
+  routes: {
+    // "/files" and "/files/:id" stay exactly as in version 2.
+    "/uploads": {
+      POST: async (req) => {
+        const session = await getSession(req);
+        if (!session) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const { type } = (await req.json()) as { type?: string };
+        if (!type || !ALLOWED_TYPES.has(type)) {
+          return new Response("Unsupported file type", { status: 415 });
+        }
+        const id = crypto.randomUUID();
+        const upload = await files.signedUploadUrl(
+          `users/${session.user.id}/${id}`,
+          { contentType: type, expiresIn: 300, maxSize: MAX_BYTES }
+        );
+        // With maxSize, s3() returns { method: "POST", url, fields }.
+        return Response.json({ id, upload });
+      },
+    },
+  },
+});
+```
+
+The browser now posts a form. Every field from the server goes first, and the file goes last, because S3 [ignores fields after it](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-HTTPPOSTForms.html):
+
+```ts title="upload.ts" lineNumbers
+interface PostUpload {
+  method: "POST";
+  url: string;
+  fields: Record<string, string>;
+}
+
+export async function uploadFile(file: File): Promise<string> {
+  const res = await fetch("/uploads", {
+    body: JSON.stringify({ type: file.type }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`Could not start the upload (${res.status})`);
+  }
+  const { id, upload } = (await res.json()) as {
+    id: string;
+    upload: PostUpload;
+  };
+
+  const form = new FormData();
+  for (const [name, value] of Object.entries(upload.fields)) {
+    form.append(name, value);
+  }
+  form.append("file", file); // S3 requires the file to be the last field
+
+  const post = await fetch(upload.url, { body: form, method: "POST" });
+  if (!post.ok) {
+    // S3 answers with an XML error: EntityTooLarge, AccessDenied, ...
+    throw new Error(`Upload failed (${post.status}): ${await post.text()}`);
+  }
+  return id;
+}
+```
+
+Change the bucket's CORS rule to allow `POST` instead of `PUT`. Against a local MinIO server, this form accepted a 1 KiB PNG with `204`, rejected an 11 MiB one with `400 EntityTooLarge`, and rejected a form whose `Content-Type` field didn't match the signed policy with `403 AccessDenied`. The server's own allowlist refused `text/html` with `415` before anything was signed.
+
+The policy checks the declared type, not the file's contents. A client can still label HTML as `image/png`; the stored object is then served as `image/png`, but the bytes are whatever was sent.
+
+## Which one to use
+
+|  | `Bun.S3Client` | `files-sdk/bun-s3` | `files-sdk/s3` |
+| --- | --- | --- | --- |
+| Runtime | Bun | Bun | Node or Bun |
+| Extra packages | None | `files-sdk` | `files-sdk` and `@aws-sdk/*` |
+| Upload, download, list, delete | Yes | Yes | Yes |
+| Range reads | `slice()` | `range` | `range` |
+| Presigned `GET` | `presign()`, 24 h default | `url()`, 1 h default, 7-day cap | `url()`, 1 h default, 7-day cap |
+| Presigned `PUT` | Yes, signs `host` only | Yes, refuses `contentType` and `maxSize` | Yes, `Content-Type` not signed in files-sdk 2.6 |
+| Size and type enforced by S3 on a browser upload | No | No | Yes, POST policy via `maxSize` |
+| User metadata, `Cache-Control` | No | Throws | Yes |
+| Copy | No copy method | Streams through your process | Server-side `CopyObject` |
+| Resume an upload in a new process | No | No, in-process only | Yes, [resumable](/docs/resumable) |
+| Error shape | `S3Error` with S3's code, or `ERR_S3_*` | `FilesError` | `FilesError` |
+| Moving to another provider | Rewrite the calls | Swap the adapter | Swap the adapter |
+
+**Use Bun's client** when the service only runs on Bun, the feature list above covers it, and checking uploads after they land is acceptable. It has no dependencies and is the shortest path. User metadata, `Cache-Control`, and server-side copy are requested in Bun's [issue #29595](https://github.com/oven-sh/bun/issues/29595), open at the time of writing.
+
+**Use `bun-s3`** when you want the `Files` API without the AWS SDK: code that moves to another adapter without changes, the same `FilesError` codes everywhere, [plugins](/docs/plugins), and the gateway. It can't do more than Bun's client underneath, but it tells you so with an error rather than a silently ignored option.
+
+**Use `s3()`** when S3 has to enforce size and type on browser uploads, or you need user metadata, `Cache-Control`, server-side copy, uploads that resume after a restart, or the same code on Node. On Cloudflare Workers, where the AWS SDK's XML parsing fails, [`s3Fetch()`](/docs/adapters/s3-fetch) speaks the same protocol over `fetch`.
+
+## Troubleshooting
+
+**``bun-s3 adapter: Bun.S3Client is only available in the Bun runtime. Pass `client: Bun.s3` or run under Bun.``** The code ran under Node, for example in a framework's dev server or a Node-based test runner. Run it with Bun, or use `s3()`.
+
+**`Missing S3 credentials. 'accessKeyId', 'secretAccessKey', 'bucket', and 'endpoint' are required`.** Bun found no credentials. Natively the error's `code` is `ERR_S3_MISSING_CREDENTIALS`; through `bun-s3` it's a `FilesError` with code `Unauthorized`. Set `AWS_*` or `S3_*` variables before the process starts, or pass `accessKeyId` and `secretAccessKey` to the client.
+
+**``bun-s3 adapter: `contentType` is not supported…``** or **``…`maxSize` is not supported…``** A `signedUploadUrl()` call asked for a constraint Bun can't sign. Drop the option and [check after upload](#check-uploads-after-they-land), or [switch to `s3()`](#switch-to-s3-when-s3-has-to-enforce-limits).
+
+**``bun-s3: `metadata` is not supported by this adapter``** (or `cacheControl`). Bun's `write()` has no field for either. Use `s3()` on the same bucket for those writes.
+
+**`Bun S3 error: presigned URLs must expire within 604800 seconds (7 days), the SigV4 limit…`** `files.url()` or `signedUploadUrl()` got an `expiresIn` over seven days. Lower it.
+
+**The browser's `PUT` or `POST` fails with a CORS error.** The bucket's CORS rule doesn't allow your origin, the method, or the `Content-Type` header. Send the request from `curl` with the same URL to see S3's own error, which a browser hides behind the CORS failure.
+
+**`403` instead of `404` for a missing key.** Without `s3:ListBucket`, [S3 answers `403`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html) for keys that don't exist, so a missing file looks like an access error instead of a not-found. Grant `s3:ListBucket` on the bucket.

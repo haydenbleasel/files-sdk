@@ -1,0 +1,339 @@
+---
+title: Build one TypeScript storage API for S3, GCS, Azure, and Dropbox
+description: One storage module that picks S3, Google Cloud Storage, Azure Blob, or Dropbox from config, runs the same code on each, and branches on what each can do.
+sidebar:
+  label: One API for four providers
+seo:
+  title: One storage API for S3, GCS, Azure, Dropbox
+related:
+  - /docs/capabilities
+  - /docs/provider-gaps
+  - /docs/api/errors
+  - /docs/escape-hatch
+  - /guides/presigned-upload-validation
+---
+
+Build one `Files` instance from configuration, then write every storage function against `files.capabilities` instead of against provider names. The same upload, folder listing, download link, browser upload, and range read then run on Amazon S3, Google Cloud Storage, Azure Blob Storage, or Dropbox, and swapping providers is an environment variable.
+
+The method names are shared; the behavior behind them isn't. Dropbox stores no metadata or content type, and its download links last four hours whatever you ask for. Azure can't put a size limit on a signed upload; only S3 and GCS can. When a provider can't do what a call asks, Files SDK throws before any network request instead of quietly doing less, so each difference shows up as a branch you write once. The [matrix](#where-the-four-providers-differ) below lists them, built from each adapter's source.
+
+## Before you start
+
+- A bucket, container, or folder, and server-side credentials, for each provider you deploy to.
+- `files-sdk`, plus the packages in the row for each provider you actually use. You don't need all four.
+- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, `@google-cloud/storage` 8.4, `@azure/storage-blob` 12.34, and `dropbox` 10.47.
+
+| Provider | Adapter | Install | Credentials the adapter finds on its own |
+| --- | --- | --- | --- |
+| Amazon S3 | `files-sdk/s3` | `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`, `@aws-sdk/s3-presigned-post` | The AWS SDK's default chain (`AWS_ACCESS_KEY_ID`, roles, profiles); `AWS_REGION` |
+| Google Cloud Storage | `files-sdk/gcs` | `@google-cloud/storage` | Application Default Credentials, such as `GOOGLE_APPLICATION_CREDENTIALS` |
+| Azure Blob Storage | `files-sdk/azure` | `@azure/storage-blob` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` with `AZURE_STORAGE_ACCOUNT_KEY` or `AZURE_STORAGE_SAS_TOKEN` |
+| Dropbox | `files-sdk/dropbox` | `dropbox` | `DROPBOX_ACCESS_TOKEN`, or `DROPBOX_REFRESH_TOKEN` with `DROPBOX_APP_KEY` (and `DROPBOX_APP_SECRET`) |
+
+On S3, also install `@aws-sdk/lib-storage` if you upload streams of unknown length or use `onProgress`. Each adapter page ([S3](/docs/adapters/s3), [GCS](/docs/adapters/gcs), [Azure](/docs/adapters/azure), [Dropbox](/docs/adapters/dropbox)) lists its options.
+
+## Choose the adapter from configuration
+
+```ts title="lib/storage.ts" lineNumbers
+import { Files } from "files-sdk";
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is not set`);
+  }
+  return value;
+}
+
+async function createStorage(provider: string | undefined): Promise<Files> {
+  switch (provider) {
+    case "s3": {
+      const { s3 } = await import("files-sdk/s3");
+      return new Files({ adapter: s3({ bucket: required("S3_BUCKET") }) });
+    }
+    case "gcs": {
+      const { gcs } = await import("files-sdk/gcs");
+      return new Files({ adapter: gcs({ bucket: required("GCS_BUCKET") }) });
+    }
+    case "azure": {
+      const { azure } = await import("files-sdk/azure");
+      return new Files({
+        adapter: azure({ container: required("AZURE_CONTAINER") }),
+      });
+    }
+    case "dropbox": {
+      const { dropbox } = await import("files-sdk/dropbox");
+      return new Files({
+        adapter: dropbox({ rootFolderPath: required("DROPBOX_ROOT") }),
+      });
+    }
+    default:
+      throw new Error(`Unknown STORAGE_PROVIDER: ${provider ?? "(unset)"}`);
+  }
+}
+
+let storage: Promise<Files> | undefined;
+
+/** One `Files` per process, built from STORAGE_PROVIDER on first use. */
+export function getStorage(): Promise<Files> {
+  storage ??= createStorage(process.env.STORAGE_PROVIDER);
+  return storage;
+}
+```
+
+`STORAGE_PROVIDER`, `S3_BUCKET`, `GCS_BUCKET`, `AZURE_CONTAINER`, and `DROPBOX_ROOT` are this module's own names; the adapters read only the credential variables in the table above. The Dropbox root folder must already exist, since the adapter doesn't create folders.
+
+Each `import()` loads one adapter and its provider SDK only when that provider is selected, so on Node a deployment needs only its own provider's packages. A bundler that compiles this file may still try to resolve all four; if yours does, install the packages for every provider your builds can select, or mark them external.
+
+The function returns the plain `Files` type, so the rest of your code can't depend on one adapter by accident. The cost is that `files.raw`, the native client, is typed `unknown`. [When a native SDK fits better](#when-a-native-sdk-fits-better) covers that.
+
+## Write the workflow against capabilities
+
+Every function below takes a `Files` and reads `files.capabilities` where providers differ. None of them mentions a provider by name.
+
+```ts title="lib/documents.ts" lineNumbers
+import { FilesError, type Files, type SignedUpload } from "files-sdk";
+
+/** Upload with a content type, plus metadata only where the adapter keeps it. */
+export async function saveDocument(
+  files: Files,
+  key: string,
+  body: Blob,
+  metadata: Record<string, string>
+) {
+  const { capabilities } = files;
+  const result = await files.upload(key, body, {
+    contentType: body.type || "application/octet-stream",
+    ...(capabilities.metadata && { metadata }),
+  });
+  // Without provider metadata, keep `metadata` in your database instead.
+  return { ...result, metadataStored: capabilities.metadata };
+}
+
+/** One folder level: direct files plus subfolder prefixes. */
+export async function listFolder(files: Files, prefix: string) {
+  if (files.capabilities.delimiter) {
+    const page = await files.list({ delimiter: "/", prefix });
+    return {
+      cursor: page.cursor,
+      files: page.items.map((item) => item.key),
+      folders: page.prefixes ?? [],
+    };
+  }
+  // No folder primitive: fold deeper keys into folder names on this page.
+  const page = await files.list({ prefix });
+  const folders = new Set<string>();
+  const direct: string[] = [];
+  for (const item of page.items) {
+    const rest = item.key.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash === -1) {
+      direct.push(item.key);
+    } else {
+      folders.add(prefix + rest.slice(0, slash + 1));
+    }
+  }
+  return { cursor: page.cursor, files: direct, folders: [...folders] };
+}
+
+/** A short-lived download link, or `null` when the caller must stream instead. */
+export async function downloadLink(files: Files, key: string, seconds = 600) {
+  const { signedUrl } = files.capabilities;
+  if (!signedUrl.supported) {
+    return null;
+  }
+  const expiresIn = Math.min(seconds, signedUrl.maxExpiresIn ?? seconds);
+  try {
+    return await files.url(key, {
+      expiresIn,
+      responseContentDisposition: "attachment",
+    });
+  } catch (error) {
+    // The adapter can't bind a disposition into its links: stream instead.
+    if (error instanceof FilesError && error.code === "Provider") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** A signed browser upload that enforces size and type, or `null` for "proxy it". */
+export async function browserUploadTarget(
+  files: Files,
+  key: string,
+  limits: { maxSize: number; contentType: string }
+): Promise<SignedUpload | null> {
+  try {
+    return await files.signedUploadUrl(key, {
+      contentType: limits.contentType,
+      expiresIn: 300,
+      maxSize: limits.maxSize,
+    });
+  } catch (error) {
+    if (error instanceof FilesError && error.code === "Provider") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** The first `length` bytes, without downloading the rest when possible. */
+export async function readHead(files: Files, key: string, length = 4096) {
+  if (files.capabilities.rangeRead) {
+    const part = await files.download(key, {
+      range: { end: length - 1, start: 0 },
+    });
+    return new Uint8Array(await part.arrayBuffer());
+  }
+  const whole = await files.download(key);
+  return new Uint8Array(await whole.arrayBuffer()).slice(0, length);
+}
+
+/** Map a storage failure to the status your API returns. */
+export function storageErrorStatus(error: unknown): number {
+  if (!(error instanceof FilesError)) {
+    return 500;
+  }
+  switch (error.code) {
+    case "NotFound":
+      return 404;
+    case "Conflict":
+      return 409;
+    case "ReadOnly":
+      return 403;
+    case "Unauthorized":
+      // The server's own credentials failed: a deployment problem, not the caller's.
+      return 500;
+    default:
+      return error.permanent ? 500 : 503;
+  }
+}
+```
+
+The branches fall into two kinds, and the difference matters.
+
+**Where a flag exists, read it.** `metadata`, `delimiter`, `rangeRead`, and `signedUrl` are fields on [`files.capabilities`](/docs/capabilities). The first three come from the same per-adapter flags the `Files` wrapper checks before every call; `signedUrl` is the adapter's own declaration, including its `maxExpiresIn` ceiling. `saveDocument` leaves metadata out on Dropbox instead of failing, `downloadLink` never asks for longer than the ceiling, and `readHead` only falls back to a full download on an adapter with no range primitive.
+
+**Where no flag exists, try it and fall back.** There's no capability for signed uploads or for forcing `Content-Disposition` on a link. For those, the adapter checks the request and throws a `Provider` error before contacting the provider, so `browserUploadTarget` and `downloadLink` catch it and return `null`. Your route then proxies the upload or streams the download itself. The [gateway](/docs/ui/server/gateway) does the same thing for keyless browser uploads: when signing fails, it falls back to receiving the bytes itself.
+
+Here's a route that uses `downloadLink` and `storageErrorStatus`:
+
+```ts title="app/api/download/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { downloadLink, storageErrorStatus } from "@/lib/documents";
+import { getStorage } from "@/lib/storage";
+
+export async function GET(req: Request) {
+  const session = await getSession(req.headers);
+  const name = new URL(req.url).searchParams.get("name");
+  if (!session || !name || name.includes("..")) {
+    return new Response(null, { status: session ? 400 : 401 });
+  }
+  const key = `users/${session.user.id}/${name}`;
+
+  try {
+    const files = await getStorage();
+    const link = await downloadLink(files, key, 300);
+    if (link) {
+      return Response.redirect(link, 302);
+    }
+    // No signing primitive: stream the bytes through this route instead.
+    const file = await files.download(key, { as: "stream" });
+    return new Response(file.stream(), {
+      headers: {
+        "content-disposition": "attachment",
+        "content-type": file.type,
+      },
+    });
+  } catch (error) {
+    return new Response(null, { status: storageErrorStatus(error) });
+  }
+}
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own); it takes request headers and returns `{ user: { id: string } }` or `null`. The route is written as a Next.js route handler but uses only `Request` and `Response`. On S3, GCS, and Azure with an account key, it redirects to a signed URL that downloads as an attachment. On Dropbox, which can't attach a disposition to its links, it streams the file through your server.
+
+### What the shared code did on two backends
+
+The functions above ran against a local MinIO server through `files-sdk/s3`, and against `files-sdk/memory`. MinIO isn't AWS, so treat its results as S3-API behavior, not as a guarantee about S3 itself.
+
+| Call | `s3()` on local MinIO | `memory()` |
+| --- | --- | --- |
+| `saveDocument` with `{ owner_id, ownerId }` | Stored. `head()` returned keys `owner_id` and `ownerid`. | Stored. Keys kept their case. |
+| `listFolder("reports/")` | `files: ["reports/summary.pdf"]`, `folders: ["reports/2026/"]` | Same |
+| `downloadLink` | Signed URL; fetching it returned `200` with `Content-Disposition: attachment` | `null`: memory can't sign |
+| `browserUploadTarget` (1 MiB, `application/pdf`) | A `POST` policy. A 2 MiB form post got `400 EntityTooLarge`; a small one got `204`. | An inert `memory://` `PUT` URL that enforces nothing |
+| `readHead(…, 8)` | `%PDF-1.7` | `%PDF-1.7` |
+| `download` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound` |
+| `head` of a missing key | `NotFound`, message `UnknownError` | `NotFound` |
+
+Two lessons came out of that run. S3-style stores [keep user metadata keys in lowercase](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html#UserMetadata), so name keys in lowercase with underscores; that form is also a valid Azure metadata name. And never branch on `error.message`: a `HEAD` response has no body, so the same missing key produces two different messages. The memory adapter is good for testing the branching logic, but it isn't a faithful stand-in for metadata casing, URL signing, or upload limits.
+
+GCS, Azure, and Dropbox weren't run against live accounts. Their adapters were constructed locally with placeholder credentials to read `files.capabilities` and to call the signing methods, which work offline; everything else about them below comes from their source.
+
+## Where the four providers differ
+
+|  | S3 | GCS | Azure Blob | Dropbox |
+| --- | --- | --- | --- | --- |
+| `rangeRead` | Yes | Yes | Yes | Yes |
+| `metadata` | Yes. Keys stored lowercase; 2 KB limit | Yes. 8 KiB limit | Yes. Names must be C# identifiers; 8 KB limit | No. `metadata` throws |
+| Stored content type | Kept | Kept | Kept | Not stored. Reads infer it from the key's extension |
+| `cacheControl` | Yes | Yes | Yes | No. `cacheControl` throws |
+| `delimiter` | Any string | Any string | Any string | `"/"` only |
+| `signedUrl` | Yes, up to 7 days | Yes, up to 7 days | With an account key or Entra credential; 7-day cap only with Entra. Not with a SAS token alone | Yes, but every link lives about 4 hours; `expiresIn` above 4 hours throws |
+| `url()` with `responseContentDisposition` | Yes | Yes | Yes | Throws |
+| `signedUploadUrl` without `maxSize` | `PUT`. Content type not enforced in files-sdk 2.6 | `PUT`. Content type is signed | SAS `PUT`; the client must send `x-ms-blob-type: BlockBlob`. Throws if you pass `contentType` | Throws |
+| `signedUploadUrl` with `maxSize` | `POST` policy; size and type enforced | `POST` policy; size and type enforced | Throws | Throws |
+| `multipart` (resumable `control`) | Yes | Yes | Yes | Yes |
+| `uploadProgress` | Yes | Yes | Yes | No |
+| `serverSideCopy` | Yes | Yes | Yes | Yes |
+| Stream of unknown length | Multipart through `@aws-sdk/lib-storage` | Resumable write stream | `uploadStream` in blocks | Upload session, chunk by chunk |
+
+Sources: each adapter's capability flags, read back from `files.capabilities`, and its `upload`, `url`, and `signedUploadUrl` code. Metadata limits are from the [S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html), [GCS](https://docs.cloud.google.com/storage/quotas), and [Azure](https://learn.microsoft.com/en-us/rest/api/storageservices/setting-and-retrieving-properties-and-metadata-for-blob-resources) docs. The Dropbox link lifetime comes from the [`get_temporary_link` reference](https://www.dropbox.com/developers/documentation/http/documentation#files-get_temporary_link): the link expires in four hours and then returns `410 Gone`. The adapter doesn't send `expiresIn` to Dropbox at all, so don't use a short value as a security control there.
+
+Three rows deserve a closer look:
+
+- **S3 `PUT` uploads don't pin the content type.** The S3 adapter's presigned `PUT` returns a `Content-Type` header for the client to send, but that header isn't part of the signature, so a client can send a different one. Against MinIO, a `text/html` body sent to a URL signed for `image/png` was accepted and stored as `text/html`. Pass `maxSize` to get a `POST` policy, which enforces both size and type, or check the type after upload. GCS lists `content-type` among the signed headers of its `PUT` URLs, so the client has to send exactly the type you signed.
+- **Azure can't constrain a signed upload.** A SAS URL limits the blob and the time, not the size or type, so the adapter refuses `maxSize`, a positive `minSize`, and `contentType` rather than return a URL that ignores them. `browserUploadTarget` passes both limits, so on Azure it always returns `null` and your server receives the upload. If you accept unbounded direct uploads, call `signedUploadUrl` without them and validate the blob afterwards.
+- **Dropbox has no signed upload in this shape.** Its temporary upload link takes a raw-body `POST`, which matches neither of the SDK's `PUT` and `POST`-form shapes, so `signedUploadUrl` throws and points you at `files.raw.filesGetTemporaryUploadLink`.
+
+[Provider gaps](/docs/provider-gaps) lists the rest: ignored expiries, copy costs, and which adapters support `Content-Disposition`.
+
+## Branch on capabilities, not provider names
+
+`if (provider === "dropbox")` looks simpler, but it's wrong in ways that are hard to see:
+
+- **One provider can report different capabilities.** Azure with only a SAS token reports `signedUrl.supported: false`; with an account key it reports `true`. Dropbox with `publicByDefault: true` reports `false` too.
+- **Plugins change them.** [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) turn off `signedUrl`, `rangeRead`, and `multipart`, because a signed URL would hand out encrypted or compressed bytes. Code that reads `files.capabilities` sees that; a provider-name check doesn't.
+- **New adapters work unchanged.** Add an R2 or Vercel Blob case to `createStorage` and the same functions take whichever branches those adapters' flags allow.
+
+And when you miss a branch, the failure is loud and immediate. The `Files` wrapper checks `metadata`, `cacheControl`, `delimiter`, `range`, and `control` against the adapter's flags before calling it, and adapters check their own limits before sending anything. With a Dropbox adapter built on a placeholder token and `fetch` instrumented to count requests, these calls all threw with zero network requests:
+
+| Call on Dropbox | Error message | `permanent` |
+| --- | --- | --- |
+| `upload(key, body, { metadata })` | ``dropbox: `metadata` is not supported by this adapter`` | `true` |
+| `upload(key, body, { cacheControl })` | ``dropbox: `cacheControl` is not supported by this adapter`` | `true` |
+| `list({ delimiter: ";" })` | `dropbox: only supports the "/" delimiter for folder listing` | `true` |
+| `url(key, { expiresIn: 18000 })` | ``dropbox: `expiresIn` of 18000s exceeds the 14400s (4h) maximum…`` | `false` |
+
+All four use code `Provider`. `permanent: true` means retrying the same call can only fail the same way, so [retries](/docs/retries) skip it. Some adapter-level refusals, like the expiry cap above and the signed-upload refusals on Azure and Dropbox, carry `permanent: false` in files-sdk 2.6, so `storageErrorStatus` would report one as a retryable `503`. Catch them where you make the call, as `browserUploadTarget` and `downloadLink` do.
+
+## Errors look the same
+
+Each adapter maps its provider's errors to one [`FilesError`](/docs/api/errors) with a small set of codes, and keeps the original on `error.cause`:
+
+| `code` | S3 | GCS | Azure | Dropbox |
+| --- | --- | --- | --- | --- |
+| `NotFound` | `NoSuchKey`, `NotFound`, or `404` | `404` | `BlobNotFound`, `ContainerNotFound` | `not_found` and related tags |
+| `Unauthorized` | `AccessDenied`, `401`, `403` | `401`, `403` | `AuthenticationFailed`, `AuthorizationFailure`, and similar | `invalid_access_token`, `expired_access_token`, `missing_scope`, and similar |
+| `Conflict` | `PreconditionFailed`, `412`, most `409`s | `409`, `412` | `BlobAlreadyExists`, `ConditionNotMet`, lease errors | `conflict` |
+
+Dropbox is the clearest case for normalizing. It answers most endpoint errors with HTTP `409` and puts the real reason in a tagged body, so a missing file arrives as a `409` with a `not_found` tag. The adapter reads the tags, ignores the status, and reports `NotFound`. Code that switched on HTTP status would call that a conflict.
+
+## When a native SDK fits better
+
+A shared interface earns its keep when most of your storage code is the common subset: put, get, list, delete, sign. Reach for the provider's own SDK when it isn't.
+
+- **The feature you need is provider-specific.** S3 object tagging, versioning, lifecycle rules, and Object Lock; GCS retention policies and holds; Azure access tiers, leases, and snapshots; Dropbox shared-link settings and team spaces. None of these is in the unified API. Use them through `files.raw` for a call or two, or through the native SDK directly if they're the core of your feature. Calls through `files.raw` skip the wrapper entirely: no prefix scoping, no `FilesError` mapping, no hooks or retries ([Escape hatch](/docs/escape-hatch)). Because `getStorage()` returns a plain `Files`, `files.raw` is `unknown`; check `files.adapter.name` and cast to that provider's client before calling it.
+- **You'll only ever use one provider.** The abstraction still gives you normalized errors and Web-standard bodies, but portability you never use isn't worth much, and the provider's SDK documents every option directly.
+- **You expect the switch to be free.** It isn't. Changing `STORAGE_PROVIDER` points new writes at a new store; existing objects stay where they are until you copy them, for example with [`transfer()`](/docs/api/transfer). Moving into Dropbox loses metadata and stored content types, because it keeps neither.

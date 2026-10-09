@@ -1,6 +1,8 @@
 ---
 title: File Browser
 description: A folder-aware browser that descends into common prefixes via list({ delimiter }), with a breadcrumb trail and cursor-based load more - driven by useFiles.
+related:
+  - /guides/shadcn-file-manager
 ---
 
 Lists a folder with `list({ delimiter })`, so common prefixes surface as folders you can click into. A breadcrumb trail tracks where you are, and cursor-based "load more" pages through large folders. On adapters with no folder concept (`capabilities().delimiter` is `false`, e.g. UploadThing or Convex) it lists flat instead: every file under the current prefix, labelled with its path relative to it. A failed listing shows the error with a retry button rather than an empty folder.

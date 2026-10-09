@@ -1,0 +1,261 @@
+---
+title: Share private Vercel Blob files with authenticated, expiring downloads
+description: Invoice PDFs in a private Vercel Blob store that each customer can download only for themselves, and when to redirect to signed URLs or proxy instead.
+sidebar:
+  label: Private Blob downloads
+seo:
+  title: Private Vercel Blob downloads with signed URLs
+related:
+  - /guides/vercel-blob-authentication
+  - /guides/private-video-range-streaming
+  - /docs/adapters/vercel-blob
+  - /docs/api/url
+---
+
+Keep the PDFs in a private Blob store and put one route handler in front of them. The route loads the invoice row, checks that it belongs to the signed-in user, and answers with a `302` to a Vercel Signed URL that `files.url()` mints for 60 seconds. The browser fetches the file from Vercel's CDN, so the bytes never pass through your Function, and a copied link stops working a minute later.
+
+Two Vercel Blob limits shape the rest. A Blob URL can't carry a `Content-Disposition` override, so the browser decides how to show the file from its stored content type. And private reads don't support byte ranges. Neither matters for PDFs your own server generates. For files where they do matter, [proxy the bytes instead](#proxy-the-bytes-instead).
+
+## Before you start
+
+- A Vercel project with a **private** Blob store connected to it.
+- The `getFiles()` helper from [Set up Vercel Blob authentication](/guides/vercel-blob-authentication), repeated below. It creates the adapter per request because on Vercel the OIDC token arrives with each request.
+- An auth library that can resolve the signed-in user on the server, and a table of invoices in your database.
+- Written against files-sdk 2.6, `@vercel/blob` 2.8, Next.js 16.4, and React 19.3.
+
+```package-install
+files-sdk @vercel/blob @vercel/oidc
+```
+
+```ts title="lib/files.ts" lineNumbers
+import { getVercelOidcToken } from "@vercel/oidc";
+import { createFiles } from "files-sdk";
+import { vercelBlob } from "files-sdk/vercel-blob";
+
+// Call inside a route handler, server action, or server component, never at
+// module scope: on Vercel the OIDC token arrives with each request.
+export async function getFiles() {
+  return createFiles({
+    adapter: vercelBlob({
+      access: "private",
+      oidcToken: await getVercelOidcToken(),
+    }),
+  });
+}
+```
+
+`access: "private"` is fixed when the adapter is created. It makes uploads private and turns `url()` into a presigned `GET`. With the default `"public"`, `url()` returns the blob's permanent CDN URL and ignores `expiresIn`.
+
+## Model the invoice
+
+Ownership lives in your database, not in the storage key. Each invoice row records who may download it and where its PDF is stored:
+
+```ts lineNumbers
+export interface Invoice {
+  id: string; // "inv_123", the ID in your download URLs
+  customerId: string; // the user allowed to download it
+  number: string; // "2026-0042", shown in the UI and the file name
+  blobKey: string; // "invoices/<customerId>/<id>.pdf", never sent to the browser
+}
+```
+
+This guide assumes `lib/invoices.ts` exports that type plus two queries against your database: `getInvoice(id)`, which returns an `Invoice` or `null`, and `listInvoices(customerId)`.
+
+The browser only ever sees the invoice ID. The route turns the ID into a `blobKey` after the ownership check, so a client can't name a storage key at all, let alone climb out of its prefix.
+
+## Store each PDF privately
+
+Wherever you generate invoices (a payment webhook, a server action, a scheduled job), upload the PDF under the row's key with an explicit content type:
+
+```ts title="lib/invoice-pdf.ts" lineNumbers
+import { getFiles } from "@/lib/files";
+import type { Invoice } from "@/lib/invoices";
+
+// Key layout: invoices/<customerId>/<invoiceId>.pdf. The server picks it;
+// nothing in it comes from the browser.
+export const invoiceKey = (customerId: string, invoiceId: string) =>
+  `invoices/${customerId}/${invoiceId}.pdf`;
+
+export async function storeInvoicePdf(invoice: Invoice, pdf: Uint8Array) {
+  const files = await getFiles();
+  await files.upload(invoice.blobKey, pdf, { contentType: "application/pdf" });
+}
+```
+
+Set `blobKey` with `invoiceKey()` when you create the row. The content type matters more than usual here: a Blob URL can't carry download instructions, so `application/pdf` is what tells the browser to open its PDF viewer.
+
+## Check ownership and redirect
+
+```ts title="app/invoices/[id]/download/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { getFiles } from "@/lib/files";
+import { getInvoice } from "@/lib/invoices";
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to download invoices", { status: 401 });
+  }
+
+  const { id } = await params;
+  const invoice = await getInvoice(id);
+  // One answer for "no such invoice" and "not yours", so IDs can't be probed.
+  if (!invoice || invoice.customerId !== session.user.id) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const files = await getFiles();
+  const url = await files.url(invoice.blobKey, { expiresIn: 60 });
+
+  return new Response(null, {
+    headers: {
+      "Cache-Control": "private, no-store",
+      Location: url,
+    },
+    status: 302,
+  });
+}
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`. If invoices belong to an organization rather than a user, compare against the session's organization ID instead.
+
+Each choice in that handler is deliberate:
+
+- **`404` for someone else's invoice.** Returning `403` would confirm the ID exists. The ownership check runs before any storage call, so nothing is signed for the wrong user.
+- **`files.url()` is scoped to one key.** For each call, the adapter asks Vercel's control API for a signing token limited to that pathname and the `get` operation, expiring with the URL, then signs the URL locally. Vercel's CDN [rejects requests outside the token's scope](https://vercel.com/docs/vercel-blob/vercel-signed-urls), so editing the path in a leaked URL to reach another invoice fails. The cost is one round trip to Vercel per click.
+- **60 seconds is enough** because the browser follows the redirect immediately. A shorter lifetime narrows the window in which a URL copied from history or logs still works. Vercel accepts lifetimes up to 7 days; the adapter's default is one hour.
+- **`Cache-Control: private, no-store`** keeps the redirect itself out of any cache, so a later click can't reuse a `302` that points at an expired URL.
+
+The route doesn't use the [gateway](/docs/ui/server/gateway). In files-sdk 2.6 the gateway's `url` operation and its default private `download` always ask for a `Content-Disposition` override, which the Vercel Blob adapter refuses, so they fail with a `500` on this store.
+
+## Link to the route
+
+The invoice list is a server component. Each link points at the route, not at storage:
+
+```tsx title="app/invoices/page.tsx" lineNumbers
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+
+import { getSession } from "@/lib/auth";
+import { listInvoices } from "@/lib/invoices";
+
+export default async function InvoicesPage() {
+  const session = await getSession(await headers());
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  const invoices = await listInvoices(session.user.id);
+
+  return (
+    <ul>
+      {invoices.map((invoice) => (
+        <li key={invoice.id}>
+          <a href={`/invoices/${invoice.id}/download`}>
+            Invoice {invoice.number}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Use a plain `<a>`: the target is a route handler that redirects, not a page. Because the link is the route and not the signed URL, it never goes stale. Users can bookmark it or find it in an email months later, and each click mints a fresh URL after a fresh session check.
+
+## What each request gets
+
+| Request to `/invoices/inv_123/download` | Response |
+| --- | --- |
+| No session | `401` |
+| Signed in, invoice belongs to another user | `404` |
+| Signed in, no such invoice | `404` |
+| Signed in as the owner | `302` to `https://<store-id>.private.blob.vercel-storage.com/invoices/<customerId>/inv_123.pdf?…` |
+
+To check the isolation yourself, sign in as two users, copy one user's download link, and open it in the other user's session: the route answers `404` before it touches Blob. Then copy the `Location` from the owner's `302` (in the browser's network panel) and open it after a minute has passed. Vercel signs the expiry into the URL and its CDN rejects the request once it has passed. Vercel's docs don't say which status code it uses, so don't build client logic on a specific one. The fix for any expired link is to click the route link again.
+
+Within its 60 seconds, a signed URL works for whoever holds it, signed in or not. That's the trade you make to keep bytes off your Function. If you can't accept it for some files, proxy them.
+
+## Choose how files reach the browser
+
+|  | Public blob | Private blob, signed URL (this guide) | Private blob, proxied through your route |
+| --- | --- | --- | --- |
+| Who can fetch it | Anyone with the URL, with no expiry | Anyone with the URL, until it expires | Only requests your route authorizes, on every read |
+| Revoking access | Delete or move the blob | Wait for the URL to expire | Immediate: change the check |
+| Bytes through your Function | No | No | Yes |
+| `Content-Disposition`, file name | Not settable (`url()` throws on `responseContentDisposition`) | Not settable | You set it |
+| Byte ranges | Supported by `download()` | Not supported by `download()` | Not supported by `download()` |
+
+Public storage is wrong for invoices. With the adapter's default `addRandomSuffix: false`, a public URL is the store's public hostname plus the key. Anyone who has the URL, or can work out a key, can fetch the file, and the URL never expires.
+
+The signed-URL redirect is the default for private files: one small Function invocation per click, the CDN delivers the bytes, and the exposure is a minute-long bearer URL.
+
+Proxy when you need something a redirect can't give: a forced download with a chosen file name, revocation that takes effect immediately, every read going through your code, or a URL that never leaves your domain. Also proxy for files your users uploaded. Those could be HTML or SVG, and a redirect would have the browser render them as-is, because Blob URLs can't force a download.
+
+## Proxy the bytes instead
+
+Same checks, but the route streams the file itself:
+
+```ts title="app/invoices/[id]/file/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { getFiles } from "@/lib/files";
+import { getInvoice } from "@/lib/invoices";
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to download invoices", { status: 401 });
+  }
+
+  const { id } = await params;
+  const invoice = await getInvoice(id);
+  if (!invoice || invoice.customerId !== session.user.id) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const files = await getFiles();
+  const file = await files.download(invoice.blobKey, { as: "stream" });
+
+  // Return the stream, not a buffered body: Vercel caps buffered Function
+  // responses at 4.5 MB.
+  return new Response(file.stream(), {
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Content-Disposition": `attachment; filename="invoice-${invoice.number}.pdf"`,
+      "Content-Type": file.type,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+```
+
+Private `download()` reads through `@vercel/blob`'s `get()` with the adapter's credentials. Two platform costs come with it:
+
+- **Response size.** Vercel's [Functions limits](https://vercel.com/docs/functions/limitations#request-body-size) put the maximum request or response body at 4.5 MB, and its [guide to that limit](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions) says streaming functions don't have it. Return `file.stream()` as above. Buffering with `arrayBuffer()` or `text()` first makes the 4.5 MB limit apply again.
+- **Transfer and duration.** Every byte is fetched by your Function and sent again, so Vercel bills it as Fast Origin Transfer and Fast Data Transfer, and the Function runs for as long as the stream does. Vercel's [private storage docs](https://vercel.com/docs/vercel-blob/private-storage#download-charges) recommend against serving files larger than 100 MB this way unless traffic is low.
+
+Vercel's [caching advice for private blobs](https://vercel.com/docs/vercel-blob/private-storage#caching) is `Cache-Control: private, no-cache`, which lets the browser keep a copy and revalidate it, and `private, no-store` for sensitive data such as banking details or PII. Invoices fall in the second group, so the route uses `no-store`.
+
+## No byte ranges on private blobs
+
+`files.download(key, { range })` on a private store throws `vercel-blob: range downloads are not supported by this adapter` before any request goes out, and `files.capabilities.rangeRead` is `false`. Private reads go through `get()`, which has no range option, and the adapter won't fetch the whole file and pretend it returned a slice.
+
+Invoices are read whole, so this never comes up here. If you're serving video that has to seek, see [Stream private video with HTTP Range requests](/guides/private-video-range-streaming), which uses a store that supports ranges.
+
+## Troubleshooting
+
+**`404` for the invoice's owner.** The ownership comparison failed. Log both `invoice.customerId` and `session.user.id`; a common mismatch is comparing your database's user ID with your auth provider's ID.
+
+**``vercel-blob: `responseContentDisposition` is not supported…``** with a `500`. Something called `url()` with a disposition, typically the gateway's `url` or `download` operation. Call `files.url()` without it, as the route above does, or proxy the file and set the header yourself.
+
+**`vercel-blob: range downloads are not supported by this adapter`.** A `range` reached `download()` on the private store. Read the whole file, or use a store with range support for media.
+
+**`vercelBlob adapter: missing credentials…`** or **`Vercel Blob: Access denied, please provide a valid token for this resource.`** The adapter couldn't authenticate. [Set up Vercel Blob authentication](/guides/vercel-blob-authentication#troubleshooting) covers each cause.
+
+**The PDF downloads instead of opening, or opens as text.** The browser goes by the stored content type. Check that the upload passed `contentType: "application/pdf"`; `files.head(key)` returns the stored `type`.

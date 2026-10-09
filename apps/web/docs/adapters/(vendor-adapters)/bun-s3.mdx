@@ -1,6 +1,8 @@
 ---
 title: Bun S3
 description: Upload, download, list, and presign files with Bun's native Bun.S3Client on AWS S3, Cloudflare R2, MinIO, or any S3-compatible bucket, with no AWS SDK.
+related:
+  - /guides/bun-s3-upload
 ---
 
 `files-sdk/bun-s3` runs the `Files` API on [`Bun.S3Client`](https://bun.com/docs/runtime/s3), the S3 client built into the Bun runtime, instead of `@aws-sdk/client-s3`. It talks to AWS S3 and, through the `endpoint` option, to any S3-compatible service such as Cloudflare R2, MinIO, or DigitalOcean Spaces. Use it when your app already runs on Bun and you want S3 storage without installing the AWS SDK.
