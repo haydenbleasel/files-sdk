@@ -3,7 +3,7 @@ title: File List
 description: A list of stored files with thumbnails, size and type, plus download and delete — driven by useFiles.
 ---
 
-Lists the objects under a prefix. It lists on mount and on Refresh, and drops a row after its own delete — changes made elsewhere show up on the next refresh. Images get an inline thumbnail from a signed URL when the adapter can mint one, falling back to the gateway download proxy otherwise, so thumbnails work on every adapter.
+Lists the objects under a prefix. It lists on mount and on Refresh, and drops a row after its own delete — changes made elsewhere show up on the next refresh. Images get an inline thumbnail from a signed URL when the adapter can mint one, falling back to the gateway download proxy otherwise, so thumbnails work on every adapter. An image stored as `application/octet-stream` still gets one when its key has a raster image extension (`.png`, `.jpg`, `.gif`, `.webp`, `.avif`, `.bmp`).
 
 <Component path="file-list/examples/file-list-basic" />
 

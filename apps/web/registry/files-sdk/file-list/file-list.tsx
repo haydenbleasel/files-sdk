@@ -45,6 +45,36 @@ const formatBytes = (bytes: number): string => {
   return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 };
 
+// Stored types that say nothing about the content, e.g. an upload nobody set a
+// type on. A file stored with one gets a thumbnail if its extension is an image.
+const GENERIC_TYPES = new Set([
+  "",
+  "application/octet-stream",
+  "binary/octet-stream",
+]);
+
+// Raster formats, which browsers sniff and render in an <img> whatever type
+// they're served as. SVG is left out: it only renders as `image/svg+xml`.
+const IMAGE_EXTENSIONS = new Set([
+  "avif",
+  "bmp",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "webp",
+]);
+
+const isImageFile = (file: StoredFile): boolean => {
+  const type = file.type.replace(/;.*/su, "").trim().toLowerCase();
+  if (!GENERIC_TYPES.has(type)) {
+    return type.startsWith("image/");
+  }
+  const name = file.key.slice(file.key.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+};
+
 const Thumbnail = ({
   canSign,
   endpoint,
@@ -58,7 +88,7 @@ const Thumbnail = ({
 }) => {
   const [src, setSrc] = useState<string>();
   const [failed, setFailed] = useState(false);
-  const isImage = file.type.startsWith("image/");
+  const isImage = isImageFile(file);
 
   useEffect(() => {
     if (!isImage || canSign === undefined) {
