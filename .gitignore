@@ -147,3 +147,6 @@ out
 
 # Cloudflare
 .wrangler
+
+# Planning docs (local only)
+plans/
