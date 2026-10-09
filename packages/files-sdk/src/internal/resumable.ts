@@ -166,7 +166,10 @@ export class UploadControl {
   /**
    * Rebuild a control pre-loaded with a persisted {@link toJSON} token, ready
    * to resume. Pass it to `upload()` with the same body — the SDK discovers
-   * what already landed server-side and uploads only the rest.
+   * what already landed server-side and uploads only the rest. To give up on
+   * the session instead, pass the token to `files.abortUpload(key, token)`:
+   * this control's own `abort()` can't reach the provider until `upload()`
+   * hands it an adapter.
    */
   static from(session: ResumableUploadSession): UploadControl {
     const control = new UploadControl();
@@ -240,6 +243,11 @@ export class UploadControl {
    *
    * To cancel but *keep* the session for a later resume, abort via
    * {@link OperationOptions.signal} instead.
+   *
+   * The discard needs the adapter, which a control only has while `upload()`
+   * is driving it. A control rebuilt with {@link UploadControl.from} that
+   * hasn't been passed to `upload()` can only mark itself aborted; to discard
+   * a persisted session, call `files.abortUpload(key, token)` instead.
    */
   async abort(cause?: unknown): Promise<void> {
     const state = stateOf(this);

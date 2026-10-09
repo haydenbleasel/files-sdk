@@ -233,10 +233,34 @@ There are four ways to stop an upload, and they leave S3 in different states:
 | Abort the `signal` you passed (Ctrl-C above) | Same process | Kept | Yes, from the token |
 | `await control.abort()` | Same process, while `upload()` is running | Aborted with `AbortMultipartUpload` | No |
 | `UploadControl.from(token).abort()` | A new process | **Kept** | Yes, until something else aborts it |
+| `await files.abortUpload(key, token)` (files-sdk 2.7+) | Any process | Aborted with `AbortMultipartUpload` | No |
 
-The last row catches people. `abort()` can only discard a session that the control is currently driving. A control rebuilt from a token and never passed to `upload()` has nothing to discard. In the local MinIO run, calling `abort()` on such a control set its status to `"aborted"` and cleared its token, and `ListParts` still returned every part. To cancel a saved upload from a fresh process, call `AbortMultipartUpload` yourself:
+The fourth row catches people. `abort()` can only discard a session that the control is currently driving. A control rebuilt from a token and never passed to `upload()` has nothing to discard. In the local MinIO run, calling `abort()` on such a control set its status to `"aborted"` and cleared its token, and `ListParts` still returned every part. To cancel a saved upload from a fresh process on files-sdk 2.7 or later, pass the key and token to `files.abortUpload()`:
 
 ```ts title="cancel.ts" lineNumbers
+import { readFile, rm } from "node:fs/promises";
+
+import { Files, type ResumableUploadSession } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+const files = new Files({ adapter: s3({ bucket: "uploads" }) });
+
+const checkpointPath = `${process.argv[2]}.upload.json`;
+const { key, session } = JSON.parse(await readFile(checkpointPath, "utf8")) as {
+  key: string;
+  session: ResumableUploadSession;
+};
+
+// Throws if the token is for another key or bucket; an upload that already
+// completed or was aborted resolves without error.
+await files.abortUpload(key, session);
+await rm(checkpointPath);
+console.log(`Discarded the saved upload for ${key}`);
+```
+
+On files-sdk 2.6, call `AbortMultipartUpload` yourself:
+
+```ts title="cancel-2.6.ts" lineNumbers
 import { readFile, rm } from "node:fs/promises";
 
 import { AbortMultipartUploadCommand } from "@aws-sdk/client-s3";

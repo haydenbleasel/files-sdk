@@ -2077,6 +2077,58 @@ describe("s3 resumable uploads", () => {
     expect(control.status).toBe("aborted");
   });
 
+  test("files.abortUpload aborts a persisted multipart upload from its token", async () => {
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+    const files = new Files({ adapter: adapter() });
+    await files.abortUpload("big.bin", {
+      bucket: "rb",
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "persisted",
+    });
+    const calls = s3Mock.commandCalls(AbortMultipartUploadCommand);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[0].input).toEqual({
+      Bucket: "rb",
+      Key: "big.bin",
+      UploadId: "persisted",
+    });
+  });
+
+  test("files.abortUpload treats an already-gone upload (NoSuchUpload) as done", async () => {
+    s3Mock.on(AbortMultipartUploadCommand).rejects(
+      Object.assign(new Error("The specified upload does not exist."), {
+        $metadata: { httpStatusCode: 404 },
+        name: "NoSuchUpload",
+      })
+    );
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.abortUpload("big.bin", {
+        bucket: "rb",
+        key: "big.bin",
+        partSize: FIVE_MIB,
+        provider: "s3",
+        uploadId: "completed",
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  test("files.abortUpload refuses a token for a different key", async () => {
+    const files = new Files({ adapter: adapter() });
+    await expect(
+      files.abortUpload("big.bin", {
+        bucket: "rb",
+        key: "other.bin",
+        partSize: FIVE_MIB,
+        provider: "s3",
+        uploadId: "u1",
+      })
+    ).rejects.toThrow(/does not match/u);
+    expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(0);
+  });
+
   test("a missing UploadId from CreateMultipartUpload throws", async () => {
     s3Mock.on(CreateMultipartUploadCommand).resolves({});
     const files = new Files({ adapter: adapter() });

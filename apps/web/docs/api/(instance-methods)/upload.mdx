@@ -98,6 +98,8 @@ control.resume();
 await result;
 ```
 
+To discard a persisted session you won't resume, call `files.abortUpload(key, token)` with the token from `control.toJSON()`; see [Discarding a persisted session](/docs/resumable#discarding-a-persisted-session).
+
 ## Many items
 
 Pass an array of `{ key, body, ...options }` to upload many in one call. Each item carries its own `contentType` / `cacheControl` / `metadata` / `multipart`. The call returns a structured result instead of throwing on partial failure: successes land in `uploaded`, per-item failures (including invalid keys) in `errors`, both in the order supplied. It honors the client's `prefix` and fans out with bounded `concurrency` (default 8); `stopOnError: true` stops at the first failure.

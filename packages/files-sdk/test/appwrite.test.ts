@@ -987,6 +987,14 @@ describe("appwrite resumable uploads (chunked)", () => {
           })
         : fileJson(FIVE_MIB * 2 + 5);
     });
+    // The discard checks the file is still partial before deleting it.
+    getFileMock.mockResolvedValueOnce({
+      $id: "ab",
+      chunksTotal: 3,
+      chunksUploaded: 1,
+      mimeType: "application/octet-stream",
+      sizeOriginal: FIVE_MIB,
+    } as never);
     const files = new Files({ adapter: adapter() });
     const control = new UploadControl();
     let aborting: Promise<void> | undefined;
@@ -1001,6 +1009,49 @@ describe("appwrite resumable uploads (chunked)", () => {
     await expect(promise).rejects.toMatchObject({ aborted: true });
     await aborting;
     expect(deleteFileMock).toHaveBeenCalled();
+  });
+
+  test("files.abortUpload deletes a persisted partial upload", async () => {
+    getFileMock.mockResolvedValueOnce({
+      $id: "doc",
+      chunksTotal: 3,
+      chunksUploaded: 1,
+      mimeType: "application/octet-stream",
+      sizeOriginal: FIVE_MIB,
+    } as never);
+    const files = new Files({ adapter: adapter() });
+    await files.abortUpload("doc", {
+      contentType: "application/octet-stream",
+      fileId: "doc",
+      key: "doc",
+      offset: FIVE_MIB,
+      provider: "appwrite",
+    });
+    expect(deleteFileMock).toHaveBeenCalledWith({
+      bucketId: BUCKET,
+      fileId: "doc",
+    });
+  });
+
+  test("files.abortUpload leaves a file whose upload has since completed", async () => {
+    // A stale token: every chunk has landed since it was persisted, so the
+    // file at that id is a finished object, not a partial to discard.
+    getFileMock.mockResolvedValueOnce({
+      $id: "doc",
+      chunksTotal: 3,
+      chunksUploaded: 3,
+      mimeType: "application/octet-stream",
+      sizeOriginal: FIVE_MIB * 2 + 5,
+    } as never);
+    const files = new Files({ adapter: adapter() });
+    await files.abortUpload("doc", {
+      contentType: "application/octet-stream",
+      fileId: "doc",
+      key: "doc",
+      offset: FIVE_MIB,
+      provider: "appwrite",
+    });
+    expect(deleteFileMock).not.toHaveBeenCalled();
   });
 
   test("a 0-byte upload is created in one request, not an invalid chunk", async () => {

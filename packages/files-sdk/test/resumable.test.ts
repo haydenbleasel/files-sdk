@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { Files, UploadControl } from "../src/index.js";
+import { Files, FilesError, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   Body,
@@ -970,5 +970,140 @@ describe("resumable guardrails", () => {
       });
       expect(result.size).toBe(size);
     }
+  });
+});
+
+const partsToken = (key: string): ResumableUploadSession => ({
+  bucket: "fake",
+  key,
+  partSize: 4,
+  provider: "s3",
+  uploadId: "upload-persisted",
+});
+
+describe("files.abortUpload", () => {
+  test("discards a persisted parts session that a restored control can't", async () => {
+    const server = newServer();
+    server.partSessions.set(
+      "upload-persisted",
+      new Map([[1, new Uint8Array(4)]])
+    );
+    const files = makeFiles(server, "parts");
+    const token = partsToken("big.bin");
+
+    // A control rebuilt from the token has no adapter until upload() drives
+    // it, so its own abort() only marks it aborted.
+    const restored = UploadControl.from(token);
+    await restored.abort();
+    expect(restored.status).toBe("aborted");
+    expect(server.partSessions.has("upload-persisted")).toBe(true);
+
+    await files.abortUpload("big.bin", token);
+    expect(server.partSessions.has("upload-persisted")).toBe(false);
+    expect(server.drivers.at(-1)?.discarded).toBe(true);
+  });
+
+  test("discards a persisted offset session", async () => {
+    const server = newServer();
+    server.offsetSessions.set("uri-persisted", { chunks: [], received: 0 });
+    const files = makeFiles(server, "offset");
+    await files.abortUpload("doc.bin", {
+      bucket: "fake",
+      key: "doc.bin",
+      provider: "gcs",
+      uri: "uri-persisted",
+    });
+    expect(server.offsetSessions.has("uri-persisted")).toBe(false);
+  });
+
+  test("builds the driver for the prefixed key and forwards no upload options", async () => {
+    const server = newServer();
+    const seen: { key: string; opts: ResumableDriverOptions }[] = [];
+    const files = new Files({
+      adapter: {
+        ...makeFiles(server, "parts").adapter,
+        resumableUpload: (key: string, opts: ResumableDriverOptions) => {
+          seen.push({ key, opts });
+          return createPartsDriver(server, key, opts);
+        },
+      },
+      prefix: "tenant",
+    });
+    await files.abortUpload("big.bin", partsToken("tenant/big.bin"));
+    expect(seen).toEqual([{ key: "tenant/big.bin", opts: {} }]);
+  });
+
+  test("a session that's already gone is not an error", async () => {
+    const server = newServer();
+    const files = new Files({
+      adapter: {
+        ...makeFiles(server, "parts").adapter,
+        resumableUpload: (key: string, opts: ResumableDriverOptions) => ({
+          ...createPartsDriver(server, key, opts),
+          discard: () =>
+            Promise.reject(new FilesError("NotFound", "NoSuchUpload")),
+        }),
+      },
+    });
+    await expect(
+      files.abortUpload("big.bin", partsToken("big.bin"))
+    ).resolves.toBeUndefined();
+  });
+
+  test("other discard failures reject", async () => {
+    const server = newServer();
+    let calls = 0;
+    const files = new Files({
+      adapter: {
+        ...makeFiles(server, "parts").adapter,
+        resumableUpload: (key: string, opts: ResumableDriverOptions) => ({
+          ...createPartsDriver(server, key, opts),
+          discard: () => {
+            calls += 1;
+            return Promise.reject(new FilesError("Unauthorized", "denied"));
+          },
+        }),
+      },
+    });
+    await expect(
+      files.abortUpload("big.bin", partsToken("big.bin"), {
+        retries: { backoff: () => 0, max: 2 },
+      })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+    // Unauthorized isn't retryable, so the discard ran once.
+    expect(calls).toBe(1);
+  });
+
+  test("a token for another provider is refused before any discard", async () => {
+    const server = newServer();
+    server.offsetSessions.set("uri-persisted", { chunks: [], received: 0 });
+    const files = makeFiles(server, "parts");
+    const refused = await files
+      .abortUpload("doc.bin", {
+        bucket: "fake",
+        key: "doc.bin",
+        provider: "gcs",
+        uri: "uri-persisted",
+      })
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(FilesError);
+    expect((refused as FilesError).message).toMatch(/wrong provider/u);
+    expect(server.drivers[0]?.discarded).toBe(false);
+    expect(server.offsetSessions.has("uri-persisted")).toBe(true);
+  });
+
+  test("rejects a missing token, an unsupported adapter, and a read-only view", async () => {
+    const server = newServer();
+    const files = makeFiles(server, "parts");
+    await expect(
+      files.abortUpload("big.bin", null as unknown as ResumableUploadSession)
+    ).rejects.toThrow(/control\.toJSON\(\)/u);
+    await expect(
+      makeFiles(server, "none").abortUpload("big.bin", partsToken("big.bin"))
+    ).rejects.toThrow(/not supported/iu);
+    await expect(
+      files.readonly().abortUpload("big.bin", partsToken("big.bin"))
+    ).rejects.toMatchObject({ code: "ReadOnly" });
+    expect(server.drivers).toHaveLength(0);
   });
 });

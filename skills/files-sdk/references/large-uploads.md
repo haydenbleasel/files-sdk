@@ -54,21 +54,27 @@ It's an `AbortSignal`-style handle: a plain object you construct and drive from 
 
 ### Resume across processes
 
-`control.toJSON()` is a small JSON-serializable token. Persist it (disk, `localStorage`, a DB row), then rebuild with `UploadControl.from(token)` and call `upload` again with the **same body** — the SDK discovers what already landed and uploads only the rest.
+`control.toJSON()` is a small JSON-serializable token. Persist it (disk, a DB row), then rebuild with `UploadControl.from(token)` and call `upload` again with the **same body** — the SDK discovers what already landed and uploads only the rest.
 
 ```ts
 // First run — pause and persist.
 const control = new UploadControl();
 files.upload("backups/db.tar", file, { control }).catch(() => {});
 // …once a session exists, control.toJSON() is populated…
-localStorage.setItem("upload", JSON.stringify(control.toJSON()));
+await writeFile("upload.json", JSON.stringify(control.toJSON()));
 
-// Later — new tab / process / after a crash.
-const token = JSON.parse(localStorage.getItem("upload")!);
+// Later — new process / after a crash.
+const token = JSON.parse(await readFile("upload.json", "utf8"));
 await files.upload("backups/db.tar", file, {
   control: UploadControl.from(token),
 });
+
+// …or give up on it: discard the provider session from the token.
+await files.abortUpload("backups/db.tar", token);
 ```
+
+- **Discarding a persisted session:** `UploadControl.from(token).abort()` can't discard anything — a control only reaches the adapter while `upload()` drives it — so it just marks itself aborted. Use `files.abortUpload(key, token)`: same logical key, token must match (else it throws before discarding), already-gone sessions resolve, `ReadOnly` on a read-only view. Appwrite only deletes a still-partial file.
+- **Not in the browser client.** `UploadControl` runs where `Files` (and its credentials) runs: server, worker, CLI. In 2.x, `files-sdk/client` and `useFiles` send each file in one request (gateway or presigned URL), can't pause, and can't resume across a reload.
 
 ### Requirements & support
 

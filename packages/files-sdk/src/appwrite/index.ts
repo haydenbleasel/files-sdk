@@ -467,6 +467,17 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
             return;
           }
           try {
+            // And only while it's still partial. A token whose upload has
+            // since finished (a stale `control.toJSON()` passed to
+            // `files.abortUpload()`, or an abort after the last chunk landed)
+            // now names a complete file, which is not this call's to delete.
+            const file = await storage.getFile({
+              bucketId: opts.bucket,
+              fileId: key,
+            });
+            if (file.chunksUploaded >= file.chunksTotal) {
+              return;
+            }
             await storage.deleteFile({ bucketId: opts.bucket, fileId: key });
           } catch {
             // Best-effort — a partial chunked upload may not be deletable.

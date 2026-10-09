@@ -24,6 +24,7 @@ import { runResumableUpload } from "./internal/resumable.js";
 import type {
   ResumableDriver,
   ResumableDriverOptions,
+  ResumableUploadSession,
   UploadControl,
 } from "./internal/resumable.js";
 import {
@@ -1083,8 +1084,8 @@ export interface FilesOptions<A extends Adapter> extends OperationOptions {
   prefix?: string;
   /**
    * When `true`, block every write surface on this instance (`upload`,
-   * `delete`, `copy`, `move`, `signedUploadUrl`, and the write helpers on
-   * `file(key)`) with `FilesError("ReadOnly", ...)`.
+   * `delete`, `copy`, `move`, `signedUploadUrl`, `abortUpload`, and the write
+   * helpers on `file(key)`) with `FilesError("ReadOnly", ...)`.
    */
   readonly?: boolean;
   /** Observability callbacks — see {@link FilesHooks}. */
@@ -3726,6 +3727,72 @@ export class Files<A extends Adapter = Adapter> {
         this.#perform(op)
       )
     );
+  }
+
+  /**
+   * Discard the provider-side session behind a persisted resumable-upload
+   * token (`control.toJSON()`) without finishing the upload — the
+   * cross-process counterpart to {@link UploadControl.abort}. A control
+   * rebuilt with `UploadControl.from(token)` has no adapter until it's passed
+   * to `upload()`, so its own `abort()` can't reach the provider; call this
+   * instead. `key` is the same logical key the upload targeted, and the token
+   * must match it (and this instance's adapter), or this throws.
+   *
+   * Does what `abort()` does mid-upload: S3 and the S3-compatible adapters
+   * issue `AbortMultipartUpload`; GCS, Firebase Storage, Google Drive,
+   * OneDrive, SharePoint, and Supabase cancel the session URL; `fs`, FTP, and
+   * SFTP remove the staged partial; Appwrite deletes the partial file.
+   * Providers with no cancel primitive (Azure, Dropbox, Cloudinary, Vercel
+   * Blob) let the session expire on its own, and in-process sessions (Box,
+   * Bun S3, memory) don't outlive their process, so for those this resolves
+   * without a provider call. A session that's already gone (completed or
+   * discarded) is not an error. Throws on an adapter without resumable
+   * uploads, and `ReadOnly` on a {@link Files.readonly} view.
+   */
+  async abortUpload(
+    key: string,
+    session: ResumableUploadSession,
+    opts?: OperationOptions
+  ): Promise<void> {
+    if (this.#isReadOnly) {
+      throw new FilesError(
+        "ReadOnly",
+        "Cannot call abortUpload() on a read-only Files instance."
+      );
+    }
+    if (!this.#adapter.resumableUpload) {
+      throw new FilesError(
+        "Provider",
+        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    if (!(isObject(session) && isString(session.provider))) {
+      throw new FilesError(
+        "Provider",
+        "abortUpload() needs the resumable-upload session token from control.toJSON().",
+        undefined,
+        { permanent: true }
+      );
+    }
+    const driver = this.#adapter.resumableUpload(this.#path(key), {});
+    try {
+      // Throws when the token belongs to another key, bucket, or provider —
+      // never discard a session this call wasn't pointed at.
+      driver.adopt(session);
+    } catch (error) {
+      throw FilesError.wrap(error);
+    }
+    try {
+      await this.#run(opts, () => driver.discard());
+    } catch (error) {
+      // Already completed or discarded: the session is gone either way.
+      if (error instanceof FilesError && error.code === "NotFound") {
+        return;
+      }
+      throw error;
+    }
   }
 
   // eslint-disable-next-line complexity -- retry, timeout, abort, and hook settlement deliberately share one attempt loop
