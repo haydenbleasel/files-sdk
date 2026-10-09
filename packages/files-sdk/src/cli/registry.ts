@@ -327,7 +327,6 @@ export const PROVIDERS: ProviderRegistry = {
       return construct(
         fs,
         {
-          defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
           root: opts.root,
           urlBaseUrl: opts.urlBaseUrl,
         },

@@ -44,12 +44,6 @@ export interface FsAdapterOptions {
    * for browsers.
    */
   urlBaseUrl?: string;
-  /**
-   * Accepted for backward compatibility but ignored. `url()` returns a
-   * `file://` or static-server URL, and `signedUploadUrl()` fails closed
-   * because the fs adapter has no built-in upload signer or verifier.
-   */
-  defaultUrlExpiresIn?: number;
 }
 
 export type FsAdapter = Adapter<{ root: string }> & { readonly root: string };

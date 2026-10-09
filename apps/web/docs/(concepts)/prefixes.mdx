@@ -25,6 +25,8 @@ const { items } = await users.list(); // scoped to users/, keys returned relativ
 
 Leading and trailing slashes are normalized: `"/users/"`, `"users/"`, and `"users"` all behave identically, and a leading slash on a key is ignored, so the prefix and key always join with exactly one separator (`users/123/avatar.png`, never `users//123` or a literal-leading-slash `/users/...` that S3 and R2 would store under an empty-named folder).
 
+An empty prefix (`""`) or an all-slash one (`"/"`) means no prefix, the same as leaving the option out. That keeps `prefix: process.env.FILES_PREFIX ?? ""` working when the variable is unset.
+
 ## Listing under a prefix
 
 `list()` scopes the underlying provider query to the prefix and matches on a path boundary, so a `Files` constructed with `prefix: "users"` lists objects under `users/` but never the sibling `users-archive/`. Cursor pagination and the per-call `list({ prefix })` filter compose with the constructor prefix.

@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install files-sdk and the optional peer dependencies for the adapter you're using - anything you don't import is never bundled. ESM only, Node 20+ and Bun.
+description: Install files-sdk and the optional peer dependencies for the adapter you're using - anything you don't import is never bundled. ESM only, Node 22+ and Bun.
 ---
 
 `files-sdk` itself is small - a handful of lightweight runtime dependencies (`aws4fetch`, `commander`, `fflate`, `mime`, `p-map`, `picomatch`, and `safe-regex2`, plus an optional `@modelcontextprotocol/sdk` for the MCP server) behind a tree of subpath exports. Install the package, then add the peer dependencies for the adapter you're wiring up. Anything you don't import is never bundled.
@@ -9,7 +9,7 @@ description: Install files-sdk and the optional peer dependencies for the adapte
 npm install files-sdk
 ```
 
-The package ships its own TypeScript types, so there's no `@types/files-sdk` to chase down. It's published as ESM only (`"type": "module"`) and targets modern runtimes - Node 20+ and Bun. From a CommonJS file, reach it with a dynamic `import()`.
+The package ships its own TypeScript types, so there's no `@types/files-sdk` to chase down. It's published as ESM only (`"type": "module"`) and targets modern runtimes - Node 22+ and Bun. From a CommonJS file, reach it with a dynamic `import()`.
 
 ## Adapter peer dependencies
 

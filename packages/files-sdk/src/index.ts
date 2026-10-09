@@ -1696,6 +1696,11 @@ const normalizePrefix = (prefix: string | undefined): string => {
   // that backtracking is what makes a bare `\/+$` polynomial (ReDoS) on input
   // like `"users////…"`.
   const normalized = prefix.replaceAll(/^\/+|(?<!\/)\/+$/gu, "");
+  // `""` and an all-slash prefix (`"/"`) both mean "no prefix", the same as
+  // leaving the option out — common when it comes from an optional env var.
+  if (normalized === "") {
+    return "";
+  }
   assertValidKey(normalized, "prefix");
   assertNoRelativeSegments(normalized, "prefix");
   return normalized;

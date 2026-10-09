@@ -85,7 +85,7 @@ cd apps/web
 bun dev
 ```
 
-A husky pre-commit hook runs `check`, `types`, `test:coverage`, and the SDK build, so expect a commit to take a few minutes. Please don't bypass it with `--no-verify`: it is the only place the coverage gate is enforced. CI builds the SDK and runs `bun test` (without the coverage threshold) in a Node 20/22/24 + Bun matrix — the tests themselves always execute under Bun, and the Node legs smoke-test the built package under that Node version — and runs `check` and `types` once.
+A husky pre-commit hook runs `check`, `types`, `test:coverage`, and the SDK build, so expect a commit to take a few minutes. Please don't bypass it with `--no-verify`: it is the only place the coverage gate is enforced. CI builds the SDK and runs `bun test` (without the coverage threshold) in a Node 22/24 + Bun matrix — the tests themselves always execute under Bun, and the Node legs smoke-test the built package under that Node version — and runs `check` and `types` once.
 
 ## Code Style
 

@@ -1310,17 +1310,26 @@ describe("Files class", () => {
     expect(adapter.has("users/123")).toBe(false);
   });
 
-  test("constructor prefix validation rejects non-string, empty-after-trim, and null bytes", () => {
+  test("constructor prefix validation rejects non-string and null bytes", () => {
     expect(
       () => new Files({ adapter: fakeAdapter(), prefix: 123 as never })
     ).toThrow(/prefix must be a string/u);
-    expect(() => new Files({ adapter: fakeAdapter(), prefix: "///" })).toThrow(
-      /prefix must be a non-empty string/u
-    );
     expect(
       () => new Files({ adapter: fakeAdapter(), prefix: "users\0bad" })
     ).toThrow(/prefix must not contain null bytes/u);
   });
+
+  test.each(["", "/", "///"])(
+    "constructor prefix %p means no prefix",
+    async (prefix) => {
+      const adapter = fakeAdapter();
+      const files = new Files({ adapter, prefix });
+      expect(files.prefix).toBe("");
+      await files.upload("a.txt", "x");
+      expect(adapter.has("a.txt")).toBe(true);
+      expect(files.readonly().prefix).toBe("");
+    }
+  );
 
   test("constructor prefix only strips exact path prefixes from adapter keys", async () => {
     const base = fakeAdapter();

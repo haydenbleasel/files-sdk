@@ -656,6 +656,6 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }
