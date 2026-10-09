@@ -1,0 +1,123 @@
+---
+title: Migrating to v3
+description: What changed in files-sdk 3.0 - body-less head and list results, two new error codes, one bulk result shape, expiring URLs that never silently stay permanent, a capabilities object for adapters, and Node 22.
+---
+
+v3 tidies the API that grew from v0 to v2. Most of it surfaces as type errors when you upgrade. Two changes don't show up in the types, so read those first: [error codes](#error-codes) and [`url({ expiresIn })`](#expiring-urls).
+
+```package-install
+npm install files-sdk@3
+```
+
+## Error codes
+
+`FilesError` has two new codes, split out of `Provider`, which now only means the backend or transport failed:
+
+- **`Invalid`** — the call itself is wrong: an empty, null-byte, or `..` key, a malformed range, ETag, or condition, contradictory options, bad constructor config, or a file a [`validation()`](/docs/plugins/validation) rule rejects (`ValidationError` keeps its `reason`).
+- **`Unsupported`** — the call is fine, but this adapter, in this mode and with these plugins, can't do it: a `range` without range reads, `metadata` on Vercel Blob, `url()` under [`encryption()`](/docs/plugins/encryption), a presigned `maxSize` the provider can't enforce.
+
+Both are `permanent`, so they're never retried. If you branch on `error.code === "Provider"` to catch bad input or unsupported options, check the new codes too:
+
+```ts lineNumbers
+try {
+  await files.download(key, { range: { start: 0, end: 1023 } });
+} catch (error) {
+  if (error instanceof FilesError && error.code === "Unsupported") {
+    // was "Provider" in v2
+    return files.download(key);
+  }
+  throw error;
+}
+```
+
+`restoreVersion()` ([`versioning()`](/docs/plugins/versioning)) and `restoreTrashed()` ([`softDelete()`](/docs/plugins/soft-delete)) with nothing to restore now throw `NotFound`.
+
+The [gateway](/docs/ui/server/gateway) answers `Invalid` with a `422` (wire code `Validation`, where v2 sent a `500`) and `Unsupported` with a `422` (wire code `Unsupported`), and the browser client turns both back into the matching code. The `files` CLI exits `5` for `Provider` and `2` for `Invalid` / `Unsupported` / `ReadOnly`; v2 exited `2` for all of them.
+
+## Expiring URLs
+
+`url(key, { expiresIn })` now always returns a link that expires, or throws:
+
+- On an adapter that can sign, it signs, **even with a `publicBaseUrl`**. In v2 the S3 family, GCS, Azure, Firebase, Supabase, and R2 returned the permanent CDN link and ignored `expiresIn`. A plain `url(key)` still returns the CDN link.
+- On an adapter that only has permanent links (Vercel Blob public, UploadThing `public-read`, Convex, Appwrite, the filesystem, OneDrive / Google Drive in public-link mode), it throws `Unsupported`. Drop `expiresIn` to get the permanent link. Box and Dropbox in public-link mode return their tokenized (provider-timed) link instead.
+
+[`files.capabilities`](/docs/capabilities) has two new fields to branch on: `publicUrl` (a plain `url(key)` is a permanent link) and `signedUrl.disposition` (a `responseContentDisposition` is bound into the signature). The gateway now proxies a download it can't sign with the forced `attachment`, which fixes default downloads on Vercel Blob and UploadThing in private mode, PocketBase, and Cloudinary private delivery.
+
+## `head`, `list`, and `search` results
+
+`head()`, `list()`, `listAll()`, and `search()` return [`FileInfo`](/docs/api/stored-file) — `{ key, size, contentType, etag?, lastModified?, metadata? }` — with no body. In v2 they returned a `StoredFile` whose body accessors quietly downloaded the object.
+
+```ts lineNumbers
+// v2
+const meta = await files.head(key);
+meta.type;
+await meta.text(); // a hidden full download
+
+// v3
+const info = await files.head(key);
+info.contentType;
+await (await files.download(key)).text(); // explicit
+```
+
+- Read `contentType` where you read `type`, and `key` where you read `name`, on head and list results.
+- `download()` still returns a `StoredFile`, which is now a `FileInfo` plus `name` / `type` and the body accessors.
+- `upload()` resolves to a `FileInfo` (`UploadResult` is an alias).
+- So do `restoreVersion()`, `restoreTrashed()`, and the browser client's `upload()`.
+- The gateway wire, `useFiles`, the registry components, and the CLI / MCP / AI tool output use `contentType` too.
+
+## Bulk results
+
+The array forms of `upload`, `download`, `head`, and `delete` all resolve to `{ results, errors? }`:
+
+```ts lineNumbers
+// v2
+const { uploaded } = await files.upload(items);
+const { deleted } = await files.delete(keys);
+
+// v3
+const { results: uploaded } = await files.upload(items);
+const { results: deleted } = await files.delete(keys);
+```
+
+`exists([…])` keeps `{ existing, missing, errors? }`. `DeleteManyOptions` is now `BulkOptions`, and `DeleteManyError` is replaced by `BulkError`. A bulk `delete` with `stopOnError: true` now always deletes one key at a time and skips the native batch, so it gives the same result with or without plugins.
+
+## Capabilities
+
+`files.capabilities` reads the same way, with a few field changes:
+
+- `multipart` is renamed `resumable`.
+- `delimiter` is `"any" | "slash" | false`, so check `caps.delimiter !== false` for "has folders".
+- `signedUrl` gains `expiry` and `disposition`.
+- `signedUpload` (direct uploads) and `publicUrl` are new.
+
+An option the adapter can't honor, or that a plugin turns off, is now refused before any plugin runs.
+
+**Custom adapters** declare their capabilities as one object instead of separate flags:
+
+```ts lineNumbers
+const myAdapter: Adapter = {
+  name: "my-store",
+  raw: client,
+  // v2: supportsRange: true, supportsDelimiter: true, signedUrl: { supported: true }
+  capabilities: {
+    rangeRead: true,
+    delimiter: "slash",
+    signedUrl: { supported: true, disposition: true },
+    signedUpload: { supported: true, maxSize: false, contentType: true },
+  },
+  // …methods
+};
+```
+
+Their other changes:
+
+- `head` and `list` return `FileInfo`.
+- `deleteMany` returns `{ results, errors? }`.
+- `createStoredFile()` takes a `FileInfo`, with `contentType` instead of `type` (`StoredFileMeta` is removed).
+- Throw `Invalid` / `Unsupported` for bad calls and refusals.
+
+## Smaller changes
+
+- **Node 22 or later** (Node 20 is end-of-life).
+- **The filesystem adapter's `defaultUrlExpiresIn`** option is removed; it was ignored.
+- **`new Files({ prefix: "" })`** (or `"/"`) now means no prefix instead of throwing.
