@@ -21,7 +21,7 @@ The method names are shared; the behavior behind them isn't. Dropbox stores no m
 
 - A bucket, container, or folder, and server-side credentials, for each provider you deploy to.
 - `files-sdk`, plus the packages in the row for each provider you actually use. You don't need all four.
-- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, `@google-cloud/storage` 8.4, `@azure/storage-blob` 12.34, and `dropbox` 10.47.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, `@google-cloud/storage` 8.4, `@azure/storage-blob` 12.34, and `dropbox` 10.47.
 
 | Provider | Adapter | Install | Credentials the adapter finds on its own |
 | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ export async function saveDocument(
 
 /** One folder level: direct files plus subfolder prefixes. */
 export async function listFolder(files: Files, prefix: string) {
-  if (files.capabilities.delimiter) {
+  if (files.capabilities.delimiter !== false) {
     const page = await files.list({ delimiter: "/", prefix });
     return {
       cursor: page.cursor,
@@ -139,22 +139,15 @@ export async function listFolder(files: Files, prefix: string) {
 /** A short-lived download link, or `null` when the caller must stream instead. */
 export async function downloadLink(files: Files, key: string, seconds = 600) {
   const { signedUrl } = files.capabilities;
-  if (!signedUrl.supported) {
+  // Can't sign, or can't bind `attachment` into the link: stream instead.
+  if (!(signedUrl.supported && signedUrl.disposition)) {
     return null;
   }
   const expiresIn = Math.min(seconds, signedUrl.maxExpiresIn ?? seconds);
-  try {
-    return await files.url(key, {
-      expiresIn,
-      responseContentDisposition: "attachment",
-    });
-  } catch (error) {
-    // The adapter can't bind a disposition into its links: stream instead.
-    if (error instanceof FilesError && error.code === "Provider") {
-      return null;
-    }
-    throw error;
-  }
+  return await files.url(key, {
+    expiresIn,
+    responseContentDisposition: "attachment",
+  });
 }
 
 /** A signed browser upload that enforces size and type, or `null` for "proxy it". */
@@ -163,18 +156,16 @@ export async function browserUploadTarget(
   key: string,
   limits: { maxSize: number; contentType: string }
 ): Promise<SignedUpload | null> {
-  try {
-    return await files.signedUploadUrl(key, {
-      contentType: limits.contentType,
-      expiresIn: 300,
-      maxSize: limits.maxSize,
-    });
-  } catch (error) {
-    if (error instanceof FilesError && error.code === "Provider") {
-      return null;
-    }
-    throw error;
+  const { supported, maxSize, contentType } = files.capabilities.signedUpload;
+  // Proxy unless the adapter signs uploads that enforce both limits.
+  if (!(supported && maxSize && contentType)) {
+    return null;
   }
+  return await files.signedUploadUrl(key, {
+    contentType: limits.contentType,
+    expiresIn: 300,
+    maxSize: limits.maxSize,
+  });
 }
 
 /** The first `length` bytes, without downloading the rest when possible. */
@@ -201,6 +192,10 @@ export function storageErrorStatus(error: unknown): number {
       return 409;
     case "ReadOnly":
       return 403;
+    case "Invalid":
+    case "Unsupported":
+      // The request asked for something this storage can't do as asked.
+      return 422;
     case "Unauthorized":
       // The server's own credentials failed: a deployment problem, not the caller's.
       return 500;
@@ -210,11 +205,13 @@ export function storageErrorStatus(error: unknown): number {
 }
 ```
 
-The branches fall into two kinds, and the difference matters.
+Every branch reads a field on [`files.capabilities`](/docs/capabilities) instead of trying the call and catching the error:
 
-**Where a flag exists, read it.** `metadata`, `delimiter`, `rangeRead`, and `signedUrl` are fields on [`files.capabilities`](/docs/capabilities). The first three come from the same per-adapter flags the `Files` wrapper checks before every call; `signedUrl` is the adapter's own declaration, including its `maxExpiresIn` ceiling. `saveDocument` leaves metadata out on Dropbox instead of failing, `downloadLink` never asks for longer than the ceiling, and `readHead` only falls back to a full download on an adapter with no range primitive.
+- **`metadata`, `delimiter`, and `rangeRead`.** `saveDocument` leaves metadata out on Dropbox instead of failing, `listFolder` folds keys itself on an adapter with no folder primitive, and `readHead` only falls back to a full download on an adapter with no range primitive.
+- **`signedUrl`.** `downloadLink` never asks for longer than its `maxExpiresIn` ceiling, and returns `null` when the adapter can't sign or, per `disposition`, can't bind `attachment` into the link.
+- **`signedUpload`.** `browserUploadTarget` returns `null` unless the adapter can sign an upload that enforces both `maxSize` and `contentType`.
 
-**Where no flag exists, try it and fall back.** There's no capability for signed uploads or for forcing `Content-Disposition` on a link. For those, the adapter checks the request and throws a `Provider` error before contacting the provider, so `browserUploadTarget` and `downloadLink` catch it and return `null`. Your route then proxies the upload or streams the download itself. The [gateway](/docs/ui/server/gateway) does the same thing: when signing a keyless browser upload fails, it receives the bytes itself, and by default, when an adapter can't put `attachment` on a download link, it streams the download.
+On `null`, your route proxies the upload or streams the download itself. The [gateway](/docs/ui/server/gateway) does the same thing: when the adapter can't sign a keyless browser upload, it receives the bytes itself, and by default, when an adapter can't put `attachment` on a download link, it streams the download.
 
 Here's a route that uses `downloadLink` and `storageErrorStatus`:
 
@@ -242,7 +239,7 @@ export async function GET(req: Request) {
     return new Response(file.stream(), {
       headers: {
         "content-disposition": "attachment",
-        "content-type": file.type,
+        "content-type": file.contentType,
       },
     });
   } catch (error) {
@@ -262,7 +259,7 @@ The functions above ran against a local MinIO server through `files-sdk/s3`, and
 | `saveDocument` with `{ owner_id, ownerId }` | Stored. `head()` returned keys `owner_id` and `ownerid`. | Stored. Keys kept their case. |
 | `listFolder("reports/")` | `files: ["reports/summary.pdf"]`, `folders: ["reports/2026/"]` | Same |
 | `downloadLink` | Signed URL; fetching it returned `200` with `Content-Disposition: attachment` | `null`: memory can't sign |
-| `browserUploadTarget` (1 MiB, `application/pdf`) | A `POST` policy. A 2 MiB form post got `400 EntityTooLarge`; a small one got `204`. | An inert `memory://` `PUT` URL that enforces nothing |
+| `browserUploadTarget` (1 MiB, `application/pdf`) | A `POST` policy. A 2 MiB form post got `400 EntityTooLarge`; a small one got `204`. | `null`: memory declares no signed uploads |
 | `readHead(…, 8)` | `%PDF-1.7` | `%PDF-1.7` |
 | `download` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound`, message `memory: not found: <key>` |
 | `head` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound`, message `memory: not found: <key>` |
@@ -284,7 +281,7 @@ GCS, Azure, and Dropbox weren't run against live accounts. Their adapters were c
 | `url()` with `responseContentDisposition` | Yes | Yes | Yes | Throws |
 | `signedUploadUrl` without `maxSize` | `PUT`. Content type is signed; size isn't limited | `PUT`. Content type is signed; size isn't limited | SAS `PUT`; the client must send `x-ms-blob-type: BlockBlob`. Throws if you pass `contentType` | Throws |
 | `signedUploadUrl` with `maxSize` | `POST` policy; size and type enforced | `POST` policy; size and type enforced | Throws | Throws |
-| `multipart` (resumable `control`) | Yes | Yes | Yes | Yes |
+| `resumable` (`control`) | Yes | Yes | Yes | Yes |
 | `uploadProgress` | Yes | Yes | Yes | No |
 | `serverSideCopy` | Yes | Yes | Yes | Yes |
 | Stream of unknown length | Multipart through `@aws-sdk/lib-storage` | Resumable write stream | `uploadStream` in blocks | Upload session, chunk by chunk |
@@ -303,20 +300,20 @@ Three rows deserve a closer look:
 
 `if (provider === "dropbox")` looks simpler, but it's wrong in ways that are hard to see:
 
-- **One provider can report different capabilities.** Azure with only a SAS token reports `signedUrl.supported: false`; with an account key it reports `true`. Dropbox with `publicByDefault: true` reports `false` too.
-- **Plugins change them.** [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) turn off `signedUrl`, `rangeRead`, and `multipart`, because a signed URL would hand out encrypted or compressed bytes. Code that reads `files.capabilities` sees that; a provider-name check doesn't.
+- **One provider can report different capabilities.** Azure with only a SAS token reports `signedUrl.supported: false`; with an account key it reports `true`. Dropbox with `publicByDefault: true` reports `publicUrl: true`, so a plain `url(key)` returns a permanent shared link.
+- **Plugins change them.** [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) turn off `signedUrl`, `signedUpload`, `rangeRead`, and `resumable`, because a signed URL would hand out encrypted or compressed bytes. Code that reads `files.capabilities` sees that; a provider-name check doesn't.
 - **New adapters work unchanged.** Add an R2 or Vercel Blob case to `createStorage` and the same functions take whichever branches those adapters' flags allow.
 
-And when you miss a branch, the failure is loud and immediate. The `Files` wrapper checks `metadata`, `cacheControl`, `delimiter`, `range`, and `control` against the adapter's flags before calling it, and adapters check their own limits before sending anything. With a Dropbox adapter built on a placeholder token and `fetch` instrumented to count requests, these calls all threw with zero network requests:
+And when you miss a branch, the failure is loud and immediate. The `Files` wrapper checks `metadata`, `cacheControl`, `delimiter`, `range`, `control`, and `url()`'s `expiresIn` against the adapter's capabilities before calling it, and adapters check their own limits before sending anything. With a Dropbox adapter built on a placeholder token and `fetch` instrumented to count requests, these calls all threw with zero network requests:
 
-| Call on Dropbox | Error message | `permanent` |
+| Call on Dropbox | Error message | `code` |
 | --- | --- | --- |
-| `upload(key, body, { metadata })` | ``dropbox: `metadata` is not supported by this adapter`` | `true` |
-| `upload(key, body, { cacheControl })` | ``dropbox: `cacheControl` is not supported by this adapter`` | `true` |
-| `list({ delimiter: ";" })` | `dropbox: only supports the "/" delimiter for folder listing` | `true` |
-| `url(key, { expiresIn: 18000 })` | ``dropbox: `expiresIn` of 18000s exceeds the 14400s (4h) maximum…`` | `false` |
+| `upload(key, body, { metadata })` | ``dropbox: `metadata` is not supported by this adapter`` | `Unsupported` |
+| `upload(key, body, { cacheControl })` | ``dropbox: `cacheControl` is not supported by this adapter`` | `Unsupported` |
+| `list({ delimiter: ";" })` | `dropbox: only the "/" delimiter is supported by this adapter` | `Unsupported` |
+| `url(key, { expiresIn: 18000 })` | ``dropbox: `expiresIn` of 18000s exceeds the 14400s (4h) maximum…`` | `Invalid` |
 
-All four use code `Provider`. `permanent: true` means retrying the same call can only fail the same way, so [retries](/docs/retries) skip it. Some adapter-level refusals, like the expiry cap above and the signed-upload refusals on Azure and Dropbox, carry `permanent: false` in files-sdk 2.7, so `storageErrorStatus` would report one as a retryable `503`. Catch them where you make the call, as `browserUploadTarget` and `downloadLink` do.
+`Unsupported` means the call is fine but this adapter can't do it; `Invalid` means the call itself is wrong. Both are `permanent`: retrying the same call can only fail the same way, so [retries](/docs/retries) skip it, and `storageErrorStatus` reports a `422` rather than a retryable `503`. The signed-upload refusals on Azure and Dropbox are `Unsupported` too. `Provider` is left for failures at the provider itself.
 
 ## Errors look the same
 

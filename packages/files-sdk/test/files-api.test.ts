@@ -261,12 +261,12 @@ describe("createFilesRouter — read verbs", () => {
       const res = await router({ adapter: refuser, authorize }).handle(
         post({ key: "a.txt", op: "url" })
       );
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(422);
       // oxlint-disable-next-line no-await-in-loop -- read each response in turn
       const { error } = await readJson<{
         error: { code: string; message: string };
       }>(res);
-      expect(error.code).toBe("Provider");
+      expect(error.code).toBe("Unsupported");
       expect(error.message).toContain('"attachment"');
       expect(error.message).toContain(
         'Return { disposition: "inline" } from authorize'
@@ -954,7 +954,7 @@ describe("createFilesRouter — download", () => {
   });
 
   test("bytes=0- on a non-range adapter is the whole object (200), other ranges stay 416", async () => {
-    const adapter = fakeAdapter() as unknown as Adapter;
+    const adapter = withCapabilities(fakeAdapter(), NO_SIGNING);
     await seed(adapter, "a.txt", "hello");
     const r = router({ adapter, operations: ["download"] });
     // Every <video>/<audio> opens with `bytes=0-`.
@@ -1044,10 +1044,10 @@ describe("createFilesRouter — download", () => {
       authorize: () => ({ disposition: "attachment" }),
       downloadMode: "redirect",
     }).handle(get("op=download&key=a.txt"));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(422);
     expect(
       await readJson<{ error: { code: string; message: string } }>(res)
-    ).toEqual({ error: { code: "Provider", message: REFUSAL } });
+    ).toEqual({ error: { code: "Unsupported", message: REFUSAL } });
   });
 
   test("an inline authorize policy redirects to a URL without a disposition", async () => {

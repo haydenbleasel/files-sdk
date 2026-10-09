@@ -21,7 +21,7 @@ The catch is where that boundary lives. It's in your application, not in the buc
 
 - A Files SDK gateway in your app. This guide reuses the Next.js route and `lib/files.ts` from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload). The policy works the same with any adapter and any [framework binding](/docs/ui/server/gateway#other-frameworks).
 - A session that carries a stable tenant ID. A tenant can be a user or an organization; this guide uses organizations, and the code is identical with `session.user.id`.
-- Written against files-sdk 2.7 and Next.js 16.4. The results below come from running the gateway in Bun against the memory adapter, and the signing-adapter differences from a local MinIO server.
+- Written against files-sdk 3.0 and Next.js 16.4. The results below come from running the gateway in Bun against the memory adapter, and the signing-adapter differences from a local MinIO server.
 
 ## Derive the prefix from the session
 
@@ -110,7 +110,7 @@ The bucket holds `orgs/acme/report.pdf` and `orgs/acme-co/secret.txt`. A signed-
 | `upload` with a key | `422` | `200` | wrote `orgs/acme/orgs/acme-co/secret.txt` |
 | `upload` without a key | a file named `../../acme-co/secret.txt` was stored as `<uuid>.txt` | not applicable | wrote `orgs/acme/<uuid>.txt` |
 | `delete` | `422` | `200` | deleted `orgs/acme/orgs/acme-co/secret.txt`, which didn't exist |
-| `delete` with a key list | `422` for the whole batch if any key traverses | `200`, both keys reported in `deleted` | the same, per key |
+| `delete` with a key list | `422` for the whole batch if any key traverses | `200`, both keys reported in `results` | the same, per key |
 | `copy` | `422` as source or destination | source: `404`; destination: `200` | destination: wrote `orgs/acme/orgs/acme-co/planted.pdf` |
 | `move` | `422` as source or destination | source: `404`; destination: `200` | destination: moved `acme`'s file to `orgs/acme/orgs/acme-co/report.pdf` |
 | `signedUploadUrl` | `422` | `200` | signed a `PUT` for `orgs/acme/orgs/acme-co/secret.txt`, expiring in 300 seconds |
@@ -335,7 +335,7 @@ export async function deleteTenantFiles(orgId: string) {
   for await (const file of tenant.listAll()) {
     keys.push(file.key);
   }
-  const { deleted, errors } = await tenant.delete(keys);
+  const { results: deleted, errors } = await tenant.delete(keys);
   return { deleted: deleted.length, failed: errors ?? [] };
 }
 ```

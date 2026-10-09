@@ -231,7 +231,8 @@ test(
         );
 
       const refused = await urlOp();
-      expect(refused.status).toBe(500);
+      // An `Unsupported` refusal: the client can act on it, so it's a 422.
+      expect(refused.status).toBe(422);
       const { error } = (await refused.json()) as {
         error: { message: string };
       };

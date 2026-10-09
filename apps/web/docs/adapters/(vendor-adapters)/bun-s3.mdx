@@ -156,7 +156,7 @@ await note.text(); // "Hello from Bun"
 // Streamed - pipe a large object to the client without buffering it
 const video = await files.download("videos/clip.mp4", { as: "stream" });
 const response = new Response(video.stream(), {
-  headers: { "Content-Type": video.type },
+  headers: { "Content-Type": video.contentType },
 });
 
 // A byte range (end is inclusive), fetched with a ranged GET
@@ -187,7 +187,7 @@ for await (const file of files.search("reports/**/*.csv")) {
 }
 ```
 
-Bun's list response carries no Content-Type, so each item's `type` is inferred from the key's extension (`application/octet-stream` when unknown). Call `head()` when you need the stored value. See [`list`](/docs/api/list) and [`search`](/docs/api/search) for pagination and pattern syntax.
+Bun's list response carries no Content-Type, so each item's `contentType` is inferred from the key's extension (`application/octet-stream` when unknown). Call `head()` when you need the stored value. See [`list`](/docs/api/list) and [`search`](/docs/api/search) for pagination and pattern syntax.
 
 ## Presigned URLs with Bun S3
 
@@ -207,7 +207,7 @@ const attachment = await files.url("reports/q3.pdf", {
 
 The default lifetime is 1 hour (the adapter's `defaultUrlExpiresIn`, not Bun's own 24-hour default). SigV4 caps a presigned URL at 7 days, so an `expiresIn` above 604800 seconds throws instead of returning a URL the server would reject.
 
-If the bucket is public or sits behind a CDN, set `publicBaseUrl` and `url(key)` returns `${publicBaseUrl}/${key}` without signing. Passing `responseContentDisposition` still produces a signed URL, because a permanent URL has no signature to bind the override into.
+If the bucket is public or sits behind a CDN, set `publicBaseUrl` and `url(key)` returns `${publicBaseUrl}/${key}` without signing. Passing `expiresIn` or `responseContentDisposition` still produces a signed URL, because a permanent URL can't expire and has no signature to bind the override into.
 
 ### Presigned upload URLs
 
@@ -272,7 +272,7 @@ Pick `files-sdk/bun-s3` for a Bun app that only needs the core operations and sh
 | `upload` | ⚠️ | User `metadata` and `cacheControl` throw - `Bun.S3Client.write()` exposes neither field. Reach for `s3()` on the same bucket if you need them. Stream bodies are wrapped in a `Response` and handed to Bun's writer. Pause/resume via `control` is in-process only — Bun’s S3 client exposes no resumable upload id, so chunks are buffered and a token cannot resume in a new process. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Bun's list response carries no Content-Type, so `type` is inferred from the key's extension (`application/octet-stream` when unknown), like the rest of the S3 family. Use `head()` for the stored value. `delimiter` folding works. |
+| `list` | ⚠️ | Bun's list response carries no Content-Type, so `contentType` is inferred from the key's extension (`application/octet-stream` when unknown), like the rest of the S3 family. Use `head()` for the stored value. `delimiter` folding works. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |

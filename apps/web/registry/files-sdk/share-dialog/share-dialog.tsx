@@ -191,7 +191,14 @@ export const ShareDialog = ({
     };
   }, [open]);
 
-  const maxExpiresIn = caps?.signedUrl.maxExpiresIn;
+  // Uploads and downloads have separate signing caps.
+  const maxExpiresIn =
+    mode === "upload"
+      ? caps?.signedUpload.maxExpiresIn
+      : caps?.signedUrl.maxExpiresIn;
+  // An adapter that only hands out permanent download links can't honor an
+  // expiry (v3 refuses one), so the link is minted without it.
+  const expires = mode === "upload" || caps?.signedUrl.supported !== false;
   const presets = EXPIRY_PRESETS.filter(
     (preset) => !maxExpiresIn || preset.seconds <= maxExpiresIn
   );
@@ -212,7 +219,7 @@ export const ShareDialog = ({
         }
       } else {
         const url = await filesRef.current.url(fileKey, {
-          expiresIn: ttl,
+          ...(expires && { expiresIn: ttl }),
           responseContentDisposition: disposition,
         });
         if (current()) {
@@ -230,7 +237,7 @@ export const ShareDialog = ({
     } finally {
       setIsGenerating(false);
     }
-  }, [clear, mode, fileKey, expiresIn, disposition, maxExpiresIn]);
+  }, [clear, mode, fileKey, expiresIn, disposition, maxExpiresIn, expires]);
 
   const view = minted ? viewOf(minted) : undefined;
   const copyText = view?.copyText;

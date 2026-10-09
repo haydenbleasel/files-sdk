@@ -19,7 +19,7 @@ Both stop short at the same place: presigned uploads. Bun signs only the `Host` 
 ## Before you start
 
 - An S3 bucket (this guide calls it `uploads`) and credentials that can put, get, and delete objects in it, plus `s3:ListBucket` so missing keys come back as `404` rather than `403`.
-- Bun 1.4. Written against Bun 1.4.2, files-sdk 2.7, and `@aws-sdk/*` 3.1148 for the `s3()` section.
+- Bun 1.4. Written against Bun 1.4.2, files-sdk 3.0, and `@aws-sdk/*` 3.1148 for the `s3()` section.
 - Credentials in the environment. Bun reads `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, and `S3_ENDPOINT`, and falls back to the `AWS_*` names when they're unset. The AWS SDK behind `s3()` reads only the `AWS_*` names, so use those and one `.env` serves all three versions:
 
 ```bash title=".env"
@@ -240,7 +240,7 @@ Handing back a URL plus a `Content-Type` header to send would look like a guaran
 
 Both alternatives the first message names do sign the type: their presigned `PUT` URLs list `content-type;host` when you pass `contentType`. Against a local MinIO server, a `text/html` body sent to a URL signed for `image/png` got `403 SignatureDoesNotMatch` from each. Neither limits size on a `PUT`; for type and size together, use `s3()` with `maxSize`, covered below.
 
-The [`useFiles` gateway](/docs/ui/server/bun) runs into the same refusal. When the browser reports a file's type, the gateway passes it to `signedUploadUrl()`, `bun-s3` throws, and the gateway falls back to proxying that upload through your server. With `bun-s3`, most gateway uploads go through Bun rather than straight to S3.
+The [`useFiles` gateway](/docs/ui/server/bun) runs into the same limit. `bun-s3` reports `signedUpload.contentType: false` in `files.capabilities`, so when the browser reports a file's type, the gateway skips the presigned URL and proxies that upload through your server. With `bun-s3`, most gateway uploads go through Bun rather than straight to S3.
 
 ## Check uploads after they land
 
@@ -273,20 +273,24 @@ const ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "application/pdf"]);
       throw error;
     }
 
-    // `type` is the Content-Type the browser sent, not a check of the bytes.
-    if (stored.size > MAX_BYTES || !ALLOWED_TYPES.has(stored.type)) {
+    // `contentType` is the Content-Type the browser sent, not a check of the bytes.
+    if (stored.size > MAX_BYTES || !ALLOWED_TYPES.has(stored.contentType)) {
       await files.delete(key);
       return new Response("File rejected", { status: 422 });
     }
-    // Save key, stored.size, and stored.type with your record here.
-    return Response.json({ id: req.params.id, size: stored.size, type: stored.type });
+    // Save key, stored.size, and stored.contentType with your record here.
+    return Response.json({
+      id: req.params.id,
+      size: stored.size,
+      contentType: stored.contentType,
+    });
   },
 },
 ```
 
 Against local MinIO, with the limit lowered to 1 KiB for the test, a 512-byte PNG passed, a 4 KiB one and a `text/html` one were deleted with `422`, and an ID that was never uploaded got `404`.
 
-This keeps bad files out of your app, not out of the bucket. The bytes are stored and billed before the check runs, `stored.type` is still the type the browser claimed, and an upload nobody completes stays until something removes it (an [S3 lifecycle rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html) on the prefix, for example). To check the actual bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
+This keeps bad files out of your app, not out of the bucket. The bytes are stored and billed before the check runs, `stored.contentType` is still the type the browser claimed, and an upload nobody completes stays until something removes it (an [S3 lifecycle rule](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html) on the prefix, for example). To check the actual bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
 
 ## Switch to s3() when S3 has to enforce limits
 

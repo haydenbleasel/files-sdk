@@ -91,10 +91,9 @@ export const loadS3Sdk = async (
 ): Promise<S3Sdk> => {
   const missingPeers = (cause?: unknown) =>
     new FilesError(
-      "Provider",
+      "Unsupported",
       `${name} adapter: client "aws-sdk" requires the optional peer dependencies @aws-sdk/client-s3, @aws-sdk/s3-presigned-post, and @aws-sdk/s3-request-presigner. Install them, or pass client: "fetch", which needs no @aws-sdk/* package.`,
-      cause,
-      { permanent: true }
+      cause
     );
   let sdk: S3Sdk;
   try {

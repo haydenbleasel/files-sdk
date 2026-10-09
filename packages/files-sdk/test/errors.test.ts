@@ -62,10 +62,10 @@ describe("FilesError", () => {
 });
 
 describe("dispositionUnsupported", () => {
-  test("builds a permanent Provider FilesError the predicate recognizes", () => {
+  test("builds an Unsupported (so permanent) FilesError the predicate recognizes", () => {
     const error = dispositionUnsupported("x: not supported");
     expect(error).toBeInstanceOf(FilesError);
-    expect(error.code).toBe("Provider");
+    expect(error.code).toBe("Unsupported");
     expect(error.message).toBe("x: not supported");
     expect(error.permanent).toBe(true);
     expect(isDispositionUnsupported(error)).toBe(true);

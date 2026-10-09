@@ -20,7 +20,7 @@ The catch is the signed URL's lifetime. Storage checks the signature on each req
 
 - A private S3 or R2 bucket with your videos (this guide uses an S3 bucket called `videos` and keys like `lessons/intro.mp4`), and server-side credentials for it.
 - A Next.js App Router app with an auth library that resolves the signed-in user on the server.
-- Written against files-sdk 2.7, Next.js 16.4, and React 19.3. Browser behavior described below was observed in Chrome 154 against a local MinIO server; check it in the other browsers you support.
+- Written against files-sdk 3.0, Next.js 16.4, and React 19.3. Browser behavior described below was observed in Chrome 154 against a local MinIO server; check it in the other browsers you support.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner

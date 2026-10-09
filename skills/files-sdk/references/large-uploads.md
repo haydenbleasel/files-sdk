@@ -74,14 +74,14 @@ await files.abortUpload("backups/db.tar", token);
 ```
 
 - **Discarding a persisted session:** `UploadControl.from(token).abort()` can't discard anything — a control only reaches the adapter while `upload()` drives it — so it just marks itself aborted. Use `files.abortUpload(key, token)`: same logical key, token must match (else it throws before discarding), already-gone sessions resolve, `ReadOnly` on a read-only view. Appwrite only deletes a still-partial file.
-- **Not in the browser client.** `UploadControl` runs where `Files` (and its credentials) runs: server, worker, CLI. In 2.x, `files-sdk/client` and `useFiles` send each file in one request (gateway or presigned URL), can't pause, and can't resume across a reload.
+- **Not in the browser client.** `UploadControl` runs where `Files` (and its credentials) runs: server, worker, CLI. `files-sdk/client` and `useFiles` send each file in one request (gateway or presigned URL), can't pause, and can't resume across a reload.
 
 ### Requirements & support
 
 - **Known-length body only** (`File`, `Blob`, `ArrayBuffer`, typed array, `string`). A bare `ReadableStream` is rejected — a consumed stream can't be replayed. Keep the `File` handle around (as a browser upload widget does).
 - **Cross-process resume:** S3 + S3-compatible on the AWS SDK engine (token carries the `UploadId`; resume via `ListParts`, abort via `AbortMultipartUpload`), GCS, Firebase, Google Drive, Azure, OneDrive, SharePoint, Dropbox, Vercel Blob, local `fs`, FTP, and SFTP (these three stage to `<key>.fls-part` and rename onto the key on completion, so a partial upload is never visible at the key), Supabase (TUS), Appwrite, Cloudinary.
 - **In-process only** (`toJSON()` can't resume in a new process): Box, bun-s3, memory.
-- **Throws** `FilesError` "not supported" when `control` is passed: Netlify Blobs, UploadThing, PocketBase, Bunny Storage, Convex, WebDAV, the R2 Workers binding, the fetch engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), and the rest.
+- **Throws** an `Unsupported` `FilesError` when `control` is passed: Netlify Blobs, UploadThing, PocketBase, Bunny Storage, Convex, WebDAV, the R2 Workers binding, the fetch engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), and the rest.
 - `partSize`/`concurrency` come from `multipart` and tune the same trade-off; each part is retried individually under the call's retry policy.
 
 > The Supabase (TUS), Appwrite, and Cloudinary resumable drivers are built to each provider's documented protocol and covered by mocked tests, but haven't been exercised against a live account — verify end-to-end before relying on them in production.
@@ -100,7 +100,7 @@ const head = await files.download("video.mp4", {
 const rest = await files.download("video.mp4", { range: { start: 1024 } });
 ```
 
-Both bounds are **0-based** and `end` is **inclusive**. The returned `StoredFile.size` reflects the range length, not the full object. **Supported** by adapters with a native range primitive: S3 + S3-compatible (both engines, incl. R2 HTTP and the R2 Workers binding), bun-s3, GCS, Firebase, Azure, Google Drive, Dropbox, Box, OneDrive, SharePoint, Cloudinary, UploadThing, PocketBase, WebDAV, FTP, SFTP, Vercel Blob (public mode), `fs`, and memory. **Throws** a `FilesError` on Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, and Vercel Blob (private mode) rather than silently downloading the whole object and slicing it — check `files.capabilities.rangeRead` (or `adapter.supportsRange`) to branch at runtime.
+Both bounds are **0-based** and `end` is **inclusive**. The returned `StoredFile.size` reflects the range length, not the full object. **Supported** by adapters with a native range primitive: S3 + S3-compatible (both engines, incl. R2 HTTP and the R2 Workers binding), bun-s3, GCS, Firebase, Azure, Google Drive, Dropbox, Box, OneDrive, SharePoint, Cloudinary, UploadThing, PocketBase, WebDAV, FTP, SFTP, Vercel Blob (public mode), `fs`, and memory. **Throws** an `Unsupported` `FilesError` on Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, and Vercel Blob (private mode) rather than silently downloading the whole object and slicing it — check `files.capabilities.rangeRead` to branch at runtime.
 
 ## `onProgress` — upload progress
 

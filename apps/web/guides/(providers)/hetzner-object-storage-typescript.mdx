@@ -21,7 +21,7 @@ Browser uploads take two more steps. The bucket needs a CORS rule, which you set
 
 - A Hetzner account with a bucket (this guide calls it `uploads`) in one of the Object Storage locations.
 - S3 credentials from the Hetzner Console: open your project, go to **Security → S3 Credentials**, and select **Generate credentials**. [Hetzner shows the secret key once](https://docs.hetzner.com/storage/object-storage/getting-started/generating-s3-keys/), so save it before you close the window. By default a key pair works on every bucket in the same project; [bucket policies](https://docs.hetzner.com/storage/object-storage/faq/s3-credentials/) narrow that.
-- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, Node.js 24, and Hetzner's documentation as of October 2026.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, Node.js 24, and Hetzner's documentation as of October 2026.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -159,7 +159,7 @@ What the signed URL carries:
 - **An expiry.** `expiresIn` is in seconds; without it, `url()` uses the adapter's `defaultUrlExpiresIn` of 3600. The SDK refuses more than 7 days with `Hetzner error: presigned URLs must expire within 604800 seconds (7 days), the SigV4 limit`.
 - **A download disposition.** `responseContentDisposition` asks the server to send `Content-Disposition: attachment`, so browsers save the file instead of rendering it on the bucket's origin.
 
-If every object in a bucket can be public, Hetzner can make the bucket public in the Console, and anyone can then read `https://<bucket>.<location>.your-objectstorage.com/<key>`. Set `publicBaseUrl` to that origin and `url()` returns permanent links without signing. Hetzner doesn't support [custom domains](https://docs.hetzner.com/storage/object-storage/supported-actions/) on buckets directly; its how-to guides put a CNAME or reverse proxy in front instead, and that proxy's origin is what goes in `publicBaseUrl`.
+If every object in a bucket can be public, Hetzner can make the bucket public in the Console, and anyone can then read `https://<bucket>.<location>.your-objectstorage.com/<key>`. Set `publicBaseUrl` to that origin and a plain `url(key)` returns permanent links without signing. A `url()` with `expiresIn` or `responseContentDisposition`, like the handler above, still returns a signed URL. Hetzner doesn't support [custom domains](https://docs.hetzner.com/storage/object-storage/supported-actions/) on buckets directly; its how-to guides put a CNAME or reverse proxy in front instead, and that proxy's origin is what goes in `publicBaseUrl`.
 
 For a full browser app, the gateway from `files-sdk/api` does this check-then-redirect for you. The [Next.js guide's route](/guides/nextjs-r2-file-upload#mount-the-gateway) works with this `files` instance unchanged.
 
@@ -266,7 +266,7 @@ await files.delete(key);
 
 Against a local MinIO server, which implements `POST` policies, the script printed `204` for 100 bytes and `400` with `EntityTooLarge` for 2,048. On Hetzner, the same pair means the limit is enforced. Two successes mean the policy is ignored; two failures mean `POST` uploads aren't accepted.
 
-If the check passes, add `POST` to the rule's `AllowedMethods`, since browser uploads now arrive as form posts. If it fails, don't set `maxUploadSize` on a Hetzner gateway. The gateway only falls back to proxying when signing throws, and signing a `POST` policy succeeds, so every browser upload would fail at the bucket instead. Check sizes after upload, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land), or proxy uploads through your own route. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) compares the options across providers.
+If the check passes, add `POST` to the rule's `AllowedMethods`, since browser uploads now arrive as form posts. If it fails, don't set `maxUploadSize` on a Hetzner gateway. The gateway only proxies uploads the adapter can't sign, and `hetzner()` reports `signedUpload.maxSize: true` and signs the `POST` policy, so every browser upload would fail at the bucket instead. Check sizes after upload, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land), or proxy uploads through your own route. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) compares the options across providers.
 
 ## Troubleshooting
 

@@ -21,7 +21,7 @@ Start by taking the browser out of the loop. curl ignores CORS, so replaying the
 - The failing upload's request URL, copied from the browser's network panel. It's the `PUT` to `<account-id>.r2.cloudflarestorage.com`.
 - The exact origin of the page that sent it: scheme, host, and port.
 - Access to the bucket's CORS policy, in the dashboard under **Settings → CORS Policy** or with `npx wrangler r2 bucket cors list <bucket>`.
-- Written against files-sdk 2.7 and Cloudflare's R2 documentation as of October 2026.
+- Written against files-sdk 3.0 and Cloudflare's R2 documentation as of October 2026.
 
 Treat the URL as a secret while you debug. Cloudflare [describes presigned URLs as bearer tokens](https://developers.cloudflare.com/r2/api/s3/presigned-urls/): anyone holding one can use it until it expires.
 
@@ -129,7 +129,7 @@ The adapter signs path-style URLs: `https://<account-id>.r2.cloudflarestorage.co
 
 ### Custom domains
 
-Presigned URLs only work on the S3 API domain; Cloudflare says they can't be used with custom domains. Files SDK never signs for one. `signedUploadUrl()` always targets `<account-id>.r2.cloudflarestorage.com`, and when you set `publicBaseUrl`, `url()` returns a plain, unsigned `${publicBaseUrl}/${key}` link. So if a URL you expected to be presigned starts with your custom domain, it came from `publicBaseUrl`. Rewriting a presigned URL's host to your domain breaks the signature.
+Presigned URLs only work on the S3 API domain; Cloudflare says they can't be used with custom domains. Files SDK never signs for one. `signedUploadUrl()` and `url(key, { expiresIn })` always target `<account-id>.r2.cloudflarestorage.com`, and when you set `publicBaseUrl`, a plain `url(key)` returns an unsigned `${publicBaseUrl}/${key}` link. So if a URL you expected to be presigned starts with your custom domain, it came from a `url()` call without `expiresIn`. Rewriting a presigned URL's host to your domain breaks the signature.
 
 Cloudflare's [troubleshooting page](https://developers.cloudflare.com/r2/platform/troubleshooting/) covers CORS errors on custom-domain reads: a `cf-mitigated` header means a WAF rule blocked the request, and a missing `cf-cache-status` points at Hotlink Protection. Those apply to public reads through your domain, not to presigned uploads.
 

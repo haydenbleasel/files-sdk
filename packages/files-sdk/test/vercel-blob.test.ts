@@ -1596,7 +1596,7 @@ describe("vercel-blob adapter", () => {
       const thrown = await files.head("a.txt").catch((error: unknown) => error);
       expect(thrown).toBeInstanceOf(FilesError);
       expect(thrown).toMatchObject({
-        code: "Provider",
+        code: "Invalid",
         message: expect.stringMatching(
           /^vercelBlob adapter: missing credentials/u
         ),
@@ -1613,7 +1613,7 @@ describe("vercel-blob adapter", () => {
       const files = new Files({ adapter: vercelBlob() });
       delete process.env.BLOB_READ_WRITE_TOKEN;
       await expect(files.upload("a.txt", "hello")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
         message: expect.stringMatching(/missing credentials/u),
         permanent: true,
       });
@@ -1628,7 +1628,7 @@ describe("vercel-blob adapter", () => {
       delete process.env.BLOB_STORE_ID;
       // BLOB_READ_WRITE_TOKEN is still set (beforeEach); it must not be used.
       await expect(files.upload("a.txt", "hello")).rejects.toMatchObject({
-        code: "Provider",
+        code: "Invalid",
         message: expect.stringMatching(/storeId/u),
         permanent: true,
       });

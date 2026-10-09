@@ -19,7 +19,7 @@ The catch that applies everywhere: every check here is against the `Content-Type
 
 ## Before you start
 
-- Written against files-sdk 2.7. The S3 behavior below was reproduced against a local MinIO server (`RELEASE.2025-09-06T17-38-46Z`); provider behavior for the others comes from their docs, linked where it's used.
+- Written against files-sdk 3.0. The S3 behavior below was reproduced against a local MinIO server (`RELEASE.2025-09-06T17-38-46Z`); provider behavior for the others comes from their docs, linked where it's used.
 - The adapter for your provider, installed as its docs page says. For S3's `POST` policy, that includes `@aws-sdk/s3-presigned-post`.
 
 ## What each service enforces
@@ -185,7 +185,7 @@ If a client can only send a `PUT` (some upload widgets can't build a form), call
 
 ## What the gateway does with `maxUploadSize`
 
-The gateway's keyless `upload(file)` starts with the size the browser declares. A file that claims more than `maxUploadSize` gets `422` with `reason: "size"` and the message `upload exceeds maxUploadSize`, before anything is signed. Otherwise the gateway asks the adapter for a presigned target with `maxSize: maxUploadSize`, `minSize: 0`, and the file's claimed type. If the adapter can't sign URLs, or `signedUploadUrl` throws for any reason, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
+The gateway's keyless `upload(file)` starts with the size the browser declares. A file that claims more than `maxUploadSize` gets `422` with `reason: "size"` and the message `upload exceeds maxUploadSize`, before anything is signed. Otherwise the gateway asks the adapter for a presigned target with `maxSize: maxUploadSize`, `minSize: 0`, and the file's claimed type. If `files.capabilities.signedUpload` says the adapter can't sign that (no direct uploads, no `maxSize` while `maxUploadSize` is set, or no `contentType` for a typed file), or `signedUploadUrl` refuses with an `Invalid` or `Unsupported` error, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
 
 | Configuration | Target |
 | --- | --- |
@@ -196,15 +196,13 @@ The gateway's keyless `upload(file)` starts with the size the browser declares. 
 | R2, `maxUploadSize` set | Proxy through your server |
 | `s3Fetch()`, `maxUploadSize` set | Proxy through your server |
 | `azure()`, any upload with a type | Proxy through your server |
-| `vercelBlob()`, public | Proxy through your server, with or without `maxUploadSize` |
-| `vercelBlob()`, private | Presigned `PUT` with `maximumSizeInBytes` (from the source; not run) |
+| `vercelBlob()`, public or private | Presigned `PUT` with `maximumSizeInBytes` (from the source; not run) |
 | `s3()` plus `validation()` or `contentType()` | Proxy through your server |
 
-Three of those rows surprise people:
+Two of those rows surprise people:
 
 - **R2 with `maxUploadSize`** proxies because R2 refuses `maxSize`. The limit then holds, since the proxy counts bytes and aborts past it, but every byte now crosses your server.
 - **Azure** proxies whenever the browser sends a type, and the browser client always sends one (`application/octet-stream` when the file has none). Azure refuses `contentType`.
-- **Public Vercel Blob** proxies because the gateway presigns only when `capabilities.signedUrl.supported` is `true`, which Vercel Blob reports only in private mode.
 
 The declared size is only the browser's claim, so the gateway checks the real one as well. After a direct upload, the complete step `head`s the object, and if it's larger than `maxUploadSize`, deletes it and returns an error entry for that key. With a 1000-byte limit, on the memory adapter and on `s3()` against MinIO, a presign that declared 2000 bytes got `422`. One that declared 500 bytes, followed by a 2000-byte object written to the minted key, came back from complete as `uploaded object is 2000 bytes, exceeds maxSize 1000`, and the object was gone afterwards. The proxy path stops the bytes sooner: with the memory adapter, a 2000-byte body streamed there got `422` `upload exceeds maxSize`, and nothing was stored.
 
@@ -239,7 +237,7 @@ export const files = createFiles({
 
 Both plugins refuse to sign upload URLs, because a direct upload would skip them. `files.signedUploadUrl()` throws `contentType: signedUploadUrl() bypasses magic-byte sniffing (the client uploads directly, never through the plugin); upload through the Files instance to enforce it`. `validation()` refuses the same way whenever it has a size or type rule.
 
-Behind the gateway, that refusal sends keyless uploads to the proxy path, so the plugins see every byte. With the memory adapter, uploading HTML bytes as `avatar.png` through that path returned `500` with code `Provider` and the message `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`. The gateway reports plugin rejections as `500`, not `4xx`, and the message includes the full storage key.
+Behind the gateway, that refusal sends keyless uploads to the proxy path, so the plugins see every byte. With the memory adapter, uploading HTML bytes as `avatar.png` through that path returns `422` with code `Validation` and the message `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`. The plugin throws an `Invalid` error, which the gateway sends as a `422`, and the message includes the full storage key.
 
 ### After a direct upload: sniff and delete
 
@@ -263,12 +261,12 @@ export async function verifyUpload(key: string) {
     stored.size <= MAX_BYTES &&
     sniffed !== undefined &&
     ALLOWED_TYPES.has(sniffed) &&
-    sniffed === stored.type;
+    sniffed === stored.contentType;
   if (!ok) {
     await files.delete(key);
     throw new Error("Upload rejected: size or content doesn't match");
   }
-  return { key, size: stored.size, type: sniffed };
+  return { key, size: stored.size, contentType: sniffed };
 }
 ```
 

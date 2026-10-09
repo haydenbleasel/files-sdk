@@ -23,7 +23,7 @@ That split decides what this setup is for. Pull Zone URLs are public and permane
 - A **Pull Zone** whose origin type is **Bunny Storage Zone**, pointing at that zone, as in Bunny's [storage quickstart](https://bunny.net/docs/storage/quickstart). Use its `*.b-cdn.net` hostname or add a [custom hostname](https://bunny.net/docs/cdn/custom-hostname) such as `media.example.com`.
 - Your account **API key** from [Account → API Key](https://bunny.net/docs/account/api-keys), for purging. It's a different key from the storage zone password.
 - A Next.js App Router app with an auth library that can resolve the signed-in user on the server.
-- Written against files-sdk 2.7, `@bunny.net/storage-sdk` 0.3.2, Next.js 16.4, and React 19.3.
+- Written against files-sdk 3.0, `@bunny.net/storage-sdk` 0.3.2, Next.js 16.4, and React 19.3.
 
 ```package-install
 files-sdk @bunny.net/storage-sdk
@@ -128,7 +128,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 
 `getSession` stands in for your auth library: Auth.js, Clerk, Better Auth, or your own cookie check. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
 
-You don't configure a proxy anywhere. The client's `upload(file)` starts by asking the gateway for an upload target. The gateway offers a presigned URL only when `files.capabilities.signedUrl.supported` is true, and the Bunny adapter reports `false`, so the gateway answers with its own proxy URL (`/api/files?op=proxy&token=…`) instead. The browser `PUT`s the file there, the gateway checks the token and streams the request body into `files.upload()`, and a final `complete` call `head`s the stored file. Against a mocked Storage API, that sequence returned a proxy target, stored the file under `users/42/<uuid>.png`, and completed with its size and type.
+You don't configure a proxy anywhere. The client's `upload(file)` starts by asking the gateway for an upload target. The gateway offers a presigned URL only when `files.capabilities.signedUpload.supported` is true, and the Bunny adapter reports `false`, so the gateway answers with its own proxy URL (`/api/files?op=proxy&token=…`) instead. The browser `PUT`s the file there, the gateway checks the token and streams the request body into `files.upload()`, and a final `complete` call `head`s the stored file. Against a mocked Storage API, that sequence returned a proxy target, stored the file under `users/42/<uuid>.png`, and completed with its size and content type.
 
 The rest of the configuration:
 
@@ -227,7 +227,7 @@ export function Uploader() {
 
 Progress measures the upload to your server. An entry reaches `"success"` only after the `complete` step, which runs once the server has finished writing to Bunny.
 
-Why not ask the gateway for the URL instead? Its `url` operation asks `files.url()` for `Content-Disposition: attachment` by default, which a Pull Zone URL can't carry, so on Bunny it fails with a `500` rather than hand out a URL without it. If `authorize` returns `{ disposition: "inline" }` for that operation, the gateway mints the plain Pull Zone URL instead, which suits this setup, since the plugins only store images. The gateway's `download` operation works on Bunny too, but it streams every byte through your server, because there's no signed URL to redirect to. Calling `files.url()` in server code, as the page does, needs neither.
+Why not ask the gateway for the URL instead? Its `url` operation asks `files.url()` for `Content-Disposition: attachment` by default, which a Pull Zone URL can't carry, so on Bunny it fails with a `422` rather than hand out a URL without it. If `authorize` returns `{ disposition: "inline" }` for that operation, the gateway mints the plain Pull Zone URL instead, which suits this setup, since the plugins only store images. The gateway's `download` operation works on Bunny too, but it streams every byte through your server, because there's no signed URL to redirect to. Calling `files.url()` in server code, as the page does, needs neither.
 
 To check delivery, request a file through the Pull Zone:
 
@@ -315,10 +315,10 @@ Deletes need the purge as much as overwrites do: removing a file from storage do
 
 ## What Bunny Storage can't do here
 
-`files.capabilities` reports `false` for every optional feature on this adapter: `signedUrl`, `rangeRead`, `metadata`, `cacheControl`, `delimiter`, `multipart`, `uploadProgress`, and `serverSideCopy`. In this setup that means:
+Apart from `publicUrl`, which is `true` once `publicBaseUrl` is set, `files.capabilities` reports every optional feature on this adapter as unsupported: `signedUrl`, `signedUpload`, `rangeRead`, `metadata`, `cacheControl`, `delimiter`, `resumable`, `uploadProgress`, and `serverSideCopy`. In this setup that means:
 
 - **No direct uploads.** `signedUploadUrl()` always rejects with `bunnyStorage: signed upload URLs are not available…`, so the bytes cross your server. On Vercel, function request bodies are capped at 4.5 MB, which caps each file on this path; [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side. For larger files, run the upload route on a host without that limit.
-- **No private delivery through the adapter.** `url()` returns a permanent public URL and ignores `expiresIn`. Bunny's Pull Zones support [token authentication](https://bunny.net/docs/cdn/security/token-authentication) for expiring links, but Files SDK doesn't generate those tokens; you'd sign them yourself. For files that must stay private, a provider with signed URLs is the simpler fit.
+- **No private delivery through the adapter.** `url()` returns a permanent public URL. Passing `expiresIn` throws an `Unsupported` `FilesError` rather than hand back a link that never expires. Bunny's Pull Zones support [token authentication](https://bunny.net/docs/cdn/security/token-authentication) for expiring links, but Files SDK doesn't generate those tokens; you'd sign them yourself. For files that must stay private, a provider with signed URLs is the simpler fit.
 - **Directory listings, not prefix scans.** `list({ prefix })` lists one directory and filters it, so `prefix: "users/"` won't return files under `users/42/`, and `delimiter` throws. Keep each user's files in one directory, as the gateway's `keyPrefix` does.
 - **No range reads or server-side copies.** `download(key, { range })` throws, and `copy()` downloads the source and uploads it again. Browsers fetch media from the Pull Zone, so neither touches the delivery path.
 
@@ -332,9 +332,9 @@ Bunny also offers an [S3-compatible API](https://bunny.net/docs/storage/s3), in 
 
 **`Unauthorized access to storage zone: app-media`** (code `Unauthorized`). The Storage API returned `401`. Check that `BUNNY_STORAGE_ACCESS_KEY` is the zone password, not the account API key, and that `BUNNY_STORAGE_REGION` is the zone's primary region.
 
-**`500` with `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`.** The `contentType()` plugin refused an upload whose bytes don't match its declared type. Nothing was stored. A file it can't identify fails with `could not identify the contents`, and a recognized type that isn't on the list, such as a BMP, fails `validation()` with `is not one of the allowed types`. The gateway reports these plugin rejections as `500`, so show `upload.error.message` rather than relying on the status code.
+**`422` with `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`.** The `contentType()` plugin refused an upload whose bytes don't match its declared type. Nothing was stored. A file it can't identify fails with `could not identify the contents`, and a recognized type that isn't on the list, such as a BMP, fails `validation()` with `is not one of the allowed types`. The gateway reports these plugin rejections as `422` with code `Validation`, and `upload.error.code` is `Invalid` in the browser. Show `upload.error.message` to say which rule failed.
 
-**`500` with `url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment"` from `/api/files`.** Something called the gateway's `url` operation, which asks for an attachment disposition unless `authorize` allows inline. Build URLs with `files.url()` in server code, or return `{ disposition: "inline" }` from `authorize` for that operation.
+**`422` with `url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment"` from `/api/files`.** Something called the gateway's `url` operation, which asks for an attachment disposition unless `authorize` allows inline. Build URLs with `files.url()` in server code, or return `{ disposition: "inline" }` from `authorize` for that operation.
 
 **The old image keeps showing after an overwrite.** The edge or the browser still has the previous copy. Purge the URL, or give the new version a new key.
 

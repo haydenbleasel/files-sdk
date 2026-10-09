@@ -39,7 +39,7 @@ describe("loadS3Sdk", () => {
     const { cause, code, message, permanent } = thrown as FilesError;
     expect({ cause, code, permanent }).toEqual({
       cause: missing,
-      code: "Provider",
+      code: "Unsupported",
       permanent: true,
     });
     expect(message).toStartWith('r2-http adapter: client "aws-sdk" requires');
@@ -63,7 +63,7 @@ describe("loadS3Sdk", () => {
       loadS3Sdk("rustfs", () => Promise.resolve(empty as unknown as S3Sdk))
     ).rejects.toMatchObject({
       cause: undefined,
-      code: "Provider",
+      code: "Unsupported",
       message: expect.stringContaining(
         'rustfs adapter: client "aws-sdk" requires'
       ),
@@ -76,6 +76,6 @@ describe("loadS3Sdk", () => {
     await expect(
       // SAFETY (test): `requestPresigner` is deliberately empty.
       loadS3Sdk("minio", () => Promise.resolve(partial as unknown as S3Sdk))
-    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    ).rejects.toMatchObject({ code: "Unsupported", permanent: true });
   });
 });

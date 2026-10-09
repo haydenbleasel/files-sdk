@@ -55,11 +55,11 @@ return {
 
 `keyPrefix` is the workhorse. It is **prepended** server-side, so a client that calls `download("avatar.jpg")` actually reads `users/123/avatar.jpg` — it literally cannot address outside its scope. The prefix is stripped from `list`/`search` results and returned keys, so the client only ever sees relative paths. `copy`/`move` re-root **both** ends under the caller's prefix: a `from` that names another tenant's key just becomes a key inside the caller's own prefix, so neither end can reach outside the scope.
 
-`maxExpiresIn` is the only expiry ceiling. The router's `defaultExpiresIn` is just what applies when the client doesn't ask, and a client may request a longer `expiresIn` for `url()` or an upload. Return `maxExpiresIn` to cap it.
+`maxExpiresIn` is the only expiry ceiling. The router's `defaultExpiresIn` is just what applies when the client doesn't ask, and a client may request a longer `expiresIn` for `url()` or an upload. Return `maxExpiresIn` to cap it. On an adapter that only has permanent links (Vercel Blob public, UploadThing `public-read`, …), a capped `url` can't be honored, so it fails with a `422` `Unsupported` error. In the default `"auto"` `downloadMode`, `download` proxies the bytes instead of redirecting.
 
 `disposition` is the server-side override for both proxy downloads and URL minting. The gateway defaults untrusted URLs to `attachment`; return `"inline"` only when that operation is safe for the current user, key, and content type.
 
-Some adapters can't bind a `Content-Disposition` into their URLs at all (Vercel Blob, Box, Dropbox, the local `fs` adapter, …; see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, an `"inline"` disposition from `authorize` makes the gateway mint the URL without one, since inline rendering is already your policy. Without it, `download` proxies the bytes to apply `attachment` (unless `downloadMode` is `"redirect"`), and the `url` operation fails with a `Provider` error rather than hand out a URL that may render inline.
+Some adapters can't bind a `Content-Disposition` into their URLs at all (Vercel Blob, Box, Dropbox, the local `fs` adapter, …; see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, an `"inline"` disposition from `authorize` makes the gateway mint the URL without one, since inline rendering is already your policy. Without it, `download` proxies the bytes to apply `attachment` (unless `downloadMode` is `"redirect"`), and the `url` operation fails with a `422` `Unsupported` error rather than hand out a URL that may render inline.
 
 ## Recipes
 

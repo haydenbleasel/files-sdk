@@ -12,7 +12,7 @@ const adapter = s3({
   region: "us-east-1", // optional; falls back to AWS_REGION / AWS_DEFAULT_REGION
   // credentials: { accessKeyId, secretAccessKey, sessionToken? }, // optional; AWS default chain otherwise
   // endpoint, forcePathStyle,                                     // for self-hosted/S3-compatible
-  // publicBaseUrl: "https://cdn.example.com",                     // skip signing on url()
+  // publicBaseUrl: "https://cdn.example.com",                     // plain url(key) returns the CDN link
   // defaultUrlExpiresIn: 3600,
 });
 ```
@@ -20,8 +20,8 @@ const adapter = s3({
 Gotchas:
 
 - No `credentials`? The AWS SDK's default credential chain (env, shared config, EC2/ECS/EKS metadata) runs. That's usually what you want in production.
-- `publicBaseUrl` flips `url()` to return `${publicBaseUrl}/${key}` and skips signing — set this when you've put CloudFront in front of the bucket.
-- Passing `responseContentDisposition` always forces signing, even with `publicBaseUrl` set, because permanent CDN URLs have no signature to bind the override to.
+- `publicBaseUrl` flips a plain `url(key)` to return `${publicBaseUrl}/${key}` without signing — set this when you've put CloudFront in front of the bucket.
+- Passing `expiresIn` or `responseContentDisposition` always forces signing, even with `publicBaseUrl` set, because a permanent CDN URL can't expire and has no signature to bind the override to.
 
 ## Cloudflare R2 — `files-sdk/r2`
 
@@ -65,7 +65,7 @@ Reads/writes still go through the binding (no egress fees, no extra round trip).
 
 Gotchas:
 
-- Binding-only with no `publicBaseUrl` and no HTTP creds → `url()` throws. There's no signing primitive available to a binding.
+- Binding-only with no `publicBaseUrl` and no HTTP creds → `url()` throws `Unsupported`. There's no signing primitive available to a binding. With a `publicBaseUrl`, a plain `url(key)` returns the permanent link, but `url(key, { expiresIn })` still throws `Unsupported` — add HTTP creds (hybrid mode) to sign.
 - The `"aws-sdk"` engine is loaded lazily, so a binding-only or fetch-engine Worker builds with `files-sdk` alone: Wrangler leaves the `@aws-sdk/*` imports unresolved when the packages aren't installed. If they _are_ installed (including hoisted in a monorepo), Wrangler bundles them (~900 KiB) even though they never run, so keep them out of such a Worker. On files-sdk ≤2.6.2 a missing `@aws-sdk/*` package failed `wrangler deploy` with `Could not resolve "@aws-sdk/client-s3"`; upgrade (or alias the four packages to a stub). With `client: "aws-sdk"` and the packages missing, the first call rejects with a `FilesError` naming them.
 - HTTP mode has two engines: `client: "aws-sdk"` (full surface, needs the `@aws-sdk/*` peers) and `client: "fetch"` (SigV4 `fetch` via aws4fetch, no AWS SDK; no multipart/resumable uploads, bulk deletes fan out per key). Inside Cloudflare Workers it defaults to `"fetch"`.
 
@@ -99,7 +99,8 @@ A few things to know:
 - **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either). A passed `oidcToken` is used as given, never refreshed.
 - **Explicit `token` always wins** over OIDC env vars, mirroring the SDK. Set it only when you actually want to override.
 - **`access` is fixed at construction.** A single `Files` instance is unambiguously public or private. Need both? Instantiate two adapters.
-- **`access: "private"` makes `url()` presign.** Private blobs have no permanent public URL, so `url()` returns a presigned `GET` scoped to that key that expires after `expiresIn` (default 3600 via `defaultUrlExpiresIn`; Vercel caps it at 7 days). `responseContentDisposition` still throws (Vercel URLs can't carry it), and range downloads aren't available in private mode. `signedUploadUrl` works in both modes.
+- **`access: "private"` makes `url()` presign.** Private blobs have no permanent public URL, so `url()` returns a presigned `GET` scoped to that key that expires after `expiresIn` (default 3600 via `defaultUrlExpiresIn`; Vercel caps it at 7 days). `responseContentDisposition` still throws `Unsupported` (Vercel URLs can't carry it), and range downloads aren't available in private mode. `signedUploadUrl` works in both modes.
+- **Public blobs can't expire.** In `access: "public"` mode, `url(key)` returns the permanent CDN URL and `url(key, { expiresIn })` throws `Unsupported`. Drop `expiresIn`, or use a private adapter for expiring links.
 - **`allowOverwrite: true` is the default** so `addRandomSuffix: false` works at all — Vercel rejects same-pathname uploads otherwise. If you want create-only semantics, set `allowOverwrite: false` and handle the resulting `Conflict`.
 
 ## Google Cloud Storage — `files-sdk/gcs`
@@ -145,7 +146,7 @@ const adapter = azure({
 
 Notes:
 
-- A SAS-token-only adapter (no `accountKey`) **cannot mint new SAS** — `url()` and `signedUploadUrl()` throw `Provider`. Reads/writes/list still work as long as the SAS has those permissions.
+- A SAS-token-only adapter (no `accountKey`) **cannot mint new SAS** — `url()` and `signedUploadUrl()` throw `Unsupported`. Reads/writes/list still work as long as the SAS has those permissions.
 - A `credential` adapter uses Azure AD / Managed Identity for SDK calls and mints User Delegation SAS URLs for `url()` and `signedUploadUrl()`. The principal needs blob data permissions plus permission to call `generateUserDelegationKey`.
 - `connectionString` is the highest-precedence credential source.
 - Azurite: `@azure/storage-blob` 12.34+ sends service version `2026-10-06`, newer than Azurite 3.37.0 accepts. Start Azurite with `--skipApiVersionCheck`.
@@ -180,9 +181,9 @@ const adapter = fs({
 
 Notes:
 
-- Paths that resolve outside `root` (e.g. `../etc/passwd`) throw `Provider`.
-- Without `urlBaseUrl`, `url()` returns a `file://` URL — fine for CLIs/tests, not for browsers.
-- `signedUploadUrl()` throws `Provider` — the fs adapter has no upload server or signer to enforce expiry, size, or content type. Upload through `files.upload()` or your own route.
+- Paths that resolve outside `root` (e.g. `../etc/passwd`) throw `Invalid`.
+- Without `urlBaseUrl`, `url()` returns a `file://` URL — fine for CLIs/tests, not for browsers. Either way the link is permanent, so `url(key, { expiresIn })` throws `Unsupported`.
+- `signedUploadUrl()` throws `Unsupported` — the fs adapter has no upload server or signer to enforce expiry, size, or content type. Upload through `files.upload()` or your own route.
 
 ## The shape every adapter shares
 

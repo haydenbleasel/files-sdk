@@ -19,7 +19,7 @@ The catch is size limits. R2 doesn't implement S3's `POST` upload policies, so a
 
 - A Cloudflare account with R2 enabled, a bucket (this guide calls it `uploads`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** on that bucket. The token gives you an access key ID and secret access key; your account ID is on the R2 overview page.
 - A Next.js App Router app with an auth library that can resolve the signed-in user on the server.
-- Written against files-sdk 2.7, Next.js 16.4, and React 19.3.
+- Written against files-sdk 3.0, Next.js 16.4, and React 19.3.
 
 ```package-install
 files-sdk
@@ -35,7 +35,7 @@ That's the only package. The R2 adapter's `client: "fetch"` engine signs request
 | --- | --- | --- |
 | 1. Presign | Browser → `POST /api/files` | Your `authorize` hook runs. The gateway mints a key like `users/42/3f1c….pdf`, asks R2 for a presigned `PUT` URL, and signs an HMAC token for the key. |
 | 2. Upload | Browser → R2 | The browser `PUT`s the file to the presigned URL with `XMLHttpRequest`, which reports upload progress. This is a cross-origin request, so the bucket needs a CORS rule. |
-| 3. Complete | Browser → `POST /api/files` | `authorize` runs again. The gateway verifies the token, checks that its key is under this user's prefix, `head`s the object in R2, and returns its key, size, type, and ETag. |
+| 3. Complete | Browser → `POST /api/files` | `authorize` runs again. The gateway verifies the token, checks that its key is under this user's prefix, `head`s the object in R2, and returns its key, size, content type, and ETag. |
 
 The server chooses the key, so a client can't overwrite another user's file or pick a path outside its prefix. A token is also tied to the prefix it was minted under: complete refuses another user's token with `upload token was not issued for this caller`, without revealing the key.
 
@@ -112,7 +112,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 
 A few details in that file are deliberate:
 
-- **Throw a `FilesError`, not a plain `Error`.** The gateway maps `Unauthorized` to `401` and `ReadOnly` to `403`. Any other thrown error becomes a `500`.
+- **Throw a `FilesError`, not a plain `Error`.** The gateway maps `Unauthorized` to `401` and `ReadOnly` to `403`. A plain `Error` becomes a `500`.
 - **`keyPrefix` is enforced on the server.** When the browser asks for `report.pdf`, the gateway reads `users/42/report.pdf`. Keys that try to climb out with `..` are rejected, and `list` results come back with the prefix stripped. See [Authorization](/docs/ui/server/authorization) for the rest of the constraint object.
 - **`maxExpiresIn: 300`** caps how long any signed URL from this route lives. The gateway's own default is also 300 seconds, but a client can ask for longer. The cap is what stops it.
 - **Origins.** State-changing requests must come from the route's own origin by default. That's right when the page and the API share a domain; add `allowedOrigins` only if they don't.
@@ -251,7 +251,7 @@ const router = createFilesRouter({
 });
 ```
 
-On R2 this changes the upload path, not just the limit. A file whose declared size is already over the limit is refused at presign with `422` (`upload exceeds maxUploadSize`) before anything moves. For the rest, the gateway asks R2 for a presigned URL with `maxSize`, R2's adapter refuses, and the gateway falls back to its proxy target. The browser then `PUT`s the bytes to `/api/files`. The gateway counts the bytes as they stream through and aborts past the limit, so an oversized file never finishes landing in R2.
+On R2 this changes the upload path, not just the limit. A file whose declared size is already over the limit is refused at presign with `422` (`upload exceeds maxUploadSize`) before anything moves. For the rest, the gateway sees that R2 can't enforce `maxSize` on a presigned URL (`files.capabilities.signedUpload.maxSize` is `false`) and returns its proxy target instead. The browser then `PUT`s the bytes to `/api/files`. The gateway counts the bytes as they stream through and aborts past the limit, so an oversized file never finishes landing in R2.
 
 The cost is that every byte now passes through your server. Two consequences:
 
@@ -284,8 +284,8 @@ export async function attachUpload(key: string) {
     await files.delete(fullKey);
     throw new Error("File is larger than 25 MiB");
   }
-  // Save fullKey, stored.size, and stored.type with the record here.
-  return { key, size: stored.size, type: stored.type };
+  // Save fullKey, stored.size, and stored.contentType with the record here.
+  return { key, size: stored.size, contentType: stored.contentType };
 }
 ```
 

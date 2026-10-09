@@ -20,7 +20,7 @@ Two Vercel Blob limits shape the rest. A Blob URL can't carry a `Content-Disposi
 
 - A Vercel project with a **private** Blob store connected to it.
 - An auth library that can resolve the signed-in user on the server, and a table of invoices in your database.
-- Written against files-sdk 2.7, `@vercel/blob` 2.8, Next.js 16.4, and React 19.3.
+- Written against files-sdk 3.0, `@vercel/blob` 2.8, Next.js 16.4, and React 19.3.
 
 ```package-install
 files-sdk @vercel/blob
@@ -39,7 +39,7 @@ export const files = createFiles({
 
 With the store connected, the adapter needs no credentials in code: on Vercel Functions each call uses the current request's OIDC token. [Set up Vercel Blob authentication](/guides/vercel-blob-authentication) covers local development and hosts outside Vercel.
 
-`access: "private"` is fixed when the adapter is created. It makes uploads private and turns `url()` into a presigned `GET`. With the default `"public"`, `url()` returns the blob's permanent CDN URL and ignores `expiresIn`.
+`access: "private"` is fixed when the adapter is created. It makes uploads private and turns `url()` into a presigned `GET`. With the default `"public"`, `url()` returns the blob's permanent CDN URL, and passing `expiresIn` throws an `Unsupported` error.
 
 ## Model the invoice
 
@@ -220,7 +220,7 @@ export async function GET(
     headers: {
       "Cache-Control": "private, no-store",
       "Content-Disposition": `attachment; filename="invoice-${invoice.number}.pdf"`,
-      "Content-Type": file.type,
+      "Content-Type": file.contentType,
       "X-Content-Type-Options": "nosniff",
     },
   });
@@ -248,10 +248,10 @@ Invoices are read whole, so this never comes up here. If you're serving video th
 
 **``vercel-blob: `responseContentDisposition` is not supported…``** Something passed a disposition to `url()`: your own code, or a gateway configured with `downloadMode: "redirect"`, which has no proxy to fall back to. Call `files.url()` without it, as the route above does, or proxy the file and set the header yourself.
 
-**`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment".…`** with a `500` from the gateway's `url` operation. The gateway refuses to mint a Blob URL it can't force to download. Return `{ disposition: "inline" }` from `authorize` for routes where inline rendering is acceptable, or serve the file through `download` or a route like the one in this guide.
+**`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment".…`** with a `422` (code `Unsupported`) from the gateway's `url` operation. The gateway refuses to mint a Blob URL it can't force to download. Return `{ disposition: "inline" }` from `authorize` for routes where inline rendering is acceptable, or serve the file through `download` or a route like the one in this guide.
 
 **`vercel-blob: range downloads are not supported by this adapter`.** A `range` reached `download()` on the private store. Read the whole file, or use a store with range support for media.
 
 **`vercelBlob adapter: missing credentials…`** or **`Vercel Blob: Access denied, please provide a valid token for this resource.`** The adapter couldn't authenticate. [Set up Vercel Blob authentication](/guides/vercel-blob-authentication#troubleshooting) covers each cause.
 
-**The PDF downloads instead of opening, or opens as text.** The browser goes by the stored content type. Check that the upload passed `contentType: "application/pdf"`; `files.head(key)` returns the stored `type`.
+**The PDF downloads instead of opening, or opens as text.** The browser goes by the stored content type. Check that the upload passed `contentType: "application/pdf"`; `files.head(key)` returns the stored `contentType`.

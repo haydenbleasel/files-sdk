@@ -475,10 +475,8 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
     wrap: handlers({
       signedUploadUrl: () => {
         throw new FilesError(
-          "Provider",
-          "contentType: signedUploadUrl() bypasses magic-byte sniffing (the client uploads directly, never through the plugin); upload through the Files instance to enforce it",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "contentType: signedUploadUrl() bypasses magic-byte sniffing (the client uploads directly, never through the plugin); upload through the Files instance to enforce it"
         );
       },
       upload: async (op, next) => {

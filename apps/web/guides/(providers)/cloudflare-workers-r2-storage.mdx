@@ -22,7 +22,7 @@ Two things catch people on Workers. Wrangler bundles whatever `@aws-sdk/*` packa
 - A Cloudflare account with R2, a bucket (this guide calls it `uploads`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** on that bucket. Hybrid signing uses the token's access key ID and secret access key. Your account ID is on the R2 overview page.
 - A Worker project with Wrangler. The examples type `env` by hand with `@cloudflare/workers-types`; `npx wrangler types` can generate the same `Env` interface.
 - A way to resolve the signed-in user from a request. This guide calls it `getSession(request)` and assumes it returns `{ user: { id: string } }` or `null`. It stands in for your auth library: Better Auth, Clerk, Auth.js, or your own session cookie.
-- Written against files-sdk 2.7, Wrangler 4.148, and the `2026-10-01` compatibility date.
+- Written against files-sdk 3.0, Wrangler 4.148, and the `2026-10-01` compatibility date.
 
 ```package-install
 files-sdk
@@ -36,7 +36,7 @@ files-sdk
 | --- | --- | --- | --- | --- |
 | Options | `binding` | `binding`, `bucket`, `accountId`, `accessKeyId`, `secretAccessKey` | `bucket`, `accountId`, `accessKeyId`, `secretAccessKey` | Same, plus `client: "aws-sdk"` |
 | Reads and writes | Binding | Binding | Signed `fetch` to the S3 API | AWS SDK over the S3 API |
-| `url()` and `signedUploadUrl()` | Throw (`url()` only returns unsigned `publicBaseUrl` links) | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` |
+| `url()` and `signedUploadUrl()` | Throw (a plain `url(key)` only returns unsigned `publicBaseUrl` links; `expiresIn` throws) | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` |
 | Resumable `control` | Throws | Throws | Throws | Supported |
 | `multipart` option | Ignored, one `put` | Ignored, one `put` | Throws | Supported |
 | Bulk `delete([...])` | One binding call per key | One binding call per key | One `DELETE` request per key | Batched `DeleteObjects` |
@@ -46,7 +46,7 @@ files-sdk
 On every configuration, `signedUploadUrl()` returns a presigned `PUT` and throws if you pass `maxSize`, because R2 has no `POST` upload policies. Inside a Worker, the S3 API modes default to `client: "fetch"`.
 
 - **Hybrid** fits most Workers that serve a browser app: Worker code uses the binding, and file bytes go between the browser and R2 without passing through the Worker. The rest of this guide builds it.
-- **Binding only** works when the browser never needs a URL of its own. Uploads and downloads stream through the Worker, and each upload has to fit Workers' [request body limit](https://developers.cloudflare.com/workers/platform/limits/) (100 MB on the Free and Pro plans). The gateway's `url` operation fails in this mode: it asks for `Content-Disposition: attachment` by default, which only a signed URL can carry. Returning `{ disposition: "inline" }` from `authorize` produces a URL only if you also set `publicBaseUrl`, and that URL is a permanent public link. Leave `url` out of the operations you allow; `download` streams through the Worker and sets the header itself.
+- **Binding only** works when the browser never needs a URL of its own. Uploads and downloads stream through the Worker, and each upload has to fit Workers' [request body limit](https://developers.cloudflare.com/workers/platform/limits/) (100 MB on the Free and Pro plans). The gateway's `url` operation fails in this mode: it asks for `Content-Disposition: attachment` by default, which only a signed URL can carry. Returning `{ disposition: "inline" }` from `authorize` produces a URL only if you also set `publicBaseUrl` and neither `authorize` (`maxExpiresIn`) nor the client asks for an expiry, and that URL is a permanent public link. Leave `url` out of the operations you allow; `download` streams through the Worker and sets the header itself.
 - **`client: "fetch"`** is for a Worker with no binding to the bucket, such as a bucket in another account. Each call is an HTTP subrequest.
 - **`client: "aws-sdk"`** only earns its weight when Worker code needs resumable or multipart uploads, and its XML parsing needs a `DOMParser` that workerd doesn't provide ([details](/docs/adapters/r2#default-inside-cloudflare-workers)). Test it under `wrangler dev` before you rely on it.
 
@@ -119,7 +119,7 @@ export function createStorage(env: Env) {
 }
 ```
 
-Hybrid mode needs all four of `bucket`, `accountId` (or `endpoint`), `accessKeyId`, and `secretAccessKey`. Leave one out and the adapter quietly stays binding-only. Nothing fails until `url()` or `signedUploadUrl()` throws `r2 binding: signing requires either…`.
+Hybrid mode needs all four of `bucket`, `accountId` (or `endpoint`), `accessKeyId`, and `secretAccessKey`. Leave one out and the adapter quietly stays binding-only. Nothing fails until `url()` or `signedUploadUrl()` throws an `Unsupported` error, such as `r2 binding: signing requires either…`.
 
 `bucket` and `bucket_name` have to agree because they're used separately. The binding is tied to the bucket in `wrangler.jsonc`, while the signer builds `https://<account-id>.r2.cloudflarestorage.com/<bucket>/<key>` from the option. If they differ, browsers upload to one bucket and the Worker reads from another.
 
@@ -191,7 +191,7 @@ In hybrid mode, each request takes this path. The presign and download responses
 
 - **Presign** returns a `PUT` target on `<account-id>.r2.cloudflarestorage.com/uploads/users/<id>/…` with `X-Amz-SignedHeaders=content-type;host`. The browser must send the exact `Content-Type` it asked for, and the client does.
 - **Upload** goes from the browser to R2. The Worker never sees the bytes.
-- **Complete** `head`s the new object through the binding and reports its size and type.
+- **Complete** `head`s the new object through the binding and reports its size and content type.
 - **Download** returns a `302` to a presigned `GET` that asks R2 for `Content-Disposition: attachment` and expires in 300 seconds.
 
 The gateway checks `Origin` on writes (a presign from another site got `403` with `origin not allowed`) and sends no CORS headers of its own. Serve the page from the Worker's hostname, for example with [Workers static assets](https://developers.cloudflare.com/workers/static-assets/). `allowedOrigins` only relaxes the origin check; it doesn't make the endpoint callable cross-origin.
@@ -332,7 +332,7 @@ The runtime raises an error if more or fewer bytes than `length` pass through. W
 
 ## Limit upload size
 
-Don't set `maxUploadSize` on a gateway whose `files` writes through the binding. The gateway enforces the limit by piping the request body through a `TransformStream` that counts bytes, and the output of that stream has no known length. In hybrid mode it also changes the upload path: `signedUploadUrl()` throws on `maxSize`, so the gateway falls back to proxying the upload through the Worker.
+Don't set `maxUploadSize` on a gateway whose `files` writes through the binding. The gateway enforces the limit by piping the request body through a `TransformStream` that counts bytes, and the output of that stream has no known length. In hybrid mode it also changes the upload path: R2 reports `signedUpload.maxSize: false` in `files.capabilities`, so the gateway proxies the upload through the Worker instead of presigning it.
 
 Under `wrangler dev` with its local R2 simulation, a gateway with `maxUploadSize: 1 MiB` failed every upload under the limit with `500` and the known-length error. Nothing under the limit ever got stored. That holds for binding-only and hybrid configurations alike. A file whose declared size is over the limit doesn't get that far: the presign step refuses it with `422` (`upload exceeds maxUploadSize`). With `maxUploadSize` set, every upload either fails at the binding or is refused up front.
 
@@ -355,7 +355,7 @@ Set `"remote": true` on the binding while you develop uploads, so the binding an
 
 **`Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)`.** A stream of unknown length reached the binding. Look for `maxUploadSize` on the gateway, `onProgress` on a stream upload, or a body you piped through a `TransformStream`.
 
-**`r2 binding: signing requires either…` or `r2 binding: url() requires either…`.** Hybrid mode is off because one of `bucket`, `accountId`, `accessKeyId`, or `secretAccessKey` is missing. A secret that was never set with `wrangler secret put` arrives as `undefined`.
+**`r2 binding: signing requires either…`, `r2 binding: url() requires either…`, or ``r2-binding: an expiring url() (`expiresIn`) is not supported by this adapter``.** Hybrid mode is off because one of `bucket`, `accountId`, `accessKeyId`, or `secretAccessKey` is missing. A secret that was never set with `wrangler secret put` arrives as `undefined`.
 
 **`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment"` from the gateway.** The Worker is binding-only and something called the `url` operation, which asks for an attachment disposition by default. Add the hybrid credentials, or drop `url` from the allowed operations.
 

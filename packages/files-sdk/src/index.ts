@@ -3958,18 +3958,14 @@ export class Files<A extends Adapter = Adapter> {
     }
     if (!this.#adapter.resumableUpload) {
       throw new FilesError(
-        "Provider",
-        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `${this.#adapter.name}: pause-able/resumable uploads are not supported by this adapter`
       );
     }
     if (!(isObject(session) && isString(session.provider))) {
       throw new FilesError(
-        "Provider",
-        "abortUpload() needs the resumable-upload session token from control.toJSON().",
-        undefined,
-        { permanent: true }
+        "Invalid",
+        "abortUpload() needs the resumable-upload session token from control.toJSON()."
       );
     }
     const driver = this.#adapter.resumableUpload(this.#path(key), {});

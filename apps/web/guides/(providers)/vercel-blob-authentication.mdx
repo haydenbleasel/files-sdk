@@ -20,7 +20,7 @@ The catch is the fallback. When `@vercel/blob` finds no usable OIDC token, it us
 
 - A Vercel project with a Blob store connected to it (the project's **Storage** tab). Include **Development** in the connection's environments if you want to use the store from your machine.
 - The Vercel CLI, logged in, for `vercel link`, `vercel env pull`, and refreshing development tokens.
-- Written against files-sdk 2.7, `@vercel/blob` 2.8, `@vercel/oidc` 3.8 (a dependency of `@vercel/blob`), and Next.js 16.4. The examples are App Router code, but nothing depends on Next.js except how `.env.local` gets loaded.
+- Written against files-sdk 3.0, `@vercel/blob` 2.8, `@vercel/oidc` 3.8 (a dependency of `@vercel/blob`), and Next.js 16.4. The examples are App Router code, but nothing depends on Next.js except how `.env.local` gets loaded.
 
 ```package-install
 files-sdk @vercel/blob
@@ -158,7 +158,7 @@ Keep it if something else needs it. Vercel's own [`handleUpload()`](https://verc
 
 ## Troubleshooting
 
-**``vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from the request's x-vercel-oidc-token header on Vercel Functions, or from VERCEL_OIDC_TOKEN).``** The `FilesError` code is `Provider`, flagged permanent, so `retries` don't repeat it. Thrown by `vercelBlob()` itself, it means neither `BLOB_STORE_ID` nor `BLOB_READ_WRITE_TOKEN` is set: `.env.local` wasn't loaded, or the store isn't connected to this environment. Thrown by a call, it means the adapter had a store ID but no OIDC token turned up and there's no read-write token. On Vercel, the call ran outside a request. Locally, the pulled token expired and couldn't be refreshed; see [Set up local development](#set-up-local-development). The error's `cause` is `@vercel/blob`'s `No blob credentials found` error.
+**``vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from the request's x-vercel-oidc-token header on Vercel Functions, or from VERCEL_OIDC_TOKEN).``** The `FilesError` code is `Invalid`, which is permanent, so `retries` don't repeat it. Thrown by `vercelBlob()` itself, it means neither `BLOB_STORE_ID` nor `BLOB_READ_WRITE_TOKEN` is set: `.env.local` wasn't loaded, or the store isn't connected to this environment. Thrown by a call, it means the adapter had a store ID but no OIDC token turned up and there's no read-write token. On Vercel, the call ran outside a request. Locally, the pulled token expired and couldn't be refreshed; see [Set up local development](#set-up-local-development). The error's `cause` is `@vercel/blob`'s `No blob credentials found` error.
 
 **``vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC.``** You passed `oidcToken` and no store ID resolved. Pass `storeId` as well, or check that the store's project connection covers this environment.
 

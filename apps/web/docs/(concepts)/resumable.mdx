@@ -48,7 +48,7 @@ const result = await files.upload("backups/db.tar", file, {
 Because resuming re-reads the bytes, `control` requires a body with a **known length** — a `File`, `Blob`, `ArrayBuffer`, typed array, or `string`. A bare `ReadableStream` is rejected: a consumed stream can't be replayed.
 
 :::warning
-`UploadControl` runs wherever the `Files` instance runs, which holds your provider credentials, so in practice that's your server, a worker, or a CLI. The browser client (`files-sdk/client`) and [`useFiles`](/docs/ui) don't use it: in 2.x they send each file through your [gateway](/docs/ui/server/gateway) or a presigned URL in a single request, can't pause, and can't resume across a page reload. An interrupted browser upload starts again from zero.
+`UploadControl` runs wherever the `Files` instance runs, which holds your provider credentials, so in practice that's your server, a worker, or a CLI. The browser client (`files-sdk/client`) and [`useFiles`](/docs/ui) don't use it: in 3.x they send each file through your [gateway](/docs/ui/server/gateway) or a presigned URL in a single request, can't pause, and can't resume across a page reload. An interrupted browser upload starts again from zero.
 :::
 
 ## Pause, abort, and the session
@@ -68,7 +68,7 @@ const token = JSON.parse(await readFile("upload.json", "utf8"));
 await files.abortUpload("backups/db.tar", token);
 ```
 
-It does what `abort()` does mid-upload. The key and token must match (the same logical key the upload targeted, on an instance with the same adapter and prefix), or it throws before discarding anything. A session that's already gone, because the upload completed or was discarded, isn't an error. Like other writes, it throws `ReadOnly` on a [read-only](/docs/readonly) instance, and it throws "not supported" on an adapter without resumable uploads.
+It does what `abort()` does mid-upload. The key and token must match (the same logical key the upload targeted, on an instance with the same adapter and prefix), or it throws before discarding anything. A session that's already gone, because the upload completed or was discarded, isn't an error. Like other writes, it throws `ReadOnly` on a [read-only](/docs/readonly) instance, and it throws `Unsupported` on an adapter without resumable uploads.
 
 ## What each adapter does
 
@@ -88,7 +88,7 @@ A few providers expose no serializable session, so they support pause/resume **i
 
 What `abort()` and `files.abortUpload()` discard also depends on the provider. S3 and the S3-compatible adapters abort the multipart upload; GCS, Firebase Storage, Google Drive, OneDrive, SharePoint, and Supabase cancel the session URL; the local filesystem, FTP, and SFTP delete the `.fls-part` file; and Appwrite deletes the partially uploaded file (never one whose upload has completed). Azure, Dropbox, Cloudinary, and Vercel Blob have no way to cancel a session, so it expires on its own (Azure drops uncommitted blocks after about 7 days), and the in-process sessions above end with their process.
 
-Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, WebDAV, the R2 Workers binding, the `fetch` S3 engine (`s3Fetch()` and `client: "fetch"`), and the rest — throws a clear "not supported" [`FilesError`](/docs/api/errors) when `control` is passed, the same way an unsupported [range download](/docs/api/download) does. `control` is a single-key option; it isn't available in the [array form](/docs/bulk) of `upload`.
+Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Convex, WebDAV, the R2 Workers binding, the `fetch` S3 engine (`s3Fetch()` and `client: "fetch"`), and the rest — throws an `Unsupported` [`FilesError`](/docs/api/errors) when `control` is passed, the same way an unsupported [range download](/docs/api/download) does. Check [`files.capabilities.resumable`](/docs/capabilities) to branch up front. `control` is a single-key option; it isn't available in the [array form](/docs/bulk) of `upload`.
 
 > The Supabase (TUS), Appwrite, and Cloudinary drivers are built to each provider's documented chunked-upload protocol and covered by mocked tests, but haven't been exercised against a live account — verify them end-to-end before relying on them in production.
 

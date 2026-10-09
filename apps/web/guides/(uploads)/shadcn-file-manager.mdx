@@ -22,7 +22,7 @@ File Browser reports the open folder through its `onNavigate` prop, so the page 
 - A Next.js App Router app with [shadcn/ui](https://ui.shadcn.com/docs/installation/next) initialized. The components import from `@/components/ui` and `@/lib/utils`.
 - The storage setup from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload): `lib/files.ts`, the `R2_*` and `FILES_API_SECRET` variables, and the bucket's CORS rule, with `GET` added to `AllowedMethods`. File Preview and the Download action fetch files from JavaScript, and that `fetch` follows the gateway's redirect to R2. Any signing adapter's bucket needs the same rule.
 - An auth library that can resolve the signed-in user on the server.
-- Written against files-sdk 2.7, Next.js 16.4, React 19.3, and the registry components as published on files-sdk.dev. The page below was rendered under happy-dom against the gateway and the memory adapter to check the folder, pagination, upload, retry, and error flows. It hasn't been run against R2.
+- Written against files-sdk 3.0, Next.js 16.4, React 19.3, and the registry components as published on files-sdk.dev. The page below was rendered under happy-dom against the gateway and the memory adapter to check the folder, pagination, upload, retry, and error flows. It hasn't been run against R2.
 
 ## Install the components
 
@@ -91,7 +91,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 ```tsx title="app/files/file-manager.tsx" lineNumbers
 "use client";
 
-import type { StoredFile } from "files-sdk";
+import type { FileInfo } from "files-sdk";
 import { useFiles } from "files-sdk/react";
 import { useState } from "react";
 
@@ -111,7 +111,7 @@ const MAX_BYTES = 25 * 1024 * 1024;
 export function FileManager() {
   const files = useFiles();
   const [folder, setFolder] = useState("");
-  const [selected, setSelected] = useState<StoredFile | null>(null);
+  const [selected, setSelected] = useState<FileInfo | null>(null);
 
   const failed = files.uploads.filter((upload) => upload.status === "error");
 
@@ -194,7 +194,7 @@ Render the page behind your sign-in. How the pieces connect:
 - **One `useFiles()` instance.** Upload Progress reads the hook's `uploads` and `progress`, so it shows every upload the dropzone starts without any wiring between them.
 - **Folders.** File Browser calls `onNavigate` with the open folder's prefix on mount and whenever the user opens another folder, so `folder` follows the breadcrumb and the dropzone's `prefix` follows `folder`. Folder rows are the `prefixes` of a `list({ delimiter: "/" })`; on adapters with no folder concept, File Browser lists every key under the path instead and says so.
 - **Refreshing after uploads.** File Browser re-lists the open folder when you navigate, after its own row actions, and when uploads through its `files` instance finish. A dropzone batch re-lists once, after its last file, and the rows on screen stay until the new listing replaces them. The listing starts again from its first page, so rows you loaded with **Load more** have to be loaded again.
-- **Previews.** `onSelect` hands over the `StoredFile` from the listing, and passing that object (not a key string) to File Preview saves a `head` request. Images load from a signed URL, PDFs are downloaded and shown from a `blob:` URL, and text renders inline. [File Preview](/docs/ui/components/file-preview#why-pdfs-use-a-blob-url) explains why PDFs take the long way. `onChanged` clears the selection after a rename, move, or delete, since the file may no longer be there.
+- **Previews.** `onSelect` hands over the `FileInfo` from the listing, and passing that object (not a key string) to File Preview saves a `head` request. Images load from a signed URL, PDFs are downloaded and shown from a `blob:` URL, and text renders inline. [File Preview](/docs/ui/components/file-preview#why-pdfs-use-a-blob-url) explains why PDFs take the long way. `onChanged` clears the selection after a rename, move, or delete, since the file may no longer be there.
 
 ## Choose where uploads go
 

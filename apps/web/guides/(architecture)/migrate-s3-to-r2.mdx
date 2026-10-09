@@ -18,7 +18,7 @@ The script here uses `transfer()` to stream every object from S3 to R2, writes t
 
 - AWS credentials that can list and read the source bucket (`s3:ListBucket`, `s3:GetObject`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with Object Read & Write on the destination bucket, set as `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. This guide calls both buckets `uploads`.
 - Node 22.18 or later, or Bun, on a machine with good bandwidth to both providers. Every byte streams through it.
-- Written against files-sdk 2.7 and `@aws-sdk/client-s3` 3.1148.
+- Written against files-sdk 3.0 and `@aws-sdk/client-s3` 3.1148.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -72,7 +72,7 @@ export const s3ClientOf = (files: Files): S3Client => {
   return files.raw;
 };
 
-// StoredFile has no Cache-Control field, so read it from the native client.
+// FileInfo has no Cache-Control field, so read it from the native client.
 export const cacheControlOf = async (
   files: Files,
   bucket: string,
@@ -121,7 +121,7 @@ export const dest = new Files({
 });
 ```
 
-**Why the plugin.** `transfer()` carries the body, content type, and user metadata. It doesn't carry Cache-Control, because a `StoredFile` has no field for it; neither `head()` nor `download()` returns it. If your objects never set Cache-Control, delete the plugin. If they do, the plugin wraps every upload on the destination, reads the source object's `Cache-Control` with one `HeadObject` through [`files.raw`](/docs/escape-hatch), and passes it as the upload's `cacheControl` option. That's one extra request per key. If you remap keys with `transformKey`, map `op.key` back to the source key before the lookup.
+**Why the plugin.** `transfer()` carries the body, content type, and user metadata. It doesn't carry Cache-Control, because [`FileInfo`](/docs/api/stored-file) has no field for it; neither `head()` nor `download()` returns it. If your objects never set Cache-Control, delete the plugin. If they do, the plugin wraps every upload on the destination, reads the source object's `Cache-Control` with one `HeadObject` through [`files.raw`](/docs/escape-hatch), and passes it as the upload's `cacheControl` option. That's one extra request per key. If you remap keys with `transformKey`, map `op.key` back to the source key before the lookup.
 
 **Retries.** `retries: 3` covers listing and opening each download. The plugin's `HeadObject` goes through the native client, which applies the AWS SDK's own retries. The upload leg is a stream, and Files SDK never replays a stream, so a failed upload lands in the failure manifest instead of retrying.
 
@@ -188,7 +188,7 @@ for (const { key } of failed) {
     // The same three things transfer() carries: body, type, metadata.
     const file = await source.download(key, { as: "stream" });
     await dest.upload(key, file.stream(), {
-      contentType: file.type,
+      contentType: file.contentType,
       ...(file.metadata && { metadata: file.metadata }),
     });
     console.log(`ok    ${key}`);
@@ -214,7 +214,7 @@ The retry goes through the same `dest` instance, so the Cache-Control plugin app
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 
-import type { Files, StoredFile } from "files-sdk";
+import type { FileInfo, Files } from "files-sdk";
 
 import {
   DEST_BUCKET,
@@ -224,8 +224,8 @@ import {
   source,
 } from "./storage";
 
-const listKeys = async (files: Files): Promise<Map<string, StoredFile>> => {
-  const all = new Map<string, StoredFile>();
+const listKeys = async (files: Files): Promise<Map<string, FileInfo>> => {
+  const all = new Map<string, FileInfo>();
   for await (const file of files.listAll()) {
     all.set(file.key, file);
   }
@@ -241,7 +241,7 @@ const inspect = async (files: Files, bucket: string, key: string) => {
   }
   return {
     size: file.size,
-    type: file.type,
+    contentType: file.contentType,
     metadata: JSON.stringify(Object.entries(file.metadata ?? {}).sort()),
     cacheControl: await cacheControlOf(files, bucket, key),
     sha256: hash.digest("hex"),
@@ -287,7 +287,7 @@ process.exitCode = missing.length || mismatches.length ? 1 : 0;
 What it compares, and why each check reads where it does:
 
 - **Key sets** come from `listAll()` on both sides: `missing` is in S3 but not R2, `extra` the reverse.
-- **Size, type, and metadata** come from `download()`, not `list()`. S3's `ListObjectsV2` returns no content type or metadata, so a listed `StoredFile` guesses its `type` from the key's extension and has no `metadata` at all.
+- **Size, type, and metadata** come from `download()`, not `list()`. S3's `ListObjectsV2` returns no content type or metadata, so a listed `FileInfo` guesses its `contentType` from the key's extension and has no `metadata` at all.
 - **SHA-256** is computed from the bytes on both sides. **ETags aren't compared.** A multipart object's ETag depends on how it was split into parts, and R2 [documents its own multipart ETag format](https://developers.cloudflare.com/r2/objects/multipart-objects/), so identical bytes can carry different ETags.
 
 The cost is real: the script downloads every object from both buckets once more. AWS bills that as S3 data transfer out, and both providers count the reads as requests. For a large bucket, compare sizes, types, and metadata everywhere and hash a random sample, or hash only the keys that matter most.

@@ -22,7 +22,7 @@ The decision that matters is how the model receives each file. A short-lived sig
 - An R2 bucket, API token, and CORS rule, set up as in [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload). This guide reuses its gateway and skips the CORS and `FILES_API_SECRET` details.
 - A Next.js App Router app with server-side auth, and a database table for chats.
 - A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key and a model that accepts images and PDFs. An AI SDK provider instance works in place of the Gateway model ID.
-- Written against files-sdk 2.7, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
+- Written against files-sdk 3.0, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
 
 ```package-install
 files-sdk ai @ai-sdk/react zod
@@ -123,7 +123,7 @@ Older code used `experimental_attachments`, an array of `{ url, … }` entries o
 
 ```ts title="lib/attachments.ts" lineNumbers
 import type { FilePart, TextPart } from "ai";
-import { FilesError, type Files, type StoredFile } from "files-sdk";
+import { FilesError, type FileInfo, type Files } from "files-sdk";
 import { z } from "zod";
 
 import type { Attachment } from "./chat-types";
@@ -149,10 +149,11 @@ export const attachmentSchema = z.object({
 });
 
 /** head() the key. null if it isn't under this user's prefix or breaks a rule. */
-async function usable(files: Files, key: string): Promise<StoredFile | null> {
+async function usable(files: Files, key: string): Promise<FileInfo | null> {
   try {
     const stored = await files.head(key);
-    const ok = stored.size <= MAX_BYTES && ALLOWED_TYPES.has(stored.type);
+    const ok =
+      stored.size <= MAX_BYTES && ALLOWED_TYPES.has(stored.contentType);
     return ok ? stored : null;
   } catch (error) {
     if (error instanceof FilesError && error.code === "NotFound") {
@@ -168,7 +169,7 @@ export async function checkAttachment(
   attachment: Attachment
 ): Promise<Attachment | null> {
   const stored = await usable(files, attachment.key);
-  return stored && { ...attachment, mediaType: stored.type };
+  return stored && { ...attachment, mediaType: stored.contentType };
 }
 
 /** Build what the model receives for one attachment on this request. */
@@ -180,7 +181,7 @@ export async function toModelPart(
   if (!stored) {
     return { type: "text", text: `[${filename} is unavailable]` };
   }
-  const mediaType = stored.type;
+  const mediaType = stored.contentType;
   if (SEND_AS_URL.has(mediaType)) {
     const url = await files.url(key, { expiresIn: URL_EXPIRES_IN });
     return { type: "file", data: new URL(url), filename, mediaType };
@@ -416,7 +417,11 @@ export function Chat({
     }
     setPending((list) => [
       ...list,
-      { key: uploaded.key, filename: file.name, mediaType: uploaded.type },
+      {
+        key: uploaded.key,
+        filename: file.name,
+        mediaType: uploaded.contentType,
+      },
     ]);
   }
 

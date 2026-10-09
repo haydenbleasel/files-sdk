@@ -94,14 +94,14 @@ With `BLOB_STORE_ID` and `BLOB_READ_WRITE_TOKEN` both set, a Vercel Function aut
 
 `access` selects public or private blobs and is fixed at construction. Defaults to `"public"`. With `access: "private"`, uploads use Vercel's private mode and reads route through `blob.get()` with whichever credentials the adapter resolved (OIDC or read-write token) instead of a public URL fetch. There is no permanent public URL for private blobs, so `url()` mints a [Vercel Signed URL](https://vercel.com/docs/vercel-blob/vercel-signed-urls) instead - a presigned GET scoped to that key that expires after `expiresIn` seconds (1 hour by default, `defaultUrlExpiresIn` changes the default). Need both? Use two adapters.
 
-`downloadTimeoutMs` bounds the body reads issued by `download()` and the lazy bodies returned from `head()`/`list()` (the public-URL fetch, or `blob.get()` in private mode). Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
+`downloadTimeoutMs` bounds the body reads issued by `download()` (the public-URL fetch, or `blob.get()` in private mode). Defaults to 5 minutes; pass `0` to disable. A hung CDN response would otherwise leak a fetch that never resolves.
 
 ## Signed URLs
 
 Vercel Signed URLs (`@vercel/blob` 2.4.0+) back two methods:
 
 - **`url()` in private mode** issues a signed token scoped to the key and the `get` operation, expiring with the URL, then signs the URL locally. One control-API round trip per call. Vercel caps the lifetime at 7 days server-side.
-- **`signedUploadUrl()`** in either mode returns a presigned `PUT`. `contentType` and `maxSize` are enforced by Vercel's CDN, so they are real constraints, not advisory headers. There is no minimum-size counterpart: a positive `minSize` throws rather than handing out a URL that accepts the empty upload you asked to reject. The adapter's `addRandomSuffix` and `allowOverwrite` settings apply to the upload.
+- **`signedUploadUrl()`** in either mode returns a presigned `PUT`. `contentType` and `maxSize` are enforced by Vercel's CDN, so they are real constraints, not advisory headers. There is no minimum-size counterpart: a positive `minSize` throws `Unsupported` rather than handing out a URL that accepts the empty upload you asked to reject. The adapter's `addRandomSuffix` and `allowOverwrite` settings apply to the upload.
 
 ```ts lineNumbers
 const files = new Files({ adapter: vercelBlob({ access: "private" }) });
@@ -119,7 +119,7 @@ const upload = await files.signedUploadUrl("uploads/photo.png", {
 // → { method: "PUT", url, headers: { "Content-Type": "image/png" } }
 ```
 
-Public blobs keep returning their permanent CDN URL from `url()` - a presigned copy would add a round trip without restricting anything - so `capabilities.signedUrl.supported` is `true` only in private mode. Neither the CDN URL nor a presigned URL can carry a `Content-Disposition` override, so `responseContentDisposition` throws in both modes.
+Public blobs keep returning their permanent CDN URL from `url()` - a presigned copy would add a round trip without restricting anything - so `capabilities.signedUrl.supported` is `true` only in private mode. In public mode, `url(key, { expiresIn })` throws `Unsupported` rather than hand back a link that never expires; omit `expiresIn` for the permanent URL. Neither the CDN URL nor a presigned URL can carry a `Content-Disposition` override, so `responseContentDisposition` throws `Unsupported` in both modes.
 
 Signed uploads don't depend on the mode: `capabilities.signedUpload` reports `supported`, `maxSize`, and `contentType` as `true` for public and private adapters alike. The [gateway](/docs/ui/server/gateway) presigns on that, so browser uploads go straight to Vercel Blob with a presigned `PUT` in either mode, with your `maxUploadSize` and the file's content type enforced at the CDN, rather than streaming through your server.
 
@@ -132,7 +132,7 @@ Signed uploads don't depend on the mode: `capabilities.signedUpload` reports `su
 
 ## Limitations
 
-User `metadata` isn't supported by the underlying API, so passing a non-empty `metadata` throws rather than silently dropping it. `cacheControl` is supported through its `max-age` directive, which maps to the blob's `cacheControlMaxAge`; Vercel writes the rest of the header itself. A value with no `max-age` (e.g. `"no-store"`) throws rather than being dropped.
+User `metadata` isn't supported by the underlying API, so passing a non-empty `metadata` throws `Unsupported` rather than silently dropping it. `cacheControl` is supported through its `max-age` directive, which maps to the blob's `cacheControlMaxAge`; Vercel writes the rest of the header itself. A value with no `max-age` (e.g. `"no-store"`) throws `Unsupported` rather than being dropped.
 
 With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 
@@ -145,12 +145,12 @@ With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 | `upload` | ✅ |  |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Listed items' `type` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
+| `list` | ⚠️ | Listed items' `contentType` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
-| `url` | ⚠️ | Returns the permanent CDN URL. `expiresIn` is silently ignored (the URL is public already); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
+| `url` | ⚠️ | Returns the permanent CDN URL. `expiresIn` throws `Unsupported` (the URL can't expire); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
 | `signedUploadUrl` | ✅ | Presigned `PUT` via Vercel Signed URLs. `contentType` and `maxSize` are enforced at the CDN; a positive `minSize` throws. |
 
 ### Private access
@@ -160,7 +160,7 @@ With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 | `upload` | ✅ |  |
 | `download` | ⚠️ | Reads go through `blob.get()`, which has no range primitive, so `range` throws. |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Listed items' `type` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
+| `list` | ⚠️ | Listed items' `contentType` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |

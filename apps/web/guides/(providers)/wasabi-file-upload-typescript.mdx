@@ -22,7 +22,7 @@ Two Wasabi rules shape that design. A presigned URL can't live longer than 7 day
 - A Wasabi account and a bucket. You choose the bucket's region when you create it, and the endpoint follows from that choice. [Wasabi's docs](https://docs.wasabi.com/docs/how-do-i-generate-pre-signed-urls-for-temporary-access-with-wasabi) state that buckets and objects are private by default; this guide keeps them that way.
 - An access key for a sub-user whose policy covers only that bucket. Root-account keys carry full administrative access, billing included, according to [Wasabi's API authentication docs](https://docs.wasabi.com/apidocs/authentication-with-s3-api). A server that reads and writes documents doesn't need that.
 - Somewhere to store share records: any database your app already uses.
-- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, and Next.js 16.4. The two route handlers use only `Request` and `Response`, so they move to Hono, SvelteKit, or `Bun.serve` without changes.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, and Next.js 16.4. The two route handlers use only `Request` and `Response`, so they move to Hono, SvelteKit, or `Bun.serve` without changes.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-request-presigner @aws-sdk/s3-presigned-post
@@ -78,7 +78,7 @@ export const files = createFiles({
 
 `wasabi()` checks its configuration when it's called, which here is when `lib/files.ts` first loads. A missing region or credential fails the first request that imports the module, with the messages listed under [Troubleshooting](#troubleshooting).
 
-Leave `publicBaseUrl` unset. It switches `url()` to return a plain, unsigned `https://documents.s3…/<key>` link, which only works on a bucket you've made public.
+Leave `publicBaseUrl` unset. With it, a plain `url(key)` returns an unsigned `https://documents.s3…/<key>` link, which only works on a bucket you've made public. The links in this guide pass `expiresIn`, which signs either way.
 
 ## Store a document and check what landed
 
@@ -98,13 +98,18 @@ export async function storeDocument(ownerId: string, file: File) {
   const stored = await files.head(key);
   if (
     stored.size !== file.size ||
-    stored.type !== contentType ||
+    stored.contentType !== contentType ||
     stored.metadata?.owner !== ownerId
   ) {
     await files.delete(key);
     throw new Error(`Stored object ${key} doesn't match the upload`);
   }
-  return { etag: stored.etag, key, size: stored.size, type: stored.type };
+  return {
+    contentType: stored.contentType,
+    etag: stored.etag,
+    key,
+    size: stored.size,
+  };
 }
 
 export async function deleteDocument(key: string) {
@@ -285,7 +290,7 @@ export function directShareUrl(key: string, filename: string, days: number) {
 }
 ```
 
-Wasabi documents a 7-day maximum for URLs signed with an IAM user's keys, and that's also the SigV4 limit. The adapter checks it before signing, so `directShareUrl(key, name, 8)` throws a `FilesError` with code `Provider` and `permanent: true` instead of returning a URL that won't work.
+Wasabi documents a 7-day maximum for URLs signed with an IAM user's keys, and that's also the SigV4 limit. The adapter checks it before signing, so `directShareUrl(key, name, 8)` throws a `FilesError` with code `Invalid` and `permanent: true` instead of returning a URL that won't work.
 
 ## What a recipient sees when a link stops working
 
@@ -351,7 +356,7 @@ export function signedDownloadUrl(key: string, filename: string) {
 What the adapter adds on top:
 
 - **One `region` string** sets the endpoint and the signing region, and credentials come from `WASABI_*` variables.
-- **Normalized errors.** Failures arrive as a [`FilesError`](/docs/api/errors) with `code` `NotFound`, `Unauthorized`, `Conflict`, or `Provider`, instead of `NoSuchKey`, `AccessDenied`, and `SignatureDoesNotMatch` exceptions you classify yourself.
+- **Normalized errors.** Failures arrive as a [`FilesError`](/docs/api/errors) with `code` `NotFound`, `Unauthorized`, `Conflict`, `Invalid`, `Unsupported`, or `Provider`, instead of `NoSuchKey`, `AccessDenied`, and `SignatureDoesNotMatch` exceptions you classify yourself.
 - **A readable expiry error.** An `expiresIn` over 7 days fails before signing with a message that names the limit.
 - **Checksum defaults for non-AWS endpoints.** The adapter sets `requestChecksumCalculation: "WHEN_REQUIRED"` for any custom endpoint, because recent AWS SDKs add CRC32 checksum headers by default and some S3-compatible services reject them. Wasabi doesn't document either way, so with the native client, test an upload on your SDK version.
 - **Portability.** The same `storeDocument` and share routes run on `s3()`, `r2()`, or `hetzner()` if you move.

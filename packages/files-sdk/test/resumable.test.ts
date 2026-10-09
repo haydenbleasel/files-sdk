@@ -1097,10 +1097,16 @@ describe("files.abortUpload", () => {
     const files = makeFiles(server, "parts");
     await expect(
       files.abortUpload("big.bin", null as unknown as ResumableUploadSession)
-    ).rejects.toThrow(/control\.toJSON\(\)/u);
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/control\.toJSON\(\)/u),
+    });
     await expect(
       makeFiles(server, "none").abortUpload("big.bin", partsToken("big.bin"))
-    ).rejects.toThrow(/not supported/iu);
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/not supported/iu),
+    });
     await expect(
       files.readonly().abortUpload("big.bin", partsToken("big.bin"))
     ).rejects.toMatchObject({ code: "ReadOnly" });

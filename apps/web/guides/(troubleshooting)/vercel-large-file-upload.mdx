@@ -15,13 +15,13 @@ related:
 
 Vercel caps a function's request body at 4.5 MB and answers anything larger with `413 FUNCTION_PAYLOAD_TOO_LARGE`. No Next.js setting raises that cap, so the file has to go around the function. The function's job shrinks to a few hundred bytes of JSON per upload: check the session, pick a key, return a signed URL.
 
-The trap is that some Files SDK setups route the bytes back through the function without telling you. The gateway proxies every keyless upload to a public Vercel Blob store, and on R2, setting `maxUploadSize` turns presigned uploads into proxied ones. [Check which path your uploads take](#check-which-path-gateway-uploads-take) before you deploy.
+The trap is that some Files SDK setups route the bytes back through the function without telling you. On R2, setting `maxUploadSize` on the gateway turns presigned uploads into proxied ones, and so does a plugin that refuses to sign. [Check which path your uploads take](#check-which-path-gateway-uploads-take) before you deploy.
 
 ## Before you start
 
 - A Next.js App Router app on Vercel, with an auth library that can resolve the signed-in user on the server.
 - A Vercel Blob store connected to the project. This guide uses a private store; the upload code also works with a public one. For R2 instead, set up a bucket, token, and CORS rule as in [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload).
-- Written against files-sdk 2.7, Next.js 16.4, React 19.3, and `@vercel/blob` 2.8.
+- Written against files-sdk 3.0, Next.js 16.4, React 19.3, and `@vercel/blob` 2.8.
 
 ```package-install
 files-sdk @vercel/blob
@@ -216,18 +216,17 @@ R2 has no presigned `POST`, so it can't enforce a size on an upload URL. The ada
 
 ## Check which path gateway uploads take
 
-If you use the Files SDK gateway (`createFilesRouter` with `files-sdk/next`) and `useFiles().upload(file)`, the gateway decides per request whether the browser uploads to storage or to your function. It asks the adapter for a presigned URL, and if the adapter can't sign or throws for any reason, it returns a proxy target, a `PUT` to `/api/files?op=proxy`, without an error. On Vercel, a proxied upload over 4.5 MB fails, and `useFiles` reports it as `upload failed (413)`.
+If you use the Files SDK gateway (`createFilesRouter` with `files-sdk/next`) and `useFiles().upload(file)`, the gateway decides per request whether the browser uploads to storage or to your function. It checks the adapter's `capabilities.signedUpload`, and if the adapter can't sign this upload, or refuses it with an `Invalid` or `Unsupported` error, it returns a proxy target, a `PUT` to `/api/files?op=proxy`, without an error. On Vercel, a proxied upload over 4.5 MB fails, and `useFiles` reports it as `upload failed (413)`.
 
 | Setup | Where the bytes go |
 | --- | --- |
-| Vercel Blob, private store | Straight to Blob. `maxUploadSize` becomes `maximumSizeInBytes`. |
-| Vercel Blob, public store | Your function, with or without `maxUploadSize`. The gateway only presigns when `capabilities.signedUrl.supported` is `true`, which Vercel Blob reports only in private mode. |
+| Vercel Blob, public or private store | Straight to Blob. `maxUploadSize` becomes `maximumSizeInBytes`. |
 | R2, no `maxUploadSize` | Straight to R2. |
 | R2 with `maxUploadSize` | Your function. R2 refuses `maxSize`, so the gateway falls back. |
 | Any adapter plus `validation()` with a size or type rule, or `contentType()` | Your function. Those plugins refuse to sign URLs. |
 | `upload(key, file)` with an explicit key | Always your function. |
 
-On a public Blob store, use the route in this guide instead of the gateway's keyless upload. On R2, take `maxUploadSize` off the gateway and check sizes after upload. To see which path a deployment takes, open the browser's network panel and look at where the large `PUT` goes: a storage host means direct, `/api/files?op=proxy` means your function. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation#what-the-gateway-does-with-maxuploadsize) has the same table for more adapters.
+On R2, take `maxUploadSize` off the gateway and check sizes after upload. To see which path a deployment takes, open the browser's network panel and look at where the large `PUT` goes: a storage host means direct, `/api/files?op=proxy` means your function. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation#what-the-gateway-does-with-maxuploadsize) has the same table for more adapters.
 
 ## Downloads go through the function too
 
@@ -291,4 +290,4 @@ Keep the Files SDK route when the same server code has to work with R2 or S3, or
 
 **The `PUT` to Blob is rejected.** Vercel refuses a `PUT` whose `Content-Type` isn't the signed type, or whose body is larger than `maximumSizeInBytes`. Send `upload.headers` as returned, and check `file.size` before you request the URL.
 
-**`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment".…`** with a `500` from `/api/files`. The gateway's `url` operation won't hand out a private Blob URL it can't force to download. Return `{ disposition: "inline" }` from `authorize` where inline rendering is acceptable, or use `download`, which proxies. With `downloadMode: "redirect"`, `download` fails the same way, with the adapter's ``vercel-blob: `responseContentDisposition` is not supported`` message.
+**`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment".…`** with a `422` (code `Unsupported`) from `/api/files`. The gateway's `url` operation won't hand out a private Blob URL it can't force to download. Return `{ disposition: "inline" }` from `authorize` where inline rendering is acceptable, or use `download`, which proxies. With `downloadMode: "redirect"`, `download` fails the same way, with the adapter's ``vercel-blob: `responseContentDisposition` is not supported`` message.

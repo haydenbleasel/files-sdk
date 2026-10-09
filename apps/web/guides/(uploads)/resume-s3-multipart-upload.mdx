@@ -20,7 +20,7 @@ The catch is that S3 keeps parts, not proof of what they contain. Resuming with 
 
 - An S3 bucket (this guide calls it `uploads`), `AWS_REGION` set to its region, and credentials the AWS credential chain can find. The upload needs `s3:PutObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload`, and `s3:GetObject` (the SDK `HEAD`s the object after completing). AWS lists which action covers which call in [multipart upload permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html#mpuAndPermissions).
 - Node 22.18 or later, or Bun. Node runs the `.ts` files directly because [type stripping](https://nodejs.org/api/typescript.html) is on by default from 22.18, and the script opens the file with [`fs.openAsBlob`](https://nodejs.org/api/fs.html#fsopenasblobpath-options), which is stable from 22.17.
-- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, Node 24.14, and Bun 1.4.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, Node 24.14, and Bun 1.4.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -299,13 +299,13 @@ R2 already has a default rule: per Cloudflare's [object lifecycle docs](https://
 | `r2()` with `client: "fetch"`, the R2 Workers binding, `s3Fetch()`, MinIO and RustFS on `client: "fetch"` | Throws, for example `r2-http-fetch: pause-able/resumable uploads are not supported by this adapter` |
 | `bunS3()`, `memory()`, Box | Pause and resume in-process only; the token can't be resumed elsewhere |
 
-GCS, Azure, Dropbox, OneDrive, Vercel Blob, and several others resume across processes through their own protocols. [Resumable uploads](/docs/resumable#what-each-adapter-does) lists every adapter. If you branch at runtime, note that `files.capabilities.multipart` is `true` for the in-process-only adapters too, so it tells you whether `control` works, not whether a token survives a restart.
+GCS, Azure, Dropbox, OneDrive, Vercel Blob, and several others resume across processes through their own protocols. [Resumable uploads](/docs/resumable#what-each-adapter-does) lists every adapter. If you branch at runtime, note that `files.capabilities.resumable` is `true` for the in-process-only adapters too, so it tells you whether `control` works, not whether a token survives a restart.
 
 ## A process restart isn't a browser reload
 
 A Node or Bun process restarts with the same file on disk. The checkpoint holds the path's size and modification time, so the script can reopen the file and confirm it's the one it was uploading.
 
-A reloaded browser tab has the token, if you stored it, but not the file. A `File` handle doesn't survive a reload, so the user has to pick the file again, and you compare its `name`, `size`, and `lastModified` with what you saved before resuming. There's a second limit: in files-sdk 2.x, the browser bindings (`useFiles` and `createFilesClient`) don't accept an `UploadControl`. They upload each file with one presigned request or through your gateway. Running `s3()` itself in a browser would mean shipping AWS credentials to it, so don't. Resumable uploads with this SDK belong in processes that hold credentials: CLIs, workers, backup jobs, and desktop apps' main processes.
+A reloaded browser tab has the token, if you stored it, but not the file. A `File` handle doesn't survive a reload, so the user has to pick the file again, and you compare its `name`, `size`, and `lastModified` with what you saved before resuming. There's a second limit: in files-sdk 3.x, the browser bindings (`useFiles` and `createFilesClient`) don't accept an `UploadControl`. They upload each file with one presigned request or through your gateway. Running `s3()` itself in a browser would mean shipping AWS credentials to it, so don't. Resumable uploads with this SDK belong in processes that hold credentials: CLIs, workers, backup jobs, and desktop apps' main processes.
 
 ## Troubleshooting
 

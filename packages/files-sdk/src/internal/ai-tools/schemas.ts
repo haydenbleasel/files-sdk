@@ -151,7 +151,7 @@ export const TOOL_SCHEMAS = {
   },
   getFileUrl: {
     description:
-      "Return a URL the caller can use to fetch a file. Signing adapters return a presigned URL that expires after expiresIn seconds; permanent-CDN adapters (Vercel Blob public) return a permanent URL and ignore expiresIn.",
+      "Return a URL the caller can use to fetch a file. With expiresIn, signing adapters return a presigned URL that expires after that many seconds; adapters that only have permanent links (e.g. Vercel Blob public) refuse expiresIn, so omit it there to get the permanent URL.",
     input: getFileUrlInput,
   },
   listFiles: {
