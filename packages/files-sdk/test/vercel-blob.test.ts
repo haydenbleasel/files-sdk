@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
@@ -8,6 +17,8 @@ import { expectDispositionRefusal } from "./disposition-refusal.js";
 // re-exported from the double below. Real `@vercel/blob` errors have
 // `name: "Error"` and no `status`, so the adapter has to classify them by
 // class; hand-rolled `{ name: "BlobNotFoundError" }` errors would hide that.
+// The real `head` and `issueSignedToken` are captured too: the OIDC lookup
+// tests delegate to them so `@vercel/blob`'s own credential resolution runs.
 const {
   BlobAccessError,
   BlobClientTokenExpiredError,
@@ -21,6 +32,8 @@ const {
   BlobServiceNotAvailable,
   BlobStoreNotFoundError,
   BlobStoreSuspendedError,
+  head: realHead,
+  issueSignedToken: realIssueSignedToken,
 } = await import("@vercel/blob");
 
 // Mock @vercel/blob before the adapter imports it.
@@ -291,8 +304,10 @@ afterEach(() => {
 
 describe("vercel-blob adapter", () => {
   test("missing credentials throws at construction", () => {
+    // No store id and no read-write token: OIDC needs a store id, so no
+    // request header could supply a credential later. Fail at construction.
     delete process.env.BLOB_READ_WRITE_TOKEN;
-    expect(() => vercelBlob()).toThrow(/credentials/iu);
+    expect(() => vercelBlob()).toThrow(/missing credentials/iu);
     process.env.BLOB_READ_WRITE_TOKEN = "test-token";
   });
 
@@ -1586,6 +1601,107 @@ describe("vercel-blob adapter", () => {
       expect(opts.storeId).toBeUndefined();
     });
 
+    test("BLOB_STORE_ID leaves the choice to the SDK even with BLOB_READ_WRITE_TOKEN and no env OIDC token", async () => {
+      // A Vercel Function's environment: the store id and a read-write token,
+      // with the OIDC token only in the request header. Passing the env RW
+      // token as `token` would make it outrank that header token, so the
+      // adapter passes just the store id. `@vercel/blob` uses the request's
+      // OIDC token, and falls back to BLOB_READ_WRITE_TOKEN itself when there
+      // is none.
+      process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_secret";
+      process.env.BLOB_STORE_ID = "abc123store";
+      const files = new Files({ adapter: vercelBlob() });
+      await files.upload("a.txt", "hello");
+      await files.head("a.txt");
+      for (const opts of [
+        putMock.mock.calls.at(-1)?.[2],
+        headMock.mock.calls.at(-1)?.[1],
+      ]) {
+        assertOidc(opts as AuthOpts | undefined);
+      }
+    });
+
+    test("an explicit storeId option is passed to the SDK, not the env RW token", async () => {
+      process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_secret";
+      const files = new Files({
+        adapter: vercelBlob({ storeId: "store_abc123store" }),
+      });
+      await files.delete("a.txt");
+      const opts = delMock.mock.calls.at(-1)?.[1] as AuthOpts;
+      expect(opts.token).toBeUndefined();
+      expect(opts.oidcToken).toBeUndefined();
+      expect(opts.storeId).toBe("store_abc123store");
+    });
+
+    test("a store id with no token anywhere throws missing credentials on first use, not at construction", async () => {
+      // On Vercel Functions the token exists only inside a request, so
+      // construction can't tell "no token yet" from "no token ever". The
+      // check happens per call: `@vercel/blob` finds nothing and throws, and
+      // the adapter reports it as its own missing-credentials error, flagged
+      // permanent so `retries` doesn't re-issue it.
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.BLOB_STORE_ID = "abc123store";
+      const files = new Files({ adapter: vercelBlob(), retries: 2 });
+      const sdkError = new BlobError(
+        "No blob credentials found. Pass a `token` option, set `BLOB_READ_WRITE_TOKEN`, or use `oidcToken` (or `VERCEL_OIDC_TOKEN`) with `storeId` or `BLOB_STORE_ID`."
+      );
+      headMock.mockRejectedValueOnce(sdkError);
+      const thrown = await files.head("a.txt").catch((error: unknown) => error);
+      expect(thrown).toBeInstanceOf(FilesError);
+      expect(thrown).toMatchObject({
+        code: "Provider",
+        message: expect.stringMatching(
+          /^vercelBlob adapter: missing credentials/u
+        ),
+        permanent: true,
+      });
+      expect((thrown as FilesError).cause).toBe(sdkError);
+      expect(headMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("missing credentials surfaces at operation time once the env is emptied", async () => {
+      // Environment credentials are re-resolved per call, so one that
+      // disappears after construction fails the next operation, before any
+      // provider call.
+      const files = new Files({ adapter: vercelBlob() });
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      await expect(files.upload("a.txt", "hello")).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringMatching(/missing credentials/u),
+        permanent: true,
+      });
+      expect(putMock).not.toHaveBeenCalled();
+    });
+
+    test("explicit oidcToken whose store id disappears throws per call — still no RW fallback", async () => {
+      process.env.BLOB_STORE_ID = "abc123store";
+      const files = new Files({
+        adapter: vercelBlob({ oidcToken: "explicit-oidc" }),
+      });
+      delete process.env.BLOB_STORE_ID;
+      // BLOB_READ_WRITE_TOKEN is still set (beforeEach); it must not be used.
+      await expect(files.upload("a.txt", "hello")).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringMatching(/storeId/u),
+        permanent: true,
+      });
+      expect(putMock).not.toHaveBeenCalled();
+    });
+
+    test("public url() builds from BLOB_STORE_ID with no token in the env", async () => {
+      // The Vercel Functions case: the OIDC token only exists per request,
+      // but a public URL needs no credential, so it's built from the store id
+      // without a round trip or a missing-credentials error.
+      delete process.env.BLOB_READ_WRITE_TOKEN;
+      process.env.BLOB_STORE_ID = "store_abc123store";
+      const files = new Files({ adapter: vercelBlob() });
+      const url = await files.url("docs/a b.txt");
+      expect(url).toBe(
+        "https://abc123store.public.blob.vercel-storage.com/docs/a%20b.txt"
+      );
+      expect(headMock).not.toHaveBeenCalled();
+    });
+
     test("OIDC env vars beat BLOB_READ_WRITE_TOKEN env var when both are set", async () => {
       // No explicit option overrides — OIDC takes precedence over the
       // legacy env token. Mirrors the upstream SDK behavior so a project
@@ -1742,6 +1858,223 @@ describe("vercel-blob adapter", () => {
       );
       expect(headMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+// What a Vercel Function installs on `globalThis` for each invocation;
+// `@vercel/oidc` reads the request's headers through it.
+const REQUEST_CONTEXT = Symbol.for("@vercel/request-context");
+const inRequest = (oidcToken: string) => {
+  Reflect.set(globalThis, REQUEST_CONTEXT, {
+    get: () => ({ headers: { "x-vercel-oidc-token": oidcToken } }),
+  });
+};
+
+const jwtSegment = (value: Record<string, number | string>): string =>
+  Buffer.from(JSON.stringify(value)).toString("base64url");
+
+// `@vercel/oidc` decodes the payload to check `exp` (and would refresh an
+// expired or unreadable token), so these are JWT-shaped and unexpired. The
+// signature is only verified server-side.
+const oidcJwt = (subject: string): string =>
+  [
+    jwtSegment({ alg: "RS256", typ: "JWT" }),
+    jwtSegment({ exp: Math.floor(Date.now() / 1000) + 3600, sub: subject }),
+    "signature",
+  ].join(".");
+
+// These cases run the real `@vercel/blob` (`head` and `issueSignedToken`,
+// captured above) against a loopback stand-in for the Blob API, so its own
+// credential lookup runs: the request's `x-vercel-oidc-token` header, then
+// `VERCEL_OIDC_TOKEN`, then `BLOB_READ_WRITE_TOKEN`. The SDK sends requests
+// through its own `undici` fetch, which the patched `globalThis.fetch` can't
+// intercept, hence a real listener. Each case that relies on OIDC supplies
+// an unexpired token: with none, `@vercel/oidc` would try to refresh one
+// through the Vercel CLI.
+describe("vercel-blob OIDC lookup through @vercel/blob", () => {
+  interface SeenRequest {
+    authorization: string | null;
+    path: string;
+    storeId: string | null;
+  }
+  const seen: SeenRequest[] = [];
+  const serveBlobApi = () =>
+    Bun.serve({
+      fetch(request) {
+        const url = new URL(request.url);
+        seen.push({
+          authorization: request.headers.get("authorization"),
+          path: url.pathname,
+          storeId: request.headers.get("x-vercel-blob-store-id"),
+        });
+        if (url.pathname.endsWith("/signed-token")) {
+          return Response.json({
+            clientSigningToken: "client-signing-token",
+            delegationToken: "delegation-token",
+            validUntil: Date.now() + 60_000,
+          });
+        }
+        const pathname = url.searchParams.get("url") ?? "";
+        return Response.json({
+          cacheControl: "",
+          contentDisposition: "",
+          contentType: "text/plain",
+          downloadUrl: `https://blob.test/${pathname}?download=1`,
+          etag: `"etag-${pathname}"`,
+          pathname,
+          size: 5,
+          uploadedAt: new Date().toISOString(),
+          url: `https://blob.test/${pathname}`,
+        });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+
+  let blobApi: ReturnType<typeof serveBlobApi> | undefined;
+
+  // Runs one `files.head()` through the real SDK and returns the credentials
+  // the stand-in saw on that request.
+  const credentialsOfHead = async (
+    files: Files,
+    key = "a.txt"
+  ): Promise<SeenRequest> => {
+    // The adapter passes `BlobCommandOptions`; the mock just types it unknown.
+    headMock.mockImplementationOnce((pathname, opts) =>
+      realHead(pathname, opts as Parameters<typeof realHead>[1])
+    );
+    const file = await files.head(key);
+    expect(file.key).toBe(key);
+    expect(seen).toHaveLength(1);
+    const [request] = seen;
+    if (!request) {
+      throw new Error("expected the Blob API stand-in to see a request");
+    }
+    return request;
+  };
+
+  beforeAll(() => {
+    blobApi = serveBlobApi();
+    process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${blobApi.port}/api/blob`;
+    // Fail fast instead of backing off if the stand-in ever errors.
+    process.env.VERCEL_BLOB_RETRIES = "0";
+  });
+
+  afterAll(async () => {
+    delete process.env.VERCEL_BLOB_API_URL;
+    delete process.env.VERCEL_BLOB_RETRIES;
+    await blobApi?.stop(true);
+  });
+
+  beforeEach(() => {
+    seen.length = 0;
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, REQUEST_CONTEXT);
+  });
+
+  test("a module-scope adapter with only BLOB_STORE_ID uses the request's header token", async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    process.env.BLOB_STORE_ID = "store_abc123store";
+    // Constructed outside any request, like a module-scope `lib/files.ts`.
+    const files = new Files({ adapter: vercelBlob() });
+
+    const token = oidcJwt("request");
+    inRequest(token);
+    expect(await credentialsOfHead(files)).toEqual({
+      authorization: `Bearer ${token}`,
+      path: "/api/blob",
+      storeId: "abc123store",
+    });
+  });
+
+  test("the request's OIDC token wins over BLOB_READ_WRITE_TOKEN", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_secret";
+    process.env.BLOB_STORE_ID = "abc123store";
+    const files = new Files({ adapter: vercelBlob() });
+
+    const token = oidcJwt("request");
+    inRequest(token);
+    const { authorization } = await credentialsOfHead(files);
+    expect(authorization).toBe(`Bearer ${token}`);
+  });
+
+  test("the request's OIDC token wins over a stale VERCEL_OIDC_TOKEN", async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    process.env.BLOB_STORE_ID = "abc123store";
+    process.env.VERCEL_OIDC_TOKEN = oidcJwt("build");
+    const files = new Files({ adapter: vercelBlob() });
+
+    const token = oidcJwt("request");
+    inRequest(token);
+    const { authorization } = await credentialsOfHead(files);
+    expect(authorization).toBe(`Bearer ${token}`);
+  });
+
+  test("outside a request, VERCEL_OIDC_TOKEN is used, ahead of BLOB_READ_WRITE_TOKEN", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_secret";
+    process.env.BLOB_STORE_ID = "abc123store";
+    const token = oidcJwt("development");
+    process.env.VERCEL_OIDC_TOKEN = token;
+    const files = new Files({ adapter: vercelBlob() });
+
+    expect(await credentialsOfHead(files)).toEqual({
+      authorization: `Bearer ${token}`,
+      path: "/api/blob",
+      storeId: "abc123store",
+    });
+  });
+
+  test("an explicit token option still beats the request's OIDC token", async () => {
+    process.env.BLOB_STORE_ID = "abc123store";
+    const files = new Files({
+      adapter: vercelBlob({ token: "vercel_blob_rw_tokenstore1_explicit" }),
+    });
+
+    inRequest(oidcJwt("request"));
+    expect(await credentialsOfHead(files)).toEqual({
+      authorization: "Bearer vercel_blob_rw_tokenstore1_explicit",
+      path: "/api/blob",
+      storeId: "tokenstore1",
+    });
+  });
+
+  test("without a store id, BLOB_READ_WRITE_TOKEN is used even inside a request", async () => {
+    // OIDC needs a store id; `@vercel/blob` skips a token it can't pair with
+    // one and falls back to the read-write token, and so does the adapter.
+    process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_secret";
+    const files = new Files({ adapter: vercelBlob() });
+
+    inRequest(oidcJwt("request"));
+    expect(await credentialsOfHead(files)).toEqual({
+      authorization: "Bearer vercel_blob_rw_abc123store_secret",
+      path: "/api/blob",
+      storeId: "abc123store",
+    });
+  });
+
+  test("private url() and signedUploadUrl() issue signed tokens with the request's OIDC token", async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    process.env.BLOB_STORE_ID = "abc123store";
+    const files = new Files({ adapter: vercelBlob({ access: "private" }) });
+
+    const token = oidcJwt("request");
+    inRequest(token);
+    issueSignedTokenMock
+      .mockImplementationOnce(realIssueSignedToken)
+      .mockImplementationOnce(realIssueSignedToken);
+    expect(await files.url("a.txt")).toBe(
+      "https://presigned.example.com/private/get/a.txt?sig=abc"
+    );
+    await files.signedUploadUrl("b.txt", { expiresIn: 60 });
+
+    const signedTokenRequest = {
+      authorization: `Bearer ${token}`,
+      path: "/api/blob/signed-token",
+      storeId: "abc123store",
+    };
+    expect(seen).toEqual([signedTokenRequest, signedTokenRequest]);
   });
 });
 

@@ -75,13 +75,14 @@ Gotchas:
 import { vercelBlob } from "files-sdk/vercel-blob";
 
 const adapter = vercelBlob({
-  // Credentials are optional — the adapter resolves them in the same order
-  // the upstream SDK does:
+  // Credentials are optional — the adapter resolves them on every call, in
+  // the same order the upstream SDK does:
   //   1. explicit `token` (RW or client token) — always wins
   //   2. `oidcToken` option + `storeId` (option or `BLOB_STORE_ID`)
-  //   3. OIDC from the environment: `BLOB_STORE_ID`, with the token found by
-  //      @vercel/blob (request header on Vercel Functions, or VERCEL_OIDC_TOKEN)
-  //   4. `BLOB_READ_WRITE_TOKEN` env
+  //   3. an OIDC token @vercel/blob finds itself (the request's
+  //      x-vercel-oidc-token header, then VERCEL_OIDC_TOKEN), paired with
+  //      `storeId` (option or `BLOB_STORE_ID`)
+  //   4. `BLOB_READ_WRITE_TOKEN` env — only when no OIDC token turns up
   // token: process.env.BLOB_READ_WRITE_TOKEN,
   // oidcToken: loadOidcToken(),
   // storeId: loadStoreId(),
@@ -93,8 +94,9 @@ const adapter = vercelBlob({
 
 A few things to know:
 
-- **OIDC is preferred on Vercel.** When the Blob store is connected to a project, the deployment gets `BLOB_STORE_ID` and a short-lived, auto-rotated OIDC token. On Vercel Functions that token arrives per request (`x-vercel-oidc-token` header), not in `process.env`, so the adapter passes just the store id and lets `@vercel/blob` read the token — `vercelBlob()` needs no options and no `BLOB_READ_WRITE_TOKEN`. Locally, `vercel env pull` writes `VERCEL_OIDC_TOKEN` (12-hour lifetime; `@vercel/blob` ≥ 2.5 refreshes it in a `vercel link`ed project). Off Vercel, use `BLOB_READ_WRITE_TOKEN`.
-- **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either).
+- **OIDC is preferred on Vercel.** When the Blob store is connected to a project, the deployment gets `BLOB_STORE_ID` and a short-lived, auto-rotated OIDC token. On Vercel Functions that token arrives per request (`x-vercel-oidc-token` header), not in `process.env`, so the adapter passes just the store id and lets `@vercel/blob` read the token on each call — a module-scope `vercelBlob()` needs no options and no `BLOB_READ_WRITE_TOKEN`, and if the project has one anyway, the request's OIDC token still wins. Locally, `vercel env pull` writes `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` (12-hour token; `@vercel/blob` ≥ 2.5 refreshes it in a `vercel link`ed project). Off Vercel, use `BLOB_READ_WRITE_TOKEN`.
+- **`missing credentials` can come from the first call.** Construction throws it only when there's no store id and no RW token. With just a store id, the adapter can't know whether a token will arrive, so the first operation that finds none throws the same `FilesError` (`permanent`, `@vercel/blob`'s error as `cause`).
+- **Pass `oidcToken` / `storeId` explicitly** when your framework doesn't load `.env.local` into `process.env` (Vite, etc.). Otherwise the adapter silently falls back to `BLOB_READ_WRITE_TOKEN` (or throws if no RW token is set either). A passed `oidcToken` is used as given, never refreshed.
 - **Explicit `token` always wins** over OIDC env vars, mirroring the SDK. Set it only when you actually want to override.
 - **`access` is fixed at construction.** A single `Files` instance is unambiguously public or private. Need both? Instantiate two adapters.
 - **`access: "private"` makes `url()` presign.** Private blobs have no permanent public URL, so `url()` returns a presigned `GET` scoped to that key that expires after `expiresIn` (default 3600 via `defaultUrlExpiresIn`; Vercel caps it at 7 days). `responseContentDisposition` still throws (Vercel URLs can't carry it), and range downloads aren't available in private mode. `signedUploadUrl` works in both modes.

@@ -1579,7 +1579,7 @@ export const PROVIDERS = {
   },
   "vercel-blob": {
     description:
-      "Vercel Blob. Prefers Vercel OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID, auto-rotating) and falls back to BLOB_READ_WRITE_TOKEN; pass token, oidcToken, or storeId manually for local dev or other hosts.",
+      "Vercel Blob. Prefers Vercel OIDC (BLOB_STORE_ID plus a short-lived token @vercel/blob finds per call: the request's x-vercel-oidc-token header on Vercel Functions, else VERCEL_OIDC_TOKEN) and falls back to BLOB_READ_WRITE_TOKEN; pass token, oidcToken, or storeId to override.",
     env: {
       credentialModes: [
         {
@@ -1597,9 +1597,10 @@ export const PROVIDERS = {
           label: "Vercel OIDC (auto-rotating)",
           vars: [
             {
-              description: "Vercel OIDC token (auto-injected on Vercel)",
+              description:
+                "Vercel OIDC token, read by @vercel/blob: set during Vercel builds and by `vercel env pull`. On Vercel Functions it arrives per request in the x-vercel-oidc-token header instead.",
               key: "VERCEL_OIDC_TOKEN",
-              readBy: "files-sdk",
+              readBy: "sdk-chain",
               secret: true,
             },
             {
@@ -1612,7 +1613,7 @@ export const PROVIDERS = {
         },
       ],
       notes:
-        "An explicit `token` wins over OIDC. Locally, set BLOB_READ_WRITE_TOKEN.",
+        "An explicit `token` wins over OIDC; BLOB_READ_WRITE_TOKEN from the environment is used only when no OIDC token is found for the call. On Vercel Functions, BLOB_STORE_ID is enough. Locally, `vercel env pull` writes VERCEL_OIDC_TOKEN and BLOB_STORE_ID (the 12-hour token is refreshed by @vercel/blob 2.5+ in a linked project); BLOB_READ_WRITE_TOKEN works too.",
     },
     name: "Vercel Blob",
     peerDeps: ["@vercel/blob"],

@@ -29,32 +29,36 @@ import { createStoredFile } from "../internal/stored-file.js";
 
 export interface VercelBlobAdapterOptions {
   /**
-   * Long-lived read-write token. Defaults to `process.env.BLOB_READ_WRITE_TOKEN`.
-   * Environment-provided credentials are resolved for each operation so
-   * changes made after adapter construction are honored.
+   * Read-write token (or client token). Passed here, it wins over every
+   * other credential, OIDC included, matching `@vercel/blob`.
    *
-   * Takes priority over OIDC even when both are present (mirrors the
-   * upstream `@vercel/blob` resolution order). For code running on
-   * Vercel, prefer leaving this unset and using OIDC instead.
+   * Without this option the adapter falls back to
+   * `process.env.BLOB_READ_WRITE_TOKEN`, but only as the last resort: with
+   * a store id configured, an OIDC token found for the call is used first.
+   * Environment credentials are resolved on every operation, so changes made
+   * after construction are honored. On Vercel, prefer OIDC and leave this
+   * unset.
    */
   token?: string;
   /**
-   * Vercel OIDC token. Defaults to `process.env.VERCEL_OIDC_TOKEN`, which
-   * Vercel populates automatically on every deployment when a Blob store
-   * is connected to the project. Environment-provided credentials are
-   * resolved for each operation so rotated OIDC tokens stay current.
+   * Vercel OIDC token. Usually left unset: with a store id (`storeId` or
+   * `BLOB_STORE_ID`) and no `token`, `@vercel/blob` looks the token up on
+   * every call, the way it does when called directly. On Vercel Functions
+   * the token arrives per request in the `x-vercel-oidc-token` header, not
+   * in `process.env`; elsewhere it comes from `VERCEL_OIDC_TOKEN` (set
+   * during Vercel builds, and written to `.env.local` by `vercel env pull`).
+   * `@vercel/blob` 2.5 and later refresh an expired local token in a
+   * project linked with `vercel link`.
    *
    * OIDC tokens are short-lived and auto-rotated, so they remove the risk
    * that a long-lived `BLOB_READ_WRITE_TOKEN` leaks from your codebase
-   * or environment. OIDC needs a `storeId` (option or `BLOB_STORE_ID`) and
-   * no `token`. On Vercel Functions, where the token arrives per request in
-   * the `x-vercel-oidc-token` header rather than in `process.env`, the
-   * store id alone is enough: `@vercel/blob` reads the token from the
-   * request. That matches the upstream SDK's resolution order.
+   * or environment.
    *
-   * Pass `oidcToken` explicitly when your framework doesn't load
-   * `.env.local` into `process.env` automatically (Vite, etc.) — the
-   * adapter would otherwise silently fall back to the read-write token.
+   * Pass `oidcToken` explicitly only when you obtain the token yourself, for
+   * example when your framework doesn't load `.env.local` into
+   * `process.env` (Vite, etc.). A token passed here is used as given, never
+   * refreshed, and needs a store id: without one the adapter throws rather
+   * than falling back to the read-write token.
    */
   oidcToken?: string;
   /**
@@ -296,9 +300,34 @@ const DEFAULT_BLOB_MESSAGES: Record<ProviderFilesErrorCode, string> = {
   Unauthorized: "Unauthorized",
 };
 
+const MISSING_CREDENTIALS_MESSAGE =
+  "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from the request's x-vercel-oidc-token header on Vercel Functions, or from VERCEL_OIDC_TOKEN).";
+
+// Nothing to authenticate with. Flagged permanent: re-sending the request
+// can't produce a credential, so `retries` must not re-issue it.
+const missingCredentials = (cause?: unknown): FilesError =>
+  new FilesError("Provider", MISSING_CREDENTIALS_MESSAGE, cause, {
+    permanent: true,
+  });
+
+// `@vercel/blob` throws a bare `BlobError` with this message when its own
+// lookup finds no credential at call time (unchanged from 2.4 through 2.8).
+const NO_BLOB_CREDENTIALS_RE = /No blob credentials found/u;
+
 const mapBlobError = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
     return cause;
+  }
+  // The OIDC token can only be looked for per call (see `resolveAuth`), so
+  // this is where "no credentials" surfaces for an adapter that has a store
+  // id but no token. Report it as the adapter's own missing-credentials
+  // error, the one thrown when nothing is configured at all.
+  if (
+    isInstance(cause, blob.BlobError) &&
+    cause instanceof Error &&
+    NO_BLOB_CREDENTIALS_RE.test(cause.message)
+  ) {
+    return missingCredentials(cause);
   }
   const message =
     isObject(cause) && "message" in cause && isString(cause.message)
@@ -377,19 +406,18 @@ export const vercelBlob = (
   const explicitToken = config.token;
   const explicitOidcToken = config.oidcToken;
   const explicitStoreId = config.storeId;
+  // The credentials handed to `@vercel/blob` for one operation. Mirrors its
+  // own resolution order (`resolveBlobAuth`):
+  //   1. explicit `token` (RW or client token): wins over OIDC
+  //   2. OIDC: the `oidcToken` option, or the token `@vercel/blob` finds
+  //      itself (request header, then `VERCEL_OIDC_TOKEN`), paired with the
+  //      `storeId` option or `BLOB_STORE_ID`
+  //   3. `BLOB_READ_WRITE_TOKEN` env
   const resolveAuth = (): BlobAuthOptions => {
-    const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
-    const envOidcToken = readEnv("VERCEL_OIDC_TOKEN");
-    const resolvedStoreId = explicitStoreId ?? readEnv("BLOB_STORE_ID");
-
-    // Mirrors the upstream SDK's resolution order:
-    //   1. explicit `token` (RW or client token) — wins over OIDC
-    //   2. OIDC (`storeId` from option or env, with an `oidcToken` option or
-    //      an OIDC token the SDK finds itself)
-    //   3. `BLOB_READ_WRITE_TOKEN` env
     if (explicitToken) {
       return { token: explicitToken };
     }
+    const resolvedStoreId = explicitStoreId ?? readEnv("BLOB_STORE_ID");
     if (explicitOidcToken) {
       if (resolvedStoreId) {
         return { oidcToken: explicitOidcToken, storeId: resolvedStoreId };
@@ -401,31 +429,42 @@ export const vercelBlob = (
       // too, ahead of its own read-write-token fallback.
       throw new FilesError(
         "Provider",
-        "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC."
+        "vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC.",
+        undefined,
+        { permanent: true }
       );
     }
-    // Implicit OIDC: hand over just the store id and let `@vercel/blob` find
-    // the token, rather than pinning `VERCEL_OIDC_TOKEN` here. On Vercel
-    // Functions the fresh token arrives per request in the
-    // `x-vercel-oidc-token` header (the env copy can be missing or stale), and
-    // the SDK reads that first, then the env. From 2.5 it also refreshes an
-    // expired local token from `vercel env pull`. A store id with neither
-    // token nor RW token is still OIDC: the token may only exist per request,
-    // and with none there the SDK throws "No blob credentials found".
-    if (resolvedStoreId && (envOidcToken || !envToken)) {
+    // Implicit OIDC: hand over just the store id and let `@vercel/blob` pick
+    // the credential on each call. Whether an OIDC token exists is only
+    // knowable then: on Vercel Functions it arrives per request in the
+    // `x-vercel-oidc-token` header, not `process.env`; elsewhere it is
+    // `VERCEL_OIDC_TOKEN`, which `@vercel/blob` 2.5+ refreshes once expired
+    // in a `vercel link`ed project. The SDK reads those in that order and,
+    // finding none, falls back to `BLOB_READ_WRITE_TOKEN` itself. So a
+    // read-write token in the env must not be passed here: as an explicit
+    // `token` it would outrank the request's OIDC token.
+    if (resolvedStoreId) {
       return { storeId: resolvedStoreId };
     }
+    // No store id, so no OIDC (the SDK skips an OIDC token it can't pair with
+    // a store): the read-write token is the only credential left.
+    const envToken = readEnv("BLOB_READ_WRITE_TOKEN");
     if (envToken) {
       return { token: envToken };
     }
-    throw new FilesError(
-      "Provider",
-      "vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from VERCEL_OIDC_TOKEN or, on Vercel Functions, the request)."
-    );
+    throw missingCredentials();
   };
 
-  // Preserve construction-time validation while resolving implicit
-  // environment credentials again for every provider operation.
+  // Fail fast on what construction can already decide: an explicit
+  // `oidcToken` with no store id, or neither a store id nor a read-write
+  // token (OIDC needs a store id, so no request header could rescue that).
+  // A store id with no token in sight is deliberately not checked here: on
+  // Vercel Functions the OIDC token exists only inside a request, so
+  // checking would make a module-scope `vercelBlob()` throw at import. For
+  // that path the check moves to first use, where `@vercel/blob`'s "No blob
+  // credentials found" becomes the same missing-credentials error (see
+  // `mapBlobError`). Every operation re-resolves, so env changes made after
+  // construction are honored.
   resolveAuth();
 
   const access = config.access ?? "public";
@@ -530,15 +569,16 @@ export const vercelBlob = (
     }
   };
 
-  // Prefer the explicit storeId (option or `BLOB_STORE_ID` env, whatever the
-  // active auth scheme) since it works for OIDC and any future credential
-  // shape. Fall back to deriving it from a read-write token (the only
-  // credential shape that embeds the storeId) so existing setups keep their
-  // no-round-trip URL fast path.
+  // A public URL is built from the store id and the key alone, so it needs no
+  // OIDC token, which may only exist inside a request. Prefer the store id
+  // from the option or `BLOB_STORE_ID` (whatever the active auth scheme),
+  // then fall back to deriving it from a read-write token (the only
+  // credential shape that embeds one) so token-only setups keep the
+  // no-round-trip fast path. `resolveAuth()` still runs, so an adapter with
+  // nothing to authenticate with fails loudly here too.
   const resolveStoreId = (): string | undefined => {
     const auth = resolveAuth();
-    const resolvedStoreId =
-      explicitStoreId ?? auth.storeId ?? readEnv("BLOB_STORE_ID");
+    const resolvedStoreId = explicitStoreId ?? readEnv("BLOB_STORE_ID");
     if (resolvedStoreId) {
       const normalizedStoreId = normalizeExplicitStoreId(resolvedStoreId);
       if (normalizedStoreId) {
