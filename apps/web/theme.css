@@ -76,6 +76,11 @@
   --color-sky: #8fd8ff;
   --color-lilac: #c8b5ff;
   --color-sun: #ffd84d;
+
+  /* Motion curves (Animations on the Web): a strong ease-out for things
+     arriving, a softer one for sweeps that should read as a stroke. */
+  --ease-out-expo: cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 /* The config accent compiles a white accent-foreground for both modes, which
@@ -141,7 +146,13 @@ html:has([data-home])
  *   <div class="dog-ear [--fold:--spacing(3)] [--fold-color:var(--color-highlighter)]">
  *
  * clip-path also clips outlines, so keep focus rings on an unclipped parent.
+ *
+ * To lift the corner on hover, change `--fold` and transition what it
+ * drives: `clip-path` on the element and `width`/`height` on its flap.
+ * (`--fold` itself can't transition: an `@property` here would sit inside
+ * Blume's cascade layer, where browsers ignore it.)
  */
+
 @utility dog-ear {
   position: relative;
   clip-path: polygon(
@@ -165,6 +176,162 @@ html:has([data-home])
       var(--fold-color, currentColor) 50%
     );
     pointer-events: none;
+  }
+}
+
+/*
+ * Homepage motion (components/home, pages/index.astro). One vocabulary, used
+ * sparingly: the highlighter sweep (a left-to-right clip-path wipe for marked
+ * text), the paper stack fanning out, and reveals in reading order. Movement
+ * sits behind `prefers-reduced-motion: no-preference`; reduced motion keeps
+ * the fades and drops the travel. The intro is CSS only, and a scroll
+ * reveal hides nothing unless its script has marked it to play, so the page
+ * reads fine without JavaScript.
+ */
+@keyframes home-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes home-rise {
+  from {
+    opacity: 0;
+    translate: 0 0.75rem;
+  }
+}
+
+@keyframes home-step {
+  from {
+    opacity: 0;
+    translate: -0.5rem 0;
+  }
+}
+
+@keyframes home-step-back {
+  from {
+    opacity: 0;
+    translate: 0.5rem 0;
+  }
+}
+
+/* The back pages of a stack start squared up behind the front one. */
+@keyframes home-fan {
+  from {
+    opacity: 0;
+    rotate: 0deg;
+  }
+}
+
+@keyframes home-sweep {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+
+/* The sweep for a dog-ear: the same five points as the utility's polygon,
+   collapsed to the left edge, so the fold lands last. */
+@keyframes home-sweep-dog-ear {
+  from {
+    clip-path: polygon(0 0, 0 0, 0 var(--fold), 0 100%, 0 100%);
+  }
+}
+
+/* The hero's intro, on every load. The headline leads; supporting copy and
+   the code stack follow. */
+[data-intro] [data-intro-rise],
+[data-intro] [data-intro-fade] {
+  animation: home-fade 400ms ease both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-intro] [data-intro-rise] {
+    animation: home-rise 800ms var(--ease-out-expo) both;
+    animation-delay: calc(var(--i, 0) * 90ms);
+  }
+
+  [data-intro] [data-intro-fade] {
+    animation: home-fade 900ms var(--ease-out-expo) both;
+    animation-delay: calc(var(--i, 0) * 90ms);
+  }
+
+  [data-intro] [data-intro-sweep] {
+    animation: home-sweep-dog-ear 700ms var(--ease-out-quart) 300ms both;
+  }
+
+  [data-intro] [data-intro-fan] {
+    animation: home-fan 1000ms var(--ease-out-expo) both;
+    animation-delay: calc(420ms + var(--i, 0) * 100ms);
+  }
+
+  /* Switching the hero's adapter sweeps in only the lines that change. */
+  [data-adapter-switched] [data-hl] {
+    animation: home-sweep 450ms var(--ease-out-quart) both;
+    animation-delay: calc(var(--hl, 0) * 80ms);
+  }
+}
+
+/* Scroll reveals (a script marks below-the-fold blocks pending, then done). */
+[data-reveal="pending"] [data-step] {
+  opacity: 0;
+}
+
+[data-reveal="done"] [data-step] {
+  animation: home-fade 500ms ease both;
+  animation-delay: calc(var(--step, 0) * 90ms);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-reveal="done"] [data-step] {
+    animation: home-step 600ms var(--ease-out-expo) both;
+    animation-delay: calc(var(--step, 0) * 90ms);
+  }
+
+  [data-reveal="done"] [data-step][data-dir="back"] {
+    animation-name: home-step-back;
+  }
+
+  [data-reveal="pending"] [data-hl] {
+    clip-path: inset(0 100% 0 0);
+  }
+
+  [data-reveal="done"] [data-hl] {
+    animation: home-sweep 600ms var(--ease-out-quart) both;
+    animation-delay: calc(200ms + var(--hl, 0) * 150ms);
+  }
+}
+
+/* The install command's copy icon crossfades to a check (scale and blur
+   rather than a delay, so the two shapes never read as overlapping). */
+[data-install-command] :is(.copy-icon, .check-icon) {
+  transition:
+    opacity 200ms var(--ease-out-quart),
+    scale 200ms var(--ease-out-quart),
+    filter 200ms var(--ease-out-quart);
+}
+
+[data-install-command] .check-icon,
+[data-install-command][data-copied] .copy-icon {
+  opacity: 0;
+}
+
+[data-install-command][data-copied] .check-icon {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-install-command] .check-icon,
+  [data-install-command][data-copied] .copy-icon {
+    filter: blur(4px);
+    scale: 0.5;
+  }
+
+  [data-install-command][data-copied] .check-icon {
+    filter: blur(0);
+    scale: 1;
   }
 }
 

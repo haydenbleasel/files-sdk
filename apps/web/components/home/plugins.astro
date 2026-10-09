@@ -67,18 +67,25 @@ const STEPS = [
           <CodeBlock code={SNIPPET} highlight={[9, 10, 11, 12, 13]} />
         </div>
 
-        <figure class="mt-8">
+        <!-- Scroll reveal in pipeline order: writes left to right, then reads
+             unwinding right to left (theme.css, `[data-reveal]`). -->
+        <figure class="mt-8" data-reveal>
           <div class="-mx-6 overflow-x-auto px-6 sm:mx-0 sm:px-0">
             <div
               class="grid min-w-[36rem] grid-cols-[auto_repeat(4,minmax(0,1fr))] items-center gap-x-2 gap-y-3 font-mono text-[0.8125rem]/5"
             >
               <span
                 class="pr-3 text-xs tracking-wide text-neutral-500 uppercase dark:text-neutral-400"
+                data-step
                 >Upload</span
               >
               {
                 STEPS.map((step, index) => (
-                  <span class="flex items-center gap-2 px-3 text-neutral-700 dark:text-neutral-300">
+                  <span
+                    class="flex items-center gap-2 px-3 text-neutral-700 dark:text-neutral-300"
+                    data-step
+                    style={`--step: ${index}`}
+                  >
                     {step.write}
                     {index < STEPS.length - 1 && (
                       <Icon
@@ -94,11 +101,19 @@ const STEPS = [
               {
                 STEPS.map((step) =>
                   step.adapter ? (
-                    <span class="border border-neutral-950 bg-neutral-950 px-3 py-2.5 text-white dark:border-white dark:bg-white dark:text-neutral-950">
+                    <span
+                      class="border border-neutral-950 bg-neutral-950 px-3 py-2.5 text-white dark:border-white dark:bg-white dark:text-neutral-950"
+                      data-step
+                      style={`--step: ${STEPS.indexOf(step)}`}
+                    >
                       {step.name}
                     </span>
                   ) : (
-                    <span class="dog-ear border border-neutral-950/15 bg-white px-3 py-2.5 text-neutral-950 [--fold-color:var(--color-coral)] [--fold:--spacing(2.5)] dark:border-white/15 dark:bg-neutral-900 dark:text-white">
+                    <span
+                      class="dog-ear border border-neutral-950/15 bg-white px-3 py-2.5 text-neutral-950 [--fold-color:var(--color-coral)] [--fold:--spacing(2.5)] dark:border-white/15 dark:bg-neutral-900 dark:text-white"
+                      data-step
+                      style={`--step: ${STEPS.indexOf(step)}`}
+                    >
                       {step.name}
                     </span>
                   )
@@ -107,11 +122,17 @@ const STEPS = [
 
               <span
                 class="pr-3 text-xs tracking-wide text-neutral-500 uppercase dark:text-neutral-400"
+                data-dir="back"
+                data-step
+                style={`--step: ${STEPS.length * 2 - 1}`}
                 >Download</span
               >
               {
                 STEPS.map((step, index) => (
                   <span
+                    data-dir="back"
+                    data-step
+                    style={`--step: ${STEPS.length * 2 - 1 - index}`}
                     class:list={[
                       "flex items-center gap-2 px-3",
                       index === 0

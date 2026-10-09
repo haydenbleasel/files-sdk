@@ -85,7 +85,7 @@ const [core, ...rest] = AREAS;
       >
         <div
           class:list={[
-            "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 group-hover:border-neutral-950/35 sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
+            "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 transition-[border-color,clip-path] duration-200 ease-out-expo group-hover:border-neutral-950/35 group-hover:[--fold:--spacing(9)] after:transition-[width,height] after:duration-200 after:ease-out-expo sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
             core.fold,
           ]}
         >
@@ -128,7 +128,7 @@ const [core, ...rest] = AREAS;
           >
             <div
               class:list={[
-                "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 group-hover:border-neutral-950/35 sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
+                "dog-ear flex w-full flex-col border border-neutral-950/15 bg-white p-6 transition-[border-color,clip-path] duration-200 ease-out-expo group-hover:border-neutral-950/35 group-hover:[--fold:--spacing(9)] after:transition-[width,height] after:duration-200 after:ease-out-expo sm:p-8 dark:border-white/10 dark:bg-neutral-900 dark:group-hover:border-white/25",
                 area.fold,
               ]}
             >

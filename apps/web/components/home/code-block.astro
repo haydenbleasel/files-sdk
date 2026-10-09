@@ -31,9 +31,13 @@ const escape = (text: string): string =>
 // would render as stray indentation inside the code.
 const html = tokenize(code)
   .map((line, index) => {
-    const lineClass = highlight.includes(index + 1)
-      ? `${LINE_CLASS} ${HIGHLIGHT_CLASS}`
-      : LINE_CLASS;
+    // Marked lines carry `data-hl` and their order among the marked ones
+    // (`--hl`), so the highlighter sweep in theme.css can stagger them.
+    const marked = highlight.toSorted((a, b) => a - b).indexOf(index + 1);
+    const lineAttrs =
+      marked === -1
+        ? `class="${LINE_CLASS}"`
+        : `class="${LINE_CLASS} ${HIGHLIGHT_CLASS}" data-hl style="--hl: ${marked}"`;
     const body =
       line.length === 0
         ? " "
@@ -45,7 +49,7 @@ const html = tokenize(code)
                 : escape(token.text);
             })
             .join("");
-    return `<span class="${lineClass}">${body}</span>`;
+    return `<span ${lineAttrs}>${body}</span>`;
   })
   .join("");
 ---

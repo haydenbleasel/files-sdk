@@ -12,7 +12,7 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
 <button
   aria-label={`Copy install command: ${command}`}
   class:list={[
-    "inline-flex h-12 cursor-pointer items-center gap-3 border border-neutral-950/15 bg-transparent pr-4 pl-5 font-mono text-base text-neutral-950 hover:border-neutral-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 sm:text-[0.9375rem] dark:border-white/15 dark:text-white dark:hover:border-white/30 dark:focus-visible:outline-white",
+    "inline-flex h-12 cursor-pointer items-center gap-3 border border-neutral-950/15 bg-transparent pr-4 pl-5 font-mono transition-[border-color,scale] duration-150 ease-out active:scale-[0.97] text-base text-neutral-950 hover:border-neutral-950/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 sm:text-[0.9375rem] dark:border-white/15 dark:text-white dark:hover:border-white/30 dark:focus-visible:outline-white",
     className,
   ]}
   data-command={command}
@@ -21,11 +21,13 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
 >
   <span class="text-neutral-500 dark:text-neutral-400">$</span>
   <span>{command}</span>
-  <Icon
-    class="copy-icon size-4 shrink-0 text-neutral-500 dark:text-neutral-400"
-    name="copy"
-  />
-  <Icon class="check-icon hidden size-4 shrink-0" name="check" />
+  <span class="grid size-4 shrink-0 *:[grid-area:1/1]">
+    <Icon
+      class="copy-icon size-4 text-neutral-500 dark:text-neutral-400"
+      name="copy"
+    />
+    <Icon class="check-icon size-4" name="check" />
+  </span>
 </button>
 
 <script>
@@ -41,8 +43,6 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
       "[data-install-command]:not([data-bound])"
     )) {
       btn.dataset.bound = "";
-      const copy = btn.querySelector(".copy-icon");
-      const check = btn.querySelector(".check-icon");
       let timer: ReturnType<typeof setTimeout>;
       btn.addEventListener("click", async () => {
         try {
@@ -56,12 +56,11 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
           manager: (btn.dataset.command ?? "").split(" ")[0] ?? "",
           page: location.pathname,
         });
-        copy?.classList.add("hidden");
-        check?.classList.remove("hidden");
+        // The icons crossfade on `data-copied` (theme.css).
+        btn.dataset.copied = "";
         clearTimeout(timer);
         timer = setTimeout(() => {
-          copy?.classList.remove("hidden");
-          check?.classList.add("hidden");
+          delete btn.dataset.copied;
         }, 1800);
       });
     }

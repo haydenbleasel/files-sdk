@@ -79,19 +79,23 @@ const STATS = [
 ];
 ---
 
-<section class="overflow-x-clip">
+<!-- `data-intro` plays the hero's intro on load (theme.css). -->
+<section class="overflow-x-clip" data-intro>
   <div class="mx-auto max-w-7xl px-6 pt-14 pb-20 sm:pt-20 sm:pb-24 lg:px-8">
     <a
-      class="inline-flex items-center font-mono text-sm text-neutral-600 hover:text-neutral-950 dark:text-neutral-400 dark:hover:text-white"
+      class="inline-flex items-center font-mono text-sm text-neutral-600 transition-colors duration-150 hover:text-neutral-950 dark:text-neutral-400 dark:hover:text-white"
+      data-intro-fade
       href="/changelog"
     >
       v{latestVersion} · Read the changelog
     </a>
 
     <h1
+      data-intro-rise
       class="mt-8 max-w-[14ch] font-display text-6xl font-semibold tracking-tighter text-balance text-neutral-950 sm:text-7xl lg:text-8xl xl:text-9xl dark:text-white"
     >
       Write once. Store <span
+        data-intro-sweep
         class="dog-ear -ml-[0.04em] inline-block bg-highlighter px-[0.12em] pb-[0.04em] text-neutral-950 [--fold-color:var(--color-neutral-950)] [--fold:0.28em] dark:[--fold-color:var(--color-white)]"
         >anywhere.</span
       >
@@ -101,6 +105,8 @@ const STATS = [
       <div class="flex min-w-0 flex-col gap-8 lg:col-span-5">
         <p
           class="max-w-[40ch] text-xl/8 text-pretty text-neutral-600 dark:text-neutral-400"
+          data-intro-rise
+          style="--i: 1"
         >
           One small, honest API for S3, R2, Vercel Blob, GCS, Azure and {
             adapterCount - 5
@@ -108,13 +114,17 @@ const STATS = [
           client whenever you need it.
         </p>
 
-        <div class="flex flex-wrap items-center gap-3">
+        <div
+          class="flex flex-wrap items-center gap-3"
+          data-intro-rise
+          style="--i: 2"
+        >
           <a
-            class="group inline-flex focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 dark:focus-visible:outline-white"
+            class="group inline-flex transition-[scale] duration-150 ease-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-950 active:scale-[0.97] dark:focus-visible:outline-white"
             href="/docs"
           >
             <span
-              class="dog-ear inline-flex h-12 items-center bg-neutral-950 px-4 text-base font-semibold text-white [--fold-color:var(--color-highlighter)] [--fold:--spacing(3)] group-hover:bg-neutral-800 dark:bg-white dark:text-neutral-950 dark:group-hover:bg-neutral-200"
+              class="dog-ear inline-flex h-12 items-center bg-neutral-950 px-4 text-base font-semibold text-white transition-[background-color,clip-path] duration-200 ease-out-expo after:transition-[width,height] after:duration-200 after:ease-out-expo [--fold-color:var(--color-highlighter)] [--fold:--spacing(3)] group-hover:bg-neutral-800 group-hover:[--fold:--spacing(4)] dark:bg-white dark:text-neutral-950 dark:group-hover:bg-neutral-200"
             >
               Get started
             </span>
@@ -122,7 +132,11 @@ const STATS = [
           <InstallCommand />
         </div>
 
-        <dl class="grid grid-cols-2 gap-x-8 gap-y-6 sm:grid-cols-4">
+        <dl
+          class="grid grid-cols-2 gap-x-8 gap-y-6 sm:grid-cols-4"
+          data-intro-fade
+          style="--i: 3"
+        >
           {
             STATS.map((stat) => (
               <div class="flex flex-col-reverse gap-1 border-t border-neutral-950/10 pt-4 dark:border-white/10">
@@ -138,10 +152,12 @@ const STATS = [
         </dl>
       </div>
 
-      <div class="group/code min-w-0 lg:col-span-7">
+      <div class="group/code min-w-0 lg:col-span-7" data-hero-code>
         <div class="relative pt-12 pl-5 sm:pl-9">
           <div
             aria-hidden="true"
+            data-intro-fan
+            style="--i: 1"
             class="dog-ear absolute top-0 right-5 bottom-12 left-0 sm:right-9 origin-bottom-left -rotate-4 border border-neutral-950/10 bg-neutral-100 [--fold-color:var(--color-neutral-300)] [--fold:--spacing(8)] dark:border-white/10 dark:bg-neutral-900 dark:[--fold-color:var(--color-neutral-700)]"
           >
             <span
@@ -151,6 +167,7 @@ const STATS = [
           </div>
           <div
             aria-hidden="true"
+            data-intro-fan
             class="dog-ear absolute top-6 right-2.5 bottom-6 left-2.5 sm:right-4.5 sm:left-4.5 origin-bottom-left -rotate-2 border border-neutral-950/10 bg-neutral-50 [--fold-color:var(--color-neutral-300)] [--fold:--spacing(8)] dark:border-white/10 dark:bg-neutral-900 dark:[--fold-color:var(--color-neutral-700)]"
           >
             <span
@@ -160,6 +177,8 @@ const STATS = [
           </div>
 
           <div
+            data-intro-rise
+            style="--i: 2"
             class="dog-ear border border-neutral-950/15 bg-white [--fold-color:var(--color-neutral-950)] [--fold:--spacing(8)] dark:border-white/15 dark:bg-neutral-900 dark:[--fold-color:var(--color-white)]"
           >
             {
@@ -179,7 +198,9 @@ const STATS = [
         <div
           aria-labelledby="hero-adapter-label"
           class="mt-5 flex flex-wrap items-center gap-2 sm:pl-9"
+          data-intro-fade
           role="radiogroup"
+          style="--i: 3"
         >
           <p
             class="mb-1 w-full text-base/6 text-neutral-600 sm:text-sm/6 dark:text-neutral-400"
@@ -189,7 +210,7 @@ const STATS = [
           </p>
           {
             ADAPTERS.map((adapter) => (
-              <label class="relative inline-flex h-9 cursor-pointer items-center border border-neutral-950/15 px-3 font-mono text-sm text-neutral-950 not-has-checked:hover:bg-neutral-950/5 has-checked:border-neutral-950 has-checked:bg-neutral-950 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-neutral-950 dark:border-white/15 dark:text-white dark:not-has-checked:hover:bg-white/5 dark:has-checked:border-white dark:has-checked:bg-white dark:has-checked:text-neutral-950 dark:has-focus-visible:outline-white">
+              <label class="relative inline-flex h-9 cursor-pointer items-center border transition-[background-color,border-color,color,scale] duration-150 ease-out active:scale-[0.97] border-neutral-950/15 px-3 font-mono text-sm text-neutral-950 not-has-checked:hover:bg-neutral-950/5 has-checked:border-neutral-950 has-checked:bg-neutral-950 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-neutral-950 dark:border-white/15 dark:text-white dark:not-has-checked:hover:bg-white/5 dark:has-checked:border-white dark:has-checked:bg-white dark:has-checked:text-neutral-950 dark:has-focus-visible:outline-white">
                 <input
                   checked={adapter.slug === DEFAULT_ADAPTER}
                   class="sr-only"
@@ -211,3 +232,20 @@ const STATS = [
     </div>
   </div>
 </section>
+
+<script>
+  // Switching the adapter sweeps in only the lines that change (theme.css,
+  // `[data-adapter-switched]`). Marked on the first switch, so the default
+  // variant doesn't sweep on load. Rebound after client-router swaps.
+  const bind = () => {
+    for (const code of document.querySelectorAll<HTMLElement>(
+      "[data-hero-code]:not([data-bound])"
+    )) {
+      code.dataset.bound = "";
+      code.addEventListener("change", () => {
+        code.dataset.adapterSwitched = "";
+      });
+    }
+  };
+  document.addEventListener("astro:page-load", bind);
+</script>

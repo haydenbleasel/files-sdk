@@ -59,3 +59,39 @@ const pluginCount = PLUGINS.length;
   </div>
   <Footer slot="footer" />
 </PageLayout>
+
+<script>
+  // Scroll reveals (theme.css, `[data-reveal]`): a block still below the
+  // fold is marked pending (hidden) and plays once as it comes into view.
+  // Anything already on screen is left alone, and without this script nothing
+  // is ever hidden. Rebound after client-router swaps.
+  const bind = () => {
+    const blocks = document.querySelectorAll<HTMLElement>(
+      "[data-reveal]:not([data-reveal-bound])"
+    );
+    if (blocks.length === 0 || !("IntersectionObserver" in window)) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && entry.target instanceof HTMLElement) {
+            entry.target.dataset.reveal = "done";
+            observer.unobserve(entry.target);
+          }
+        }
+      },
+      // Play as the block arrives, a little before it's fully in view.
+      { rootMargin: "0px 0px -10% 0px" }
+    );
+    for (const block of blocks) {
+      block.dataset.revealBound = "";
+      if (block.getBoundingClientRect().top < window.innerHeight * 0.9) {
+        continue;
+      }
+      block.dataset.reveal = "pending";
+      observer.observe(block);
+    }
+  };
+  document.addEventListener("astro:page-load", bind);
+</script>
