@@ -49,11 +49,11 @@ All methods live on the `Files` instance; the single-key forms are also availabl
 
 | Method | Returns | Notes |
 | --- | --- | --- |
-| `upload(key, body, opts?)` | `FileInfo` | `opts`: `contentType`, `cacheControl`, `metadata`, `onProgress`, `multipart`, `control`, `condition`. Array form → `{ uploaded, errors? }`. |
-| `download(key, opts?)` | `StoredFile` | `opts.as` is `"blob"` or `"stream"`; `opts.range` for a byte slice. Array form → `{ downloaded, errors? }`. |
-| `head(key, opts?)` | `FileInfo` | Metadata only (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`), no body — use `download` for bytes. Array form → `{ files, errors? }`. |
+| `upload(key, body, opts?)` | `FileInfo` | `opts`: `contentType`, `cacheControl`, `metadata`, `onProgress`, `multipart`, `control`, `condition`. Array form → `{ results, errors? }`. |
+| `download(key, opts?)` | `StoredFile` | `opts.as` is `"blob"` or `"stream"`; `opts.range` for a byte slice. Array form → `{ results, errors? }`. |
+| `head(key, opts?)` | `FileInfo` | Metadata only (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`), no body — use `download` for bytes. Array form → `{ results, errors? }`. |
 | `exists(key, opts?)` | `boolean` | `false` only on `NotFound`. Auth/transport errors still throw. Array form → `{ existing, missing, errors? }`. |
-| `delete(key, opts?)` | `void` | Array form → `{ deleted, errors? }` (uses native batch delete on S3-family, Azure, Supabase, UploadThing). |
+| `delete(key, opts?)` | `void` | Array form → `{ results, errors? }` (the deleted keys) (uses native batch delete on S3-family, Azure, Supabase, UploadThing). |
 | `copy(from, to, opts?)` | `void` | Within one adapter. |
 | `move(from, to, opts?)` | `void` | Rename. Native rename where available (`fs`, FTP, SFTP, WebDAV, Cloudinary, memory), else copy+delete. Throws on immutable stores (Convex). |
 | `list(opts?)` | `{ items, prefixes?, cursor? }` | `opts`: `prefix`, `cursor`, `limit`, `delimiter`. `delimiter` returns folder `prefixes` — see [Folder listing](#folder-listing). |
@@ -122,16 +122,18 @@ Pass these to `new Files({ adapter, ... })`. The three `OperationOptions` (`sign
 `upload`, `download`, `head`, and `exists` take a single key **or an array**; `delete` takes one key or many. The array form fans out with bounded concurrency (8 by default) and returns a structured result that keeps successes and failures separate, in input order — **one bad key never sinks the batch, and it does not throw on partial failure**.
 
 ```ts
-const { uploaded, errors } = await files.upload([
+const { results, errors } = await files.upload([
   { key: "a.txt", body: "alpha" },
   { key: "b.txt", body: "beta", contentType: "text/plain" },
 ]);
 
 const { existing, missing } = await files.exists(["a.txt", "b.txt", "c.txt"]);
-const { deleted } = await files.delete(["a.txt", "b.txt"], { concurrency: 16 });
+const { results: deleted } = await files.delete(["a.txt", "b.txt"], {
+  concurrency: 16,
+});
 ```
 
-Result shapes: `upload → { uploaded, errors? }`, `download → { downloaded, errors? }`, `head → { files, errors? }`, `exists → { existing, missing, errors? }`, `delete → { deleted, errors? }`. `errors` is `{ key, error }[]`, omitted entirely when everything succeeded. Pass `stopOnError: true` to bail at the first failure (runs sequentially). Bulk calls are not retried and fire one aggregated `onAction`.
+Result shapes: every array form but `exists` returns `{ results, errors? }` (`upload` / `head` → `FileInfo[]`, `download` → `StoredFile[]`, `delete` → the deleted keys); `exists → { existing, missing, errors? }`. `errors` is `{ key, error }[]`, omitted entirely when everything succeeded. Pass `stopOnError: true` to bail at the first failure (runs sequentially). Bulk calls are not retried and fire one aggregated `onAction`.
 
 ## Large & resilient uploads
 

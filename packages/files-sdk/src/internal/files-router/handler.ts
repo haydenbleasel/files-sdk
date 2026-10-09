@@ -460,7 +460,7 @@ const dispatchJson = async (
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
-        files: result.files.map((f) => fileInfoToWire(f, unscope)),
+        results: result.results.map((f) => fileInfoToWire(f, unscope)),
         ...(errors && { errors }),
       });
     }
@@ -527,7 +527,7 @@ const dispatchJson = async (
       );
       const errors = bulkErrors(result.errors, unscope);
       return json({
-        deleted: result.deleted.map(unscope),
+        results: result.results.map(unscope),
         ...(errors && { errors }),
       });
     }

@@ -208,7 +208,7 @@ const runUploadDir = async (
   const result = await files.upload(items, buildBulkOptions(opts));
   emit(
     {
-      uploaded: result.uploaded,
+      results: result.results,
       ...(result.errors && { errors: result.errors }),
     },
     opts
@@ -328,14 +328,14 @@ const runDownloadMany = async (
     ...buildBulkOptions(opts),
   });
   const downloaded: { key: string; path: string }[] = [];
-  for (const file of result.downloaded) {
+  for (const file of result.results) {
     // eslint-disable-next-line no-await-in-loop -- stream each downloaded body to disk sequentially to bound open fds/memory.
     const dest = await writeBodyToDir(file, opts.outDir);
     downloaded.push({ key: file.key, path: dest });
   }
   emit(
     {
-      downloaded,
+      results: downloaded,
       ...(result.errors && { errors: result.errors }),
     },
     opts
@@ -436,7 +436,7 @@ export const runHead = async (opts: HeadCmdOpts): Promise<void> => {
   const result = await files.head(opts.keys, buildBulkOptions(opts));
   emit(
     {
-      files: result.files.map(fileInfoToJson),
+      results: result.results.map(fileInfoToJson),
       ...(result.errors && { errors: result.errors }),
     },
     opts

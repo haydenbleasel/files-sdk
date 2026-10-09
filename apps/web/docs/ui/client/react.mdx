@@ -37,7 +37,7 @@ for await (const f of files.search("docs/*.pdf")) {
 }
 ```
 
-Every verb mirrors the SDK's signature, including the bulk array forms — `files.delete([a, b])`, `files.head([a, b])`, `files.download([a, b])` — which return the same partial-result shapes (`{ deleted, errors? }`, …) and never throw on a single bad key.
+Every verb mirrors the SDK's signature, including the bulk array forms — `files.delete([a, b])`, `files.head([a, b])`, `files.download([a, b])` — which return the same partial-result shape (`{ results, errors? }`) and never throw on a single bad key.
 
 ## Uploading
 

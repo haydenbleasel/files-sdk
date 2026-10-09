@@ -433,7 +433,7 @@ describe("uploadthing adapter", () => {
   test("deleteMany delegates to utapi.deleteFiles with the keys", async () => {
     const files = new Files({ adapter: uploadthing() });
     const result = await files.delete(["a.txt", "b.txt"]);
-    expect(result).toEqual({ deleted: ["a.txt", "b.txt"] });
+    expect(result).toEqual({ results: ["a.txt", "b.txt"] });
     expect(deleteFilesMock).toHaveBeenCalledTimes(1);
     expect(deleteFilesMock.mock.calls[0]?.[0]).toEqual(["a.txt", "b.txt"]);
   });
@@ -441,7 +441,7 @@ describe("uploadthing adapter", () => {
   test("deleteMany short-circuits an empty list without calling deleteFiles", async () => {
     const files = new Files({ adapter: uploadthing() });
     const result = await files.delete([]);
-    expect(result).toEqual({ deleted: [] });
+    expect(result).toEqual({ results: [] });
     expect(deleteFilesMock).not.toHaveBeenCalled();
   });
 
@@ -453,7 +453,7 @@ describe("uploadthing adapter", () => {
     );
     const files = new Files({ adapter: uploadthing() });
     const result = await files.delete(["a.txt", "b.txt"]);
-    expect(result.deleted).toEqual([]);
+    expect(result.results).toEqual([]);
     expect(result.errors?.map((e) => e.key)).toEqual(["a.txt", "b.txt"]);
     for (const entry of result.errors ?? []) {
       expect(entry.error).toBeInstanceOf(FilesError);
@@ -461,6 +461,27 @@ describe("uploadthing adapter", () => {
     }
     // One batched call, not one per key.
     expect(deleteFilesMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a bulk delete with stopOnError runs per key through delete() and halts at the first failure", async () => {
+    // Files never hands stopOnError to the native batch: each key goes
+    // through `delete()` (one deleteFiles call per key).
+    deleteFilesMock
+      .mockImplementationOnce(() =>
+        Promise.resolve({ deletedCount: 1, success: true })
+      )
+      .mockImplementationOnce(() =>
+        Promise.reject(new Error("file not found"))
+      );
+    const files = new Files({ adapter: uploadthing() });
+    const result = await files.delete(["a.txt", "b.txt", "c.txt"], {
+      stopOnError: true,
+    });
+    expect(result.results).toEqual(["a.txt"]);
+    expect(result.errors?.map((e) => [e.key, e.error.code])).toEqual([
+      ["b.txt", "NotFound"],
+    ]);
+    expect(deleteFilesMock).toHaveBeenCalledTimes(2);
   });
 
   test("deleteMany with stopOnError deletes one key at a time and halts at the first failure", async () => {
@@ -473,11 +494,14 @@ describe("uploadthing adapter", () => {
       .mockImplementationOnce(() =>
         Promise.reject(new Error("file not found"))
       );
-    const files = new Files({ adapter: uploadthing() });
-    const result = await files.delete(["a.txt", "b.txt", "c.txt"], {
+    const adapter = uploadthing();
+    const result = await adapter.deleteMany?.(["a.txt", "b.txt", "c.txt"], {
       stopOnError: true,
     });
-    expect(result.deleted).toEqual(["a.txt"]);
+    if (!result) {
+      throw new Error("expected a deleteMany result");
+    }
+    expect(result.results).toEqual(["a.txt"]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors?.[0]?.key).toBe("b.txt");
     expect(result.errors?.[0]?.error.code).toBe("NotFound");

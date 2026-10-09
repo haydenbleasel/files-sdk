@@ -115,7 +115,7 @@ Read-only instances still allow `download`, `head`, `exists`, `list`, `listAll`,
 
 ```ts lineNumbers
 // Upload several objects in one call
-const { uploaded, errors } = await files.upload([
+const { results, errors } = await files.upload([
   { key: "a.txt", body: "alpha" },
   { key: "b.txt", body: "beta", contentType: "text/plain" },
 ]);

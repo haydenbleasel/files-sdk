@@ -1209,7 +1209,7 @@ export const createS3Adapter = (
       deleteOpts?: DeleteManyOptions
     ): Promise<DeleteManyResult> {
       if (keys.length === 0) {
-        return { deleted: [] };
+        return { results: [] };
       }
       if (deleteOpts?.stopOnError) {
         const deleted: string[] = [];
@@ -1223,10 +1223,10 @@ export const createS3Adapter = (
             deleted.push(key);
           } catch (error) {
             errors.push({ error: wrapErr(error), key });
-            return { deleted, errors };
+            return { errors, results: deleted };
           }
         }
-        return { deleted };
+        return { results: deleted };
       }
       const deletedKeys = new Set<string>();
       const errors: NonNullable<DeleteManyResult["errors"]> = [];
@@ -1268,9 +1268,9 @@ export const createS3Adapter = (
       }
       const deleted = keys.filter((key) => deletedKeys.has(key));
       if (errors.length === 0) {
-        return { deleted };
+        return { results: deleted };
       }
-      return { deleted, errors };
+      return { errors, results: deleted };
     },
     async download(key, downloadOpts) {
       try {

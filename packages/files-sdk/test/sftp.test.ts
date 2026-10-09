@@ -366,7 +366,7 @@ describe("sftp adapter", () => {
     await files.upload("b.txt", "2");
     const result = await files.delete(["a.txt", "b.txt", "missing.txt"]);
     // Missing deletes are idempotent, so all three count as deleted.
-    expect(result.deleted).toEqual(["a.txt", "b.txt", "missing.txt"]);
+    expect(result.results).toEqual(["a.txt", "b.txt", "missing.txt"]);
     expect(result.errors).toBeUndefined();
   });
 
@@ -677,18 +677,34 @@ describe("sftp edge cases (injected client)", () => {
   test("deleteMany with no keys returns early", async () => {
     const files = newFiles();
     const result = await files.delete([]);
-    expect(result.deleted).toEqual([]);
+    expect(result.results).toEqual([]);
     expect(result.errors).toBeUndefined();
   });
 
-  test("deleteMany collects a transport error and stops on stopOnError", async () => {
+  test("a bulk delete with stopOnError runs per key and stops at the first error", async () => {
     const files = newFiles();
     await files.upload("ok.txt", "1");
+    await files.upload("after.txt", "2");
     const result = await files.delete(["ok.txt", "boom.txt", "after.txt"], {
       stopOnError: true,
     });
-    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.results).toEqual(["ok.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+    expect(store.has("after.txt")).toBe(true);
+  });
+
+  test("deleteMany collects a transport error and stops on stopOnError", async () => {
+    const adapter = sftp({ client: makeFakeClient() });
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+    await files.upload("after.txt", "2");
+    const result = await adapter.deleteMany?.(
+      ["ok.txt", "boom.txt", "after.txt"],
+      { stopOnError: true }
+    );
+    expect(result?.results).toEqual(["ok.txt"]);
+    expect(result?.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+    expect(store.has("after.txt")).toBe(true);
   });
 
   test("stream download of a missing key releases and throws NotFound", async () => {

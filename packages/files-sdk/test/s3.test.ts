@@ -408,7 +408,7 @@ describe("s3 adapter", () => {
 
     const result = await files.delete(["a.txt", "b.txt", "c.txt"]);
 
-    expect(result.deleted).toEqual(["a.txt", "c.txt"]);
+    expect(result.results).toEqual(["a.txt", "c.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual(["b.txt"]);
     expect(result.errors?.[0]?.error.code).toBe("Unauthorized");
     const calls = s3Mock.commandCalls(DeleteObjectsCommand);
@@ -421,7 +421,7 @@ describe("s3 adapter", () => {
     ]);
   });
 
-  test("deleteMany stops on the first error when stopOnError is true", async () => {
+  test("a bulk delete with stopOnError runs per key through delete() and stops at the first error", async () => {
     s3Mock
       .on(DeleteObjectCommand)
       .resolvesOnce({})
@@ -439,8 +439,31 @@ describe("s3 adapter", () => {
       stopOnError: true,
     });
 
-    expect(result.deleted).toEqual(["a.txt"]);
+    expect(result.results).toEqual(["a.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual(["b.txt"]);
+    expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(2);
+    expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
+  });
+
+  test("deleteMany stops on the first error when stopOnError is true", async () => {
+    s3Mock
+      .on(DeleteObjectCommand)
+      .resolvesOnce({})
+      .rejectsOnce(
+        Object.assign(new Error("denied"), {
+          $metadata: { httpStatusCode: 403 },
+          name: "AccessDenied",
+        })
+      );
+    const adapter = s3({ bucket: "test-bucket", region: "us-east-1" });
+
+    const result = await adapter.deleteMany?.(["a.txt", "b.txt", "c.txt"], {
+      stopOnError: true,
+    });
+
+    expect(result?.results).toEqual(["a.txt"]);
+    expect(result?.errors?.map((item) => item.key)).toEqual(["b.txt"]);
+    expect(result?.errors?.[0]?.error.code).toBe("Unauthorized");
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(2);
     expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
   });
@@ -457,7 +480,7 @@ describe("s3 adapter", () => {
 
     const result = await files.delete(keys);
 
-    expect(result.deleted).toEqual(keys);
+    expect(result.results).toEqual(keys);
     expect(result.errors).toBeUndefined();
     const calls = s3Mock.commandCalls(DeleteObjectsCommand);
     expect(calls).toHaveLength(2);
@@ -1745,7 +1768,7 @@ describe("s3 adapter", () => {
   test("deleteMany with an empty key list resolves to an empty result without any request", async () => {
     const adapter = s3({ bucket: "b", region: "us-east-1" });
     const result = await adapter.deleteMany?.([]);
-    expect(result).toEqual({ deleted: [] });
+    expect(result).toEqual({ results: [] });
     expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(0);
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
   });
@@ -1756,7 +1779,7 @@ describe("s3 adapter", () => {
     const result = await adapter.deleteMany?.(["a.txt", "b.txt", "c.txt"], {
       stopOnError: true,
     });
-    expect(result?.deleted).toEqual(["a.txt", "b.txt", "c.txt"]);
+    expect(result?.results).toEqual(["a.txt", "b.txt", "c.txt"]);
     expect(result?.errors).toBeUndefined();
     // stopOnError takes the per-key path, never the bulk DeleteObjects.
     expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(3);
@@ -1774,7 +1797,7 @@ describe("s3 adapter", () => {
     const result = await adapter.deleteMany?.(["a.txt", "b.txt"]);
     // S3 doesn't tell us which keys failed when the request itself fails, so
     // the mapped error is attached to every key in the batch.
-    expect(result?.deleted).toEqual([]);
+    expect(result?.results).toEqual([]);
     expect(result?.errors?.map((item) => item.key)).toEqual(["a.txt", "b.txt"]);
     expect(
       result?.errors?.every((item) => item.error.code === "Unauthorized")

@@ -101,7 +101,7 @@ describe("deleteManyWithFallback", () => {
       calls += 1;
       return Promise.resolve();
     });
-    expect(result).toEqual({ deleted: [] });
+    expect(result).toEqual({ results: [] });
     expect(calls).toBe(0);
   });
 
@@ -115,7 +115,7 @@ describe("deleteManyWithFallback", () => {
       },
       { stopOnError: true }
     );
-    expect(result).toEqual({ deleted: ["a", "b", "c"] });
+    expect(result).toEqual({ results: ["a", "b", "c"] });
     expect(removed).toEqual(["a", "b", "c"]);
   });
 
@@ -128,7 +128,7 @@ describe("deleteManyWithFallback", () => {
       removed.push(key);
       return Promise.resolve();
     });
-    expect(result.deleted).toEqual(["a", "c"]);
+    expect(result.results).toEqual(["a", "c"]);
     expect(result.errors).toBeUndefined();
     expect(removed).toEqual(["a", "c"]);
   });
@@ -147,7 +147,7 @@ describe("deleteManyWithFallback", () => {
       },
       { concurrency: 1 }
     );
-    expect(result.deleted).toEqual(["a", "c"]);
+    expect(result.results).toEqual(["a", "c"]);
     expect(removed).toEqual(["a", "c"]);
   });
 });

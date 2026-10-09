@@ -37,7 +37,7 @@ Every verb mirrors the SDK — `upload`, `download`, `head`, `exists`, `list`, `
 const { key } = await files.upload(file); // keyless → server mints the key
 const stored = await files.download("report.pdf"); // → a lazy StoredFile
 const link = await files.url("avatar.png"); // → string, for <img src>
-await files.delete(["a.txt", "b.txt"]); // bulk → { deleted, errors? }
+await files.delete(["a.txt", "b.txt"]); // bulk → { results, errors? }
 ```
 
 ## Ambient state (stores)

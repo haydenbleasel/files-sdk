@@ -299,7 +299,7 @@ describe("soft-delete plugin — bulk delete", () => {
     await files.upload("b.txt", "2");
 
     const result = await files.delete(["a.txt", "b.txt"]);
-    expect(result.deleted).toEqual(["a.txt", "b.txt"]);
+    expect(result.results).toEqual(["a.txt", "b.txt"]);
     expect(await files.list().then((r) => r.items)).toEqual([]);
 
     await files.restoreTrashed("a.txt");

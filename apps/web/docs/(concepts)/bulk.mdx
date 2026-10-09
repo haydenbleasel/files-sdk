@@ -7,7 +7,7 @@ description: Pass an array instead of a key to act on many objects at once - a b
 
 ```ts lineNumbers
 // Upload several objects in one call
-const { uploaded, errors } = await files.upload([
+const { results, errors } = await files.upload([
   { key: "a.txt", body: "alpha" },
   { key: "b.txt", body: "beta", contentType: "text/plain" },
 ]);
@@ -15,25 +15,25 @@ const { uploaded, errors } = await files.upload([
 // exists() splits the keys into present and absent
 const { existing, missing } = await files.exists(["a.txt", "b.txt", "c.txt"]);
 
-// delete() reports what it removed
-const { deleted } = await files.delete(["a.txt", "b.txt"]);
+// delete() reports the keys it removed
+const { results: deleted } = await files.delete(["a.txt", "b.txt"]);
 ```
 
-Each method returns a result shaped for what it does, and every one carries an optional `errors` array — omitted entirely when every item succeeded:
+Every method but `exists` returns the same shape, a `BulkResult`: the successes in `results` and an optional `errors` array, omitted entirely when every item succeeded. `exists` splits the keys into `existing` and `missing` instead:
 
-| Method     | Array form returns               |
-| ---------- | -------------------------------- |
-| `upload`   | `{ uploaded, errors? }`          |
-| `download` | `{ downloaded, errors? }`        |
-| `head`     | `{ files, errors? }`             |
-| `exists`   | `{ existing, missing, errors? }` |
-| `delete`   | `{ deleted, errors? }`           |
+| Method     | Array form returns                          |
+| ---------- | ------------------------------------------- |
+| `upload`   | `{ results: FileInfo[], errors? }`          |
+| `download` | `{ results: StoredFile[], errors? }`        |
+| `head`     | `{ results: FileInfo[], errors? }`          |
+| `delete`   | `{ results: string[], errors? }` (the keys) |
+| `exists`   | `{ existing, missing, errors? }`            |
 
 The success arrays come back in the order you supplied the keys. Each entry in `errors` is `{ key, error }`, where `error` is a normalized [`FilesError`](/docs/api/errors). Invalid keys (empty, or containing null bytes) are reported there too, never thrown.
 
 ## Partial failure
 
-By default the array forms don't throw on a partial failure — every item is attempted and per-key failures collect in `errors`. Pass `stopOnError: true` to bail at the first failure and return the results gathered so far plus that error (this path runs sequentially), or `concurrency` to tune the fan-out.
+By default the array forms don't throw on a partial failure — every item is attempted and per-key failures collect in `errors`. Pass `stopOnError: true` to bail at the first failure and return the results gathered so far plus that error, or `concurrency` to tune the fan-out. `stopOnError` always runs the items one at a time, in order, and a bulk `delete` with it skips the adapter's native batch (a batch request can't stop partway), so it behaves the same with or without plugins.
 
 ```ts lineNumbers
 const result = await files.upload(items, {

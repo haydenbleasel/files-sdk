@@ -175,7 +175,7 @@ export interface HeadResponse {
   file: WireFileInfo;
 }
 export interface HeadManyResponse {
-  files: WireFileInfo[];
+  results: WireFileInfo[];
   errors?: WireBulkError[];
 }
 export interface ExistsResponse {
@@ -190,7 +190,7 @@ export interface OkResponse {
   ok: true;
 }
 export interface DeleteManyResponse {
-  deleted: string[];
+  results: string[];
   errors?: WireBulkError[];
 }
 export interface UrlResponse {

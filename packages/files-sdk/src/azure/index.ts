@@ -20,7 +20,7 @@ import type {
 
 import type {
   Adapter,
-  DeleteManyError,
+  BulkError,
   DeleteManyOptions,
   DeleteManyResult,
   FileInfo,
@@ -857,7 +857,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       deleteOpts?: DeleteManyOptions
     ): Promise<DeleteManyResult> {
       if (keys.length === 0) {
-        return { deleted: [] };
+        return { results: [] };
       }
       // `stopOnError` wants to stop at the first failure, but a batch attempts
       // every key in the chunk regardless — so honor that mode through the
@@ -874,7 +874,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       }
       const batchClient = client.getBlobBatchClient();
       const deleted: string[] = [];
-      const errors: DeleteManyError[] = [];
+      const errors: BulkError[] = [];
       for (let i = 0; i < keys.length; i += AZURE_BATCH_DELETE_MAX) {
         const chunk = keys.slice(i, i + AZURE_BATCH_DELETE_MAX);
         const blobClients = chunk.map((key) =>
@@ -915,7 +915,9 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
           });
         }
       }
-      return errors.length === 0 ? { deleted } : { deleted, errors };
+      return errors.length === 0
+        ? { results: deleted }
+        : { errors, results: deleted };
     },
     async download(key, downloadOpts) {
       try {

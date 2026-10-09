@@ -539,7 +539,7 @@ describe("encryption plugin — bulk + copy", () => {
       { body: "one", key: "a" },
       { body: "two", key: "b" },
     ]);
-    const { downloaded } = await files.download(["a", "b"]);
+    const { results: downloaded } = await files.download(["a", "b"]);
     const texts = await Promise.all(downloaded.map((file) => file.text()));
     expect(texts).toEqual(["one", "two"]);
   });

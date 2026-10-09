@@ -1242,14 +1242,14 @@ describe("azure adapter", () => {
       const files = batchFiles();
       const result = await files.delete(["a.txt", "missing.txt", "b.txt"]);
       expect(deleteBlobsMock).toHaveBeenCalledTimes(1);
-      expect(result.deleted).toEqual(["a.txt", "missing.txt", "b.txt"]);
+      expect(result.results).toEqual(["a.txt", "missing.txt", "b.txt"]);
       expect(result.errors).toBeUndefined();
     });
 
     test("collects a per-key failure from a non-404 sub-response", async () => {
       const files = batchFiles();
       const result = await files.delete(["ok.txt", "denied.txt"]);
-      expect(result.deleted).toEqual(["ok.txt"]);
+      expect(result.results).toEqual(["ok.txt"]);
       expect(result.errors).toEqual([
         {
           error: expect.objectContaining({ code: "Unauthorized" }),
@@ -1261,26 +1261,49 @@ describe("azure adapter", () => {
     test("a batch-level failure fails every key in the chunk", async () => {
       const files = batchFiles();
       const result = await files.delete(["x.txt", "batchboom.txt"]);
-      expect(result.deleted).toEqual([]);
+      expect(result.results).toEqual([]);
       expect(result.errors).toHaveLength(2);
       expect(result.errors?.[0]?.error.code).toBe("Unauthorized");
     });
 
-    test("stopOnError falls back to sequential deleteIfExists", async () => {
+    test("a bulk delete with stopOnError runs per key through deleteIfExists", async () => {
       const files = batchFiles();
       const result = await files.delete(["a.txt", "b.txt"], {
         stopOnError: true,
       });
       expect(deleteBlobsMock).not.toHaveBeenCalled();
       expect(deleteIfExistsMock).toHaveBeenCalledTimes(2);
-      expect(result.deleted).toEqual(["a.txt", "b.txt"]);
+      expect(result.results).toEqual(["a.txt", "b.txt"]);
+    });
+
+    test("stopOnError falls back to sequential deleteIfExists", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      deleteIfExistsMock.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error("denied"), { statusCode: 403 }))
+      );
+      const result = await adapter.deleteMany?.(["a.txt", "b.txt"], {
+        stopOnError: true,
+      });
+      expect(deleteBlobsMock).not.toHaveBeenCalled();
+      expect(deleteIfExistsMock).toHaveBeenCalledTimes(1);
+      expect(result?.results).toEqual([]);
+      expect(result?.errors).toEqual([
+        {
+          error: expect.objectContaining({ code: "Unauthorized" }),
+          key: "a.txt",
+        },
+      ]);
     });
 
     test("empty key list is a no-op", async () => {
       const files = batchFiles();
       const result = await files.delete([]);
       expect(deleteBlobsMock).not.toHaveBeenCalled();
-      expect(result.deleted).toEqual([]);
+      expect(result.results).toEqual([]);
     });
   });
 

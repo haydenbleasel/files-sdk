@@ -467,7 +467,7 @@ describe("ftp adapter", () => {
     await files.upload("a.txt", "1");
     await files.upload("b.txt", "2");
     const result = await files.delete(["a.txt", "b.txt", "missing.txt"]);
-    expect(result.deleted).toEqual(["a.txt", "b.txt", "missing.txt"]);
+    expect(result.results).toEqual(["a.txt", "b.txt", "missing.txt"]);
     expect(result.errors).toBeUndefined();
   });
 
@@ -720,7 +720,7 @@ describe("ftp edge cases (injected client)", () => {
     await files.upload("ok.txt", "1");
     await files.upload("after.txt", "2");
     const result = await files.delete(["ok.txt", "boom.txt", "after.txt"]);
-    expect(result.deleted).toEqual(["ok.txt", "after.txt"]);
+    expect(result.results).toEqual(["ok.txt", "after.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
   });
 
@@ -729,20 +729,36 @@ describe("ftp edge cases (injected client)", () => {
     await files.upload("ok.txt", "1");
     store.set("locked.txt", Buffer.from("2"));
     const result = await files.delete(["ok.txt", "locked.txt"]);
-    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.results).toEqual(["ok.txt"]);
     expect(result.errors?.map((e) => [e.key, e.error.code])).toEqual([
       ["locked.txt", "Unauthorized"],
     ]);
   });
 
-  test("deleteMany stops at the first error when stopOnError is set", async () => {
+  test("a bulk delete with stopOnError runs per key and stops at the first error", async () => {
     const files = newFiles();
     await files.upload("ok.txt", "1");
+    await files.upload("after.txt", "2");
     const result = await files.delete(["ok.txt", "boom.txt", "after.txt"], {
       stopOnError: true,
     });
-    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.results).toEqual(["ok.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+    expect(store.has("after.txt")).toBe(true);
+  });
+
+  test("deleteMany stops at the first error when stopOnError is set", async () => {
+    const adapter = ftp({ client: makeFakeClient() });
+    const files = new Files({ adapter });
+    await files.upload("ok.txt", "1");
+    await files.upload("after.txt", "2");
+    const result = await adapter.deleteMany?.(
+      ["ok.txt", "boom.txt", "after.txt"],
+      { stopOnError: true }
+    );
+    expect(result?.results).toEqual(["ok.txt"]);
+    expect(result?.errors?.map((e) => e.key)).toEqual(["boom.txt"]);
+    expect(store.has("after.txt")).toBe(true);
   });
 
   test("uploading a ReadableStream looks up the size after transfer", async () => {
@@ -760,7 +776,7 @@ describe("ftp edge cases (injected client)", () => {
   test("deleteMany with no keys returns early", async () => {
     const files = newFiles();
     const result = await files.delete([]);
-    expect(result.deleted).toEqual([]);
+    expect(result.results).toEqual([]);
     expect(result.errors).toBeUndefined();
   });
 

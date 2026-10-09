@@ -104,7 +104,7 @@ describe("svelte useFiles", () => {
     );
 
     expect((await files.list({ prefix: "m/" })).items).toHaveLength(2);
-    expect((await files.head(["m/1", "m/2"])).files).toHaveLength(2);
+    expect((await files.head(["m/1", "m/2"])).results).toHaveLength(2);
     expect((await files.exists(["m/1", "nope"])).existing).toEqual(["m/1"]);
 
     const seen: string[] = [];
@@ -118,7 +118,7 @@ describe("svelte useFiles", () => {
     }
     expect(matched).toHaveLength(2);
 
-    expect((await files.delete(["m/1", "m/2"])).deleted).toEqual([
+    expect((await files.delete(["m/1", "m/2"])).results).toEqual([
       "m/1",
       "m/2",
     ]);

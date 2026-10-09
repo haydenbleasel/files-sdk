@@ -5,7 +5,7 @@ import SftpClient from "ssh2-sftp-client";
 import type {
   Adapter,
   Body,
-  DeleteManyError,
+  BulkError,
   DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
@@ -365,9 +365,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       opts2?: DeleteManyOptions
     ): Promise<DeleteManyResult> {
       const deleted: string[] = [];
-      const errors: DeleteManyError[] = [];
+      const errors: BulkError[] = [];
       if (keys.length === 0) {
-        return { deleted };
+        return { results: deleted };
       }
       // One connection, sequential deletes — opening a socket per key (the
       // default fan-out) would trip server session limits.
@@ -385,7 +385,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           }
         }
       });
-      return errors.length === 0 ? { deleted } : { deleted, errors };
+      return errors.length === 0
+        ? { results: deleted }
+        : { errors, results: deleted };
     },
     async download(key, downloadOpts?: DownloadOptions): Promise<StoredFile> {
       const remote = keyToRemote(key);

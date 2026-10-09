@@ -158,7 +158,7 @@ describe("Files class", () => {
 
     // Array form resolves to a structured DeleteManyResult.
     const many = await files.delete(["two.txt"]);
-    expect(many).toEqual({ deleted: ["two.txt"] });
+    expect(many).toEqual({ results: ["two.txt"] });
     expect(adapter.has("two.txt")).toBe(false);
   });
 
@@ -171,7 +171,7 @@ describe("Files class", () => {
 
     const result = await files.delete(["a.txt", "b.txt", "c.txt"]);
 
-    expect(result).toEqual({ deleted: ["a.txt", "b.txt", "c.txt"] });
+    expect(result).toEqual({ results: ["a.txt", "b.txt", "c.txt"] });
     expect(adapter.has("a.txt")).toBe(false);
     expect(adapter.has("b.txt")).toBe(false);
     expect(adapter.has("c.txt")).toBe(false);
@@ -188,7 +188,7 @@ describe("Files class", () => {
       { stopOnError: false }
     );
 
-    expect(result.deleted).toEqual(["ok-1.txt", "ok-2.txt"]);
+    expect(result.results).toEqual(["ok-1.txt", "ok-2.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual([
       "fail/a.txt",
       "fail/b.txt",
@@ -207,9 +207,44 @@ describe("Files class", () => {
       stopOnError: true,
     });
 
-    expect(result.deleted).toEqual(["ok-1.txt"]);
+    expect(result.results).toEqual(["ok-1.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual(["fail/a.txt"]);
     expect(adapter.has("ok-2.txt")).toBe(true);
+  });
+
+  test("delete (array) with stopOnError skips the native batch, with or without plugins", async () => {
+    const passthrough: FilesPlugin = {
+      name: "passthrough",
+      wrap: (op, next) => next(op),
+    };
+    for (const plugins of [[], [passthrough]]) {
+      const base = fakeAdapter();
+      let batches = 0;
+      // The fake always has a native batch; the `Adapter` type marks it optional.
+      const nativeBatch = base.deleteMany as NonNullable<
+        typeof base.deleteMany
+      >;
+      const adapter: Adapter = {
+        ...base,
+        deleteMany: (keys, opts) => {
+          batches += 1;
+          return nativeBatch(keys, opts);
+        },
+      };
+      const files = new Files({ adapter, plugins });
+      // eslint-disable-next-line no-await-in-loop -- each setup is checked on its own
+      await files.upload(["a.txt", "b.txt"].map((key) => ({ body: key, key })));
+      // eslint-disable-next-line no-await-in-loop -- each setup is checked on its own
+      const result = await files.delete(["a.txt", "fail/x", "b.txt"], {
+        stopOnError: true,
+      });
+      expect(result).toEqual({
+        errors: [{ error: expect.any(FilesError), key: "fail/x" }],
+        results: ["a.txt"],
+      });
+      expect(base.has("b.txt")).toBe(true);
+      expect(batches).toBe(0);
+    }
   });
 
   test("delete (array) returns validation errors without skipping valid keys", async () => {
@@ -221,7 +256,7 @@ describe("Files class", () => {
       stopOnError: false,
     });
 
-    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.results).toEqual(["ok.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual(["", "foo\0bar"]);
   });
 
@@ -234,7 +269,7 @@ describe("Files class", () => {
     const result = await files.delete(["a.txt", "b.txt"]);
 
     // Result reflects the keys the caller passed, not the prefixed paths.
-    expect(result).toEqual({ deleted: ["a.txt", "b.txt"] });
+    expect(result).toEqual({ results: ["a.txt", "b.txt"] });
     expect(adapter.has("uploads/a.txt")).toBe(false);
     expect(adapter.has("uploads/b.txt")).toBe(false);
   });
@@ -260,7 +295,7 @@ describe("Files class", () => {
       stopOnError: true,
     });
 
-    expect(result.deleted).toEqual(["ok-1.txt"]);
+    expect(result.results).toEqual(["ok-1.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual(["fail/x.txt"]);
     // stopOnError must short-circuit the fallback: ok-2.txt is never attempted.
     expect(attempted).toEqual(["ok-1.txt", "fail/x.txt"]);
@@ -299,7 +334,7 @@ describe("Files class", () => {
 
     const result = await files.delete(keys, { concurrency: 2 });
 
-    expect(result.deleted).toEqual(["a.txt", "c.txt", "d.txt", "f.txt"]);
+    expect(result.results).toEqual(["a.txt", "c.txt", "d.txt", "f.txt"]);
     expect(result.errors?.map((item) => item.key)).toEqual([
       "fail/b.txt",
       "fail/e.txt",
@@ -320,7 +355,7 @@ describe("Files class", () => {
       { stopOnError: false }
     );
 
-    expect(result.deleted).toEqual(["ok.txt"]);
+    expect(result.results).toEqual(["ok.txt"]);
     // A provider failure, two invalid keys, and another provider failure —
     // all reported in the original input order, not grouped by source.
     expect(result.errors?.map((item) => item.key)).toEqual([
@@ -341,13 +376,13 @@ describe("Files class", () => {
       { body: new Uint8Array([1, 2, 3]), key: "c.txt" },
     ]);
 
-    expect(result.uploaded.map((u) => u.key)).toEqual([
+    expect(result.results.map((u) => u.key)).toEqual([
       "a.txt",
       "b.txt",
       "c.txt",
     ]);
     expect(result.errors).toBeUndefined();
-    expect(result.uploaded[0]?.contentType).toBe("text/plain");
+    expect(result.results[0]?.contentType).toBe("text/plain");
     expect(adapter.has("a.txt")).toBe(true);
     expect(adapter.has("c.txt")).toBe(true);
   });
@@ -362,7 +397,7 @@ describe("Files class", () => {
       { body: "z", key: "foo\0bar" },
     ]);
 
-    expect(result.uploaded.map((u) => u.key)).toEqual(["ok.txt"]);
+    expect(result.results.map((u) => u.key)).toEqual(["ok.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["", "foo\0bar"]);
   });
 
@@ -375,7 +410,7 @@ describe("Files class", () => {
       { body: "b", key: "b.txt" },
     ]);
 
-    expect(result.uploaded.map((u) => u.key)).toEqual(["a.txt", "b.txt"]);
+    expect(result.results.map((u) => u.key)).toEqual(["a.txt", "b.txt"]);
     expect(adapter.has("uploads/a.txt")).toBe(true);
     expect(adapter.has("uploads/b.txt")).toBe(true);
   });
@@ -429,7 +464,7 @@ describe("Files class", () => {
       { stopOnError: true }
     );
 
-    expect(result.uploaded.map((u) => u.key)).toEqual(["ok-1.txt"]);
+    expect(result.results.map((u) => u.key)).toEqual(["ok-1.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["fail/x.txt"]);
     // stopOnError short-circuits: ok-2.txt is never attempted.
     expect(attempted).toEqual(["ok-1.txt", "fail/x.txt"]);
@@ -443,9 +478,9 @@ describe("Files class", () => {
 
     const result = await files.download(["a.txt", "missing.txt", "c.txt"]);
 
-    expect(result.downloaded.map((f) => f.key)).toEqual(["a.txt", "c.txt"]);
+    expect(result.results.map((f) => f.key)).toEqual(["a.txt", "c.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["missing.txt"]);
-    expect(await result.downloaded[0]?.text()).toBe("aa");
+    expect(await result.results[0]?.text()).toBe("aa");
   });
 
   test("download (array) applies the prefix but reports caller keys", async () => {
@@ -455,7 +490,7 @@ describe("Files class", () => {
 
     const result = await files.download(["a.txt", "missing.txt"]);
 
-    expect(result.downloaded.map((f) => f.key)).toEqual(["a.txt"]);
+    expect(result.results.map((f) => f.key)).toEqual(["a.txt"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["missing.txt"]);
   });
 
@@ -480,7 +515,7 @@ describe("Files class", () => {
 
     const result = await files.download(keys, { concurrency: 2 });
 
-    expect(result.downloaded.map((f) => f.key)).toEqual(keys);
+    expect(result.results.map((f) => f.key)).toEqual(keys);
     expect(maxInFlight).toBeLessThanOrEqual(2);
     expect(maxInFlight).toBeGreaterThan(1);
   });
@@ -493,8 +528,8 @@ describe("Files class", () => {
 
     const result = await files.head(["a.txt", "missing.txt", "b.txt"]);
 
-    expect(result.files.map((f) => f.key)).toEqual(["a.txt", "b.txt"]);
-    expect(result.files.map((f) => f.size)).toEqual([2, 3]);
+    expect(result.results.map((f) => f.key)).toEqual(["a.txt", "b.txt"]);
+    expect(result.results.map((f) => f.size)).toEqual([2, 3]);
     expect(result.errors?.map((e) => e.key)).toEqual(["missing.txt"]);
   });
 
@@ -547,9 +582,9 @@ describe("Files class", () => {
   test("bulk forms accept an empty array", async () => {
     const files = new Files({ adapter: fakeAdapter() });
 
-    expect(await files.upload([])).toEqual({ uploaded: [] });
-    expect(await files.download([])).toEqual({ downloaded: [] });
-    expect(await files.head([])).toEqual({ files: [] });
+    expect(await files.upload([])).toEqual({ results: [] });
+    expect(await files.download([])).toEqual({ results: [] });
+    expect(await files.head([])).toEqual({ results: [] });
     expect(await files.exists([])).toEqual({ existing: [], missing: [] });
   });
 
@@ -1059,7 +1094,7 @@ describe("Files class", () => {
     controller.abort(new Error("bulk stop"));
 
     const result = await pending;
-    expect(result.files).toHaveLength(0);
+    expect(result.results).toHaveLength(0);
     expect(result.errors).toHaveLength(2);
     for (const entry of result.errors ?? []) {
       expect(entry.error.aborted).toBe(true);
@@ -1085,7 +1120,7 @@ describe("Files class", () => {
     });
 
     const result = await files.delete(["slow-1", "slow-2"]);
-    expect(result.deleted).toHaveLength(0);
+    expect(result.results).toHaveLength(0);
     expect(result.errors).toHaveLength(2);
     for (const entry of result.errors ?? []) {
       expect(entry.error.timedOut).toBe(true);
@@ -2324,7 +2359,7 @@ describe("capability gates run before plugins", () => {
       { body: "1", key: "ok.txt" },
       { body: "2", key: "meta.txt", metadata: { a: "1" } },
     ]);
-    expect(result.uploaded.map((u) => u.key)).toEqual(["ok.txt"]);
+    expect(result.results.map((u) => u.key)).toEqual(["ok.txt"]);
     expect(result.errors?.[0]?.key).toBe("meta.txt");
     expect(seen).toEqual(["upload"]);
   });
@@ -2528,7 +2563,7 @@ describe("SDK-side gates", () => {
       /range downloads are not supported/u
     );
     const many = await files.download(["a"]);
-    expect(many.downloaded).toEqual([]);
+    expect(many.results).toEqual([]);
     expect(many.errors?.[0]?.error).toMatchObject({
       message: "fake: range downloads are not supported by this adapter",
       permanent: true,
@@ -2565,7 +2600,7 @@ describe("SDK-side gates", () => {
     };
     const files = new Files({ adapter, plugins: [firstFive] });
     const many = await files.download(["a"]);
-    expect(await many.downloaded[0]?.text()).toBe("hello");
+    expect(await many.results[0]?.text()).toBe("hello");
   });
 
   test("a prefixed instance rejects a key of only slashes", async () => {

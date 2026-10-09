@@ -231,11 +231,11 @@ describe("cli/mcp tools (write-enabled)", () => {
       stopOnError: true,
     });
     expect(many.isError).toBe(false);
-    expect((many.data.files as unknown[]).length).toBe(2);
+    expect((many.data.results as unknown[]).length).toBe(2);
 
     // No bulk knobs → bulkOpts returns undefined.
     const plain = await call(h.client, "head", { key: ["a.txt"] });
-    expect((plain.data.files as unknown[]).length).toBe(1);
+    expect((plain.data.results as unknown[]).length).toBe(1);
   });
 
   test("exists single and array forms", async () => {
@@ -289,6 +289,7 @@ describe("cli/mcp tools (write-enabled)", () => {
       key: ["d2.txt"],
     });
     expect(many.isError).toBe(false);
+    expect(many.data).toEqual({ results: ["d2.txt"] });
 
     const after = await call(h.client, "exists", { key: "d1.txt" });
     expect(after.data.exists).toBe(false);

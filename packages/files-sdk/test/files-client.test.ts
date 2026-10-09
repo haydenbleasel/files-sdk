@@ -168,13 +168,13 @@ describe("createFilesClient — round-trip", () => {
       { body: "2", key: "b" },
     ]);
     const heads = await client.head(["a", "b"]);
-    expect(heads.files).toHaveLength(2);
+    expect(heads.results).toHaveLength(2);
     const ex = await client.exists(["a", "missing"]);
     expect(ex.existing).toEqual(["a"]);
     const dl = await client.download(["a", "b"]);
-    expect(dl.downloaded).toHaveLength(2);
+    expect(dl.results).toHaveLength(2);
     const del = await client.delete(["a", "b"]);
-    expect(del.deleted).toEqual(["a", "b"]);
+    expect(del.results).toEqual(["a", "b"]);
   });
 
   test("maps a 404 to a FilesError(NotFound)", async () => {
@@ -255,7 +255,7 @@ describe("createFilesClient — bulk partial failure", () => {
     const client = clientFor(fakeAdapter() as unknown as Adapter);
     await client.upload("ok", "1");
     const result = await client.delete(["ok", "fail/x"]);
-    expect(result.deleted).toEqual(["ok"]);
+    expect(result.results).toEqual(["ok"]);
     expect(result.errors?.[0]?.error).toBeInstanceOf(FilesError);
   });
 });

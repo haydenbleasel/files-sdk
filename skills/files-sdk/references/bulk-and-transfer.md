@@ -7,26 +7,26 @@ Acting on many objects, renaming, walking a whole bucket, and migrating or mirro
 `upload`, `download`, `head`, and `exists` take a single key **or an array**; `delete` takes one key or many. The array form fans out with bounded concurrency (8 by default) and **does not throw on partial failure** — successes and failures come back separated, in input order.
 
 ```ts
-const { uploaded, errors } = await files.upload([
+const { results, errors } = await files.upload([
   { key: "a.txt", body: "alpha" },
   { key: "b.txt", body: "beta", contentType: "text/plain", multipart: true },
 ]);
 
 const { existing, missing } = await files.exists(["a.txt", "b.txt", "c.txt"]);
-const { files: metas } = await files.head(["a.txt", "b.txt"]);
-const { downloaded } = await files.download(["a.txt", "b.txt"]);
-const { deleted } = await files.delete(["a.txt", "b.txt"]);
+const { results: metas } = await files.head(["a.txt", "b.txt"]);
+const { results: downloaded } = await files.download(["a.txt", "b.txt"]);
+const { results: deleted } = await files.delete(["a.txt", "b.txt"]);
 ```
 
-| Method     | Array form returns               |
-| ---------- | -------------------------------- |
-| `upload`   | `{ uploaded, errors? }`          |
-| `download` | `{ downloaded, errors? }`        |
-| `head`     | `{ files, errors? }`             |
-| `exists`   | `{ existing, missing, errors? }` |
-| `delete`   | `{ deleted, errors? }`           |
+| Method     | Array form returns                          |
+| ---------- | ------------------------------------------- |
+| `upload`   | `{ results: FileInfo[], errors? }`          |
+| `download` | `{ results: StoredFile[], errors? }`        |
+| `head`     | `{ results: FileInfo[], errors? }`          |
+| `delete`   | `{ results: string[], errors? }` (the keys) |
+| `exists`   | `{ existing, missing, errors? }`            |
 
-The success arrays are in supplied order. Each `errors` entry is `{ key, error }` with a normalized `FilesError`; invalid keys (empty, null bytes) are reported there too, never thrown. `errors` is omitted entirely when every item succeeded.
+Every form but `exists` returns the same `BulkResult` shape: successes in `results`, in supplied order. With `stopOnError: true` the items run one at a time, and a bulk `delete` skips the native batch so it behaves the same with or without plugins. Each `errors` entry is `{ key, error }` with a normalized `FilesError`; invalid keys (empty, null bytes) are reported there too, never thrown. `errors` is omitted entirely when every item succeeded.
 
 ### Options & semantics
 

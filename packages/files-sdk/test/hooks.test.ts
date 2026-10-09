@@ -126,7 +126,7 @@ describe("Files hooks", () => {
       { concurrency: 2, stopOnError: false }
     );
 
-    expect(result.uploaded.map((item) => item.key)).toEqual([
+    expect(result.results.map((item) => item.key)).toEqual([
       "ok.txt",
       "bin.dat",
     ]);

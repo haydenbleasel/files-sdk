@@ -471,7 +471,7 @@ describe("versioning plugin — bulk operations", () => {
     await files.upload("a.txt", "v1");
     const result = await files.upload([{ body: "v2", key: "a.txt" }]);
 
-    expect(result.uploaded).toHaveLength(1);
+    expect(result.results).toHaveLength(1);
     expect(await bodyOf(files, "a.txt")).toBe("v2");
     const versions = await files.versions("a.txt");
     expect(versions).toHaveLength(1);
@@ -483,7 +483,7 @@ describe("versioning plugin — bulk operations", () => {
     await files.upload("gone.txt", "bye");
     const result = await files.delete(["gone.txt"]);
 
-    expect(result.deleted).toEqual(["gone.txt"]);
+    expect(result.results).toEqual(["gone.txt"]);
     expect(await files.exists("gone.txt")).toBe(false);
     await files.restoreVersion("gone.txt");
     expect(await bodyOf(files, "gone.txt")).toBe("bye");

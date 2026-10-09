@@ -8,7 +8,7 @@ import type { FileInfo as FtpFileInfo } from "basic-ftp";
 import type {
   Adapter,
   Body,
-  DeleteManyError,
+  BulkError,
   DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
@@ -471,9 +471,9 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       opts2?: DeleteManyOptions
     ): Promise<DeleteManyResult> {
       const deleted: string[] = [];
-      const errors: DeleteManyError[] = [];
+      const errors: BulkError[] = [];
       if (keys.length === 0) {
-        return { deleted };
+        return { results: deleted };
       }
       // One connection, sequential deletes — a socket per key (the default
       // fan-out) would trip FTP servers' per-IP connection limits.
@@ -491,7 +491,9 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           }
         }
       });
-      return errors.length === 0 ? { deleted } : { deleted, errors };
+      return errors.length === 0
+        ? { results: deleted }
+        : { errors, results: deleted };
     },
     async download(key, downloadOpts?: DownloadOptions): Promise<StoredFile> {
       const remote = keyToRemote(key);

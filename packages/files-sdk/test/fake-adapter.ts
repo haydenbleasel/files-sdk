@@ -136,7 +136,14 @@ export const fakeAdapter = (config?: {
       store.set(to, { ...entry, etag: nextEtag(), uploadedAt: Date.now() });
       return Promise.resolve();
     },
+    // `fail/…` keys fail the same way on the single and batch paths, so a
+    // bulk delete reports them whichever path the SDK takes.
     delete(key: string): Promise<void> {
+      if (key.startsWith("fail/")) {
+        return Promise.reject(
+          new FilesError("Provider", `delete failed: ${key}`)
+        );
+      }
       store.delete(key);
       return Promise.resolve();
     },
@@ -161,9 +168,9 @@ export const fakeAdapter = (config?: {
         deleted.push(key);
       }
       if (errors.length === 0) {
-        return Promise.resolve({ deleted });
+        return Promise.resolve({ results: deleted });
       }
-      return Promise.resolve({ deleted, errors });
+      return Promise.resolve({ errors, results: deleted });
     },
     download(key: string, downloadOpts?: DownloadOptions): Promise<StoredFile> {
       const entry = store.get(key);

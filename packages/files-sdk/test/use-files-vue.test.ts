@@ -113,7 +113,7 @@ describe("vue useFiles", () => {
       const page = await files.list({ prefix: "m/" });
       expect(page.items).toHaveLength(2);
       const heads = await files.head(["m/1", "m/2"]);
-      expect(heads.files).toHaveLength(2);
+      expect(heads.results).toHaveLength(2);
       const existence = await files.exists(["m/1", "nope"]);
       expect(existence.existing).toEqual(["m/1"]);
 
@@ -129,7 +129,7 @@ describe("vue useFiles", () => {
       expect(matched).toHaveLength(2);
 
       const removed = await files.delete(["m/1", "m/2"]);
-      expect(removed.deleted).toEqual(["m/1", "m/2"]);
+      expect(removed.results).toEqual(["m/1", "m/2"]);
     });
   });
 

@@ -14,11 +14,11 @@ const info = await files.head("avatars/abc.png");
 
 ## Many keys
 
-Pass an array to fetch metadata for many in one call. Returns `{ files, errors? }` instead of throwing on partial failure (a missing key lands in `errors`), honoring `concurrency` / `stopOnError`.
+Pass an array to fetch metadata for many in one call. Returns `{ results, errors? }` instead of throwing on partial failure (a missing key lands in `errors`), honoring `concurrency` / `stopOnError`.
 
 ```ts lineNumbers
 const result = await files.head(["avatars/a.png", "avatars/b.png"]);
 
-result.files; // FileInfo[] — successes, in the order supplied
+result.results; // FileInfo[] — successes, in the order supplied
 result.errors; // undefined when every key succeeded
 ```

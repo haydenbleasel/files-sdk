@@ -585,7 +585,9 @@ export const createFilesClient = (
         errors.push({ error: result.error, key: result.key });
       }
     }
-    return errors.length ? { errors, uploaded } : { uploaded };
+    return errors.length
+      ? { errors, results: uploaded }
+      : { results: uploaded };
   };
 
   const downloadMany = async (
@@ -621,7 +623,9 @@ export const createFilesClient = (
         errors.push({ error: result.error, key: result.key });
       }
     }
-    return errors.length ? { downloaded, errors } : { downloaded };
+    return errors.length
+      ? { errors, results: downloaded }
+      : { results: downloaded };
   };
 
   // --- assembled client ---
@@ -648,7 +652,7 @@ export const createFilesClient = (
 
     delete: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
-        const r = await post<{ deleted: string[]; errors?: WireBulkError[] }>(
+        const r = await post<{ results: string[]; errors?: WireBulkError[] }>(
           {
             concurrency: opts?.concurrency,
             keys: keyOrKeys,
@@ -657,7 +661,7 @@ export const createFilesClient = (
           },
           opts?.signal
         );
-        return withErrors({ deleted: r.deleted }, r.errors);
+        return withErrors({ results: r.results }, r.errors);
       }
       // discard the { ok: true } envelope; single delete resolves to void
       await post({ key: keyOrKeys, op: "delete" }, opts?.signal);
@@ -701,7 +705,7 @@ export const createFilesClient = (
     head: (async (keyOrKeys: string | string[], opts?: BulkCallOptions) => {
       if (Array.isArray(keyOrKeys)) {
         const res = await post<{
-          files: WireFileInfo[];
+          results: WireFileInfo[];
           errors?: WireBulkError[];
         }>(
           {
@@ -712,7 +716,7 @@ export const createFilesClient = (
           },
           opts?.signal
         );
-        return withErrors({ files: res.files.map(toFileInfo) }, res.errors);
+        return withErrors({ results: res.results.map(toFileInfo) }, res.errors);
       }
       const r = await post<{ file: WireFileInfo }>(
         { key: keyOrKeys, op: "head" },

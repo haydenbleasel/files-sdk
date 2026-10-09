@@ -368,14 +368,14 @@ describe("cli/commands real (fs adapter)", () => {
     expect(lastJson(cap.stdout)).toMatchObject({ key: "h.txt", size: 4 });
   });
 
-  test("head returns a structured { files } result for many keys", async () => {
+  test("head returns a structured { results } result for many keys", async () => {
     const local = path.join(root, "in.txt");
     await uploadFile("hm-a.txt", "aa", local);
     await uploadFile("hm-b.txt", "bbbb", local);
     cap.stdout.length = 0;
     await runHead({ ...baseOpts(), keys: ["hm-a.txt", "hm-b.txt"] });
-    const out = lastJson(cap.stdout) as { files: { key: string }[] };
-    expect(out.files.map((f) => f.key)).toEqual(["hm-a.txt", "hm-b.txt"]);
+    const out = lastJson(cap.stdout) as { results: { key: string }[] };
+    expect(out.results.map((f) => f.key)).toEqual(["hm-a.txt", "hm-b.txt"]);
     expect(out).not.toHaveProperty("errors");
     expect(cap.exits).toEqual([]);
   });
@@ -386,10 +386,10 @@ describe("cli/commands real (fs adapter)", () => {
     cap.stdout.length = 0;
     await runHead({ ...baseOpts(), keys: ["hp.txt", "nope.txt"] });
     const out = lastJson(cap.stdout) as {
-      files: { key: string }[];
       errors: { key: string }[];
+      results: { key: string }[];
     };
-    expect(out.files.map((f) => f.key)).toEqual(["hp.txt"]);
+    expect(out.results.map((f) => f.key)).toEqual(["hp.txt"]);
     expect(out.errors.map((e) => e.key)).toEqual(["nope.txt"]);
     // NotFound maps to exit code 1, signalled via process.exitCode so
     // stdout can drain before the process ends.
@@ -467,7 +467,7 @@ describe("cli/commands real (fs adapter)", () => {
     await uploadFile("m-b.txt", "b", local);
     cap.stdout.length = 0;
     await runDelete({ ...baseOpts(), keys: ["m-a.txt", "m-b.txt"] });
-    expect(lastJson(cap.stdout)).toEqual({ deleted: ["m-a.txt", "m-b.txt"] });
+    expect(lastJson(cap.stdout)).toEqual({ results: ["m-a.txt", "m-b.txt"] });
     await expect(fsp.access(path.join(root, "m-a.txt"))).rejects.toThrow();
     await expect(fsp.access(path.join(root, "m-b.txt"))).rejects.toThrow();
   });
@@ -866,10 +866,10 @@ describe("cli/commands new surface", () => {
     await fsp.writeFile(path.join(localDir, "sub", "b.txt"), "hello");
     await runUpload({ ...baseOpts(), dir: localDir });
     const out = lastJson(cap.stdout) as {
-      uploaded: { key: string; contentType: string }[];
+      results: { key: string; contentType: string }[];
     };
-    expect(out.uploaded.map((u) => u.key)).toEqual(["a.json", "sub/b.txt"]);
-    expect(out.uploaded[0]?.contentType).toBe("application/json");
+    expect(out.results.map((u) => u.key)).toEqual(["a.json", "sub/b.txt"]);
+    expect(out.results[0]?.contentType).toBe("application/json");
     expect(await fsp.readFile(path.join(root, "sub/b.txt"), "utf-8")).toBe(
       "hello"
     );
@@ -907,8 +907,8 @@ describe("cli/commands new surface", () => {
       keys: ["docs/a.txt", "docs/b.txt"],
       outDir,
     });
-    const out = lastJson(cap.stdout) as { downloaded: { key: string }[] };
-    expect(out.downloaded.map((d) => d.key).toSorted()).toEqual([
+    const out = lastJson(cap.stdout) as { results: { key: string }[] };
+    expect(out.results.map((d) => d.key).toSorted()).toEqual([
       "docs/a.txt",
       "docs/b.txt",
     ]);
@@ -923,10 +923,10 @@ describe("cli/commands new surface", () => {
     tmpDirs.push(outDir);
     await runDownload({ ...baseOpts(), keys: ["ok.txt", "gone.txt"], outDir });
     const out = lastJson(cap.stdout) as {
-      downloaded: { key: string }[];
       errors: { key: string }[];
+      results: { key: string }[];
     };
-    expect(out.downloaded.map((d) => d.key)).toEqual(["ok.txt"]);
+    expect(out.results.map((d) => d.key)).toEqual(["ok.txt"]);
     expect(out.errors.map((e) => e.key)).toEqual(["gone.txt"]);
     expect(takeExitCode()).toBe(1);
   });
@@ -970,7 +970,7 @@ describe("cli/commands new surface", () => {
       keys: ["d-a.txt", "d-b.txt"],
       stopOnError: true,
     });
-    expect(lastJson(cap.stdout)).toEqual({ deleted: ["d-a.txt", "d-b.txt"] });
+    expect(lastJson(cap.stdout)).toEqual({ results: ["d-a.txt", "d-b.txt"] });
   });
 
   test("list --all walks every page and omits the cursor", async () => {

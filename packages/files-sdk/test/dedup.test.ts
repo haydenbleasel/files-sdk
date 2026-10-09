@@ -490,7 +490,7 @@ describe("dedup plugin — store prefix is write-protected", () => {
       { body: "ok", key: "b.txt" },
       { body: "poison", key: blobKey },
     ]);
-    expect(bulk.uploaded.map((item) => item.key)).toEqual(["b.txt"]);
+    expect(bulk.results.map((item) => item.key)).toEqual(["b.txt"]);
     expect(bulk.errors?.[0]?.key).toBe(blobKey);
 
     await expect(
@@ -539,11 +539,11 @@ describe("dedup plugin — bulk operations", () => {
       { body: "one", key: "x.txt" },
       { body: "two", key: "y.txt" },
     ]);
-    expect(result.uploaded).toHaveLength(2);
+    expect(result.results).toHaveLength(2);
 
     const downloaded = await files.download(["x.txt", "y.txt"]);
     const bodies = await Promise.all(
-      downloaded.downloaded.map((file) => file.text())
+      downloaded.results.map((file) => file.text())
     );
     expect(bodies).toEqual(["one", "two"]);
   });

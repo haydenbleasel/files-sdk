@@ -325,7 +325,7 @@ const runPrune = async (
     ...(opts?.concurrency !== undefined && { concurrency: opts.concurrency }),
     ...(opts?.stopOnError && { stopOnError: true }),
   });
-  const { deleted } = res;
+  const { results: deleted } = res;
   const errors = res.errors ?? [];
   for (const key of deleted) {
     report(key, "deleted");

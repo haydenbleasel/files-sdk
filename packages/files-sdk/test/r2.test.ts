@@ -231,7 +231,7 @@ describe("r2 adapter — HTTP path", () => {
       });
       const files = new Files({ adapter: makeAdapter() });
       const result = await files.delete(["a.txt", "b.txt"]);
-      expect(result.deleted.toSorted()).toEqual(["a.txt", "b.txt"]);
+      expect(result.results.toSorted()).toEqual(["a.txt", "b.txt"]);
       expect(s3Mock.commandCalls(DeleteObjectsCommand)).toHaveLength(1);
     });
 
@@ -1489,7 +1489,7 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     await files.upload("b/1.txt", "1");
     await files.upload("b/2.txt", "2");
     const result = await files.delete(["b/1.txt", "b/2.txt"]);
-    expect(result.deleted).toEqual(["b/1.txt", "b/2.txt"]);
+    expect(result.results).toEqual(["b/1.txt", "b/2.txt"]);
     expect(fake.store.size).toBe(0);
   });
 

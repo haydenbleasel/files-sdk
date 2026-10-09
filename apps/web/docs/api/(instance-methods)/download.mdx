@@ -75,11 +75,11 @@ An out-of-shape range (`start` negative or non-integer, or `end` below `start`) 
 
 ## Many keys
 
-Pass an array to download many in one call. Returns `{ downloaded, errors? }` instead of throwing on partial failure; a missing key lands in `errors`. `as` applies to every download, and the call fans out with bounded `concurrency` (default 8) / `stopOnError`.
+Pass an array to download many in one call. Returns `{ results, errors? }` instead of throwing on partial failure; a missing key lands in `errors`. `as` applies to every download, and the call fans out with bounded `concurrency` (default 8) / `stopOnError`.
 
 ```ts lineNumbers
 const result = await files.download(["avatars/a.png", "avatars/b.png"]);
 
-result.downloaded; // StoredFile[] — successes, in the order supplied
+result.results; // StoredFile[] — successes, in the order supplied
 result.errors; // undefined when every key succeeded
 ```

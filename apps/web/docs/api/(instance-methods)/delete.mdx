@@ -35,7 +35,7 @@ const result = await files.delete(
   { concurrency: 8, stopOnError: false }
 );
 
-result.deleted; // string[] — keys removed, in the order supplied
+result.results; // string[] — keys removed, in the order supplied
 result.errors; // undefined when every key succeeded
 ```
 
@@ -48,7 +48,7 @@ type DeleteManyResult = {
 };
 ```
 
-With the default `stopOnError: false`, every key is attempted and per-key failures are collected in `errors`. With `stopOnError: true`, the call stops at the first failure and returns the keys deleted so far plus that error. Invalid keys (empty, or containing null bytes) are reported in `errors` rather than thrown. When a native bulk provider only reports that the whole request failed, the provider error is mapped onto each affected key.
+With the default `stopOnError: false`, every key is attempted and per-key failures are collected in `errors`. With `stopOnError: true`, keys are deleted one at a time (skipping the native batch, which can't stop partway) and the call stops at the first failure, returning the keys deleted so far plus that error. Invalid keys (empty, or containing null bytes) are reported in `errors` rather than thrown. When a native bulk provider only reports that the whole request failed, the provider error is mapped onto each affected key.
 
 ### Options (array form)
 

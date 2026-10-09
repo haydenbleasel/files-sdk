@@ -341,7 +341,7 @@ describe("compression plugin — bulk + copy", () => {
       { body: `one ${TEXT}`, key: "a" },
       { body: `two ${TEXT}`, key: "b" },
     ]);
-    const { downloaded } = await files.download(["a", "b"]);
+    const { results: downloaded } = await files.download(["a", "b"]);
     const texts = await Promise.all(downloaded.map((file) => file.text()));
     expect(texts).toEqual([`one ${TEXT}`, `two ${TEXT}`]);
   });

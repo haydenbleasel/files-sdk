@@ -11,7 +11,6 @@ import type {
   BulkError,
   BulkOptions,
   ByteRange,
-  DeleteManyError,
   DeleteManyOptions,
   DeleteManyResult,
   MultipartOptions,
@@ -541,10 +540,10 @@ export const deleteManyWithFallback = async (
   mapError: (cause: unknown) => FilesError = FilesError.wrap
 ): Promise<DeleteManyResult> => {
   const deleted: string[] = [];
-  const errors: DeleteManyError[] = [];
+  const errors: BulkError[] = [];
 
   if (keys.length === 0) {
-    return { deleted };
+    return { results: deleted };
   }
 
   if (opts?.stopOnError) {
@@ -555,15 +554,15 @@ export const deleteManyWithFallback = async (
         deleted.push(key);
       } catch (error) {
         errors.push({ error: mapError(error), key });
-        return { deleted, errors };
+        return { errors, results: deleted };
       }
     }
-    return { deleted };
+    return { results: deleted };
   }
 
   const concurrency = poolSize(opts?.concurrency);
   const success = Array.from<boolean>({ length: keys.length }).fill(false);
-  const failed = Array.from<DeleteManyError | undefined>({
+  const failed = Array.from<BulkError | undefined>({
     length: keys.length,
   });
   let index = 0;
@@ -602,10 +601,10 @@ export const deleteManyWithFallback = async (
   }
 
   if (errors.length === 0) {
-    return { deleted };
+    return { results: deleted };
   }
 
-  return { deleted, errors };
+  return { errors, results: deleted };
 };
 
 /**

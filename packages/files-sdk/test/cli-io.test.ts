@@ -102,13 +102,13 @@ describe("cli/io emit", () => {
       requestId: "req-123",
     });
     const payload = {
-      deleted: ["a.txt"],
       errors: [
         {
           error: new FilesError("NotFound", "Not found: b.txt", providerError),
           key: "b.txt",
         },
       ],
+      results: ["a.txt"],
     };
     emit(payload, { json: true, pretty: false, verbose: false });
     const parsed = JSON.parse(cap.stdout.join("")) as {

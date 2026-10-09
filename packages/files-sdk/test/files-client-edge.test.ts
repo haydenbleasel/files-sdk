@@ -164,7 +164,7 @@ describe("upload edge paths", () => {
       { body: "1", key: "good" },
       { body: "2", key: "bad" },
     ]);
-    expect(result.uploaded).toHaveLength(1);
+    expect(result.results).toHaveLength(1);
     expect(result.errors?.[0]?.key).toBe("bad");
   });
 });
@@ -500,7 +500,7 @@ describe("download edge paths", () => {
       fetchImpl: failing,
     });
     const result = await client.download(["ok", "missing"]);
-    expect(result.downloaded).toHaveLength(1);
+    expect(result.results).toHaveLength(1);
     expect(result.errors?.[0]?.key).toBe("missing");
     expect(fetchImpl).toBeDefined();
   });

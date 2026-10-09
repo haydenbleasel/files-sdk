@@ -439,7 +439,7 @@ export const uploadthing = (
     },
     async deleteMany(keys, deleteOpts) {
       if (keys.length === 0) {
-        return { deleted: [] };
+        return { results: [] };
       }
       if (deleteOpts?.stopOnError) {
         return deleteManyWithFallback(
@@ -454,12 +454,12 @@ export const uploadthing = (
         // call. `deleteFiles` reports only whole-request failure, not per-key,
         // so on error the mapped error is attributed to every key.
         await utapi.deleteFiles(keys);
-        return { deleted: [...keys] };
+        return { results: [...keys] };
       } catch (error) {
         const mapped = mapUploadThingError(error);
         return {
-          deleted: [],
           errors: keys.map((key) => ({ error: mapped, key })),
+          results: [],
         };
       }
     },

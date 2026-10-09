@@ -195,13 +195,13 @@ describe("plugin onion — bulk ops", () => {
       { body: "y", key: "b" },
     ]);
     const dl = await files.download(["a", "b"]);
-    expect(dl.downloaded).toHaveLength(2);
+    expect(dl.results).toHaveLength(2);
     const hd = await files.head(["a", "b"]);
-    expect(hd.files).toHaveLength(2);
+    expect(hd.results).toHaveLength(2);
     const ex = await files.exists(["a", "b"]);
     expect(ex.existing).toEqual(["a", "b"]);
     const del = await files.delete(["a", "b"]);
-    expect(del.deleted).toEqual(["a", "b"]);
+    expect(del.results).toEqual(["a", "b"]);
 
     // Each bulk verb drove its cross-kind probe once per item (two items).
     for (const tag of [
@@ -246,7 +246,7 @@ describe("plugin onion — bulk ops", () => {
     await files.upload("b", "2");
     seen.length = 0;
     const result = await files.delete(["a", "b"]);
-    expect(result.deleted).toEqual(["a", "b"]);
+    expect(result.results).toEqual(["a", "b"]);
     expect(deleteMany).not.toHaveBeenCalled();
     expect(del).toHaveBeenCalledTimes(2);
     expect(seen).toEqual(["delete", "delete"]);
@@ -269,7 +269,7 @@ describe("plugin onion — bulk ops", () => {
     await files.upload("bad", "2");
     await files.upload("ok2", "3");
     const result = await files.delete(["ok1", "bad", "ok2"]);
-    expect(result.deleted).toEqual(["ok1", "ok2"]);
+    expect(result.results).toEqual(["ok1", "ok2"]);
     expect(result.errors?.map((e) => e.key)).toEqual(["bad"]);
   });
 });

@@ -203,7 +203,7 @@ function upload(
   log("upload", target, ...args);
   if (Array.isArray(target)) {
     return Promise.resolve({
-      uploaded: target.map(({ contentType, key }) => ({
+      results: target.map(({ contentType, key }) => ({
         contentType: contentType ?? "application/octet-stream",
         key,
         size: 0,
@@ -226,7 +226,7 @@ function download(
   log("download", target);
   return Promise.resolve(
     Array.isArray(target)
-      ? { downloaded: target.map(inferStored) }
+      ? { results: target.map(inferStored) }
       : inferStored(target)
   );
 }
@@ -236,7 +236,9 @@ function head(keys: string[]): Promise<HeadManyResult>;
 function head(target: string | string[]): Promise<FileInfo | HeadManyResult> {
   log("head", target);
   return Promise.resolve(
-    Array.isArray(target) ? { files: target.map(inferInfo) } : inferInfo(target)
+    Array.isArray(target)
+      ? { results: target.map(inferInfo) }
+      : inferInfo(target)
   );
 }
 
@@ -255,7 +257,7 @@ function remove(keys: string[]): Promise<DeleteManyResult>;
 function remove(target: string | string[]): Promise<void | DeleteManyResult> {
   log("delete", target);
   return Promise.resolve(
-    Array.isArray(target) ? { deleted: target } : undefined
+    Array.isArray(target) ? { results: target } : undefined
   );
 }
 

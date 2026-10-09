@@ -530,18 +530,18 @@ describe("conditional option handling", () => {
     const uploaded = await files.upload([{ body: "x", key: "c" }], {
       condition: undefined,
     } as never);
-    expect(uploaded.uploaded.map((item) => item.key)).toEqual(["c"]);
+    expect(uploaded.results.map((item) => item.key)).toEqual(["c"]);
 
     const downloaded = await files.download(["a", "b"], {
       as: "buffer",
       condition: undefined,
     } as never);
-    expect(downloaded.downloaded).toHaveLength(2);
+    expect(downloaded.results).toHaveLength(2);
 
     const deleted = await files.delete(["a", "b"], {
       condition: undefined,
     } as never);
-    expect(deleted.deleted).toEqual(["a", "b"]);
+    expect(deleted.results).toEqual(["a", "b"]);
   });
 
   test("ordinary delete and copy still pass extra options through to plugins and the adapter", async () => {

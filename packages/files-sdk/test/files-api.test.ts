@@ -577,7 +577,9 @@ describe("createFilesRouter — bulk verbs", () => {
       operations: ["head", "exists", "delete"],
     });
     const head = await r.handle(post({ keys: ["a", "b"], op: "head-many" }));
-    expect((await readJson<{ files: unknown[] }>(head)).files).toHaveLength(2);
+    expect((await readJson<{ results: unknown[] }>(head)).results).toHaveLength(
+      2
+    );
 
     const ex = await r.handle(post({ keys: ["a", "z"], op: "exists-many" }));
     const exBody = (await ex.json()) as {
@@ -588,7 +590,7 @@ describe("createFilesRouter — bulk verbs", () => {
     expect(exBody.missing).toEqual(["z"]);
 
     const del = await r.handle(post({ keys: ["a"], op: "delete-many" }));
-    expect((await readJson<{ deleted: string[] }>(del)).deleted).toEqual(["a"]);
+    expect((await readJson<{ results: string[] }>(del)).results).toEqual(["a"]);
   });
 
   test("bulk arrays are capped by maxBatchSize (413, reason count)", async () => {

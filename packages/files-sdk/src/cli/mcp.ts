@@ -372,7 +372,7 @@ export const buildMcpServer = async (
     "head",
     {
       description:
-        "Fetch metadata for `key` without transferring its body. Pass an array of keys to fetch many in one call — that form returns a structured `{ files, errors? }` result instead of throwing on partial failure.",
+        "Fetch metadata for `key` without transferring its body. Pass an array of keys to fetch many in one call — that form returns a structured `{ results, errors? }` result instead of throwing on partial failure.",
       inputSchema: {
         concurrency: concurrencyArg,
         key: z.union([z.string(), z.array(z.string())]),
@@ -389,7 +389,7 @@ export const buildMcpServer = async (
           );
           return ok({
             ...result,
-            files: result.files.map(fileInfoToJson),
+            results: result.results.map(fileInfoToJson),
           });
         }
         const file = await files.head(key);
@@ -432,7 +432,7 @@ export const buildMcpServer = async (
       "delete",
       {
         description:
-          "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ deleted, errors? }` result instead of throwing on partial failure. A `condition` (single key only) deletes only the generation with that ETag.",
+          "Permanently delete the object at `key`. Pass an array of keys to delete many in one call — that form returns a structured `{ results, errors? }` result instead of throwing on partial failure. A `condition` (single key only) deletes only the generation with that ETag.",
         inputSchema: {
           concurrency: concurrencyArg,
           condition: etagConditionArg,

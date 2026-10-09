@@ -492,61 +492,58 @@ export interface SearchOptions extends OperationOptions {
   caseInsensitive?: boolean;
 }
 
-export interface DeleteManyOptions {
-  /**
-   * How many per-key deletes run in parallel when the SDK fans out to
-   * repeated `delete()` calls — on adapters without a native bulk primitive,
-   * and on every adapter once a wrapping plugin is installed. Defaults to `8`.
-   * Otherwise a native bulk primitive ignores it: S3 and the S3-compatible
-   * adapters (on the `aws-sdk` client), Azure, Supabase, and UploadThing batch
-   * the keys into as few requests as the provider allows, and FTP / SFTP
-   * delete sequentially over one connection.
-   */
-  concurrency?: number;
-  /**
-   * When `true`, stop at the first failure and return immediately with the
-   * keys deleted so far plus that error. When `false` (default), process
-   * every key and collect per-key failures in `errors`.
-   */
-  stopOnError?: boolean;
-}
-
-export interface DeleteManyError {
-  key: string;
-  error: FilesError;
-}
-
-export interface DeleteManyResult {
-  /** Keys that were deleted, in the order they were supplied. */
-  deleted: string[];
-  /** Per-key failures. Omitted entirely when every key succeeded. */
-  errors?: DeleteManyError[];
-}
-
 /**
  * Shared controls for the array form of the bulk methods (`upload`,
- * `download`, `head`, `exists`). Unlike `delete`, none of these have a native
- * provider batch primitive, so the SDK always fans out to per-key calls.
+ * `download`, `head`, `exists`, `delete`).
  */
 export interface BulkOptions {
   /**
    * How many per-key operations run in parallel. Defaults to `8`. Ignored
    * when `stopOnError` is set — that path runs sequentially.
+   *
+   * A bulk `delete` on an adapter with a native batch primitive ignores it
+   * too: S3 and the S3-compatible adapters (on the `aws-sdk` client), Azure,
+   * Supabase, and UploadThing batch the keys into as few requests as the
+   * provider allows, and FTP / SFTP delete sequentially over one connection.
+   * With a wrapping plugin installed, or without a native batch, the SDK fans
+   * out to per-key `delete()` calls under this concurrency.
    */
   concurrency?: number;
   /**
    * When `true`, stop at the first failure and return immediately with the
    * results gathered so far plus that error. When `false` (default), process
    * every item and collect per-key failures in `errors`.
+   *
+   * It always runs the per-key calls one at a time, in input order — a bulk
+   * `delete` included, which skips the adapter's native batch (a batch request
+   * can't stop partway) — so it behaves the same with or without plugins.
    */
   stopOnError?: boolean;
 }
+
+/** The options for a bulk `delete` — the shared {@link BulkOptions}. */
+export type DeleteManyOptions = BulkOptions;
 
 /** A single per-key failure from the array form of a bulk method. */
 export interface BulkError {
   key: string;
   error: FilesError;
 }
+
+/**
+ * What the array form of every bulk method except `exists` resolves to. It
+ * never throws on a partial failure: successes and per-key failures are
+ * collected side by side, both in the order the items were supplied.
+ */
+export interface BulkResult<T> {
+  /** Successes, in the order their items were supplied. */
+  results: T[];
+  /** Per-key failures. Omitted entirely when every item succeeded. */
+  errors?: BulkError[];
+}
+
+/** A bulk `delete`: the keys that were deleted. */
+export type DeleteManyResult = BulkResult<string>;
 
 /** One item in the array form of {@link Files.upload}. */
 export interface UploadManyItem {
@@ -562,12 +559,8 @@ export interface UploadManyItem {
   multipart?: boolean | MultipartOptions;
 }
 
-export interface UploadManyResult {
-  /** Successful uploads, in the order their items were supplied. */
-  uploaded: UploadResult[];
-  /** Per-item failures. Omitted entirely when every item succeeded. */
-  errors?: BulkError[];
-}
+/** A bulk `upload`: each stored object's {@link FileInfo}. */
+export type UploadManyResult = BulkResult<UploadResult>;
 
 export interface UploadManyOptions extends BulkOptions {
   /**
@@ -583,19 +576,11 @@ export interface DownloadManyOptions extends BulkOptions {
   as?: "blob" | "stream";
 }
 
-export interface DownloadManyResult {
-  /** Downloaded files, in the order their keys were supplied. */
-  downloaded: StoredFile[];
-  /** Per-key failures. Omitted entirely when every key succeeded. */
-  errors?: BulkError[];
-}
+/** A bulk `download`: each downloaded {@link StoredFile}. */
+export type DownloadManyResult = BulkResult<StoredFile>;
 
-export interface HeadManyResult {
-  /** Metadata results, in the order their keys were supplied. */
-  files: FileInfo[];
-  /** Per-key failures. Omitted entirely when every key succeeded. */
-  errors?: BulkError[];
-}
+/** A bulk `head`: each object's {@link FileInfo}. */
+export type HeadManyResult = BulkResult<FileInfo>;
 
 export interface ExistsManyResult {
   /** Keys that exist, in input order. */
@@ -2825,7 +2810,7 @@ export class Files<A extends Adapter = Adapter> {
    * - `upload(items)` stores many in one call — each item carries its own
    *   `key`, `body`, and optional `contentType` / `cacheControl` / `metadata`
    *   — and resolves to an {@link UploadManyResult}. It does **not** throw on
-   *   partial failure: successes land in `uploaded`, per-item failures
+   *   partial failure: successes land in `results`, per-item failures
    *   (including invalid keys) in `errors`, both in the order supplied. The
    *   SDK fans out with bounded `concurrency` (default 8); `stopOnError`
    *   short-circuits at the first failure.
@@ -3170,9 +3155,7 @@ export class Files<A extends Adapter = Adapter> {
       },
       opts
     );
-    return errors.length === 0
-      ? { uploaded: results }
-      : { errors, uploaded: results };
+    return errors.length === 0 ? { results } : { errors, results };
   }
 
   /**
@@ -3181,7 +3164,7 @@ export class Files<A extends Adapter = Adapter> {
    * - `download(key, opts)` resolves to a single {@link StoredFile}; a missing
    *   key (or any failure) **throws** a {@link FilesError}.
    * - `download(keys, opts)` resolves to a {@link DownloadManyResult} and does
-   *   **not** throw on partial failure: successes land in `downloaded`,
+   *   **not** throw on partial failure: successes land in `results`,
    *   per-key failures (a missing key included) in `errors`, both in input
    *   order. `as` applies to every download; the SDK fans out with bounded
    *   `concurrency` (default 8) and `stopOnError` stops at the first failure.
@@ -3344,15 +3327,13 @@ export class Files<A extends Adapter = Adapter> {
         ),
       opts
     );
-    return errors.length === 0
-      ? { downloaded: results }
-      : { downloaded: results, errors };
+    return errors.length === 0 ? { results } : { errors, results };
   }
 
   /**
    * Fetch metadata only — does not transfer the body. Pass one key for a
    * single {@link FileInfo} (throws on failure), or an array for a
-   * {@link HeadManyResult} (`files` + per-key `errors`, never throws on
+   * {@link HeadManyResult} (`results` + per-key `errors`, never throws on
    * partial failure; honors `concurrency` / `stopOnError`). To read the bytes,
    * call {@link Files.download}.
    */
@@ -3408,9 +3389,7 @@ export class Files<A extends Adapter = Adapter> {
         ),
       opts
     );
-    return errors.length === 0
-      ? { files: results }
-      : { errors, files: results };
+    return errors.length === 0 ? { results } : { errors, results };
   }
 
   /**
@@ -3499,11 +3478,12 @@ export class Files<A extends Adapter = Adapter> {
    * - `delete(keys)` removes many in one call and resolves to a
    *   {@link DeleteManyResult}. It does **not** throw on partial failure —
    *   per-key failures (and invalid keys) are collected in `errors`, deleted
-   *   keys in `deleted`, both in the order supplied. The adapter's native
+   *   keys in `results`, both in the order supplied. The adapter's native
    *   bulk primitive is used when available, otherwise the SDK fans out to
-   *   single deletes with bounded `concurrency`. With `stopOnError`, the first
-   *   failure short-circuits and returns the keys deleted so far plus that
-   *   error.
+   *   single deletes with bounded `concurrency`. With `stopOnError`, keys are
+   *   deleted one at a time (skipping the native batch, which can't stop
+   *   partway) and the first failure returns the keys deleted so far plus
+   *   that error.
    *
    * Both forms honor the client's `prefix`; the array form reports the keys
    * the caller passed, not the internal prefixed paths.
@@ -3597,7 +3577,7 @@ export class Files<A extends Adapter = Adapter> {
     // Track each error's position in the caller's array so the final
     // `errors` list stays in input order, even when invalid keys (caught
     // here) interleave with provider failures (reported by the adapter).
-    const errors: (DeleteManyError & { index: number })[] = [];
+    const errors: (BulkError & { index: number })[] = [];
     // Adapters operate on prefixed paths; map each back so the result
     // reflects the keys the caller passed, not the internal path.
     const paths: string[] = [];
@@ -3612,8 +3592,8 @@ export class Files<A extends Adapter = Adapter> {
         if (opts?.stopOnError) {
           // Short-circuit before any delete is attempted.
           return {
-            deleted: [],
             errors: [{ error: FilesError.wrap(error), key: String(key) }],
+            results: [],
           };
         }
         errors.push({ error: FilesError.wrap(error), index, key: String(key) });
@@ -3632,7 +3612,11 @@ export class Files<A extends Adapter = Adapter> {
     // `signal`/`timeout` via the non-retryable #run. The native bulk
     // primitive takes no per-call signal, so the whole batch runs under one
     // #run; the fan-out fallback runs one per key.
-    const nativeDeleteMany = this.#adapter.deleteMany?.bind(this.#adapter);
+    // `stopOnError` runs one key at a time, like the plugin path above: a
+    // native batch request can't stop partway through.
+    const nativeDeleteMany = opts?.stopOnError
+      ? undefined
+      : this.#adapter.deleteMany?.bind(this.#adapter);
     const result = nativeDeleteMany
       ? await this.#run(undefined, () => nativeDeleteMany(paths, opts), false)
       : await deleteManyWithFallback(
@@ -3642,7 +3626,7 @@ export class Files<A extends Adapter = Adapter> {
           opts
         );
 
-    const deleted = result.deleted.map(toKey);
+    const deleted = result.results.map(toKey);
     for (const entry of result.errors ?? []) {
       errors.push({
         error: entry.error,
@@ -3652,12 +3636,12 @@ export class Files<A extends Adapter = Adapter> {
     }
 
     if (errors.length === 0) {
-      return { deleted };
+      return { results: deleted };
     }
     errors.sort((a, b) => a.index - b.index);
     return {
-      deleted,
       errors: errors.map(({ error, key }) => ({ error, key })),
+      results: deleted,
     };
   }
 
