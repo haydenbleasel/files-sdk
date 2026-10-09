@@ -88,6 +88,11 @@ export const storj = (opts: StorjAdapterOptions): StorjAdapter => {
 
   return {
     ...inner,
+    capabilities: {
+      ...inner.capabilities,
+      // S3 `Records[]` bucket events, published to your Google Pub/Sub topic.
+      events: { format: "s3" },
+    },
     name: "storj",
   };
 };

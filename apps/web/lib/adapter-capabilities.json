@@ -785,7 +785,7 @@
       "replace": false
     },
     "delimiter": "any",
-    "events": null,
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,

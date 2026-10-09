@@ -1,0 +1,6 @@
+{
+  "Service": "Storj S3",
+  "Event": "s3:TestEvent",
+  "Time": "2026-01-17T10:30:00.000Z",
+  "Bucket": "my-bucket"
+}

@@ -73,6 +73,28 @@ export const malformed = (format: EventFormat, detail: string): FilesError =>
     `files-sdk/events: not a ${format} notification (${detail})`
   );
 
+/**
+ * The text of a Google Pub/Sub message's `data`: base64 on the wire, a Buffer
+ * from the Node client library. `undefined` when the message carries none.
+ */
+export const pubsubText = (
+  data: JsonValue | Uint8Array | undefined,
+  format: EventFormat
+): string | undefined => {
+  if (isString(data) && data !== "") {
+    try {
+      const bytes = Uint8Array.from(atob(data), (c) => c.codePointAt(0) ?? 0);
+      return new TextDecoder().decode(bytes);
+    } catch {
+      throw malformed(format, "message data is not base64");
+    }
+  }
+  if (data instanceof Uint8Array && data.byteLength > 0) {
+    return new TextDecoder().decode(data);
+  }
+  return undefined;
+};
+
 /** A delivery whose credential or signature doesn't check out. */
 export const unauthorized = (detail: string): FilesError =>
   new FilesError("Unauthorized", `files-sdk/events: ${detail}`, undefined, {

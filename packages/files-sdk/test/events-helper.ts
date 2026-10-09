@@ -19,6 +19,7 @@ const FORMATS: Readonly<Record<string, EventFormat>> = {
   "r2-binding": "r2",
   rustfs: "s3",
   s3: "s3",
+  storj: "s3",
   supabase: "supabase",
   tigris: "tigris",
   wasabi: "s3",

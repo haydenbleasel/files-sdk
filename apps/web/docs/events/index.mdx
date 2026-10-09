@@ -72,6 +72,7 @@ All three reach the same `on()` handlers.
 | `s3` | `minio` | Webhook | [MinIO](/docs/events/minio) |
 | `s3` | `rustfs` | Webhook (or Kafka, NATS, …) | [MinIO](/docs/events/minio#rustfs) |
 | `s3` | `wasabi` | Your own AWS SNS topic | [Amazon S3](/docs/events/s3#wasabi) |
+| `s3` | `storj` | Your own Google Pub/Sub topic (pull or push) | [Amazon S3](/docs/events/s3#storj) |
 | `r2` | `r2` | Queue (Worker consumer or HTTP pull) | [Cloudflare R2](/docs/events/r2) |
 | `gcs` | `gcs`, `firebase-storage` | Pub/Sub (pull or push), Eventarc | [Google Cloud Storage](/docs/events/gcs) |
 | `azure` | `azure` | Event Grid webhook (either schema) | [Azure Blob Storage](/docs/events/azure) |
@@ -84,7 +85,7 @@ All three reach the same `on()` handlers.
 | `box` | `box` | Signed webhook (v2) | [Box](/docs/events/box) |
 | `memory` | `memory` | Built in | [Testing locally](/docs/events/testing) |
 
-Of the other S3-compatible services, Storj sends S3-shaped events only through Google Pub/Sub (not read yet); Oracle, IBM COS, Alibaba, Tencent and Yandex use formats of their own; and DigitalOcean Spaces, Hetzner, Scaleway, Vultr, Exoscale, OVHcloud, Filebase, Akamai, Archil and Neon have no bucket notifications. An adapter whose provider isn't verified claims no format; pass `events({ format: "s3" })` to opt in when you know it sends S3's. Calling `parse()` or `dispatch()` on an adapter with no format throws instead of guessing.
+Of the other S3-compatible services, Oracle, IBM COS, Alibaba, Tencent and Yandex use formats of their own; and DigitalOcean Spaces, Hetzner, Scaleway, Vultr, Exoscale, OVHcloud, Filebase, Akamai, Archil and Neon have no bucket notifications. An adapter whose provider isn't verified claims no format; pass `events({ format: "s3" })` to opt in when you know it sends S3's. Calling `parse()` or `dispatch()` on an adapter with no format throws instead of guessing.
 
 Dropbox, Google Drive, OneDrive and SharePoint webhooks only say "something changed" and expect you to call a changes API with a stored cursor, so they aren't supported yet. Vercel Blob, Netlify Blobs, UploadThing, Convex, PocketBase, the filesystem, FTP, SFTP, WebDAV and Bunny have no notifications to read; use `events({ sdk: true })` and the [gateway](/docs/ui/server/upload-lifecycle) there.
 

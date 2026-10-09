@@ -1,0 +1,27 @@
+{
+  "Records": [
+    {
+      "eventVersion": "2.1",
+      "eventSource": "storj:s3",
+      "eventTime": "2025-01-17T10:30:00.000Z",
+      "eventName": "ObjectCreated:Put",
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "MyNotificationConfig",
+        "bucket": {
+          "name": "my-bucket",
+          "ownerIdentity": {
+            "principalId": "my-storj-project-id"
+          },
+          "arn": "arn:storj:s3:::my-bucket"
+        },
+        "object": {
+          "key": "uploads/video.mp4",
+          "size": 1048576,
+          "versionId": "000000000000000190f2277f35af0b76",
+          "sequencer": "1892E0DE46FBAE18"
+        }
+      }
+    }
+  ]
+}

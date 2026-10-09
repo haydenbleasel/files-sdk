@@ -8,7 +8,10 @@
 // - an SQS message (`{ Records: [{ eventSource: "aws:sqs", body }] }`, or one
 //   such record) whose `body` is the event, an SNS envelope around it
 //   (`{ Type: "Notification", Message }`), or an EventBridge event;
-// - EventBridge's own shape (`{ source: "aws.s3", "detail-type", detail }`).
+// - EventBridge's own shape (`{ source: "aws.s3", "detail-type", detail }`);
+// - a Google Pub/Sub message whose `data` is the event, base64-encoded (Storj
+//   delivers this way): pushed (`{ message, subscription }`), pulled
+//   (`{ receivedMessages }`), or as the Node client library hands it over.
 //
 // `Records[]` keys are URL-encoded with `+` for spaces (MinIO's too, via Go's
 // `url.QueryEscape`); EventBridge keys are not. `s3:TestEvent` (sent when a
@@ -18,7 +21,7 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { Delivery, EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, toSize, toTime } from "./types.js";
+import { bareEtag, malformed, pubsubText, toSize, toTime } from "./types.js";
 
 const decodeKey = (key: string): string => {
   try {
@@ -155,38 +158,65 @@ const fromEventBridge = (event: JsonObject): RawEvent[] => {
   ];
 };
 
-const fromValue = (value: JsonValue): RawEvent[] => {
-  if (!isJsonObject(value)) {
-    throw malformed("s3", "expected an object");
-  }
-  // s3:TestEvent, bare or inside an SQS/SNS envelope.
-  if (value.Event === "s3:TestEvent") {
-    return [];
-  }
-  // SNS envelope (SNS → SQS with raw delivery off).
+/**
+ * What an envelope carries, or `undefined` when `value` isn't one: an SNS
+ * notification (SNS → SQS with raw delivery off), an SQS record, or a Google
+ * Pub/Sub message (Storj), pushed, pulled, or from the Node client.
+ */
+const unwrap = (value: JsonObject): JsonValue[] | undefined => {
   if (isString(value.Type) && "TopicArn" in value) {
     return value.Type === "Notification" && isString(value.Message)
-      ? fromValue(decodeJson(value.Message))
+      ? [decodeJson(value.Message)]
       : [];
   }
-  if (value.source === "aws.s3" && "detail-type" in value) {
-    return fromEventBridge(value);
-  }
-  // One SQS record.
   if (value.eventSource === "aws:sqs") {
     if (!isString(value.body)) {
       throw malformed("s3", "SQS record without a string body");
     }
-    return fromValue(decodeJson(value.body));
+    return [decodeJson(value.body)];
   }
-  // The S3 event record itself (one entry of Records[]).
-  // The S3 event record itself: AWS's `aws:s3`, MinIO's `minio:s3`, Wasabi's
-  // `wasabi:s3`, or RustFS's, which has no `eventSource` at all.
-  const source = value.eventSource;
+  if (isJsonObject(value.message)) {
+    return [value.message];
+  }
+  if (isJsonArray(value.receivedMessages)) {
+    return value.receivedMessages;
+  }
   if (
+    "data" in value &&
+    ("messageId" in value || "message_id" in value || "publishTime" in value)
+  ) {
+    const text = pubsubText(value.data, "s3");
+    return text === undefined ? [] : [decodeJson(text)];
+  }
+  return undefined;
+};
+
+// The S3 event record itself: AWS's `aws:s3`, MinIO's `minio:s3`, Wasabi's
+// `wasabi:s3`, Storj's `storj:s3`, or RustFS's, which has no `eventSource`.
+const isRecord = (value: JsonObject): boolean => {
+  const source = value.eventSource;
+  return (
     (isString(source) && source.endsWith(":s3")) ||
     (source === undefined && "eventName" in value && "s3" in value)
-  ) {
+  );
+};
+
+const fromValue = (value: JsonValue): RawEvent[] => {
+  if (!isJsonObject(value)) {
+    throw malformed("s3", "expected an object");
+  }
+  // s3:TestEvent (Storj's too), bare or inside any envelope.
+  if (value.Event === "s3:TestEvent") {
+    return [];
+  }
+  const inner = unwrap(value);
+  if (inner) {
+    return inner.flatMap(fromValue);
+  }
+  if (value.source === "aws.s3" && "detail-type" in value) {
+    return fromEventBridge(value);
+  }
+  if (isRecord(value)) {
     return fromRecord(value);
   }
   if (isJsonArray(value.Records)) {
@@ -194,7 +224,7 @@ const fromValue = (value: JsonValue): RawEvent[] => {
   }
   throw malformed(
     "s3",
-    "no Records, SQS body, SNS Message or EventBridge detail"
+    "no Records, SQS body, SNS Message, EventBridge detail or Pub/Sub data"
   );
 };
 

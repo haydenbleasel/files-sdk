@@ -2,7 +2,7 @@
 "files-sdk": minor
 ---
 
-`files-sdk/events` now reads notifications from Backblaze B2, Tigris, Supabase (a Database Webhook on `storage.objects`), Cloudinary, Appwrite and Box, and from S3 delivered by SNS over HTTPS. The matching adapters pick their format automatically. `webhook()` verifies each provider's own signature with `verify: { secret }`:
+`files-sdk/events` now reads notifications from Backblaze B2, Tigris, Supabase (a Database Webhook on `storage.objects`), Cloudinary, Appwrite and Box, from S3 delivered by SNS over HTTPS, and from Storj, which publishes S3-format events to Google Pub/Sub. The `s3` format unwraps a Pub/Sub message, whether pushed, pulled, or handed over by the Node client library. The matching adapters pick their format automatically. `webhook()` verifies each provider's own signature with `verify: { secret }`:
 
 - B2: HMAC-SHA256.
 - Cloudinary: SHA-1 or SHA-256, checked for freshness.

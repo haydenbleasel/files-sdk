@@ -10,7 +10,7 @@ import { isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 import { isJsonArray, isJsonObject } from "../../internal/json.js";
 import type { Delivery, EventParser, RawEvent } from "./types.js";
-import { bareEtag, malformed, toSize, toTime } from "./types.js";
+import { bareEtag, malformed, pubsubText, toSize, toTime } from "./types.js";
 
 const CE_PREFIX = "google.cloud.storage.object.v1.";
 
@@ -19,18 +19,7 @@ const CE_PREFIX = "google.cloud.storage.object.v1.";
 const decodeData = (
   data: JsonValue | Uint8Array | undefined
 ): JsonObject | undefined => {
-  let text: string | undefined;
-  if (isString(data) && data !== "") {
-    try {
-      const bytes = Uint8Array.from(atob(data), (c) => c.codePointAt(0) ?? 0);
-      text = new TextDecoder().decode(bytes);
-    } catch {
-      throw malformed("gcs", "message data is not base64");
-    }
-  } else if (data instanceof Uint8Array && data.byteLength > 0) {
-    // The Node client library hands `data` over as a Buffer.
-    text = new TextDecoder().decode(data);
-  }
+  const text = pubsubText(data, "gcs");
   if (text === undefined) {
     return undefined;
   }

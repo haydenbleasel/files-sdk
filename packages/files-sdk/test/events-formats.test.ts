@@ -14,6 +14,7 @@ import { r2 } from "../src/r2/index.js";
 import { rustfs } from "../src/rustfs/index.js";
 import { s3Fetch } from "../src/s3-fetch/index.js";
 import { s3 } from "../src/s3/index.js";
+import { storj } from "../src/storj/index.js";
 import { tigris } from "../src/tigris/index.js";
 import { wasabi } from "../src/wasabi/index.js";
 import { providerAdapter } from "./events-helper.js";
@@ -128,6 +129,9 @@ describe("adapters declare their notification format", () => {
     expect(
       declaredFormat(hetzner({ bucket: "b", region: "fsn1", ...creds }))
     ).toBe(false);
+    expect(declaredFormat(storj({ bucket: "b", ...creds }))).toEqual({
+      format: "s3",
+    });
   });
 
   test("B2, Tigris and every R2 engine read their own formats", () => {
@@ -318,6 +322,91 @@ describe("s3", () => {
       Type: "Notification",
     });
     expect(viaSns.map((e) => e.key)).toEqual(["heart.jpg"]);
+  });
+
+  describe("Storj, through Google Pub/Sub", () => {
+    const storjEvent = fixture("s3-compatible/storj-event.json");
+    const data = btoa(JSON.stringify(storjEvent));
+    const message = {
+      data,
+      messageId: "2070443601311540",
+      publishTime: "2025-01-17T10:30:01.000Z",
+    };
+    const expected = {
+      contentType: undefined,
+      etag: undefined,
+      key: "uploads/video.mp4",
+      size: 1_048_576,
+      type: "created" as const,
+      versionId: "000000000000000190f2277f35af0b76",
+    };
+
+    test("a push delivery, a pulled message, and a pulled batch", async () => {
+      expect(
+        pick(
+          await parse("storj", {
+            message,
+            subscription: "projects/p/subscriptions/storj-push",
+          })
+        )
+      ).toEqual([expected]);
+      expect(pick(await parse("storj", message))).toEqual([expected]);
+      expect(
+        pick(
+          await parse("storj", {
+            receivedMessages: [{ ackId: "a", message }],
+          })
+        )
+      ).toEqual([expected]);
+      const [event] = await parse("storj", message);
+      expect(event?.id).toBe("created:uploads/video.mp4@1892E0DE46FBAE18");
+    });
+
+    test("the Node client's message, whose data is a Buffer", async () => {
+      const files = filesAs("storj");
+      const nodeMessage = {
+        ...message,
+        data: new TextEncoder().encode(JSON.stringify(storjEvent)),
+      };
+      expect(pick(await files.events.parse(nodeMessage))).toEqual([expected]);
+    });
+
+    test("keys are decoded the way Storj encodes them", async () => {
+      // EncodeForS3Event: `my file+test (1).txt` → `my+file%2Btest+%281%29.txt`
+      const encoded = structuredClone(storjEvent) as {
+        Records: { s3: { object: { key: string } } }[];
+      };
+      const [record] = encoded.Records;
+      if (record) {
+        record.s3.object.key = "dir/my+file%2Btest+%281%29.txt";
+      }
+      const [event] = await parse("storj", {
+        ...message,
+        data: btoa(JSON.stringify(encoded)),
+      });
+      expect(event?.key).toBe("dir/my file+test (1).txt");
+    });
+
+    test("the test event and an empty message parse to nothing", async () => {
+      expect(
+        await parse("storj", {
+          ...message,
+          data: btoa(
+            JSON.stringify(fixture("s3-compatible/storj-test-event.json"))
+          ),
+        })
+      ).toEqual([]);
+      expect(await parse("storj", { ...message, data: "" })).toEqual([]);
+    });
+
+    test("bad message data throws", async () => {
+      await expect(parse("storj", { ...message, data: "!!!" })).rejects.toThrow(
+        "message data is not base64"
+      );
+      await expect(
+        parse("storj", { ...message, data: btoa("not json") })
+      ).rejects.toThrow("message body is not JSON");
+    });
   });
 
   test.each([

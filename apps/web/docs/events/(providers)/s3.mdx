@@ -135,6 +135,29 @@ The signing certificate is fetched from the message's `SigningCertURL`, which mu
 
 Wasabi publishes S3-shaped notifications to an AWS SNS topic you own (set up in the Wasabi console, with AWS credentials), so the `wasabi` adapter reads the `s3` format. Subscribe an SQS queue to the topic and consume it as above, or subscribe your endpoint and use `verify: { sns }`.
 
+## Storj
+
+Storj publishes S3-shaped bucket events to a Google Pub/Sub topic you own, so the `storj` adapter reads the `s3` format, and `dispatch()` and `webhook()` unwrap the Pub/Sub message around each event.
+
+1. Ask Storj support to enable bucket eventing for the project. It needs Storj-managed encryption.
+2. Grant your satellite's service account the Pub/Sub Publisher role on the topic: `bucket-eventing@storj-prod.iam.gserviceaccount.com` (US1), `bucket-eventing@storj-prod-europe-west1.iam.gserviceaccount.com` (EU1) or `bucket-eventing@storj-prod-asia-east1.iam.gserviceaccount.com` (AP1).
+3. Point the bucket at the topic (`projects/GCP_PROJECT_ID/topics/TOPIC_ID`) under **Configure Eventing** in the Storj console, or with `PutBucketNotificationConfiguration`.
+
+Then consume the topic like any other: pull and `dispatch(message)` each message, or push to [`webhook()`](/docs/events/webhooks) with an authenticated push subscription:
+
+```ts lineNumbers
+const webhook = files.events.webhook({
+  verify: {
+    google: {
+      audience: "https://app.example.com/api/storage-events",
+      email: "push@my-project.iam.gserviceaccount.com",
+    },
+  },
+});
+```
+
+Storj reports `POST` and multipart uploads as `ObjectCreated:Put`, and its events carry no ETag.
+
 ## What maps to what
 
 | S3 event | `FileEvent` |
