@@ -33,9 +33,44 @@ export function Browser() {
 }
 ```
 
-Folders come straight from `list()`'s `prefixes`, which the gateway returns whenever the adapter [supports a delimiter](/docs/capabilities); the component reads `capabilities()` once on mount to decide which listing to use. The component owns its own navigation state; pass `onSelect` to react to file clicks (open a preview, generate a share link, etc.).
+Folders come straight from `list()`'s `prefixes`, which the gateway returns whenever the adapter [supports a delimiter](/docs/capabilities); the component reads `capabilities()` once on mount to decide which listing to use. The component owns its navigation state and reports it through `onNavigate`, which receives the open folder's prefix (`""` for the root) on mount and every time the user opens another folder. Pass `onSelect` to react to file clicks (open a preview, generate a share link, etc.).
 
 Each file row also carries a [File Actions](/docs/ui/components/file-actions) menu — download, copy, rename, move and delete — unless you pass `readOnly`. Mutations re-list the current folder automatically; pass `onChanged` to refresh anything else (a [Trash Bin](/docs/ui/components/trash-bin), a usage meter) alongside it.
+
+## Upload into the open folder
+
+Point a [Dropzone](/docs/ui/components/dropzone)'s `prefix` at the folder `onNavigate` reports, and give both components the same `useFiles()` instance:
+
+```tsx lineNumbers
+import { useFiles } from "files-sdk/react";
+import { useState } from "react";
+
+import {
+  Dropzone,
+  DropzoneContent,
+  DropzoneEmptyState,
+  DropzoneError,
+} from "@/components/files-sdk/dropzone";
+import { FileBrowser } from "@/components/files-sdk/file-browser";
+
+export function FolderUploads() {
+  const files = useFiles({ endpoint: "/api/files" });
+  const [folder, setFolder] = useState("");
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Dropzone files={files} maxFiles={10} prefix={folder}>
+        <DropzoneEmptyState />
+        <DropzoneContent />
+        <DropzoneError />
+      </Dropzone>
+      <FileBrowser files={files} onNavigate={setFolder} />
+    </div>
+  );
+}
+```
+
+File Browser re-lists the open folder whenever uploads through its `files` instance finish, whether a Dropzone or your own `files.upload()` started them. A Dropzone batch re-lists once, after its last file. The rows already on screen stay until the new listing replaces them, and the listing starts again from its first page, as it does after a row action. Changes made anywhere else (another tab, a server job, a second `useFiles()` instance) show up the next time the folder is listed.
 
 ## Props
 

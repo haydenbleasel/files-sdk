@@ -39,7 +39,12 @@ export interface FileActionsProps {
   fileKey: string;
   /** Called after a successful copy/rename/move/delete so the parent can refresh. */
   onChanged?: () => void;
-  /** Custom trigger content, rendered inside the trigger button. Defaults to a styled `⋯` icon. */
+  /**
+   * Custom trigger content, rendered inside the trigger button. Defaults to a
+   * styled `⋯` icon whose screen-reader label is "Actions for" plus the key;
+   * custom content becomes the trigger's accessible name, so make it name the
+   * file.
+   */
   children?: ReactNode;
   className?: string;
 }
@@ -154,7 +159,9 @@ export const FileActions = ({
           {children ?? (
             <>
               <MoreHorizontalIcon />
-              <span className="sr-only">Actions</span>
+              {/* Named after the key so a list of rows has distinguishable
+                  triggers, not a column of identical "Actions" buttons. */}
+              <span className="sr-only">Actions for {fileKey}</span>
             </>
           )}
         </DropdownMenuTrigger>

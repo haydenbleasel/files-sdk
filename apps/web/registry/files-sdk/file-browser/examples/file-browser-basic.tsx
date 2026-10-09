@@ -7,6 +7,7 @@ import { FileBrowser } from "@/registry/files-sdk/file-browser/file-browser";
 
 const Example = () => {
   const files = demoFiles;
+  const [folder, setFolder] = useState("");
   const [selected, setSelected] = useState<string>();
 
   return (
@@ -14,11 +15,13 @@ const Example = () => {
       <FileBrowser
         files={files}
         initialPrefix="documents/"
+        onNavigate={setFolder}
         onSelect={(file) => setSelected(file.key)}
       />
-      {selected && (
-        <p className="text-muted-foreground text-xs">Selected: {selected}</p>
-      )}
+      <p className="text-muted-foreground text-xs">
+        Open folder: {folder || "(root)"}
+        {selected && ` · Selected: ${selected}`}
+      </p>
     </div>
   );
 };

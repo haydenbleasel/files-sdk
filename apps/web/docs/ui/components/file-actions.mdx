@@ -27,6 +27,8 @@ export function Row({ fileKey }: { fileKey: string }) {
 
 Drop it into a [File Browser](/docs/ui/components/file-browser) or [File List](/docs/ui/components/file-list) row. `onChanged` fires after a successful copy/rename/move/delete so the parent can re-list. Rename edits only the basename and re-attaches the original prefix; Move takes a full destination key.
 
+The default trigger is an icon button whose accessible name includes the key ("Actions for photos/sunset.jpg"), so a list of rows doesn't read as a column of identical "Actions" buttons. If you pass `children`, they become the trigger's content and its accessible name, so make them name the file too. The menu and dialogs are shadcn primitives and work from the keyboard.
+
 ## Props
 
 <AutoTypeTable

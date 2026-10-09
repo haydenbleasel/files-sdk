@@ -3,7 +3,7 @@ title: Upload Progress
 description: Per-file and aggregate progress bars for in-flight uploads, reading the ambient uploads and progress state a useFiles instance exposes.
 ---
 
-A drop-in progress view. It reads the ambient `uploads` and `progress` a [`useFiles`](/docs/ui/client/react) instance exposes, so it lights up for **any** upload that instance starts — single or bulk, wherever the call originates. Returns `null` until there's something to show. (The preview below simulates that state, since the docs have no gateway.)
+A drop-in progress view. It reads the ambient `uploads` and `progress` a [`useFiles`](/docs/ui/client/react) instance exposes, so it lights up for **any** upload that instance starts — single or bulk, wherever the call originates. It renders nothing visible until there's something to show. (The preview below simulates that state, since the docs have no gateway.)
 
 <Component path="upload-progress/examples/upload-progress-basic" />
 
@@ -33,6 +33,12 @@ export function Uploader() {
 ```
 
 Each row shows a file's name and status: a percentage while it uploads, a check when it's done, the error message when it fails, or "Cancelled" after an abort. The hook keeps every file's row across upload calls, so finished rows stay until you call `files.reset()`, which clears them (in-flight rows stay). Once there's more than one row, an aggregate bar on top shows how many have finished and the overall byte progress.
+
+## Accessibility
+
+Each bar is a `progressbar` named after its file, with its percentage as the value and the row's status ("45%", "Failed: …", "Cancelled") as the value text, so a screen reader announces the file and its status rather than an anonymous bar. The aggregate bar is named "All uploads". The component sets `aria-valuenow` itself, because shadcn's Radix-based Progress uses `value` only to draw the indicator.
+
+A visually hidden, polite live region (`role="log"`) announces each file once it reaches a final state: "notes.txt uploaded", "report.pdf failed: …", or "draft.docx cancelled". Progress ticks aren't announced, and clearing rows with `files.reset()` is silent. The region stays mounted when there are no rows, so the first announcement isn't missed.
 
 ## Props
 

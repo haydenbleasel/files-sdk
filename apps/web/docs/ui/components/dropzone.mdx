@@ -36,7 +36,7 @@ export function Uploader() {
 }
 ```
 
-`DropzoneEmptyState` renders the prompt — and keeps rendering it after uploads, so users can keep adding files. `DropzoneContent` shows a success summary ("3 files uploaded") once something lands, and `DropzoneError` surfaces failures (files that don't match `accept`, oversize files, files over the `maxFiles` limit, and failed uploads). Pass your own children to any of them to override the default look (the zone is a `<button>`, so keep them to phrasing content such as spans, icons and text), or wire `onUploaded` / `onError` to render state outside the dropzone entirely.
+`DropzoneEmptyState` renders the prompt — and keeps rendering it after uploads, so users can keep adding files. `DropzoneContent` shows a success summary ("3 files uploaded") once something lands, and `DropzoneError` surfaces the latest batch's failures (files that don't match `accept`, oversize files, files over the `maxFiles` limit, and failed uploads) until the next upload starts on the same `useFiles()` instance, including one your page starts itself, such as a retry. Pass your own children to any of them to override the default look (the zone is a `<button>`, so keep them to phrasing content such as spans, icons and text), or wire `onUploaded` / `onError` to render state outside the dropzone entirely.
 
 `accept` filters the file picker and is enforced on dropped files too, using the same rules: `.ext` suffixes, `type/*` wildcards, and exact MIME types.
 
@@ -82,6 +82,14 @@ export function FolderUploader() {
 ```
 
 With `directory` set, `maxFiles` defaults to unlimited; pass a number to cap the total file count per drop.
+
+## Accessibility
+
+The zone is a native `<button>`, so it's in the tab order and Enter or Space opens the file picker. While uploads run it's marked `aria-disabled` and ignores activation, but stays focusable.
+
+A button's content is its accessible name, so the dropzone keeps the summaries out of it. The name is the prompt from `DropzoneEmptyState` (or your own children). `DropzoneContent` and `DropzoneError` are hidden from assistive tech inside the button and referenced as its description instead, so a screen reader reads the prompt and its limits as the name, then the latest outcome. Errors are also announced when they happen: the dropzone mirrors the failure summary into a visually hidden, polite live region beside the button, and a repeat of the same error is announced again. Custom `DropzoneError` children are visual only; the announcement uses the summary text.
+
+Successful uploads aren't announced by the dropzone. Pair it with [Upload Progress](/docs/ui/components/upload-progress), which announces each file as it finishes or fails, or announce from `onUploaded`. With both on the page, a failed upload is announced twice: once for the file by Upload Progress, and once in the dropzone's batch summary.
 
 ## Props
 
