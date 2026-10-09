@@ -878,9 +878,16 @@ describe("box adapter", () => {
   });
 
   test("box only supports the / delimiter", async () => {
+    // `delimiter: "slash"` lets the Files wrapper refuse it up front…
     const files = new Files({ adapter: box(baseOpts) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
       code: "Provider",
+      message: expect.stringMatching(/only the "\/" delimiter/u),
+    });
+    // …and the adapter still guards a direct call.
+    await expect(box(baseOpts).list({ delimiter: "|" })).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/^box: only supports the "\/" delimiter/u),
     });
   });
 
@@ -985,19 +992,38 @@ describe("box adapter", () => {
     expect(url).toBe("https://cdn.example.com/files/a.txt");
   });
 
-  test("signedUrl.supported reflects whether url() signs or returns a permanent link", () => {
+  test("signedUrl reflects whether url() signs or returns a permanent link", () => {
+    // Box sets the tokenized URL's lifetime server-side, so `expiresIn` is
+    // advisory: `expiry: "provider"`.
     expect(
-      new Files({ adapter: box(baseOpts) }).capabilities.signedUrl.supported
-    ).toBe(true);
+      new Files({ adapter: box(baseOpts) }).capabilities.signedUrl
+    ).toEqual({ expiry: "provider", supported: true });
     expect(
       new Files({ adapter: box({ ...baseOpts, publicByDefault: true }) })
-        .capabilities.signedUrl.supported
-    ).toBe(false);
+        .capabilities.signedUrl
+    ).toEqual({ expiry: "none", supported: false });
     expect(
       new Files({
         adapter: box({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
-      }).capabilities.signedUrl.supported
-    ).toBe(false);
+      }).capabilities.signedUrl
+    ).toEqual({ expiry: "none", supported: false });
+  });
+
+  test("declares its capabilities", () => {
+    const caps = new Files({ adapter: box(baseOpts) }).capabilities;
+    expect(caps.cacheControl).toBe(false);
+    expect(caps.delimiter).toBe("slash");
+    expect(caps.metadata).toBe(false);
+    expect(caps.rangeRead).toBe(true);
+    expect(caps.resumable).toBe(true);
+    expect(caps.serverSideCopy).toBe(true);
+    // signedUploadUrl() always throws: Box needs a multipart POST.
+    expect(caps.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: false,
+    });
+    expect(caps.uploadProgress).toBe(false);
   });
 
   test("url throws on responseContentDisposition", async () => {

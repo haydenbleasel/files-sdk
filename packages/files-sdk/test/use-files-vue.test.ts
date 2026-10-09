@@ -106,7 +106,7 @@ describe("vue useFiles", () => {
       await files.copy("seed", "seed-copy");
       await files.move("seed-copy", "seed-moved");
       const caps = await files.capabilities();
-      expect(caps.delimiter).toBe(true);
+      expect(caps.delimiter).toBe("any");
       const signed = await files.signedUploadUrl("sig", { expiresIn: 60 });
       expect(signed.method).toBe("PUT");
 

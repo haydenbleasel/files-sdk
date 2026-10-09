@@ -6,12 +6,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -23,12 +27,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -45,6 +53,7 @@
     "rangeRead": false,
     "resumable": true,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -55,12 +64,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -72,12 +85,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": null
     },
     "uploadProgress": true
@@ -89,12 +106,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -106,12 +127,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": null,
     "signedUrl": {
+      "expiry": "provider",
       "maxExpiresIn": null
     },
     "uploadProgress": false
@@ -123,12 +146,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": false,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": false
@@ -145,6 +172,7 @@
     "rangeRead": false,
     "resumable": false,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -155,11 +183,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": false,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -175,6 +206,7 @@
     "rangeRead": false,
     "resumable": false,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -185,12 +217,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -202,12 +238,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": null,
     "signedUrl": {
+      "expiry": "provider",
       "maxExpiresIn": 14400
     },
     "uploadProgress": false
@@ -219,12 +257,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -236,12 +278,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -253,12 +299,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -270,11 +320,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -285,11 +336,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": true
   },
@@ -300,12 +352,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -317,11 +373,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -332,12 +391,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -349,12 +412,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -366,12 +433,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -383,11 +454,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -398,12 +470,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -415,12 +491,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -432,11 +512,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": true,
     "rangeRead": false,
     "resumable": false,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -447,11 +528,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -462,12 +546,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -479,12 +567,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -501,7 +593,9 @@
     "rangeRead": true,
     "resumable": false,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": {
+      "expiry": "provider",
       "maxExpiresIn": null
     },
     "uploadProgress": false
@@ -513,12 +607,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -530,12 +628,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -547,12 +649,16 @@
       "delete": true,
       "replace": true
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -564,12 +670,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": false,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": false
@@ -581,12 +691,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -598,11 +712,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": false,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -613,11 +728,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -628,12 +746,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -645,12 +767,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": true,
     "rangeRead": false,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": false
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": null
     },
     "uploadProgress": false
@@ -662,12 +788,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -679,12 +809,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -701,9 +835,10 @@
     "rangeRead": true,
     "resumable": false,
     "serverSideCopy": false,
-    "signedUrl": {
-      "maxExpiresIn": null
+    "signedUpload": {
+      "maxSize": false
     },
+    "signedUrl": null,
     "uploadProgress": false
   },
   "vercel-blob": {
@@ -713,11 +848,14 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "slash",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": null,
     "uploadProgress": true
   },
@@ -728,12 +866,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -745,12 +887,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true
@@ -762,11 +908,12 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": false,
     "rangeRead": true,
     "resumable": false,
     "serverSideCopy": true,
+    "signedUpload": null,
     "signedUrl": null,
     "uploadProgress": false
   },
@@ -777,12 +924,16 @@
       "delete": false,
       "replace": false
     },
-    "delimiter": true,
+    "delimiter": "any",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
     "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
     "signedUrl": {
+      "expiry": "exact",
       "maxExpiresIn": 604800
     },
     "uploadProgress": true

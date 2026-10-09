@@ -206,6 +206,14 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
   };
 
   const adapter: ConvexAdapter = {
+    capabilities: {
+      // Convex storage ids are immutable — `copy()` is unsupported (throws).
+      serverSideCopy: false,
+      // No `signedUrl`: `url()` returns a permanent Convex serving URL —
+      // unsigned and non-expiring (`expiresIn` is ignored). No `signedUpload`:
+      // `generateUploadUrl()` can't bind the key or any constraint, so
+      // `signedUploadUrl()` always throws.
+    },
     copy(_from, _to): Promise<void> {
       return Promise.reject(
         new FilesError(
@@ -374,14 +382,9 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
         )
       );
     },
-    // `url()` returns a permanent Convex serving URL — unsigned and
-    // non-expiring (`expiresIn` is ignored), so not a signed URL.
-    signedUrl: { supported: false },
-    // Convex storage ids are immutable — `copy()` is unsupported (throws).
-    supportsServerSideCopy: false,
     async upload(_key, body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
-      // (this adapter sets neither `supportsMetadata` nor `supportsCacheControl`)
+      // (this adapter declares neither `metadata` nor `cacheControl`)
       // — Convex's _storage table is fixed to contentType/sha256/size.
       if (!isFunction(storage.store)) {
         throw new FilesError("Provider", `convex: upload() ${REQUIRES_ACTION}`);

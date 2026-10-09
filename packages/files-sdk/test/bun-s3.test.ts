@@ -272,7 +272,7 @@ describe("bun-s3 adapter", () => {
       return list(input);
     };
     const files = new Files({ adapter: bunS3({ client }) });
-    expect(files.capabilities.delimiter).toBe(true);
+    expect(files.capabilities.delimiter).toBe("any");
     await files.upload("top.txt", "t");
     await files.upload("a/1.txt", "1");
     await files.upload("a/deep/2.txt", "2");
@@ -310,6 +310,33 @@ describe("bun-s3 adapter", () => {
     expect(signed).toContain("content-disposition=attachment");
   });
 
+  test("declares range + delimiter, no metadata/cacheControl/progress, and a client-side copy", () => {
+    const files = new Files({
+      adapter: bunS3({ client: new FakeBunS3Client() }),
+    });
+    expect(files.capabilities).toMatchObject({
+      cacheControl: false,
+      delimiter: "any",
+      metadata: false,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: false,
+      uploadProgress: false,
+    });
+  });
+
+  test("signedUpload is a SigV4-capped presigned PUT that enforces neither maxSize nor contentType", () => {
+    const files = new Files({
+      adapter: bunS3({ client: new FakeBunS3Client() }),
+    });
+    expect(files.capabilities.signedUpload).toEqual({
+      contentType: false,
+      maxExpiresIn: 604_800,
+      maxSize: false,
+      supported: true,
+    });
+  });
+
   test("signedUploadUrl returns PUT URLs and rejects maxSize", async () => {
     const adapter = bunS3({ client: new FakeBunS3Client() });
 
@@ -337,7 +364,8 @@ describe("bun-s3 adapter", () => {
     };
     const adapter = bunS3({ client });
     const eightDays = 8 * 24 * 60 * 60;
-    expect(adapter.signedUrl).toEqual({
+    expect(new Files({ adapter }).capabilities.signedUrl).toEqual({
+      expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
     });
@@ -406,8 +434,8 @@ describe("bun-s3 adapter", () => {
   });
 
   test("unsupported upload options throw instead of being ignored", async () => {
-    // Gated centrally by the Files wrapper: the adapter advertises neither
-    // supportsMetadata nor supportsCacheControl.
+    // Gated centrally by the Files wrapper: the adapter declares neither
+    // `capabilities.metadata` nor `capabilities.cacheControl`.
     const files = new Files({
       adapter: bunS3({ client: new FakeBunS3Client() }),
     });

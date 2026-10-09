@@ -185,7 +185,7 @@ export interface UploadOptions extends OperationOptions {
    * **Throws** a {@link FilesError} on adapters with no cache-control field
    * (FTP, SFTP, WebDAV, Dropbox, Box, OneDrive, SharePoint, Cloudinary,
    * Appwrite, PocketBase, Bunny Storage, Convex, UploadThing, Bun's S3) rather
-   * than silently dropping it — check {@link Adapter.supportsCacheControl} to
+   * than silently dropping it — check {@link AdapterCapabilities.cacheControl} to
    * branch at runtime.
    */
   cacheControl?: string;
@@ -199,7 +199,7 @@ export interface UploadOptions extends OperationOptions {
    * S3) rather than silently dropping it, mirroring the
    * {@link DownloadOptions.range} gate.
    * An empty object is treated as "no metadata" and never throws. Check
-   * {@link Adapter.supportsMetadata} to branch at runtime.
+   * {@link AdapterCapabilities.metadata} to branch at runtime.
    */
   metadata?: Record<string, string>;
   /**
@@ -253,7 +253,7 @@ export interface UploadOptions extends OperationOptions {
    * Drive, OneDrive, SharePoint, Dropbox, Box, Vercel Blob, Supabase,
    * Appwrite, Cloudinary, FTP, SFTP, `fs`, and the in-memory adapter; others
    * (including the `fetch` S3 client) throw. Check
-   * {@link AdapterCapabilities.multipart} to branch at runtime. Not available
+   * {@link AdapterCapabilities.resumable} to branch at runtime. Not available
    * in the array (bulk) form of `upload`.
    */
   control?: UploadControl;
@@ -329,7 +329,7 @@ export interface DownloadOptions extends OperationOptions {
    * (Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, Vercel Blob in
    * private mode) rather than silently downloading the whole object and
    * slicing it — so the bandwidth saving is never quietly lost. Check
-   * {@link Adapter.supportsRange} to branch at runtime.
+   * {@link AdapterCapabilities.rangeRead} to branch at runtime.
    */
   range?: ByteRange;
 }
@@ -401,7 +401,7 @@ export interface ListOptions extends OperationOptions {
    * **Throws** a {@link FilesError} on adapters with no folder concept
    * (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) rather than
    * silently returning a flat list. Check
-   * {@link Adapter.supportsDelimiter} to branch at runtime. Must be a
+   * {@link AdapterCapabilities.delimiter} to branch at runtime. Must be a
    * non-empty string.
    */
   delimiter?: string;
@@ -703,6 +703,18 @@ export interface SignedUrlCapability {
    */
   supported: boolean;
   /**
+   * What {@link UrlOptions.expiresIn} does on this instance:
+   *
+   * - `"exact"` — the URL expires after exactly `expiresIn` seconds (SigV4,
+   *   SAS, GCS V4, Vercel Signed URLs).
+   * - `"provider"` — the URL is tokenized and does expire, but the provider
+   *   sets the lifetime; `expiresIn` is advisory (Box, PocketBase, Dropbox's
+   *   4-hour temporary links).
+   * - `"none"` — `url()` returns a permanent link (or throws), so `expiresIn`
+   *   can't be honored.
+   */
+  expiry: SignedUrlExpiry;
+  /**
    * Hard upper bound on `expiresIn`, in seconds, when the adapter enforces one
    * in code: a longer `expiresIn` throws rather than being clamped (e.g. SigV4
    * presigned URLs on the S3 family and an Azure user-delegation SAS are capped
@@ -711,6 +723,40 @@ export interface SignedUrlCapability {
    */
   maxExpiresIn?: number;
 }
+
+/** See {@link SignedUrlCapability.expiry}. */
+export type SignedUrlExpiry = "exact" | "provider" | "none";
+
+/** How an adapter's {@link Adapter.signedUploadUrl} hands out direct uploads. */
+export interface SignedUploadCapability {
+  /**
+   * `true` when `signedUploadUrl()` returns a presigned target a client can
+   * upload to directly, without going through this process. `false` when it
+   * always throws on this instance (no signing primitive, or a body-transforming
+   * plugin that a direct upload would bypass) — upload through the instance
+   * instead, as the `files-sdk/api` gateway's proxy path does.
+   */
+  supported: boolean;
+  /**
+   * `true` when a {@link SignUploadOptions.maxSize} is enforced server-side
+   * (e.g. an S3 POST policy's `content-length-range`). When `false`, passing
+   * `maxSize` throws rather than minting an unbounded URL.
+   */
+  maxSize: boolean;
+  /**
+   * `true` when a {@link SignUploadOptions.contentType} is bound into the
+   * signature or policy. When `false`, passing `contentType` throws.
+   */
+  contentType: boolean;
+  /** Hard upper bound on `expiresIn`, in seconds, when enforced in code. */
+  maxExpiresIn?: number;
+}
+
+/**
+ * Which {@link ListOptions.delimiter} values `list()` accepts: any non-empty
+ * string, only `"/"` (folder-based providers), or none at all.
+ */
+export type DelimiterSupport = "any" | "slash" | false;
 
 /** A provider-native conditional copy and the destination predicates it honors. */
 export interface AdapterConditionalCopy {
@@ -779,98 +825,105 @@ export interface ConditionalAdapterCapabilities {
  * (e.g. skip `range` planning when `rangeRead` is `false`, or fall back to
  * `download()` when `signedUrl.supported` is `false`).
  *
- * Every flag mirrors an operation the unified API actually exposes. The first
- * six are derived from the same per-adapter flags / optional methods the
- * {@link Files} wrapper already gates on, so they can never drift from the
- * runtime behavior. `serverSideCopy` and `signedUrl` are declared per-adapter
- * (no operation-level flag carries them) and default to the conservative value
- * when an adapter does not advertise them.
+ * Every field mirrors an operation the unified API actually exposes. Most come
+ * straight from the adapter's {@link Adapter.capabilities} declaration (with
+ * the conservative value for anything it leaves out); `resumable` and
+ * `conditional` are derived from the methods that implement them. The
+ * {@link Files} wrapper gates on this same snapshot, so it can't drift from
+ * runtime behavior.
  */
 export interface AdapterCapabilities {
-  /** `download({ range })` returns only the requested bytes. From {@link Adapter.supportsRange}. */
-  rangeRead: boolean;
-  /** `upload({ onProgress })` reports byte-level progress natively. From {@link Adapter.reportsUploadProgress}. */
-  uploadProgress: boolean;
-  /** `list({ delimiter })` returns common prefixes. From {@link Adapter.supportsDelimiter}. */
-  delimiter: boolean;
-  /** `upload({ metadata })` persists arbitrary user metadata. From {@link Adapter.supportsMetadata}. */
-  metadata: boolean;
-  /** `upload({ cacheControl })` stores a Cache-Control header. From {@link Adapter.supportsCacheControl}. */
+  /** `upload({ cacheControl })` stores a Cache-Control header. */
   cacheControl: boolean;
-  /** `upload({ control })` resumable / multipart uploads. From {@link Adapter.resumableUpload}. */
-  multipart: boolean;
-  /** `copy()` runs server-side with no body re-transfer. From {@link Adapter.supportsServerSideCopy}. */
-  serverSideCopy: boolean;
-  /** How `url()` produces a download URL. From {@link Adapter.signedUrl}. */
-  signedUrl: SignedUrlCapability;
-  /** Native compare-and-set primitives. Unsupported operations fail closed. */
+  /** Native compare-and-set primitives. Derived from {@link Adapter.conditional}. */
   conditional: ConditionalAdapterCapabilities;
+  /** Which `list({ delimiter })` values return common prefixes. */
+  delimiter: DelimiterSupport;
+  /** `upload({ metadata })` persists arbitrary user metadata. */
+  metadata: boolean;
+  /** `download({ range })` returns only the requested bytes. */
+  rangeRead: boolean;
+  /** `upload({ control })` pause-able / resumable uploads. Derived from {@link Adapter.resumableUpload}. */
+  resumable: boolean;
+  /** `copy()` runs server-side with no body re-transfer. Advisory; gates nothing. */
+  serverSideCopy: boolean;
+  /** How `signedUploadUrl()` hands out direct uploads. */
+  signedUpload: SignedUploadCapability;
+  /** How `url()` produces a download URL. */
+  signedUrl: SignedUrlCapability;
+  /** `upload({ onProgress })` reports byte-level progress from the adapter itself. */
+  uploadProgress: boolean;
+}
+
+/**
+ * What an adapter declares about itself as {@link Adapter.capabilities}. Every
+ * field is optional and defaults to the conservative value — `false`, or
+ * "unsupported" — so an adapter that says nothing never advertises a wrong
+ * `true`. Declare it per instance: when a constructor option changes what the
+ * adapter can do (a `publicBaseUrl`, an access mode, a client engine), the
+ * declaration should reflect that instance's configuration.
+ */
+export interface AdapterCapabilityDeclaration {
+  /**
+   * `upload` stores {@link UploadOptions.cacheControl} on the object. Without
+   * it, passing `cacheControl` throws before any provider call.
+   */
+  cacheControl?: boolean;
+  /**
+   * `list` honors {@link ListOptions.delimiter} by returning common prefixes in
+   * {@link ListResult.prefixes}: `"any"` for any non-empty string, `"slash"`
+   * for `"/"` only. Without it, passing a delimiter throws before any provider
+   * call, rather than silently returning a flat list.
+   */
+  delimiter?: DelimiterSupport;
+  /**
+   * `upload` persists {@link UploadOptions.metadata}. Without it, a non-empty
+   * `metadata` throws before any provider call rather than being dropped.
+   */
+  metadata?: boolean;
+  /**
+   * `download` honors {@link DownloadOptions.range} with a real byte-range
+   * request. Without it, a `range` throws before any provider call rather than
+   * downloading the whole object.
+   */
+  rangeRead?: boolean;
+  /**
+   * `copy` runs server-side, never re-transferring the body through this
+   * process (S3 `CopyObject`, Azure `syncCopyFromURL`, a filesystem rename).
+   * Advisory: it doesn't gate `copy()`, which works on every adapter.
+   */
+  serverSideCopy?: boolean;
+  /**
+   * What `signedUploadUrl` can do. Defaults to unsupported; `maxSize` and
+   * `contentType` default to `false` when omitted.
+   */
+  signedUpload?: Partial<SignedUploadCapability> & { supported: boolean };
+  /**
+   * What `url` produces. Defaults to `{ supported: false, expiry: "none" }`;
+   * when `supported` is `true` and `expiry` is omitted it defaults to
+   * `"exact"`.
+   */
+  signedUrl?: Partial<SignedUrlCapability> & { supported: boolean };
+  /**
+   * `upload` reports byte-level progress by calling `opts.onProgress` itself
+   * (a provider's native progress hook), so the wrapper defers to it. Without
+   * it, the wrapper reports progress generically: byte-level for
+   * `ReadableStream` bodies, start/finish for buffered ones.
+   */
+  uploadProgress?: boolean;
 }
 
 export interface Adapter<Raw = unknown> {
   readonly name: string;
   readonly raw: Raw;
   /**
-   * Set `true` when `upload` reports byte-level progress by calling
-   * `opts.onProgress` itself (e.g. via a provider's native upload-progress
-   * hook). The {@link Files} wrapper then defers progress entirely to the
-   * adapter. When unset, the wrapper handles `onProgress` generically:
-   * byte-level for `ReadableStream` bodies, start/finish for buffered ones.
+   * What this adapter instance can do — see {@link AdapterCapabilityDeclaration}.
+   * Surfaced (with `resumable` and `conditional` derived from the methods
+   * below) through {@link Files.capabilities}, and gated on by the
+   * {@link Files} wrapper before any provider call. Omit it and every
+   * capability reads as unsupported.
    */
-  readonly reportsUploadProgress?: boolean;
-  /**
-   * Set `true` when `download` honors {@link DownloadOptions.range} by issuing
-   * a real byte-range request to the provider. The {@link Files} wrapper gates
-   * on this: a `range` passed to an adapter without it throws before any
-   * provider call, rather than silently downloading the whole object. Leave
-   * unset for adapters whose provider has no range primitive.
-   */
-  readonly supportsRange?: boolean;
-  /**
-   * Set `true` when `list` honors {@link ListOptions.delimiter} by returning
-   * S3-style common prefixes in {@link ListResult.prefixes}. The {@link Files}
-   * wrapper gates on this: a `delimiter` passed to an adapter without it throws
-   * before any provider call, rather than silently returning a flat list.
-   * Leave unset for adapters whose provider has no folder/prefix concept.
-   */
-  readonly supportsDelimiter?: boolean;
-  /**
-   * Set `true` when `upload` persists {@link UploadOptions.metadata} (arbitrary
-   * user metadata) on the stored object. The {@link Files} wrapper gates on
-   * this exactly like {@link Adapter.supportsRange}: a non-empty `metadata`
-   * passed to an adapter without it throws before any provider call, rather
-   * than silently dropping it. Leave unset for adapters whose provider has no
-   * arbitrary-metadata field.
-   */
-  readonly supportsMetadata?: boolean;
-  /**
-   * Set `true` when `upload` honors {@link UploadOptions.cacheControl} by
-   * storing it on the object. The {@link Files} wrapper gates on this exactly
-   * like {@link Adapter.supportsRange}: a `cacheControl` passed to an adapter
-   * without it throws before any provider call, rather than silently dropping
-   * it. Leave unset for adapters whose provider has no cache-control field.
-   */
-  readonly supportsCacheControl?: boolean;
-  /**
-   * Set `true` when `copy` runs server-side — a provider copy API call that
-   * never re-transfers the body through this process (S3 `CopyObject`, Azure
-   * `syncCopyFromURL`, a native filesystem rename, …). Leave unset for adapters
-   * whose only copy path streams or buffers the bytes client-side
-   * (download-then-reupload). Purely advisory — surfaced via
-   * {@link Files.capabilities} as {@link AdapterCapabilities.serverSideCopy} so
-   * callers can reason about the cost of a large `copy()`; it does not gate the
-   * operation (every adapter's `copy` works regardless).
-   */
-  readonly supportsServerSideCopy?: boolean;
-  /**
-   * Describes how `url` produces a download URL, surfaced via
-   * {@link Files.capabilities} as {@link AdapterCapabilities.signedUrl}. Leave
-   * unset for adapters that cannot mint a usable URL — it defaults to
-   * `{ supported: false }`, the conservative value, so an adapter that doesn't
-   * advertise still reads as "no signed URL" rather than a wrong `true`.
-   * Advisory only; it does not gate `url()`.
-   */
-  readonly signedUrl?: SignedUrlCapability;
+  readonly capabilities?: AdapterCapabilityDeclaration;
   /**
    * Native conditional primitives. Omitting an operation means it cannot be
    * implemented atomically and the public call fails before provider I/O.
@@ -883,7 +936,7 @@ export interface Adapter<Raw = unknown> {
   ) => Promise<UploadResult>;
   /**
    * Download an object's body and metadata. When {@link DownloadOptions.range}
-   * is set, adapters that advertise {@link Adapter.supportsRange} must return
+   * is set, adapters that declare {@link AdapterCapabilityDeclaration.rangeRead} must return
    * only the requested bytes, with `size` set to the range length.
    */
   download: (key: string, opts?: AdapterDownloadOptions) => Promise<StoredFile>;
@@ -960,7 +1013,7 @@ export interface Adapter<Raw = unknown> {
    * multipart-with-listable-parts primitive implement it. When omitted, an
    * `upload()` call that passes {@link UploadOptions.control} throws an
    * unsupported-operation error before any provider call (mirroring the
-   * {@link Adapter.supportsRange} gate). The returned driver is synchronous to
+   * `rangeRead` gate). The returned driver is synchronous to
    * construct; it establishes the provider session lazily in `begin()`.
    */
   resumableUpload?: (
@@ -1318,10 +1371,15 @@ export interface FilesPlugin<
    * through every earlier plugin's hook in `plugins` order — and returns the
    * snapshot to advertise. A body-transforming plugin uses it to turn off what
    * it can't honor end to end: `signedUrl.supported` (a presigned URL would
-   * serve the stored, transformed bytes) and `rangeRead` (a byte range of the
+   * serve the stored, transformed bytes), `signedUpload.supported` (a direct
+   * upload would skip the transform), and `rangeRead` (a byte range of the
    * stored bytes isn't a range of the caller's), so gateways and callers that
    * branch on capabilities pick the path that works instead of hitting a
    * fail-closed throw.
+   *
+   * The core also gates on the narrowed snapshot: an option a plugin turns
+   * off (`range`, `metadata`, `cacheControl`, `control`, `delimiter`) is
+   * refused before any plugin's `wrap` runs, with an error naming the plugin.
    *
    * Return a new object rather than mutating the argument. Only narrow — the
    * hook changes what is advertised, not what the adapter can do, so widening
@@ -1682,6 +1740,48 @@ const assertNoRelativeSegments = (key: string, label = "key"): void => {
 // which is never what callers want), and no trailing slash so we control the
 // single separator when joining. `"/users/"`, `"users/"`, and `"users"` all
 // collapse to `"users"`.
+const normalizeDelimiterSupport = (
+  declared: DelimiterSupport | undefined
+): DelimiterSupport =>
+  declared === "any" || declared === "slash" ? declared : false;
+
+/** Whether `delimiter` is one a `list()` with this support level accepts. */
+const delimiterAllowed = (
+  support: DelimiterSupport,
+  delimiter: string
+): boolean => support === "any" || (support === "slash" && delimiter === "/");
+
+const normalizeSignedUrl = (
+  declared: AdapterCapabilityDeclaration["signedUrl"]
+): SignedUrlCapability => {
+  if (declared?.supported !== true) {
+    return { expiry: "none", supported: false };
+  }
+  return {
+    expiry: declared.expiry ?? "exact",
+    ...(declared.maxExpiresIn !== undefined && {
+      maxExpiresIn: declared.maxExpiresIn,
+    }),
+    supported: true,
+  };
+};
+
+const normalizeSignedUpload = (
+  declared: AdapterCapabilityDeclaration["signedUpload"]
+): SignedUploadCapability => {
+  if (declared?.supported !== true) {
+    return { contentType: false, maxSize: false, supported: false };
+  }
+  return {
+    contentType: declared.contentType === true,
+    maxSize: declared.maxSize === true,
+    ...(declared.maxExpiresIn !== undefined && {
+      maxExpiresIn: declared.maxExpiresIn,
+    }),
+    supported: true,
+  };
+};
+
 const normalizePrefix = (prefix: string | undefined): string => {
   if (prefix === undefined) {
     return "";
@@ -1902,6 +2002,17 @@ export class Files<A extends Adapter = Adapter> {
     // each layer must resolve to the result of the op it received (a plugin
     // returning another verb's result is a type error in its own `wrap`), so
     // the erased result is this op's `OperationResult<O>`.
+    if (this.#wraps.length > 0) {
+      // Refuse an unsupported option before any plugin runs, so a plugin
+      // can't do I/O (a version snapshot, a trash move) for a call the core
+      // is about to reject. The inner gates still catch options a plugin
+      // injects on the way in.
+      try {
+        this.#assertSupportedBeforePlugins(op);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
     if (!isConditionalOperation(op)) {
       if (this.#wraps.length === 0) {
         // SAFETY: see above.
@@ -2515,15 +2626,14 @@ export class Files<A extends Adapter = Adapter> {
    * `download()` when `signedUrl.supported` is `false`) instead of discovering
    * the limit by catching a throw at call time.
    *
-   * Derived live from the adapter on each read, so a plugin that swaps
-   * behaviors is always reflected. The derived flags read the exact per-adapter
-   * flags / optional methods the wrapper gates on, so they cannot drift from
-   * runtime behavior; `serverSideCopy` and `signedUrl` come from what the
-   * adapter declares, defaulting to the conservative value when it declares
-   * nothing. Each installed plugin's {@link FilesPlugin.capabilities} hook is
-   * then folded over that snapshot in `plugins` order, so a plugin that can't
-   * honor a capability end to end (e.g. a body transform and presigned URLs)
-   * narrows what is advertised.
+   * Built live on each read from the adapter's
+   * {@link Adapter.capabilities} declaration (conservative values for anything
+   * it leaves out), with `resumable` and `conditional` derived from the
+   * methods that implement them. Each installed plugin's
+   * {@link FilesPlugin.capabilities} hook is then folded over that snapshot in
+   * `plugins` order, so a plugin that can't honor a capability end to end (e.g.
+   * a body transform and presigned URLs) narrows what is advertised. The
+   * wrapper gates options on this same snapshot before any plugin runs.
    */
   get capabilities(): AdapterCapabilities {
     let caps = this.#adapterCapabilities();
@@ -2538,13 +2648,14 @@ export class Files<A extends Adapter = Adapter> {
   /** The adapter-derived half of {@link Files.capabilities}, before plugins. */
   #adapterCapabilities(): AdapterCapabilities {
     const a = this.#adapter;
+    const declared = this.#declared();
     const conditionalCopy = a.conditional?.copy;
     const nativeConditionalCopy =
       isFunction(conditionalCopy?.run) &&
       conditionalCopy.sourceEtag === true &&
       conditionalCopy.atomicSourceDestination === true;
     return {
-      cacheControl: a.supportsCacheControl === true,
+      cacheControl: declared.cacheControl === true,
       conditional: {
         copy: {
           atomicSourceDestination: nativeConditionalCopy,
@@ -2561,16 +2672,102 @@ export class Files<A extends Adapter = Adapter> {
         multipart: { create: false, replace: false },
         replace: isFunction(a.conditional?.replace),
       },
-      delimiter: a.supportsDelimiter === true,
-      metadata: a.supportsMetadata === true,
-      multipart: isFunction(a.resumableUpload),
-      rangeRead: a.supportsRange === true,
-      serverSideCopy: a.supportsServerSideCopy === true,
-      // A copy, so a plugin hook can't reach through the snapshot and
+      delimiter: normalizeDelimiterSupport(declared.delimiter),
+      metadata: declared.metadata === true,
+      rangeRead: declared.rangeRead === true,
+      resumable: isFunction(a.resumableUpload),
+      serverSideCopy: declared.serverSideCopy === true,
+      // Fresh objects, so a plugin hook can't reach through the snapshot and
       // rewrite the adapter's own declaration.
-      signedUrl: a.signedUrl ? { ...a.signedUrl } : { supported: false },
-      uploadProgress: a.reportsUploadProgress === true,
+      signedUpload: normalizeSignedUpload(declared.signedUpload),
+      signedUrl: normalizeSignedUrl(declared.signedUrl),
+      uploadProgress: declared.uploadProgress === true,
     };
+  }
+
+  /** The adapter's own declaration, or an empty one (everything unsupported). */
+  #declared(): AdapterCapabilityDeclaration {
+    return this.#adapter.capabilities ?? {};
+  }
+
+  /**
+   * Gate the caller's options against the plugin-narrowed capabilities, ahead
+   * of the onion (see {@link Files.#dispatch}). A capability the adapter
+   * lacks throws the adapter's usual message; one a plugin turns off names the
+   * plugin, since the adapter itself would have honored it.
+   */
+  #assertSupportedBeforePlugins(op: FilesOperation): void {
+    const opts = op.options;
+    if (op.kind === "upload") {
+      const uploadOpts: UploadOptions | undefined = opts;
+      if (uploadOpts?.metadata && Object.keys(uploadOpts.metadata).length > 0) {
+        this.#assertCapability(
+          (caps) => caps.metadata,
+          "`metadata` is not supported by"
+        );
+      }
+      if (uploadOpts?.cacheControl) {
+        this.#assertCapability(
+          (caps) => caps.cacheControl,
+          "`cacheControl` is not supported by"
+        );
+      }
+      if (uploadOpts?.control !== undefined) {
+        this.#assertCapability(
+          (caps) => caps.resumable,
+          "pause-able/resumable uploads are not supported by"
+        );
+      }
+      return;
+    }
+    if (op.kind === "download" && op.options?.range) {
+      this.#assertCapability(
+        (caps) => caps.rangeRead,
+        "range downloads are not supported by"
+      );
+      return;
+    }
+    if (op.kind === "list") {
+      const delimiter = op.options?.delimiter;
+      if (isString(delimiter) && delimiter !== "") {
+        this.#assertCapability(
+          (caps) => caps.delimiter !== false,
+          "directory-style listing (delimiter) is not supported by"
+        );
+        this.#assertCapability(
+          (caps) => delimiterAllowed(caps.delimiter, delimiter),
+          'only the "/" delimiter is supported by'
+        );
+      }
+    }
+  }
+
+  #assertCapability(
+    allows: (caps: AdapterCapabilities) => boolean,
+    unsupported: string
+  ): void {
+    let caps = this.#adapterCapabilities();
+    if (!allows(caps)) {
+      throw new FilesError(
+        "Provider",
+        `${this.#adapter.name}: ${unsupported} this adapter`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    for (const plugin of this.#plugins ?? []) {
+      if (plugin.capabilities) {
+        caps = plugin.capabilities(caps);
+        if (!allows(caps)) {
+          throw new FilesError(
+            "Provider",
+            `${unsupported} the "${plugin.name}" plugin`,
+            undefined,
+            { permanent: true }
+          );
+        }
+      }
+    }
   }
 
   readonly(): Files<A> {
@@ -2741,7 +2938,7 @@ export class Files<A extends Adapter = Adapter> {
    * Run a single upload, threading {@link UploadOptions.onProgress} through.
    *
    * When the adapter reports progress itself
-   * ({@link Adapter.reportsUploadProgress}) the callback is passed straight to
+   * ({@link AdapterCapabilityDeclaration.uploadProgress}) the callback is passed straight to
    * it. Otherwise the wrapper reports generically: a `ReadableStream` body is
    * wrapped so bytes are counted as the adapter drains it; a buffered body
    * brackets the call with a `0` and a final event.
@@ -2833,7 +3030,7 @@ export class Files<A extends Adapter = Adapter> {
       );
     }
 
-    if (this.#adapter.reportsUploadProgress) {
+    if (this.#declared().uploadProgress === true) {
       // The adapter reports progress itself, from inside its upload — so a
       // throwing reporter would reject the attempt, and `#run` would retry it
       // as a provider error, re-uploading the body. Hand it a guarded
@@ -3098,7 +3295,7 @@ export class Files<A extends Adapter = Adapter> {
         { permanent: true }
       );
     }
-    if (!this.#adapter.supportsRange) {
+    if (this.#declared().rangeRead !== true) {
       throw new FilesError(
         "Provider",
         `${this.#adapter.name}: range downloads are not supported by this adapter`,
@@ -3111,8 +3308,9 @@ export class Files<A extends Adapter = Adapter> {
   /**
    * Reject upload options the adapter can't honor, before any provider call —
    * the metadata/cacheControl analogue of {@link Files.#assertRangeSupported}.
-   * An adapter advertises support via {@link Adapter.supportsMetadata} /
-   * {@link Adapter.supportsCacheControl}; without it, passing the option throws
+   * An adapter advertises support via its declared
+   * {@link AdapterCapabilityDeclaration.metadata} /
+   * {@link AdapterCapabilityDeclaration.cacheControl}; without it, passing the option throws
    * rather than silently dropping the caller's metadata. An empty `metadata`
    * object is treated as "none" so callers can pass `{}` unconditionally. Runs
    * for both the single and bulk upload paths and ahead of the resumable
@@ -3122,7 +3320,7 @@ export class Files<A extends Adapter = Adapter> {
     if (
       opts?.metadata &&
       Object.keys(opts.metadata).length > 0 &&
-      !this.#adapter.supportsMetadata
+      this.#declared().metadata !== true
     ) {
       throw new FilesError(
         "Provider",
@@ -3131,7 +3329,7 @@ export class Files<A extends Adapter = Adapter> {
         { permanent: true }
       );
     }
-    if (opts?.cacheControl && !this.#adapter.supportsCacheControl) {
+    if (opts?.cacheControl && this.#declared().cacheControl !== true) {
       throw new FilesError(
         "Provider",
         `${this.#adapter.name}: \`cacheControl\` is not supported by this adapter`,
@@ -3913,10 +4111,19 @@ export class Files<A extends Adapter = Adapter> {
         { permanent: true }
       );
     }
-    if (!this.#adapter.supportsDelimiter) {
+    const support = normalizeDelimiterSupport(this.#declared().delimiter);
+    if (support === false) {
       throw new FilesError(
         "Provider",
         `${this.#adapter.name}: directory-style listing (delimiter) is not supported by this adapter`,
+        undefined,
+        { permanent: true }
+      );
+    }
+    if (!delimiterAllowed(support, opts.delimiter)) {
+      throw new FilesError(
+        "Provider",
+        `${this.#adapter.name}: only the "/" delimiter is supported by this adapter`,
         undefined,
         { permanent: true }
       );

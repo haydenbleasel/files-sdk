@@ -328,6 +328,32 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
 
   return {
     bucket: opts.bucket,
+    // No `cacheControl` / `metadata`: Bun.s3 exposes no API for either, so the
+    // Files wrapper rejects both before a call reaches this adapter.
+    capabilities: {
+      // Bun's list forwards `delimiter` and returns `commonPrefixes`.
+      delimiter: "any",
+      rangeRead: true,
+      // Bun's S3 client has no CopyObject helper — `copy()` streams
+      // source→dest through this process, so it's not a server-side copy.
+      serverSideCopy: false,
+      // A presigned PUT capped at SigV4's one-week lifetime. Bun signs only
+      // the `host` header and exposes no POST policy, so neither `contentType`
+      // nor `maxSize` can be enforced — `signedUploadUrl()` throws on both.
+      signedUpload: {
+        contentType: false,
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        maxSize: false,
+        supported: true,
+      },
+      // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`),
+      // capped at SigV4's one-week lifetime.
+      signedUrl: {
+        expiry: "exact",
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        supported: true,
+      },
+    },
     /**
      * Client-side stream copy: reads the source through this process and
      * writes it to the destination. Bun's `S3Client` does not expose a
@@ -579,15 +605,6 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         return Promise.reject(mapBunS3Error(error));
       }
     },
-    // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`), capped
-    // at SigV4's one-week lifetime.
-    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
-    // Bun's list forwards `delimiter` and returns `commonPrefixes`.
-    supportsDelimiter: true,
-    supportsRange: true,
-    // Bun's S3 client has no CopyObject helper — `copy()` streams source→dest
-    // through this process, so it's not a server-side copy.
-    supportsServerSideCopy: false,
     async upload(key, body, options) {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — Bun.s3 exposes no API for either.

@@ -430,6 +430,15 @@ export const pocketbase = (
   };
 
   return {
+    capabilities: {
+      rangeRead: true,
+      // No server-side copy — `copy()` downloads then re-uploads to the dest key.
+      serverSideCopy: false,
+      // `url()` returns a file-token URL for protected collections (the token's
+      // TTL is server-controlled, so `expiresIn` is ignored — see provider-gaps).
+      // With `publicBaseUrl` it returns a permanent link instead, unsigned.
+      signedUrl: { expiry: "provider", supported: !publicBaseUrl },
+    },
     collection,
     async copy(from, to, operationOpts) {
       try {
@@ -555,12 +564,6 @@ export const pocketbase = (
         )
       );
     },
-    // `url()` returns a file-token URL for protected collections (the token's
-    // TTL is server-controlled, so `expiresIn` is ignored — see provider-gaps).
-    signedUrl: { supported: true },
-    supportsRange: true,
-    // No server-side copy — `copy()` downloads then re-uploads to the dest key.
-    supportsServerSideCopy: false,
     async upload(
       key: string,
       body: Body,

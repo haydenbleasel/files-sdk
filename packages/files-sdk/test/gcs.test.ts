@@ -665,8 +665,28 @@ describe("gcs adapter", () => {
     // outlives 7 days, so the cap is enforced in code on every signing call.
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     expect(files.capabilities.signedUrl).toEqual({
+      expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
+    });
+    expect(files.capabilities.signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: true,
+      supported: true,
+    });
+  });
+
+  test("capabilities declare the rest of the GCS surface", () => {
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    expect(files.capabilities).toMatchObject({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: true,
+      uploadProgress: true,
     });
   });
 

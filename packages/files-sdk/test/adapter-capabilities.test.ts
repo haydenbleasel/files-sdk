@@ -210,10 +210,16 @@ const snapshotOf = (adapter: Adapter) => {
     delimiter: caps.delimiter,
     metadata: caps.metadata,
     rangeRead: caps.rangeRead,
-    resumable: caps.multipart,
+    resumable: caps.resumable,
     serverSideCopy: caps.serverSideCopy,
+    signedUpload: caps.signedUpload.supported
+      ? { maxSize: caps.signedUpload.maxSize }
+      : null,
     signedUrl: caps.signedUrl.supported
-      ? { maxExpiresIn: caps.signedUrl.maxExpiresIn ?? null }
+      ? {
+          expiry: caps.signedUrl.expiry,
+          maxExpiresIn: caps.signedUrl.maxExpiresIn ?? null,
+        }
       : null,
     uploadProgress: caps.uploadProgress,
   };

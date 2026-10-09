@@ -10,28 +10,27 @@ import {
   verifyToken,
 } from "../src/internal/router-core/sign-token.js";
 import { memory } from "../src/memory/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const ENDPOINT = "https://app.test/api/files";
 const SECRET = "edge-secret";
 const NOW = 2_000_000_000;
 
 const signing = (maxExpiresIn?: number): Adapter =>
-  ({
-    ...fakeAdapter({ supportsRange: true }),
+  withCapabilities(fakeAdapter({ supportsRange: true }), {
     signedUrl: {
       supported: true,
       ...(maxExpiresIn !== undefined && { maxExpiresIn }),
     },
-  }) as unknown as Adapter;
+  });
 
-const throwingSign = (): Adapter =>
-  ({
-    ...fakeAdapter(),
-    signedUploadUrl: () =>
-      Promise.reject(new Error("cannot enforce size at the signature")),
-    signedUrl: { supported: true },
-  }) as unknown as Adapter;
+const throwingSign = (): Adapter => ({
+  ...withCapabilities(fakeAdapter(), {
+    signedUpload: { contentType: true, maxSize: true, supported: true },
+  }),
+  signedUploadUrl: () =>
+    Promise.reject(new Error("cannot enforce size at the signature")),
+});
 
 const mk = (
   opts: Partial<CreateFilesRouterOptions> & { adapter?: Adapter } = {}
@@ -179,6 +178,32 @@ describe("handler — expiry clamping", () => {
     // fakeAdapter.url echoes the (clamped) expiry; capability cap 30 wins.
     expect((await readJson<{ url: string }>(res)).url).toContain("expires=30");
   });
+
+  test("signedUploadUrl clamps to the upload cap, not the download one", async () => {
+    let expiresIn: number | undefined;
+    const base = withCapabilities(fakeAdapter(), {
+      signedUpload: { maxExpiresIn: 20, supported: true },
+      signedUrl: { maxExpiresIn: 500, supported: true },
+    });
+    const adapter: Adapter = {
+      ...base,
+      signedUploadUrl: (key, opts) => {
+        ({ expiresIn } = opts);
+        return base.signedUploadUrl(key, opts);
+      },
+    };
+    const router = mk({
+      adapter,
+      allowedOrigins: () => true,
+      authorize: () => ({ maxExpiresIn: 100 }),
+      operations: ["signedUploadUrl"],
+    });
+    const res = await router.handle(
+      post({ expiresIn: 999, key: "a", op: "signed-upload-url" })
+    );
+    expect(res.status).toBe(200);
+    expect(expiresIn).toBe(20);
+  });
 });
 
 describe("origin checks", () => {
@@ -250,6 +275,90 @@ describe("upload edges", () => {
       uploads: { target: { url: string } }[];
     };
     expect(first(uploads).target.url).toContain("op=proxy");
+  });
+
+  test("presign follows signedUpload: what it can't bind goes through the proxy", async () => {
+    let signs = 0;
+    const counting = (caps: Adapter["capabilities"]): Adapter => {
+      const base = withCapabilities(fakeAdapter(), caps ?? {});
+      return {
+        ...base,
+        signedUploadUrl: (key, opts) => {
+          signs += 1;
+          return base.signedUploadUrl(key, opts);
+        },
+      };
+    };
+    const targetFor = async (
+      adapter: Adapter,
+      file: { name: string; size: number; type: string },
+      maxUploadSize?: number
+    ): Promise<string> => {
+      const router = mk({
+        adapter,
+        allowedOrigins: () => true,
+        operations: ["upload"],
+        ...(maxUploadSize !== undefined && { maxUploadSize }),
+      });
+      const res = await router.handle(post({ files: [file], op: "presign" }));
+      const { uploads } = await readJson<{
+        uploads: { target: { url: string } }[];
+      }>(res);
+      return first(uploads).target.url;
+    };
+    const typed = { name: "a.txt", size: 3, type: "text/plain" };
+    const untyped = { name: "a.bin", size: 3, type: "" };
+
+    // A download signer alone doesn't presign uploads any more.
+    const downloadOnly = counting({ signedUrl: { supported: true } });
+    expect(await targetFor(downloadOnly, typed)).toContain("op=proxy");
+    expect(signs).toBe(0);
+
+    // Can't bind a content type: typed files proxy, untyped ones presign.
+    const noType = counting({ signedUpload: { supported: true } });
+    expect(await targetFor(noType, typed)).toContain("op=proxy");
+    expect(await targetFor(noType, untyped)).toContain("fake.local");
+    expect(signs).toBe(1);
+
+    // Can't enforce maxSize: proxied whenever the gateway has a size cap.
+    const noSize = counting({
+      signedUpload: { contentType: true, supported: true },
+    });
+    expect(await targetFor(noSize, typed, 1024)).toContain("op=proxy");
+    expect(await targetFor(noSize, typed)).toContain("fake.local");
+    expect(signs).toBe(2);
+  });
+
+  test("presign clamps expiry to signedUpload.maxExpiresIn", async () => {
+    let expiresIn: number | undefined;
+    const base = withCapabilities(fakeAdapter(), {
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: 30,
+        maxSize: true,
+        supported: true,
+      },
+    });
+    const adapter: Adapter = {
+      ...base,
+      signedUploadUrl: (key, opts) => {
+        ({ expiresIn } = opts);
+        return base.signedUploadUrl(key, opts);
+      },
+    };
+    const router = mk({
+      adapter,
+      allowedOrigins: () => true,
+      operations: ["upload"],
+    });
+    await router.handle(
+      post({
+        expiresIn: 600,
+        files: [{ name: "a.txt", size: 1, type: "text/plain" }],
+        op: "presign",
+      })
+    );
+    expect(expiresIn).toBe(30);
   });
 
   test("complete rejects a tampered token and a missing object", async () => {

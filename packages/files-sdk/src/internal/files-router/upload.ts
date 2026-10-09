@@ -175,12 +175,19 @@ export const handlePresign = async (
   ) {
     throw new RouterError("Validation", "upload exceeds maxUploadSize", "size");
   }
-  const caps = cfg.files.capabilities;
+  const { signedUpload } = cfg.files.capabilities;
   const expires = clampExpiry(
     requestedExpiresIn ?? cfg.defaultExpiresIn,
     scope.maxExpiresIn,
-    caps.signedUrl.maxExpiresIn
+    signedUpload.maxExpiresIn
   );
+  // Presign only when the adapter can bind everything this upload carries: a
+  // `maxUploadSize` it can't enforce, or a content type it can't sign, would
+  // be refused — so those go through the proxy, which enforces both itself.
+  const canPresign = (file: ClientFileInfo): boolean =>
+    signedUpload.supported &&
+    (cfg.maxUploadSize === undefined || signedUpload.maxSize) &&
+    (!file.type || signedUpload.contentType);
 
   const presignOne = async (file: ClientFileInfo): Promise<PresignedUpload> => {
     const key = mintKey(scope.prefix, file.name);
@@ -198,7 +205,7 @@ export const handlePresign = async (
     );
 
     let target: SignedUpload;
-    if (caps.signedUrl.supported) {
+    if (canPresign(file)) {
       try {
         target = await cfg.files.signedUploadUrl(key, {
           contentType: file.type || undefined,
@@ -208,6 +215,9 @@ export const handlePresign = async (
           ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
         });
       } catch {
+        // A refusal the capabilities didn't predict (a per-call limit such as
+        // a `minSize` the provider can't bind) still has a working path: the
+        // proxy, which enforces size and type itself.
         target = proxyTarget(cfg, id, file.type);
       }
     } else {

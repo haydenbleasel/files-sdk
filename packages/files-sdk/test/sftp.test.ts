@@ -459,6 +459,31 @@ describe("sftp adapter", () => {
     ).rejects.toThrow(/not supported/iu);
   });
 
+  test("declares its capabilities", () => {
+    for (const publicBaseUrl of [undefined, "https://cdn.example.com"]) {
+      const caps = newFiles(
+        publicBaseUrl === undefined ? undefined : { publicBaseUrl }
+      ).capabilities;
+      expect(caps.cacheControl).toBe(false);
+      expect(caps.delimiter).toBe("any");
+      expect(caps.metadata).toBe(false);
+      expect(caps.rangeRead).toBe(true);
+      expect(caps.resumable).toBe(true);
+      // copy() round-trips the bytes through the client.
+      expect(caps.serverSideCopy).toBe(false);
+      expect(caps.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: false,
+      });
+      // A `publicBaseUrl` front URL is permanent, not signed.
+      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      // ssh2-sftp-client's `put` has no progress hook, so the Files wrapper
+      // reports generically.
+      expect(caps.uploadProgress).toBe(false);
+    }
+  });
+
   test("missing connection config throws at construction", () => {
     expect(() => sftp({ host: "h" })).toThrow(/missing connection/iu);
   });

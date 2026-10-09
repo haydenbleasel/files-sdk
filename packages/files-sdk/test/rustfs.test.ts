@@ -45,7 +45,7 @@ describe("rustfs adapter", () => {
     expect(adapter.name).toBe("rustfs");
     // The lazy proxy advertises the s3 engine's capability flags, so range
     // downloads work on RustFS like every other s3-compatible adapter.
-    expect(adapter.supportsRange).toBe(true);
+    expect(new Files({ adapter }).capabilities.rangeRead).toBe(true);
     // The s3 adapter is loaded lazily, so `raw` is undefined until any
     // method has run; a presign needs no network and materializes it.
     await adapter.url("a.txt");
@@ -236,6 +236,16 @@ describe("rustfs adapter — fetch engine", () => {
     expect(adapter.name).toBe("rustfs-fetch");
     expect(adapter.raw).toBeInstanceOf(AwsClient);
     expect(adapter.resumableUpload).toBeUndefined();
+  });
+
+  test("inherits the fetch engine's declaration: no native progress, no maxSize", () => {
+    const { capabilities } = new Files({ adapter: makeFetch() });
+    expect(capabilities.uploadProgress).toBe(false);
+    expect(capabilities.signedUpload).toMatchObject({
+      contentType: true,
+      maxSize: false,
+      supported: true,
+    });
   });
 
   test("path-style addressing and the us-east-1 signing region by default", async () => {

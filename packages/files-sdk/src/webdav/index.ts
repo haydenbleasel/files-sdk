@@ -311,6 +311,16 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
   };
 
   const adapter: WebdavAdapter = {
+    capabilities: {
+      delimiter: "any",
+      rangeRead: true,
+      // COPY / MOVE run server-side.
+      serverSideCopy: true,
+      // A WebDAV GET requires auth and the protocol has no signing primitive —
+      // `url()` returns a `publicBaseUrl` front URL when configured, else
+      // throws.
+      signedUrl: { supported: false },
+    },
     async copy(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
@@ -566,13 +576,6 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
         )
       );
     },
-    // A WebDAV GET requires auth and the protocol has no signing primitive —
-    // `url()` returns a `publicBaseUrl` front URL when configured, else throws.
-    signedUrl: { supported: false },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // COPY / MOVE run server-side.
-    supportsServerSideCopy: true,
     async upload(key, body: Body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither). `contentType` is sent as the PUT

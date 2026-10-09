@@ -658,9 +658,20 @@ describe("dropbox adapter", () => {
   });
 
   test("dropbox only supports the / delimiter", async () => {
+    // `delimiter: "slash"` lets the Files wrapper refuse it up front…
     const files = new Files({ adapter: dropbox(baseOpts) });
     await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
       code: "Provider",
+      message: expect.stringMatching(/only the "\/" delimiter/u),
+    });
+    // …and the adapter still guards a direct call.
+    await expect(
+      dropbox(baseOpts).list({ delimiter: "|" })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(
+        /^dropbox: only supports the "\/" delimiter/u
+      ),
     });
   });
 
@@ -754,18 +765,37 @@ describe("dropbox adapter", () => {
   });
 
   test("signedUrl capability reflects the url() mode", () => {
+    // Temporary links live a fixed ~4h whatever `expiresIn` says, so the
+    // lifetime is provider-set; `expiresIn` above 4h still throws.
     expect(
       new Files({ adapter: dropbox(baseOpts) }).capabilities.signedUrl
-    ).toEqual({ maxExpiresIn: 14_400, supported: true });
+    ).toEqual({ expiry: "provider", maxExpiresIn: 14_400, supported: true });
     expect(
       new Files({ adapter: dropbox({ ...baseOpts, publicByDefault: true }) })
         .capabilities.signedUrl
-    ).toEqual({ supported: false });
+    ).toEqual({ expiry: "none", supported: false });
     expect(
       new Files({
         adapter: dropbox({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
       }).capabilities.signedUrl
-    ).toEqual({ supported: false });
+    ).toEqual({ expiry: "none", supported: false });
+  });
+
+  test("declares its capabilities", () => {
+    const caps = new Files({ adapter: dropbox(baseOpts) }).capabilities;
+    expect(caps.cacheControl).toBe(false);
+    expect(caps.delimiter).toBe("slash");
+    expect(caps.metadata).toBe(false);
+    expect(caps.rangeRead).toBe(true);
+    expect(caps.resumable).toBe(true);
+    expect(caps.serverSideCopy).toBe(true);
+    // signedUploadUrl() always throws: Dropbox's upload link is a raw-body POST.
+    expect(caps.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: false,
+    });
+    expect(caps.uploadProgress).toBe(false);
   });
 
   test("signedUploadUrl throws", async () => {

@@ -12,7 +12,7 @@ import {
 } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const compressed = (
   adapter: Adapter = fakeAdapter(),
@@ -221,10 +221,10 @@ describe("compression plugin — head and list bodies", () => {
 
 // A signing-capable adapter: without the plugin's capabilities hook, the
 // gateway would redirect downloads to a url() the plugin refuses.
-const signing = (): Adapter => ({
-  ...memory(),
-  signedUrl: { maxExpiresIn: 3600, supported: true },
-});
+const signing = (): Adapter =>
+  withCapabilities(memory(), {
+    signedUrl: { maxExpiresIn: 3600, supported: true },
+  });
 
 describe("compression plugin — resumable uploads", () => {
   test("a control upload is refused before any I/O", async () => {
@@ -236,7 +236,7 @@ describe("compression plugin — resumable uploads", () => {
       .catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: "Provider", permanent: true });
     expect((failure as Error).message).toMatch(
-      /compression: resumable uploads \(`control`\) are unsupported/u
+      /resumable uploads are not supported by the "compression" plugin/u
     );
     expect(control.status).toBe("idle");
     expect(await new Files({ adapter }).exists("a.txt")).toBe(false);
@@ -244,9 +244,9 @@ describe("compression plugin — resumable uploads", () => {
 
   test("advertises no resumable uploads; multipart without control still works", async () => {
     const adapter = memory();
-    expect(new Files({ adapter }).capabilities.multipart).toBe(true);
+    expect(new Files({ adapter }).capabilities.resumable).toBe(true);
     const files = compressed(adapter);
-    expect(files.capabilities.multipart).toBe(false);
+    expect(files.capabilities.resumable).toBe(false);
     await files.upload("a.txt", TEXT, { multipart: true });
     const file = await files.download("a.txt");
     expect(await file.text()).toBe(TEXT);
@@ -256,7 +256,10 @@ describe("compression plugin — resumable uploads", () => {
 describe("compression plugin — capabilities + gateway", () => {
   test("advertises no presigned URLs and no range reads", () => {
     const { capabilities } = compressed(signing());
-    expect(capabilities.signedUrl).toEqual({ supported: false });
+    expect(capabilities.signedUrl).toEqual({
+      expiry: "none",
+      supported: false,
+    });
     expect(capabilities.rangeRead).toBe(false);
     expect(capabilities.metadata).toBe(true);
   });
@@ -334,7 +337,9 @@ describe("compression plugin — refused operations", () => {
   });
 
   test("upload throws on an adapter without metadata support", async () => {
-    const adapter: Adapter = { ...fakeAdapter(), supportsMetadata: false };
+    const adapter: Adapter = withCapabilities(fakeAdapter(), {
+      metadata: false,
+    });
     const files = new Files({ adapter, plugins: [compression()] });
     await expect(files.upload("a.txt", TEXT)).rejects.toThrow(
       /`metadata` is not supported/u
@@ -363,12 +368,49 @@ describe("compression plugin — bulk + copy", () => {
   });
 });
 
+/** A `next` that fails the test if a plugin calls through. */
+const unreachable = (): Promise<never> => {
+  throw new Error("next must not run");
+};
+
+describe("compression plugin — backstop refusals", () => {
+  // The core refuses `range` and `control` before any plugin runs, because the
+  // plugin narrows those capabilities. The plugin still refuses them itself,
+  // for an outer plugin that injects one into the op it passes inward.
+  test("refuses an injected range or control without calling next", async () => {
+    const plugin = compression();
+    const wrap = plugin.wrap as NonNullable<typeof plugin.wrap>;
+    await expect(
+      wrap(
+        { key: "a.txt", kind: "download", options: { range: { start: 0 } } },
+        unreachable
+      )
+    ).rejects.toThrow(
+      /compression: range downloads are unsupported on compressed objects/u
+    );
+    await expect(
+      wrap(
+        {
+          body: "x",
+          key: "a.txt",
+          kind: "upload",
+          options: { control: new UploadControl() },
+        },
+        unreachable
+      )
+    ).rejects.toThrow(
+      /compression: resumable uploads \(`control`\) are unsupported/u
+    );
+  });
+});
+
 describe("compression plugin — refusals are permanent", () => {
   test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
     const secondary = fakeAdapter();
     await new Files({ adapter: secondary }).upload("a.txt", "replica");
     const files = new Files({
-      adapter: fakeAdapter(),
+      // Range-capable, so the range refusal is the plugin's, not the adapter's.
+      adapter: fakeAdapter({ supportsRange: true }),
       plugins: [failover({ secondaries: secondary }), compression()],
     });
     await files.upload("a.txt", TEXT);
@@ -382,7 +424,7 @@ describe("compression plugin — refusals are permanent", () => {
       const failure = await refused().catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(FilesError);
       expect((failure as FilesError).permanent).toBe(true);
-      expect((failure as FilesError).message).toMatch(/^compression: /u);
+      expect((failure as FilesError).message).toMatch(/compression/u);
     }
   });
 

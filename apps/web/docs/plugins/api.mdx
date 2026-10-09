@@ -22,7 +22,7 @@ capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
 
 Narrows what the instance reports through [`files.capabilities`](/docs/capabilities). The getter starts from the adapter's snapshot and folds every installed plugin's `capabilities` hook over it in `plugins` order, so each hook receives the snapshot as the earlier plugins left it. [`files.readonly()`](/docs/readonly) clones carry the plugins, so they report the same result.
 
-Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported` and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes) along with `multipart` (they refuse resumable uploads), and [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported` and every `conditional` flag as `false`. The plugins that veto [conditional operations](/docs/conditional-operations) clear exactly the flags they refuse: [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) every `conditional` flag, [`versioning()`](/docs/plugins/versioning) all but `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) `conditional.delete`.
+Use it to advertise what your plugin refuses, so callers and the [UI gateway](/docs/ui/server/gateway) (which picks redirect vs. proxy, and presign vs. proxy, from `capabilities`) choose a path that works instead of hitting a fail-closed throw. The bundled body-transforming plugins do this: [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) report `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` as `false` (a presigned URL or a byte range would serve the stored, transformed bytes, and a direct upload would skip the transform) along with `resumable` (they refuse resumable uploads), [`dedup()`](/docs/plugins/dedup) reports `signedUrl.supported`, `signedUpload.supported`, and every `conditional` flag as `false`, and [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) report `signedUpload.supported` as `false`. The plugins that veto [conditional operations](/docs/conditional-operations) clear exactly the flags they refuse: [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) every `conditional` flag, [`versioning()`](/docs/plugins/versioning) all but `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) `conditional.delete`.
 
 ```ts lineNumbers
 import { handlers, type FilesPlugin } from "files-sdk";
@@ -30,7 +30,10 @@ import { handlers, type FilesPlugin } from "files-sdk";
 const watermark: FilesPlugin = {
   name: "watermark",
   // A presigned URL would skip the watermark, so don't advertise one.
-  capabilities: (caps) => ({ ...caps, signedUrl: { supported: false } }),
+  capabilities: (caps) => ({
+    ...caps,
+    signedUrl: { expiry: "none", supported: false },
+  }),
   wrap: handlers({
     download: async (op, next) => addWatermark(await next(op)),
   }),
@@ -38,6 +41,8 @@ const watermark: FilesPlugin = {
 ```
 
 Return a new object rather than mutating the argument, and only narrow. The hook changes what is advertised, not what the adapter can do, so turning on a flag the core gates on doesn't make that option work.
+
+The core also gates on the narrowed snapshot. A `range`, `metadata`, `cacheControl`, `control`, or `delimiter` that a plugin turns off is refused before any plugin's `wrap` runs, with an error naming the plugin, so an outer plugin never does I/O for a call that's about to be rejected.
 
 ## FilesOperation
 

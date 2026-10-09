@@ -246,8 +246,8 @@ describe("convex adapter", () => {
 
     test("rejects unsupported metadata and cacheControl", async () => {
       const { actionCtx } = makeBackend();
-      // The Files wrapper gates centrally on supportsMetadata/supportsCacheControl,
-      // which this adapter leaves unset.
+      // The Files wrapper gates centrally on the `metadata` / `cacheControl`
+      // capabilities, which this adapter leaves undeclared.
       const files = new Files({ adapter: convex({ ctx: actionCtx }) });
       await expect(
         files.upload("k", "x", { metadata: { a: "b" } })
@@ -364,6 +364,25 @@ describe("convex adapter", () => {
       await expectDispositionRefusal(
         adapter.url(key, { responseContentDisposition: "attachment" })
       );
+    });
+  });
+
+  describe("capabilities", () => {
+    test("declares no signing and no server-side copy", () => {
+      const { actionCtx } = makeBackend();
+      const { capabilities } = new Files({
+        adapter: convex({ ctx: actionCtx }),
+      });
+      expect(capabilities).toMatchObject({
+        cacheControl: false,
+        delimiter: false,
+        metadata: false,
+        rangeRead: false,
+        serverSideCopy: false,
+        signedUpload: { contentType: false, maxSize: false, supported: false },
+        signedUrl: { expiry: "none", supported: false },
+        uploadProgress: false,
+      });
     });
   });
 

@@ -138,7 +138,7 @@ export const FileBrowser = ({
       let supported = true;
       try {
         const caps = await filesRef.current.capabilities();
-        supported = caps.delimiter;
+        supported = caps.delimiter !== false;
       } catch {
         // Keep the default above.
       }

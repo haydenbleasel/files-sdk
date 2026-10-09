@@ -468,6 +468,13 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
   };
 
   return {
+    // `signedUploadUrl()` is refused (a direct upload is never sniffed), so
+    // advertise that; the `files-sdk/api` gateway then proxies uploads through
+    // the instance instead of presigning.
+    capabilities: (caps) => ({
+      ...caps,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+    }),
     name: "content-type",
     wrap: handlers({
       signedUploadUrl: () => {

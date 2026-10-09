@@ -9,7 +9,7 @@ import type {
   PluginNext,
 } from "../src/index.js";
 import { FilesError } from "../src/internal/errors.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
 /**
@@ -222,7 +222,9 @@ describe("failover — the primary is the source of truth", () => {
     // The primary can't store metadata, so the core gate rejects before any
     // provider I/O. That's a permanent answer, not an outage: the upload must
     // fail loudly rather than silently land (with its metadata) on a replica.
-    const primary: Adapter = { ...fakeAdapter(), supportsMetadata: false };
+    const primary: Adapter = withCapabilities(fakeAdapter(), {
+      metadata: false,
+    });
     const secondary = fakeAdapter();
     const events: FailoverEvent[] = [];
     const files = new Files({

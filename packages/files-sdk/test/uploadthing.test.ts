@@ -569,16 +569,37 @@ describe("uploadthing adapter", () => {
     expect(generateSignedURLMock.mock.calls[0]?.[1]?.expiresIn).toBe(120);
   });
 
-  test("private reports the 7-day cap; public-read keeps upload presigning", () => {
+  test("private reports the 7-day cap; public-read reports no signed URL", () => {
     // Private mints generateSignedURL, which throws above 7 days. Public-read
-    // stays `supported` so the gateway keeps presigning direct uploads.
+    // returns the permanent CDN URL, so it isn't a signed URL.
     expect(
       new Files({ adapter: uploadthing() }).capabilities.signedUrl
-    ).toEqual({ supported: true });
+    ).toEqual({ expiry: "none", supported: false });
     expect(
       new Files({ adapter: uploadthing({ acl: "private" }) }).capabilities
         .signedUrl
-    ).toEqual({ maxExpiresIn: 604_800, supported: true });
+    ).toEqual({ expiry: "exact", maxExpiresIn: 604_800, supported: true });
+  });
+
+  test("both ACLs presign direct uploads, binding content type but not size", () => {
+    // The gateway presigns on `signedUpload`, so public-read (the default)
+    // still hands out ingest URLs even though its `signedUrl` is unsupported.
+    for (const acl of ["public-read", "private"] as const) {
+      const { capabilities } = new Files({ adapter: uploadthing({ acl }) });
+      expect(capabilities.signedUpload).toEqual({
+        contentType: true,
+        maxSize: false,
+        supported: true,
+      });
+      expect(capabilities).toMatchObject({
+        cacheControl: false,
+        delimiter: false,
+        metadata: false,
+        rangeRead: true,
+        serverSideCopy: false,
+        uploadProgress: false,
+      });
+    }
   });
 
   test("url maps a generateSignedURL failure through mapUploadThingError", async () => {

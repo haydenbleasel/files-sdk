@@ -5,7 +5,7 @@ import type { ContentTypeOptions } from "../src/content-type/index.js";
 import { failover } from "../src/failover/index.js";
 import { Files, FilesError } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const withContentType = (
   options: ContentTypeOptions = {},
@@ -372,6 +372,14 @@ describe("contentType plugin — pass-through verbs", () => {
     await expect(
       files.signedUploadUrl("a.png", { expiresIn: 60 })
     ).rejects.toThrow(/bypasses magic-byte sniffing/u);
+    // …and says so up front, so the gateway proxies uploads instead.
+    const signing = withCapabilities(fakeAdapter(), {
+      signedUpload: { supported: true },
+    });
+    expect(
+      new Files({ adapter: signing, plugins: [contentType()] }).capabilities
+        .signedUpload.supported
+    ).toBe(false);
   });
 
   test("download, copy, move, and url pass straight through", async () => {

@@ -573,8 +573,28 @@ describe("vercel-blob adapter", () => {
   });
 
   test("public adapter advertises range support; private does not", () => {
-    expect(vercelBlob().supportsRange).toBe(true);
-    expect(vercelBlob({ access: "private" }).supportsRange).toBeUndefined();
+    expect(new Files({ adapter: vercelBlob() }).capabilities.rangeRead).toBe(
+      true
+    );
+    expect(
+      new Files({ adapter: vercelBlob({ access: "private" }) }).capabilities
+        .rangeRead
+    ).toBe(false);
+  });
+
+  test("declares the access-independent capabilities", () => {
+    for (const access of ["public", "private"] as const) {
+      expect(
+        new Files({ adapter: vercelBlob({ access }) }).capabilities
+      ).toMatchObject({
+        cacheControl: true,
+        delimiter: "slash",
+        metadata: false,
+        resumable: true,
+        serverSideCopy: true,
+        uploadProgress: true,
+      });
+    }
   });
 
   test("url returns the blob's public URL via head() when token has no storeId", async () => {
@@ -686,12 +706,20 @@ describe("vercel-blob adapter", () => {
 
   test("public mode reports signedUrl unsupported; private mode supported", () => {
     expect(new Files({ adapter: vercelBlob() }).capabilities.signedUrl).toEqual(
-      { supported: false }
+      { expiry: "none", supported: false }
     );
     expect(
       new Files({ adapter: vercelBlob({ access: "private" }) }).capabilities
         .signedUrl
-    ).toEqual({ supported: true });
+    ).toEqual({ expiry: "exact", supported: true });
+  });
+
+  test("both modes report direct presigned uploads with CDN-enforced limits", () => {
+    for (const access of ["public", "private"] as const) {
+      expect(
+        new Files({ adapter: vercelBlob({ access }) }).capabilities.signedUpload
+      ).toEqual({ contentType: true, maxSize: true, supported: true });
+    }
   });
 
   describe("signedUploadUrl", () => {

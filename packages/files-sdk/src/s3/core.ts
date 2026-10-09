@@ -1188,6 +1188,35 @@ export const createS3Adapter = (
 
   return {
     bucket,
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` issues a CopyObject — server-side, no body round-trip.
+      serverSideCopy: true,
+      // A `maxSize` switches `signedUploadUrl()` to a presigned POST whose
+      // policy enforces `content-length-range` (and binds `Content-Type`); the
+      // presigned PUT signs `Content-Type` too and throws past SigV4's
+      // one-week ceiling.
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        maxSize: true,
+        supported: true,
+      },
+      // `url()` SigV4-signs a GetObject request. SigV4 caps a presigned URL's
+      // lifetime at 604800s (7 days) and the SDK's presigner enforces it in
+      // code for every endpoint, AWS or S3-compatible, so it's a hard ceiling.
+      signedUrl: {
+        expiry: "exact",
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        supported: true,
+      },
+      // `upload()` reports byte-level progress through lib-storage's `Upload`
+      // whenever `onProgress` is set.
+      uploadProgress: true,
+    },
     ...(conditional && { conditional }),
     async copy(from, to, operationOpts) {
       try {
@@ -1362,7 +1391,6 @@ export const createS3Adapter = (
     },
     name: "s3",
     raw: client,
-    reportsUploadProgress: true,
     resumableUpload(key, resumableOpts) {
       return createS3ResumableDriver(
         sdk.clientS3,
@@ -1426,16 +1454,6 @@ export const createS3Adapter = (
         throw wrapErr(error);
       }
     },
-    // `url()` SigV4-signs a GetObject request. SigV4 caps a presigned URL's
-    // lifetime at 604800s (7 days) and the SDK's presigner enforces it in code
-    // for every endpoint, AWS or S3-compatible, so it's a hard ceiling.
-    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` issues a CopyObject — server-side, no body round-trip.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const { multipart, onProgress, signal } = options ?? {};
       const normalized = await normalizeBody(body, options?.contentType);

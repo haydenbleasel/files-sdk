@@ -319,16 +319,19 @@ const authorizeOp = (
 ): Promise<Scope> =>
   runAuthorize(ctx.authorize, ctx.operations, { req: ctx.req, ...partial });
 
+// Clamp to the `authorize` scope and to the adapter's hard cap for this kind
+// of URL — `signedUrl` for downloads, `signedUpload` for direct uploads.
 const clampExpiry = (
   ctx: HandlerContext,
   requested: number,
-  scope: Scope
+  scope: Scope,
+  kind: "signedUpload" | "signedUrl"
 ): number => {
   let value = requested;
   if (scope.maxExpiresIn !== undefined) {
     value = Math.min(value, scope.maxExpiresIn);
   }
-  const capMax = ctx.files.capabilities.signedUrl.maxExpiresIn;
+  const capMax = ctx.files.capabilities[kind].maxExpiresIn;
   if (capMax !== undefined) {
     value = Math.min(value, capMax);
   }
@@ -566,7 +569,8 @@ const dispatchJson = async (
             expiresIn: clampExpiry(
               ctx,
               expiresIn ?? ctx.defaultExpiresIn,
-              scope
+              scope,
+              "signedUrl"
             ),
             signal,
           },
@@ -702,7 +706,7 @@ const dispatchJson = async (
       const signed = await ctx.files.signedUploadUrl(
         scopeKey(scope.prefix, key),
         {
-          expiresIn: clampExpiry(ctx, expiresIn, scope),
+          expiresIn: clampExpiry(ctx, expiresIn, scope, "signedUpload"),
           signal,
           ...(contentType && { contentType }),
           ...(maxSize !== undefined && { maxSize }),

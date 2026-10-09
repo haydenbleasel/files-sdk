@@ -498,6 +498,17 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
   };
 
   return {
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` is a local `fs.copyFile` — no body round-trip.
+      serverSideCopy: true,
+      // `url()` returns a `file://` or static-server URL — never a signed,
+      // time-limited one (there's no signature to bind an expiry into).
+      signedUrl: { supported: false },
+    },
     async copy(from, to) {
       const fromPath = resolveKeyPath(root, from);
       const toKeyPath = resolveKeyPath(root, to);
@@ -862,15 +873,6 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         )
       );
     },
-    // `url()` returns a `file://` or static-server URL — never a signed,
-    // time-limited one (there's no signature to bind an expiry into).
-    signedUrl: { supported: false },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` is a local `fs.copyFile` — no body round-trip.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const contentType = defaultContentType(body, options?.contentType);
       try {

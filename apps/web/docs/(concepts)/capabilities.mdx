@@ -28,12 +28,22 @@ return files.download(key);
 interface AdapterCapabilities {
   rangeRead: boolean;
   uploadProgress: boolean;
-  delimiter: boolean;
+  delimiter: "any" | "slash" | false;
   metadata: boolean;
   cacheControl: boolean;
-  multipart: boolean;
+  resumable: boolean;
   serverSideCopy: boolean;
-  signedUrl: { supported: boolean; maxExpiresIn?: number };
+  signedUrl: {
+    supported: boolean;
+    expiry: "exact" | "provider" | "none";
+    maxExpiresIn?: number;
+  };
+  signedUpload: {
+    supported: boolean;
+    maxSize: boolean;
+    contentType: boolean;
+    maxExpiresIn?: number;
+  };
   conditional: {
     create: boolean;
     replace: boolean;
@@ -54,12 +64,13 @@ interface AdapterCapabilities {
 | --- | --- | --- |
 | `rangeRead` | `download({ range })` returns only the requested bytes | `download` |
 | `uploadProgress` | `upload({ onProgress })` reports byte-level progress natively | `upload` |
-| `delimiter` | `list({ delimiter })` returns S3-style common prefixes | `list` |
+| `delimiter` | `list({ delimiter })` returns S3-style common prefixes, for any delimiter (`"any"`) or only `"/"` (`"slash"`) | `list` |
 | `metadata` | `upload({ metadata })` persists arbitrary user metadata | `upload` |
 | `cacheControl` | `upload({ cacheControl })` stores a `Cache-Control` header | `upload` |
-| `multipart` | the adapter exposes a resumable / multipart upload primitive | `upload({ control })` |
+| `resumable` | the adapter exposes a pause-able, resumable upload primitive | `upload({ control })` |
 | `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy` |
 | `signedUrl` | `url()` can mint a signed or tokenized URL — see below | `url` |
+| `signedUpload` | `signedUploadUrl()` hands out a direct upload target — see below | `signedUploadUrl` |
 | `conditional` | the requested create, replace, exact-read, delete, or copy predicate has a provider-native primitive | `upload`, `download`, `delete`, `copy` |
 
 Every field mirrors an operation the unified API actually has. There are deliberately no flags for `raw`-only territory such as object versioning, checksums, or POST policies — advertising a flag for a non-operation would turn the matrix into a back-door spec, where a wrong flag is worse than no flag.
@@ -73,17 +84,56 @@ There is no probe-then-mutate fallback. See [Conditional operations](/docs/condi
 ### `signedUrl`
 
 ```ts
-signedUrl: { supported: boolean; maxExpiresIn?: number }
+signedUrl: {
+  supported: boolean;
+  expiry: "exact" | "provider" | "none";
+  maxExpiresIn?: number;
+}
 ```
 
 `supported` is `true` when `url()` mints a signed or tokenized download URL that grants access without the caller's own credentials and is more than a permanent public link — an S3 SigV4 URL, an Azure SAS, a GCS signed URL, a Box or PocketBase access-token URL. It's `false` when the adapter has no signing primitive: it returns only a permanent public URL (Vercel Blob in public mode, Appwrite, Convex, and Box or Dropbox with `publicBaseUrl` / `publicByDefault`) or throws because it can't mint one at all (FTP/SFTP/WebDAV without `publicBaseUrl`, Netlify Blobs, OneDrive / Google Drive outside their public-link mode). The local filesystem returns an unsigned `file://` or static-server URL. When `false`, prefer `download()`.
 
-`maxExpiresIn` is set only when the adapter enforces a hard ceiling on `expiresIn` **in code**, throwing above it. Dropbox temporary links cap at 4 hours (14400s). The S3 family — `s3()` and its S3-compatible wrappers, R2 over HTTP or in hybrid mode, the `fetch` engine, and Bun's S3 — caps presigned URLs at SigV4's 604800 seconds (7 days). Google Cloud Storage and Firebase Storage declare the same 7-day V4 signing cap, and so does UploadThing with `acl: "private"`. Azure declares its 7-day cap only in user-delegation mode, since account-key SAS has no such limit. It stays unset where the limit isn't checked in code; those cases live in [Provider gaps](/docs/provider-gaps), not here. Whether a supported URL honors `expiresIn` exactly is also per-provider — some pin the lifetime server-side (Box, PocketBase) and ignore the request.
+`maxExpiresIn` is set only when the adapter enforces a hard ceiling on `expiresIn` **in code**, throwing above it. Dropbox temporary links cap at 4 hours (14400s). The S3 family — `s3()` and its S3-compatible wrappers, R2 over HTTP or in hybrid mode, the `fetch` engine, and Bun's S3 — caps presigned URLs at SigV4's 604800 seconds (7 days). Google Cloud Storage and Firebase Storage declare the same 7-day V4 signing cap, and so does UploadThing with `acl: "private"`. Azure declares its 7-day cap only in user-delegation mode, since account-key SAS has no such limit. It stays unset where the limit isn't checked in code; those cases live in [Provider gaps](/docs/provider-gaps), not here. `expiry` says what `expiresIn` does on this instance: `"exact"` when the URL expires after exactly that many seconds, `"provider"` when the URL is tokenized but the provider sets its lifetime (Box, PocketBase), and `"none"` when `url()` returns a permanent link (it's always `"none"` when `supported` is `false`).
+
+### `signedUpload`
+
+```ts
+signedUpload: {
+  supported: boolean;
+  maxSize: boolean;
+  contentType: boolean;
+  maxExpiresIn?: number;
+}
+```
+
+`supported` is `true` when `signedUploadUrl()` returns a presigned target a client can upload to directly. `maxSize` is `true` when a `maxSize` is enforced server-side (an S3 POST policy, a Vercel Blob size limit); when it's `false`, passing `maxSize` throws rather than minting an unbounded URL. `contentType` is `true` when a `contentType` is bound into the signature; when it's `false`, passing one throws. The [gateway](/docs/ui/server/gateway) reads this to decide between a direct upload and its proxy path: it presigns only when the adapter can bind the configured `maxUploadSize` and the file's content type, and proxies the upload through the instance otherwise.
 
 ## How it's derived
 
-`capabilities` is computed live from the adapter on every read, so a plugin that swaps behavior is always reflected. The first six fields read the exact per-adapter flags and optional methods the wrapper already gates on (`supportsRange`, `reportsUploadProgress`, `supportsDelimiter`, `supportsMetadata`, `supportsCacheControl`, and the presence of `resumableUpload`), so they can never drift from runtime behavior. Conditional support is derived from the adapter's optional native operation group and its explicit copy guarantees. `serverSideCopy`, `signedUrl`, and every absent conditional primitive default to the conservative value (`false`) — a caller that doesn't advertise reads as "no", never a wrong "yes".
+Each adapter declares what it can do as a single `capabilities` object, per instance — so a constructor option that changes what it can do (a `publicBaseUrl`, an access mode, the `fetch` client) is reflected. `files.capabilities` reads that declaration live on every call, filling in the conservative value (`false`, or unsupported) for anything the adapter leaves out, so an adapter that says nothing never reads as a wrong "yes". `resumable` and `conditional` are derived from the methods that implement them (`resumableUpload`, and the adapter's native conditional operation group with its explicit copy guarantees). The wrapper gates on this same snapshot, so it can't drift from runtime behavior.
 
-Capabilities also reflect the instance's installed [plugins](/docs/plugins). After reading the adapter, the getter folds each plugin's [`capabilities` hook](/docs/plugins/api#capabilities) over the snapshot in `plugins` order, and a plugin can only narrow it. [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) turn off `signedUrl`, `rangeRead`, and `multipart`, [`dedup()`](/docs/plugins/dedup) turns off `signedUrl` and every `conditional` flag, [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) turn off every `conditional` flag, [`versioning()`](/docs/plugins/versioning) turns off every `conditional` flag except `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) turns off `conditional.delete`, because the plugin can't honor those paths end to end. So the same adapter can report different capabilities on two instances with different plugins.
+Capabilities also reflect the instance's installed [plugins](/docs/plugins). After reading the adapter, the getter folds each plugin's [`capabilities` hook](/docs/plugins/api#capabilities) over the snapshot in `plugins` order, and a plugin can only narrow it. [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) turn off `signedUrl`, `signedUpload`, `rangeRead`, and `resumable`, [`dedup()`](/docs/plugins/dedup) turns off `signedUrl`, `signedUpload`, and every `conditional` flag, [`validation()`](/docs/plugins/validation) and [`contentType()`](/docs/plugins/content-type) turn off `signedUpload`, [`tiering()`](/docs/plugins/tiering) and [`failover()`](/docs/plugins/failover) turn off every `conditional` flag, [`versioning()`](/docs/plugins/versioning) turns off every `conditional` flag except `exactRead`, and [`softDelete()`](/docs/plugins/soft-delete) turns off `conditional.delete`, because the plugin can't honor those paths end to end. So the same adapter can report different capabilities on two instances with different plugins.
 
-If you're writing a custom adapter, set `supportsServerSideCopy` and `signedUrl` alongside the existing `supports*` flags to make your adapter introspectable; both are optional and advisory (they don't gate any operation).
+The wrapper gates options on the narrowed snapshot before any plugin runs. Pass a `range` to an instance whose adapter has no range primitive, or whose `encryption()` plugin turns ranges off, and the call throws before a plugin can do any I/O, with an error naming whichever one refused.
+
+## Declaring capabilities on a custom adapter
+
+A custom adapter declares its capabilities as one object. Every field is optional and defaults to unsupported:
+
+```ts
+const myAdapter: Adapter = {
+  name: "my-store",
+  raw: client,
+  capabilities: {
+    rangeRead: true,
+    delimiter: "slash",
+    metadata: true,
+    serverSideCopy: true,
+    signedUrl: { supported: true, maxExpiresIn: 86_400 }, // expiry defaults to "exact"
+    signedUpload: { supported: true, maxSize: true, contentType: true },
+  },
+  // upload, download, head, exists, delete, copy, list, url, signedUploadUrl…
+};
+```
+
+Declare what the instance can actually do with its configuration. A `rangeRead`, `metadata`, `cacheControl`, or `delimiter` you declare is let through to your adapter; one you leave out is refused before your adapter is called. `serverSideCopy`, `signedUrl`, and `signedUpload` are descriptive: they don't gate the call, but callers and the gateway plan around them, so a wrong `true` sends them down a path that fails.

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { Files, FilesError, sync } from "../src/index.js";
 import type { ListResult, StoredFile, SyncProgress } from "../src/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const newFiles = (): Files => new Files({ adapter: fakeAdapter() });
 
@@ -383,7 +383,7 @@ describe("sync", () => {
   test("drops metadata for a destination without metadata support", async () => {
     const source = newFiles();
     const dest = new Files({
-      adapter: { ...fakeAdapter(), supportsMetadata: false },
+      adapter: withCapabilities(fakeAdapter(), { metadata: false }),
     });
     await source.upload("a.txt", "alpha", {
       contentType: "text/plain",

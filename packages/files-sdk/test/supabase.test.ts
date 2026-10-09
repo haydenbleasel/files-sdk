@@ -916,6 +916,30 @@ describe("supabase adapter", () => {
     });
   });
 
+  describe("capabilities", () => {
+    test("declares signed URLs, signed uploads without bound limits, and slash folding", () => {
+      const { capabilities } = new Files({ adapter: makeAdapter() });
+      expect(capabilities).toMatchObject({
+        cacheControl: true,
+        delimiter: "slash",
+        metadata: true,
+        rangeRead: false,
+        resumable: true,
+        serverSideCopy: true,
+        uploadProgress: false,
+      });
+      expect(capabilities.signedUrl).toEqual({
+        expiry: "exact",
+        supported: true,
+      });
+      expect(capabilities.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: true,
+      });
+    });
+  });
+
   describe("signedUploadUrl", () => {
     test("returns PUT URL with x-upsert header", async () => {
       const adapter = makeAdapter();

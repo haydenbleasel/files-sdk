@@ -1,6 +1,7 @@
 import { createStoredFile } from "../src/index.js";
 import type {
   Adapter,
+  AdapterCapabilityDeclaration,
   Body,
   DeleteManyOptions,
   DeleteManyResult,
@@ -94,6 +95,19 @@ const toStored = (key: string, entry: Entry): StoredFile =>
     { data: entry.bytes, kind: "buffer" }
   );
 
+/**
+ * A copy of `adapter` with some capability declarations overridden — the
+ * test-side way to flip one capability (`metadata: false`, a signing
+ * `signedUrl`) on an otherwise real adapter.
+ */
+export const withCapabilities = <A extends Adapter>(
+  adapter: A,
+  overrides: AdapterCapabilityDeclaration
+): A => ({
+  ...adapter,
+  capabilities: { ...adapter.capabilities, ...overrides },
+});
+
 export const fakeAdapter = (config?: {
   supportsRange?: boolean;
   supportsDelimiter?: boolean;
@@ -106,6 +120,14 @@ export const fakeAdapter = (config?: {
   };
 
   return {
+    // The fake store round-trips metadata and cache-control, so it advertises
+    // both and the Files wrapper's central gate lets them through.
+    capabilities: {
+      cacheControl: true,
+      metadata: true,
+      ...(config?.supportsDelimiter && { delimiter: "any" as const }),
+      ...(config?.supportsRange && { rangeRead: true }),
+    },
     copy(from: string, to: string): Promise<void> {
       const entry = store.get(from);
       if (!entry) {
@@ -223,12 +245,6 @@ export const fakeAdapter = (config?: {
     },
     name: "fake",
     raw: store,
-    // The fake store round-trips both, so it advertises support and the Files
-    // wrapper's central gate lets them through.
-    supportsCacheControl: true,
-    supportsMetadata: true,
-    ...(config?.supportsDelimiter && { supportsDelimiter: true }),
-    ...(config?.supportsRange && { supportsRange: true }),
     signedUploadUrl(
       key: string,
       _opts: SignUploadOptions

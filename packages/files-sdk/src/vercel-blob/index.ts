@@ -600,6 +600,32 @@ export const vercelBlob = (
   };
 
   return {
+    capabilities: {
+      // Vercel Blob maps `cacheControl` to its `cacheControlMaxAge` (a value
+      // with no `max-age` directive throws); there is no arbitrary
+      // user-metadata primitive, so `metadata` stays unset and a non-empty
+      // `metadata` hits the gate's loud throw.
+      cacheControl: true,
+      // `list()` folds on "/" only (`mode: "folded"`); other delimiters throw.
+      delimiter: "slash",
+      // Range rides on the standard-HTTP fetch of the public blob URL. Private
+      // blobs read through `blob.get`, which has no range primitive, so they
+      // fall through to the gate's loud throw.
+      rangeRead: access !== "private",
+      // `copy()` is a server-side `blob.copy` — no body round-trip.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a presigned PUT in both access modes; the CDN
+      // enforces `allowedContentTypes` and `maximumSizeInBytes`, so
+      // `contentType` and `maxSize` are real constraints. Vercel's 7-day
+      // ceiling is enforced by the control API, not here, so no `maxExpiresIn`.
+      signedUpload: { contentType: true, maxSize: true, supported: true },
+      // Public blobs return their permanent CDN URL from `url()`, which is no
+      // more than a public link and ignores `expiresIn`. Private blobs mint a
+      // presigned GET that honors it. Vercel's 7-day ceiling is enforced by
+      // the control API, not here, so no `maxExpiresIn`.
+      signedUrl: { expiry: "exact", supported: access === "private" },
+      uploadProgress: true,
+    },
     async copy(from, to, operationOpts) {
       try {
         await blob.copy(from, to, {
@@ -752,7 +778,6 @@ export const vercelBlob = (
     },
     name: PROVIDER,
     raw: blob,
-    reportsUploadProgress: true,
     resumableUpload(key, resumableOpts): PartsResumableDriver {
       // Vercel Blob has no list-parts or abort primitive, so the session token
       // carries the parts completed so far; the driver appends to it as each
@@ -896,16 +921,6 @@ export const vercelBlob = (
         },
       };
     },
-    // Vercel Blob maps `cacheControl` to its `cacheControlMaxAge` (a value
-    // with no `max-age` directive throws); there is no arbitrary
-    // user-metadata primitive, so `supportsMetadata` stays unset and a
-    // non-empty `metadata` hits the gate's loud throw.
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    // Range rides on the standard-HTTP fetch of the public blob URL. Private
-    // blobs read through `blob.get`, which has no range primitive, so they
-    // fall through to the gate's loud throw.
-    ...(access !== "private" && { supportsRange: true }),
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       // A presigned PUT enforces `allowedContentTypes` and
       // `maximumSizeInBytes` at the CDN, so `contentType` and `maxSize` are
@@ -955,13 +970,6 @@ export const vercelBlob = (
         throw mapBlobError(error);
       }
     },
-    // Public blobs return their permanent CDN URL from `url()`, which is no
-    // more than a public link and ignores `expiresIn`. Private blobs mint a
-    // presigned GET that honors it. Vercel's 7-day ceiling is enforced by
-    // the control API, not here, so no `maxExpiresIn`.
-    signedUrl: { supported: access === "private" },
-    // `copy()` is a server-side `blob.copy` — no body round-trip.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       try {
         // SAFETY: `Body`'s typed-array members are missing from the SDK's

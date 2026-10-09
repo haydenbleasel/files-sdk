@@ -545,7 +545,7 @@ describe("azure adapter", () => {
             `https://${ACCOUNT}.blob.core.windows.net?sig=explicit`
           );
           expect(sharedKeyInstances).toHaveLength(0);
-          expect(adapter.signedUrl?.supported).toBe(false);
+          expect(adapter.capabilities?.signedUrl?.supported).toBe(false);
         });
       });
 
@@ -1848,24 +1848,58 @@ describe("azure adapter", () => {
     });
   });
 
-  describe("signedUrl capability", () => {
-    test("shared-key mode signs with no expiry cap", () => {
-      const adapter = azure({
-        accountKey: "k",
-        accountName: ACCOUNT,
-        container: CONTAINER,
+  describe("signing capabilities", () => {
+    test("declares the static capabilities in every mode", () => {
+      const { capabilities } = new Files({
+        adapter: azure({ accountName: ACCOUNT, container: CONTAINER }),
       });
-      expect(adapter.signedUrl).toEqual({ supported: true });
+      expect(capabilities).toMatchObject({
+        cacheControl: true,
+        delimiter: "any",
+        metadata: true,
+        rangeRead: true,
+        resumable: true,
+        serverSideCopy: true,
+        uploadProgress: true,
+      });
+    });
+
+    test("shared-key mode signs with no expiry cap", () => {
+      const { capabilities } = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+        }),
+      });
+      expect(capabilities.signedUrl).toEqual({
+        expiry: "exact",
+        supported: true,
+      });
+      expect(capabilities.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: true,
+      });
     });
 
     test("user-delegation mode declares the 7-day cap", () => {
-      const adapter = azure({
-        accountName: ACCOUNT,
-        container: CONTAINER,
-        credential: fakeCredential(),
+      const { capabilities } = new Files({
+        adapter: azure({
+          accountName: ACCOUNT,
+          container: CONTAINER,
+          credential: fakeCredential(),
+        }),
       });
-      expect(adapter.signedUrl).toEqual({
+      expect(capabilities.signedUrl).toEqual({
+        expiry: "exact",
         maxExpiresIn: SEVEN_DAYS_S,
+        supported: true,
+      });
+      expect(capabilities.signedUpload).toEqual({
+        contentType: false,
+        maxExpiresIn: SEVEN_DAYS_S,
+        maxSize: false,
         supported: true,
       });
     });
@@ -1884,7 +1918,16 @@ describe("azure adapter", () => {
         useUserDelegationSas: false,
       });
       for (const adapter of [sasOnly, anonymous, tokenNoSas]) {
-        expect(adapter.signedUrl?.supported).toBe(false);
+        const { capabilities } = new Files({ adapter });
+        expect(capabilities.signedUrl).toEqual({
+          expiry: "none",
+          supported: false,
+        });
+        expect(capabilities.signedUpload).toEqual({
+          contentType: false,
+          maxSize: false,
+          supported: false,
+        });
       }
     });
   });

@@ -121,6 +121,8 @@ const upload = await files.signedUploadUrl("uploads/photo.png", {
 
 Public blobs keep returning their permanent CDN URL from `url()` - a presigned copy would add a round trip without restricting anything - so `capabilities.signedUrl.supported` is `true` only in private mode. Neither the CDN URL nor a presigned URL can carry a `Content-Disposition` override, so `responseContentDisposition` throws in both modes.
 
+Signed uploads don't depend on the mode: `capabilities.signedUpload` reports `supported`, `maxSize`, and `contentType` as `true` for public and private adapters alike. The [gateway](/docs/ui/server/gateway) presigns on that, so browser uploads go straight to Vercel Blob with a presigned `PUT` in either mode, with your `maxUploadSize` and the file's content type enforced at the CDN, rather than streaming through your server.
+
 ## Options
 
 <AutoTypeTable

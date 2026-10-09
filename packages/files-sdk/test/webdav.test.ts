@@ -528,6 +528,29 @@ describe("webdav adapter", () => {
     ).rejects.toThrow(/not supported/iu);
   });
 
+  test("declares its capabilities", () => {
+    for (const publicBaseUrl of [undefined, "https://cdn.example.com"]) {
+      const caps = newFiles(
+        publicBaseUrl === undefined ? undefined : { publicBaseUrl }
+      ).capabilities;
+      expect(caps.cacheControl).toBe(false);
+      expect(caps.delimiter).toBe("any");
+      expect(caps.metadata).toBe(false);
+      expect(caps.rangeRead).toBe(true);
+      expect(caps.resumable).toBe(false);
+      // COPY runs server-side.
+      expect(caps.serverSideCopy).toBe(true);
+      expect(caps.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: false,
+      });
+      // A `publicBaseUrl` front URL is permanent, not signed.
+      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.uploadProgress).toBe(false);
+    }
+  });
+
   test("raw exposes the injected client and root", () => {
     const client = makeFakeClient();
     const adapter = webdav({ client, root: "/uploads" });

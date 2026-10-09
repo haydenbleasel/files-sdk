@@ -610,6 +610,25 @@ describe("memory adapter", () => {
       const files = new Files({ adapter: memory() });
       await expect(files.download("nope")).rejects.toBeInstanceOf(FilesError);
     });
+
+    test("declares its capabilities", () => {
+      const caps = new Files({ adapter: memory() }).capabilities;
+      expect(caps.cacheControl).toBe(true);
+      expect(caps.delimiter).toBe("any");
+      expect(caps.metadata).toBe(true);
+      expect(caps.rangeRead).toBe(true);
+      expect(caps.resumable).toBe(true);
+      expect(caps.serverSideCopy).toBe(true);
+      // signedUploadUrl()'s memory:// target is an inert placeholder nothing
+      // can upload to, so it isn't advertised.
+      expect(caps.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: false,
+      });
+      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.uploadProgress).toBe(false);
+    });
   });
 });
 

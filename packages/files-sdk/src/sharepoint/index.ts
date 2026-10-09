@@ -429,6 +429,24 @@ export const sharepoint = (
   };
 
   return {
+    // Hand-mirrors the inner onedrive adapter's declaration: that adapter is
+    // only built once the site's drive is resolved, so it can't be read here.
+    capabilities: {
+      // Delegates to the inner onedrive adapter, which returns folder common
+      // prefixes for a "/" delimiter; listOpts (incl. delimiter) is forwarded.
+      delimiter: "slash",
+      // Delegates to the inner onedrive adapter, which honors Range on Graph's
+      // /content endpoint; downloadOpts (incl. range) is forwarded above.
+      rangeRead: true,
+      // Delegates to the inner onedrive adapter's server-side Graph `/copy`.
+      serverSideCopy: true,
+      // Delegates to the inner onedrive adapter's Graph upload session, which
+      // binds neither a size limit nor a Content-Type.
+      signedUpload: { contentType: false, maxSize: false, supported: true },
+      // Delegates to the inner onedrive adapter — same Graph limitation: no
+      // signed-URL primitive, so `url()` needs `publicByDefault`.
+      signedUrl: { supported: false },
+    },
     copy: (from: string, to: string) => call((inner) => inner.copy(from, to)),
     delete: (key: string) => call((inner) => inner.delete(key)),
     download: (key: string, downloadOpts?: DownloadOptions) =>
@@ -450,17 +468,6 @@ export const sharepoint = (
       signOpts: SignUploadOptions
     ): Promise<SignedUpload> =>
       call((inner) => inner.signedUploadUrl(key, signOpts)),
-    // Delegates to the inner onedrive adapter — same Graph limitation: no
-    // signed-URL primitive, so `url()` needs `publicByDefault`.
-    signedUrl: { supported: false },
-    // Delegates to the inner onedrive adapter, which returns folder common
-    // prefixes for a "/" delimiter; listOpts (incl. delimiter) is forwarded.
-    supportsDelimiter: true,
-    // Delegates to the inner onedrive adapter, which honors Range on Graph's
-    // /content endpoint; downloadOpts (incl. range) is forwarded above.
-    supportsRange: true,
-    // Delegates to the inner onedrive adapter's server-side Graph `/copy`.
-    supportsServerSideCopy: true,
     upload: (
       key: string,
       body: Body,

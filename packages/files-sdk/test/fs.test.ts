@@ -75,6 +75,30 @@ describe("fs adapter", () => {
       expect(path.isAbsolute(adapter.root)).toBe(true);
     });
 
+    test("declares its capabilities", async () => {
+      const root = await makeRoot();
+      for (const urlBaseUrl of [undefined, "https://static.example.com"]) {
+        const caps = new Files({
+          adapter: fsAdapter({ root, ...(urlBaseUrl && { urlBaseUrl }) }),
+        }).capabilities;
+        expect(caps.cacheControl).toBe(true);
+        expect(caps.delimiter).toBe("any");
+        expect(caps.metadata).toBe(true);
+        expect(caps.rangeRead).toBe(true);
+        expect(caps.resumable).toBe(true);
+        expect(caps.serverSideCopy).toBe(true);
+        // No signer: signedUploadUrl() always throws, and url() is a permanent
+        // file:// or static-server URL.
+        expect(caps.signedUpload).toEqual({
+          contentType: false,
+          maxSize: false,
+          supported: false,
+        });
+        expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+        expect(caps.uploadProgress).toBe(false);
+      }
+    });
+
     test("fails every conditional primitive before filesystem adapter I/O", async () => {
       const root = await makeRoot();
       const adapter = fsAdapter({ root });

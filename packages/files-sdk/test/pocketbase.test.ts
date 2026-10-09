@@ -460,7 +460,7 @@ describe("pocketbase adapter", () => {
 
   test("upload rejects cacheControl", async () => {
     // Gated centrally by the Files wrapper (the adapter advertises neither
-    // supportsMetadata nor supportsCacheControl).
+    // the `metadata` nor the `cacheControl` capability).
     const files = new Files({
       adapter: pocketbase({ collection: "files", url: "http://pb.test" }),
     });
@@ -762,6 +762,34 @@ describe("pocketbase adapter", () => {
     await expectDispositionRefusal(
       adapter.url("a.txt", { responseContentDisposition: "attachment" })
     );
+  });
+
+  test("capabilities declare provider-expiry token URLs and no signed upload", () => {
+    const { capabilities } = new Files({
+      adapter: pocketbase({ collection: "files", url: "http://pb.test" }),
+    });
+    expect(capabilities).toMatchObject({
+      cacheControl: false,
+      delimiter: false,
+      metadata: false,
+      rangeRead: true,
+      serverSideCopy: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "provider", supported: true },
+      uploadProgress: false,
+    });
+    // A publicBaseUrl hands out permanent, unsigned links instead.
+    const pub = new Files({
+      adapter: pocketbase({
+        collection: "files",
+        publicBaseUrl: "https://cdn.test",
+        url: "http://pb.test",
+      }),
+    });
+    expect(pub.capabilities.signedUrl).toEqual({
+      expiry: "none",
+      supported: false,
+    });
   });
 
   test("signedUploadUrl is not supported", async () => {

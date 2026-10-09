@@ -8,17 +8,22 @@ import { createFiles } from "../src/index.js";
 import { FilesError, dispositionUnsupported } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
 import { memory } from "../src/memory/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const ENDPOINT = "https://app.test/api/files";
 const SECRET = "test-secret";
 const NOW = 1_000_000_000;
 
+// The fake signs both ways and binds size and type, so the gateway takes the
+// direct (redirect / presign) paths.
 const signing = (): Adapter =>
-  ({
-    ...fakeAdapter({ supportsDelimiter: true, supportsRange: true }),
-    signedUrl: { supported: true },
-  }) as unknown as Adapter;
+  withCapabilities(
+    fakeAdapter({ supportsDelimiter: true, supportsRange: true }),
+    {
+      signedUpload: { contentType: true, maxSize: true, supported: true },
+      signedUrl: { supported: true },
+    }
+  );
 
 const router = (
   opts: Partial<CreateFilesRouterOptions> & { adapter?: Adapter } = {}
@@ -82,9 +87,9 @@ describe("createFilesRouter — deny by default", () => {
     const caps = await r.handle(post({ op: "capabilities" }));
     expect(caps.status).toBe(200);
     expect(
-      (await readJson<{ capabilities: { delimiter: boolean } }>(caps))
+      (await readJson<{ capabilities: { delimiter: string } }>(caps))
         .capabilities.delimiter
-    ).toBe(true);
+    ).toBe("any");
   });
 
   test("operations allow-list gates ops", async () => {

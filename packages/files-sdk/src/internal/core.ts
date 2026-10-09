@@ -167,9 +167,9 @@ export const assertRangeHonored = (
 /**
  * Guard for folder-based providers that only understand `/` as a path
  * separator (the SaaS stores: Vercel Blob, Netlify Blobs, Supabase, Dropbox,
- * Box, OneDrive). They advertise `supportsDelimiter` but can't honor an
- * arbitrary delimiter the way the object stores can, so reject anything else
- * loudly rather than silently treating it as `/`.
+ * Box, OneDrive). They declare `delimiter: "slash"`, which the `Files` wrapper
+ * already gates on; this is the adapter's own check, for direct callers, so
+ * anything else is rejected loudly rather than silently treated as `/`.
  */
 export const assertSlashDelimiter = (
   providerLabel: string,

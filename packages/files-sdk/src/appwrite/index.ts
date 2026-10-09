@@ -252,6 +252,14 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   // explicit intent. Documented on the adapter's limitations section.
   return {
     bucket: opts.bucket,
+    capabilities: {
+      // No native copy — `copy()` downloads the source and creates a new file.
+      serverSideCopy: false,
+      // No `signedUrl`: Appwrite SDKs can't mint signed read URLs with API
+      // keys — `url()` returns a permanent view URL under `{ public: true }`,
+      // else throws. No `signedUpload` either: there is no presigned upload
+      // primitive, so `signedUploadUrl()` always throws.
+    },
     copy: async (from: string, to: string) => {
       assertAppwriteKey(from, "copy source");
       assertAppwriteKey(to, "copy destination");
@@ -574,11 +582,6 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
           "appwrite: signedUploadUrl is not supported. Appwrite has no presigned upload primitive — use a JWT or the client SDK for direct uploads."
         )
       ),
-    // Appwrite SDKs can't mint signed read URLs with API keys — `url()` returns
-    // a permanent view URL under `{ public: true }`, else throws.
-    signedUrl: { supported: false },
-    // No native copy — `copy()` downloads the source and creates a new file.
-    supportsServerSideCopy: false,
     upload: async (key: string, body: Body, _uploadOpts?: UploadOptions) => {
       assertAppwriteKey(key);
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper

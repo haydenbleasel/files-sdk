@@ -9,7 +9,7 @@ import { softDelete } from "../src/soft-delete/index.js";
 import { validation, ValidationError } from "../src/validation/index.js";
 import type { ValidationOptions } from "../src/validation/index.js";
 import { versioning } from "../src/versioning/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const withValidation = (
   options: ValidationOptions = {},
@@ -277,6 +277,18 @@ describe("validation plugin — signed uploads", () => {
     ).rejects.toThrow(/not allowed/u);
     const signed = await files.signedUploadUrl("ok.txt", { expiresIn: 60 });
     expect(signed.url).toContain("ok.txt");
+  });
+
+  test("advertises no direct uploads only when a size or type rule is set", () => {
+    const signing = withCapabilities(fakeAdapter(), {
+      signedUpload: { supported: true },
+    });
+    const caps = (options: ValidationOptions) =>
+      new Files({ adapter: signing, plugins: [validation(options)] })
+        .capabilities.signedUpload.supported;
+    expect(caps({ maxSize: 10 })).toBe(false);
+    expect(caps({ allowedTypes: ["image/*"] })).toBe(false);
+    expect(caps({ key: /^ok/u })).toBe(true);
   });
 });
 

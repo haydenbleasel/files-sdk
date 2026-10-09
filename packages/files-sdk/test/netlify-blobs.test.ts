@@ -853,6 +853,22 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
+  test("capabilities declare slash folding, metadata, and no signing", () => {
+    const { capabilities } = new Files({
+      adapter: netlifyBlobs({ name: "s" }),
+    });
+    expect(capabilities).toMatchObject({
+      cacheControl: true,
+      delimiter: "slash",
+      metadata: true,
+      rangeRead: false,
+      serverSideCopy: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
+      uploadProgress: false,
+    });
+  });
+
   test("signedUploadUrl throws Provider", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     try {

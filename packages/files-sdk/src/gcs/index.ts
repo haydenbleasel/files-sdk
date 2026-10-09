@@ -214,6 +214,31 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
 
   return {
     bucket: bucketName,
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` is a server-side GCS object copy.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a V4 signed PUT, or a V4 POST policy whose
+      // `content-length-range` enforces `maxSize`; `contentType` is bound into
+      // either signature. Both share V4's 7-day ceiling.
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: V4_MAX_EXPIRES_IN,
+        maxSize: true,
+        supported: true,
+      },
+      // `url()` returns a V4 signed URL (or `publicBaseUrl` when set). The SDK
+      // rejects an expiry past V4's 7-day limit, so declare that ceiling.
+      signedUrl: {
+        expiry: "exact",
+        maxExpiresIn: V4_MAX_EXPIRES_IN,
+        supported: true,
+      },
+      uploadProgress: true,
+    },
     async copy(from, to) {
       try {
         await bucket.file(from).copy(bucket.file(to));
@@ -333,7 +358,6 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     },
     name: "gcs",
     raw: storage,
-    reportsUploadProgress: true,
     resumableUpload(key, resumableOpts) {
       return createGcsResumableDriver({
         bucket: bucketName,
@@ -381,15 +405,6 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         throw mapGCSError(error);
       }
     },
-    // `url()` returns a V4 signed URL (or `publicBaseUrl` when set). The SDK
-    // rejects an expiry past V4's 7-day limit, so declare that ceiling.
-    signedUrl: { maxExpiresIn: V4_MAX_EXPIRES_IN, supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` is a server-side GCS object copy.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const { cacheControl, metadata, multipart, onProgress } = options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(

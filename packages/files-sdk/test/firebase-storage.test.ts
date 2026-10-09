@@ -742,8 +742,28 @@ describe("firebase-storage adapter", () => {
       adapter: firebaseStorage({ projectId: "p" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
+    });
+    expect(files.capabilities.signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: true,
+      supported: true,
+    });
+  });
+
+  test("capabilities declare the rest of the storage surface", () => {
+    const files = new Files({ adapter: firebaseStorage({ projectId: "p" }) });
+    expect(files.capabilities).toMatchObject({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: true,
+      uploadProgress: true,
     });
   });
 

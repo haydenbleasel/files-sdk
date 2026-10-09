@@ -170,6 +170,34 @@ export const lazyS3Adapter = (
   };
 
   return {
+    // Upload/list/download all delegate to the inner S3 adapter, which honors
+    // `metadata`, `cacheControl`, ListObjectsV2 `Delimiter`, and `Range` —
+    // so advertise the same capabilities the eager s3 adapter does (including
+    // the SigV4 one-week presign ceiling). This must be sync, hence hardcoded
+    // rather than read off the lazy instance; keep it identical to the
+    // declaration in `createS3Adapter`.
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` delegates to the S3 adapter's server-side CopyObject.
+      serverSideCopy: true,
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        maxSize: true,
+        supported: true,
+      },
+      signedUrl: {
+        expiry: "exact",
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        supported: true,
+      },
+      // `upload` delegates to the underlying S3 adapter, which reports
+      // byte-level progress via @aws-sdk/lib-storage when onProgress is set.
+      uploadProgress: true,
+    },
     async copy(from, to, operationOpts) {
       const adapter = await ensure();
       return adapter.copy(from, to, operationOpts);
@@ -215,9 +243,6 @@ export const lazyS3Adapter = (
       // the inner adapter's `S3Client` here.
       return cachedRaw as S3Client;
     },
-    // `upload` delegates to the underlying S3 adapter, which reports
-    // byte-level progress via @aws-sdk/lib-storage when onProgress is set.
-    reportsUploadProgress: true,
     // Resumable uploads delegate to the inner S3 driver. The driver must be
     // returned synchronously, but the S3 adapter loads lazily — so wrap it:
     // each async method awaits the (memoized) inner driver, and the sync
@@ -284,18 +309,6 @@ export const lazyS3Adapter = (
       const adapter = await ensure();
       return adapter.signedUploadUrl(key, signOpts);
     },
-    // Upload/list/download all delegate to the inner S3 adapter, which honors
-    // `metadata`, `cacheControl`, ListObjectsV2 `Delimiter`, and `Range` —
-    // so advertise the same capabilities the eager s3 adapter does (including
-    // the SigV4 one-week presign ceiling). These must be sync, hence
-    // hardcoded rather than read off the lazy instance.
-    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` delegates to the S3 adapter's server-side CopyObject.
-    supportsServerSideCopy: true,
     async upload(key, body, uploadOpts) {
       const adapter = await ensure();
       return adapter.upload(key, body, uploadOpts);

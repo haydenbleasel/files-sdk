@@ -156,7 +156,7 @@ describe("createFilesClient — round-trip", () => {
     const signed = await client.signedUploadUrl("k", { expiresIn: 60 });
     expect(signed.method).toBe("PUT");
     const caps = await client.capabilities();
-    expect(caps.delimiter).toBe(true);
+    expect(caps.delimiter).toBe("any");
   });
 
   test("bulk head / exists / delete / upload / download", async () => {

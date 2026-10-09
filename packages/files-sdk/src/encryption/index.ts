@@ -188,14 +188,15 @@ export const generateEncryptionKey = (): Promise<CryptoKey> =>
  * - **Resumable uploads (`control`) throw** — every upload seals the body
  *   under a fresh random data key, so a session resumed in another process
  *   would splice two different ciphertexts into an object that can't be
- *   decrypted. `files.capabilities` reports `multipart` as `false` to match;
+ *   decrypted. `files.capabilities` reports `resumable` as `false` to match;
  *   `multipart: true` still splits a large body within one call.
  * - **Range downloads throw** — a slice of a GCM ciphertext can't be decrypted.
  * - **`url()` / `signedUploadUrl()` throw** — presigned URLs bypass the plugin,
  *   handing out ciphertext or letting a client store plaintext.
- *   `files.capabilities` reports `signedUrl.supported` and `rangeRead` as
- *   `false` to match, so the `files-sdk/api` gateway proxies downloads
- *   through the instance.
+ *   `files.capabilities` reports `signedUrl.supported`,
+ *   `signedUpload.supported`, and `rangeRead` as `false` to match, so the
+ *   `files-sdk/api` gateway proxies uploads and downloads through the
+ *   instance.
  * - **`head` / `list` never decrypt eagerly** — they report the plaintext
  *   size, and their body accessors download and decrypt only when called.
  *   On adapters whose `list()` returns no metadata (S3 and the
@@ -433,13 +434,14 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
   return {
     // Advertise what the plugin refuses, so `files.capabilities` (and the
     // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
-    // plans a presigned URL, a ranged read, or a resumable upload that would
-    // throw.
+    // plans a presigned URL, a direct upload, a ranged read, or a resumable
+    // upload that would throw.
     capabilities: (caps) => ({
       ...caps,
-      multipart: false,
       rangeRead: false,
-      signedUrl: { supported: false },
+      resumable: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
     }),
     name: "encryption",
     wrap: (op, next) => verbs(next)(op, next),

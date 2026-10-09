@@ -1156,6 +1156,18 @@ export const onedrive = (
 
   return {
     basePath,
+    capabilities: {
+      delimiter: "slash",
+      rangeRead: true,
+      // `copy()` is a server-side Graph `/copy`.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a Graph upload session, which binds neither
+      // a size limit nor a Content-Type — it throws when asked for either.
+      signedUpload: { contentType: false, maxSize: false, supported: true },
+      // Graph has no signed-URL primitive: `url()` throws unless built with
+      // `publicByDefault`, and even then returns an anonymous (permanent) link.
+      signedUrl: { supported: false },
+    },
     async copy(from, to) {
       try {
         // Resolve destination parent folder. For nested keys we copy to the
@@ -1408,13 +1420,6 @@ export const onedrive = (
         throw mapGraphError(error);
       }
     },
-    // Graph has no signed-URL primitive: `url()` throws unless built with
-    // `publicByDefault`, and even then returns an anonymous (permanent) link.
-    signedUrl: { supported: false },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // `copy()` is a server-side Graph `/copy`.
-    supportsServerSideCopy: true,
     async upload(key, body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — Graph drive items have no native

@@ -445,6 +445,31 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
 
   return {
     bucket,
+    // No `uploadProgress`: bodies go up as one buffered PUT with no native
+    // progress hook, so the Files wrapper reports progress generically.
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` issues a CopyObject — server-side, no body round-trip.
+      serverSideCopy: true,
+      // A presigned PUT with `content-type` in the signed headers, so the type
+      // is enforced. `maxSize` needs a presigned POST policy, which this
+      // engine doesn't implement — `signedUploadUrl()` throws on it.
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        maxSize: false,
+        supported: true,
+      },
+      // SigV4 caps presigned lifetimes at one week; `presign()` throws above it.
+      signedUrl: {
+        expiry: "exact",
+        maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
+        supported: true,
+      },
+    },
     async copy(from, to, operationOpts) {
       const res = await send("PUT", objectUrl(to), {
         headers: {
@@ -577,14 +602,6 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         url,
       } satisfies SignedUpload;
     },
-    // SigV4 caps presigned lifetimes at one week; `presign()` throws above it.
-    signedUrl: { maxExpiresIn: SIGV4_MAX_EXPIRES_IN, supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` issues a CopyObject — server-side, no body round-trip.
-    supportsServerSideCopy: true,
     async upload(key, body, uploadOpts) {
       if (isMultipartRequested(uploadOpts?.multipart)) {
         // `permanent`: fail loudly instead of silently buffering what the

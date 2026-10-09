@@ -99,8 +99,8 @@ describe("files-sdk/nestjs", () => {
 
     const res = await capabilities(`${base}/api/files`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
-    expect(typeof body.capabilities.delimiter).toBe("boolean");
+    const body = (await res.json()) as { capabilities: { rangeRead: boolean } };
+    expect(typeof body.capabilities.rangeRead).toBe("boolean");
 
     expect(app?.get(UploadsService).files).toBe(files);
     expect(app?.get<Files>(FILES)).toBe(files);
@@ -151,7 +151,7 @@ describe("files-sdk/nestjs", () => {
 
     const res = await capabilities(`${base}/api/files`);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
-    expect(typeof body.capabilities.delimiter).toBe("boolean");
+    const body = (await res.json()) as { capabilities: { rangeRead: boolean } };
+    expect(typeof body.capabilities.rangeRead).toBe("boolean");
   });
 });

@@ -609,6 +609,26 @@ describe("bunnyStorage adapter", () => {
     );
   });
 
+  test("capabilities declare no signing and no server-side copy", () => {
+    const { capabilities } = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    expect(capabilities).toMatchObject({
+      cacheControl: false,
+      delimiter: false,
+      metadata: false,
+      rangeRead: false,
+      serverSideCopy: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
+      uploadProgress: false,
+    });
+  });
+
   test("signedUploadUrl throws", async () => {
     const adapter = bunnyStorage({
       accessKey: "key",

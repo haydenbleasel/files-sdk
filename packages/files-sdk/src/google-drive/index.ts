@@ -724,6 +724,27 @@ export const googleDrive = (
   };
 
   return {
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` is a server-side `files.copy`.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a Drive resumable upload session, which
+      // enforces no size limit (`maxSize` throws). It needs an auth handle to
+      // mint the session's access token, so it refuses on an adapter built
+      // from a pre-built `client`.
+      signedUpload: {
+        contentType: false,
+        maxSize: false,
+        supported: authForTokens !== undefined,
+      },
+      // Drive has no signed-URL primitive: `url()` throws unless the adapter
+      // was built with `publicByDefault`, and even then returns a permanent
+      // link.
+      signedUrl: { supported: false },
+    },
     async copy(from, to, operationOpts) {
       assertAppPropertiesFit({ [KEY_PROP]: to });
       try {
@@ -1195,15 +1216,6 @@ export const googleDrive = (
         }),
       };
     },
-    // Drive has no signed-URL primitive: `url()` throws unless the adapter was
-    // built with `publicByDefault`, and even then returns a permanent link.
-    signedUrl: { supported: false },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` is a server-side `files.copy`.
-    supportsServerSideCopy: true,
     async upload(key, body, options): Promise<UploadResult> {
       assertNoReservedMetadata(options?.metadata);
       try {

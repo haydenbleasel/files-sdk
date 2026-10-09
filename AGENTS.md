@@ -18,7 +18,7 @@ Bun + Turbo monorepo:
 Design intent that decides most API questions:
 
 - **Common subset, not lowest common denominator.** Core exposes only what every adapter can do cleanly. Provider-specific features go behind `files.raw` (the native client). "Use `raw`" beats "add it to the core".
-- **Fail loud, never degrade silently.** If an adapter can't honor an option (`range`, `delimiter`, `metadata`, `cacheControl`, `control`), the `Files` wrapper throws before any provider I/O, gated on the adapter's `supports*` flags. Plugins that can't enforce a guarantee fail closed.
+- **Fail loud, never degrade silently.** If an adapter can't honor an option (`range`, `delimiter`, `metadata`, `cacheControl`, `control`), the `Files` wrapper throws before any provider I/O (and before any plugin runs), gated on the adapter's declared `capabilities` object. Plugins that can't enforce a guarantee fail closed.
 - **Web-standard I/O.** Bodies are `Blob`/`File`/`ReadableStream`/bytes/`string`. No provider types leak into the public surface.
 - **Errors are normalized** to `FilesError` with codes `NotFound | Unauthorized | Conflict | Provider` (plus the SDK-native `ReadOnly`), original error in `cause`.
 - **Optional peers are never bundled and never statically imported** from a path that a consumer might take without installing them. See "Bundling".
@@ -128,7 +128,7 @@ Notes:
 
 Model it on the most recent one (`git show --stat` the "Add a … adapter" commit; `2b8c962` for RustFS). Touch, in order:
 
-1. `src/<slug>/index.ts`. S3-compatible: wrap the engine like `minio/`. Otherwise implement `Adapter`, using `makeErrorMapper`, `readEnv`, `normalizeBody`, `resolveUrlStrategy`, and set the `supports*` / `signedUrl` capability flags honestly.
+1. `src/<slug>/index.ts`. S3-compatible: wrap the engine like `minio/`. Otherwise implement `Adapter`, using `makeErrorMapper`, `readEnv`, `normalizeBody`, `resolveUrlStrategy`, and declare the `capabilities` object (`rangeRead`, `delimiter`, `metadata`, `cacheControl`, `uploadProgress`, `serverSideCopy`, `signedUrl`, `signedUpload`) honestly, per instance.
 2. `package.json` `exports["./<slug>"]` (+ optional peer if it needs an SDK).
 3. `src/providers/index.ts` catalog entry with every env var the adapter reads (the drift test checks both directions).
 4. `src/cli/registry.ts` entry + a case in `test/cli-registry.test.ts`.

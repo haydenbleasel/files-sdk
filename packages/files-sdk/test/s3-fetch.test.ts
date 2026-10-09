@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { AwsClient } from "aws4fetch";
 
-import { FilesError } from "../src/index.js";
+import { Files, FilesError } from "../src/index.js";
 import { s3FetchAdapter } from "../src/internal/s3-fetch.js";
 import type { S3FetchAdapterOptions } from "../src/internal/s3-fetch.js";
 import { makeFakeS3 } from "./fake-s3-server.js";
@@ -58,18 +58,29 @@ describe("s3-fetch core — identity", () => {
   test("name override and capability flags", () => {
     const adapter = makeAdapter({ name: "r2-http-fetch" });
     expect(adapter.name).toBe("r2-http-fetch");
-    expect(adapter.supportsRange).toBe(true);
-    expect(adapter.supportsDelimiter).toBe(true);
-    expect(adapter.supportsMetadata).toBe(true);
-    expect(adapter.supportsCacheControl).toBe(true);
-    expect(adapter.supportsServerSideCopy).toBe(true);
-    expect(adapter.signedUrl).toEqual({
-      maxExpiresIn: 604_800,
-      supported: true,
+    expect(adapter.capabilities).toEqual({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      serverSideCopy: true,
+      // A presigned PUT signs `content-type`; `maxSize` needs a POST policy,
+      // which this engine doesn't implement.
+      signedUpload: {
+        contentType: true,
+        maxExpiresIn: 604_800,
+        maxSize: false,
+        supported: true,
+      },
+      signedUrl: { expiry: "exact", maxExpiresIn: 604_800, supported: true },
     });
     expect(adapter.resumableUpload).toBeUndefined();
     expect(adapter.deleteMany).toBeUndefined();
-    expect(adapter.reportsUploadProgress).toBeUndefined();
+    // No native progress hook: the Files wrapper reports progress itself.
+    expect(new Files({ adapter }).capabilities).toMatchObject({
+      resumable: false,
+      uploadProgress: false,
+    });
   });
 });
 

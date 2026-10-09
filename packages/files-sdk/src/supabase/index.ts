@@ -607,6 +607,20 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
 
   return {
     bucket,
+    capabilities: {
+      cacheControl: true,
+      // `list()` folds on "/" only (`with_delimiter`); other delimiters throw.
+      delimiter: "slash",
+      metadata: true,
+      // `copy()` is a server-side Storage copy.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a `createSignedUploadUrl` token, which binds
+      // neither a size limit nor a Content-Type (so `maxSize` / `contentType`
+      // throw). Supabase fixes its TTL at 2 hours and ignores `expiresIn`.
+      signedUpload: { contentType: false, maxSize: false, supported: true },
+      // `url()` mints a `createSignedUrl` (or a public URL when configured).
+      signedUrl: { expiry: "exact", supported: true },
+    },
     async copy(from, to) {
       const { error } = await bucketRef.copy(from, to);
       if (error) {
@@ -980,13 +994,6 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         url: signedUrl,
       };
     },
-    // `url()` mints a `createSignedUrl` (or a public URL when configured).
-    signedUrl: { supported: true },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    // `copy()` is a server-side Storage copy.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const { data, contentType, contentLength } = await normalizeBody(
         body,

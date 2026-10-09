@@ -18,7 +18,7 @@ import type {
   PluginNext,
 } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const encrypted = async (adapter: Adapter = fakeAdapter()): Promise<Files> =>
   new Files({ adapter, plugins: [encryption(await generateEncryptionKey())] });
@@ -340,10 +340,10 @@ describe("encryption plugin — head and list bodies", () => {
 
 // A signing-capable adapter: without the plugin's capabilities hook, the
 // gateway would redirect downloads to a url() the plugin refuses.
-const signing = (): Adapter => ({
-  ...memory(),
-  signedUrl: { maxExpiresIn: 3600, supported: true },
-});
+const signing = (): Adapter =>
+  withCapabilities(memory(), {
+    signedUrl: { maxExpiresIn: 3600, supported: true },
+  });
 
 describe("encryption plugin — resumable uploads", () => {
   test("a control upload is refused before any I/O", async () => {
@@ -355,7 +355,7 @@ describe("encryption plugin — resumable uploads", () => {
       .catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: "Provider", permanent: true });
     expect((failure as Error).message).toMatch(
-      /encryption: resumable uploads \(`control`\) are unsupported/u
+      /resumable uploads are not supported by the "encryption" plugin/u
     );
     expect(control.status).toBe("idle");
     expect(await new Files({ adapter }).exists("a.txt")).toBe(false);
@@ -363,9 +363,9 @@ describe("encryption plugin — resumable uploads", () => {
 
   test("advertises no resumable uploads; multipart without control still works", async () => {
     const adapter = memory();
-    expect(new Files({ adapter }).capabilities.multipart).toBe(true);
+    expect(new Files({ adapter }).capabilities.resumable).toBe(true);
     const files = await encrypted(adapter);
-    expect(files.capabilities.multipart).toBe(false);
+    expect(files.capabilities.resumable).toBe(false);
     await files.upload("a.txt", "hello", { multipart: true });
     const file = await files.download("a.txt");
     expect(await file.text()).toBe("hello");
@@ -375,7 +375,10 @@ describe("encryption plugin — resumable uploads", () => {
 describe("encryption plugin — capabilities + gateway", () => {
   test("advertises no presigned URLs and no range reads", async () => {
     const files = await encrypted(signing());
-    expect(files.capabilities.signedUrl).toEqual({ supported: false });
+    expect(files.capabilities.signedUrl).toEqual({
+      expiry: "none",
+      supported: false,
+    });
     expect(files.capabilities.rangeRead).toBe(false);
     expect(files.capabilities.metadata).toBe(true);
   });
@@ -480,7 +483,9 @@ describe("encryption plugin — refused operations", () => {
   });
 
   test("upload throws on an adapter without metadata support", async () => {
-    const adapter: Adapter = { ...fakeAdapter(), supportsMetadata: false };
+    const adapter: Adapter = withCapabilities(fakeAdapter(), {
+      metadata: false,
+    });
     const files = new Files({
       adapter,
       plugins: [encryption(await generateEncryptionKey())],
@@ -554,12 +559,49 @@ describe("encryption plugin — bulk + copy", () => {
   });
 });
 
+/** A `next` that fails the test if a plugin calls through. */
+const unreachable = (): Promise<never> => {
+  throw new Error("next must not run");
+};
+
+describe("encryption plugin — backstop refusals", () => {
+  // The core refuses `range` and `control` before any plugin runs, because the
+  // plugin narrows those capabilities. The plugin still refuses them itself,
+  // for an outer plugin that injects one into the op it passes inward.
+  test("refuses an injected range or control without calling next", async () => {
+    const plugin = encryption(await generateEncryptionKey());
+    const wrap = plugin.wrap as NonNullable<typeof plugin.wrap>;
+    await expect(
+      wrap(
+        { key: "a.txt", kind: "download", options: { range: { start: 0 } } },
+        unreachable
+      )
+    ).rejects.toThrow(
+      /encryption: range downloads are unsupported on encrypted objects/u
+    );
+    await expect(
+      wrap(
+        {
+          body: "x",
+          key: "a.txt",
+          kind: "upload",
+          options: { control: new UploadControl() },
+        },
+        unreachable
+      )
+    ).rejects.toThrow(
+      /encryption: resumable uploads \(`control`\) are unsupported/u
+    );
+  });
+});
+
 describe("encryption plugin — refusals are permanent", () => {
   test("an outer failover() doesn't re-send a refused call to a plugin-less secondary", async () => {
     const secondary = fakeAdapter();
     await new Files({ adapter: secondary }).upload("a.txt", "replica");
     const files = new Files({
-      adapter: fakeAdapter(),
+      // Range-capable, so the range refusal is the plugin's, not the adapter's.
+      adapter: fakeAdapter({ supportsRange: true }),
       plugins: [
         failover({ secondaries: secondary }),
         encryption(await generateEncryptionKey()),
@@ -576,7 +618,7 @@ describe("encryption plugin — refusals are permanent", () => {
       const failure = await refused().catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(FilesError);
       expect((failure as FilesError).permanent).toBe(true);
-      expect((failure as FilesError).message).toMatch(/^encryption: /u);
+      expect((failure as FilesError).message).toMatch(/encryption/u);
     }
   });
 

@@ -98,7 +98,7 @@ describe("svelte useFiles", () => {
     expect(await files.url("seed")).toContain("memory://");
     await files.copy("seed", "seed-copy");
     await files.move("seed-copy", "seed-moved");
-    expect((await files.capabilities()).delimiter).toBe(true);
+    expect((await files.capabilities()).delimiter).toBe("any");
     expect((await files.signedUploadUrl("sig", { expiresIn: 60 })).method).toBe(
       "PUT"
     );

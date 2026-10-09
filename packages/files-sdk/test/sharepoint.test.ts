@@ -15,6 +15,7 @@ import { Client, GraphError } from "@microsoft/microsoft-graph-client";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
+import { onedrive } from "../src/onedrive/index.js";
 import { sharepoint } from "../src/sharepoint/index.js";
 
 // SharePoint resolution traffic — these are the Graph endpoints the adapter
@@ -525,6 +526,25 @@ describe("sharepoint adapter", () => {
     expect(putCall).toBeDefined();
   });
 
+  test("capabilities > mirror the inner onedrive adapter's declaration", () => {
+    const adapter = sharepoint({ clientCredentials: CREDS, driveId: "d" });
+    // The inner adapter only exists after drive resolution, so sharepoint
+    // hand-copies its declaration; this keeps the two from drifting.
+    expect(adapter.capabilities).toEqual(
+      onedrive({ client: fakeGraphClient as unknown as Client }).capabilities
+    );
+    const caps = new Files({ adapter }).capabilities;
+    expect(caps.delimiter).toBe("slash");
+    expect(caps.rangeRead).toBe(true);
+    expect(caps.serverSideCopy).toBe(true);
+    expect(caps.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: true,
+    });
+    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+  });
+
   test("signedUploadUrl > delegates to createUploadSession", async () => {
     postHandler = (path) => {
       if (path === "/drives/d/root:/big.bin:/createUploadSession") {
@@ -926,7 +946,7 @@ describe("sharepoint adapter", () => {
     try {
       const adapter = sharepoint({ clientCredentials: CREDS, driveId: "d" });
       const files = new Files({ adapter });
-      expect(files.capabilities.multipart).toBe(true);
+      expect(files.capabilities.resumable).toBe(true);
       const control = new UploadControl();
       const result = await files.upload("big.bin", new Uint8Array(CHUNK + 5), {
         control,

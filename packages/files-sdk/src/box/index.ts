@@ -893,6 +893,20 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   let uploadSeq = 0;
 
   const adapter: BoxAdapter = {
+    capabilities: {
+      delimiter: "slash",
+      rangeRead: true,
+      // `copy()` is a server-side `copyFile`.
+      serverSideCopy: true,
+      // By default `url()` returns a tokenized download URL: time-limited, but
+      // Box controls the TTL server-side, so `expiresIn` is accepted and
+      // ignored — see provider-gaps. Under `publicBaseUrl` / `publicByDefault`
+      // it returns a permanent public link instead, which isn't signed.
+      signedUrl: {
+        expiry: "provider",
+        supported: !(publicBaseUrl || publicByDefault),
+      },
+    },
     async copy(from, to) {
       try {
         await authHandle.ensureReady();
@@ -1198,15 +1212,6 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
         )
       );
     },
-    // By default `url()` returns a tokenized download URL: time-limited, but
-    // Box controls the TTL server-side, so `expiresIn` is accepted and
-    // ignored — see provider-gaps. Under `publicBaseUrl` / `publicByDefault`
-    // it returns a permanent public link instead, which isn't signed.
-    signedUrl: { supported: !(publicBaseUrl || publicByDefault) },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // `copy()` is a server-side `copyFile`.
-    supportsServerSideCopy: true,
     upload(key, body, options): Promise<UploadResult> {
       return runUpload(key, body, options);
     },

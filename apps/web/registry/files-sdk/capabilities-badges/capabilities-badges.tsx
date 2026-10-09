@@ -37,15 +37,16 @@ const formatDuration = (seconds: number): string => {
 const describe = (
   caps: AdapterCapabilities
 ): { label: string; supported: boolean }[] => [
-  { label: "Folder listing", supported: caps.delimiter },
+  { label: "Folder listing", supported: caps.delimiter !== false },
   {
     label: caps.signedUrl.maxExpiresIn
       ? `Signed URLs (max ${formatDuration(caps.signedUrl.maxExpiresIn)})`
       : "Signed URLs",
     supported: caps.signedUrl.supported,
   },
+  { label: "Direct uploads", supported: caps.signedUpload.supported },
   { label: "Range reads", supported: caps.rangeRead },
-  { label: "Multipart uploads", supported: caps.multipart },
+  { label: "Resumable uploads", supported: caps.resumable },
   { label: "Upload progress", supported: caps.uploadProgress },
   { label: "Server-side copy", supported: caps.serverSideCopy },
   { label: "Custom metadata", supported: caps.metadata },

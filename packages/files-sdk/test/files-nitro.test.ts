@@ -69,8 +69,8 @@ describe("files-sdk/nitro", () => {
       method: "POST",
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
-    expect(typeof body.capabilities.delimiter).toBe("boolean");
+    const body = (await res.json()) as { capabilities: { rangeRead: boolean } };
+    expect(typeof body.capabilities.rangeRead).toBe("boolean");
   });
 
   test("forwards the method and streams a PUT body to the gateway", async () => {
@@ -212,8 +212,8 @@ describe("files-sdk/nitro — in-process requests", () => {
       })
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
-    expect(typeof body.capabilities.delimiter).toBe("boolean");
+    const body = (await res.json()) as { capabilities: { rangeRead: boolean } };
+    expect(typeof body.capabilities.rangeRead).toBe("boolean");
   });
 
   test("reads a node-mock-http request's body from the event (toPlainHandler)", async () => {
@@ -274,8 +274,8 @@ describe("files-sdk/nitro — h3 2", () => {
       })
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
-    expect(typeof body.capabilities.delimiter).toBe("boolean");
+    const body = (await res.json()) as { capabilities: { rangeRead: boolean } };
+    expect(typeof body.capabilities.rangeRead).toBe("boolean");
   });
 
   test("passes h3 2's request through untouched, body and all", async () => {

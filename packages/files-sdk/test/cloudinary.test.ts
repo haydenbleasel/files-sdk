@@ -645,6 +645,50 @@ describe("cloudinary adapter", () => {
     expect(apiSignRequestMock).not.toHaveBeenCalled();
   });
 
+  test("capabilities > signedUpload needs both apiKey and apiSecret", () => {
+    const signer = new Files({
+      adapter: cloudinary({
+        apiKey: API_KEY,
+        apiSecret: API_SECRET,
+        cloudName: CLOUD_NAME,
+      }),
+    });
+    expect(signer.capabilities.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: true,
+    });
+    for (const adapter of [
+      cloudinary({ cloudName: CLOUD_NAME }),
+      cloudinary({ apiKey: API_KEY, cloudName: CLOUD_NAME }),
+    ]) {
+      expect(new Files({ adapter }).capabilities.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: false,
+      });
+    }
+  });
+
+  test("capabilities > signedUrl only for private / authenticated delivery", () => {
+    expect(
+      new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME }) }).capabilities
+    ).toMatchObject({
+      cacheControl: false,
+      delimiter: "any",
+      metadata: false,
+      rangeRead: true,
+      serverSideCopy: false,
+      signedUrl: { expiry: "none", supported: false },
+    });
+    for (const type of ["private", "authenticated"] as const) {
+      expect(
+        new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME, type }) })
+          .capabilities.signedUrl
+      ).toEqual({ expiry: "exact", supported: true });
+    }
+  });
+
   test("signedUploadUrl > throws when apiSecret is missing", async () => {
     const files = new Files({
       adapter: cloudinary({ cloudName: CLOUD_NAME }),

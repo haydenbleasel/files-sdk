@@ -334,6 +334,17 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     });
 
   const adapter: SftpAdapter = {
+    // No `uploadProgress` — see `upload()` below for why.
+    capabilities: {
+      delimiter: "any",
+      rangeRead: true,
+      // No server-side copy — `copy()` round-trips the bytes through the
+      // client.
+      serverSideCopy: false,
+      // SFTP serves no HTTP and has no signing primitive — `url()` returns a
+      // `publicBaseUrl` front URL when configured, else throws.
+      signedUrl: { supported: false },
+    },
     async copy(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
@@ -705,24 +716,18 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         )
       );
     },
-    // SFTP serves no HTTP and has no signing primitive — `url()` returns a
-    // `publicBaseUrl` front URL when configured, else throws.
-    signedUrl: { supported: false },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // No server-side copy — `copy()` round-trips the bytes through the client.
-    supportsServerSideCopy: false,
     upload(key, body: Body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — SFTP files have no
       // arbitrary-metadata or cache-header field.
       //
-      // No `reportsUploadProgress`: ssh2-sftp-client's `step` byte-progress
-      // callback is only wired into `fastPut`/`fastGet` (local-file paths). The
-      // `put` form we use for Buffer/stream bodies pipes through a write stream
-      // with no progress hook, so rather than fake granular progress we leave it
-      // unset and let the Files wrapper report generically (byte-level for
-      // stream bodies, start/finish for buffered ones).
+      // No `capabilities.uploadProgress`: ssh2-sftp-client's `step`
+      // byte-progress callback is only wired into `fastPut`/`fastGet`
+      // (local-file paths). The `put` form we use for Buffer/stream bodies
+      // pipes through a write stream with no progress hook, so rather than
+      // fake granular progress we leave it unset and let the Files wrapper
+      // report generically (byte-level for stream bodies, start/finish for
+      // buffered ones).
       const remote = keyToRemote(key);
       assertNotStagingPath("sftp", remote, key);
       return run(options?.signal, async (client) => {

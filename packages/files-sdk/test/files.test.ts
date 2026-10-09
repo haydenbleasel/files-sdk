@@ -19,7 +19,7 @@ import type {
   UploadProgress,
 } from "../src/index.js";
 import { countingStream } from "../src/internal/core.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const streamOf = (chunks: Uint8Array[]): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
@@ -1412,10 +1412,11 @@ describe("Files class", () => {
       },
       delimiter: false,
       metadata: true,
-      multipart: false,
       rangeRead: false,
+      resumable: false,
       serverSideCopy: false,
-      signedUrl: { supported: false },
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
       uploadProgress: false,
     });
   });
@@ -1425,19 +1426,23 @@ describe("Files class", () => {
       adapter: fakeAdapter({ supportsDelimiter: true, supportsRange: true }),
     });
     expect(files.capabilities.rangeRead).toBe(true);
-    expect(files.capabilities.delimiter).toBe(true);
+    expect(files.capabilities.delimiter).toBe("any");
   });
 
-  test("capabilities surfaces multipart, progress, copy, and signed-url declarations", () => {
+  test("capabilities surfaces resumable, progress, copy, and signing declarations", () => {
     const base = fakeAdapter();
     const adapter: Adapter = {
       ...base,
-      reportsUploadProgress: true,
+      capabilities: {
+        ...base.capabilities,
+        serverSideCopy: true,
+        signedUpload: { maxSize: true, supported: true },
+        signedUrl: { maxExpiresIn: 604_800, supported: true },
+        uploadProgress: true,
+      },
       resumableUpload: () => {
         throw new Error("unused");
       },
-      signedUrl: { maxExpiresIn: 604_800, supported: true },
-      supportsServerSideCopy: true,
     };
     const files = new Files({ adapter });
     expect(files.capabilities).toEqual({
@@ -1457,10 +1462,11 @@ describe("Files class", () => {
       },
       delimiter: false,
       metadata: true,
-      multipart: true,
       rangeRead: false,
+      resumable: true,
       serverSideCopy: true,
-      signedUrl: { maxExpiresIn: 604_800, supported: true },
+      signedUpload: { contentType: false, maxSize: true, supported: true },
+      signedUrl: { expiry: "exact", maxExpiresIn: 604_800, supported: true },
       uploadProgress: true,
     });
   });
@@ -1584,7 +1590,7 @@ describe("upload progress", () => {
     const base = fakeAdapter();
     const adapter: Adapter = {
       ...base,
-      reportsUploadProgress: true,
+      capabilities: { ...base.capabilities, uploadProgress: true },
       upload(key, body, opts) {
         opts?.onProgress?.({ loaded: 10, total: 20 });
         opts?.onProgress?.({ loaded: 20, total: 20 });
@@ -1665,7 +1671,7 @@ describe("upload progress", () => {
     let uploads = 0;
     const adapter: Adapter = {
       ...base,
-      reportsUploadProgress: true,
+      capabilities: { ...base.capabilities, uploadProgress: true },
       upload(key, body, opts) {
         uploads += 1;
         // The adapter reports from inside its own upload, so an unguarded
@@ -2216,17 +2222,168 @@ const narrowing = (name: string, seen: string[]): FilesPlugin => ({
     return {
       ...caps,
       rangeRead: false,
-      signedUrl: { supported: false },
+      signedUrl: { expiry: "none", supported: false },
     };
   },
   name,
 });
 
+/** A plugin that records every op it sees and passes it through. */
+const recording = (seen: string[]): FilesPlugin => ({
+  name: "recording",
+  wrap: (op, next) => {
+    seen.push(op.kind);
+    return next(op);
+  },
+});
+
+describe("capability gates run before plugins", () => {
+  test("an option the adapter lacks is refused before any wrap runs", async () => {
+    const seen: string[] = [];
+    const files = new Files({
+      adapter: withCapabilities(fakeAdapter(), {
+        cacheControl: false,
+        metadata: false,
+      }),
+      plugins: [recording(seen)],
+    });
+    await expect(
+      files.upload("a.txt", "x", { metadata: { a: "1" } })
+    ).rejects.toThrow("fake: `metadata` is not supported by this adapter");
+    await expect(
+      files.upload("a.txt", "x", { cacheControl: "no-store" })
+    ).rejects.toThrow("fake: `cacheControl` is not supported by this adapter");
+    await expect(
+      files.upload("a.txt", "x", { control: new UploadControl() })
+    ).rejects.toThrow(
+      "fake: pause-able/resumable uploads are not supported by this adapter"
+    );
+    await expect(
+      files.download("a.txt", { range: { start: 0 } })
+    ).rejects.toThrow(
+      "fake: range downloads are not supported by this adapter"
+    );
+    await expect(files.list({ delimiter: "/" })).rejects.toThrow(
+      "fake: directory-style listing (delimiter) is not supported by this adapter"
+    );
+    expect(seen).toEqual([]);
+    // An empty metadata object is "none", so it isn't gated.
+    await files.upload("a.txt", "x", { metadata: {} });
+    expect(seen).toEqual(["upload"]);
+  });
+
+  test("an option a plugin turns off is refused before any wrap, naming the plugin", async () => {
+    const seen: string[] = [];
+    const noRanges: FilesPlugin = {
+      capabilities: (caps) => ({ ...caps, rangeRead: false }),
+      name: "no-ranges",
+    };
+    const files = new Files({
+      adapter: fakeAdapter({ supportsRange: true }),
+      plugins: [recording(seen), noRanges],
+    });
+    await files.upload("a.txt", "0123456789");
+    seen.length = 0;
+    const failure = await files
+      .download("a.txt", { range: { start: 0 } })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "Provider", permanent: true });
+    expect((failure as Error).message).toBe(
+      'range downloads are not supported by the "no-ranges" plugin'
+    );
+    expect(seen).toEqual([]);
+  });
+
+  test("a slash-only adapter refuses any other delimiter, with or without plugins", async () => {
+    const adapter = withCapabilities(fakeAdapter(), { delimiter: "slash" });
+    const bare = new Files({ adapter });
+    const wrapped = new Files({ adapter, plugins: [recording([])] });
+    for (const files of [bare, wrapped]) {
+      // eslint-disable-next-line no-await-in-loop -- each instance is checked on its own
+      await expect(files.list({ delimiter: "|" })).rejects.toThrow(
+        'fake: only the "/" delimiter is supported by this adapter'
+      );
+      // eslint-disable-next-line no-await-in-loop -- each instance is checked on its own
+      await expect(files.list({ delimiter: "/" })).resolves.toMatchObject({
+        items: [],
+      });
+    }
+    // An empty delimiter is a usage error, reported by the inner gate.
+    await expect(wrapped.list({ delimiter: "" })).rejects.toThrow(
+      "delimiter must be a non-empty string"
+    );
+  });
+
+  test("a bulk item gated before plugins fails on its own", async () => {
+    const seen: string[] = [];
+    const files = new Files({
+      adapter: withCapabilities(fakeAdapter(), { metadata: false }),
+      plugins: [recording(seen)],
+    });
+    const result = await files.upload([
+      { body: "1", key: "ok.txt" },
+      { body: "2", key: "meta.txt", metadata: { a: "1" } },
+    ]);
+    expect(result.uploaded.map((u) => u.key)).toEqual(["ok.txt"]);
+    expect(result.errors?.[0]?.key).toBe("meta.txt");
+    expect(seen).toEqual(["upload"]);
+  });
+});
+
+describe("capability declarations", () => {
+  test("fill in conservative defaults for what an adapter leaves out", () => {
+    const base = fakeAdapter();
+    const caps = (declared?: Adapter["capabilities"]) =>
+      new Files({ adapter: { ...base, capabilities: declared } }).capabilities;
+    expect(caps()).toMatchObject({
+      cacheControl: false,
+      delimiter: false,
+      metadata: false,
+      rangeRead: false,
+      serverSideCopy: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
+      uploadProgress: false,
+    });
+    expect(caps({ signedUrl: { supported: true } }).signedUrl).toEqual({
+      expiry: "exact",
+      supported: true,
+    });
+    expect(
+      caps({ signedUrl: { expiry: "provider", supported: true } }).signedUrl
+    ).toEqual({ expiry: "provider", supported: true });
+    // An unsupported signer is always "none", whatever else it declares.
+    expect(
+      caps({
+        signedUrl: { expiry: "provider", maxExpiresIn: 9, supported: false },
+      }).signedUrl
+    ).toEqual({ expiry: "none", supported: false });
+    expect(
+      caps({ signedUpload: { maxExpiresIn: 60, supported: true } }).signedUpload
+    ).toEqual({
+      contentType: false,
+      maxExpiresIn: 60,
+      maxSize: false,
+      supported: true,
+    });
+    expect(
+      caps({ signedUpload: { maxSize: true, supported: false } }).signedUpload
+    ).toEqual({ contentType: false, maxSize: false, supported: false });
+    // Anything but "any" / "slash" reads as no folder support.
+    expect(caps({ delimiter: "slash" }).delimiter).toBe("slash");
+    expect(caps({ delimiter: true as never }).delimiter).toBe(false);
+  });
+});
+
 describe("plugin capability hooks", () => {
   test("folds every plugin's hook over the adapter snapshot, in order", () => {
+    const base = fakeAdapter({ supportsRange: true });
     const adapter: Adapter = {
-      ...fakeAdapter({ supportsRange: true }),
-      signedUrl: { maxExpiresIn: 60, supported: true },
+      ...base,
+      capabilities: {
+        ...base.capabilities,
+        signedUrl: { maxExpiresIn: 60, supported: true },
+      },
     };
     const seen: string[] = [];
     const tagging: FilesPlugin = {
@@ -2245,17 +2402,21 @@ describe("plugin capability hooks", () => {
     const caps = files.capabilities;
     expect(seen).toEqual(["first", "tagging"]);
     expect(caps.rangeRead).toBe(false);
-    expect(caps.signedUrl).toEqual({ supported: false });
+    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
     expect(caps.metadata).toBe(true);
     // The adapter's own declaration is untouched.
-    expect(adapter.signedUrl).toEqual({ maxExpiresIn: 60, supported: true });
+    expect(adapter.capabilities?.signedUrl).toEqual({
+      maxExpiresIn: 60,
+      supported: true,
+    });
     expect(new Files({ adapter }).capabilities.rangeRead).toBe(true);
   });
 
   test("a hook can't mutate the adapter's signedUrl declaration", () => {
+    const base = fakeAdapter();
     const adapter: Adapter = {
-      ...fakeAdapter(),
-      signedUrl: { supported: true },
+      ...base,
+      capabilities: { ...base.capabilities, signedUrl: { supported: true } },
     };
     const mutating: FilesPlugin = {
       capabilities: (caps) => {
@@ -2266,7 +2427,7 @@ describe("plugin capability hooks", () => {
     };
     const files = new Files({ adapter, plugins: [mutating] });
     expect(files.capabilities.signedUrl.supported).toBe(false);
-    expect(adapter.signedUrl).toEqual({ supported: true });
+    expect(adapter.capabilities?.signedUrl).toEqual({ supported: true });
   });
 
   test("read-only and prefixed instances keep the plugins' narrowing", () => {
@@ -2297,11 +2458,10 @@ describe("SDK-side gates", () => {
   test("capability and key rejections are permanent FilesErrors", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     const bare = new Files({
-      adapter: {
-        ...fakeAdapter(),
-        supportsCacheControl: false,
-        supportsMetadata: false,
-      },
+      adapter: withCapabilities(fakeAdapter(), {
+        cacheControl: false,
+        metadata: false,
+      }),
     });
     await files.upload("r.txt", "0123456789");
     const permanent = { code: "Provider", permanent: true };

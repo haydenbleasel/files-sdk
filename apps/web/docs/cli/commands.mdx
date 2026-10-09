@@ -153,7 +153,7 @@ files --provider s3 --bucket uploads sign-upload uploads/avatar.png \
 
 ### capabilities
 
-Print the configured adapter's [capability snapshot](/docs/capabilities) as JSON — range reads, native upload progress, list delimiters, metadata, cache-control, multipart, server-side copy, signed URLs, and conditional operations. Pure introspection; it makes no provider call.
+Print the configured adapter's [capability snapshot](/docs/capabilities) as JSON — range reads, native upload progress, list delimiters, metadata, cache-control, resumable uploads, server-side copy, signed URLs, signed uploads, and conditional operations. Pure introspection; it makes no provider call.
 
 ```bash lineNumbers
 files --provider r2 --bucket uploads capabilities

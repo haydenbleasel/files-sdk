@@ -263,6 +263,17 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
   };
 
   return {
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` clones the in-memory entry — no body round-trip.
+      serverSideCopy: true,
+      // `url()` returns an opaque, non-fetchable `memory://` URL — there's no
+      // server to sign against.
+      signedUrl: { supported: false },
+    },
     copy(from, to) {
       return defer(() => {
         const entry = getOrThrow(from);
@@ -459,15 +470,6 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         url: `memory://${key}?expires=${signOpts.expiresIn}`,
       });
     },
-    // `url()` returns an opaque, non-fetchable `memory://` URL — there's no
-    // server to sign against.
-    signedUrl: { supported: false },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` clones the in-memory entry — no body round-trip.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const bytes = await bodyToBytes(body);
       const contentType = inferContentType(body, options?.contentType);

@@ -18,7 +18,7 @@ import type {
   PluginNext,
 } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 import type { FakeAdapter } from "./fake-adapter.js";
 
 const withDedup = (
@@ -330,12 +330,12 @@ describe("dedup plugin — resumable uploads", () => {
 
 describe("dedup plugin — capabilities", () => {
   test("advertises no presigned URLs or conditional ops, and keeps ranges", () => {
-    const adapter: Adapter = {
-      ...fakeAdapter({ supportsRange: true }),
-      signedUrl: { maxExpiresIn: 3600, supported: true },
-    };
+    const adapter: Adapter = withCapabilities(
+      fakeAdapter({ supportsRange: true }),
+      { signedUrl: { maxExpiresIn: 3600, supported: true } }
+    );
     const caps = withDedup({}, adapter).capabilities;
-    expect(caps.signedUrl).toEqual({ supported: false });
+    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
     expect(caps.rangeRead).toBe(true);
     expect(caps.metadata).toBe(true);
     expect(caps.conditional).toEqual({
@@ -354,7 +354,9 @@ describe("dedup plugin — capabilities", () => {
   });
 
   test("a gateway over a signing adapter proxies downloads through the plugin", async () => {
-    const adapter: Adapter = { ...memory(), signedUrl: { supported: true } };
+    const adapter: Adapter = withCapabilities(memory(), {
+      signedUrl: { supported: true },
+    });
     const files = withDedup({}, adapter);
     await files.upload("a.txt", "0123456789");
     const router = createFilesRouter({

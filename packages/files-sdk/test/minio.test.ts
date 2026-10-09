@@ -6,6 +6,7 @@ import { AwsClient } from "aws4fetch";
 
 import { Files } from "../src/index.js";
 import { minio } from "../src/minio/index.js";
+import { s3 } from "../src/s3/index.js";
 import { makeFakeS3 } from "./fake-s3-server.js";
 
 const creds = { accessKeyId: "AKID", secretAccessKey: "SECRET" } as const;
@@ -21,7 +22,7 @@ describe("minio adapter", () => {
     expect(adapter.name).toBe("minio");
     // The lazy proxy advertises the s3 engine's capability flags, so range
     // downloads work on MinIO (and every other s3-compatible adapter).
-    expect(adapter.supportsRange).toBe(true);
+    expect(new Files({ adapter }).capabilities.rangeRead).toBe(true);
     // The s3 adapter is loaded lazily, so `raw` is undefined until any
     // method has run; a presign needs no network and materializes it.
     await adapter.url("a.txt");
@@ -31,6 +32,19 @@ describe("minio adapter", () => {
     expect(endpoint?.hostname).toBe("localhost");
     expect(endpoint?.port).toBe(9000);
     expect(await client.config.forcePathStyle).toBe(true);
+  });
+
+  test("the lazy aws-sdk proxy declares exactly what the eager s3 adapter does", () => {
+    const adapter = minio({
+      ...creds,
+      bucket: "uploads",
+      endpoint: "http://localhost:9000",
+    });
+    // The proxy hardcodes its declaration (it must be sync, before the SDK
+    // loads), so pin it to the s3 engine's own to catch drift.
+    expect(adapter.capabilities).toEqual(
+      s3({ bucket: "uploads", region: "us-east-1" }).capabilities
+    );
   });
 
   test("region override is forwarded to the inner S3 client", async () => {
@@ -193,6 +207,22 @@ describe("minio adapter — fetch engine", () => {
     expect(adapter.name).toBe("minio-fetch");
     expect(adapter.raw).toBeInstanceOf(AwsClient);
     expect(adapter.resumableUpload).toBeUndefined();
+  });
+
+  test("inherits the fetch engine's declaration: no native progress, no maxSize", () => {
+    const { capabilities } = new Files({ adapter: makeFetch() });
+    expect(capabilities.uploadProgress).toBe(false);
+    expect(capabilities.signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: false,
+      supported: true,
+    });
+    expect(capabilities.signedUrl).toEqual({
+      expiry: "exact",
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
   });
 
   test("path-style addressing and the us-east-1 signing region by default", async () => {

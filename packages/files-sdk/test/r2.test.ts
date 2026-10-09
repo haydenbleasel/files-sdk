@@ -779,10 +779,15 @@ describe("r2 adapter — Workers binding path", () => {
 
   test("signedUrl capability: plain binding unsupported; hybrid and HTTP carry the SigV4 one-week cap", async () => {
     const { bucket } = fakeBinding();
-    const cap = { maxExpiresIn: 604_800, supported: true };
-    expect(r2({ binding: bucket as never }).signedUrl).toEqual({
-      supported: false,
-    });
+    const cap = {
+      expiry: "exact",
+      maxExpiresIn: 604_800,
+      supported: true,
+    } as const;
+    expect(
+      new Files({ adapter: r2({ binding: bucket as never }) }).capabilities
+        .signedUrl
+    ).toEqual({ expiry: "none", supported: false });
     const hybrid = r2({
       accessKeyId: "K",
       accountId: "ACCT",
@@ -790,20 +795,91 @@ describe("r2 adapter — Workers binding path", () => {
       bucket: "uploads",
       secretAccessKey: "S",
     });
-    expect(hybrid.signedUrl).toEqual(cap);
+    expect(new Files({ adapter: hybrid }).capabilities.signedUrl).toEqual(cap);
     await expect(
       hybrid.url("a.txt", { expiresIn: 604_801 })
     ).rejects.toMatchObject({ code: "Provider" });
-    expect(makeAdapter().signedUrl).toEqual(cap);
     expect(
-      r2({
-        accessKeyId: "K",
-        accountId: "ACCT",
-        bucket: "uploads",
-        client: "fetch",
-        secretAccessKey: "S",
-      }).signedUrl
+      new Files({ adapter: makeAdapter() }).capabilities.signedUrl
     ).toEqual(cap);
+    expect(
+      new Files({
+        adapter: r2({
+          accessKeyId: "K",
+          accountId: "ACCT",
+          bucket: "uploads",
+          client: "fetch",
+          secretAccessKey: "S",
+        }),
+      }).capabilities.signedUrl
+    ).toEqual(cap);
+  });
+
+  test("signedUpload capability: maxSize is never enforced (R2 has no POST Object); a plain binding can't sign", () => {
+    const { bucket } = fakeBinding();
+    // Every signing mode: a presigned PUT binding Content-Type, SigV4-capped,
+    // with `maxSize` off even on the aws-sdk engine that could POST-policy it.
+    const cap = {
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: false,
+      supported: true,
+    };
+    expect(
+      new Files({ adapter: r2({ binding: bucket as never }) }).capabilities
+        .signedUpload
+    ).toEqual({ contentType: false, maxSize: false, supported: false });
+    const hybrid = r2({
+      accessKeyId: "K",
+      accountId: "ACCT",
+      binding: bucket as never,
+      bucket: "uploads",
+      secretAccessKey: "S",
+    });
+    expect(new Files({ adapter: hybrid }).capabilities.signedUpload).toEqual(
+      cap
+    );
+    expect(
+      new Files({ adapter: makeAdapter() }).capabilities.signedUpload
+    ).toEqual(cap);
+    expect(
+      new Files({
+        adapter: r2({
+          accessKeyId: "K",
+          accountId: "ACCT",
+          bucket: "uploads",
+          client: "fetch",
+          secretAccessKey: "S",
+        }),
+      }).capabilities.signedUpload
+    ).toEqual(cap);
+  });
+
+  test("binding declares range/delimiter/metadata/cacheControl but no server-side copy or progress", () => {
+    const { bucket } = fakeBinding();
+    expect(
+      new Files({ adapter: r2({ binding: bucket as never }) }).capabilities
+    ).toMatchObject({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      resumable: false,
+      serverSideCopy: false,
+      uploadProgress: false,
+    });
+  });
+
+  test("HTTP (aws-sdk) inherits the s3 engine's declaration apart from maxSize", () => {
+    expect(new Files({ adapter: makeAdapter() }).capabilities).toMatchObject({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: true,
+      uploadProgress: true,
+    });
   });
 
   test("hybrid: endpoint override is honored by the signing fallback", async () => {
@@ -1403,8 +1479,10 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
     expect(adapter.raw).toBeInstanceOf(AwsClient);
     expect(adapter.resumableUpload).toBeUndefined();
     const files = new Files({ adapter });
-    expect(files.capabilities.multipart).toBe(false);
+    expect(files.capabilities.resumable).toBe(false);
     expect(files.capabilities.signedUrl.supported).toBe(true);
+    // Single buffered PUT: no native progress hook.
+    expect(files.capabilities.uploadProgress).toBe(false);
   });
 
   test("round-trips uploads and downloads against the R2 S3 endpoint", async () => {

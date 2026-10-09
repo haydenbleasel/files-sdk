@@ -440,6 +440,19 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
   };
 
   const adapter: FtpAdapter = {
+    capabilities: {
+      delimiter: "any",
+      rangeRead: true,
+      // No server-side copy — `copy()` round-trips the bytes through the
+      // client.
+      serverSideCopy: false,
+      // FTP serves no HTTP and has no signing primitive — `url()` returns a
+      // `publicBaseUrl` front URL when configured, else throws.
+      signedUrl: { supported: false },
+      // `upload()` reports byte progress itself via basic-ftp's
+      // `trackProgress`.
+      uploadProgress: true,
+    },
     async copy(from, to, opts2) {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
@@ -713,7 +726,6 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       }
       return { connect: resolved.access };
     },
-    reportsUploadProgress: true,
     resumableUpload(key, resumableOpts): OffsetResumableDriver {
       const remote = keyToRemote(key);
       assertNotStagingPath("ftp", remote, key);
@@ -824,13 +836,6 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         )
       );
     },
-    // FTP serves no HTTP and has no signing primitive — `url()` returns a
-    // `publicBaseUrl` front URL when configured, else throws.
-    signedUrl: { supported: false },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // No server-side copy — `copy()` round-trips the bytes through the client.
-    supportsServerSideCopy: false,
     upload(key, body: Body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — FTP files have no arbitrary-metadata

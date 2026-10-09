@@ -414,6 +414,28 @@ export const uploadthing = (
   };
 
   const adapter: UploadThingAdapter = {
+    capabilities: {
+      rangeRead: true,
+      // No server-side copy — `copy()` downloads then re-uploads (buffered).
+      serverSideCopy: false,
+      // `signedUploadUrl()` signs a UFS ingest URL in both ACL modes, binding
+      // the content type (`x-ut-file-type`) into the HMAC. UFS exposes no
+      // content-length-range policy, so `maxSize` throws.
+      signedUpload: { contentType: true, maxSize: false, supported: true },
+      // `url()` mints a `generateSignedURL` for private files, capped at 7 days
+      // by the SDK. Public-read returns the permanent CDN URL and ignores
+      // `expiresIn`, so it isn't a signed URL. (The `files-sdk/api` gateway
+      // presigns uploads on `signedUpload`, so public-read still hands out
+      // direct ingest URLs.)
+      signedUrl:
+        acl === ACL_PUBLIC_READ
+          ? { supported: false }
+          : {
+              expiry: "exact",
+              maxExpiresIn: SIGNED_URL_MAX_EXPIRES_IN,
+              supported: true,
+            },
+    },
     async copy(from, to, opts) {
       // UploadThing has no server-side copy, so this downloads and
       // re-uploads. Note the re-upload **buffers the whole object**:
@@ -640,19 +662,6 @@ export const uploadthing = (
         url: url.toString(),
       };
     },
-    // `url()` mints a `generateSignedURL` for private files, capped at 7 days
-    // by the SDK. Public-read returns the permanent CDN URL and ignores
-    // `expiresIn`, but still reports `supported: true`: the `files-sdk/api`
-    // gateway keys direct-to-storage upload presigning on this flag, and
-    // public-read (the default) must keep handing out ingest URLs rather than
-    // proxying every upload through the app server.
-    signedUrl:
-      acl === ACL_PUBLIC_READ
-        ? { supported: true }
-        : { maxExpiresIn: SIGNED_URL_MAX_EXPIRES_IN, supported: true },
-    supportsRange: true,
-    // No server-side copy — `copy()` downloads then re-uploads (buffered).
-    supportsServerSideCopy: false,
     async upload(key, body, options): Promise<UploadResult> {
       const contentType = options?.contentType;
       const blob = await bodyToBlob(body, contentType);

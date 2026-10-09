@@ -8,6 +8,7 @@ import type { AwsClient } from "aws4fetch";
 
 import type {
   Adapter,
+  AdapterCapabilityDeclaration,
   Body,
   DownloadOptions,
   SignUploadOptions,
@@ -334,6 +335,19 @@ const assertNoMaxSize = (signOpts: SignUploadOptions): void => {
   }
 };
 
+/**
+ * The signed-upload declaration of the engine (or hybrid signer) underneath,
+ * with `maxSize` forced off: every mode runs {@link assertNoMaxSize} first, so
+ * R2 never enforces one whatever that engine could do on another endpoint.
+ */
+const withoutMaxSize = (
+  declared: AdapterCapabilityDeclaration["signedUpload"]
+): NonNullable<AdapterCapabilityDeclaration["signedUpload"]> => ({
+  ...declared,
+  maxSize: false,
+  supported: declared?.supported === true,
+});
+
 const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   const bucket = opts.binding;
   const { publicBaseUrl } = opts;
@@ -377,6 +391,24 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
   };
 
   return {
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // Bindings have no server-side copy — `copy()` streams get→put.
+      serverSideCopy: false,
+      // Like `url()`, `signedUploadUrl()` signs only in hybrid mode, through
+      // the aws4fetch signer (a presigned PUT binding `Content-Type`).
+      signedUpload: hybrid
+        ? withoutMaxSize(hybrid.capabilities?.signedUpload)
+        : { supported: false },
+      // A Workers binding can't sign on its own: `url()` signs only in hybrid
+      // mode (HTTP credentials also passed), which inherits the SigV4 signer's
+      // one-week ceiling; a bare `publicBaseUrl` is a permanent public link,
+      // not a signed one.
+      signedUrl: hybrid?.capabilities?.signedUrl ?? { supported: false },
+    },
     async copy(from, to) {
       // R2 bindings have no server-side copy, so this is a read-then-write.
       // Stream the body straight through `put` instead of buffering the whole
@@ -526,17 +558,6 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       assertNoMaxSize(signOpts);
       return await signer.signedUploadUrl(key, signOpts);
     },
-    // A Workers binding can't sign on its own: `url()` signs only in hybrid
-    // mode (HTTP credentials also passed), which inherits the SigV4 signer's
-    // one-week ceiling; a bare `publicBaseUrl` is a permanent public link,
-    // not a signed one.
-    signedUrl: hybrid?.signedUrl ?? { supported: false },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // Bindings have no server-side copy — `copy()` streams get→put.
-    supportsServerSideCopy: false,
     async upload(key, body, options) {
       const { data, contentType, contentLength } = await normalizeForR2(
         body,
@@ -650,6 +671,10 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     });
     return {
       ...inner,
+      capabilities: {
+        ...inner.capabilities,
+        signedUpload: withoutMaxSize(inner.capabilities?.signedUpload),
+      },
       // `async` so the `maxSize` rejection is a rejected promise, matching
       // binding mode and every other adapter method.
       async signedUploadUrl(key, signOpts) {
@@ -684,6 +709,12 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
 
   return {
     ...inner,
+    // The aws-sdk engine could enforce `maxSize` with a presigned POST, but R2
+    // has no POST Object API, so `signedUploadUrl()` rejects it up front.
+    capabilities: {
+      ...inner.capabilities,
+      signedUpload: withoutMaxSize(inner.capabilities?.signedUpload),
+    },
     // Spreading snapshots the lazy `raw` getter as `undefined`; re-bind it.
     get raw(): S3Client {
       return inner.raw;

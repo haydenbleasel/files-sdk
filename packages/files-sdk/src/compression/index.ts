@@ -141,15 +141,16 @@ const correctMeta = (file: StoredFile): StoredFile => {
  *   byte-for-byte stable across runtimes or versions (Node and Bun already
  *   differ), so a session resumed in another process could splice two
  *   different compressed streams into an object that can't be decompressed.
- *   `files.capabilities` reports `multipart` as `false` to match;
+ *   `files.capabilities` reports `resumable` as `false` to match;
  *   `multipart: true` still splits a large body within one call.
  * - **Range downloads throw** — a byte range of the original maps to no fixed
  *   slice of the compressed bytes.
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET hands out
  *   compressed bytes with no `Content-Encoding`, which clients can't read, and a
  *   presigned PUT would silently bypass compression. `files.capabilities`
- *   reports `signedUrl.supported` and `rangeRead` as `false` to match, so the
- *   `files-sdk/api` gateway proxies downloads through the instance.
+ *   reports `signedUrl.supported`, `signedUpload.supported`, and `rangeRead` as
+ *   `false` to match, so the `files-sdk/api` gateway proxies uploads and
+ *   downloads through the instance.
  * - **`head` / `list` never decompress eagerly** — they report the original
  *   size, and their body accessors download and decompress only when called.
  *   On adapters whose `list()` returns no metadata (S3 and the
@@ -377,13 +378,14 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
   return {
     // Advertise what the plugin refuses, so `files.capabilities` (and the
     // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
-    // plans a presigned URL, a ranged read, or a resumable upload that would
-    // throw.
+    // plans a presigned URL, a direct upload, a ranged read, or a resumable
+    // upload that would throw.
     capabilities: (caps) => ({
       ...caps,
-      multipart: false,
       rangeRead: false,
-      signedUrl: { supported: false },
+      resumable: false,
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
     }),
     name: "compression",
     wrap: (op, next) => verbs(next)(op, next),

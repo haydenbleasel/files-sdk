@@ -1045,6 +1045,45 @@ describe("onedrive adapter", () => {
     expect(url).toMatch(/^https:\/\/share\.example\.com\//u);
   });
 
+  test("declares its capabilities", () => {
+    for (const publicByDefault of [false, true]) {
+      const caps = new Files({
+        adapter: onedrive({ ...baseOpts, publicByDefault }),
+      }).capabilities;
+      expect(caps.cacheControl).toBe(false);
+      expect(caps.delimiter).toBe("slash");
+      expect(caps.metadata).toBe(false);
+      expect(caps.rangeRead).toBe(true);
+      expect(caps.resumable).toBe(true);
+      expect(caps.serverSideCopy).toBe(true);
+      // A Graph upload session binds neither a size limit nor a Content-Type.
+      expect(caps.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: true,
+      });
+      // No signed-URL primitive: the public-link mode is permanent.
+      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.uploadProgress).toBe(false);
+    }
+  });
+
+  test("only the / delimiter is accepted", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(files.list({ delimiter: "|" })).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/only the "\/" delimiter/u),
+    });
+    await expect(
+      onedrive(baseOpts).list({ delimiter: "|" })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(
+        /^onedrive: only supports the "\/" delimiter/u
+      ),
+    });
+  });
+
   test("signedUploadUrl returns the createUploadSession uploadUrl as PUT", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     const out = await files.signedUploadUrl("a.txt", { expiresIn: 3600 });

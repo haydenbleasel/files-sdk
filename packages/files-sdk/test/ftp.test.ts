@@ -532,6 +532,30 @@ describe("ftp adapter", () => {
     ).rejects.toThrow(/not supported/iu);
   });
 
+  test("declares its capabilities", () => {
+    for (const publicBaseUrl of [undefined, "https://cdn.example.com"]) {
+      const caps = newFiles(
+        publicBaseUrl === undefined ? undefined : { publicBaseUrl }
+      ).capabilities;
+      expect(caps.cacheControl).toBe(false);
+      expect(caps.delimiter).toBe("any");
+      expect(caps.metadata).toBe(false);
+      expect(caps.rangeRead).toBe(true);
+      expect(caps.resumable).toBe(true);
+      // copy() round-trips the bytes through the client.
+      expect(caps.serverSideCopy).toBe(false);
+      expect(caps.signedUpload).toEqual({
+        contentType: false,
+        maxSize: false,
+        supported: false,
+      });
+      // A `publicBaseUrl` front URL is permanent, not signed.
+      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      // upload() reports byte progress itself via trackProgress.
+      expect(caps.uploadProgress).toBe(true);
+    }
+  });
+
   test("missing host throws at construction", () => {
     expect(() => ftp({})).toThrow(/missing connection/iu);
   });

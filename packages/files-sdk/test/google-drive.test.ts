@@ -949,6 +949,41 @@ describe("google-drive adapter", () => {
     ).rejects.toThrow(/escape hatch|client/iu);
   });
 
+  test("declares its capabilities", () => {
+    const caps = new Files({ adapter: googleDrive(baseOpts) }).capabilities;
+    expect(caps.cacheControl).toBe(true);
+    expect(caps.delimiter).toBe("any");
+    expect(caps.metadata).toBe(true);
+    expect(caps.rangeRead).toBe(true);
+    expect(caps.resumable).toBe(true);
+    expect(caps.serverSideCopy).toBe(true);
+    // A resumable upload session enforces no size limit.
+    expect(caps.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: true,
+    });
+    // No signed-URL primitive: the public-link mode is permanent.
+    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+    expect(caps.uploadProgress).toBe(false);
+  });
+
+  test("signedUpload is unsupported when built from the `client` escape hatch", () => {
+    // No auth handle to mint the session's access token from, so
+    // signedUploadUrl() always refuses (see the test above).
+    const caps = new Files({
+      adapter: googleDrive({
+        client: fakeDriveClient as never,
+        rootFolderId: "rootX",
+      }),
+    }).capabilities;
+    expect(caps.signedUpload).toEqual({
+      contentType: false,
+      maxSize: false,
+      supported: false,
+    });
+  });
+
   test("signedUploadUrl maps a non-OK resumable initiation to a provider error", async () => {
     // The non-OK branch reads the response body for context but guards it
     // with `.catch(() => "")`; force `text()` to reject so that fallback

@@ -266,6 +266,21 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
   };
 
   return {
+    // With a size or type rule, `signedUploadUrl()` is refused (a direct
+    // upload skips those checks), so advertise that; the `files-sdk/api`
+    // gateway then proxies uploads through the instance instead of presigning.
+    // Key rules alone still let it through.
+    capabilities: (caps) =>
+      hasBodyRule
+        ? {
+            ...caps,
+            signedUpload: {
+              contentType: false,
+              maxSize: false,
+              supported: false,
+            },
+          }
+        : caps,
     name: "validation",
     wrap: handlers({
       copy: (op, next) => {

@@ -354,6 +354,23 @@ export const cloudinaryAdapter = (
     };
 
   return {
+    capabilities: {
+      delimiter: "any",
+      rangeRead: true,
+      // No native copy — `copy()` re-uploads by URL into a new asset.
+      serverSideCopy: false,
+      // `signedUploadUrl()` signs upload params with the API secret, so it
+      // needs both `apiKey` and `apiSecret`. The signature binds neither a
+      // size limit nor a MIME type, so `maxSize` / `contentType` throw.
+      signedUpload: {
+        contentType: false,
+        maxSize: false,
+        supported: Boolean(apiKey && apiSecret),
+      },
+      // `private` / `authenticated` delivery types sign URLs; the default
+      // `upload` (public) delivery type returns an unsigned, permanent CDN URL.
+      signedUrl: { expiry: "exact", supported: type !== "upload" },
+    },
     cloudName,
     async copy(from, to) {
       try {
@@ -778,13 +795,6 @@ export const cloudinaryAdapter = (
         url,
       });
     },
-    // `private` / `authenticated` delivery types sign URLs; the default
-    // `upload` (public) delivery type returns an unsigned, permanent CDN URL.
-    signedUrl: { supported: type !== "upload" },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // No native copy — `copy()` re-uploads by URL into a new asset.
-    supportsServerSideCopy: false,
     type,
     async upload(
       key: string,

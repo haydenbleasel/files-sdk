@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 
 import { createFiles, Files, FilesError, handlers } from "../src/index.js";
 import type { Adapter, FilesOperation, FilesPlugin } from "../src/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 // A raw `wrap` plugin that records onion entry/exit around each op, for
 // asserting composition order.
@@ -423,7 +423,9 @@ describe("metadata-injecting plugins", () => {
           }),
       }),
     };
-    const noMeta: Adapter = { ...fakeAdapter(), supportsMetadata: false };
+    const noMeta: Adapter = withCapabilities(fakeAdapter(), {
+      metadata: false,
+    });
     const files = new Files({ adapter: noMeta, plugins: [iv] });
     await expect(files.upload("k.txt", "v")).rejects.toThrow(
       /`metadata` is not supported/u

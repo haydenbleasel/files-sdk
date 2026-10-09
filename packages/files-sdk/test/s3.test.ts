@@ -1706,12 +1706,40 @@ describe("s3 adapter", () => {
     }
   });
 
+  test("declares the full S3 capability set", () => {
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+    });
+    expect(files.capabilities).toMatchObject({
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      resumable: true,
+      serverSideCopy: true,
+      uploadProgress: true,
+    });
+  });
+
   test("declares the SigV4 one-week ceiling as signedUrl.maxExpiresIn", () => {
     const files = new Files({
       adapter: s3({ bucket: "b", region: "us-east-1" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      expiry: "exact",
       maxExpiresIn: 604_800,
+      supported: true,
+    });
+  });
+
+  test("signedUpload binds contentType and enforces maxSize (POST policy) under the SigV4 ceiling", () => {
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+    });
+    expect(files.capabilities.signedUpload).toEqual({
+      contentType: true,
+      maxExpiresIn: 604_800,
+      maxSize: true,
       supported: true,
     });
   });

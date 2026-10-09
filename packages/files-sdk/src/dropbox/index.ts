@@ -1097,6 +1097,26 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
   };
 
   const adapter: DropboxAdapter = {
+    capabilities: {
+      delimiter: "slash",
+      rangeRead: true,
+      // `copy()` is a server-side `filesCopyV2`.
+      serverSideCopy: true,
+      // By default `url()` returns a temporary link. Dropbox fixes its
+      // lifetime at ~4h whatever `expiresIn` says (`expiry: "provider"`), and
+      // `url()` throws when `expiresIn` exceeds that 4h
+      // (`MAX_TEMPORARY_LINK_DURATION`). Under `publicBaseUrl` /
+      // `publicByDefault` it returns a permanent public link instead, which
+      // isn't signed and ignores `expiresIn`.
+      signedUrl:
+        publicBaseUrl || publicByDefault
+          ? { supported: false }
+          : {
+              expiry: "provider",
+              maxExpiresIn: MAX_TEMPORARY_LINK_DURATION,
+              supported: true,
+            },
+    },
     async copy(from, to, copyOpts) {
       try {
         await authHandle.ensureAccessToken();
@@ -1325,18 +1345,6 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         )
       );
     },
-    // By default `url()` returns a temporary link — time-limited, but capped
-    // at 4h (`MAX_TEMPORARY_LINK_DURATION`); `url()` throws above that. Under
-    // `publicBaseUrl` / `publicByDefault` it returns a permanent public link
-    // instead, which isn't signed and ignores `expiresIn`.
-    signedUrl:
-      publicBaseUrl || publicByDefault
-        ? { supported: false }
-        : { maxExpiresIn: MAX_TEMPORARY_LINK_DURATION, supported: true },
-    supportsDelimiter: true,
-    supportsRange: true,
-    // `copy()` is a server-side `filesCopyV2`.
-    supportsServerSideCopy: true,
     async upload(key, body, options): Promise<UploadResult> {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — Dropbox files have no native

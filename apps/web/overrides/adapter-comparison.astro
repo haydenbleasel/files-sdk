@@ -36,11 +36,14 @@ const COLUMNS = [
 const DAY = 86_400;
 const HOUR = 3600;
 
-// A signed URL's maximum lifetime: "7 days", "4 hours", or "Yes" when the
-// provider sets no fixed cap.
+// A signed URL's maximum lifetime: "7 days", "4 hours", "Provider-set" when
+// the provider fixes the lifetime itself, or "Yes" when there's no fixed cap.
 const signedUrlLabel = (signedUrl: Capabilities["signedUrl"]): string | null => {
   if (!signedUrl) {
     return null;
+  }
+  if (signedUrl.expiry === "provider") {
+    return "Provider-set";
   }
   const max = signedUrl.maxExpiresIn;
   if (max === null) {
@@ -50,6 +53,17 @@ const signedUrlLabel = (signedUrl: Capabilities["signedUrl"]): string | null => 
     return `${max / DAY} day${max === DAY ? "" : "s"}`;
   }
   return `${Math.round(max / HOUR)} hours`;
+};
+
+// Direct (presigned) uploads: "Size-capped" when a maxSize is enforced
+// server-side, "Yes" when the URL can't bound the upload size.
+const signedUploadLabel = (
+  signedUpload: Capabilities["signedUpload"]
+): string | null => {
+  if (!signedUpload) {
+    return null;
+  }
+  return signedUpload.maxSize ? "Size-capped" : "Yes";
 };
 
 const conditionalLabel = (conditional: Capabilities["conditional"]) =>
@@ -82,6 +96,9 @@ const CELL = "border-b border-border px-3 py-2 text-center whitespace-nowrap";
           Signed URLs
         </th>
         <th class="border-b border-border px-3 py-2 text-center font-medium" scope="col">
+          Direct uploads
+        </th>
+        <th class="border-b border-border px-3 py-2 text-center font-medium" scope="col">
           Conditional writes
         </th>
       </tr>
@@ -90,6 +107,7 @@ const CELL = "border-b border-border px-3 py-2 text-center whitespace-nowrap";
       {
         rows.map(({ adapter, caps }) => {
           const signed = signedUrlLabel(caps.signedUrl);
+          const direct = signedUploadLabel(caps.signedUpload);
           const conditional = conditionalLabel(caps.conditional);
           return (
             <tr class="group hover:bg-highlighter">
@@ -128,6 +146,14 @@ const CELL = "border-b border-border px-3 py-2 text-center whitespace-nowrap";
               ))}
               <td class:list={[CELL, "group-hover:text-neutral-950"]}>
                 {signed ?? (
+                  <>
+                    <span aria-hidden="true" class="text-muted-foreground group-hover:text-neutral-700">–</span>
+                    <span class="sr-only">No</span>
+                  </>
+                )}
+              </td>
+              <td class:list={[CELL, "group-hover:text-neutral-950"]}>
+                {direct ?? (
                   <>
                     <span aria-hidden="true" class="text-muted-foreground group-hover:text-neutral-700">–</span>
                     <span class="sr-only">No</span>

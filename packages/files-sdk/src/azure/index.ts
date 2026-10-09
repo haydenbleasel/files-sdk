@@ -84,7 +84,7 @@ export interface AzureAdapterOptions {
    * auth and `url()` / `signedUploadUrl()` mint User Delegation SAS URLs.
    * A User Delegation SAS can live at most 7 days (the lifetime of the
    * delegation key that signs it): a longer `expiresIn` throws, and
-   * `signedUrl.maxExpiresIn` reports the cap.
+   * `signedUrl.maxExpiresIn` / `signedUpload.maxExpiresIn` report the cap.
    *
    * The principal must be allowed to access blob data and call
    * `Microsoft.Storage/storageAccounts/blobServices/generateUserDelegationKey/action`
@@ -803,8 +803,40 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     return { url: baseUrl };
   };
 
+  // A User Delegation SAS is capped at 7 days (`url()` and `signedUploadUrl()`
+  // throw above it); account-key SAS has no such limit, so the cap is declared
+  // only in user-delegation mode.
+  const sasExpiryCap = signer?.kind === "userDelegation" && {
+    maxExpiresIn: USER_DELEGATION_SAS_MAX_SECONDS,
+  };
+
   return {
     bucket: container,
+    capabilities: {
+      cacheControl: true,
+      delimiter: "any",
+      metadata: true,
+      rangeRead: true,
+      // `copy()` is a server-side `syncCopyFromURL`.
+      serverSideCopy: true,
+      // `signedUploadUrl()` mints a write SAS — only when a signer exists. A
+      // SAS binds neither a size limit nor the request Content-Type, so
+      // `maxSize` and `contentType` throw rather than being advisory.
+      signedUpload: {
+        contentType: false,
+        maxSize: false,
+        supported: Boolean(signer),
+        ...sasExpiryCap,
+      },
+      // `url()` mints a SAS (or returns `publicBaseUrl` when set) — only when a
+      // signer exists; SAS-only and anonymous adapters throw.
+      signedUrl: {
+        expiry: "exact",
+        supported: Boolean(signer),
+        ...sasExpiryCap,
+      },
+      uploadProgress: true,
+    },
     async copy(from, to, operationOpts) {
       try {
         const signal = operationOpts?.signal;
@@ -1112,7 +1144,6 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     name: "azure",
     raw: client,
-    reportsUploadProgress: true,
     resumableUpload(key, resumableOpts) {
       return createAzureResumableDriver(
         containerClient.getBlockBlobClient(key),
@@ -1165,22 +1196,6 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         throw mapAzureError(error);
       }
     },
-    // `url()` mints a SAS (or returns `publicBaseUrl` when set) — only when a
-    // signer exists; SAS-only and anonymous adapters throw. A User Delegation
-    // SAS is capped at 7 days (`url()` throws above it); account-key SAS has
-    // no such limit, so the cap is declared only in user-delegation mode.
-    signedUrl: {
-      supported: Boolean(signer),
-      ...(signer?.kind === "userDelegation" && {
-        maxExpiresIn: USER_DELEGATION_SAS_MAX_SECONDS,
-      }),
-    },
-    supportsCacheControl: true,
-    supportsDelimiter: true,
-    supportsMetadata: true,
-    supportsRange: true,
-    // `copy()` is a server-side `syncCopyFromURL`.
-    supportsServerSideCopy: true,
     async upload(key, body, options) {
       const { cacheControl, metadata, multipart, onProgress, signal } =
         options ?? {};

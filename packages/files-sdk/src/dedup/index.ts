@@ -208,8 +208,9 @@ const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
  * - **`url()` / `signedUploadUrl()` throw** — a presigned GET would hand out the
  *   empty pointer, and a presigned PUT would bypass content-addressing. Download
  *   through the instance instead. `files.capabilities` reports
- *   `signedUrl.supported` as `false` to match, so the `files-sdk/api` gateway
- *   proxies downloads through the instance.
+ *   `signedUrl.supported` and `signedUpload.supported` as `false` to match, so
+ *   the `files-sdk/api` gateway proxies uploads and downloads through the
+ *   instance.
  * - **Blobs aren't garbage-collected.** `delete` (and overwrite) drop the
  *   pointer but leave the content addressed, so it's reused if the content
  *   reappears; reclaim unreferenced blobs with a storage lifecycle rule or a
@@ -557,12 +558,14 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   return {
     // Advertise what the plugin refuses, so `files.capabilities` (and the
     // `files-sdk/api` gateway, which picks redirect vs proxy from it) never
-    // plans a presigned URL or a compare-and-set that would throw. Ranges
-    // stay as the adapter reports them: they're applied to the verbatim blob.
+    // plans a presigned URL, a direct upload, or a compare-and-set that would
+    // throw. Ranges stay as the adapter reports them: they're applied to the
+    // verbatim blob.
     capabilities: (caps) => ({
       ...caps,
       conditional: NO_CONDITIONAL,
-      signedUrl: { supported: false },
+      signedUpload: { contentType: false, maxSize: false, supported: false },
+      signedUrl: { expiry: "none", supported: false },
     }),
     name: "dedup",
     wrap,

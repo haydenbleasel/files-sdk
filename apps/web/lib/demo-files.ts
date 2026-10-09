@@ -46,12 +46,13 @@ const CAPABILITIES: AdapterCapabilities = {
     multipart: { create: false, replace: false },
     replace: false,
   },
-  delimiter: true,
+  delimiter: "any",
   metadata: true,
-  multipart: true,
   rangeRead: true,
+  resumable: true,
   serverSideCopy: true,
-  signedUrl: { maxExpiresIn: 3600, supported: true },
+  signedUpload: { contentType: true, maxSize: true, supported: true },
+  signedUrl: { expiry: "exact", maxExpiresIn: 3600, supported: true },
   uploadProgress: true,
 };
 
