@@ -20,7 +20,7 @@ await files.upload("backups/db.tar", stream, {
 - **OneDrive / SharePoint**: bodies over 250 MB (and any `multipart` request) use a chunked upload session.
 - **GCS / Firebase**: switch to a resumable upload; `partSize` maps to chunk size.
 - **Azure Blob**: maps `partSize`/`concurrency` to parallel block-upload tuning.
-- **Dropbox**: streams `ReadableStream` bodies through its upload session chunk-by-chunk (never buffers the whole file); `partSize` rounds to a 4 MiB multiple.
+- **Dropbox**: streams `ReadableStream` bodies through its upload session chunk-by-chunk (never buffers the whole file); `partSize` rounds to a 4 MiB multiple. Buffered bodies over 150 MB use a concurrent session with `dropbox` 10.47+ (`concurrency` chunks in parallel, default 4; `concurrency: 1` keeps it sequential).
 - Everything else either streams natively or only takes a buffered body, so it ignores the flag — except the `fetch` S3 engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), which throws rather than buffer a body it was asked to chunk.
 
 Adapters that chunk natively round `partSize` to their own granularity (OneDrive → 320 KiB multiple, GCS/Firebase → 256 KiB); S3 enforces a 5 MiB minimum per part except the last, and caps an object at 10,000 parts (so very large objects need a big enough `partSize`). Memory footprint is up to `partSize × concurrency`. Multipart is still **one `upload` call** for retries/timeouts/cancellation — a failure retries the whole call, not a part. To retry individual parts and pause/resume, use `control` below.

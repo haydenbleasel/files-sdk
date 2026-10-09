@@ -1,5 +1,9 @@
 import { getDeployStore, getStore } from "@netlify/blobs";
-import type { GetWithMetadataResult, Store } from "@netlify/blobs";
+import type {
+  GetDeployStoreOptions,
+  GetWithMetadataResult,
+  Store,
+} from "@netlify/blobs";
 
 import type {
   Adapter,
@@ -53,7 +57,18 @@ export interface NetlifyBlobsAdapterOptions {
    * read-your-writes.
    */
   consistency?: "eventual" | "strong";
+  /**
+   * Region that holds the store's data (`"us-east-1"`, `"eu-central-1"`, …).
+   * Site-wide stores don't read it from the environment, so without it the
+   * API picks its default region rather than your site's Functions region.
+   * Deploy-scoped stores already default to the deploy's region. Changing it
+   * later doesn't move data a store already holds.
+   */
+  region?: NetlifyBlobsRegion;
 }
+
+/** A Netlify Blobs region, as `@netlify/blobs` types it. */
+export type NetlifyBlobsRegion = NonNullable<GetDeployStoreOptions["region"]>;
 
 export type NetlifyBlobsClient = Store;
 
@@ -346,6 +361,7 @@ const walkList = async (
 interface NetlifyStoreOptions {
   name: string;
   consistency?: "eventual" | "strong";
+  region?: NetlifyBlobsRegion;
   siteID?: string;
   token?: string;
 }
@@ -364,6 +380,7 @@ const buildStoreOptions = (
   return {
     name: opts.name,
     ...(opts.consistency && { consistency: opts.consistency }),
+    ...(opts.region && { region: opts.region }),
     ...(siteID && token && { siteID, token }),
   };
 };

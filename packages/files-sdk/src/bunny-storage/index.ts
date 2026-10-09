@@ -227,10 +227,35 @@ const BUNNY_CONFLICT_CODES: ReadonlySet<string> = new Set(["Conflict"]);
 
 // The Bunny SDK throws `new Error(...)` with no `code` or `status` field —
 // see `statusCodeToException` in `@bunny.net/storage-sdk`. Classification
-// has to fall back to regex-matching the English message. The SDK's message
-// templates are stable today, but this will silently degrade to `Provider`
-// if they ever localize or rephrase. Keep the regex permissive enough to
-// match the current templates exactly.
+// has to fall back to matching the English message, which will silently
+// degrade to `Provider` if the SDK ever localizes or rephrases it.
+//
+// The SDK's own templates are matched anchored, first: they interpolate the
+// key (the 400 template since 0.3.2), so keyword-matching them would read a
+// key like `not found.txt` or `conflict.txt` as the cause. Anything else gets
+// the permissive keyword match.
+const classifyBunnyMessage = (message: string): string | undefined => {
+  if (message.startsWith("File not found: ")) {
+    return "NotFound";
+  }
+  if (message.startsWith("Unauthorized access to storage zone: ")) {
+    return "Unauthorized";
+  }
+  if (message.startsWith("Bad request for ")) {
+    return undefined;
+  }
+  if (/not found/iu.test(message)) {
+    return "NotFound";
+  }
+  if (/unauthor|access key|forbidden/iu.test(message)) {
+    return "Unauthorized";
+  }
+  if (/conflict|precondition/iu.test(message)) {
+    return "Conflict";
+  }
+  return undefined;
+};
+
 const _mapBunnyStorageError = makeErrorMapper({
   codes: {
     conflict: BUNNY_CONFLICT_CODES,
@@ -243,14 +268,9 @@ const _mapBunnyStorageError = makeErrorMapper({
     }
     const message =
       "message" in err && isString(err.message) ? err.message : "";
-    let code = "code" in err && isString(err.code) ? err.code : undefined;
-    if (!code && /not found/iu.test(message)) {
-      code = "NotFound";
-    } else if (!code && /unauthor|access key|forbidden/iu.test(message)) {
-      code = "Unauthorized";
-    } else if (!code && /conflict|precondition/iu.test(message)) {
-      code = "Conflict";
-    }
+    const code =
+      ("code" in err && isString(err.code) ? err.code : undefined) ??
+      classifyBunnyMessage(message);
     const status =
       "status" in err && isNumber(err.status) ? err.status : undefined;
     const statusCode =

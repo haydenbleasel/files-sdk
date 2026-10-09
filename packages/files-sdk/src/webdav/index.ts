@@ -113,6 +113,18 @@ const toWebStream = (body: ResponseBody): ReadableStream<Uint8Array> => {
   return nodeToWebStream(nodeReadable);
 };
 
+// webdav 5.11 types `customRequest`'s result as a minimal structural Response
+// with no `body`. The runtime value is still the fetch Response itself, so
+// read the unread body structurally (and keep compiling against 5.10's types).
+type CustomResponse = Awaited<ReturnType<WebDAVClient["customRequest"]>>;
+
+const readBody = (res: CustomResponse): ResponseBody | null => {
+  const body: unknown = "body" in res ? res.body : null;
+  // SAFETY: the Response is node-fetch's (body: Readable) or the platform
+  // fetch's (body: ReadableStream); any object body is one of the two.
+  return isObject(body) ? (body as ResponseBody) : null;
+};
+
 // WebDAV errors from the `webdav` library carry the HTTP status on `.status`;
 // classify on the standard status buckets. Transport failures (fetch rejected:
 // DNS, connection refused, TLS) arrive with no status and fall through to
@@ -345,7 +357,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           if (range) {
             assertRangeHonored(res.status, "webdav");
           }
-          const { body } = res;
+          const body = readBody(res);
           if (!body) {
             throw new FilesError(
               "Provider",

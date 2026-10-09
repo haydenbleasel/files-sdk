@@ -317,6 +317,10 @@ const fakeClient = {
 
 const baseOpts = { client: fakeClient };
 
+// Each SDK route's second argument: the per-request transport options.
+const requestOptions = (m: { mock: { calls: unknown[][] } }) =>
+  m.mock.calls.map((call) => call[1]);
+
 beforeEach(() => {
   store = new Map();
   nextId = 0;
@@ -1355,12 +1359,14 @@ describe("dropbox adapter", () => {
     expect((err as FilesError).message).toBe("Dropbox error");
   });
 
-  test("upload uses the chunked session API for files larger than 150MB", async () => {
+  test("upload uses the sequential session loop for files larger than 150MB at concurrency 1", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     // 150 MiB + 1 byte — just over the simple-upload threshold.
     const SIZE = 150 * 1024 * 1024 + 1;
     const big = Buffer.allocUnsafe(SIZE);
-    const r = await files.upload("big.bin", big);
+    const r = await files.upload("big.bin", big, {
+      multipart: { concurrency: 1 },
+    });
     expect(r.size).toBe(SIZE);
     expect(filesUploadMock).not.toHaveBeenCalled();
     expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
@@ -1423,7 +1429,7 @@ describe("dropbox adapter", () => {
     const MB = 1024 * 1024;
     const big = Buffer.allocUnsafe(160 * MB);
     const r = await files.upload("capped.bin", big, {
-      multipart: { partSize: 1024 * MB },
+      multipart: { concurrency: 1, partSize: 1024 * MB },
     });
     expect(r.size).toBe(160 * MB);
     expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
@@ -1433,6 +1439,54 @@ describe("dropbox adapter", () => {
     const finishArg = filesUploadSessionFinishMock.mock.calls[0]?.[0];
     expect(finishArg?.cursor.offset).toBe(148 * MB);
     expect(finishArg?.contents.byteLength).toBe(12 * MB);
+  });
+
+  test("upload runs a concurrent session for files larger than 150MB by default", async () => {
+    const adapter = dropbox(baseOpts);
+    const MB = 1024 * 1024;
+    // 150 MiB + 1 byte in 8 MiB chunks: 18 full chunks plus a 6 MiB + 1 tail.
+    const SIZE = 150 * MB + 1;
+    const { signal } = new AbortController();
+    const r = await adapter.upload("big.bin", Buffer.allocUnsafe(SIZE), {
+      signal,
+    });
+    expect(r.size).toBe(SIZE);
+    expect(filesUploadMock).not.toHaveBeenCalled();
+    const startArg = filesUploadSessionStartMock.mock.calls[0]?.[0] as {
+      contents: Uint8Array;
+      session_type?: { ".tag": string };
+    };
+    expect(filesUploadSessionStartMock).toHaveBeenCalledTimes(1);
+    expect(startArg.session_type).toEqual({ ".tag": "concurrent" });
+    expect(startArg.contents.byteLength).toBe(0);
+    // Every chunk is an append; only the tail closes the session.
+    const appends = filesUploadSessionAppendV2Mock.mock.calls.map(
+      ([arg]) => arg
+    );
+    expect(appends).toHaveLength(19);
+    expect(
+      appends.map((arg) => arg.cursor.offset).toSorted((a, b) => a - b)
+    ).toEqual(Array.from({ length: 19 }, (_, index) => index * 8 * MB));
+    expect(appends.filter((arg) => arg.close)).toEqual([
+      expect.objectContaining({
+        cursor: expect.objectContaining({ offset: 144 * MB }),
+      }),
+    ]);
+    for (const options of requestOptions(filesUploadSessionAppendV2Mock)) {
+      expect((options as { signal?: unknown }).signal).toBeInstanceOf(
+        AbortSignal
+      );
+    }
+    // Finish commits the closed session with no further bytes.
+    const finishArg = filesUploadSessionFinishMock.mock.calls[0]?.[0];
+    expect(filesUploadSessionFinishMock).toHaveBeenCalledTimes(1);
+    expect(finishArg?.cursor.offset).toBe(SIZE);
+    expect(finishArg?.contents.byteLength).toBe(0);
+    expect(finishArg?.commit).toEqual({
+      mode: { ".tag": "overwrite" },
+      mute: true,
+      path: "/big.bin",
+    });
   });
 
   test("a small stream uses a single simple upload, not a session", async () => {
@@ -1653,5 +1707,79 @@ describe("dropbox resumable uploads", () => {
     await expect(
       files.upload("doc.bin", "data", { control: UploadControl.from(token) })
     ).rejects.toThrow(/does not match/u);
+  });
+});
+
+describe("dropbox request options", () => {
+  const FOUR_MIB = 4 * 1024 * 1024;
+
+  test("every SDK route gets the caller's abort signal", async () => {
+    const adapter = dropbox(baseOpts);
+    const { signal } = new AbortController();
+    await adapter.upload("a.txt", "hello", { signal });
+    // A stream over one chunk runs a whole session: start, append, finish.
+    await adapter.upload(
+      "s.bin",
+      new Blob([new Uint8Array(2 * FOUR_MIB + 10)]).stream(),
+      { multipart: { partSize: FOUR_MIB }, signal }
+    );
+    await adapter.download("a.txt", { signal });
+    await adapter.head("a.txt", { signal });
+    await adapter.exists("a.txt", { signal });
+    await adapter.copy("a.txt", "b.txt", { signal });
+    await adapter.list({ signal });
+    await adapter.list({ cursor: "next", signal });
+    await adapter.url("a.txt", { signal });
+    await adapter.delete("b.txt", { signal });
+    for (const route of [
+      filesUploadMock,
+      filesUploadSessionStartMock,
+      filesUploadSessionAppendV2Mock,
+      filesUploadSessionFinishMock,
+      filesDownloadMock,
+      filesGetMetadataMock,
+      filesCopyV2Mock,
+      filesListFolderMock,
+      filesListFolderContinueMock,
+      filesGetTemporaryLinkMock,
+      filesDeleteV2Mock,
+    ]) {
+      expect(requestOptions(route).length).toBeGreaterThan(0);
+      for (const options of requestOptions(route)) {
+        expect(options).toEqual({ signal });
+      }
+    }
+  });
+
+  test("the shared link and resumable chunks carry the signal too", async () => {
+    const { signal } = new AbortController();
+    await dropbox({ ...baseOpts, publicByDefault: true }).upload(
+      "p.txt",
+      "hi",
+      { signal }
+    );
+    expect(requestOptions(sharingCreateSharedLinkWithSettingsMock)).toEqual([
+      { signal },
+    ]);
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("r.bin", new Uint8Array(FOUR_MIB + 10), {
+      control: new UploadControl(),
+      multipart: { partSize: FOUR_MIB },
+    });
+    const chunkOptions = [
+      ...requestOptions(filesUploadSessionAppendV2Mock),
+      ...requestOptions(filesUploadSessionFinishMock),
+    ];
+    expect(chunkOptions).toHaveLength(2);
+    for (const options of chunkOptions) {
+      expect((options as { signal?: unknown }).signal).toBeInstanceOf(
+        AbortSignal
+      );
+    }
+  });
+
+  test("routes get no transport options without a signal", async () => {
+    await dropbox(baseOpts).upload("a.txt", "hello");
+    expect(requestOptions(filesUploadMock)).toEqual([undefined]);
   });
 });

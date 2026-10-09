@@ -330,6 +330,22 @@ describe("netlify-blobs adapter", () => {
     expect(call.consistency).toBe("strong");
   });
 
+  test("region threads through to site and deploy stores, and is omitted by default", () => {
+    netlifyBlobs({ name: "my-store", region: "eu-central-1" });
+    netlifyBlobs({ deployScoped: true, name: "my-store", region: "us-east-2" });
+    netlifyBlobs({ name: "my-store" });
+    const [site, unset] = getStoreMock.mock.calls.map(
+      (args) => args[0] as { region?: string }
+    );
+    const deploy = getDeployStoreMock.mock.calls[0]?.[0] as {
+      region?: string;
+    };
+    expect(site?.region).toBe("eu-central-1");
+    expect(deploy.region).toBe("us-east-2");
+    expect(unset).toBeDefined();
+    expect(unset).not.toHaveProperty("region");
+  });
+
   test("upload writes the body and packs metadata", async () => {
     const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
     const result = await files.upload("a.txt", "hello", {

@@ -27,9 +27,12 @@ const files = new Files({
     // token: process.env.NETLIFY_API_TOKEN,
     // deployScoped: false,           // true uses getDeployStore()
     // consistency: "eventual",       // or "strong"
+    // region: "eu-central-1",        // site stores default to the API's region
   }),
 });
 ```
+
+Site-wide stores don't pick up your site's Functions region on their own, so set `region` to keep a store's data next to the functions that read it. Deploy-scoped stores already use the deploy's region. Changing `region` later doesn't move data a store already holds.
 
 Netlify Blobs has no native size, content-type, or last-modified fields, so the adapter packs them - plus `cacheControl` and user `metadata` - into Netlify's metadata map at upload time. `head()` and `download()` read them back, so the unified `StoredFile` shape works the same as on the cloud adapters.
 

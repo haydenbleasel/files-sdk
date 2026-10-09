@@ -144,6 +144,7 @@ Notes:
 - A SAS-token-only adapter (no `accountKey`) **cannot mint new SAS** — `url()` and `signedUploadUrl()` throw `Provider`. Reads/writes/list still work as long as the SAS has those permissions.
 - A `credential` adapter uses Azure AD / Managed Identity for SDK calls and mints User Delegation SAS URLs for `url()` and `signedUploadUrl()`. The principal needs blob data permissions plus permission to call `generateUserDelegationKey`.
 - `connectionString` is the highest-precedence credential source.
+- Azurite: `@azure/storage-blob` 12.34+ sends service version `2026-10-06`, newer than Azurite 3.37.0 accepts. Start Azurite with `--skipApiVersionCheck`.
 
 ## MinIO — `files-sdk/minio`
 

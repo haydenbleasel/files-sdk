@@ -59,6 +59,8 @@ Azure AD / Managed Identity is supported via the `credential` option (install `@
 
 Explicit auth options always win over environment variables: the `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_KEY`, and `AZURE_STORAGE_SAS_TOKEN` fallbacks are read only when you pass none of `connectionString`, `accountKey`, `credential`, or `sasToken`. An explicit `endpoint` also wins over the endpoint in a connection string that carries an account key or SAS.
 
+To develop against [Azurite](https://github.com/Azure/Azurite), point `endpoint` at it (`http://127.0.0.1:10000/devstoreaccount1`). `@azure/storage-blob` 12.34 and later send storage service version `2026-10-06`, which is newer than the latest Azurite release (3.37.0) accepts, so start Azurite with `--skipApiVersionCheck` until it catches up.
+
 ## Compatibility
 
 | Method | Status | Notes |

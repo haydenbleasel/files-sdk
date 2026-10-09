@@ -1,7 +1,13 @@
 import { Buffer } from "node:buffer";
 
 import { Dropbox, DropboxAuth, DropboxResponseError } from "dropbox";
-import type { DropboxFileBinary, DropboxFileBlob, files } from "dropbox";
+import * as dropboxSdk from "dropbox";
+import type {
+  DropboxFileBinary,
+  DropboxFileBlob,
+  DropboxRequestOptions,
+  files,
+} from "dropbox";
 
 import type {
   Adapter,
@@ -104,6 +110,26 @@ const MAX_TEMPORARY_LINK_DURATION = 14_400;
 const OCTET_STREAM = "application/octet-stream";
 const REFRESH_LEEWAY_MS = 60_000;
 const SIMPLE_UPLOAD_LIMIT_BYTES = 150 * 1024 * 1024;
+
+// dropbox 10.47's `uploadFile` drives a concurrent upload session: chunks
+// append in parallel, then the session closes and commits. Older peers don't
+// export it and keep the sequential session loop.
+const sdkUploadFile =
+  "uploadFile" in dropboxSdk && "bytesUpload" in dropboxSdk
+    ? { bytesUpload: dropboxSdk.bytesUpload, uploadFile: dropboxSdk.uploadFile }
+    : undefined;
+
+// Chunks in flight for a concurrent session, mirroring the S3 adapter's
+// multipart default.
+const MULTIPART_DEFAULT_CONCURRENCY = 4;
+
+// Per-request transport options for every SDK route: the SDK aborts the
+// in-flight request on `signal` (the Files wrapper folds `timeout` into it).
+// Dropbox SDKs before 10.42 take no second argument and ignore it.
+const req = (
+  signal: AbortSignal | undefined
+): DropboxRequestOptions | undefined => (signal ? { signal } : undefined);
+
 const UPLOAD_SESSION_CHUNK_BYTES = 8 * 1024 * 1024;
 // Dropbox requires every non-final session chunk to be a multiple of 4 MiB.
 const UPLOAD_SESSION_CHUNK_MULTIPLE = 4 * 1024 * 1024;
@@ -767,12 +793,18 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     }
   };
 
-  const createPublicSharedLink = async (key: string): Promise<string> => {
+  const createPublicSharedLink = async (
+    key: string,
+    signal?: AbortSignal
+  ): Promise<string> => {
     try {
-      const res = await client.sharingCreateSharedLinkWithSettings({
-        path: keyToPath(key),
-        settings: { requested_visibility: { ".tag": "public" } },
-      });
+      const res = await client.sharingCreateSharedLinkWithSettings(
+        {
+          path: keyToPath(key),
+          settings: { requested_visibility: { ".tag": "public" } },
+        },
+        req(signal)
+      );
       return rewriteSharedLinkForDirectDownload(res.result.url);
     } catch (error) {
       // If a link already exists, the SDK throws with `shared_link_already_exists`
@@ -792,66 +824,100 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
 
   const uploadSimple = async (
     path: string,
-    data: Buffer
+    data: Buffer,
+    signal?: AbortSignal
   ): Promise<files.FileMetadata> => {
-    const res = await client.filesUpload({
-      contents: data,
-      mode: { ".tag": "overwrite" },
-      mute: true,
-      path,
-    });
+    const res = await client.filesUpload(
+      {
+        contents: data,
+        mode: { ".tag": "overwrite" },
+        mute: true,
+        path,
+      },
+      req(signal)
+    );
     return res.result;
   };
 
-  const sessionStart = async (contents: Buffer): Promise<string> => {
-    const start = await client.filesUploadSessionStart({
-      close: false,
-      contents,
-    });
+  const sessionStart = async (
+    contents: Buffer,
+    signal?: AbortSignal
+  ): Promise<string> => {
+    const start = await client.filesUploadSessionStart(
+      { close: false, contents },
+      req(signal)
+    );
     return start.result.session_id;
   };
 
   const sessionAppend = async (
     sessionId: string,
     offset: number,
-    contents: Buffer
+    contents: Buffer,
+    signal?: AbortSignal
   ): Promise<void> => {
-    await client.filesUploadSessionAppendV2({
-      close: false,
-      contents,
-      cursor: { offset, session_id: sessionId },
-    });
+    await client.filesUploadSessionAppendV2(
+      {
+        close: false,
+        contents,
+        cursor: { offset, session_id: sessionId },
+      },
+      req(signal)
+    );
   };
 
   const sessionFinish = async (
     path: string,
     sessionId: string,
     offset: number,
-    contents: Buffer
+    contents: Buffer,
+    signal?: AbortSignal
   ): Promise<files.FileMetadata> => {
-    const finish = await client.filesUploadSessionFinish({
-      commit: { mode: { ".tag": "overwrite" }, mute: true, path },
-      contents,
-      cursor: { offset, session_id: sessionId },
-    });
+    const finish = await client.filesUploadSessionFinish(
+      {
+        commit: { mode: { ".tag": "overwrite" }, mute: true, path },
+        contents,
+        cursor: { offset, session_id: sessionId },
+      },
+      req(signal)
+    );
     return finish.result;
   };
 
   const uploadSession = async (
     path: string,
     data: Buffer,
-    chunkBytes: number
+    chunkBytes: number,
+    concurrency: number,
+    signal?: AbortSignal
   ): Promise<files.FileMetadata> => {
+    if (sdkUploadFile && concurrency > 1) {
+      const { metadata } = await sdkUploadFile.uploadFile(
+        client,
+        sdkUploadFile.bytesUpload(data),
+        { mode: { ".tag": "overwrite" }, mute: true, path },
+        {
+          chunkSize: chunkBytes,
+          // Retries stay with the Files wrapper, where `retries` and
+          // `onRetry` see them, rather than nesting the SDK's own.
+          maxAttempts: 1,
+          parallelUploads: concurrency,
+          ...(signal && { signal }),
+        }
+      );
+      return metadata;
+    }
     const total = data.byteLength;
     let offset = Math.min(chunkBytes, total);
-    const sessionId = await sessionStart(data.subarray(0, offset));
+    const sessionId = await sessionStart(data.subarray(0, offset), signal);
 
     while (total - offset > chunkBytes) {
       // eslint-disable-next-line no-await-in-loop -- chunks must be sequential to honor Dropbox session offset.
       await sessionAppend(
         sessionId,
         offset,
-        data.subarray(offset, offset + chunkBytes)
+        data.subarray(offset, offset + chunkBytes),
+        signal
       );
       offset += chunkBytes;
     }
@@ -859,7 +925,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       path,
       sessionId,
       offset,
-      data.subarray(offset, total)
+      data.subarray(offset, total),
+      signal
     );
   };
 
@@ -870,19 +937,26 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
   const uploadSessionFromStream = async (
     path: string,
     stream: ReadableStream<Uint8Array>,
-    chunkBytes: number
+    chunkBytes: number,
+    signal?: AbortSignal
   ): Promise<{ item: files.FileMetadata; size: number }> => {
     const chunker = makeStreamChunker(stream, chunkBytes);
     const first = await chunker.next();
     // Empty stream, or one that fits in a single chunk: a plain upload is
     // cheaper than a 3-call session and still memory-bounded.
     if (first === null) {
-      return { item: await uploadSimple(path, Buffer.alloc(0)), size: 0 };
+      return {
+        item: await uploadSimple(path, Buffer.alloc(0), signal),
+        size: 0,
+      };
     }
     if (first.byteLength < chunkBytes) {
-      return { item: await uploadSimple(path, first), size: first.byteLength };
+      return {
+        item: await uploadSimple(path, first, signal),
+        size: first.byteLength,
+      };
     }
-    const sessionId = await sessionStart(first);
+    const sessionId = await sessionStart(first, signal);
     let offset = first.byteLength;
     let chunk = await chunker.next();
     while (chunk !== null) {
@@ -893,12 +967,12 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         break;
       }
       // eslint-disable-next-line no-await-in-loop -- sequential session offsets.
-      await sessionAppend(sessionId, offset, chunk);
+      await sessionAppend(sessionId, offset, chunk, signal);
       offset += chunk.byteLength;
       chunk = next;
     }
     const tail = chunk ?? Buffer.alloc(0);
-    const item = await sessionFinish(path, sessionId, offset, tail);
+    const item = await sessionFinish(path, sessionId, offset, tail, signal);
     return { item, size: offset + tail.byteLength };
   };
 
@@ -995,6 +1069,7 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         offset,
         data,
         isLast,
+        signal,
       }): Promise<{ nextOffset: number }> {
         try {
           await authHandle.ensureAccessToken();
@@ -1005,10 +1080,11 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
               path,
               current.sessionId,
               offset,
-              buffer
+              buffer,
+              signal
             );
           } else {
-            await sessionAppend(current.sessionId, offset, buffer);
+            await sessionAppend(current.sessionId, offset, buffer, signal);
           }
           const nextOffset = offset + data.byteLength;
           current.offset = nextOffset;
@@ -1021,21 +1097,24 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
   };
 
   const adapter: DropboxAdapter = {
-    async copy(from, to) {
+    async copy(from, to, copyOpts) {
       try {
         await authHandle.ensureAccessToken();
-        await client.filesCopyV2({
-          from_path: keyToPath(from),
-          to_path: keyToPath(to),
-        });
+        await client.filesCopyV2(
+          { from_path: keyToPath(from), to_path: keyToPath(to) },
+          req(copyOpts?.signal)
+        );
       } catch (error) {
         throw mapDropboxError(error);
       }
     },
-    async delete(key) {
+    async delete(key, deleteOpts) {
       try {
         await authHandle.ensureAccessToken();
-        await client.filesDeleteV2({ path: keyToPath(key) });
+        await client.filesDeleteV2(
+          { path: keyToPath(key) },
+          req(deleteOpts?.signal)
+        );
       } catch (error) {
         const mapped = mapDropboxError(error);
         // Idempotent: missing item is not an error.
@@ -1052,12 +1131,12 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         // `filesDownload` buffers the whole body and exposes neither streaming
         // nor a byte range. For streaming OR a range we fetch the temporary
         // link instead — it serves the bytes over standard HTTP (Range-capable)
-        // and exposes a ReadableStream body. This fetch is also the only path
-        // that can carry the abort signal, since the SDK transport can't.
+        // and exposes a ReadableStream body.
         if (downloadOpts?.as === "stream" || range) {
-          const tmp = await client.filesGetTemporaryLink({
-            path: keyToPath(key),
-          });
+          const tmp = await client.filesGetTemporaryLink(
+            { path: keyToPath(key) },
+            req(downloadOpts?.signal)
+          );
           const tmpResult = tmp.result;
           const meta = fileMetaFromDropbox(tmpResult.metadata);
           const linkRes = await fetch(tmpResult.link, {
@@ -1097,7 +1176,10 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
             { data: rangedBytes, kind: "buffer" }
           );
         }
-        const res = await client.filesDownload({ path: keyToPath(key) });
+        const res = await client.filesDownload(
+          { path: keyToPath(key) },
+          req(downloadOpts?.signal)
+        );
         const { result } = res;
         const meta = fileMetaFromDropbox(result);
         const bytes = await downloadResultToBytes(result);
@@ -1109,10 +1191,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         throw mapDropboxError(error);
       }
     },
-    exists(key) {
+    exists(key, existsOpts) {
       return existsByProbe(async () => {
         await authHandle.ensureAccessToken();
-        const res = await client.filesGetMetadata({ path: keyToPath(key) });
+        const res = await client.filesGetMetadata(
+          { path: keyToPath(key) },
+          req(existsOpts?.signal)
+        );
         const item = res.result;
         const tag = item[".tag"];
         if (tag === "folder" || tag === "deleted") {
@@ -1123,10 +1208,13 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         }
       }, mapDropboxError);
     },
-    async head(key) {
+    async head(key, headOpts) {
       try {
         await authHandle.ensureAccessToken();
-        const res = await client.filesGetMetadata({ path: keyToPath(key) });
+        const res = await client.filesGetMetadata(
+          { path: keyToPath(key) },
+          req(headOpts?.signal)
+        );
         const item = res.result;
         if (item[".tag"] === "folder" || item[".tag"] === "deleted") {
           throw new FilesError(
@@ -1158,16 +1246,22 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
       try {
         await authHandle.ensureAccessToken();
         const res = options?.cursor
-          ? await client.filesListFolderContinue({ cursor: options.cursor })
-          : await client.filesListFolder({
-              limit: options?.limit,
-              path: keyToPath(
-                folded
-                  ? prefix.slice(0, Math.max(prefix.lastIndexOf("/"), 0))
-                  : ""
-              ),
-              recursive: !folded,
-            });
+          ? await client.filesListFolderContinue(
+              { cursor: options.cursor },
+              req(options.signal)
+            )
+          : await client.filesListFolder(
+              {
+                limit: options?.limit,
+                path: keyToPath(
+                  folded
+                    ? prefix.slice(0, Math.max(prefix.lastIndexOf("/"), 0))
+                    : ""
+                ),
+                recursive: !folded,
+              },
+              req(options?.signal)
+            );
         const { result } = res;
         const items: StoredFile[] = [];
         const prefixes: string[] = [];
@@ -1262,7 +1356,8 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           ({ item, size } = await uploadSessionFromStream(
             path,
             body,
-            chunkBytes
+            chunkBytes,
+            options?.signal
           ));
         } else {
           const normalized = await normalizeBody(body, options?.contentType);
@@ -1270,13 +1365,21 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           size = normalized.data.byteLength;
           item =
             size <= SIMPLE_UPLOAD_LIMIT_BYTES
-              ? await uploadSimple(path, normalized.data)
-              : await uploadSession(path, normalized.data, chunkBytes);
+              ? await uploadSimple(path, normalized.data, options?.signal)
+              : await uploadSession(
+                  path,
+                  normalized.data,
+                  chunkBytes,
+                  (isObject(options?.multipart)
+                    ? options.multipart.concurrency
+                    : undefined) ?? MULTIPART_DEFAULT_CONCURRENCY,
+                  options?.signal
+                );
         }
         if (publicByDefault) {
           // Idempotent: if the link already exists, createPublicSharedLink
           // pulls the existing URL from the error body.
-          await createPublicSharedLink(key);
+          await createPublicSharedLink(key, options?.signal);
         }
         const meta = fileMetaFromDropbox(item);
         return {
@@ -1315,11 +1418,12 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         // oxlint-disable-next-line react-doctor/async-defer-await -- both branches below need a fresh access token, so this must run before the publicByDefault guard, not after it
         await authHandle.ensureAccessToken();
         if (publicByDefault) {
-          return await createPublicSharedLink(key);
+          return await createPublicSharedLink(key, urlOpts?.signal);
         }
-        const res = await client.filesGetTemporaryLink({
-          path: keyToPath(key),
-        });
+        const res = await client.filesGetTemporaryLink(
+          { path: keyToPath(key) },
+          req(urlOpts?.signal)
+        );
         return res.result.link;
       } catch (error) {
         throw mapDropboxError(error);

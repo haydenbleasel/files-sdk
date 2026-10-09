@@ -1203,6 +1203,32 @@ describe("bunnyStorage adapter", () => {
     expect(fromPrecondition.code).toBe("Conflict");
   });
 
+  test("mapBunnyStorageError doesn't read the key in the SDK's templates as the cause", () => {
+    // 0.3.2 interpolates the key into the 400 template.
+    for (const key of ["not found.txt", "forbidden/conflict.txt"]) {
+      expect(
+        mapBunnyStorageError(
+          new Error(`Bad request for ${key}: invalid path or checksum.`)
+        ).code
+      ).toBe("Provider");
+    }
+    expect(
+      mapBunnyStorageError(new Error("File not found: forbidden.txt")).code
+    ).toBe("NotFound");
+    expect(
+      mapBunnyStorageError(
+        new Error("Unauthorized access to storage zone: conflict-zone")
+      ).code
+    ).toBe("Unauthorized");
+    // Messages outside the SDK's templates keep the keyword match.
+    expect(mapBunnyStorageError(new Error("Object not found")).code).toBe(
+      "NotFound"
+    );
+    expect(mapBunnyStorageError(new Error("Forbidden")).code).toBe(
+      "Unauthorized"
+    );
+  });
+
   test("delete wraps SDK-thrown errors in a FilesError", async () => {
     const realRemove = removeMock.getMockImplementation();
     removeMock.mockImplementation(() =>
