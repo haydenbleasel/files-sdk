@@ -14,13 +14,16 @@ Tools are a record shaped for `tools: { ... }` on `generateText`/`streamText`/`T
 import { Files } from "files-sdk";
 import { createFileTools } from "files-sdk/ai-sdk";
 import { s3 } from "files-sdk/s3";
-import { generateText } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const files = new Files({ adapter: s3({ bucket: "uploads" }) });
 
 await generateText({
   model,
   tools: createFileTools({ files }),
+  // generateText stops after one step by default; without this the run ends
+  // at the first tool call and never answers.
+  stopWhen: isStepCount(10),
   prompt: "Find every CSV under reports/ and summarize the latest one.",
 });
 ```

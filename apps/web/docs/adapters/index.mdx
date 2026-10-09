@@ -1,6 +1,7 @@
 ---
 title: Adapters
-description: Every storage backend Files SDK supports. Each adapter is its own subpath export behind the same API, with its provider's SDK as an optional peer.
+description: Compare the 48 storage backends Files SDK supports, from Cloudflare R2 and S3 to Vercel Blob and the local filesystem, by what each one can do.
+mode: wide
 sidebar:
   label: Overview
 ---
@@ -18,3 +19,18 @@ These providers help maintain Files SDK by [sponsoring its development](https://
 ## Other adapters
 
 <AdapterList group="other" />
+
+## Compare adapters
+
+Every adapter runs the same methods. Where providers differ is in the options those methods take: a byte range, a folder listing, custom metadata, and so on. An adapter that can't do something throws before calling the provider, instead of quietly ignoring the option. The table shows what each adapter supports with its default options. At runtime, [`files.capabilities`](/docs/capabilities) reports the same flags for the adapter you configured.
+
+<AdapterComparison />
+
+- **Range reads:** `download(key, { range })` fetches only the bytes you ask for.
+- **Folders:** `list({ delimiter: "/" })` returns one level of a hierarchy, with subfolders as prefixes.
+- **Metadata** and **Cache-Control:** `upload()` stores custom metadata or a `Cache-Control` header on the object.
+- **Resumable uploads:** `upload()` with an `UploadControl` can pause, resume, and pick up in a later process. See [resumable uploads](/docs/resumable).
+- **Server-side copy:** `copy()` happens inside the provider, without downloading and re-uploading the body.
+- **Upload progress:** the provider reports byte-level progress for every body. Without it, `onProgress` still reports bytes for stream bodies, and start and finish for buffered ones.
+- **Signed URLs:** `url()` returns a link that expires, up to the lifetime shown. Some adapters sign only in some modes: Vercel Blob only with `access: "private"`, Dropbox unless `publicByDefault` is set, and R2's Workers binding only with HTTP credentials as well.
+- **Conditional writes:** uploads that apply only if the key is absent, or still has a given ETag. The `s3()` adapter uses S3's conditional requests on AWS; against another S3-compatible endpoint, opt in with `conditional: true` where the provider supports them. See [conditional operations](/docs/conditional-operations).

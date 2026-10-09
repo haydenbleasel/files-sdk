@@ -131,7 +131,7 @@ Model it on the most recent one (`git show --stat` the "Add a … adapter" commi
 2. `package.json` `exports["./<slug>"]` (+ optional peer if it needs an SDK).
 3. `src/providers/index.ts` catalog entry with every env var the adapter reads (the drift test checks both directions).
 4. `src/cli/registry.ts` entry + a case in `test/cli-registry.test.ts`.
-5. `test/<slug>.test.ts` at parity with siblings: CRUD, URLs, error mapping, env fallback, capability gates. 98% coverage.
+5. `test/<slug>.test.ts` at parity with siblings: CRUD, URLs, error mapping, env fallback, capability gates. 98% coverage. Then regenerate the docs comparison table's data (`/docs/adapters`): `WRITE_ADAPTER_CAPABILITIES=1 bun test adapter-capabilities`. If the adapter needs more than S3-style placeholder options to construct, add them to `PROVIDER_OPTS` in `test/adapter-capabilities.test.ts`. The same test fails whenever a capability flag changes without a regenerate.
 6. `test/build-output.test.ts` if the adapter has an optional peer.
 7. Docs: `apps/web/docs/adapters/(vendor-adapters)/<slug>.mdx` (or `(system-adapters)`), the provider span in `docs/cli/index.mdx`, and any "N providers" counts in `docs/index.mdx` / `faq.mdx`.
 8. `skills/files-sdk/SKILL.md` + `references/adapter-setup.md`, `.github/CONTRIBUTING.md` lists.

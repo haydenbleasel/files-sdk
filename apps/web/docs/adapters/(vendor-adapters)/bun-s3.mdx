@@ -1,7 +1,9 @@
 ---
 title: Bun S3
-description: AWS S3 (and any S3-compatible bucket) via Bun's native Bun.S3Client instead of @aws-sdk/client-s3 - Bun-only, with no extra peer dependencies.
+description: Upload, download, list, and presign files with Bun's native Bun.S3Client on AWS S3, Cloudflare R2, MinIO, or any S3-compatible bucket, with no AWS SDK.
 ---
+
+`files-sdk/bun-s3` runs the `Files` API on [`Bun.S3Client`](https://bun.com/docs/runtime/s3), the S3 client built into the Bun runtime, instead of `@aws-sdk/client-s3`. It talks to AWS S3 and, through the `endpoint` option, to any S3-compatible service such as Cloudflare R2, MinIO, or DigitalOcean Spaces. Use it when your app already runs on Bun and you want S3 storage without installing the AWS SDK.
 
 ## Installation
 
@@ -30,6 +32,8 @@ const files = new Files({
 new Files({ adapter: bunS3({ client: Bun.s3 }) });
 ```
 
+When you pass `client`, the client owns its bucket, region, endpoint, and credentials, so the adapter throws at construction if you also pass `bucket`, `region`, `endpoint`, `virtualHostedStyle`, `accessKeyId`, `secretAccessKey`, or `sessionToken`. `publicBaseUrl` and `defaultUrlExpiresIn` still apply.
+
 The main differences from `files-sdk/s3`:
 
 - `copy()` streams bytes through your process, because Bun doesn't expose a server-side `CopyObject` primitive.
@@ -38,6 +42,219 @@ The main differences from `files-sdk/s3`:
 - Pause/resume via `control` works within one process only, and there are no provider-native [conditional operations](/docs/conditional-operations).
 
 Reach for `files-sdk/s3` on the same bucket when you need any of those.
+
+### Environment variables
+
+The bucket, region, endpoint, and credentials can all come from the environment. Bun resolves these itself, not files-sdk: it checks the `S3_*` name first, then the `AWS_*` fallback, and an option you pass explicitly wins over both.
+
+| Option            | Environment variable   | Fallback                |
+| ----------------- | ---------------------- | ----------------------- |
+| `accessKeyId`     | `S3_ACCESS_KEY_ID`     | `AWS_ACCESS_KEY_ID`     |
+| `secretAccessKey` | `S3_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY` |
+| `sessionToken`    | `S3_SESSION_TOKEN`     | `AWS_SESSION_TOKEN`     |
+| `region`          | `S3_REGION`            | `AWS_REGION`            |
+| `endpoint`        | `S3_ENDPOINT`          | `AWS_ENDPOINT`          |
+| `bucket`          | `S3_BUCKET`            | `AWS_BUCKET`            |
+
+Bun reads them from `.env` files or the process environment, not through `process.env`, so pass an option explicitly for any value you compute at runtime. With no `region` and no `endpoint`, Bun targets AWS S3 in `us-east-1`.
+
+```bash title=".env" lineNumbers
+S3_ACCESS_KEY_ID=AKIA...
+S3_SECRET_ACCESS_KEY=...
+S3_REGION=eu-west-1
+S3_BUCKET=uploads
+```
+
+```ts lineNumbers
+// Everything comes from .env
+const files = new Files({ adapter: bunS3() });
+```
+
+## Connect to Cloudflare R2, MinIO, and other S3-compatible services
+
+Set `endpoint` to point the client at an S3-compatible API. Requests use path-style addressing (`https://<endpoint>/<bucket>/<key>`) unless you set `virtualHostedStyle: true`.
+
+### Cloudflare R2
+
+```ts lineNumbers
+const files = new Files({
+  adapter: bunS3({
+    bucket: "uploads",
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    region: "auto",
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  }),
+});
+```
+
+Use an R2 API token's access key ID and secret access key. If you need server-side copy, upload metadata, or a Workers `R2Bucket` binding, use the dedicated [`files-sdk/r2`](/docs/adapters/r2) adapter instead; its [fetch client](/docs/adapters/r2#lightweight-fetch-client) also needs no `@aws-sdk/*` packages.
+
+### MinIO and local development
+
+```ts lineNumbers
+const files = new Files({
+  adapter: bunS3({
+    bucket: "uploads",
+    endpoint: "http://localhost:9000",
+    accessKeyId: "minioadmin",
+    secretAccessKey: "minioadmin",
+  }),
+});
+```
+
+Path-style addressing is the default, which is what MinIO expects, so no extra flag is needed.
+
+### AWS S3 with virtual-hosted-style URLs
+
+On AWS, `region` is enough: Bun derives the endpoint from the region and bucket. Set `virtualHostedStyle: true` to address the bucket as `https://<bucket>.s3.<region>.amazonaws.com`.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: bunS3({
+    bucket: "uploads",
+    region: "eu-west-1",
+    virtualHostedStyle: true,
+  }),
+});
+```
+
+### Other providers
+
+The same `endpoint` option covers other S3-compatible services, for example `https://<region>.digitaloceanspaces.com` for DigitalOcean Spaces or `https://<project-ref>.supabase.co/storage/v1/s3` for Supabase Storage. Many of them also have a dedicated files-sdk adapter, such as [DigitalOcean Spaces](/docs/adapters/digitalocean-spaces), [Wasabi](/docs/adapters/wasabi), or [Hetzner](/docs/adapters/hetzner), that fills in the endpoint for you but runs on the AWS SDK.
+
+## Upload files with Bun S3
+
+`upload()` accepts a string, bytes, a `Blob` or `File`, or a `ReadableStream`. `Bun.file()` returns a `Blob`, so you can upload a file from disk directly.
+
+```ts lineNumbers
+// A string
+await files.upload("notes/hello.txt", "Hello from Bun");
+
+// A file on disk - Bun.file() is a Blob, and its type becomes the Content-Type
+await files.upload("reports/q3.pdf", Bun.file("./q3.pdf"));
+
+// A stream, such as a fetch() or request body
+const res = await fetch("https://example.com/video.mp4");
+const result = await files.upload("videos/clip.mp4", res.body!, {
+  contentType: "video/mp4",
+});
+// → { key, size, contentType, etag, lastModified }
+```
+
+The stored Content-Type is the `contentType` option when you pass one, otherwise a `Blob`'s own `type`, `text/plain; charset=utf-8` for a string, and `application/octet-stream` for anything else. Stream bodies are wrapped in a `Response` and handed to Bun's writer. `onProgress` is reported by the SDK: byte by byte for stream bodies, and as a start and finish event for buffered ones.
+
+## Download and stream files
+
+```ts lineNumbers
+// Buffered
+const note = await files.download("notes/hello.txt");
+await note.text(); // "Hello from Bun"
+
+// Streamed - pipe a large object to the client without buffering it
+const video = await files.download("videos/clip.mp4", { as: "stream" });
+const response = new Response(video.stream(), {
+  headers: { "Content-Type": video.type },
+});
+
+// A byte range (end is inclusive), fetched with a ranged GET
+const firstKiB = await files.download("videos/clip.mp4", {
+  range: { start: 0, end: 1023 },
+});
+```
+
+`download()` reads the object's metadata with Bun's `stat()` before it reads the body, so each download is a HEAD request followed by a GET. See [byte ranges](/docs/api/download#byte-ranges) for the range semantics.
+
+## List files in a bucket
+
+```ts lineNumbers
+// One page, filtered by prefix
+const { items, cursor } = await files.list({ prefix: "reports/", limit: 100 });
+
+// Every page
+for await (const file of files.listAll({ prefix: "reports/" })) {
+  console.log(file.key, file.size, file.lastModified);
+}
+
+// One folder level: subfolders come back in `prefixes`
+const { prefixes } = await files.list({ prefix: "photos/", delimiter: "/" });
+
+// Match keys by glob
+for await (const file of files.search("reports/**/*.csv")) {
+  console.log(file.key);
+}
+```
+
+Bun's list response carries no Content-Type, so each item's `type` is inferred from the key's extension (`application/octet-stream` when unknown). Call `head()` when you need the stored value. See [`list`](/docs/api/list) and [`search`](/docs/api/search) for pagination and pattern syntax.
+
+## Presigned URLs with Bun S3
+
+### Presigned download URLs
+
+`url()` returns a presigned GET URL. Bun signs it locally, so the call makes no network request.
+
+```ts lineNumbers
+const url = await files.url("reports/q3.pdf"); // expires in 1 hour
+const short = await files.url("reports/q3.pdf", { expiresIn: 300 });
+
+// Force a download with a filename
+const attachment = await files.url("reports/q3.pdf", {
+  responseContentDisposition: 'attachment; filename="q3.pdf"',
+});
+```
+
+The default lifetime is 1 hour (the adapter's `defaultUrlExpiresIn`, not Bun's own 24-hour default). SigV4 caps a presigned URL at 7 days, so an `expiresIn` above 604800 seconds throws instead of returning a URL the server would reject.
+
+If the bucket is public or sits behind a CDN, set `publicBaseUrl` and `url(key)` returns `${publicBaseUrl}/${key}` without signing. Passing `responseContentDisposition` still produces a signed URL, because a permanent URL has no signature to bind the override into.
+
+### Presigned upload URLs
+
+`signedUploadUrl()` returns a presigned PUT URL that a browser can upload to directly.
+
+```ts lineNumbers
+// On your server
+const upload = await files.signedUploadUrl("avatars/abc.png", {
+  expiresIn: 60,
+});
+// → { method: "PUT", url }
+
+// In the browser
+await fetch(upload.url, { method: "PUT", body: file });
+```
+
+`maxSize` and `contentType` both throw here (see the differences above), so enforce size and type limits in your own endpoint before you issue the URL, or use `files-sdk/s3` for a POST policy. A browser upload to another origin also needs a CORS rule on the bucket that allows `PUT` from your site.
+
+## Use the Bun.S3Client directly
+
+`files.raw` is the underlying `Bun.S3Client`: the one the adapter constructed, or the `client` you passed. Use it for Bun features the unified API doesn't cover. See [escape hatch](/docs/escape-hatch).
+
+## Errors
+
+Bun's S3 errors are normalized to [`FilesError`](/docs/api/errors), with the original error in `cause`:
+
+- `NotFound` - `NoSuchKey`, `NotFound`, or HTTP 404. `exists()` returns `false` instead of throwing.
+- `Unauthorized` - `AccessDenied`, `ERR_S3_MISSING_CREDENTIALS`, `ERR_S3_INVALID_SIGNATURE`, `ERR_S3_INVALID_SESSION_TOKEN`, or HTTP 401/403.
+- `Conflict` - `PreconditionFailed`, or HTTP 409/412.
+- `Provider` - everything else. The message is Bun's own, or `Bun S3 error` when it has none.
+
+## Bun S3 vs `files-sdk/s3` vs `files-sdk/s3-fetch`
+
+All three speak the same S3 protocol and return the same `Files` results, so you can switch between them without changing application code.
+
+|  | `files-sdk/bun-s3` | [`files-sdk/s3`](/docs/adapters/s3) | [`files-sdk/s3-fetch`](/docs/adapters/s3-fetch) |
+| --- | --- | --- | --- |
+| Runtime | Bun only | Node.js and Bun | Any runtime with `fetch` and Web Crypto, including Cloudflare Workers |
+| Extra packages | None | `@aws-sdk/*` peers | None |
+| Credentials | Options or `S3_*` / `AWS_*` env vars, resolved by Bun | AWS credential chain (env vars, IAM role, shared profile, ...) | Options or `AWS_*` env vars |
+| `ReadableStream` uploads | Handed to Bun's writer | Multipart via the optional `@aws-sdk/lib-storage` | Buffered in memory, one PUT |
+| `copy()` | Streamed through your process | Server-side `CopyObject` | Server-side `CopyObject` |
+| Upload `metadata` / `cacheControl` | Throws | ✅ | ✅ |
+| `signedUploadUrl` with `maxSize` | Throws | ✅ presigned POST policy | Throws |
+| `signedUploadUrl` with `contentType` | Throws | ✅ | ✅ |
+| Resumable uploads (`control`) | In-process only | ✅ across processes | Throws |
+| Conditional operations | ❌ | ✅ on AWS S3 | ❌ |
+
+Pick `files-sdk/bun-s3` for a Bun app that only needs the core operations and should carry no AWS SDK. Pick `files-sdk/s3` when you need server-side copy, metadata, size-capped browser uploads, resumable uploads, or the full AWS credential chain; it runs on Bun too. Pick `files-sdk/s3-fetch` for Cloudflare Workers and other edge runtimes.
 
 ## Options
 
@@ -60,3 +277,4 @@ Reach for `files-sdk/s3` on the same bucket when you need any of those.
 | `copy` | ⚠️ | Client-side stream copy - `Bun.S3Client` doesn't expose a server-side `CopyObject`, so the source is streamed through this process and re-uploaded. Doubled bandwidth, not atomic, and drops Content-Disposition/cache headers/user metadata/ACL (only Content-Type is preserved). Reach for `s3()` on the same bucket for server-side copy. |
 | `url` | ✅ | Presigned URLs are capped at 7 days (the SigV4 limit); a longer `expiresIn` throws. |
 | `signedUploadUrl` | ⚠️ | PUT URL only - Bun exposes presigned URLs, not S3 POST policy fields, so `maxSize` throws (no `content-length-range` policy). `contentType` throws too, because Bun signs only the `host` header and can't bind a Content-Type. Enforce upload caps and types at your application gateway instead. |
+| conditional operations | ❌ | Not advertised; conditional calls fail before any request. |

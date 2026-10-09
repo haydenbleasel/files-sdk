@@ -1,0 +1,790 @@
+{
+  "akamai": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "alibaba": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "appwrite": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": false,
+    "metadata": false,
+    "rangeRead": false,
+    "resumable": true,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "archil": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "azure": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": null
+    },
+    "uploadProgress": true
+  },
+  "backblaze-b2": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "box": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": null
+    },
+    "uploadProgress": false
+  },
+  "bun-s3": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": false,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": false
+  },
+  "bunny-storage": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": false,
+    "metadata": false,
+    "rangeRead": false,
+    "resumable": false,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "cloudinary": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "convex": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": false,
+    "metadata": false,
+    "rangeRead": false,
+    "resumable": false,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "digitalocean-spaces": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "dropbox": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 14400
+    },
+    "uploadProgress": false
+  },
+  "exoscale": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "filebase": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "firebase-storage": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "fs": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "ftp": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": true
+  },
+  "gcs": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "google-drive": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "hetzner": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "ibm-cos": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "idrive-e2": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "memory": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "minio": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "neon": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "netlify-blobs": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": false,
+    "resumable": false,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "onedrive": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "oracle-cloud": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "ovhcloud": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "pocketbase": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": false,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": false,
+    "serverSideCopy": false,
+    "signedUrl": {
+      "maxExpiresIn": null
+    },
+    "uploadProgress": false
+  },
+  "r2": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "rustfs": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "s3": {
+    "cacheControl": true,
+    "conditional": {
+      "create": true,
+      "delete": true,
+      "replace": true
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "s3-fetch": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": false,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": false
+  },
+  "scaleway": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "sftp": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": false,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "sharepoint": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "storj": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "supabase": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": false,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": null
+    },
+    "uploadProgress": false
+  },
+  "tencent": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "tigris": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "uploadthing": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": false,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": false,
+    "serverSideCopy": false,
+    "signedUrl": {
+      "maxExpiresIn": null
+    },
+    "uploadProgress": false
+  },
+  "vercel-blob": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": true
+  },
+  "vultr": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "wasabi": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
+  "webdav": {
+    "cacheControl": false,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": false,
+    "rangeRead": true,
+    "resumable": false,
+    "serverSideCopy": true,
+    "signedUrl": null,
+    "uploadProgress": false
+  },
+  "yandex": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": true,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUrl": {
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  }
+}

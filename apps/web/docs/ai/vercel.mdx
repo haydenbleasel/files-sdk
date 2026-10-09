@@ -1,11 +1,13 @@
 ---
 title: Vercel AI SDK
-description: Drop the files-sdk tools straight into generateText, streamText, or any Vercel AI SDK agent - same eight operations, Zod-validated, approval-gated by default.
+description: Give Vercel AI SDK agents tools to list, read, upload, and share files in S3, R2, or any bucket, with generateText, streamText, or ToolLoopAgent.
 ---
 
 The `files-sdk/ai-sdk` subpath exposes a configured `Files` instance to the [Vercel AI SDK](https://ai-sdk.dev) as a set of ready-to-use tools - drop them into `generateText`, `streamText`, or any agent and the model can browse, read, and mutate your bucket through the same unified surface as your application code.
 
 Write tools (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) require user approval by default - designed for human-in-the-loop agents. Read tools (`listFiles`, `getFileMetadata`, `downloadFile`, `getFileUrl`) never require approval.
+
+Because the tools sit on `Files`, they work with every adapter: an agent reads from Cloudflare R2, Amazon S3, Google Cloud Storage, Azure Blob, Vercel Blob, or a local folder with the same code.
 
 ## Installation
 
@@ -15,6 +17,8 @@ Write tools (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) require us
 ai zod
 ```
 
+The subpath supports AI SDK 6 and 7 and Zod 3.23 or later. Install your adapter's packages as well (see its page). The examples on this page use AI SDK 7 APIs (`isStepCount`, `instructions`, `toolApproval`).
+
 ## Quick start
 
 Construct a `Files` instance the same way you would anywhere else, then pass it to `createFileTools`. The returned object plugs straight into the AI SDK's `tools` field.
@@ -23,18 +27,101 @@ Construct a `Files` instance the same way you would anywhere else, then pass it 
 import { Files } from "files-sdk";
 import { r2 } from "files-sdk/r2";
 import { createFileTools } from "files-sdk/ai-sdk";
-import { generateText } from "ai";
+import { generateText, isStepCount } from "ai";
 
 const files = new Files({
   adapter: r2({ bucket: "uploads" }),
 });
 
 const result = await generateText({
-  model: yourModel,
+  model: "anthropic/claude-sonnet-5-5",
   tools: createFileTools({ files }),
+  stopWhen: isStepCount(10),
   prompt: "Find every CSV under reports/ and summarize the latest one.",
 });
+
+console.log(result.text);
 ```
+
+`generateText` stops after one step by default, which would end the run right after the model's first tool call. `stopWhen: isStepCount(10)` lets it list the files, download the one it needs, and then answer.
+
+A `"provider/model"` string routes through the [Vercel AI Gateway](https://ai-sdk.dev/providers/ai-sdk-providers/ai-gateway), the AI SDK's default provider (set `AI_GATEWAY_API_KEY`, or use OIDC on Vercel). To call a provider directly, pass its model instead, for example `anthropic("claude-sonnet-5-5")` from `@ai-sdk/anthropic`.
+
+## Available tools
+
+| Tool | What the model can do | Calls | Approval by default |
+| --- | --- | --- | :-: |
+| `listFiles` | List one page of objects, filtered by `prefix`, with a `cursor` and a `limit` of up to 1000 | `files.list()` | No |
+| `getFileMetadata` | Read size, content type, ETag, last-modified time, and custom metadata without the body | `files.head()` | No |
+| `downloadFile` | Read a file as UTF-8 text, or as base64 with `binary: true`, up to `maxBytes` | `files.head()`, `files.download()` | No |
+| `getFileUrl` | Get a URL for a file, with optional `expiresIn` and `responseContentDisposition` | `files.url()` | No |
+| `uploadFile` | Write `content` as text, or base64 with `encoding: "base64"`, with optional `contentType`, `cacheControl`, and `metadata` | `files.upload()` | Yes |
+| `deleteFile` | Permanently delete a key | `files.delete()` | Yes |
+| `copyFile` | Copy `from` to `to` within the bucket | `files.copy()` | Yes |
+| `signUploadUrl` | Issue a presigned upload URL, with a required `expiresIn` and optional `contentType`, `maxSize`, and `minSize` | `files.signedUploadUrl()` | Yes |
+
+Every input is validated against a Zod schema before the tool runs. When a call fails (a missing key, a file over `maxBytes`, an option the adapter can't honor), the tool throws a [`FilesError`](/docs/api/errors), and the AI SDK returns it to the model as a `tool-error` part so the model can read the message and try something else.
+
+## Stream a chat response with streamText
+
+In a chat route, pass the tools to `streamText` and return a UI message stream for `useChat`:
+
+```ts title="app/api/chat/route.ts" lineNumbers
+import { Files } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { createFileTools } from "files-sdk/ai-sdk";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  isStepCount,
+  streamText,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
+
+const files = new Files({ adapter: r2({ bucket: "uploads" }) });
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+
+  const result = streamText({
+    model: "anthropic/claude-sonnet-5-5",
+    instructions:
+      "You help the user find and summarize their files. Use the file tools to look things up.",
+    messages: await convertToModelMessages(messages),
+    tools: createFileTools({ files, readOnly: true }),
+    stopWhen: isStepCount(10),
+  });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({ stream: result.stream }),
+  });
+}
+```
+
+## Build a file agent with ToolLoopAgent
+
+`ToolLoopAgent` keeps the model, instructions, and tools in one reusable object and runs the tool loop for you (up to 20 steps by default):
+
+```ts lineNumbers
+import { ToolLoopAgent } from "ai";
+import { createFileTools } from "files-sdk/ai-sdk";
+
+// `files` is the Files instance from the quick start.
+const fileAgent = new ToolLoopAgent({
+  model: "anthropic/claude-sonnet-5-5",
+  instructions:
+    "You organize files in the bucket. Say which keys you will change before changing them.",
+  tools: createFileTools({ files }),
+});
+
+const result = await fileAgent.generate({
+  prompt:
+    "Copy every report under drafts/ older than 30 days into archive/, then delete the originals.",
+});
+```
+
+The loop pauses when the model calls an approval-gated write. The result then carries a `tool-approval-request` for each pending call; answer them as shown in [Handle approval requests](#handle-approval-requests).
 
 ## Approval control
 
@@ -59,6 +146,78 @@ createFileTools({
 });
 ```
 
+### Handle approval requests
+
+An approval-gated call doesn't run. `generateText`, `streamText`, and `ToolLoopAgent` finish the step and return a `tool-approval-request` part instead. Show the request to a person, add their answer to the messages, and call the model again:
+
+```ts lineNumbers
+import {
+  generateText,
+  isStepCount,
+  type ModelMessage,
+  type ToolApprovalResponse,
+} from "ai";
+
+const tools = createFileTools({ files });
+const messages: ModelMessage[] = [
+  { role: "user", content: "Delete everything under tmp/." },
+];
+
+const first = await generateText({
+  model: "anthropic/claude-sonnet-5-5",
+  tools,
+  messages,
+  stopWhen: isStepCount(10),
+});
+messages.push(...first.responseMessages);
+
+const approvals: ToolApprovalResponse[] = [];
+for (const part of first.content) {
+  if (part.type === "tool-approval-request" && !part.isAutomatic) {
+    // Show part.toolCall.toolName and part.toolCall.input to a person here.
+    approvals.push({
+      type: "tool-approval-response",
+      approvalId: part.approvalId,
+      approved: true,
+    });
+  }
+}
+messages.push({ role: "tool", content: approvals });
+
+// Approved calls run now; denied ones are reported back to the model.
+const final = await generateText({
+  model: "anthropic/claude-sonnet-5-5",
+  tools,
+  messages,
+  stopWhen: isStepCount(10),
+});
+```
+
+In a `useChat` UI the same request arrives as a tool part in the `approval-requested` state, answered with `addToolApprovalResponse`. See the AI SDK's [tool approval guide](https://ai-sdk.dev/docs/agents/tool-approvals).
+
+### Approval with AI SDK 7's `toolApproval`
+
+`requireApproval` works by setting each write tool's `needsApproval`. AI SDK 7 deprecates that field in favor of a `toolApproval` setting on `generateText`, `streamText`, and `ToolLoopAgent`, but still honors it, so the default gate works on AI SDK 6 and 7.
+
+If you also pass `toolApproval`, it takes precedence. A per-tool entry replaces that tool's default, and a function passed as `toolApproval` replaces the defaults for every tool, so make it return `"user-approval"` for each write you still want gated. A per-tool function receives the tool's input, which lets you approve by key:
+
+```ts lineNumbers
+import { generateText, isStepCount } from "ai";
+
+await generateText({
+  model: "anthropic/claude-sonnet-5-5",
+  tools: createFileTools({ files }),
+  // Drafts upload freely; every other upload, and every delete, copy,
+  // and signUploadUrl call, still needs approval.
+  toolApproval: {
+    uploadFile: ({ key }) =>
+      key.startsWith("drafts/") ? "not-applicable" : "user-approval",
+  },
+  stopWhen: isStepCount(10),
+  prompt: "Write a summary of reports/q3.csv to drafts/q3-summary.md.",
+});
+```
+
 ## Read-only mode
 
 Pass `readOnly: true` to drop every write tool. The model cannot mutate the bucket regardless of how `requireApproval` is configured - useful for retrieval-style agents that only need to browse, summarize, or hand the user a download URL.
@@ -69,6 +228,62 @@ Pass `readOnly: true` to drop every write tool. The model cannot mutate the buck
 createFileTools({ files, readOnly: true });
 // → { listFiles, getFileMetadata, downloadFile, getFileUrl }
 ```
+
+To lock the `Files` instance itself as well, pass a [read-only view](/docs/readonly). Every write method on it throws a `ReadOnly` error, so nothing else that shares the instance can write either:
+
+```ts lineNumbers
+createFileTools({ files: files.readonly(), readOnly: true });
+```
+
+## Scope tools to a user or tenant prefix
+
+The tools operate on whatever `Files` instance you give them, so the way to confine a model to one user's files is a `Files` with a [`prefix`](/docs/prefixes). Every key the model sends resolves under the prefix, listings and results come back relative to it, and keys containing `.` or `..` segments are rejected, so the model can't reach outside it.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { createFileTools } from "files-sdk/ai-sdk";
+import {
+  convertToModelMessages,
+  createUIMessageStreamResponse,
+  isStepCount,
+  streamText,
+  toUIMessageStream,
+  type UIMessage,
+} from "ai";
+
+// One adapter (and provider client) for the whole app.
+const adapter = r2({ bucket: "uploads" });
+
+export async function POST(req: Request) {
+  const user = await requireUser(req); // your auth
+  const { messages }: { messages: UIMessage[] } = await req.json();
+
+  // A per-request view: the model only ever sees users/<id>/...
+  const files = new Files({ adapter, prefix: `users/${user.id}` });
+
+  const result = streamText({
+    model: "anthropic/claude-sonnet-5-5",
+    messages: await convertToModelMessages(messages),
+    tools: createFileTools({ files, readOnly: true }),
+    stopWhen: isStepCount(10),
+  });
+
+  return createUIMessageStreamResponse({
+    stream: toUIMessageStream({ stream: result.stream }),
+  });
+}
+```
+
+Build the prefix from your own authenticated session, never from the prompt or a request parameter. The same pattern scopes a tenant (`tenants/<id>`) or a project.
+
+## Reading files: size limits and binary content
+
+`downloadFile` returns the whole file in the tool result, so it is capped. The default `maxBytes` is 1 MiB, and the model can raise it per call up to 10 MiB. The size is checked with `head()` before any transfer and enforced again on the bytes actually read. Text comes back as UTF-8; with `binary: true`, the model gets base64 instead.
+
+For anything larger, or anything the user should open themselves, have the model call `getFileUrl` and return the link. For user-uploaded content, ask for `responseContentDisposition: "attachment"` so HTML or SVG isn't rendered inline.
+
+`uploadFile` takes `content` as a string. Binary content goes in as base64 with `encoding: "base64"`, and the tool decodes it before upload.
 
 ## Overrides
 
@@ -100,3 +315,15 @@ const tools = {
   uploadFile: uploadFile(files),
 };
 ```
+
+The write factories (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) take an optional second argument, `{ needsApproval }`, which defaults to `true`.
+
+## Safety checklist
+
+- **Start read-only.** Give an agent `readOnly: true` and add write tools only when it needs them.
+- **Scope every request.** Use a `Files` with a per-user or per-tenant `prefix` built from your auth, not from model or user input.
+- **Keep writes gated.** Leave `requireApproval` on for `deleteFile` and `signUploadUrl` at least. If you add `toolApproval`, remember that it overrides the tools' defaults.
+- **Sign approvals in chat apps.** With `useChat`, the client sends the message history back each turn, so a client could forge an approval. On AI SDK 7, set `experimental_toolApprovalSecret` so the server rejects approvals it didn't issue.
+- **Treat file contents as untrusted.** A file the model reads can contain instructions aimed at it. Approval gates on writes stop a malicious file from triggering a delete or upload on its own.
+- **Keep upload URLs short-lived.** A `signUploadUrl` result lets anyone holding it upload until `expiresIn` elapses. Keep the tool gated and pass `maxSize` where the adapter supports it (see [`signedUploadUrl`](/docs/api/signed-upload-url)).
+- **Bound the loop.** Set `stopWhen` so a confused model can't call tools indefinitely.

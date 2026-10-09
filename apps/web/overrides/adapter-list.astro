@@ -38,8 +38,9 @@ const SLUG =
 <ul
   class:list={[
     "not-prose mt-4 mb-10 grid gap-x-6",
-    // Recommended adapters each get a full-width row; the rest pack two up.
-    !large && "sm:grid-cols-2",
+    // Recommended adapters each get a full-width row; the rest pack two or
+    // three up across the wide page.
+    !large && "sm:grid-cols-2 lg:grid-cols-3",
   ]}
   role="list"
 >

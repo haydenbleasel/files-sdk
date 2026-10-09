@@ -1,7 +1,9 @@
 ---
 title: Hetzner Object Storage
-description: Hetzner Object Storage via the S3-compatible API. Endpoint derived from the location code (fsn1, nbg1, hel1), keys auto-loaded from HCLOUD_* env vars.
+description: Use Hetzner Object Storage from Node.js - endpoint from the fsn1, nbg1, or hel1 location, HCLOUD_* keys, uploads, listing, and presigned URLs.
 ---
+
+`files-sdk/hetzner` connects to [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/) through its S3-compatible API. It wraps the [`s3()` adapter](/docs/adapters/s3) and fills in the Hetzner endpoint from your bucket's location, so you only pass a bucket name, a location code, and an S3 key pair.
 
 ## Installation
 
@@ -29,6 +31,147 @@ const files = new Files({
 });
 ```
 
+### Hetzner Object Storage endpoints and locations
+
+`region` is the location code of the bucket. The adapter builds the endpoint from it as `https://<region>.your-objectstorage.com` and uses virtual-hosted-style addressing, so objects in a bucket named `uploads` in `fsn1` live at `https://uploads.fsn1.your-objectstorage.com/<key>`.
+
+| Location             | `region` | Endpoint                              |
+| -------------------- | -------- | ------------------------------------- |
+| Falkenstein, Germany | `fsn1`   | `https://fsn1.your-objectstorage.com` |
+| Nuremberg, Germany   | `nbg1`   | `https://nbg1.your-objectstorage.com` |
+| Helsinki, Finland    | `hel1`   | `https://hel1.your-objectstorage.com` |
+
+The same code is used as the SigV4 signing region. `region` has no environment-variable fallback, and an empty one throws at construction. The endpoint is built from whatever code you pass, so a location not listed here works the same way.
+
+Pass `endpoint` to override the derived URL entirely (a proxy in front of the bucket, for example), and `forcePathStyle: true` to address objects as `https://<endpoint>/<bucket>/<key>` instead.
+
+### Credentials
+
+Pass `accessKeyId` and `secretAccessKey`, or set `HCLOUD_ACCESS_KEY_ID` and `HCLOUD_SECRET_ACCESS_KEY`. These are the S3 access key and secret key you generate for Object Storage in the Hetzner Console, not a Hetzner Cloud API token.
+
+```bash title=".env" lineNumbers
+HCLOUD_ACCESS_KEY_ID=...
+HCLOUD_SECRET_ACCESS_KEY=...
+```
+
+files-sdk reads these two variables itself and passes them to the S3 client explicitly, so the AWS credential chain (`AWS_ACCESS_KEY_ID`, shared profiles, IAM roles) is never consulted. If neither the options nor the variables are set, the adapter throws at construction.
+
+## Upload, download, and list files
+
+The adapter inherits the full `s3()` surface, including user `metadata` and `cacheControl` on upload.
+
+```ts lineNumbers
+// `file` can be a File, Blob, ReadableStream, bytes, or a string
+await files.upload("reports/q3.pdf", file, {
+  contentType: "application/pdf",
+  cacheControl: "private, max-age=3600",
+  metadata: { owner: "u_123" },
+});
+
+const report = await files.download("reports/q3.pdf");
+const meta = await files.head("reports/q3.pdf"); // size, type, etag, metadata
+
+// One page of keys under a prefix, then one folder level
+const { items, cursor } = await files.list({ prefix: "reports/" });
+const { prefixes } = await files.list({ prefix: "reports/", delimiter: "/" });
+
+// Large files: parallel multipart upload (needs @aws-sdk/lib-storage)
+await files.upload("backups/db.tar", stream, { multipart: true });
+```
+
+`copy()` runs server-side with `CopyObject`, so the bytes never pass through your process. See [`upload`](/docs/api/upload), [`download`](/docs/api/download), and [`list`](/docs/api/list) for every option.
+
+## Public and private buckets
+
+### Private buckets: presigned download URLs
+
+By default `url()` returns a presigned GET URL on the bucket's own hostname, valid for 1 hour. Change the default with the `defaultUrlExpiresIn` option, or per call:
+
+```ts lineNumbers
+const url = await files.url("reports/q3.pdf"); // 1 hour
+const week = await files.url("reports/q3.pdf", { expiresIn: 604_800 }); // the maximum
+
+// Force a download instead of inline rendering
+const attachment = await files.url("uploads/user-file.html", {
+  responseContentDisposition: "attachment",
+});
+```
+
+Presigned URLs live at most 7 days, the SigV4 limit; a longer `expiresIn` throws a `Provider` error instead of returning a URL Hetzner would reject.
+
+### Public buckets and custom domains
+
+If the bucket allows anonymous reads, or you serve it through your own domain or reverse proxy, set `publicBaseUrl`. `url(key)` then returns `${publicBaseUrl}/${key}` without signing. Hetzner Object Storage has no built-in CDN, so this is either the bucket's own URL or something you run in front of it.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: hetzner({
+    bucket: "assets",
+    region: "nbg1",
+    publicBaseUrl: "https://assets.nbg1.your-objectstorage.com",
+  }),
+});
+
+await files.url("logo.svg"); // "https://assets.nbg1.your-objectstorage.com/logo.svg"
+```
+
+Passing `responseContentDisposition` still returns a signed URL, because a permanent URL has no signature to bind the override into.
+
+## Presigned upload URLs for Hetzner Object Storage
+
+[`signedUploadUrl()`](/docs/api/signed-upload-url) lets a browser upload straight to the bucket, so the bytes never pass through your server. Without `maxSize` it returns a presigned PUT; with `maxSize` it returns a presigned POST form whose policy carries a `content-length-range` condition, the same as `s3()`.
+
+```ts lineNumbers
+// On your server
+const upload = await files.signedUploadUrl("avatars/u_123.png", {
+  expiresIn: 60,
+  contentType: "image/png",
+  maxSize: 5_000_000,
+});
+// → { method: "POST", url, fields }
+
+// In the browser
+const form = new FormData();
+for (const [name, value] of Object.entries(upload.fields)) {
+  form.append(name, value);
+}
+form.append("file", file);
+await fetch(upload.url, { method: "POST", body: form });
+```
+
+Drop `maxSize` to get `{ method: "PUT", url, headers? }` and upload with `fetch(url, { method: "PUT", body: file, headers })`. A browser upload to the bucket's hostname is cross-origin, so the bucket also needs a CORS rule that allows your site's origin.
+
+## Hetzner Object Storage on Cloudflare Workers
+
+This adapter uses `@aws-sdk/client-s3`, whose XML parser needs a `DOMParser` that Cloudflare Workers and some other edge runtimes don't provide. There, point [`s3Fetch()`](/docs/adapters/s3-fetch) at the Hetzner endpoint instead. It speaks the same S3 protocol over a SigV4-signed `fetch`, with the trade-offs listed on its page.
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { s3Fetch } from "files-sdk/s3-fetch";
+
+export default {
+  async fetch(request: Request, env: Env) {
+    const files = new Files({
+      adapter: s3Fetch({
+        bucket: "uploads",
+        endpoint: "https://fsn1.your-objectstorage.com",
+        region: "fsn1",
+        accessKeyId: env.HCLOUD_ACCESS_KEY_ID,
+        secretAccessKey: env.HCLOUD_SECRET_ACCESS_KEY,
+      }),
+    });
+    // ...
+  },
+};
+```
+
+## Limitations
+
+- **Presigned URLs live at most 7 days**, and **`copy()` / `move()` top out at 5 GB** per object, because both limits come from S3 itself. See the S3 [limits](/docs/adapters/s3#limits).
+- **No conditional operations.** The adapter always sets an endpoint, so `s3()`'s provider-native [conditional operations](/docs/conditional-operations) stay off and conditional calls fail before any request.
+- **Checksums only where required.** With an explicit endpoint, the S3 client sends request checksums only on operations that require one. See [S3-compatible endpoints and checksums](/docs/adapters/s3#s3-compatible-endpoints-and-checksums).
+- A `Provider` error that carries no message of its own reads `Hetzner error` rather than `S3 error`. `files.raw` is the underlying `S3Client` for anything the unified API doesn't cover; see [escape hatch](/docs/escape-hatch).
+
 ## Options
 
 <AutoTypeTable
@@ -47,6 +190,7 @@ const files = new Files({
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ✅ |  |
-| `url` | ✅ |  |
+| `copy` | ✅ | Server-side `CopyObject`, limited to 5 GB source objects. |
+| `url` | ✅ | Presigned URLs are capped at 7 days. |
 | `signedUploadUrl` | ✅ |  |
+| conditional operations | ❌ | Not advertised on custom endpoints; conditional calls fail before any request. |

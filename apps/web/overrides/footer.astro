@@ -1,0 +1,87 @@
+---
+import SiteFooter from "blume/components/layout/SiteFooter.astro";
+
+// The docs pages' footer: Blume's own, plus the setup-action tracking below.
+// The homepage passes its own footer, and its install button tracks itself.
+type Props = Parameters<typeof SiteFooter>[0];
+---
+
+<SiteFooter {...Astro.props} />
+
+<script>
+  import { track } from "blume/components/layout/analytics-client.ts";
+
+  // Setup actions, sent through Blume's analytics (every configured adapter,
+  // plus a `blume:track` window event): which install commands and code
+  // examples readers copy, and which pages they copy as Markdown.
+  //
+  //   install_copy            a package-manager or npx command (props: page, manager)
+  //   component_install_copy  a `shadcn add` registry command (props: page, component)
+  //   code_copy               any other code block (props: page, language)
+  //   page_copy               "Copy as Markdown" (props: page)
+  const INSTALL =
+    /^(?<manager>npm|pnpm|yarn|bun)\s+(?:i|install|add)\b|^(?<runner>npx|pnpx|bunx)\s/u;
+  const SHADCN = /\bshadcn(?:@\S+)?\s+add\s+\S*?\/r\/(?<component>[\w-]+)\.json/u;
+
+  // The block a copy button reads: its own pre, or the visible panel of the
+  // tabbed group (npm / pnpm / yarn / bun) its strip button belongs to.
+  const blockFor = (button: Element): HTMLElement | null => {
+    const own = button.closest("pre");
+    if (own) {
+      return own;
+    }
+    const content = button
+      .closest("blume-tabs")
+      ?.querySelector(":scope > [data-blume-tab-content]");
+    const panel =
+      [...(content?.children ?? [])].find(
+        (child) => !child.classList.contains("hidden")
+      ) ?? content?.firstElementChild;
+    if (panel instanceof HTMLElement && panel.matches("pre")) {
+      return panel;
+    }
+    return panel?.querySelector("pre") ?? null;
+  };
+
+  const onCopy = (button: Element) => {
+    const page = location.pathname;
+    const block = blockFor(button);
+    const text = (block?.querySelector("code") ?? block)?.textContent?.trim() ?? "";
+    const command = text.replace(/^\$\s*/u, "");
+    const component = SHADCN.exec(command)?.groups?.component;
+    if (component) {
+      track("component_install_copy", { component, page });
+      return;
+    }
+    const install = INSTALL.exec(command);
+    if (install) {
+      track("install_copy", {
+        manager: install.groups?.manager ?? install.groups?.runner ?? "",
+        page,
+      });
+      return;
+    }
+    track("code_copy", {
+      language: block?.dataset.blumeLanguage ?? "",
+      page,
+    });
+  };
+
+  // Delegated on the document, in the capture phase, so it covers the copy
+  // buttons Blume adds after every client-router swap.
+  document.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-blume-copy-page]")) {
+        track("page_copy", { page: location.pathname });
+        return;
+      }
+      const button = target?.closest("[data-blume-copy]");
+      if (button) {
+        onCopy(button);
+      }
+    },
+    { capture: true }
+  );
+</script>

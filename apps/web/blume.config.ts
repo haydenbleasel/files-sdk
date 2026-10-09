@@ -51,6 +51,7 @@ const OLD_ROOT_PAGES = [
   "bulk",
   "cancellations",
   "capabilities",
+  "conditional-operations",
   "escape-hatch",
   "faq",
   "installation",
@@ -65,6 +66,64 @@ const OLD_ROOT_PAGES = [
   "timeouts",
   "troubleshooting",
   "usage",
+];
+
+// Pages from earlier docs layouts, by their old path, to where each lives now.
+// The old site served docs at the root, and some links carry a /docs prefix,
+// so each one redirects from both.
+const LEGACY_PAGES = new Map([
+  ["api/capabilities", "/docs/capabilities"],
+  // The per-adapter compatibility page, now the adapter comparison.
+  ["api/compatibility", "/docs/adapters"],
+  ["features", "/docs"],
+  ["features/bulk", "/docs/bulk"],
+  ["features/cancellations", "/docs/cancellations"],
+  ["features/escape-hatch", "/docs/escape-hatch"],
+  ["features/multipart", "/docs/multipart"],
+  ["features/onaction", "/docs/api/onaction"],
+  ["features/onerror", "/docs/api/onerror"],
+  ["features/onprogress", "/docs/api/onprogress"],
+  ["features/onretry", "/docs/api/onretry"],
+  ["features/prefixes", "/docs/prefixes"],
+  ["features/readonly", "/docs/readonly"],
+  ["features/resumable", "/docs/resumable"],
+  ["features/retries", "/docs/retries"],
+  ["features/timeouts", "/docs/timeouts"],
+  ["features/transfer", "/docs/api/transfer"],
+  ["files-demo", "/docs/ui"],
+  ["react", "/docs/ui"],
+  ["react/authorization", "/docs/ui/server/authorization"],
+  ["react/frameworks", "/docs/ui/server/gateway"],
+  ["react/gateway", "/docs/ui/server/gateway"],
+  ["react/svelte", "/docs/ui/client/svelte"],
+  ["react/use-files", "/docs/ui/client/react"],
+  ["react/vue", "/docs/ui/client/vue"],
+  ["ui/authorization", "/docs/ui/server/authorization"],
+  ["ui/express", "/docs/ui/server/express"],
+  ["ui/gateway", "/docs/ui/server/gateway"],
+  ["ui/hono", "/docs/ui/server/hono"],
+  ["ui/next", "/docs/ui/server/next"],
+  ["ui/react", "/docs/ui/client/react"],
+  ["ui/svelte", "/docs/ui/client/svelte"],
+  ["ui/vue", "/docs/ui/client/vue"],
+]);
+
+// The shadcn registry components (registry/files-sdk/*). Old links reach
+// them under /components, /blocks, /docs/components, and bare /docs, and the
+// registry JSON without its .json.
+const REGISTRY_COMPONENTS = [
+  "capabilities-badges",
+  "dropzone",
+  "file-actions",
+  "file-browser",
+  "file-list",
+  "file-preview",
+  "file-search",
+  "multipart-uploader",
+  "share-dialog",
+  "trash-bin",
+  "upload-progress",
+  "version-history",
 ];
 
 const OLD_API_PAGES = [
@@ -253,6 +312,48 @@ export default defineConfig({
   // also swallow the assistant's /api/ask route and Blume's /api/docs/* JSON.
   // The /r/* CORS headers stay in public/_headers, which still applies.
   redirects: [
+    // Before the area patterns below, so an old /ui/<page> lands in one hop.
+    ...[...LEGACY_PAGES].flatMap(([from, to]) =>
+      [`/${from}`, `/docs/${from}`].map((oldPath) => ({
+        from: oldPath,
+        status: 301 as const,
+        to,
+      }))
+    ),
+    ...REGISTRY_COMPONENTS.flatMap((name) => [
+      ...["/components", "/blocks", "/docs/components", "/docs"].map(
+        (base) => ({
+          from: `${base}/${name}`,
+          status: 301 as const,
+          to: `/docs/ui/components/${name}`,
+        })
+      ),
+      { from: `/r/${name}`, status: 301 as const, to: `/r/${name}.json` },
+    ]),
+    ...["/components", "/blocks", "/docs/components"].map((from) => ({
+      from,
+      status: 301 as const,
+      to: "/docs/ui/components/dropzone",
+    })),
+    { from: "/updates/:slug*", status: 301, to: "/changelog" },
+    // URLs crawlers and old shares still request: the Next.js-era OG image,
+    // conventional icon and sitemap names, and a link someone published with
+    // a stray trailing backslash.
+    { from: "/opengraph-image", status: 301, to: "/og/index.png" },
+    { from: "/opengraph-image.png", status: 301, to: "/og/index.png" },
+    { from: "/apple-touch-icon.png", status: 301, to: "/apple-icon.png" },
+    {
+      from: "/apple-touch-icon-precomposed.png",
+      status: 301,
+      to: "/apple-icon.png",
+    },
+    { from: "/sitemap_index.xml", status: 301, to: "/sitemap.xml" },
+    { from: "/sitemap-index.xml", status: 301, to: "/sitemap.xml" },
+    {
+      from: "/docs/adapters/vercel-blob\\",
+      status: 301,
+      to: "/docs/adapters/vercel-blob",
+    },
     ...["adapters", "ai", "cli", "plugins", "ui"].map((area) => ({
       from: `/${area}/:path*`,
       status: 301 as const,

@@ -29,6 +29,8 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
 </button>
 
 <script>
+  import { track } from "blume/components/layout/analytics-client.ts";
+
   // Bundled module scripts run once per full page load, but Blume's layouts
   // use Astro's <ClientRouter />: navigating back to "/" swaps in fresh
   // buttons without re-running this module. `astro:page-load` fires on the
@@ -50,6 +52,10 @@ const { command = "npm i files-sdk", class: className } = Astro.props;
           // rather than claim a copy that didn't happen.
           return;
         }
+        track("install_copy", {
+          manager: (btn.dataset.command ?? "").split(" ")[0] ?? "",
+          page: location.pathname,
+        });
         copy?.classList.add("hidden");
         check?.classList.remove("hidden");
         clearTimeout(timer);

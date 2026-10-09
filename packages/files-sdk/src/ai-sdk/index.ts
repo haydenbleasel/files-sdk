@@ -128,13 +128,15 @@ export type ReadOnlyFileTools = Pick<FileTools, FileReadToolName>;
  * import { Files } from "files-sdk";
  * import { createFileTools } from "files-sdk/ai-sdk";
  * import { s3 } from "files-sdk/s3";
- * import { generateText } from "ai";
+ * import { generateText, isStepCount } from "ai";
  *
  * const files = new Files({ adapter: s3({ bucket: "uploads" }) });
  *
  * const result = await generateText({
  *   model: yourModel,
  *   tools: createFileTools({ files }),
+ *   // generateText stops after one step by default; allow tool round trips.
+ *   stopWhen: isStepCount(10),
  *   prompt: "Find every CSV under reports/ and summarize the latest one.",
  * });
  * ```

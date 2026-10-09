@@ -1,0 +1,151 @@
+---
+import Icon from "blume/components/Icon.astro";
+
+import ProviderMark from "@/components/provider-mark.astro";
+import CAPABILITIES from "@/lib/adapter-capabilities.json";
+import { ADAPTERS } from "@/lib/adapters";
+import { RECOMMENDED_PROVIDERS } from "@/lib/recommended";
+
+// Each adapter's `files.capabilities` with its default options, snapshotted
+// by packages/files-sdk/test/adapter-capabilities.test.ts (which fails when
+// the JSON falls behind the adapters).
+const BY_SLUG = new Map(Object.entries(CAPABILITIES));
+type Capabilities = (typeof CAPABILITIES)[keyof typeof CAPABILITIES];
+
+// Recommended adapters first, then alphabetical by display name.
+const rows = ADAPTERS.toSorted(
+  (a, b) =>
+    Number(RECOMMENDED_PROVIDERS.has(b.slug)) -
+      Number(RECOMMENDED_PROVIDERS.has(a.slug)) ||
+    a.name.localeCompare(b.name, "en", { sensitivity: "base" })
+).flatMap((adapter) => {
+  const caps = BY_SLUG.get(adapter.slug);
+  return caps ? [{ adapter, caps }] : [];
+});
+
+const COLUMNS = [
+  { key: "rangeRead", label: "Range reads" },
+  { key: "delimiter", label: "Folders" },
+  { key: "metadata", label: "Metadata" },
+  { key: "cacheControl", label: "Cache-Control" },
+  { key: "resumable", label: "Resumable uploads" },
+  { key: "serverSideCopy", label: "Server-side copy" },
+  { key: "uploadProgress", label: "Upload progress" },
+] as const;
+
+const DAY = 86_400;
+const HOUR = 3600;
+
+// A signed URL's maximum lifetime: "7 days", "4 hours", or "Yes" when the
+// provider sets no fixed cap.
+const signedUrlLabel = (signedUrl: Capabilities["signedUrl"]): string | null => {
+  if (!signedUrl) {
+    return null;
+  }
+  const max = signedUrl.maxExpiresIn;
+  if (max === null) {
+    return "Yes";
+  }
+  if (max % DAY === 0) {
+    return `${max / DAY} day${max === DAY ? "" : "s"}`;
+  }
+  return `${Math.round(max / HOUR)} hours`;
+};
+
+const conditionalLabel = (conditional: Capabilities["conditional"]) =>
+  conditional.create && conditional.replace ? "Yes" : null;
+
+const CELL = "border-b border-border px-3 py-2 text-center whitespace-nowrap";
+---
+
+<div class="not-prose mt-4 mb-10 overflow-x-auto border border-border">
+  <table class="w-full min-w-[60rem] border-collapse text-sm/6">
+    <caption class="sr-only">
+      What each adapter supports with its default options
+    </caption>
+    <thead>
+      <tr class="text-left text-xs/5 font-medium text-muted-foreground">
+        <th
+          class="sticky left-0 z-10 border-b border-border bg-background px-3 py-2 font-medium"
+          scope="col"
+        >
+          Adapter
+        </th>
+        {
+          COLUMNS.map(({ label }) => (
+            <th class="border-b border-border px-3 py-2 text-center font-medium" scope="col">
+              {label}
+            </th>
+          ))
+        }
+        <th class="border-b border-border px-3 py-2 text-center font-medium" scope="col">
+          Signed URLs
+        </th>
+        <th class="border-b border-border px-3 py-2 text-center font-medium" scope="col">
+          Conditional writes
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      {
+        rows.map(({ adapter, caps }) => {
+          const signed = signedUrlLabel(caps.signedUrl);
+          const conditional = conditionalLabel(caps.conditional);
+          return (
+            <tr class="group hover:bg-highlighter">
+              <th
+                class="sticky left-0 z-10 border-b border-border bg-background px-3 py-2 text-left font-normal group-hover:bg-highlighter"
+                scope="row"
+              >
+                <a
+                  class="flex items-center gap-2 text-foreground group-hover:text-neutral-950 focus-visible:outline-2 focus-visible:outline-foreground"
+                  data-adapter-row
+                  href={`/docs/adapters/${adapter.slug}`}
+                >
+                  <ProviderMark class="size-4" slug={adapter.slug} />
+                  <span class="whitespace-nowrap">{adapter.name}</span>
+                  {RECOMMENDED_PROVIDERS.has(adapter.slug) && (
+                    <span class="bg-highlighter px-1.5 font-mono text-[0.6875rem]/5 text-neutral-950">
+                      Recommended
+                    </span>
+                  )}
+                </a>
+              </th>
+              {COLUMNS.map(({ key }) => (
+                <td class:list={[CELL, "group-hover:text-neutral-950"]}>
+                  {caps[key] ? (
+                    <>
+                      <Icon class="inline size-4" name="check" />
+                      <span class="sr-only">Yes</span>
+                    </>
+                  ) : (
+                    <>
+                      <span aria-hidden="true" class="text-muted-foreground group-hover:text-neutral-700">–</span>
+                      <span class="sr-only">No</span>
+                    </>
+                  )}
+                </td>
+              ))}
+              <td class:list={[CELL, "group-hover:text-neutral-950"]}>
+                {signed ?? (
+                  <>
+                    <span aria-hidden="true" class="text-muted-foreground group-hover:text-neutral-700">–</span>
+                    <span class="sr-only">No</span>
+                  </>
+                )}
+              </td>
+              <td class:list={[CELL, "group-hover:text-neutral-950"]}>
+                {conditional ?? (
+                  <>
+                    <span aria-hidden="true" class="text-muted-foreground group-hover:text-neutral-700">–</span>
+                    <span class="sr-only">No</span>
+                  </>
+                )}
+              </td>
+            </tr>
+          );
+        })
+      }
+    </tbody>
+  </table>
+</div>
