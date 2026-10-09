@@ -1,6 +1,18 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { Buffer } from "node:buffer";
 import { Readable } from "node:stream";
+
+import { GoogleAuth, OAuth2Client } from "google-auth-library";
+import type { JWT } from "google-auth-library";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
@@ -236,26 +248,24 @@ mock.module("@googleapis/drive", () => ({
   drive: driveFactoryMock,
 }));
 
-class FakeAuthClient {
-  creds: unknown = null;
-  readonly opts: unknown;
-  constructor(opts?: unknown) {
-    this.opts = opts;
-  }
-  readonly token = "test-access-token";
-  setCredentials(creds: unknown): void {
-    this.creds = creds;
-  }
-  getAccessToken(): { token: string } {
-    return { token: this.token };
-  }
-}
+// The adapter builds real google-auth-library clients; only token minting is
+// stubbed so resumable sessions stay offline. Don't `mock.module` the library:
+// @google-cloud/storage (gcs, firebase-storage) shares the hoisted copy, and
+// the fake would leak into their test files.
+const ACCESS_TOKEN = "test-access-token";
+const jwtTokenSpy = spyOn(
+  OAuth2Client.prototype,
+  "getAccessToken"
+).mockImplementation(() => Promise.resolve({ token: ACCESS_TOKEN }));
+const googleAuthTokenSpy = spyOn(
+  GoogleAuth.prototype,
+  "getAccessToken"
+).mockImplementation(() => Promise.resolve(ACCESS_TOKEN));
 
-mock.module("google-auth-library", () => ({
-  GoogleAuth: FakeAuthClient,
-  JWT: FakeAuthClient,
-  OAuth2Client: FakeAuthClient,
-}));
+afterAll(() => {
+  jwtTokenSpy.mockRestore();
+  googleAuthTokenSpy.mockRestore();
+});
 
 const { googleDrive } = await import("../src/google-drive/index.js");
 
@@ -329,9 +339,9 @@ describe("google-drive adapter", () => {
     try {
       googleDrive();
       const factoryOpts = driveFactoryMock.mock.calls.at(-1)?.[0] as {
-        auth: FakeAuthClient;
+        auth: JWT;
       };
-      expect((factoryOpts.auth.opts as { key: string }).key).toBe(
+      expect(factoryOpts.auth.key).toBe(
         "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
       );
     } finally {
@@ -801,7 +811,7 @@ describe("google-drive adapter", () => {
     expect(captured?.url).toContain("uploadType=resumable");
     expect(captured?.url).toContain("supportsAllDrives=true");
     const headers = captured?.init?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer test-access-token");
+    expect(headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
     expect(headers["X-Upload-Content-Type"]).toBe("text/plain");
     expect(headers["X-Upload-Content-Length"]).toBeUndefined();
     const body = JSON.parse(captured?.init?.body as string);
