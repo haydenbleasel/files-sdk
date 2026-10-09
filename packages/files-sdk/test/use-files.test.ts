@@ -34,10 +34,14 @@ const { useFile, useList, useSearch } =
 const React = await import("react");
 const { renderToString } = await import("react-dom/server");
 
-const config = (adapter: Adapter) => {
+const config = (
+  adapter: Adapter,
+  onUploadComplete?: (ctx: { file: { key: string } }) => unknown
+) => {
   const router = createFilesRouter({
     allowedOrigins: () => true,
     files: createFiles({ adapter }),
+    onUploadComplete,
     operations: [
       "head",
       "exists",
@@ -127,6 +131,17 @@ describe("useFiles", () => {
     expect(result.current.uploads.at(-1)?.status).toBe("success");
     expect(result.current.progress.fraction).toBe(1);
     expect(result.current.error).toBeUndefined();
+  });
+
+  test("upload results and uploads entries carry onUploadComplete data", async () => {
+    const opts = config(memory(), ({ file }) => ({ row: file.key }));
+    const { result } = renderHook(() => useFiles<{ row: string }>(opts));
+    let outcome: { key: string; data?: { row: string } } | undefined;
+    await act(async () => {
+      outcome = await result.current.upload(new File(["hi"], "a.txt"));
+    });
+    expect(outcome?.data).toEqual({ row: outcome?.key ?? "" });
+    expect(result.current.uploads.at(-1)?.data).toEqual(outcome?.data);
   });
 
   test("download / list verbs work through the hook", async () => {

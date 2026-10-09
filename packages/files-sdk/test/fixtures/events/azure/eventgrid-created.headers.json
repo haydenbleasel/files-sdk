@@ -1,0 +1,7 @@
+{
+  "Content-Type": "application/json; charset=utf-8",
+  "aeg-event-type": "Notification",
+  "aeg-subscription-name": "<EVENT-SUBSCRIPTION-NAME>",
+  "aeg-metadata-version": "1",
+  "aeg-data-version": ""
+}

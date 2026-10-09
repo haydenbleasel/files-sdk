@@ -11,6 +11,7 @@ import type {
   SearchMatch,
   SignedUpload,
 } from "../../index.js";
+import type { JsonValue } from "../json.js";
 
 /**
  * The coarse, authorize-facing verbs. A bulk wire op (`head-many`) authorizes
@@ -214,9 +215,18 @@ export interface SignedUploadUrlResponse {
 export interface PresignResponse {
   uploads: PresignedUpload[];
 }
+/** A completed upload: its metadata, plus whatever the gateway's `onUploadComplete` returned. */
+export interface WireUploadedFile extends WireFileInfo {
+  data?: JsonValue;
+}
 export interface CompleteResponse {
-  files: WireFileInfo[];
+  files: WireUploadedFile[];
   errors?: WireBulkError[];
+}
+/** The keyed `PUT ?op=upload&key=` response. */
+export interface ExplicitUploadResponse {
+  ok: true;
+  file: WireUploadedFile;
 }
 
 /**
@@ -269,7 +279,9 @@ export type WireErrorReason =
   | "origin"
   | "forbidden"
   | "capability"
-  | "range";
+  | "range"
+  /** `onUploadComplete` threw `UploadRejectedError`. */
+  | "rejected";
 
 export interface WireError {
   error: {

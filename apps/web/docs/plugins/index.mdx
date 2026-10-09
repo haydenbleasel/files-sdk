@@ -46,18 +46,20 @@ A set of plugins ships with the SDK, each as its own subpath export:
 - [`failover()`](/docs/plugins/failover) - retry provider errors against replica backends.
 - [`signedUrlPolicy()`](/docs/plugins/signed-url-policy) - safe defaults for `url()` and `signedUploadUrl()`.
 - [`zip()`](/docs/plugins/zip) - bundle stored objects into ZIP archives and extract them back.
+- [`events()`](/docs/plugins/events) - normalize provider bucket notifications and route them to handlers.
 
 The [plugin API reference](/docs/plugins/api) covers the `FilesPlugin` type, `handlers()`, and `createFiles`.
 
 ## Plugin hooks
 
-A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to three optional hooks. A plugin can use any combination of them.
+A [`FilesPlugin`](/docs/plugins/api#filesplugin) is an object with a `name` and up to four optional hooks. A plugin can use any combination of them.
 
 | Hook | What it does | Changes the instance type? |
 | --- | --- | --- |
 | `wrap` | Intercept every operation - transform the inputs, veto by throwing, or wrap the result. | No |
 | `extend` | Contribute new namespaced methods (e.g. `files.usage()`). | Yes - via [`createFiles`](#typing-extend-with-createfiles) |
 | [`capabilities`](/docs/plugins/api#capabilities) | Narrow what [`files.capabilities`](/docs/capabilities) advertises, e.g. report `signedUrl.supported: false` for a URL the plugin refuses to mint. Folded in `plugins` order. | No |
+| [`event`](/docs/plugins/api#event) | Map a provider [storage event](/docs/events) into what the plugin's callers see, or drop it. Folded innermost first. | No |
 
 Because `wrap` doesn't touch the instance type, plugins that only wrap work with plain `new Files({ plugins })`. Only `extend` adds surface, and that's the one case [`createFiles`](/docs/plugins/api#createfiles) exists for.
 

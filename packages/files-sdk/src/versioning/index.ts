@@ -500,6 +500,8 @@ export const versioning = (
         replace: false,
       },
     }),
+    // Provider events: snapshots under the version store are internal.
+    event: (event) => (under(event.key, versionDir) ? null : event),
     extend: (files) => ({
       restoreVersion: (key, requested) => restore(files, key, requested),
       versions: (key) => listVersions(files, key),

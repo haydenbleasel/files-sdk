@@ -9,10 +9,14 @@ import { memory } from "../src/memory/index.js";
 import { useFile, useList, useSearch } from "../src/svelte/use-files-query.js";
 import { useFiles } from "../src/svelte/use-files.js";
 
-const config = (adapter: Adapter) => {
+const config = (
+  adapter: Adapter,
+  onUploadComplete?: (ctx: { file: { key: string } }) => unknown
+) => {
   const router = createFilesRouter({
     allowedOrigins: () => true,
     files: createFiles({ adapter }),
+    onUploadComplete,
     operations: [
       "head",
       "exists",
@@ -77,6 +81,15 @@ describe("svelte useFiles", () => {
     expect(read(files.uploads).at(-1)?.status).toBe("success");
     expect(read(files.progress).fraction).toBe(1);
     expect(read(files.error)).toBeUndefined();
+  });
+
+  test("upload results and uploads entries carry onUploadComplete data", async () => {
+    const files = useFiles<{ row: string }>(
+      config(memory(), ({ file }) => ({ row: file.key }))
+    );
+    const outcome = await files.upload(new File(["hi"], "a.txt"));
+    expect(outcome.data).toEqual({ row: outcome.key });
+    expect(read(files.uploads).at(-1)?.data).toEqual({ row: outcome.key });
   });
 
   test("exercises every verb and the upload variants", async () => {

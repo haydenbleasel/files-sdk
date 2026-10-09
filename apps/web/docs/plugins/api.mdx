@@ -44,6 +44,32 @@ Return a new object rather than mutating the argument, and only narrow. The hook
 
 The core also gates on the narrowed snapshot. A `range`, `metadata`, `cacheControl`, `control`, or `delimiter` that a plugin turns off is refused before any plugin's `wrap` runs, with an error naming the plugin, so an outer plugin never does I/O for a call that's about to be rejected.
 
+### event
+
+```ts
+event?: (event: FileEvent) => FileEvent | null;
+```
+
+Maps a provider storage event from [`files-sdk/events`](/docs/events) into what this plugin's callers see. Return a rewritten event, the same one, or `null` to drop it.
+
+A provider event describes what landed in the bucket, so a plugin that stores keys or bytes its callers never addressed has to translate it. The hook receives the event with the instance `prefix` already stripped, and hooks fold innermost first: `plugins` order reversed, the way stored bytes travel back out. The bundled plugins use it like this:
+
+- [`dedup()`](/docs/plugins/dedup) drops its content-addressed blobs and clears a pointer's size and ETag.
+- [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear `size`, which is the stored size, not the caller's.
+- [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) drop events under their own prefixes, so a soft delete reads as one `deleted`.
+- [`tiering()`](/docs/plugins/tiering) keeps events for keys routed to the hot tier. With `fallback: true` it throws, since a hot-tier delete may be a move to cold.
+
+```ts lineNumbers
+const thumbnails: FilesPlugin = {
+  name: "thumbnails",
+  // Generated thumbnails aren't the caller's files; don't report them.
+  event: (event) => (event.key.startsWith(".thumbs/") ? null : event),
+  wrap: handlers({/* … */}),
+};
+```
+
+Events from a [gateway](/docs/ui/server/upload-lifecycle) upload or from the instance's own writes (`events({ sdk: true })`) are already caller-facing and skip the hook.
+
 ## FilesOperation
 
 The discriminated union handed to `wrap` - one family per public verb, carrying the caller-facing inputs. Native [conditional operations](/docs/conditional-operations) stay in the existing `upload`, `download`, `delete`, and `copy` families and add a `mode` plus their ETag predicate. The array forms of `upload` / `download` / `head` / `exists` / `delete` set `bulk: true` on each fanned-out item; conditional modes are single-key only.

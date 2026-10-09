@@ -313,6 +313,10 @@ export const softDelete = (
       ...caps,
       conditional: { ...caps.conditional, delete: false },
     }),
+    // Provider events: a soft delete arrives as the key's `deleted` plus a
+    // `created` in the trash, and a restore the other way round; the trash
+    // side is internal.
+    event: (event) => (isTrashKey(event.key) ? null : event),
     extend: (files) => ({
       purge: (key) => purge(files, key),
       restoreTrashed: (key) => restore(files, key),

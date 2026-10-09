@@ -1,0 +1,9 @@
+{
+  "box-delivery-id": "673a081b-bb4b-4d45-b4f1-4131a29c1d07",
+  "box-delivery-timestamp": "2016-07-11T10:10:33-07:00",
+  "box-signature-primary": "isCeDp7mLR41/MjcSEFLag9bWmpJkgmN80Je4VIESdo=",
+  "box-signature-secondary": "1UbiiKS7/2o5vNIlyMh7e5QGCHq8lflWFgEF+YWBugI=",
+  "box-signature-version": "1",
+  "box-signature-algorithm": "HmacSHA256",
+  "user-agent": "Box-WH-Client/0.1"
+}

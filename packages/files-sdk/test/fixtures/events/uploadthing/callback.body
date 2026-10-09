@@ -1,0 +1,1 @@
+{"status":"uploaded","metadata":{},"origin":"https://example.com","file":{"name":"foo.png","size":48,"type":"image/png","customId":null,"key":"some-random-key.png","url":"https://utfs.io/f/some-random-key.png","appUrl":"https://utfs.io/a/app-1/f/some-random-key.png","ufsUrl":"https://app-1.ufs.sh/f/some-random-key.png","fileHash":"some-md5-hash"}}

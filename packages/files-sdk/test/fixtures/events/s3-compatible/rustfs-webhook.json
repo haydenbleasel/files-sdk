@@ -1,0 +1,12 @@
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Records": [
+    {
+      "eventName": "s3:ObjectCreated:Put",
+      "s3": {
+        "bucket": { "name": "my-bucket" },
+        "object": { "key": "uploads%2Fhello.dat" }
+      }
+    }
+  ]
+}

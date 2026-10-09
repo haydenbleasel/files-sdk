@@ -36,6 +36,7 @@ Each maps to a `Files` method:
 | `capabilities` | `capabilities` | what the adapter supports, as JSON; no provider round-trip |
 | `transfer` | `transfer` | `--to '<json>'` destination config; `--prefix`, `--no-overwrite` |
 | `sync` | `sync` | `--to '<json>'`; `--prefix`, `--dest-prefix`, `--compare etag\|size`, `--prune` (destructive); global `--dry-run` prints the plan |
+| `events parse [file]` | `files.events.parse` (`files-sdk/events`) | prints the normalized events for a notification delivery (stdin when no file); `--format s3\|r2\|gcs\|azure\|b2\|…` needs no provider. No MCP tool |
 
 ```sh
 files --provider s3 --bucket uploads upload reports/q1.pdf --file ./q1.pdf --content-type application/pdf

@@ -1,0 +1,9 @@
+{
+  "Content-Type": "application/json",
+  "ce-id": "aaaaaa-1111-bbbb-2222-dddddddddddd",
+  "ce-source": "//storage.googleapis.com/projects/_/buckets/some-bucket",
+  "ce-specversion": "1.0",
+  "ce-type": "google.cloud.storage.object.v1.deleted",
+  "ce-subject": "objects/folder/Test.cs",
+  "ce-time": "2020-09-29T11:32:00.123Z"
+}

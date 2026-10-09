@@ -1,0 +1,5 @@
+{
+  "Content-Type": "application/json; charset=utf-8",
+  "aeg-event-type": "SubscriptionValidation",
+  "aeg-subscription-name": "<EVENT-SUBSCRIPTION-NAME>"
+}

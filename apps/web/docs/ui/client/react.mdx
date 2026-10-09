@@ -74,6 +74,8 @@ files.progress; // { loaded, total, fraction } over the current entries
 
 `files.reset()` clears the finished entries. Uploads that are still running keep their entries, and `isUploading` stays `true` until they settle.
 
+When the server's gateway has an [`onUploadComplete`](/docs/ui/server/upload-lifecycle) hook, each upload result (and its `uploads` entry) carries what the hook returned as `data`. Type it from the router with a type-only import: `useFiles<InferUploadData<typeof router>>()`.
+
 ## Downloading vs linking
 
 Two tools, two jobs:

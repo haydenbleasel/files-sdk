@@ -1,0 +1,6 @@
+{
+  "algorithm": "base64(HMAC-SHA1(key = webhook signature key, data = webhook URL exactly as configured + raw body))",
+  "url": "https://example.com/webhook",
+  "secret": "new-key-after-rotation",
+  "expectedSignature": "JVEjxFRL8CWqbRM4BruPzdhF0k0="
+}

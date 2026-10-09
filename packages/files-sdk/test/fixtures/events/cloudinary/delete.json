@@ -1,0 +1,22 @@
+{
+  "notification_type": "delete",
+  "resources": [
+    {
+      "resource_type": "image",
+      "type": "upload",
+      "asset_id": "1d1d8d109a08857b6a7fcea5510d1970",
+      "public_id": "kids_playing_with_puppy",
+      "version": 1719318204,
+      "asset_folder": "",
+      "display_name": "kids_playing_with_puppy"
+    }
+  ],
+  "notification_context": {
+    "triggered_at": "2024-06-25T12:24:29.599817Z",
+    "triggered_by": {
+      "source": "api",
+      "id": "614335564976464"
+    }
+  },
+  "signature_key": "614335564976464"
+}

@@ -39,6 +39,11 @@ import type {
   WireTrashedFile,
 } from "./protocol.js";
 import { bulkErrorToWire, fileInfoToWire } from "./serialize.js";
+import type {
+  CompletionStore,
+  OnUploadComplete,
+  UploadData,
+} from "./upload-complete.js";
 import type { UploadConfig } from "./upload.js";
 import {
   boundQuery,
@@ -70,6 +75,9 @@ export interface HandlerContext {
   onUnsupportedRange: "reject" | "ignore";
   proxyUrl: (token: string) => string;
   now: () => number;
+  onUploadComplete?: OnUploadComplete<UploadData>;
+  onRejected: "delete" | "keep";
+  completions?: CompletionStore;
 }
 
 // --- request-shape validators (throw 422 on a bad client payload) ---
@@ -214,12 +222,20 @@ const bulkErrors = (
 
 const uploadCfg = (
   ctx: HandlerContext,
-  parsed: ParsedRequest
+  parsed: ParsedRequest,
+  scope?: Scope
 ): UploadConfig => ({
   boundPath: parsed.path,
   boundQuery: boundQuery(parsed.query),
   defaultExpiresIn: ctx.defaultExpiresIn,
   files: ctx.files,
+  lifecycle: {
+    completions: ctx.completions,
+    context: scope?.context,
+    onRejected: ctx.onRejected,
+    onUploadComplete: ctx.onUploadComplete,
+    req: ctx.req,
+  },
   maxUploadSize: ctx.maxUploadSize,
   now: ctx.now,
   proxyUrl: ctx.proxyUrl,
@@ -742,7 +758,7 @@ const dispatchJson = async (
       const items = completions(ctx, body);
       const scope = await authorizeOp(ctx, { operation: "upload", params: {} });
       return handleComplete(
-        uploadCfg(ctx, parsed),
+        uploadCfg(ctx, parsed, scope),
         items,
         scope,
         unscoper(scope)
@@ -905,7 +921,7 @@ export const dispatch = async (
       params: {},
     });
     return handleExplicitUpload(
-      uploadCfg(ctx, parsed),
+      uploadCfg(ctx, parsed, scope),
       scopeKey(scope.prefix, key),
       key,
       parsed.bodyStream,

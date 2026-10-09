@@ -1,0 +1,11 @@
+{
+  "content-type": "application/json",
+  "user-agent": "Appwrite-Server vdev. Please report abuse at security@appwrite.io",
+  "x-appwrite-webhook-delivery-id": "PLACEHOLDER-delivery-id",
+  "x-appwrite-webhook-events": "buckets.5e5ea5c16897e.files.5e5ea5c16897e.create,buckets.5e5ea5c16897e.files.5e5ea5c16897e,buckets.5e5ea5c16897e.files.*.create,buckets.5e5ea5c16897e.files.*,buckets.5e5ea5c16897e,buckets.*.files.5e5ea5c16897e.create,buckets.*.files.5e5ea5c16897e,buckets.*.files.*.create,buckets.*.files.*,buckets.*",
+  "x-appwrite-webhook-id": "PLACEHOLDER-webhook-id",
+  "x-appwrite-webhook-name": "PLACEHOLDER-webhook-name",
+  "x-appwrite-webhook-project-id": "PLACEHOLDER-project-id",
+  "x-appwrite-webhook-signature": "JVEjxFRL8CWqbRM4BruPzdhF0k0=",
+  "x-appwrite-webhook-user-id": ""
+}

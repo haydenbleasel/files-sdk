@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import { Command, Option } from "commander";
 
+import { EVENT_FORMATS } from "../events/index.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject } from "../internal/is.js";
 import {
@@ -9,6 +10,7 @@ import {
   runCopy,
   runDelete,
   runDownload,
+  runEventsParse,
   runExists,
   runHead,
   runList,
@@ -25,6 +27,7 @@ import type {
   CopyCmdOpts,
   DeleteCmdOpts,
   DownloadCmdOpts,
+  EventsParseCmdOpts,
   HeadCmdOpts,
   KeyList,
   ListCmdOpts,
@@ -808,6 +811,31 @@ export const buildProgram = (
         stopOnError: opts.stopOnError,
         to: opts.to,
       }))
+    );
+
+  const eventsCommand = program
+    .command("events")
+    .description("work with storage notifications (files-sdk/events)");
+  eventsCommand
+    .command("parse [file]")
+    .description(
+      "print the events a bucket notification delivery (a webhook body, an SQS/Queue/Pub/Sub message, …) normalizes to; reads stdin when no file is given"
+    )
+    .addOption(
+      new Option(
+        "--format <format>",
+        "read this notification format without configuring a provider"
+      ).choices([...EVENT_FORMATS])
+    )
+    .action(
+      wrap(
+        runEventsParse,
+        (
+          common,
+          file: string | undefined,
+          opts: Flags<EventsParseCmdOpts, "file">
+        ) => ({ ...common, file, format: opts.format })
+      )
     );
 
   program

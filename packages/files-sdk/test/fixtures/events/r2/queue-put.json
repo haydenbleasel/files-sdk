@@ -1,0 +1,11 @@
+{
+  "account": "3f4b7e3dcab231cbfdaa90a6a28bd548",
+  "action": "PutObject",
+  "bucket": "my-bucket",
+  "object": {
+    "key": "my-new-object",
+    "size": 65536,
+    "eTag": "c846ff7a18f28c2e262116d6e8719ef0"
+  },
+  "eventTime": "2024-05-24T19:36:44.379Z"
+}

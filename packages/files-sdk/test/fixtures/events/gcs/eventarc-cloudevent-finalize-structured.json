@@ -1,0 +1,28 @@
+{
+  "specversion": "1.0",
+  "type": "google.cloud.storage.object.v1.finalized",
+  "source": "//storage.googleapis.com/projects/_/buckets/some-bucket",
+  "subject": "objects/folder/Test.cs",
+  "id": "aaaaaa-1111-bbbb-2222-cccccccccccc",
+  "time": "2020-09-29T11:32:00.123Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "bucket": "some-bucket",
+    "contentType": "text/plain",
+    "crc32c": "rTVTeQ==",
+    "etag": "CNHZkbuF/ugCEAE=",
+    "generation": "1587627537231057",
+    "id": "some-bucket/folder/Test.cs/1587627537231057",
+    "kind": "storage#object",
+    "md5Hash": "kF8MuJ5+CTJxvyhHS1xzRg==",
+    "mediaLink": "https://www.googleapis.com/download/storage/v1/b/some-bucket/o/folder%2FTest.cs?generation=1587627537231057&alt=media",
+    "metageneration": "1",
+    "name": "folder/Test.cs",
+    "selfLink": "https://www.googleapis.com/storage/v1/b/some-bucket/o/folder/Test.cs",
+    "size": "352",
+    "storageClass": "MULTI_REGIONAL",
+    "timeCreated": "2020-04-23T07:38:57.230Z",
+    "timeStorageClassUpdated": "2020-04-23T07:38:57.230Z",
+    "updated": "2020-04-23T07:38:57.230Z"
+  }
+}

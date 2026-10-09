@@ -1,0 +1,71 @@
+---
+title: Google Cloud Storage
+description: Publish GCS notifications to Pub/Sub, then pull them, or push them to files.events.webhook() with Google-signed OIDC tokens.
+---
+
+GCS publishes object changes to a Pub/Sub topic. The `gcs` and `firebase-storage` adapters read the `gcs` format, which accepts Pub/Sub messages (pulled, pushed, or as the client library hands them over) and Eventarc CloudEvents.
+
+```sh
+gcloud storage buckets notifications create gs://my-bucket \
+  --topic=uploads \
+  --event-types=OBJECT_FINALIZE,OBJECT_DELETE,OBJECT_ARCHIVE
+```
+
+The command creates the topic if it's missing and lets the Cloud Storage service agent publish to it. `--object-prefix` narrows it.
+
+## Push to a webhook
+
+Create an authenticated push subscription, so every delivery carries a Google-signed OIDC token:
+
+```sh
+gcloud pubsub subscriptions create uploads-push --topic=uploads \
+  --push-endpoint=https://app.example.com/api/storage-events \
+  --push-auth-service-account=push@my-project.iam.gserviceaccount.com
+```
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({
+    verify: {
+      google: {
+        audience: "https://app.example.com/api/storage-events",
+        email: "push@my-project.iam.gserviceaccount.com",
+      },
+    },
+  })
+);
+```
+
+`audience` defaults to the push endpoint on Google's side; pass `--push-auth-token-audience` to choose another and use the same value here. Whoever creates the subscription needs `iam.serviceAccounts.actAs` on that service account.
+
+## Pull
+
+With the `@google-cloud/pubsub` client, dispatch each message and ack it once its handlers succeed:
+
+```ts lineNumbers
+subscription.on("message", async (message) => {
+  try {
+    await files.events.dispatch(message);
+    message.ack();
+  } catch {
+    message.nack();
+  }
+});
+```
+
+## What maps to what
+
+| Pub/Sub `eventType` | `FileEvent` |
+| --- | --- |
+| `OBJECT_FINALIZE` | `created` (also copies, rewrites and restores) |
+| `OBJECT_DELETE` | `deleted` |
+| `OBJECT_ARCHIVE` | `deleted`: the live version became noncurrent |
+| `OBJECT_DELETE` / `OBJECT_ARCHIVE` with `overwrittenByGeneration` | skipped: an overwrite, whose `OBJECT_FINALIZE` arrives separately |
+| `OBJECT_METADATA_UPDATE` | skipped |
+
+One storage change can arrive as several Pub/Sub messages with different message ids, so `event.id` is built from the bucket, object, generation and event type instead. `versionId` is the generation.
+
+Eventarc's `archived` events can't tell an overwrite from a delete, so they're skipped; on a versioned bucket, use Pub/Sub notifications.

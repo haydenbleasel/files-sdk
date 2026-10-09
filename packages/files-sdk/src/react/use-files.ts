@@ -28,7 +28,8 @@ export interface UseFilesOptions extends FilesClientConfig {
   signal?: AbortSignal;
 }
 
-export interface UseFilesResult extends FilesClient {
+/** `TData`: what the gateway's `onUploadComplete` returns — see `InferUploadData`. */
+export interface UseFilesResult<TData = unknown> extends FilesClient<TData> {
   /** `true` while any `upload()` started by this hook is in flight. */
   isUploading: boolean;
   /**
@@ -39,7 +40,7 @@ export interface UseFilesResult extends FilesClient {
    * fresh snapshot on each change; its `status` always ends `"success"`,
    * `"error"` (with `error` set), or `"aborted"`.
    */
-  uploads: readonly FileUploadState[];
+  uploads: readonly FileUploadState<TData>[];
   /** Aggregate progress over the current `uploads` entries. */
   progress: AggregateProgress;
   /** The last error from any verb (including errors thrown while iterating `listAll`/`search`). */
@@ -54,7 +55,9 @@ export interface UseFilesResult extends FilesClient {
 }
 
 /* oxlint-disable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react-doctor/react-compiler-no-manual-memoization -- ships to consumers who are mostly NOT on the React Compiler; the manual useMemo and the lazy ref-init pattern (`if (ref.current === null) ref.current = …`) are required correctness, not dead weight */
-export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
+export const useFiles = <TData = unknown>(
+  opts: UseFilesOptions = {}
+): UseFilesResult<TData> => {
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
@@ -146,7 +149,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
     []
   );
 
-  return useMemo<UseFilesResult>(() => {
+  const result = useMemo<UseFilesResult>(() => {
     const recordError = (cause: unknown): void => {
       store.patch({ error: FilesError.wrap(cause) });
     };
@@ -259,5 +262,9 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesResult => {
       versions: (k, o) => remember(() => client.versions(k, o)),
     };
   }, [client, store, ledger, state]);
+  // SAFETY: `TData` only types the `data` each upload relays from the gateway's
+  // `onUploadComplete` (see `createFilesClient`); the hook passes that value
+  // through untouched, so the result built against `unknown` holds for `TData`.
+  return result as UseFilesResult<TData>;
 };
 /* oxlint-enable react/refs, react/memo-dependencies, react/exhaustive-effect-dependencies, react-doctor/react-compiler-no-manual-memoization */

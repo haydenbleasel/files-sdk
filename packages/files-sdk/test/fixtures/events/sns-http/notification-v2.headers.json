@@ -1,0 +1,8 @@
+{
+  "x-amz-sns-message-type": "Notification",
+  "x-amz-sns-message-id": "9d2c5580-b61d-550c-8583-37a582870907",
+  "x-amz-sns-topic-arn": "arn:aws:sns:us-west-2:131990247566:dongie-standard-topic",
+  "x-amz-sns-subscription-arn": "arn:aws:sns:us-west-2:131990247566:dongie-standard-topic:b24e11a2-06bd-4e73-aa29-0ed2de3b41b5",
+  "content-type": "text/plain; charset=UTF-8",
+  "user-agent": "Amazon Simple Notification Service Agent"
+}

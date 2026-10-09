@@ -1,0 +1,146 @@
+---
+title: Amazon S3
+description: Send S3 bucket notifications to SQS, Lambda, SNS or EventBridge, and hand them to files.events.dispatch() or a webhook.
+---
+
+S3 publishes notifications to SQS, SNS, Lambda or EventBridge. All of them are read by the `s3` format, which the `s3`, `s3-fetch` and `bun-s3` adapters pick automatically.
+
+## SQS (recommended)
+
+Allow the bucket to send to the queue. S3 checks the destination when you save the notification configuration, so this comes first:
+
+```json title="queue-policy.json"
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "s3.amazonaws.com" },
+      "Action": "SQS:SendMessage",
+      "Resource": "arn:aws:sqs:us-east-1:123456789012:uploads",
+      "Condition": {
+        "ArnLike": { "aws:SourceArn": "arn:aws:s3:*:*:my-bucket" },
+        "StringEquals": { "aws:SourceAccount": "123456789012" }
+      }
+    }
+  ]
+}
+```
+
+Then point the bucket at the queue. Lifecycle expirations are a separate event type; include them if a rule can delete objects:
+
+```json title="notification.json"
+{
+  "QueueConfigurations": [
+    {
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:uploads",
+      "Events": [
+        "s3:ObjectCreated:*",
+        "s3:ObjectRemoved:*",
+        "s3:LifecycleExpiration:*"
+      ]
+    }
+  ]
+}
+```
+
+```sh
+aws s3api put-bucket-notification-configuration \
+  --bucket my-bucket \
+  --notification-configuration file://notification.json
+```
+
+The queue must be a standard (not FIFO) queue in the bucket's region. S3 sends an `s3:TestEvent` when you save the configuration; it parses to nothing.
+
+Consume the queue with Lambda. Reporting failures per record (`ReportBatchItemFailures` on the event source mapping) redelivers only the messages whose handlers threw:
+
+```ts title="handler.ts" lineNumbers
+import type { SQSBatchResponse, SQSEvent } from "aws-lambda";
+import { files } from "./lib/files";
+
+export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
+  const batchItemFailures: { itemIdentifier: string }[] = [];
+  for (const record of event.Records) {
+    try {
+      await files.events.dispatch(record);
+    } catch {
+      batchItemFailures.push({ itemIdentifier: record.messageId });
+    }
+  }
+  return { batchItemFailures };
+};
+```
+
+`dispatch(event)` with the whole Lambda event works too, but then one failing handler retries the batch. Messages that went through SNS on the way (S3 → SNS → SQS, raw delivery off) are unwrapped the same way.
+
+## Lambda directly
+
+Use `LambdaFunctionConfigurations` with a `LambdaFunctionArn` in the notification document, after granting S3 permission to invoke it:
+
+```sh
+aws lambda add-permission --function-name my-fn \
+  --principal s3.amazonaws.com --statement-id s3invoke \
+  --action "lambda:InvokeFunction" \
+  --source-arn arn:aws:s3:::my-bucket --source-account 123456789012
+```
+
+The handler is `(event) => files.events.dispatch(event)`.
+
+## EventBridge
+
+Turn EventBridge on for the bucket. The call **replaces** the bucket's whole notification configuration, so read it first with `get-bucket-notification-configuration` and merge in any existing queue or Lambda entries:
+
+```sh
+aws s3api put-bucket-notification-configuration --bucket my-bucket \
+  --notification-configuration '{ "EventBridgeConfiguration": {} }'
+```
+
+Every event type goes to EventBridge; select the ones you want in the rule:
+
+```json title="event-pattern.json"
+{
+  "source": ["aws.s3"],
+  "detail-type": ["Object Created", "Object Deleted"],
+  "detail": { "bucket": { "name": ["my-bucket"] } }
+}
+```
+
+Target a Lambda (`dispatch(event)`), an SQS queue, or an HTTPS endpoint through an API destination. An API destination needs a connection, and its `API_KEY` authorization can carry your webhook token in the `Authorization` header:
+
+```sh
+aws events create-connection --name storage-events --authorization-type API_KEY \
+  --auth-parameters '{"ApiKeyAuthParameters":{"ApiKeyName":"Authorization","ApiKeyValue":"Bearer SECRET"}}'
+```
+
+Then mount [`webhook({ verify: { token: "SECRET" } })`](/docs/events/webhooks). EventBridge keys arrive unencoded; `Records[]` keys arrive URL-encoded. Both normalize to the same `event.key`.
+
+## SNS over HTTPS
+
+If SNS delivers straight to your endpoint, verify its message signatures with `verify: { sns }`:
+
+```ts lineNumbers
+const webhook = files.events.webhook({
+  verify: {
+    sns: {
+      topicArn: "arn:aws:sns:us-east-1:123456789012:uploads",
+      confirm: true, // visit the SubscribeURL when the subscription is created
+    },
+  },
+});
+```
+
+The signing certificate is fetched from the message's `SigningCertURL`, which must be an `sns.<region>.amazonaws.com` host, and cached. With `confirm: false` (the default), the confirmation URL is logged for you to visit. Raw message delivery strips the signature, so it's refused; leave it off. SQS is simpler and more durable than SNS over HTTPS when you have the choice.
+
+## Wasabi
+
+Wasabi publishes S3-shaped notifications to an AWS SNS topic you own (set up in the Wasabi console, with AWS credentials), so the `wasabi` adapter reads the `s3` format. Subscribe an SQS queue to the topic and consume it as above, or subscribe your endpoint and use `verify: { sns }`.
+
+## What maps to what
+
+| S3 event | `FileEvent` |
+| --- | --- |
+| `ObjectCreated:Put`, `Post`, `Copy`, `CompleteMultipartUpload` | `created` |
+| `ObjectRemoved:Delete`, `DeleteMarkerCreated`, `LifecycleExpiration:*` | `deleted` |
+| Tagging, ACL, restore, replication, storage-class transitions | skipped |
+
+On a versioned bucket, see [versioned buckets](/docs/events/delivery#versioned-buckets).

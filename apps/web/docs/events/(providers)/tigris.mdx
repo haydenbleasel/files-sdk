@@ -1,0 +1,23 @@
+---
+title: Tigris
+description: Receive Tigris object notifications at files.events.webhook(), authenticated by the header you configure.
+---
+
+Tigris object notifications are webhooks in Tigris's own shape (not S3's). The `tigris` adapter reads the `tigris` format.
+
+Enable notifications on the bucket in the Tigris console, with your endpoint URL and token authentication. Tigris then sends `Authorization: Bearer <token>`:
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({ verify: { token: process.env.TIGRIS_WEBHOOK_TOKEN! } })
+);
+```
+
+Tigris deliveries aren't signed, so the token is the only check; use a long random one. With basic authentication instead, pass the whole header value: `verify: { token: "Basic <base64 user:pass>" }`.
+
+## What maps to what
+
+`OBJECT_CREATED_PUT`, `OBJECT_CREATED_MULTIPART` and `OBJECT_CREATED_COPY` become `created`; `OBJECT_DELETED` becomes `deleted`. `OBJECT_TRANSITIONED` is skipped, and so is `OBJECT_RENAME`, whose payload doesn't name the old key. There's no event id, so `event.id` is built from the key, ETag and time.

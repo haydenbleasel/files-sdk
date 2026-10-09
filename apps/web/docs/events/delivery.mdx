@@ -1,0 +1,82 @@
+---
+title: Delivery and idempotency
+description: Every provider delivers at least once and out of order. Write handlers that can run twice, keyed on event.id.
+---
+
+Every provider files-sdk reads delivers notifications **at least once**, and none of them promise order:
+
+- S3 can send the same notification twice, and SQS redelivers a message nobody deleted.
+- GCS can publish one change as several Pub/Sub messages with different message ids.
+- Event Grid, MinIO and Pub/Sub push retry anything that doesn't get a 2xx back in time.
+- Two events for the same key can arrive in either order.
+
+So a handler will sometimes see an event it has already handled, and sometimes see a `deleted` before the `created` it follows. Write handlers that are safe to run again.
+
+## Dedupe on `event.id`
+
+`id` is the same every time a given change is delivered, however it arrives. Where the provider has a per-event id (EventBridge, Event Grid), it's that. Otherwise it's built from the key and the provider's per-write marker: the S3 `sequencer`, the GCS generation and event type, or the R2 ETag and event time.
+
+The simplest idempotent handler is an upsert keyed on it:
+
+```ts lineNumbers
+files.events.on("created", async (event) => {
+  await db.files.upsert({
+    where: { eventId: event.id },
+    create: { eventId: event.id, key: event.key, size: event.size },
+  });
+});
+```
+
+For handlers that can't be idempotent (sending an email, charging a card), pass a `dedupe` store. The plugin checks it before running an event's handlers and records the id once they all succeed:
+
+```ts lineNumbers
+const files = createFiles({
+  adapter,
+  plugins: [
+    events({
+      dedupe: {
+        has: async (id) => (await redis.exists(`evt:${id}`)) === 1,
+        add: async (id, ttl) => {
+          await redis.set(`evt:${id}`, "1", "PX", ttl);
+        },
+      },
+      dedupeTtl: 24 * 60 * 60 * 1000, // the default
+    }),
+  ],
+});
+```
+
+A failed event isn't recorded, so its redelivery runs again. A `has`-then-`add` store still lets two copies of an event racing each other both through; where that matters, make the write itself conditional.
+
+## Ordering
+
+Use `time`, and the provider's own ordering fields in `raw` (S3 and Azure `sequencer`s compare per key), when order matters. A common pattern is to re-read the truth instead of trusting the event:
+
+```ts lineNumbers
+files.events.on("*", async (event) => {
+  const exists = await files.exists(event.key);
+  await db.files.sync(event.key, exists ? await files.head(event.key) : null);
+});
+```
+
+## Failures and retries
+
+When a handler throws, `dispatch()` rejects after trying every event, and the webhook answers `500`. Leave the message unacknowledged, and the provider will deliver it again. Every failure also goes to `onError`, which defaults to `console.error`.
+
+Handlers run one at a time, in the order they were registered. Await anything that has to finish before the delivery counts as handled.
+
+## Keys, prefixes and buckets
+
+- **Keys are caller-facing.** URL-encoded S3 keys are decoded, and the instance `prefix` is stripped, so `event.key` is what you'd pass to `files.download()`.
+- **Events outside the instance `prefix` are dropped,** so a multi-tenant bucket shared by several instances doesn't leak one tenant's keys to another.
+- **Other buckets' events can be dropped too.** Several buckets can share one queue or endpoint; pass `events({ bucket: "uploads" })` to keep only one of them. Events whose delivery doesn't name a bucket always pass.
+- **Plugins translate what they store.** [`dedup()`](/docs/plugins/dedup) drops its blobs, [`versioning()`](/docs/plugins/versioning) and [`softDelete()`](/docs/plugins/soft-delete) drop their internal prefixes, and [`encryption()`](/docs/plugins/encryption) and [`compression()`](/docs/plugins/compression) clear the stored size. See the plugin [`event` hook](/docs/plugins/api#event).
+
+## Versioned buckets
+
+On a versioned bucket, providers report deletes of individual versions too:
+
+- **S3:** an `ObjectRemoved:Delete` with a `versionId` may have removed an older version while the key still exists. `ObjectRemoved:DeleteMarkerCreated` means the key is gone.
+- **GCS:** `OBJECT_ARCHIVE` (the live version became noncurrent) is reported as `deleted`; an archive or delete caused by an overwrite is skipped, since its `OBJECT_FINALIZE` arrives separately. A purged noncurrent generation still arrives as `OBJECT_DELETE`.
+
+Both carry `versionId`, so check it, or re-read the key, before treating a `deleted` as the end of the object.

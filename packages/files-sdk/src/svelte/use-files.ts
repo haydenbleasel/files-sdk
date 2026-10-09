@@ -27,7 +27,8 @@ export interface UseFilesOptions extends FilesClientConfig {
   signal?: AbortSignal;
 }
 
-export interface UseFilesReturn extends FilesClient {
+/** `TData`: what the gateway's `onUploadComplete` returns — see `InferUploadData`. */
+export interface UseFilesReturn<TData = unknown> extends FilesClient<TData> {
   /** `true` while any `upload()` started here is in flight. */
   isUploading: ReadableStore<boolean>;
   /**
@@ -38,7 +39,7 @@ export interface UseFilesReturn extends FilesClient {
    * is replaced by a fresh snapshot on each change; its `status` always ends
    * `"success"`, `"error"` (with `error` set), or `"aborted"`.
    */
-  uploads: ReadableStore<readonly FileUploadState[]>;
+  uploads: ReadableStore<readonly FileUploadState<TData>[]>;
   /** Aggregate progress over the current `uploads` entries. */
   progress: ReadableStore<AggregateProgress>;
   /** The last error from any verb (including errors thrown while iterating `listAll`/`search`). */
@@ -52,7 +53,9 @@ export interface UseFilesReturn extends FilesClient {
   abort: (cause?: unknown) => void;
 }
 
-export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
+export const useFiles = <TData = unknown>(
+  opts: UseFilesOptions = {}
+): UseFilesReturn<TData> => {
   let root = new AbortController();
   let inFlight = 0;
   const errorStore = writable<FilesError | undefined>();
@@ -166,7 +169,7 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
   // overload untouched; `upload` re-implements the client's overload set on the
   // same argument shapes. The casts restore the overload signatures the client
   // declares.
-  return {
+  const result: UseFilesReturn = {
     ...client,
     abort: (cause?: unknown) => root.abort(cause),
     capabilities: (o) => remember(() => client.capabilities(o)),
@@ -204,4 +207,8 @@ export const useFiles = (opts: UseFilesOptions = {}): UseFilesReturn => {
     url: (k, o) => remember(() => client.url(k, o)),
     versions: (k, o) => remember(() => client.versions(k, o)),
   };
+  // SAFETY: `TData` only types the `data` each upload relays from the gateway's
+  // `onUploadComplete` (see `createFilesClient`); the binding passes that value
+  // through untouched, so the result built against `unknown` holds for `TData`.
+  return result as UseFilesReturn<TData>;
 };

@@ -329,6 +329,9 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
       signedUpload: { contentType: false, maxSize: false, supported: false },
       signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
+    // A provider event reports the stored object's size, not the caller's
+    // (the transformed body); the stored ETag and type still describe it.
+    event: ({ size: _stored, ...event }) => event,
     name: "encryption",
     wrap: handlers({
       download,

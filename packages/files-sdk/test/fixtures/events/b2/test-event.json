@@ -1,0 +1,14 @@
+{
+  "events": [
+    {
+      "accountId": "e85c6a500333",
+      "bucketId": "aea8c5bc362ae55070130333",
+      "bucketName": "mySampleBucket",
+      "eventId": "eventId",
+      "eventTimestamp": 1684793309123,
+      "eventType": "b2:TestEvent",
+      "eventVersion": 1,
+      "matchedRuleName": "mySampleRule1"
+    }
+  ]
+}

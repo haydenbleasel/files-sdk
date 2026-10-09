@@ -91,7 +91,9 @@ async function uploadFromBrowser(file: File) {
 
 ## Confirming the upload server-side
 
-The client knows the upload returned 2xx, but a hostile client can lie. If the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `type`/`size`.
+The client knows the upload returned 2xx, but a hostile client can lie. If you use the `files-sdk/api` gateway with `useFiles`, don't build this yourself: its `onUploadComplete` hook already runs server-side once per verified upload, after it `head`s the object and checks `maxUploadSize`, and deletes the object if the hook throws. See `docs/ui/server/upload-lifecycle.mdx`.
+
+With a hand-rolled `signedUploadUrl` flow, if the upload matters (billing, content moderation, search indexing), have the client call back and confirm; the server then runs `files.head(key)` to verify the object exists and has the expected `type`/`size`.
 
 ```ts
 const meta = await files.head(key);

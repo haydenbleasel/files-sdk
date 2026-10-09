@@ -11,10 +11,14 @@ import { memory } from "../src/memory/index.js";
 import { useFile, useList, useSearch } from "../src/vue/use-files-query.js";
 import { useFiles } from "../src/vue/use-files.js";
 
-const config = (adapter: Adapter) => {
+const config = (
+  adapter: Adapter,
+  onUploadComplete?: (ctx: { file: { key: string } }) => unknown
+) => {
   const router = createFilesRouter({
     allowedOrigins: () => true,
     files: createFiles({ adapter }),
+    onUploadComplete,
     operations: [
       "head",
       "exists",
@@ -69,6 +73,17 @@ const flush = async (): Promise<void> => {
 };
 
 describe("vue useFiles", () => {
+  test("upload results and uploads entries carry onUploadComplete data", async () => {
+    await withScope(async () => {
+      const files = useFiles<{ row: string }>(
+        config(memory(), ({ file }) => ({ row: file.key }))
+      );
+      const outcome = await files.upload(new File(["hi"], "a.txt"));
+      expect(outcome.data).toEqual({ row: outcome.key });
+      expect(files.uploads.value.at(-1)?.data).toEqual({ row: outcome.key });
+    });
+  });
+
   test("uploads and surfaces ambient refs", async () => {
     await withScope(async () => {
       const files = useFiles(config(memory()));

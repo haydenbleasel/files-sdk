@@ -1,0 +1,27 @@
+{
+  "version": "0",
+  "id": "ad1de317-e409-eba2-9552-30113f8d88e3",
+  "detail-type": "Object Deleted",
+  "source": "aws.s3",
+  "account": "111122223333",
+  "time": "2021-11-12T00:00:00Z",
+  "region": "ca-central-1",
+  "resources": ["arn:aws:s3:::amzn-s3-demo-bucket1"],
+  "detail": {
+    "version": "0",
+    "event-version": "1.2",
+    "bucket": {
+      "name": "amzn-s3-demo-bucket1"
+    },
+    "object": {
+      "key": "example-key",
+      "etag": "d41d8cd98f00b204e9800998ecf8427e",
+      "version-id": "mtB0cV.jejK63XkRNceanNMC.qXPWLeK",
+      "sequencer": "617b398000000000"
+    },
+    "request-id": "20EB74C14654DC47",
+    "requester": "s3.amazonaws.com",
+    "reason": "Lifecycle Expiration",
+    "deletion-type": "Delete Marker Created"
+  }
+}

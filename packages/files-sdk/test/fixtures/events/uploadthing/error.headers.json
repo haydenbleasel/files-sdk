@@ -1,0 +1,5 @@
+{
+  "content-type": "application/json",
+  "uploadthing-hook": "error",
+  "x-uploadthing-signature": "hmac-sha256=3fe7c5dcc754575410c2378a2e8d6e9244e598f46328d0360ef7ef9b55e4865f"
+}

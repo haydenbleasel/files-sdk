@@ -1,0 +1,5 @@
+{
+  "content-type": "application/json; charset=UTF-8",
+  "user-agent": "B2/EventNotifications",
+  "x-bz-event-notification-signature": "v1=8c8e2b5d8192d79cdc3161e6f12c958b13c7e3e6844057a97f653a29641812a9"
+}

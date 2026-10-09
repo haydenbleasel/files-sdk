@@ -73,6 +73,20 @@ adapter.raw.has("a.txt"); // true
 adapter.raw.clear(); // wipe between tests
 ```
 
+Changes made through `raw` bypass the adapter's change notifications.
+
+## Change notifications
+
+The adapter reports every object it creates or deletes, the way a bucket's notifications would. With the [`events()`](/docs/events) plugin installed, those reach `files.events.on()` handlers automatically, so event handlers run in tests with no provider (see [Testing locally](/docs/events/testing)). To listen without the plugin:
+
+```ts lineNumbers
+const unsubscribe = adapter.subscribe((change) => {
+  // { type: "created" | "deleted", key, size?, etag?, contentType?, time, sequence }
+});
+```
+
+Listeners run synchronously after the change, and a throwing listener never fails the write.
+
 ## Behavior notes
 
 - **Non-persistent.** The store lives in the process. Everything is lost when the process exits, and two `Files` instances built from separate `memory()` calls don't share data. Not for production.

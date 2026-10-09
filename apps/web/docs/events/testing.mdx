@@ -1,0 +1,64 @@
+---
+title: Testing locally
+description: The memory adapter emits storage events natively, so you can run event handlers in tests and local development without a provider.
+---
+
+The [memory adapter](/docs/adapters/memory) reports every change it makes, the way a bucket would. With the `events()` plugin installed, handlers run with no provider setup at all:
+
+```ts title="avatars.test.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { events } from "files-sdk/events";
+import { memory } from "files-sdk/memory";
+import { expect, test } from "vitest";
+
+test("indexes new avatars", async () => {
+  const files = createFiles({ adapter: memory(), plugins: [events()] });
+  const indexed: string[] = [];
+  files.events.on("created", "avatars/**", (event) => {
+    indexed.push(event.key);
+  });
+
+  await files.upload("avatars/u1.png", png);
+  await files.upload("docs/readme.md", "…");
+  await files.events.settled();
+
+  expect(indexed).toEqual(["avatars/u1.png"]);
+});
+```
+
+Events arrive with `source: "provider"`, like a real notification. Uploads, copies, moves, deletes and completed resumable uploads all raise them, and so do writes from a second `Files` instance on the same adapter, which is how to simulate a console upload or another service.
+
+## `settled()`
+
+Provider notifications arrive after the write, not during it, so the memory adapter's events are handled in the background, as are `sdk` source events. `files.events.settled()` resolves once everything delivered so far has been handled, including events those handlers caused. Await it before asserting.
+
+Handler failures in the background go to `onError`. Pass one in tests to fail loudly:
+
+```ts lineNumbers
+events({
+  onError: (error) => {
+    throw error;
+  },
+});
+```
+
+## Replaying a real payload
+
+`parse()` and `dispatch()` accept any provider's delivery, so a captured payload can be replayed against a memory-backed instance with the right format:
+
+```ts lineNumbers
+const files = createFiles({
+  adapter: memory(),
+  plugins: [events({ format: "s3" })],
+});
+await files.events.dispatch(sqsEvent); // a captured S3 → SQS Lambda event
+```
+
+The `files` CLI does the same from a terminal, which helps when a payload doesn't parse the way you expect:
+
+```sh
+files events parse delivery.json --format s3
+cat delivery.json | files events parse --format gcs
+```
+
+It prints the normalized events as JSON. Without `--format`, the configured `--provider` picks the format.

@@ -4,7 +4,7 @@ Guidance for coding agents working in this repository. Humans should read `.gith
 
 ## What this repo is
 
-`files-sdk` is a unified storage SDK for object/blob backends: one `Files` class, one `Adapter` interface, 48 adapters and 15 plugins, each published as its own subpath (`files-sdk/s3`, `files-sdk/validation`, …). It also ships a `files` CLI + MCP server, app-layer gateways for most web frameworks, and `useFiles` bindings for React/Vue/Svelte.
+`files-sdk` is a unified storage SDK for object/blob backends: one `Files` class, one `Adapter` interface, 48 adapters and 16 plugins, each published as its own subpath (`files-sdk/s3`, `files-sdk/validation`, …). It also ships a `files` CLI + MCP server, app-layer gateways for most web frameworks, and `useFiles` bindings for React/Vue/Svelte.
 
 Bun + Turbo monorepo:
 

@@ -25,6 +25,12 @@ export interface TokenPayload {
    * sibling router whose `authorize` never approved the upload.
    */
   path?: string;
+  /**
+   * `"proxy"` when presign handed the client the gateway's own proxy PUT
+   * rather than a storage-signed target, so `complete` can tell
+   * `onUploadComplete` how the bytes arrived. Absent = direct to storage.
+   */
+  via?: "proxy";
   /** Expiry, epoch milliseconds. */
   exp: number;
 }

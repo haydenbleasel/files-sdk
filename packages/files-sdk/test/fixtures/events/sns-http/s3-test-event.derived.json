@@ -1,0 +1,11 @@
+{
+  "Type": "Notification",
+  "MessageId": "165545c9-2a5c-472c-8df2-7ff2be2b3b1b",
+  "TopicArn": "arn:aws:sns:us-west-2:123456789012:MyTopic",
+  "Message": "{\"Service\":\"Amazon S3\",\"Event\":\"s3:TestEvent\",\"Time\":\"2014-10-13T15:57:02.089Z\",\"Bucket\":\"amzn-s3-demo-bucket\",\"RequestId\":\"5582815E1AEA5ADF\",\"HostId\":\"8cLeGAmw098X5cv4Zkwcmo8vvZa3eH3eKxsPzbB9wrR+YstdA6Knx4Ip8EXAMPLE\"}",
+  "Timestamp": "2012-05-02T00:54:06.655Z",
+  "SignatureVersion": "1",
+  "Signature": "UNSIGNED-DERIVED-FIXTURE",
+  "SigningCertURL": "https://sns.us-west-2.amazonaws.com/SimpleNotificationService-f3ecfb7224c7233fe7bb5f59f96de52f.pem",
+  "UnsubscribeURL": "https://sns.us-west-2.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:us-west-2:123456789012:MyTopic:c9135db0-26c4-47ec-8998-413945fb5a96"
+}

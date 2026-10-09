@@ -1,0 +1,46 @@
+---
+title: Azure Blob Storage
+description: Subscribe files.events.webhook() to a storage account's Event Grid events, in either schema.
+---
+
+Azure Blob Storage publishes `BlobCreated` and `BlobDeleted` events through Event Grid. The `azure` adapter reads both the Event Grid and CloudEvents schemas, and `webhook()` answers Event Grid's validation handshake.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+const webhook = files.events.webhook({
+  verify: { token: process.env.STORAGE_WEBHOOK_TOKEN! },
+});
+
+export const { POST } = createRouteHandler(webhook);
+// Only for the CloudEvents schema, which handshakes with OPTIONS:
+export const OPTIONS = (req: Request) => webhook.handle(req);
+```
+
+Event Grid doesn't sign deliveries, so put a secret in the endpoint URL (`?token=`). The subscription can't be created until the endpoint is live, because Event Grid validates it first.
+
+```sh
+az provider register --namespace Microsoft.EventGrid  # first use in a subscription
+storageid=$(az storage account show --name ACCOUNT --resource-group RG \
+  --query id --output tsv)
+az eventgrid event-subscription create --name uploads \
+  --source-resource-id "$storageid" \
+  --endpoint "https://app.example.com/api/storage-events?token=$STORAGE_WEBHOOK_TOKEN" \
+  --included-event-types Microsoft.Storage.BlobCreated Microsoft.Storage.BlobDeleted \
+  --subject-begins-with /blobServices/default/containers/my-container/
+```
+
+Keep the trailing slash in `--subject-begins-with`, so other containers whose names start the same way don't match. Add `--event-delivery-schema cloudeventschemav1_0` for CloudEvents. To send the secret as a header instead of in the URL, use `--delivery-attribute-mapping Authorization static "Bearer $STORAGE_WEBHOOK_TOKEN" true`.
+
+## What maps to what
+
+| Event | `FileEvent` |
+| --- | --- |
+| `BlobCreated` after `PutBlob`, `PutBlockList`, `CopyBlob`, `FlushWithClose` or `SftpCommit` | `created` |
+| `BlobCreated` after `CreateFile` or `SftpCreate` (an empty blob, before any data) | skipped |
+| `BlobDeleted` | `deleted` |
+| `BlobRenamed` (Data Lake / SFTP) | `deleted` for the source and `created` for the destination |
+| Tier changes, directories, policy runs | skipped |
+
+The key is the blob name from the event's `subject`; the container becomes the event's bucket, so `events({ bucket: "my-container" })` filters a shared endpoint.

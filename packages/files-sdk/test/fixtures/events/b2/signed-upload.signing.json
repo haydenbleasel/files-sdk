@@ -1,0 +1,6 @@
+{
+  "algorithm": "HMAC-SHA256(key = UTF-8 bytes of hmacSha256SigningSecret, data = raw body) -> lowercase hex, header value 'v1=' + hex",
+  "secret": "3XDfkdQte2OgA78qCtSD17LAzpj6ay9H",
+  "expectedHeader": "v1=8c8e2b5d8192d79cdc3161e6f12c958b13c7e3e6844057a97f653a29641812a9",
+  "wrongSecret": "rrzaVL6BqYt83s2Q5R2I79AilaxVBJUS"
+}

@@ -1,0 +1,7 @@
+{
+  "algorithm": "base64(HMAC-SHA256(key = signature key (UTF-8), data = raw body bytes || BOX-DELIVERY-TIMESTAMP header bytes)); compare to BOX-SIGNATURE-PRIMARY with the primary key OR BOX-SIGNATURE-SECONDARY with the secondary key",
+  "primaryKey": "SamplePrimaryKey",
+  "secondaryKey": "SampleSecondaryKey",
+  "incorrectKey": "IncorrectKey",
+  "note": "box-delivery-timestamp is 2020-01-01; tests must inject a clock (Box rejects deliveries older than 10 minutes, and the Box SDK also rejects future timestamps)."
+}

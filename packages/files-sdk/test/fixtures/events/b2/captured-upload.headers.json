@@ -1,0 +1,18 @@
+{
+  "host": "few-pastor-champion-netscape.trycloudflare.com",
+  "user-agent": "B2/EventNotifications",
+  "content-length": "628",
+  "accept-encoding": "gzip",
+  "cdn-loop": "cloudflare; subreqs=1",
+  "cf-connecting-ip": "2605:72c0:503:42::c19",
+  "cf-ew-via": "15",
+  "cf-ipcountry": "US",
+  "cf-ray": "8a792e6e20de16a2-SJC",
+  "cf-visitor": "{\"scheme\":\"https\"}",
+  "cf-warp-tag-id": "b54b5e36-304f-4179-9666-b3a784237fb5",
+  "cf-worker": "trycloudflare.com",
+  "connection": "keep-alive",
+  "content-type": "application/json; charset=UTF-8",
+  "x-forwarded-for": "2605:72c0:503:42::c19",
+  "x-forwarded-proto": "https"
+}

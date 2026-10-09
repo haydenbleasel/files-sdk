@@ -1,0 +1,14 @@
+{
+  "attributes": {
+    "bucketId": "sample-bucket",
+    "eventTime": "2020-04-23T07:38:57.230Z",
+    "eventType": "OBJECT_METADATA_UPDATE",
+    "notificationConfig": "projects/_/buckets/sample-bucket/notificationConfigs/3",
+    "objectGeneration": "1587627537231057",
+    "objectId": "folder/Test.cs",
+    "payloadFormat": "JSON_API_V1"
+  },
+  "data": "ewogICJidWNrZXQiOiAic2FtcGxlLWJ1Y2tldCIsCiAgImNvbnRlbnRUeXBlIjogInZpZGVvL21wNCIsCiAgImNyYzMyYyI6ICJyVFZUZVE9PSIsCiAgImV0YWciOiAiQ05IWmtidUYvdWdDRUFFPSIsCiAgImdlbmVyYXRpb24iOiAiMTU4NzYyNzUzNzIzMTA1NyIsCiAgImlkIjogInNhbXBsZS1idWNrZXQvZm9sZGVyL1Rlc3QuY3MvMTU4NzYyNzUzNzIzMTA1NyIsCiAgImtpbmQiOiAic3RvcmFnZSNvYmplY3QiLAogICJtZDVIYXNoIjogImtGOE11SjUrQ1RKeHZ5aEhTMXh6Umc9PSIsCiAgIm1lZGlhTGluayI6ICJodHRwczovL3d3dy5nb29nbGVhcGlzLmNvbS9kb3dubG9hZC9zdG9yYWdlL3YxL2Ivc2FtcGxlLWJ1Y2tldC9vL2ZvbGRlciUyRlRlc3QuY3M/Z2VuZXJhdGlvbj0xNTg3NjI3NTM3MjMxMDU3JmFsdD1tZWRpYSIsCiAgIm1ldGFnZW5lcmF0aW9uIjogIjIiLAogICJuYW1lIjogImZvbGRlci9UZXN0LmNzIiwKICAic2VsZkxpbmsiOiAiaHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vc3RvcmFnZS92MS9iL3NhbXBsZS1idWNrZXQvby9mb2xkZXIvVGVzdC5jcyIsCiAgInNpemUiOiAiMzUyIiwKICAic3RvcmFnZUNsYXNzIjogIk1VTFRJX1JFR0lPTkFMIiwKICAidGltZUNyZWF0ZWQiOiAiMjAyMC0wNC0yM1QwNzozODo1Ny4yMzBaIiwKICAidGltZVN0b3JhZ2VDbGFzc1VwZGF0ZWQiOiAiMjAyMC0wNC0yM1QwNzozODo1Ny4yMzBaIiwKICAidXBkYXRlZCI6ICIyMDIwLTA0LTIzVDA3OjM4OjU3LjIzMFoiCn0=",
+  "messageId": "2070443601311544",
+  "publishTime": "2021-02-26T19:13:55.749Z"
+}

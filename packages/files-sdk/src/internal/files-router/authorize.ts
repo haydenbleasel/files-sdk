@@ -24,7 +24,7 @@ export interface AuthorizeContext {
 }
 
 // oxlint-disable-next-line typescript/no-invalid-void-type -- `void` lets `authorize` be a no-return guard.
-export type AuthorizeResult = void | {
+export type AuthorizeResult<TContext = unknown> = void | {
   /** Prepended to every key/from/to before the `Files` call. */
   keyPrefix?: string;
   /**
@@ -39,11 +39,17 @@ export type AuthorizeResult = void | {
   filterKeys?: (key: string) => boolean;
   /** Clamp list/search page size below the router default. */
   maxResults?: number;
+  /**
+   * Per-request data for the gateway's lifecycle hooks — the signed-in user,
+   * the tenant — handed to `onUploadComplete` as `context`, so the hook
+   * doesn't re-derive the session.
+   */
+  context?: TContext;
 };
 
-export type Authorize = (
+export type Authorize<TContext = unknown> = (
   ctx: AuthorizeContext
-) => AuthorizeResult | Promise<AuthorizeResult>;
+) => AuthorizeResult<TContext> | Promise<AuthorizeResult<TContext>>;
 
 export interface Scope {
   prefix: string;
@@ -51,10 +57,11 @@ export interface Scope {
   disposition?: string;
   filterKeys?: (key: string) => boolean;
   maxResults?: number;
+  context?: unknown;
 }
 
-export const runAuthorize = async (
-  authorize: Authorize | undefined,
+export const runAuthorize = async <TContext>(
+  authorize: Authorize<TContext> | undefined,
   operations: ReadonlySet<FilesOperation> | undefined,
   ctx: AuthorizeContext
 ): Promise<Scope> => {
@@ -78,6 +85,7 @@ export const runAuthorize = async (
 
   const patch = (authorize ? await authorize(ctx) : undefined) ?? {};
   return {
+    context: patch.context,
     disposition: patch.disposition,
     filterKeys: patch.filterKeys,
     maxExpiresIn: patch.maxExpiresIn,

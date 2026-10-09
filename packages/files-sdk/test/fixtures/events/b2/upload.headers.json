@@ -1,0 +1,9 @@
+{
+  "host": "www.example.com",
+  "content-length": "468",
+  "x-bz-event-notification-signature": "v1=2c86b8e1f15f41f805f3331f3cf4eb20875be8887ab734b2cdccfa2350e5e231",
+  "x-my-custom-header-1": "myCustomHeaderVal1",
+  "x-my-custom-header-2": "myCustomHeaderVal2",
+  "user-agent": "B2/EventNotifications",
+  "content-type": "application/json; charset=UTF-8"
+}

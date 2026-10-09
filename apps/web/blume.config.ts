@@ -304,6 +304,7 @@ export default defineConfig({
       { label: "API", path: "/docs/api" },
       { label: "Adapters", path: "/docs/adapters" },
       { label: "Plugins", path: "/docs/plugins" },
+      { label: "Events", path: "/docs/events" },
       { label: "UI", path: "/docs/ui" },
       // The hub at /guides is a custom page (pages/guides/index.astro), not
       // a content page, so the tab names it rather than its first guide.

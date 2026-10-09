@@ -1,0 +1,116 @@
+---
+title: events
+description: Normalize provider bucket notifications (S3, MinIO, R2, GCS, Azure) into one FileEvent and route them to handlers by type and key glob.
+---
+
+The built-in `events()` plugin adds `files.events`: one place to react when a file is created or deleted, whether the write came through the SDK, a [gateway](/docs/ui/server/upload-lifecycle) upload, or straight to the bucket. The [Events docs](/docs/events) cover the concepts and per-provider setup; this page is the reference.
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { events } from "files-sdk/events";
+import { r2 } from "files-sdk/r2";
+
+const files = createFiles({
+  adapter: r2({ bucket: "uploads" }),
+  plugins: [events()],
+});
+
+files.events.on("created", "avatars/**", async (event) => {
+  await resizeAvatar(event.key);
+});
+```
+
+:::note
+`files.events` is contributed by the plugin's `extend`, so it only appears on the **type** when you construct with [`createFiles`](/docs/plugins/api#createfiles). Install one `events()` per instance, first in `plugins` so the `sdk` source sees the caller's keys.
+:::
+
+## Options
+
+```ts lineNumbers
+events({
+  format?: "s3" | "r2" | "gcs" | "azure" | "b2" | "tigris" | "supabase"
+    | "cloudinary" | "appwrite" | "box" | "memory",
+  bucket?: string,
+  sdk?: boolean,
+  dedupe?: { has(id): boolean | Promise<boolean>; add(id, ttl): void | Promise<void> },
+  dedupeTtl?: number,
+  onError?: (error: unknown, event: FileEvent) => void,
+});
+```
+
+| Option | Default |  |
+| --- | --- | --- |
+| `format` | From the adapter | The notification format to read. `s3`, `s3-fetch`, `bun-s3` and `minio` read `"s3"`; `r2` reads `"r2"`; `gcs` and `firebase-storage` read `"gcs"`; `azure` reads `"azure"`; `backblaze-b2` reads `"b2"`; `tigris`, `supabase`, `cloudinary`, `appwrite`, `box` and `memory` read their own. Set it for a provider that sends one of these formats under another adapter. |
+| `bucket` | All buckets | Keep only provider events for this bucket (container, on Azure), so several buckets can share a queue or endpoint. |
+| `sdk` | `false` | Also raise events for successful `upload` / `delete` / `copy` / `move` calls through this instance, with `source: "sdk"`. Delivered after the call settles and not awaited. |
+| `dedupe` | None | Skip event ids this store has seen. See [Delivery](/docs/events/delivery#dedupe-on-eventid). |
+| `dedupeTtl` | 24 hours | How long a handled id is remembered, in ms. |
+| `onError` | `console.error` | Called for every handler that throws, whatever the source. |
+
+## files.events
+
+### on
+
+```ts
+on(type: "created" | "deleted" | "*", handler): () => void;
+on(type: "created" | "deleted" | "*", pattern: string, handler): () => void;
+```
+
+Runs `handler` for events of `type` whose key matches `pattern`, a glob matched against the caller-facing key (`**` when omitted; the same glob syntax as [`search()`](/docs/api/search)). Handlers run one at a time, in registration order. Returns a function that removes the handler.
+
+### dispatch
+
+```ts
+dispatch(input: unknown): Promise<FileEvent[]>;
+```
+
+Parses a delivery and runs the matching handlers. `input` can be a webhook `Request`, a message body (an SQS record body, a Queue message body, a Pub/Sub message), a whole consumer batch (a Lambda SQS event), a JSON string, or an array of any of those. Rejects when a handler throws, after every event has been tried, so a queue consumer can leave the message for redelivery. Resolves with the events it handled.
+
+### parse
+
+```ts
+parse(input: unknown): Promise<FileEvent[]>;
+```
+
+`dispatch()` without running handlers. Events outside the instance `prefix` or the `bucket` option are dropped, and installed plugins map the rest through their [`event` hook](/docs/plugins/api#event). It doesn't authenticate a `Request`; use `webhook()` for that.
+
+### webhook
+
+```ts
+webhook(opts: { verify: false | { token: string } | { google: GoogleOidcOptions } }): { handle(req: Request): Promise<Response> };
+```
+
+An HTTP endpoint for providers that push, mountable with any gateway binding. See [Webhooks](/docs/events/webhooks) for verification, handshakes and status codes.
+
+### emit
+
+```ts
+emit(events: FileEvent | FileEvent[]): Promise<void>;
+```
+
+Runs the matching handlers for events you already have, with no parsing or prefix mapping. Gateway uploads arrive this way. Rejects like `dispatch()`.
+
+### settled
+
+```ts
+settled(): Promise<void>;
+```
+
+Resolves once every event delivered without an awaiting caller (memory adapter changes, `sdk` writes) has been handled. For [tests](/docs/events/testing).
+
+### format
+
+The format this instance reads, or `undefined` when its adapter has none.
+
+## Composition
+
+Plugins that store keys or bytes their callers never addressed map provider events through their [`event` hook](/docs/plugins/api#event):
+
+| Plugin | Provider events |
+| --- | --- |
+| [`dedup()`](/docs/plugins/dedup) | Blob-store keys are dropped; a pointer's size and ETag are cleared. |
+| [`encryption()`](/docs/plugins/encryption), [`compression()`](/docs/plugins/compression) | `size` is cleared: it's the stored size. |
+| [`versioning()`](/docs/plugins/versioning), [`softDelete()`](/docs/plugins/soft-delete) | Snapshot and trash keys are dropped, so a soft delete reads as one `deleted`. |
+| [`tiering()`](/docs/plugins/tiering) | Events for keys routed to the hot tier pass. With `fallback: true`, provider events throw: a hot-tier delete may be a move to cold. Use the gateway or `sdk` sources there. |
+
+Gateway and `sdk` events come from the instance's own API and are already caller-facing, so they skip these hooks.

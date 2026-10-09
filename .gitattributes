@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Webhook signature vectors: the signatures cover these exact bytes.
+packages/files-sdk/test/fixtures/events/**/*.body -text

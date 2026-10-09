@@ -32,7 +32,7 @@ The repo is a Bun + Turbo monorepo:
     - Platform blob stores: `src/vercel-blob/`, `src/netlify-blobs/`, `src/supabase/`, `src/uploadthing/`, `src/firebase-storage/`, `src/appwrite/`, `src/pocketbase/`, `src/convex/`, `src/cloudinary/`, `src/bunny-storage/`
     - Drive APIs: `src/google-drive/`, `src/onedrive/`, `src/dropbox/`, `src/box/`, `src/sharepoint/`
     - Local and protocol: `src/fs/`, `src/memory/`, `src/ftp/`, `src/sftp/`, `src/webdav/`
-  - Plugins, one folder each: `src/validation/`, `src/encryption/`, `src/compression/`, `src/content-type/`, `src/dedup/`, `src/versioning/`, `src/soft-delete/`, `src/cache/`, `src/tiering/`, `src/failover/`, `src/usage/`, `src/audit/`, `src/tracing/`, `src/signed-url-policy/`, `src/zip/`
+  - Plugins, one folder each: `src/validation/`, `src/encryption/`, `src/compression/`, `src/content-type/`, `src/dedup/`, `src/versioning/`, `src/soft-delete/`, `src/cache/`, `src/tiering/`, `src/failover/`, `src/usage/`, `src/audit/`, `src/tracing/`, `src/signed-url-policy/`, `src/zip/`, `src/events/`
   - App layer: `src/api/` (the gateway core), `src/client/`, `src/react/`, `src/vue/`, `src/svelte/` (`useFiles`), and one thin binding per framework (`next`, `hono`, `express`, `fastify`, `koa`, `nestjs`, `nitro`, `astro`, `sveltekit`, `tanstack-start`)
   - AI tools: `src/ai-sdk/`, `src/openai/`, `src/claude/`
   - `src/cli/` — the `files` CLI and MCP server; `registry.ts` lazy-loads one adapter per provider

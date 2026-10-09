@@ -6,6 +6,8 @@ import {
   mapMany,
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
+import type { FileEvent } from "./internal/events.js";
+import { FOLD_PROVIDER_EVENT } from "./internal/events.js";
 import { globPrefix } from "./internal/glob.js";
 import { isFunction, isNumber, isObject, isString } from "./internal/is.js";
 import {
@@ -40,6 +42,11 @@ import { buildSearchMatcher } from "./internal/search-matcher.js";
 
 export { rejectConditional } from "./internal/conditional.js";
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
+export type {
+  FileEvent,
+  FileEventSource,
+  FileEventType,
+} from "./internal/events.js";
 export { UploadControl } from "./internal/resumable.js";
 export type {
   OffsetResumableDriver,
@@ -1412,6 +1419,19 @@ export interface FilesPlugin<
    * {@link Files.readonly} clones with the rest of the plugin.
    */
   capabilities?: (caps: AdapterCapabilities) => AdapterCapabilities;
+  /**
+   * Map a provider storage event (from `files-sdk/events`) into what this
+   * plugin's callers see: rewrite it, or return `null` to drop it. Receives the
+   * event with the instance `prefix` already stripped, folded through every
+   * plugin inside this one first (`plugins` order reversed, innermost first, the
+   * way the stored bytes travel back out). A plugin that stores keys or bytes
+   * its callers never addressed uses it: `dedup()` drops its content-addressed
+   * blobs, `encryption()` / `compression()` clear `size` (the stored size, not
+   * the caller's), `versioning()` / `softDelete()` drop their own prefixes.
+   * Events from the gateway or this instance's own writes are already
+   * caller-facing and skip it.
+   */
+  event?: (event: FileEvent) => FileEvent | null;
 }
 
 /**
@@ -4134,6 +4154,33 @@ export class Files<A extends Adapter = Adapter> {
   #stripPrefix(key: string): string {
     const scoped = `${this.#prefix}/`;
     return key.startsWith(scoped) ? key.slice(scoped.length) : key;
+  }
+
+  /**
+   * Map a provider event's storage key onto this instance, for
+   * `files-sdk/events`: `null` when it falls outside the instance `prefix`
+   * (a multi-tenant bucket must not leak another tenant's keys), else the
+   * prefix stripped and the event folded through each plugin's
+   * {@link FilesPlugin.event} hook, innermost first. Symbol-keyed, so it stays
+   * off the instance's public surface.
+   */
+  [FOLD_PROVIDER_EVENT](event: FileEvent): FileEvent | null {
+    let folded: FileEvent | null = event;
+    if (this.#prefix) {
+      const scoped = `${this.#prefix}/`;
+      if (!event.key.startsWith(scoped) || event.key === scoped) {
+        return null;
+      }
+      folded = { ...event, key: event.key.slice(scoped.length) };
+    }
+    const plugins = this.#plugins ?? [];
+    for (let i = plugins.length - 1; i >= 0 && folded; i -= 1) {
+      const hook = plugins[i]?.event;
+      if (hook) {
+        folded = hook(folded);
+      }
+    }
+    return folded;
   }
 }
 

@@ -1,0 +1,17 @@
+{
+  "events": [
+    {
+      "accountId": "e85c6a500333",
+      "bucketId": "aea8c5bc362ae55070130333",
+      "bucketName": "mySampleBucket",
+      "eventId": "ba9a8e4eacda8b4b7d23a0ec1f04046342c319f3c608903e794c45a5b57184be",
+      "eventTimestamp": 1684793309123,
+      "eventType": "b2:ObjectDeleted:Delete",
+      "eventVersion": 1,
+      "matchedRuleName": "mySampleRule1",
+      "objectName": "objectName.txt",
+      "objectSize": 10495842,
+      "objectVersionId": "4_zaea8c5bc362ae55070130333_f117c7bd5d6c6597c_d20230521_m235957_c001_v0001044_t0052_u01684713597235"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "WebHook-Request-Origin": "eventemitter.example.com",
+  "WebHook-Request-Callback": "https://example.com/confirm?id=12345&key=...base64...",
+  "WebHook-Request-Rate": "120"
+}

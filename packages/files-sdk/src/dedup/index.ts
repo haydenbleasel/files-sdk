@@ -486,6 +486,16 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       signedUpload: { contentType: false, maxSize: false, supported: false },
       signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
+    // Provider events: the content-addressed blobs are internal, so drop them;
+    // a logical key holds an empty pointer, whose size and ETag aren't the
+    // caller's content.
+    event: (event) => {
+      if (isStoreKey(event.key)) {
+        return null;
+      }
+      const { etag: _pointerEtag, size: _pointerSize, ...rest } = event;
+      return rest;
+    },
     name: "dedup",
     wrap,
   };

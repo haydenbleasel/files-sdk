@@ -127,6 +127,10 @@
       "types": "./dist/encryption/index.d.ts",
       "import": "./dist/encryption/index.js"
     },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "import": "./dist/events/index.js"
+    },
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "import": "./dist/validation/index.js"

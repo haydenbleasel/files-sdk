@@ -12,17 +12,18 @@ import type {
   BulkError,
   FileInfo,
   StoredFile,
-  UploadResult,
 } from "../index.js";
 import { assertRangeHonored, makeErrorMapper } from "../internal/core.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { FilesError } from "../internal/errors.js";
 import type {
   CompleteResponse,
+  ExplicitUploadResponse,
   PresignedUpload,
   SignedUploadUrlResponse,
   WireBulkError,
   WireFileInfo,
+  WireUploadedFile,
   WireFilesError,
 } from "../internal/files-router/protocol.js";
 import { isFunction, isObject, isString } from "../internal/is.js";
@@ -111,6 +112,12 @@ const toFileInfo = (wire: WireFileInfo): FileInfo => ({
   lastModified: wire.lastModified,
   metadata: wire.metadata,
   size: wire.size,
+});
+
+/** A completed upload on the wire, with what `onUploadComplete` returned. */
+const toOutcome = (wire: WireUploadedFile): UploadOutcome => ({
+  ...toFileInfo(wire),
+  ...(wire.data !== undefined && { data: wire.data }),
 });
 
 // A download the gateway redirected fails at the storage host, whose error
@@ -207,11 +214,18 @@ const settleFailed = (
   state.error = FilesError.wrap(cause);
 };
 
-const settleSucceeded = (state: FileUploadState, key: string): void => {
+const settleSucceeded = (
+  state: FileUploadState,
+  key: string,
+  data: JsonValue | undefined
+): void => {
   state.status = "success";
   state.key = key;
   state.loaded = state.total;
   state.progress = 1;
+  if (data !== undefined) {
+    state.data = data;
+  }
 };
 
 const applyBytes = (
@@ -258,9 +272,9 @@ const keyedState = (key: string, prepared: Prepared): FileUploadState => {
   return state;
 };
 
-export const createFilesClient = (
+export const createFilesClient = <TData = unknown>(
   config: FilesClientConfig = {}
-): FilesClient => {
+): FilesClient<TData> => {
   const endpoint = config.endpoint ?? DEFAULT_ENDPOINT;
   const fetchImpl = config.fetchImpl ?? fetch;
   const transport = config.transport ?? defaultTransport(fetchImpl);
@@ -447,9 +461,9 @@ export const createFilesClient = (
           ? reviveError(error.error)
           : new FilesError("Provider", "upload did not complete");
       }
-      settleSucceeded(state, done.key);
+      settleSucceeded(state, done.key, done.data);
       report();
-      return toFileInfo(done);
+      return toOutcome(done);
     } catch (error) {
       settleFailed(state, error, opts?.signal);
       report();
@@ -493,13 +507,13 @@ export const createFilesClient = (
         signal: opts?.signal,
         url: `${endpoint}${sep}op=upload&key=${encodeURIComponent(key)}`,
       });
-      const parsed = handleEndpointResult<{ file: WireFileInfo }>(
+      const parsed = handleEndpointResult<ExplicitUploadResponse>(
         result.status,
         result.text
       );
-      settleSucceeded(state, parsed.file.key);
+      settleSucceeded(state, parsed.file.key, parsed.file.data);
       report();
-      return toFileInfo(parsed.file);
+      return toOutcome(parsed.file);
     } catch (error) {
       settleFailed(state, error, opts?.signal);
       report();
@@ -576,7 +590,7 @@ export const createFilesClient = (
       }
       throw error;
     }
-    const uploaded: UploadResult[] = [];
+    const uploaded: UploadOutcome[] = [];
     const errors: BulkError[] = [];
     for (const result of results) {
       if (result.ok) {
@@ -880,5 +894,10 @@ export const createFilesClient = (
     },
   };
 
-  return client;
+  // SAFETY: `TData` is the caller's statement of what its own gateway's
+  // `onUploadComplete` returns (usually `InferUploadData<typeof router>`); the
+  // client relays the decoded `data` untouched, so it is that value whenever
+  // the client and gateway are deployed together — the same contract as a
+  // typed `res.json()`. Every other member is independent of `TData`.
+  return client as FilesClient<TData>;
 };

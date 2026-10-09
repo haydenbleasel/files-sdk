@@ -1,0 +1,17 @@
+{
+  "algorithm": "hex(SHA1 or SHA256(raw body + X-Cld-Timestamp + api_secret)) -- plain hash of the concatenation, NOT an HMAC",
+  "docVector": {
+    "source": "https://cloudinary.com/documentation/notification_signatures",
+    "body": "{public_id: 'sample'}",
+    "timestamp": "1315060510",
+    "apiSecret": "abcd",
+    "sha1": "25f7e91709c858b97d688ce8da799dedb290d9ef"
+  },
+  "sdkSha256Vector": {
+    "source": "https://github.com/cloudinary/cloudinary_npm/blob/master/test/utils/utils_spec.js",
+    "bodyFile": "sdk-sha256-vector.body",
+    "timestamp": "7952342400000",
+    "apiSecret": "hardcoded",
+    "sha256": "6c5a29fd8815772fbac2f10ae741e093d0859313947ef8fadeb29126ded6649c"
+  }
+}

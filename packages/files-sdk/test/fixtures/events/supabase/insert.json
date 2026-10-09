@@ -1,0 +1,27 @@
+{
+  "type": "INSERT",
+  "table": "objects",
+  "record": {
+    "name": "folder/avatar1.png",
+    "bucket_id": "avatars",
+    "owner": "",
+    "owner_id": "",
+    "version": "151d16d2-0319-4e5b-add4-53820e8a0863",
+    "id": "e281a32a-6998-4ed1-b8e0-7d3d7ae9ae3c",
+    "updated_at": "2024-10-25T15:52:13.993Z",
+    "created_at": "2024-10-23T21:33:10.046Z",
+    "last_accessed_at": "2024-10-23T21:33:10.046Z",
+    "metadata": {
+      "eTag": "\"ca390059ef9fdb91e2ad5447201d2e91\"",
+      "size": 343017,
+      "mimetype": "image/png",
+      "cacheControl": "max-age=360",
+      "lastModified": "2024-10-25T15:52:13.974Z",
+      "contentLength": 343017,
+      "httpStatusCode": 200
+    },
+    "user_metadata": {}
+  },
+  "schema": "storage",
+  "old_record": null
+}

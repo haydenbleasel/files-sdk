@@ -1,0 +1,20 @@
+{
+  "notification_type": "rename",
+  "timestamp": "2024-06-25T11:29:10+00:00",
+  "request_id": "92d1f2181fa4f5875fcbda17e9a14e10",
+  "resource_type": "image",
+  "type": "upload",
+  "asset_id": "005b8a1aca3783a729054c1533624cbb",
+  "asset_folder": "",
+  "display_name": "strawberry_milk_splash-qwer129-aslk-srghta",
+  "from_public_id": "strawberry_milk_splash-qwer129-aslk-srghta",
+  "to_public_id": "strawberry_milk_splash",
+  "notification_context": {
+    "triggered_at": "2024-06-25T11:29:09.004998Z",
+    "triggered_by": {
+      "source": "api",
+      "id": "614335564976464"
+    }
+  },
+  "signature_key": "614335564976464"
+}

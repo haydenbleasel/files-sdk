@@ -1,0 +1,11 @@
+{
+  "x-amz-sns-message-type": "Notification",
+  "x-amz-sns-message-id": "22b80b92-fdea-4c2c-8f9d-bdfb0c7bf324",
+  "x-amz-sns-topic-arn": "arn:aws:sns:us-west-2:123456789012:MyTopic",
+  "x-amz-sns-subscription-arn": "arn:aws:sns:us-west-2:123456789012:MyTopic:c9135db0-26c4-47ec-8998-413945fb5a96",
+  "content-length": "773",
+  "content-type": "text/plain; charset=UTF-8",
+  "host": "myhost.example.com",
+  "connection": "Keep-Alive",
+  "user-agent": "Amazon Simple Notification Service Agent"
+}

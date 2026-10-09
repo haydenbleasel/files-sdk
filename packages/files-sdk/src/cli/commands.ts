@@ -1,3 +1,8 @@
+import { readFile } from "node:fs/promises";
+import { text as readText } from "node:stream/consumers";
+
+import type { EventFormat } from "../events/index.js";
+import { events } from "../events/index.js";
 import type {
   BulkOptions,
   CopyCondition,
@@ -6,9 +11,10 @@ import type {
   UploadCondition,
   UploadManyItem,
 } from "../index.js";
-import { sync, transfer } from "../index.js";
+import { createFiles, sync, transfer } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { inferTypeFromName } from "../internal/mime.js";
+import { memory } from "../memory/index.js";
 import {
   emit,
   exitCode,
@@ -710,6 +716,37 @@ export const runCapabilities = async (opts: CommonRunOpts): Promise<void> => {
   // there's nothing to dry-run.
   const { files } = await loadFiles(opts.global);
   emit(files.capabilities, opts);
+};
+
+export interface EventsParseCmdOpts extends CommonRunOpts {
+  /** The delivery to parse; stdin when omitted. */
+  file?: string;
+  /** Read this format without configuring a provider. */
+  format?: EventFormat;
+}
+
+/**
+ * Print the `FileEvent`s a notification delivery normalizes to — for
+ * debugging a payload before wiring up `files-sdk/events`. With `--format`,
+ * no provider is needed; otherwise the configured provider picks the format
+ * (and its `--key-prefix` maps keys, as on the instance).
+ */
+export const runEventsParse = async (
+  opts: EventsParseCmdOpts
+): Promise<void> => {
+  const input =
+    opts.file === undefined
+      ? await readText(process.stdin)
+      : await readFile(opts.file, "utf-8");
+  const { prefix } = opts.global;
+  const loaded = opts.format ? undefined : await loadFiles(opts.global);
+  const adapter = loaded ? loaded.files.adapter : memory();
+  const files = createFiles({
+    adapter,
+    plugins: [events(opts.format ? { format: opts.format } : {})],
+    ...(prefix !== undefined && { prefix }),
+  });
+  emit(await files.events.parse(input), opts);
 };
 
 export interface SignUploadCmdOpts extends CommonRunOpts {

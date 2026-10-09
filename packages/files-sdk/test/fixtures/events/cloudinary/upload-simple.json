@@ -1,0 +1,33 @@
+{
+  "notification_type": "upload",
+  "timestamp": "2024-06-25T16:48:30+00:00",
+  "request_id": "76308c7ee2cb6094a5780a03524e527a",
+  "asset_id": "59a3bb9b5df2b3e80a1013220db70bc7",
+  "public_id": "upknxfupsmqzfomzmmpv",
+  "version": 1719334109,
+  "version_id": "4ad82428e820c936097ad02ad265d0c4",
+  "width": 750,
+  "height": 160,
+  "format": "png",
+  "resource_type": "image",
+  "created_at": "2024-06-25T16:48:29Z",
+  "tags": [],
+  "bytes": 20791,
+  "type": "upload",
+  "etag": "534e8213b282f8c2a53b600090149d08",
+  "placeholder": false,
+  "url": "http://res.cloudinary.com/cld-docs/image/upload/v1719334109/upknxfupsmqzfomzmmpv.png",
+  "secure_url": "https://res.cloudinary.com/cld-docs/image/upload/v1719334109/upknxfupsmqzfomzmmpv.png",
+  "asset_folder": "",
+  "display_name": "upknxfupsmqzfomzmmpv",
+  "original_filename": "cloudinary_logo",
+  "api_key": "614335564976464",
+  "notification_context": {
+    "triggered_at": "2024-06-25T16:48:29.366010Z",
+    "triggered_by": {
+      "source": "api",
+      "id": "614335564976464"
+    }
+  },
+  "signature_key": "614335564976464"
+}

@@ -6,6 +6,7 @@
 
 import type {
   AdapterCapabilities,
+  BulkResult,
   ByteRange,
   DeleteManyResult,
   DownloadManyResult,
@@ -16,7 +17,6 @@ import type {
   SearchMatch,
   SignedUpload,
   StoredFile,
-  UploadManyResult,
 } from "../index.js";
 import { isObject, isString } from "../internal/is.js";
 import type { AggregateProgress, FileUploadState } from "./progress.js";
@@ -79,12 +79,12 @@ export interface SignUploadCallOptions extends CallOptions {
  * file is one `FileUploadState` object for the whole upload, mutated in place,
  * so `perFile` entries can be tracked by identity.
  */
-export type UploadProgressCallback = (
+export type UploadProgressCallback<TData = unknown> = (
   progress: AggregateProgress,
-  perFile: readonly FileUploadState[]
+  perFile: readonly FileUploadState<TData>[]
 ) => void;
 
-export interface UploadCallOptions extends CallOptions {
+export interface UploadCallOptions<TData = unknown> extends CallOptions {
   /**
    * The stored `Content-Type`. On the keyless path it is what `presign` binds
    * (overriding the file's own `type`); on the keyed path it is the PUT header.
@@ -92,7 +92,7 @@ export interface UploadCallOptions extends CallOptions {
   contentType?: string;
   /** Presign expiry for the keyless path, seconds. */
   expiresIn?: number;
-  onProgress?: UploadProgressCallback;
+  onProgress?: UploadProgressCallback<TData>;
 }
 
 export interface BulkCallOptions extends CallOptions {
@@ -100,17 +100,28 @@ export interface BulkCallOptions extends CallOptions {
   stopOnError?: boolean;
 }
 
-export interface UploadManyCallOptions extends BulkCallOptions {
+export interface UploadManyCallOptions<
+  TData = unknown,
+> extends BulkCallOptions {
   /**
    * Progress across the batch: `perFile` holds one state per item, in `items`
    * order. Items still `"pending"` when a `stopOnError` failure ends the batch
    * are reported `"aborted"`.
    */
-  onProgress?: UploadProgressCallback;
+  onProgress?: UploadProgressCallback<TData>;
 }
 
-/** What a client upload resolves to: the stored object's {@link FileInfo}, as on the server. */
-export type UploadOutcome = FileInfo;
+/**
+ * What a client upload resolves to: the stored object's {@link FileInfo}, as on
+ * the server, plus `data` — what the gateway's `onUploadComplete` returned for
+ * it, if it returned anything.
+ */
+export type UploadOutcome<TData = unknown> = FileInfo & { data?: TData };
+
+/** A bulk `upload([...])` result: one {@link UploadOutcome} per stored item. */
+export type UploadManyClientResult<TData = unknown> = BulkResult<
+  UploadOutcome<TData>
+>;
 
 /**
  * A React Native file reference — the `{ uri, name, type }` shape Expo's
@@ -170,21 +181,26 @@ export interface TrashedFile {
   etag?: string;
 }
 
-export interface FilesClient {
+/**
+ * `TData` types the `data` each upload carries back from the gateway's
+ * `onUploadComplete` — pass `InferUploadData<typeof router>` (from
+ * `files-sdk/api`, a type-only import) to share it with the server.
+ */
+export interface FilesClient<TData = unknown> {
   upload: {
     (
       file: Blob | NativeFileRef,
-      opts?: UploadCallOptions
-    ): Promise<UploadOutcome>;
+      opts?: UploadCallOptions<TData>
+    ): Promise<UploadOutcome<TData>>;
     (
       key: string,
       body: UploadBody,
-      opts?: UploadCallOptions
-    ): Promise<UploadOutcome>;
+      opts?: UploadCallOptions<TData>
+    ): Promise<UploadOutcome<TData>>;
     (
       items: UploadManyClientItem[],
-      opts?: UploadManyCallOptions
-    ): Promise<UploadManyResult>;
+      opts?: UploadManyCallOptions<TData>
+    ): Promise<UploadManyClientResult<TData>>;
   };
 
   download: {

@@ -209,6 +209,7 @@ describe("cli/program", () => {
       "copy",
       "delete",
       "download",
+      "events",
       "exists",
       "head",
       "list",

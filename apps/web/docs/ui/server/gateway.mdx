@@ -53,6 +53,12 @@ createFilesRouter({
   maxSearchResults?: number,   // cap a search page. Default 1000.
   maxUploadSize?: number,      // reject larger uploads (checked at presign, bound, verified on complete).
 
+  // Runs once per verified upload; its result is the client's upload `data`.
+  // Throw to reject (the object is deleted). See /ui/server/upload-lifecycle.
+  onUploadComplete?: (ctx) => TData | Promise<TData>,
+  onRejected?: "delete" | "keep", // rejected objects. Default "delete".
+  completions?: CompletionStore,  // make keyless completions single-use.
+
   // Limits on client-driven load (see "Request limits" below).
   maxBatchSize?: number,           // keys[]/files[]/completions[] per request. Default 1000.
   maxConcurrency?: number,         // ceiling on a bulk op's `concurrency`. Default 16.
@@ -97,9 +103,9 @@ A keyless `upload(file)` runs a three-step protocol so bytes never round-trip th
 
 1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target. A file whose declared `size` is over `maxUploadSize` is refused up front with `422` and `reason: "size"`, before anything is signed.
 2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress. Like a presigned URL, the proxy `PUT` is authorized by its token alone (see [Authorization](/docs/ui/server/authorization)).
-3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry with no stored metadata. (The token is signed, not encrypted: its payload names the key it was minted for, so treat a token as readable by whoever holds it.) The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted.
+3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry with no stored metadata. (The token is signed, not encrypted: its payload names the key it was minted for, so treat a token as readable by whoever holds it.) The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted. The server then runs [`onUploadComplete`](/docs/ui/server/upload-lifecycle) and returns the stored metadata with whatever the hook returned.
 
-An explicit `upload(key, body)` skips presign and streams straight through the gateway. The stream reaches the adapter with no known length, so the S3-family adapters on their AWS SDK client need the optional `@aws-sdk/lib-storage` package for this path.
+An explicit `upload(key, body)` skips presign and streams straight through the gateway, then runs `onUploadComplete` the same way. The stream reaches the adapter with no known length, so the S3-family adapters on their AWS SDK client need the optional `@aws-sdk/lib-storage` package for this path.
 
 ## Request limits
 

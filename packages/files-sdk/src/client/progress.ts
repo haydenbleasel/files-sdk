@@ -20,7 +20,7 @@ export type FileUploadStatus =
  */
 export type UploadStateBody = Blob | Uint8Array | NativeFileRef;
 
-export interface FileUploadState {
+export interface FileUploadState<TData = unknown> {
   file: UploadStateBody;
   name: string;
   size: number;
@@ -32,6 +32,8 @@ export interface FileUploadState {
   /** 0–1. */
   progress: number;
   error?: FilesError;
+  /** On `"success"`: what the gateway's `onUploadComplete` returned, if anything. */
+  data?: TData;
 }
 
 export interface AggregateProgress {

@@ -1,0 +1,153 @@
+---
+title: Upload lifecycle
+description: onUploadComplete runs on the server once per verified upload, so you can record it, hand data back to the browser, or reject it, without a second endpoint.
+---
+
+A browser upload through the [gateway](/docs/ui/server/gateway) ends on your server. `onUploadComplete` runs once the object has landed and been verified. It's the place to write the upload into your database, and whatever it returns is handed back to the client.
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { createFiles, FilesError } from "files-sdk";
+import { r2 } from "files-sdk/r2";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+export const router = createFilesRouter({
+  files: createFiles({ adapter: r2({ bucket: "uploads" }) }),
+  authorize: async ({ req }) => {
+    const user = await getUser(req);
+    if (!user) throw new FilesError("Unauthorized", "sign in");
+    return { keyPrefix: `users/${user.id}/`, context: { userId: user.id } };
+  },
+  onUploadComplete: async ({ file, context, uploadId }) => {
+    const row = await db.uploads.upsert({
+      id: uploadId, // stable per upload, so a retried complete doesn't insert twice
+      key: file.key,
+      size: file.size,
+      owner: context?.userId,
+    });
+    return { id: row.id }; // → the client's upload result `data`
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+No second "I finished uploading" endpoint, and no trusting the client to call one.
+
+## When it fires
+
+| Upload | Fires | `via` |
+| --- | --- | --- |
+| Keyless `upload(file)`, bytes sent straight to storage | In `complete`, after the gateway `head`s the object and checks `maxUploadSize` | `"presign"` |
+| Keyless `upload(file)`, bytes sent through the gateway (adapters that can't presign) | In `complete`, same checks | `"proxy"` |
+| Keyed `upload(key, body)` | After `files.upload` stores the body | `"keyed"` |
+
+It fires once per upload, never on the proxy `PUT` itself, because the client still calls `complete` afterwards.
+
+A client that closes the tab before `complete` never fires it, and neither does anything written outside the gateway (a console upload, another service). To catch those, listen to the bucket's own notifications with [`files-sdk/events`](/docs/plugins/events).
+
+## The context
+
+```ts lineNumbers
+onUploadComplete(ctx: {
+  file: {               // the landed object: metadata only
+    key: string;        // caller-facing (authorize's keyPrefix stripped)
+    size: number;
+    contentType: string;
+    etag?: string;
+    lastModified?: number;
+    metadata?: Record<string, string>;
+  };
+  storageKey: string;   // file.key with keyPrefix applied: the key in `files`
+  files: Files;         // the instance this request resolved to
+  req: Request;         // the completing request
+  context: TContext | undefined; // what authorize returned as `context`
+  uploadId: string;     // stable per upload, see "Retries and replays"
+  via: "presign" | "proxy" | "keyed";
+});
+```
+
+`context` is how per-request data from [`authorize`](/docs/ui/server/authorization) reaches the hook. Return it next to your other constraints (`{ keyPrefix, context: { userId } }`) and the hook gets it typed, without re-reading the session.
+
+## Rejecting an upload
+
+Throw to reject. The gateway deletes the object and the client's `upload()` rejects with your error.
+
+```ts lineNumbers
+import { UploadRejectedError } from "files-sdk/api";
+
+const PNG = [0x89, 0x50, 0x4e, 0x47];
+
+createFilesRouter({
+  // …
+  onUploadComplete: async ({ files, storageKey }) => {
+    // Check the landed bytes yourself: here, the PNG signature.
+    const head = await files.download(storageKey, {
+      range: { start: 0, end: 3 },
+    });
+    const bytes = new Uint8Array(await head.arrayBuffer());
+    if (!PNG.every((byte, i) => bytes[i] === byte)) {
+      throw new UploadRejectedError("only PNG images are allowed");
+    }
+  },
+});
+```
+
+- **`UploadRejectedError`** gives the client a `422` (`Validation`, reason `rejected`) carrying your message.
+- **A `FilesError`** keeps its code (`Conflict` → `409`, …).
+- **Anything else** is reported the way a failing `authorize` is.
+
+Set `onRejected: "keep"` to leave rejected objects in place instead, for example to quarantine them for review. The same policy applies when the object fails the complete-time `maxUploadSize` check.
+
+For a keyless upload, the error comes back per file in the `complete` response, so one rejected file doesn't fail the others in a batch. For a keyed upload, it's the response error.
+
+:::warning
+A keyed `upload(key, body)` overwrites before the hook runs. Rejecting it deletes the key, so anything stored there before is gone either way. Keep keyed uploads to keys the client owns, or use keyless uploads, whose keys the server mints.
+:::
+
+## Retries and replays
+
+Upload tokens are stateless, so a client can call `complete` again with the same token until it expires (`defaultExpiresIn`, 5 minutes by default), and the hook fires again. `uploadId` is a hash of the token, the same on every replay, so make the hook idempotent on it: an upsert keyed on `uploadId`, or a unique column.
+
+To make completions single-use, pass a `completions` store. A replayed `complete` then gets the first result back and the hook doesn't fire again:
+
+```ts lineNumbers
+createFilesRouter({
+  files,
+  authorize,
+  onUploadComplete,
+  // A Map-backed store is enough for one process. Use Redis, KV or a table
+  // across instances.
+  completions: {
+    get: (id) => kv.get(`upload:${id}`, "json"),
+    set: (id, record, ttl) =>
+      kv.put(`upload:${id}`, JSON.stringify(record), {
+        expirationTtl: Math.ceil(ttl / 1000),
+      }),
+  },
+});
+```
+
+`ttl` is in milliseconds and lasts until the token expires, after which the token itself is refused. A get-then-set store still lets two `complete` calls racing each other both through, so keep the hook idempotent on `uploadId` regardless.
+
+## On the client
+
+Every upload result carries `data`, and so does the `uploads` entry in `useFiles()`. Type it from the router with a type-only import, so no server code reaches the browser bundle:
+
+```tsx title="components/avatar-upload.tsx" lineNumbers
+import type { InferUploadData } from "files-sdk/react";
+import { useFiles } from "files-sdk/react";
+import type { router } from "@/app/api/files/route";
+
+export const AvatarUpload = () => {
+  const files = useFiles<InferUploadData<typeof router>>();
+
+  const onChange = async (file: File) => {
+    const { data } = await files.upload(file);
+    // data: { id: string } | undefined
+  };
+  // …
+};
+```
+
+The same generic works on `createFilesClient<…>()` and the [Vue](/docs/ui/client/vue) and [Svelte](/docs/ui/client/svelte) bindings. The [Dropzone](/docs/ui/components/dropzone) and [Multipart uploader](/docs/ui/components/multipart-uploader) pass `data` to `onUploaded`.

@@ -1,0 +1,7 @@
+{
+  "algorithm": "'hmac-sha256=' + hex(HMAC-SHA256(key = UTF-8 bytes of the API key 'sk_...' decoded from UPLOADTHING_TOKEN, data = raw body))",
+  "apiKey": "sk_foo",
+  "appId": "app-1",
+  "callbackSignature": "hmac-sha256=652fe61b4fa5a87466639cd3f49357d62f9697a0696e4f090c4be1cc54c29f17",
+  "errorSignature": "hmac-sha256=3fe7c5dcc754575410c2378a2e8d6e9244e598f46328d0360ef7ef9b55e4865f"
+}

@@ -1,0 +1,66 @@
+---
+title: Cloudflare R2
+description: Send R2 event notifications to a Queue and dispatch them from a Worker consumer.
+---
+
+R2 delivers notifications to a [Queue](https://developers.cloudflare.com/queues/). Consume it from a Worker and hand each message body to `dispatch()`.
+
+```sh
+npx wrangler queues create r2-events
+npx wrangler r2 bucket notification create my-bucket \
+  --event-type object-create --event-type object-delete \
+  --queue r2-events
+```
+
+`object-create` covers `PutObject`, `CopyObject` and `CompleteMultipartUpload`; `object-delete` covers `DeleteObject` and lifecycle deletions. `--prefix` and `--suffix` narrow a rule.
+
+```jsonc title="wrangler.jsonc"
+{
+  "queues": {
+    "consumers": [
+      {
+        "queue": "r2-events",
+        "max_retries": 3,
+        "dead_letter_queue": "r2-events-dlq",
+      },
+    ],
+  },
+}
+```
+
+```ts title="src/index.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { events } from "files-sdk/events";
+import { r2 } from "files-sdk/r2";
+
+export default {
+  async queue(batch, env) {
+    const files = createFiles({
+      adapter: r2({ binding: env.BUCKET }),
+      plugins: [events()],
+    });
+    files.events.on("created", "uploads/**", (event) =>
+      indexUpload(env, event)
+    );
+
+    for (const message of batch.messages) {
+      try {
+        await files.events.dispatch(message.body);
+        message.ack();
+      } catch {
+        message.retry();
+      }
+    }
+  },
+} satisfies ExportedHandler<Env>;
+```
+
+Without a dead-letter queue, a message that keeps failing is dropped after `max_retries`.
+
+## Pull consumers
+
+Outside Workers, pull from the queue over HTTP and pass the response (or each message) to `dispatch()`. Pulled bodies arrive as strings, sometimes base64-encoded; both are decoded.
+
+## What you get
+
+R2 notifications carry the key, size and ETag (none on deletes) and the event time. There's no event id, so `event.id` is built from the key, ETag and time.

@@ -1,0 +1,53 @@
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "test-bucket/photos/my summer(2024).jpg",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "",
+      "eventTime": "2025-02-06T01:04:31.998Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "access_key"
+      },
+      "requestParameters": {
+        "principalId": "access_key",
+        "region": "",
+        "sourceIPAddress": "192.168.1.10"
+      },
+      "responseElements": {
+        "x-amz-id-2": "dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8",
+        "x-amz-request-id": "182178E8B36AC9DF",
+        "x-minio-deployment-id": "2369dcb4-348b-4d30-8fc9-61ab089ba4bc",
+        "x-minio-origin-endpoint": "https://aistor.test.svc.cluster.local"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "Config",
+        "bucket": {
+          "name": "test-bucket",
+          "ownerIdentity": {
+            "principalId": "access_key"
+          },
+          "arn": "arn:aws:s3:::test-bucket"
+        },
+        "object": {
+          "key": "photos%2Fmy+summer%282024%29.jpg",
+          "size": 84452,
+          "eTag": "eb52f8e46f60a27a8a1a704e25757f30",
+          "contentType": "image/jpeg",
+          "userMetadata": {
+            "content-type": "image/jpeg"
+          },
+          "sequencer": "182178E8B3728CAC"
+        }
+      },
+      "source": {
+        "host": "192.168.1.10",
+        "port": "",
+        "userAgent": "MinIO (linux; amd64) minio-go/v7.0.83"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "box-delivery-id": "f96bb54b-ee16-4fc5-aa65-8c2d9e5b546f",
+  "box-delivery-timestamp": "2020-01-01T00:00:00-07:00",
+  "box-signature-algorithm": "HmacSHA256",
+  "box-signature-primary": "6TfeAW3A1PASkgboxxA5yqHNKOwFyMWuEXny/FPD5hI=",
+  "box-signature-secondary": "v+1CD1Jdo3muIcbpv5lxxgPglOqMfsNHPV899xWYydo=",
+  "box-signature-version": "1"
+}

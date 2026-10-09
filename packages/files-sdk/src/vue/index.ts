@@ -9,6 +9,7 @@ export * from "./use-files.js";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- intentional barrel re-export; `export *` keeps the bundled entry's runtime exports bound
 export * from "./use-files-query.js";
 export type {
+  InferUploadData,
   AggregateProgress,
   BulkCallOptions,
   CallOptions,
@@ -27,6 +28,7 @@ export type {
   UploadCallOptions,
   UploadManyCallOptions,
   UploadManyClientItem,
+  UploadManyClientResult,
   UploadOutcome,
   UploadProgressCallback,
   UrlCallOptions,

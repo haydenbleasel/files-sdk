@@ -1,0 +1,39 @@
+---
+title: MinIO
+description: Point MinIO's webhook notification target at files.events.webhook(), authenticated with its auth_token.
+---
+
+MinIO sends S3-shaped notifications, so the `minio` adapter reads the `s3` format. Deliver them over its webhook target.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({ verify: { token: process.env.MINIO_WEBHOOK_TOKEN! } })
+);
+```
+
+Configure the target, restart, and subscribe the bucket:
+
+```sh
+mc admin config set ALIAS notify_webhook:primary \
+  endpoint="https://app.example.com/api/storage-events" \
+  auth_token="$MINIO_WEBHOOK_TOKEN"
+mc admin service restart ALIAS
+mc event add ALIAS/my-bucket arn:minio:sqs::primary:webhook --event put,delete
+```
+
+MinIO sends a single-word `auth_token` as `Authorization: Bearer <token>`, which `verify: { token }` accepts. AIStor applies `config set` without a restart; the community edition needs one. The environment-variable form is `MINIO_NOTIFY_WEBHOOK_ENABLE_PRIMARY=on`, `MINIO_NOTIFY_WEBHOOK_ENDPOINT_PRIMARY` and `MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_PRIMARY`, and it wins over `config set`.
+
+Set `queue_dir` on the target so MinIO keeps events while your endpoint is down and replays them afterwards.
+
+## What maps to what
+
+MinIO's `put` covers every `s3:ObjectCreated:*` event, including tagging, retention and legal-hold changes. Those don't create anything, so they're skipped; only `Put`, `Post`, `Copy` and `CompleteMultipartUpload` become `created`. `s3:ObjectRemoved:Delete`, `DeleteMarkerCreated` and `DeleteAllVersions` become `deleted`; `s3:ObjectRemoved:NoOP` is skipped.
+
+MinIO events carry the object's `contentType`, which AWS events don't.
+
+## RustFS
+
+RustFS sends the same S3-shaped envelope, so the `rustfs` adapter reads the `s3` format too. Turn notifications on with `RUSTFS_NOTIFY_ENABLE` and a webhook target (`RUSTFS_NOTIFY_WEBHOOK_ENDPOINT_*`, with `RUSTFS_NOTIFY_WEBHOOK_AUTH_TOKEN_*` for the bearer token), then subscribe a bucket with `aws s3api put-bucket-notification-configuration` and a `QueueConfigurations` entry for the target. Mount `webhook({ verify: { token } })` as above. RustFS checks the endpoint with a `HEAD` request before delivering; `webhook()` answers it with `200`.

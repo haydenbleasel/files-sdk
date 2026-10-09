@@ -1,0 +1,8 @@
+{
+  "x-amz-sns-message-type": "Notification",
+  "x-amz-sns-message-id": "792cda85-518f-5dd3-9163-81d851212f3a",
+  "x-amz-sns-topic-arn": "arn:aws:sns:us-east-2:295079676684:publish-and-verify-892f85fe-4836-424d-8188-ab85bef0f362",
+  "x-amz-sns-subscription-arn": "arn:aws:sns:us-east-2:295079676684:publish-and-verify-892f85fe-4836-424d-8188-ab85bef0f362:2296bc94-7992-4be1-b15f-b97229b5c1d8",
+  "content-type": "text/plain; charset=UTF-8",
+  "user-agent": "Amazon Simple Notification Service Agent"
+}

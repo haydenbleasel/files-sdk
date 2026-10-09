@@ -35,7 +35,8 @@ export interface MultipartUploaderProps {
   accept?: string;
   /** Parallel uploads. Default 3. */
   concurrency?: number;
-  onUploaded?: (entry: { key: string; name: string }) => void;
+  /** Called after each successful upload; `data` is what the gateway's `onUploadComplete` returned. */
+  onUploaded?: (entry: { key: string; name: string; data?: unknown }) => void;
   className?: string;
 }
 
@@ -124,7 +125,11 @@ export const MultipartUploader = ({
             : // eslint-disable-next-line no-await-in-loop -- bounded-concurrency worker pulls items from a shared queue; each upload runs in order within its worker
               await files.upload(item.file, { onProgress });
           patch(item.id, { key: result.key, progress: 1, status: "success" });
-          onUploaded?.({ key: result.key, name: item.file.name });
+          onUploaded?.({
+            key: result.key,
+            name: item.file.name,
+            ...(result.data !== undefined && { data: result.data }),
+          });
         } catch (error) {
           // An upload cut off by Cancel rejects too; keep it "cancelled" (and
           // retryable) rather than reporting the abort as a failure.

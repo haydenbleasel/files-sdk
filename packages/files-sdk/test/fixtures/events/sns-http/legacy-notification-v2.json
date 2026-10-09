@@ -1,0 +1,11 @@
+{
+  "Type": "Notification",
+  "MessageId": "17dea24b-55c2-540b-8362-f916557af765",
+  "TopicArn": "arn:aws:sns:us-east-2:295079676684:publish-and-verify-62674b1d-4295-426b-88e7-5fb75652a04e",
+  "Message": "Hello world",
+  "Timestamp": "2022-07-28T21:24:08.324Z",
+  "SignatureVersion": "2",
+  "Signature": "CXVqp9PfZAL+4JHS3Zxo1PFbQsvnOjvmYhtIf17TWpwc+iIVas8kZ8GopuzVzVMdatE7rCl/O4P91Zp05Dwz8lk8dLhfp8gSu3Njlzxlyrmzo9x3va3Jb7zFnedgS2GKnZWHGBdwTXho+TosNUE+3e10OMSlwN5XGDwX7+R3WL+rn+AXmFAqp3alg27sYa55h1dLE9cGszGPjScPdtF3BmZsUDMx9wSdNKsCk+vSvE8yBjnCmUl7laSFj3LzPVrlSwgNYCF3kYnNAkah7NplK4SFhJYLwS0HCVCQJKa8rVbQLf9cBTu60U402mrgy0bN8xWoyimzbYbrOMJjalqkUg==",
+  "SigningCertURL": "https://sns.us-east-2.amazonaws.com/SimpleNotificationService-7ff5318490ec183fbaddaa2a969abfda.pem",
+  "UnsubscribeURL": "https://sns.us-east-2.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:us-east-2:295079676684:publish-and-verify-62674b1d-4295-426b-88e7-5fb75652a04e:ad7d16e3-0a7c-46aa-b23e-ffaf02250cbe"
+}

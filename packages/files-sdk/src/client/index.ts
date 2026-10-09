@@ -14,3 +14,4 @@ export * from "./progress.js";
 export type { SendRequest, SendResult, Transport } from "./transport.js";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- intentional barrel re-export; export * keeps Bun's runtime exports bound (see header)
 export * from "./types.js";
+export type { InferUploadData } from "../api/index.js";

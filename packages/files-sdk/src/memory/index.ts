@@ -58,14 +58,41 @@ export interface MemoryEntry {
 }
 
 /**
+ * One change to the store, as the memory adapter reports it to
+ * {@link MemoryAdapter.subscribe} listeners: its native bucket notification,
+ * the way S3 or R2 emit theirs. `files-sdk/events` turns it into a
+ * `FileEvent`, so event handlers can be tested with no provider setup.
+ */
+export interface MemoryNotification {
+  type: "created" | "deleted";
+  key: string;
+  size?: number;
+  etag?: string;
+  contentType?: string;
+  /** ms since the epoch. */
+  time: number;
+  /** Increases by one per notification from this adapter; unique within it. */
+  sequence: number;
+}
+
+/**
  * The `raw` escape hatch is the backing `Map`, so callers can inspect or reset
  * the store directly in tests — `adapter.raw.clear()`, `adapter.raw.size`, etc.
+ * Changes made through `raw` bypass {@link MemoryAdapter.subscribe}.
  *
  * `move` is narrowed to required: the adapter always re-keys natively (no
  * copy+delete fallback), so callers can rely on it without an optional guard.
  */
 export type MemoryAdapter = Adapter<Map<string, MemoryEntry>> &
-  Required<Pick<Adapter<Map<string, MemoryEntry>>, "move">>;
+  Required<Pick<Adapter<Map<string, MemoryEntry>>, "move">> & {
+    /**
+     * Listen for every object this adapter creates (upload, copy, move
+     * destination, resumable completion) or deletes (delete or move source of
+     * a key that existed). Listeners run synchronously after the change, and a
+     * throwing listener never fails the write. Returns an unsubscribe function.
+     */
+    subscribe: (listener: (change: MemoryNotification) => void) => () => void;
+  };
 
 // 2^31 - 1 (a Mersenne prime). The polynomial hash below stays an exact
 // integer because `hash * MULTIPLIER + byte` peaks around 31 * 2^31 ≈ 6.7e10,
@@ -218,6 +245,33 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
   // has none, which is why `adopt()` rejects an unknown id.
   const pending = new Map<string, PendingUpload>();
   let uploadSeq = 0;
+  const listeners = new Set<(change: MemoryNotification) => void>();
+  let sequence = 0;
+  const notify = (
+    change: Omit<MemoryNotification, "sequence" | "time">
+  ): void => {
+    if (listeners.size === 0) {
+      return;
+    }
+    sequence += 1;
+    const full: MemoryNotification = { ...change, sequence, time: Date.now() };
+    for (const listener of listeners) {
+      try {
+        listener(full);
+      } catch {
+        // A listener's failure is its own; the write already happened.
+      }
+    }
+  };
+  const created = (key: string, entry: MemoryEntry): void => {
+    notify({
+      contentType: entry.contentType,
+      etag: entry.etag,
+      key,
+      size: entry.bytes.byteLength,
+      type: "created",
+    });
+  };
 
   // Copy the body and metadata in so a later mutation of the caller's buffer or
   // metadata object can't reach into the store (and vice-versa on read) — value
@@ -241,6 +295,7 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       ...(meta?.cacheControl && { cacheControl: meta.cacheControl }),
     };
     store.set(key, entry);
+    created(key, entry);
     return entry;
   };
 
@@ -290,7 +345,9 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
     },
     delete(key) {
       // Idempotent — deleting a missing key is a no-op, matching S3/fs.
-      store.delete(key);
+      if (store.delete(key)) {
+        notify({ key, type: "deleted" });
+      }
       return Promise.resolve();
     },
     download(key, downloadOpts) {
@@ -374,6 +431,8 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         // bytes didn't change), mirroring fs move's rename of the sidecar.
         store.delete(from);
         store.set(to, entry);
+        notify({ key: from, type: "deleted" });
+        created(to, entry);
       });
     },
     name: "memory",
@@ -472,6 +531,12 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
         method: "PUT",
         url: `memory://${key}?expires=${signOpts.expiresIn}`,
       });
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
     async upload(key, body, options) {
       const bytes = await bodyToBytes(body);

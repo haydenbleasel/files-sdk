@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "eventVersion": "1",
+      "eventSource": "tigris",
+      "eventName": "OBJECT_CREATED_PUT",
+      "eventTime": "2023-05-15T10:30:00.000Z",
+      "bucket": "my-bucket",
+      "object": {
+        "key": "path/to/myfile.txt",
+        "size": 1024,
+        "eTag": "d41d8cd98f00b204e9800998ecf8427e"
+      }
+    },
+    {
+      "eventVersion": "1",
+      "eventSource": "tigris",
+      "eventName": "OBJECT_DELETED",
+      "eventTime": "2023-05-15T11:45:00.000Z",
+      "bucket": "my-bucket",
+      "object": {
+        "key": "path/to/anotherfile.jpg",
+        "size": 2048,
+        "eTag": "c4ca4238a0b923820dcc509a6f75849b"
+      }
+    }
+  ]
+}

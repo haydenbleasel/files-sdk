@@ -26,6 +26,8 @@ export interface UploadedEntry {
   key: string;
   /** Display name — the relative path for folder uploads, else the file name. */
   name: string;
+  /** What the gateway's `onUploadComplete` returned for this file, if anything. */
+  data?: unknown;
 }
 
 interface PendingFile {
@@ -293,7 +295,11 @@ export const Dropzone = ({
               await files.upload(key, file, { contentType: file.type })
             : // eslint-disable-next-line no-await-in-loop -- uploads run sequentially to avoid firing an unbounded burst of parallel requests at the server
               await files.upload(file);
-          const entry: UploadedEntry = { key: result.key, name };
+          const entry: UploadedEntry = {
+            key: result.key,
+            name,
+            ...(result.data !== undefined && { data: result.data }),
+          };
           setUploaded((prev) => [...prev, entry]);
           onUploaded?.(entry);
         } catch (error) {

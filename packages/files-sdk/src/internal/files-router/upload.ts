@@ -7,6 +7,7 @@
 
 import type { Files, SignedUpload, UploadResult } from "../../index.js";
 import { FilesError } from "../errors.js";
+import { eventSinkOf, gatewayUploadEvent } from "../events.js";
 import { RouterError } from "../router-core/envelope.js";
 import type { TokenPayload } from "../router-core/sign-token.js";
 import { signToken, verifyToken } from "../router-core/sign-token.js";
@@ -15,11 +16,23 @@ import type { Scope } from "./authorize.js";
 import { assertSafeKey } from "./keys.js";
 import type {
   ClientFileInfo,
+  ExplicitUploadResponse,
   PresignedUpload,
   WireBulkError,
   WireFileInfo,
+  WireUploadedFile,
 } from "./protocol.js";
 import { bulkErrorToWire, fileInfoToWire } from "./serialize.js";
+import type {
+  UploadData,
+  UploadLifecycle,
+  UploadVia,
+} from "./upload-complete.js";
+import {
+  discardRejected,
+  rejectionToWire,
+  uploadIdFor,
+} from "./upload-complete.js";
 
 export interface UploadConfig {
   files: Files;
@@ -34,6 +47,8 @@ export interface UploadConfig {
   now: () => number;
   /** The request's abort signal, threaded into every storage call. */
   signal: AbortSignal;
+  /** `onUploadComplete` and its options, when configured. */
+  lifecycle?: UploadLifecycle;
 }
 
 const ROUTING_PARAMS = new Set(["op", "key", "token"]);
@@ -189,8 +204,39 @@ export const handlePresign = async (
     (cfg.maxUploadSize === undefined || signedUpload.maxSize) &&
     (!file.type || signedUpload.contentType);
 
+  // A storage-signed target, or `undefined` when the adapter can't sign one
+  // (the client is then handed the gateway's proxy PUT).
+  const signedTarget = async (
+    key: string,
+    file: ClientFileInfo
+  ): Promise<SignedUpload | undefined> => {
+    if (!canPresign(file)) {
+      return undefined;
+    }
+    try {
+      return await cfg.files.signedUploadUrl(key, {
+        contentType: file.type || undefined,
+        expiresIn: expires,
+        minSize: 0,
+        signal: cfg.signal,
+        ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
+      });
+    } catch (error) {
+      // A refusal the capabilities didn't predict (a per-call limit such as
+      // a `minSize` the provider can't bind) still has a working path: the
+      // proxy, which enforces size and type itself. A backend failure or an
+      // abort is a real error, so it surfaces instead of being masked.
+      const { code } = FilesError.wrap(error);
+      if (code !== "Unsupported" && code !== "Invalid") {
+        throw error;
+      }
+      return undefined;
+    }
+  };
+
   const presignOne = async (file: ClientFileInfo): Promise<PresignedUpload> => {
     const key = mintKey(scope.prefix, file.name);
+    const signed = await signedTarget(key, file);
     const id = await signToken(
       {
         contentType: file.type || undefined,
@@ -200,35 +246,15 @@ export const handlePresign = async (
         minSize: 0,
         path: cfg.boundPath,
         ...(cfg.boundQuery && { query: cfg.boundQuery }),
+        ...(signed === undefined && { via: "proxy" as const }),
       },
       cfg.secret
     );
-
-    let target: SignedUpload;
-    if (canPresign(file)) {
-      try {
-        target = await cfg.files.signedUploadUrl(key, {
-          contentType: file.type || undefined,
-          expiresIn: expires,
-          minSize: 0,
-          signal: cfg.signal,
-          ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
-        });
-      } catch (error) {
-        // A refusal the capabilities didn't predict (a per-call limit such as
-        // a `minSize` the provider can't bind) still has a working path: the
-        // proxy, which enforces size and type itself. A backend failure or an
-        // abort is a real error, so it surfaces instead of being masked.
-        const { code } = FilesError.wrap(error);
-        if (code !== "Unsupported" && code !== "Invalid") {
-          throw error;
-        }
-        target = proxyTarget(cfg, id, file.type);
-      }
-    } else {
-      target = proxyTarget(cfg, id, file.type);
-    }
-    return { id, key: unscope(key), target };
+    return {
+      id,
+      key: unscope(key),
+      target: signed ?? proxyTarget(cfg, id, file.type),
+    };
   };
 
   const uploads = await Promise.all(files.map(presignOne));
@@ -242,60 +268,194 @@ const unauthorizedEntry = (message: string, key: string): WireBulkError => ({
   key,
 });
 
-// An object `complete` found over the token's `maxSize` must not stay stored:
-// the key was minted by this server for this upload alone, so removing it
-// can't touch anything else. A failed removal is reported, not swallowed.
-const removeOversized = async (
+const withData = (file: WireFileInfo, data: UploadData): WireUploadedFile =>
+  data === undefined ? file : { ...file, data };
+
+interface Accepted {
+  ok: true;
+  file: WireUploadedFile;
+}
+interface Rejected {
+  ok: false;
+  /** What the hook threw — reported to the client as the upload's error. */
+  cause: unknown;
+  /** Why discarding the rejected object failed, as a message suffix ("" when it didn't). */
+  removal: string;
+}
+
+/**
+ * Feed an accepted upload to `files-sdk/events` handlers when the plugin is
+ * installed on the instance. Their failures are the plugin's to report (its
+ * `onError`); the upload itself already succeeded.
+ */
+const announceUpload = async (
   cfg: UploadConfig,
-  key: string
-): Promise<string> => {
+  upload: { wire: WireFileInfo; storageKey: string; uploadId: string }
+): Promise<void> => {
+  const sink = eventSinkOf(cfg.files);
+  if (!sink) {
+    return;
+  }
+  const { wire } = upload;
   try {
-    await cfg.files.delete(key, { signal: cfg.signal });
-    return "";
-  } catch (error) {
-    const wrapped = FilesError.wrap(error);
-    return wrapped.code === "NotFound"
-      ? ""
-      : ` (removing it failed: ${wrapped.message})`;
+    await sink.emit(
+      gatewayUploadEvent(cfg.files.adapter.name, {
+        contentType: wire.contentType,
+        key: upload.storageKey,
+        size: wire.size,
+        uploadId: upload.uploadId,
+        ...(wire.etag !== undefined && { etag: wire.etag }),
+        ...(wire.lastModified !== undefined && {
+          lastModified: wire.lastModified,
+        }),
+      })
+    );
+  } catch {
+    // reported through the events plugin's `onError`
   }
 };
 
-// One completion: the stored file, or the per-key error entry explaining why
-// it can't be completed by this request.
+/**
+ * Run `onUploadComplete` for a landed object: its result rides back as `data`;
+ * a throw rejects the upload, discarding the object (unless `onRejected:
+ * "keep"`). Without a hook, every verified upload is accepted as-is. An
+ * accepted upload is then announced to `files-sdk/events` handlers.
+ */
+const settleUpload = async (
+  cfg: UploadConfig,
+  upload: {
+    wire: WireFileInfo;
+    storageKey: string;
+    uploadId: string;
+    via: UploadVia;
+  }
+): Promise<Accepted | Rejected> => {
+  const hook = cfg.lifecycle?.onUploadComplete;
+  if (!(cfg.lifecycle && hook)) {
+    await announceUpload(cfg, upload);
+    return { file: upload.wire, ok: true };
+  }
+  const { wire } = upload;
+  try {
+    const data = await hook({
+      context: cfg.lifecycle.context,
+      file: {
+        contentType: wire.contentType,
+        key: wire.key,
+        size: wire.size,
+        ...(wire.etag !== undefined && { etag: wire.etag }),
+        ...(wire.lastModified !== undefined && {
+          lastModified: wire.lastModified,
+        }),
+        ...(wire.metadata !== undefined && { metadata: wire.metadata }),
+      },
+      files: cfg.files,
+      req: cfg.lifecycle.req,
+      storageKey: upload.storageKey,
+      uploadId: upload.uploadId,
+      via: upload.via,
+    });
+    await announceUpload(cfg, upload);
+    return { file: withData(wire, data), ok: true };
+  } catch (error) {
+    const removal = await discardRejected(
+      cfg.files,
+      cfg.lifecycle,
+      upload.storageKey,
+      cfg.signal
+    );
+    return { cause: error, ok: false, removal };
+  }
+};
+
+type CompletionOutcome =
+  | { ok: true; file: WireUploadedFile }
+  | { ok: false; error: WireBulkError };
+
+// One completion: the stored file (with what `onUploadComplete` returned), or
+// the per-key error entry explaining why it can't be completed by this request.
 const completeOne = async (
   cfg: UploadConfig,
   completion: { id: string; key: string },
   scope: Scope,
   unscope: (key: string) => string
-): Promise<WireFileInfo | WireBulkError> => {
+): Promise<CompletionOutcome> => {
   const verified = await redeem(completion.id, cfg);
   if (!verified.ok) {
-    return unauthorizedEntry(verified.message, completion.key);
+    return {
+      error: unauthorizedEntry(verified.message, completion.key),
+      ok: false,
+    };
   }
-  const { key, maxSize } = verified.payload;
+  const { exp, key, maxSize, via } = verified.payload;
   // The token is valid, but only for the caller whose `authorize` scope
   // minted it: another tenant presenting it must not learn the storage key or
   // metadata. Answer with the key the caller sent, never the token's.
   if (!key.startsWith(scope.prefix)) {
-    return unauthorizedEntry(SCOPE_MISMATCH, completion.key);
+    return {
+      error: unauthorizedEntry(SCOPE_MISMATCH, completion.key),
+      ok: false,
+    };
   }
+  const store = cfg.lifecycle?.completions;
+  const uploadId = await uploadIdFor(completion.id);
   try {
+    // A replayed `complete` for an upload this store already settled gets the
+    // recorded answer; the hook does not fire twice.
+    const prior = await store?.get(uploadId);
+    if (prior) {
+      return { file: prior.file, ok: true };
+    }
     const meta = await cfg.files.head(key, { signal: cfg.signal });
     if (maxSize !== undefined && meta.size > maxSize) {
-      const removal = await removeOversized(cfg, key);
+      // The key was minted by this server for this upload alone, so removing
+      // it can't touch anything else.
+      const removal = await discardRejected(
+        cfg.files,
+        cfg.lifecycle,
+        key,
+        cfg.signal
+      );
       return {
         error: {
-          aborted: false,
-          code: "Provider",
-          message: `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}${removal}`,
-          timedOut: false,
+          error: {
+            aborted: false,
+            code: "Provider",
+            message: `uploaded object is ${meta.size} bytes, exceeds maxSize ${maxSize}${removal}`,
+            timedOut: false,
+          },
+          key: unscope(key),
         },
-        key: unscope(key),
+        ok: false,
       };
     }
-    return fileInfoToWire(meta, unscope);
+    const settled = await settleUpload(cfg, {
+      storageKey: key,
+      uploadId,
+      via: via === "proxy" ? "proxy" : "presign",
+      wire: fileInfoToWire(meta, unscope),
+    });
+    if (!settled.ok) {
+      const error = rejectionToWire(settled.cause);
+      return {
+        error: {
+          error: { ...error, message: `${error.message}${settled.removal}` },
+          key: unscope(key),
+        },
+        ok: false,
+      };
+    }
+    await store?.set(
+      uploadId,
+      { file: settled.file },
+      Math.max(0, exp - cfg.now())
+    );
+    return settled;
   } catch (error) {
-    return bulkErrorToWire(FilesError.wrap(error), key, unscope);
+    return {
+      error: bulkErrorToWire(FilesError.wrap(error), key, unscope),
+      ok: false,
+    };
   }
 };
 
@@ -305,16 +465,16 @@ export const handleComplete = async (
   scope: Scope,
   unscope: (key: string) => string
 ): Promise<ResultModel> => {
-  const completed: WireFileInfo[] = [];
+  const completed: WireUploadedFile[] = [];
   const errors: WireBulkError[] = [];
 
   for (const completion of completions) {
     // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- completions verified sequentially; small N
     const outcome = await completeOne(cfg, completion, scope, unscope);
-    if ("error" in outcome) {
-      errors.push(outcome);
+    if (outcome.ok) {
+      completed.push(outcome.file);
     } else {
-      completed.push(outcome);
+      errors.push(outcome.error);
     }
   }
 
@@ -393,12 +553,16 @@ export const handleExplicitUpload = async (
   } catch (error) {
     throw limited.getError() ?? FilesError.wrap(error);
   }
-  return {
-    body: {
-      file: fileInfoToWire({ ...result, key: unscopedKey }, (key) => key),
-      ok: true,
-    },
-    kind: "json",
-    status: 200,
-  };
+  const wire = fileInfoToWire({ ...result, key: unscopedKey }, (key) => key);
+  const settled = await settleUpload(cfg, {
+    storageKey,
+    uploadId: crypto.randomUUID(),
+    via: "keyed",
+    wire,
+  });
+  if (!settled.ok) {
+    throw settled.cause;
+  }
+  const response: ExplicitUploadResponse = { file: settled.file, ok: true };
+  return { body: response, kind: "json", status: 200 };
 };

@@ -785,6 +785,22 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
         replace: false,
       },
     }),
+    // Provider events come from the hot tier's bucket. With deterministic
+    // routing they're accurate for the keys routed there (any other key in
+    // that bucket is invisible to the instance). With `fallback`, objects move
+    // between tiers, and a hot-tier `deleted` may be a transition to cold —
+    // ambiguous without I/O, so refuse rather than report a false delete.
+    event: (event) => {
+      if (fallback) {
+        throw new FilesError(
+          "Provider",
+          "tiering: provider events can't be mapped with fallback: true (a hot-tier delete may be a move to cold); use gateway or events({ sdk: true }) events instead",
+          undefined,
+          { permanent: true }
+        );
+      }
+      return route({ key: event.key }) === "hot" ? event : null;
+    },
     extend: (files) => {
       const { defaults } = files;
       cold = coldFor(defaults);

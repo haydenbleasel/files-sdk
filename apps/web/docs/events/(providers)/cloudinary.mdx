@@ -1,0 +1,32 @@
+---
+title: Cloudinary
+description: Receive Cloudinary upload, delete and rename notifications at files.events.webhook(), verified with your API secret.
+---
+
+Cloudinary sends notifications to a `notification_url` or to webhook triggers. The `cloudinary` adapter reads the `cloudinary` format.
+
+Add a trigger in the console (Settings → Webhook Notifications) for the `upload`, `delete` and `rename` event types, pointing at your endpoint.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({
+    verify: { secret: process.env.CLOUDINARY_API_SECRET! },
+  })
+);
+```
+
+`verify: { secret }` checks `X-Cld-Signature` (a SHA-1 or SHA-256 digest of the body, `X-Cld-Timestamp` and the API secret) and rejects deliveries more than two hours old. Use the secret of the API key that signs notifications: a dedicated one if you've set it, otherwise the oldest active key. Triggers using the newer `eddsa_v2` auth scheme send only `X-Cld-Signature_v2`, which isn't publicly documented, so they're refused; use the default scheme.
+
+## What maps to what
+
+| `notification_type` | `FileEvent` |
+| --- | --- |
+| `upload` | `created`, with size, ETag, version id and (for images and video) content type |
+| `delete` | `deleted`, one per resource |
+| `rename` | `deleted` for the old `public_id` and `created` for the new one |
+| Everything else (eager, moderation, folders, …) | skipped |
+
+Keys are `public_id`s, and the adapter stores everything under one resource type (`raw` by default) and delivery type. Events for other resource or delivery types are dropped, since they aren't keys the adapter can address.

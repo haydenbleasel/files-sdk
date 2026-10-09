@@ -1,0 +1,35 @@
+---
+title: Supabase
+description: Use a Database Webhook on storage.objects to deliver Supabase Storage changes to files.events.webhook().
+---
+
+Supabase Storage keeps every object as a row in `storage.objects`, so a [Database Webhook](https://supabase.com/docs/guides/database/webhooks) on that table is its notification. The `supabase` adapter reads the `supabase` format.
+
+In the dashboard (Database → Webhooks), create a webhook on the `storage.objects` table for **Insert, Update and Delete**, pointing at your endpoint, with an `Authorization: Bearer <token>` HTTP header.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({
+    verify: { token: process.env.SUPABASE_WEBHOOK_TOKEN! },
+  })
+);
+```
+
+Database Webhooks aren't signed, so the header is the only check.
+
+## What maps to what
+
+| Change | `FileEvent` |
+| --- | --- |
+| `INSERT` | `created` |
+| `UPDATE` with a new `version` or ETag | `created`: Storage upserts, so an overwrite is an update |
+| `UPDATE` that changes `name` or `bucket_id` | `deleted` for the old key and `created` for the new one |
+| Other `UPDATE`s (`last_accessed_at`, `user_metadata`) | skipped |
+| `DELETE` | `deleted` |
+
+Every bucket in the project shares the table, so pass `events({ bucket: "avatars" })` to keep one bucket's changes. Changes to other tables, if the webhook covers them, are skipped.
+
+Database Webhooks are sent once, with a short timeout and no retries, so a missed delivery isn't redelivered. Reconcile against [`list()`](/docs/api/list) when that matters.

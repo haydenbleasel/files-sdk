@@ -1,0 +1,30 @@
+---
+title: Appwrite
+description: Receive Appwrite storage file webhooks at files.events.webhook(), verified with the webhook's signature key.
+---
+
+Appwrite project webhooks report storage file events. The `appwrite` adapter reads the `appwrite` format.
+
+Create a webhook in the console (Project → Settings → Webhooks) for the `buckets.*.files.*.create` and `buckets.*.files.*.delete` events, and copy its signature key.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({
+    verify: {
+      secret: process.env.APPWRITE_WEBHOOK_KEY!,
+      url: "https://app.example.com/api/storage-events",
+    },
+  })
+);
+```
+
+Appwrite signs the webhook URL followed by the body (base64 HMAC-SHA1), so `url` must be exactly the URL configured in Appwrite, not one derived from the request. The signature has no timestamp; dedupe on `event.id`, which is Appwrite's delivery id.
+
+What happened to the file is in the `X-Appwrite-Webhook-Events` header, not the body, so Appwrite deliveries need the whole request: use `webhook()` or `parse(request)`, not `parse(body)`.
+
+## What maps to what
+
+`…files.<id>.create` becomes `created` and `…files.<id>.delete` becomes `deleted`; updates (renames, permissions) are skipped. The key is the file's `$id`, which is the key `files-sdk/appwrite` writes under. Pass `events({ bucket: "<bucket id>" })` when one webhook covers several buckets.

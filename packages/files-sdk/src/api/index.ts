@@ -14,6 +14,11 @@ import type { Authorize } from "../internal/files-router/authorize.js";
 import type { HandlerContext } from "../internal/files-router/handler.js";
 import { dispatch } from "../internal/files-router/handler.js";
 import type { FilesOperation } from "../internal/files-router/protocol.js";
+import type {
+  CompletionStore,
+  OnUploadComplete,
+  UploadData,
+} from "../internal/files-router/upload-complete.js";
 import { isFunction } from "../internal/is.js";
 import { toErrorResult } from "../internal/router-core/envelope.js";
 import type { AllowedOrigins } from "../internal/router-core/origin.js";
@@ -30,13 +35,48 @@ export type {
   Scope,
 } from "../internal/files-router/authorize.js";
 export type { FilesOperation } from "../internal/files-router/protocol.js";
+export type {
+  CompletionRecord,
+  CompletionStore,
+  OnUploadComplete,
+  UploadCompleteContext,
+  UploadedFileInfo,
+  UploadVia,
+} from "../internal/files-router/upload-complete.js";
+export { UploadRejectedError } from "../internal/files-router/upload-complete.js";
 export type { AllowedOrigins } from "../internal/router-core/origin.js";
 
-export interface CreateFilesRouterOptions {
+export interface CreateFilesRouterOptions<TData = unknown, TContext = unknown> {
   /** A `Files` instance, or a per-request factory (multi-tenant). Pass `files.readonly()` to hard-deny writes. */
   files: Files | ((req: Request) => Files | Promise<Files>);
   /** Per-operation gate. Deny-by-default when omitted (only `capabilities` answers). */
-  authorize?: Authorize;
+  authorize?: Authorize<TContext>;
+  /**
+   * Runs once per verified upload: in `complete` for keyless uploads (after
+   * the landed object's size is checked), and after a keyed `upload(key,
+   * body)` stores its body. Record the upload here; the resolved value is
+   * JSON-serialized back to the client as the upload result's `data`. Throw
+   * to reject the upload — the object is deleted (see `onRejected`) and the
+   * client gets the error; throw `UploadRejectedError` for a 422 with your
+   * message.
+   *
+   * A client that never calls `complete` (a closed tab) never fires it; use
+   * `files-sdk/events` provider notifications to reconcile those.
+   */
+  onUploadComplete?: OnUploadComplete<TData, TContext>;
+  /**
+   * What happens to an object whose upload is rejected — by
+   * `onUploadComplete` throwing, or by the complete-time `maxUploadSize`
+   * check. Default `"delete"`.
+   */
+  onRejected?: "delete" | "keep";
+  /**
+   * Makes keyless completions single-use: a replayed `complete` gets the
+   * recorded result instead of firing `onUploadComplete` again. Upload tokens
+   * are stateless, so without a store a client can re-`complete` an upload
+   * until its token expires — dedupe on `uploadId` in the hook either way.
+   */
+  completions?: CompletionStore;
   /** Declarative allow-list: operations permitted without a hook. A hard gate that runs before `authorize`. */
   operations?: readonly FilesOperation[];
   /** CSRF/origin allowlist for state-changing actions. Defaults to same-origin when omitted. */
@@ -81,10 +121,28 @@ export interface CreateFilesRouterOptions {
   now?: () => number;
 }
 
-export interface FilesApi {
+export interface FilesApi<TData = unknown> {
   /** The framework-agnostic core every binding calls. */
   handle: (req: Request) => Promise<Response>;
+  /**
+   * Type-only: what `onUploadComplete` resolves to. Never set at runtime —
+   * read it with {@link InferUploadData}.
+   */
+  readonly "~uploadData"?: TData;
 }
+
+/**
+ * The `data` a router's `onUploadComplete` hands back to the client, for
+ * `createFilesClient<…>()` / `useFiles<…>()`. A type-only import of the
+ * router keeps server code out of the client bundle:
+ *
+ * ```ts
+ * import type { router } from "./server";
+ * const files = useFiles<InferUploadData<typeof router>>();
+ * ```
+ */
+export type InferUploadData<T> =
+  T extends FilesApi<infer TData> ? Awaited<TData> : never;
 
 const resolveSecret = (secret: string | undefined): string => {
   if (secret) {
@@ -102,7 +160,9 @@ const resolveSecret = (secret: string | undefined): string => {
   return `${crypto.randomUUID()}${crypto.randomUUID()}`;
 };
 
-export const createFilesRouter = (opts: CreateFilesRouterOptions): FilesApi => {
+export const createFilesRouter = <TData = undefined, TContext = undefined>(
+  opts: CreateFilesRouterOptions<TData, TContext>
+): FilesApi<TData> => {
   if (!(opts.authorize || opts.operations)) {
     // oxlint-disable-next-line no-console -- construction-time safety warning.
     console.warn(
@@ -114,7 +174,12 @@ export const createFilesRouter = (opts: CreateFilesRouterOptions): FilesApi => {
   const operations = opts.operations ? new Set(opts.operations) : undefined;
   const base = {
     allowedOrigins: opts.allowedOrigins,
-    authorize: opts.authorize,
+    // SAFETY: `TContext` only types what `authorize` returns as `context` and
+    // what `onUploadComplete` reads back; the gateway carries that value
+    // through untouched (`Scope.context`), so erasing it to `unknown` here and
+    // handing it to the hook unchanged preserves the caller's pairing.
+    authorize: opts.authorize as Authorize | undefined,
+    completions: opts.completions,
     defaultExpiresIn: opts.defaultExpiresIn ?? 300,
     downloadMode: opts.downloadMode ?? "auto",
     forceDisposition: opts.forceDownloadDisposition ?? true,
@@ -124,7 +189,15 @@ export const createFilesRouter = (opts: CreateFilesRouterOptions): FilesApi => {
     maxSearchResults: opts.maxSearchResults ?? 1000,
     maxUploadSize: opts.maxUploadSize,
     now: opts.now ?? Date.now,
+    onRejected: opts.onRejected ?? "delete",
     onUnsupportedRange: opts.onUnsupportedRange ?? "reject",
+    // SAFETY: see `authorize` above — the hook receives the same `context`
+    // value `authorize` produced, so `TContext` holds at the call. Its result
+    // only ever goes to `JSON.stringify` for the wire, which is what
+    // `UploadData` models.
+    onUploadComplete: opts.onUploadComplete as
+      | OnUploadComplete<UploadData>
+      | undefined,
     operations,
     searchPatternLimits: {
       maxLength: opts.maxSearchPatternLength ?? 256,

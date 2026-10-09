@@ -1,0 +1,36 @@
+---
+title: Box
+description: Receive Box webhooks (v2) at files.events.webhook(), verified with the app's primary and secondary signature keys.
+---
+
+Box webhooks (v2) report file events on a folder. The `box` adapter reads the `box` format.
+
+Create a webhook on the folder the adapter uses as its root, for the `FILE.UPLOADED`, `FILE.RESTORED`, `FILE.TRASHED` and `FILE.DELETED` triggers, and copy the app's signature keys from the developer console.
+
+```ts title="app/api/storage-events/route.ts" lineNumbers
+import { createRouteHandler } from "files-sdk/next";
+import { files } from "@/lib/files";
+
+export const { POST } = createRouteHandler(
+  files.events.webhook({
+    verify: {
+      secret: process.env.BOX_PRIMARY_SIGNATURE_KEY!,
+      secondarySecret: process.env.BOX_SECONDARY_SIGNATURE_KEY,
+    },
+  })
+);
+```
+
+`verify: { secret, secondarySecret }` checks `BOX-SIGNATURE-PRIMARY` with the primary key or `BOX-SIGNATURE-SECONDARY` with the secondary one, so you can rotate keys without downtime, and rejects deliveries more than ten minutes old.
+
+:::warning
+Box can't attach a webhook to the root folder (`0`), which is the adapter's default `rootFolderId`. Point the adapter at a real folder (`box({ rootFolderId: "123" })`) and watch that folder.
+:::
+
+## Keys
+
+`files-sdk/box` keys are paths under `rootFolderId`, so each event's key is rebuilt from the file's folder path. Files outside the adapter's root are dropped.
+
+## What maps to what
+
+`FILE.UPLOADED` and `FILE.RESTORED` become `created`; `FILE.TRASHED` and `FILE.DELETED` become `deleted` (a delete can send both, depending on your enterprise's trash settings). `FILE.MOVED` and `FILE.RENAMED` are skipped, since they don't say where the file was. `event.id` is Box's event id, which stays the same across retries.

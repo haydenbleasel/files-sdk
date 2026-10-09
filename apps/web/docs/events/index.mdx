@@ -1,0 +1,96 @@
+---
+title: Events overview
+description: React when a file is created or deleted, however it got there. files-sdk/events turns each provider's bucket notifications into one event shape and routes them to your handlers.
+---
+
+`files.upload()` tells you about uploads made through the SDK. Plenty of writes aren't: a file dropped in the console, another service writing to the bucket, a lifecycle rule expiring old objects, a browser that uploaded straight to storage and closed the tab before telling your server.
+
+Every major provider can notify you about those writes, but each one does it differently: S3 sends to SQS, SNS, EventBridge or Lambda, MinIO to a webhook, R2 to a Queue, GCS to Pub/Sub, and Azure to Event Grid. `files-sdk/events` reads all of them and gives you one event:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { events } from "files-sdk/events";
+import { s3 } from "files-sdk/s3";
+
+export const files = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [events()],
+});
+
+files.events.on("created", "avatars/**", async (event) => {
+  await db.avatars.upsert({ key: event.key, size: event.size });
+});
+
+files.events.on("deleted", async (event) => {
+  await db.files.delete({ key: event.key });
+});
+```
+
+Then point the provider's notifications at it. For S3 delivering to SQS, the consumer is one line:
+
+```ts title="handler.ts" lineNumbers
+import { files } from "./lib/files";
+
+export const handler = (event: unknown) => files.events.dispatch(event);
+```
+
+## The event
+
+```ts lineNumbers
+interface FileEvent {
+  type: "created" | "deleted";
+  key: string; // caller-facing: URL-decoded, the instance prefix stripped
+  size?: number;
+  etag?: string;
+  versionId?: string; // S3 version id, GCS generation
+  contentType?: string; // only when the delivery carries it (GCS, Azure, MinIO)
+  time: number; // ms since the epoch
+  source: "provider" | "gateway" | "sdk";
+  provider: string; // the adapter's name
+  id: string; // the idempotency key, see Delivery
+  raw: unknown; // the provider's original record, untouched
+}
+```
+
+There are only two types because that's what providers can honestly tell you. Most can't tell an overwrite from a new object, so both are `created`. A copy is a `created` and a move is a `deleted` plus a `created`. Tagging, metadata, restore and storage-class changes don't create or remove anything, so they're skipped.
+
+## Where events come from
+
+| `source` | What it is | How it arrives |
+| --- | --- | --- |
+| `"provider"` | The bucket's own notification. It sees every write, from anywhere. | [`dispatch()`](/docs/plugins/events#dispatch) from a queue consumer, or [`webhook()`](/docs/events/webhooks) for providers that push over HTTP. The [memory adapter](/docs/events/testing) emits them natively. |
+| `"gateway"` | A browser upload through the [gateway](/docs/ui/server/gateway), once it completes. | Automatic when the plugin is installed on the gateway's `files`. |
+| `"sdk"` | A successful `upload` / `delete` / `copy` / `move` made through this instance. | Opt in with `events({ sdk: true })`. It duplicates provider events for the same write, so it's off by default. Use it where the provider has no notifications. |
+
+All three reach the same `on()` handlers.
+
+## Supported providers
+
+| Format | Adapters | Delivery | Setup |
+| --- | --- | --- | --- |
+| `s3` | `s3`, `s3-fetch`, `bun-s3` | Lambda, SQS, SNS → SQS, EventBridge | [Amazon S3](/docs/events/s3) |
+| `s3` | `minio` | Webhook | [MinIO](/docs/events/minio) |
+| `s3` | `rustfs` | Webhook (or Kafka, NATS, …) | [MinIO](/docs/events/minio#rustfs) |
+| `s3` | `wasabi` | Your own AWS SNS topic | [Amazon S3](/docs/events/s3#wasabi) |
+| `r2` | `r2` | Queue (Worker consumer or HTTP pull) | [Cloudflare R2](/docs/events/r2) |
+| `gcs` | `gcs`, `firebase-storage` | Pub/Sub (pull or push), Eventarc | [Google Cloud Storage](/docs/events/gcs) |
+| `azure` | `azure` | Event Grid webhook (either schema) | [Azure Blob Storage](/docs/events/azure) |
+| `s3` | `s3` | SNS over HTTPS (signature-verified) | [Amazon S3](/docs/events/s3#sns-over-https) |
+| `b2` | `backblaze-b2` | Signed webhook | [Backblaze B2](/docs/events/b2) |
+| `tigris` | `tigris` | Webhook | [Tigris](/docs/events/tigris) |
+| `supabase` | `supabase` | Database Webhook on `storage.objects` | [Supabase](/docs/events/supabase) |
+| `cloudinary` | `cloudinary` | Signed webhook | [Cloudinary](/docs/events/cloudinary) |
+| `appwrite` | `appwrite` | Signed webhook | [Appwrite](/docs/events/appwrite) |
+| `box` | `box` | Signed webhook (v2) | [Box](/docs/events/box) |
+| `memory` | `memory` | Built in | [Testing locally](/docs/events/testing) |
+
+Of the other S3-compatible services, Storj sends S3-shaped events only through Google Pub/Sub (not read yet); Oracle, IBM COS, Alibaba, Tencent and Yandex use formats of their own; and DigitalOcean Spaces, Hetzner, Scaleway, Vultr, Exoscale, OVHcloud, Filebase, Akamai, Archil and Neon have no bucket notifications. An adapter whose provider isn't verified claims no format; pass `events({ format: "s3" })` to opt in when you know it sends S3's. Calling `parse()` or `dispatch()` on an adapter with no format throws instead of guessing.
+
+Dropbox, Google Drive, OneDrive and SharePoint webhooks only say "something changed" and expect you to call a changes API with a stored cursor, so they aren't supported yet. Vercel Blob, Netlify Blobs, UploadThing, Convex, PocketBase, the filesystem, FTP, SFTP, WebDAV and Bunny have no notifications to read; use `events({ sdk: true })` and the [gateway](/docs/ui/server/upload-lifecycle) there.
+
+## Next
+
+- [Delivery and idempotency](/docs/events/delivery): duplicates, ordering, and the `id` to dedupe on.
+- [Webhooks](/docs/events/webhooks): mounting `webhook()`, authenticating deliveries, and status codes.
+- [Testing locally](/docs/events/testing): the memory adapter and `settled()`.
+- [Plugin reference](/docs/plugins/events): every option and method.

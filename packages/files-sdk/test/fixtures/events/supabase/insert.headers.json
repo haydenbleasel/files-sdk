@@ -1,0 +1,4 @@
+{
+  "content-type": "application/json",
+  "x-webhook-secret": "PLACEHOLDER-user-configured-header"
+}

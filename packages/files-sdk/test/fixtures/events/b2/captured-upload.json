@@ -1,0 +1,17 @@
+{
+  "events": [
+    {
+      "accountId": "15f935cf4dcb",
+      "bucketId": "21a5bf29a395fc7f84dd0c1b",
+      "bucketName": "my-bucket",
+      "eventId": "19f154fa574c68f60ea362f8e2a4272a63aefc094889d8985740c93d2710dcbe",
+      "eventTimestamp": 1721711606884,
+      "eventType": "b2:ObjectCreated:Upload",
+      "eventVersion": 1,
+      "matchedRuleName": "--autocreated-b2listen-2024-07-22-22-13-20-312502--",
+      "objectName": "images/raw/smiley.png",
+      "objectSize": 23889,
+      "objectVersionId": "4_z21a5bf29a395fc7f84dd0c1b_f102737ab881484be_d20240723_m051326_c004_v0402010_t0003_u01721711606612"
+    }
+  ]
+}
