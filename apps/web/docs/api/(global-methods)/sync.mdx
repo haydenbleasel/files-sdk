@@ -99,7 +99,7 @@ await sync(from, to, {
 
 ## Progress
 
-`onProgress` fires once per key as it settles — skips and uploads interleaved in the order they finish, then prunes once every upload has settled — carrying a running `done` count, the `total` (uploads + skips + prunes), the `key`, and a `status` of `"uploaded"`, `"skipped"`, or `"deleted"`. It does not fire under `dryRun`. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already settled or the sync as a whole.
+`onProgress` fires once per key as it settles — skips and uploads interleaved in the order they finish, then prunes once every upload has settled — carrying a running `done` count, the `total` (uploads + skips + prunes), the `key`, and a `status` of `"uploaded"`, `"skipped"`, `"deleted"`, or `"failed"`. A failed upload or prune's error is in the result's `errors`; the event just counts it, so the last event has `done === total` even when keys fail. Under `stopOnError` the run stops at the first failed upload and skips the prune phase, so `done` stops short of `total`. It does not fire under `dryRun`. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already settled or the sync as a whole.
 
 ```ts lineNumbers
 await sync(from, to, {

@@ -69,7 +69,7 @@ await transfer(from, to, {
 
 ## Progress
 
-`onProgress` fires once per key as it settles, carrying a running `done` count, the `total`, the `key`, and whether it was `transferred` or `skipped`. The source is walked in full before any transfer begins, so `total` is the final denominator from the very first event. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already landed or the transfer as a whole.
+`onProgress` fires once per key as it settles, carrying a running `done` count, the `total`, the `key`, and a `status` of `"transferred"`, `"skipped"`, or `"failed"`. A failed key's error is in the result's `errors`; the event just counts it. The source is walked in full before any transfer begins, so `total` is the final denominator from the very first event, and the last event has `done === total` even when keys fail. The one exception is `stopOnError`: the run stops at the first failure, so the keys after it never settle. The callback is fire-and-forget: if it throws, the error is swallowed and can't fail a key that already landed or the transfer as a whole.
 
 ```ts lineNumbers
 await transfer(from, to, {

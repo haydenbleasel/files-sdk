@@ -211,6 +211,38 @@ describe("transfer", () => {
     expect(status["b.txt"]).toBe("skipped");
   });
 
+  test("reports failed keys too, so done reaches total", async () => {
+    const sourceAdapter = fakeAdapter();
+    const original = sourceAdapter.download;
+    const source = new Files({
+      adapter: {
+        ...sourceAdapter,
+        download: (key: string): Promise<StoredFile> =>
+          key === "b.txt"
+            ? Promise.reject(new FilesError("Provider", "boom"))
+            : original(key),
+      },
+    });
+    const dest = newFiles();
+    await source.upload("a.txt", "alpha");
+    await source.upload("b.txt", "beta");
+    await source.upload("c.txt", "gamma");
+
+    const events: TransferProgress[] = [];
+    const result = await transfer(source, dest, {
+      concurrency: 1,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(result.errors?.map((e) => e.key)).toEqual(["b.txt"]);
+    expect(events.map((e) => [e.done, e.key, e.status])).toEqual([
+      [1, "a.txt", "transferred"],
+      [2, "b.txt", "failed"],
+      [3, "c.txt", "transferred"],
+    ]);
+    expect(events.at(-1)?.done).toBe(events.at(-1)?.total);
+  });
+
   test("a throwing onProgress never fails a transferred key", async () => {
     const source = newFiles();
     const dest = newFiles();

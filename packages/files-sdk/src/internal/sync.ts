@@ -49,19 +49,29 @@ export type SyncCompare =
 
 /**
  * A single per-key report, delivered to {@link SyncOptions.onProgress} once a
- * key has settled (failures surface in the result's `errors`, not here). Skips
- * and uploads are interleaved in completion order as the source pass runs;
- * prunes are reported last, after every upload has settled.
+ * key has settled. Skips, uploads, and failed uploads are interleaved in
+ * completion order as the source pass runs; prunes (and failed prunes) are
+ * reported last, after every upload has settled. A failed key's error is in
+ * the result's `errors`; the report only counts it, so `done` reaches `total`
+ * on a run with failures too.
  */
 export interface SyncProgress {
-  /** Keys settled so far — uploaded plus skipped plus deleted. Monotonically increasing. */
+  /** Keys settled so far — uploaded plus skipped plus deleted plus failed. Monotonically increasing. */
   done: number;
-  /** Uploads, skips, and prunes the plan turned up — the denominator for `done`. */
+  /**
+   * Uploads, skips, and prunes the plan turned up — the denominator for
+   * `done`. Every key settles exactly once, so the last report has
+   * `done === total`, unless `stopOnError` bails at the first failure (which
+   * leaves the remaining uploads unattempted and skips the prune phase).
+   */
   total: number;
   /** The source key (upload / skip) or destination key (delete) just settled. */
   key: string;
-  /** What happened to the key. */
-  status: "uploaded" | "skipped" | "deleted";
+  /**
+   * What happened to the key. `"failed"` is an upload or prune that errored;
+   * its error is in the result's `errors`.
+   */
+  status: "uploaded" | "skipped" | "deleted" | "failed";
 }
 
 export interface SyncOptions extends BulkOptions {
@@ -242,44 +252,57 @@ const runUploads = async (
   ctx: UploadContext
 ): Promise<{ uploaded: string[]; skipped: string[]; errors: BulkError[] }> => {
   const skippedSet = new Set<string>();
+  // One key, start to finish. Throws on failure; the caller reports it.
+  const syncKey = async (file: StoredFile): Promise<"uploaded" | "skipped"> => {
+    const destKey = ctx.transformKey(file.key);
+    const existing = ctx.destIndex.get(destKey);
+    if (existing && unchanged(file, existing, ctx.compare)) {
+      return "skipped";
+    }
+    const body = await source.download(file.key, {
+      as: "stream",
+      ...ctx.signalOpt,
+    });
+    const stream = body.stream();
+    try {
+      await dest.upload(destKey, stream, {
+        contentType: body.type,
+        ...(ctx.keepMetadata && body.metadata && { metadata: body.metadata }),
+        ...ctx.signalOpt,
+      });
+    } catch (error) {
+      // The destination failed without draining the source — cancel the
+      // open stream so its HTTP response / file handle is released instead
+      // of leaking one per failed key. A locked stream is held by the
+      // failed consumer; nothing to release here.
+      if (!stream.locked) {
+        try {
+          await stream.cancel();
+        } catch {
+          // Best-effort cleanup — the per-key error is what matters.
+        }
+      }
+      throw error;
+    }
+    return "uploaded";
+  };
   const { results, errors } = await mapMany(
     sources,
     (file) => file.key,
     async (file) => {
-      const destKey = ctx.transformKey(file.key);
-      const existing = ctx.destIndex.get(destKey);
-      if (existing && unchanged(file, existing, ctx.compare)) {
-        skippedSet.add(file.key);
-        ctx.report(file.key, "skipped");
-        return file.key;
-      }
-      const body = await source.download(file.key, {
-        as: "stream",
-        ...ctx.signalOpt,
-      });
-      const stream = body.stream();
       try {
-        await dest.upload(destKey, stream, {
-          contentType: body.type,
-          ...(ctx.keepMetadata && body.metadata && { metadata: body.metadata }),
-          ...ctx.signalOpt,
-        });
-      } catch (error) {
-        // The destination failed without draining the source — cancel the
-        // open stream so its HTTP response / file handle is released instead
-        // of leaking one per failed key. A locked stream is held by the
-        // failed consumer; nothing to release here.
-        if (!stream.locked) {
-          try {
-            await stream.cancel();
-          } catch {
-            // Best-effort cleanup — the per-key error is what matters.
-          }
+        const status = await syncKey(file);
+        if (status === "skipped") {
+          skippedSet.add(file.key);
         }
+        ctx.report(file.key, status);
+        return file.key;
+      } catch (error) {
+        // Count the failure too, so `done` still reaches `total`; the error
+        // itself lands in the result's `errors` via `mapMany`.
+        ctx.report(file.key, "failed");
         throw error;
       }
-      ctx.report(file.key, "uploaded");
-      return file.key;
     },
     ctx.opts
   );
@@ -303,10 +326,14 @@ const runPrune = async (
     ...(opts?.stopOnError && { stopOnError: true }),
   });
   const { deleted } = res;
+  const errors = res.errors ?? [];
   for (const key of deleted) {
     report(key, "deleted");
   }
-  return { deleted, errors: res.errors ?? [] };
+  for (const { key } of errors) {
+    report(key, "failed");
+  }
+  return { deleted, errors };
 };
 
 /**

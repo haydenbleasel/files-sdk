@@ -281,6 +281,42 @@ describe("sync", () => {
     expect(await dest.exists("fail/x")).toBe(true);
   });
 
+  test("reports failed uploads and prunes too, so done reaches total", async () => {
+    const sourceAdapter = fakeAdapter();
+    const original = sourceAdapter.download;
+    const source = new Files({
+      adapter: {
+        ...sourceAdapter,
+        download: (key: string): Promise<StoredFile> =>
+          key === "bad.txt"
+            ? Promise.reject(new FilesError("Provider", "boom"))
+            : original(key),
+      },
+    });
+    const dest = newFiles();
+    await source.upload("a.txt", "alpha");
+    await source.upload("bad.txt", "x");
+    // fakeAdapter.deleteMany rejects keys under `fail/`.
+    await dest.upload("fail/x", "boom");
+    await dest.upload("ok/y", "bye");
+
+    const events: SyncProgress[] = [];
+    const result = await sync(source, dest, {
+      concurrency: 1,
+      onProgress: (event) => events.push(event),
+      prune: true,
+    });
+
+    expect(result.errors?.map((e) => e.key)).toEqual(["bad.txt", "fail/x"]);
+    expect(events.map((e) => [e.done, e.key, e.status])).toEqual([
+      [1, "a.txt", "uploaded"],
+      [2, "bad.txt", "failed"],
+      [3, "ok/y", "deleted"],
+      [4, "fail/x", "failed"],
+    ]);
+    expect(events.every((e) => e.total === 4)).toBe(true);
+  });
+
   test("stopOnError bails at the first upload failure and skips the prune", async () => {
     const sourceAdapter = fakeAdapter();
     const original = sourceAdapter.download;

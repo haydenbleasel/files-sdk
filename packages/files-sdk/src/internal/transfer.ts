@@ -11,18 +11,26 @@ import { mapMany } from "./core.js";
 
 /**
  * A single per-key report, delivered to {@link TransferOptions.onProgress}
- * once a key has been transferred or skipped (failures surface in the result's
- * `errors`, not here).
+ * once a key has been transferred, skipped, or has failed. A failed key's
+ * error is in the result's `errors`; the report only counts it, so `done`
+ * reaches `total` on a run with failures too.
  */
 export interface TransferProgress {
-  /** Keys settled so far — transferred plus skipped. Monotonically increasing. */
+  /** Keys settled so far — transferred plus skipped plus failed. Monotonically increasing. */
   done: number;
-  /** Total keys the source walk turned up — the denominator for `done`. */
+  /**
+   * Total keys the source walk turned up — the denominator for `done`. Every
+   * key settles exactly once, so the last report has `done === total`, unless
+   * `stopOnError` bails at the first failure and leaves the rest unattempted.
+   */
   total: number;
   /** The source key just settled. */
   key: string;
-  /** Whether the key was copied to the destination or skipped (already present and `overwrite: false`). */
-  status: "transferred" | "skipped";
+  /**
+   * Whether the key was copied to the destination, skipped (already present
+   * and `overwrite: false`), or failed (its error is in the result's `errors`).
+   */
+  status: "transferred" | "skipped" | "failed";
 }
 
 export interface TransferOptions extends BulkOptions {
@@ -147,6 +155,40 @@ export const transfer = async (
   // metadata-bearing key; drop it instead (see the JSDoc above).
   const keepMetadata = dest.capabilities.metadata;
 
+  // One key, start to finish. Throws on failure; the caller reports it.
+  const transferKey = async (
+    key: string
+  ): Promise<"transferred" | "skipped"> => {
+    const destKey = transformKey(key);
+    if (!overwrite && (await dest.exists(destKey, signalOpt))) {
+      return "skipped";
+    }
+    const file = await source.download(key, { as: "stream", ...signalOpt });
+    const body = file.stream();
+    try {
+      await dest.upload(destKey, body, {
+        contentType: file.type,
+        ...(keepMetadata && file.metadata && { metadata: file.metadata }),
+        ...signalOpt,
+      });
+    } catch (error) {
+      // The destination failed without draining the source (auth error,
+      // rejected metadata, a fail-closed plugin) — cancel the open stream
+      // so its HTTP response / file handle is released instead of leaking
+      // one per failed key on a large walk. A locked stream is held by the
+      // failed consumer; nothing to release here.
+      if (!body.locked) {
+        try {
+          await body.cancel();
+        } catch {
+          // Best-effort cleanup — the per-key error is what matters.
+        }
+      }
+      throw error;
+    }
+    return "transferred";
+  };
+
   // `mapMany` is the same bounded-concurrency engine the bulk array methods
   // use: input-order results, per-key error collection, `stopOnError`. The
   // run echoes its key on success; skips are tracked separately so the result
@@ -155,37 +197,19 @@ export const transfer = async (
     keys,
     identity,
     async (key) => {
-      const destKey = transformKey(key);
-      if (!overwrite && (await dest.exists(destKey, signalOpt))) {
-        skipped.add(key);
-        report(key, "skipped");
-        return key;
-      }
-      const file = await source.download(key, { as: "stream", ...signalOpt });
-      const body = file.stream();
       try {
-        await dest.upload(destKey, body, {
-          contentType: file.type,
-          ...(keepMetadata && file.metadata && { metadata: file.metadata }),
-          ...signalOpt,
-        });
-      } catch (error) {
-        // The destination failed without draining the source (auth error,
-        // rejected metadata, a fail-closed plugin) — cancel the open stream
-        // so its HTTP response / file handle is released instead of leaking
-        // one per failed key on a large walk. A locked stream is held by the
-        // failed consumer; nothing to release here.
-        if (!body.locked) {
-          try {
-            await body.cancel();
-          } catch {
-            // Best-effort cleanup — the per-key error is what matters.
-          }
+        const status = await transferKey(key);
+        if (status === "skipped") {
+          skipped.add(key);
         }
+        report(key, status);
+        return key;
+      } catch (error) {
+        // Count the failure too, so `done` still reaches `total`; the error
+        // itself lands in the result's `errors` via `mapMany`.
+        report(key, "failed");
         throw error;
       }
-      report(key, "transferred");
-      return key;
     },
     opts
   );
