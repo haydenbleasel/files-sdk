@@ -91,6 +91,42 @@ const OLD_API_PAGES = [
 ];
 
 export default defineConfig({
+  agents: {
+    // Entries in the AI catalog (/.well-known/ai-catalog.json), keyed by
+    // `<namespace>:<name>`: the docs MCP server and the published skill.
+    catalog: {
+      queries: {
+        "mcp:files-sdk": [
+          "search the Files SDK documentation",
+          "how do I configure a Files SDK adapter",
+          "which storage providers does files-sdk support",
+        ],
+        "skill:files-sdk": [
+          "add file uploads to a TypeScript app",
+          "upload files to Cloudflare R2 or S3 from Node.js",
+          "switch storage providers without rewriting upload code",
+          "let the browser upload files through an authorized gateway",
+        ],
+      },
+    },
+    llmsTxt: {
+      details: [
+        "Reach for Files SDK when a TypeScript or JavaScript project needs to store files in object or blob storage without locking into one provider: uploads and downloads, signed URLs, listing and search, multipart and resumable uploads, and moving data between providers. One `Files` class runs the same methods on 48 adapters (Cloudflare R2, Amazon S3 and every S3-compatible store, Google Cloud Storage, Azure Blob, Vercel Blob, Supabase, the local filesystem, and more). Each adapter is its own subpath export with its provider's SDK as an optional peer.",
+        "",
+        "Install with `npm i files-sdk`, construct `new Files({ adapter: r2({ bucket }) })`, and call `upload`, `download`, `list`, `url`, and the rest. Plugins such as `files-sdk/encryption` and `files-sdk/validation` wrap the same API. `files-sdk/api` with a framework binding (`files-sdk/next`, `files-sdk/hono`, …) serves browser uploads behind an `authorize` hook, and the `files` CLI and its MCP server expose the same operations to scripts and agents. The `files-sdk` agent skill below covers setup and usage.",
+      ].join("\n"),
+    },
+    // The docs MCP server at /mcp: search and read these docs. It never
+    // touches storage; that's the `files` CLI's own MCP server.
+    mcp: {
+      enabled: true,
+      instructions:
+        "This server searches and reads the Files SDK documentation. It doesn't access any storage. To give an agent file operations, run the `files` CLI's MCP server instead (see /docs/cli/mcp).",
+    },
+    // Publishes skills/files-sdk at /.well-known/agent-skills/files-sdk/ and
+    // /skill.md, in place of the generated docs-map skill of the same name.
+    skills: "../../skills",
+  },
   ai: {
     // The in-page docs assistant, grounded in these docs and answering through
     // OpenAI directly. Its `POST /api/ask` route reads OPENAI_API_KEY at
@@ -105,6 +141,11 @@ export default defineConfig({
         { icon: "lock", label: "How do I encrypt files at rest?" },
       ],
     },
+  },
+  // The generated /changelog index's meta description.
+  changelog: {
+    description:
+      "Every Files SDK release, newest first: new adapters, plugins, and features, fixes, and breaking changes, from the release notes on GitHub.",
   },
   content: {
     sources: [
@@ -141,6 +182,20 @@ export default defineConfig({
     source: "registry/files-sdk/**/examples/*",
   },
 
+  // Docs pages only: the homepage passes its own footer.
+  footer: {
+    copyright: `© ${new Date().getFullYear()} Hayden Bleasel. MIT licensed.`,
+    links: [
+      { href: "https://www.npmjs.com/package/files-sdk", label: "npm" },
+      { href: "https://github.com/sponsors/haydenbleasel", label: "Sponsor" },
+      {
+        href: "https://github.com/haydenbleasel/files-sdk/issues",
+        label: "Report an issue",
+      },
+    ],
+    socials: { x: "https://x.com/haydenbleasel" },
+  },
+
   github: {
     branch: "main",
     dir: "apps/web/docs",
@@ -149,6 +204,10 @@ export default defineConfig({
   },
 
   integrations: [blumeTypescriptExternal],
+
+  // "Last updated" dates from each page's git history. The deploy workflow
+  // checks out the full history for this.
+  lastModified: "git",
 
   // The dog-ear mark + outlined "Files SDK" wordmark, as per-mode images so the
   // lockup renders identically in the docs header and on custom pages (whose
@@ -228,6 +287,27 @@ export default defineConfig({
       // social cards (public/icon.svg is also the favicon).
       logo: "/icon.svg",
     },
+    // schema.org identity: an Organization on every page and a
+    // SoftwareApplication on the homepage, for search engines and agents.
+    organization: {
+      logo: "/icon.svg",
+      name: "Files SDK",
+      sameAs: [
+        "https://github.com/haydenbleasel/files-sdk",
+        "https://www.npmjs.com/package/files-sdk",
+        "https://x.com/haydenbleasel",
+      ],
+    },
+    software: {
+      license: "https://opensource.org/license/mit",
+      operatingSystem: "Node.js 20+, Bun, Deno, Cloudflare Workers",
+      price: 0,
+      sameAs: [
+        "https://www.npmjs.com/package/files-sdk",
+        "https://github.com/haydenbleasel/files-sdk",
+      ],
+    },
+    x: { creator: "@haydenbleasel", handle: "@haydenbleasel" },
   },
 
   theme: {
