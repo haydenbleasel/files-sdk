@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { RunContext } from "@openai/agents";
+import { Agent, RunContext } from "@openai/agents";
+import type { Tool } from "@openai/agents";
 
 import { Files, FilesError } from "../src/index.js";
 import {
@@ -132,6 +133,16 @@ describe("createAgentsFileTools", () => {
       "$.properties.metadata: must be required",
       "$.properties.metadata: additionalProperties must be false",
     ]);
+  });
+
+  test("the tool record fits a string-keyed record of agent tools", () => {
+    // Compile-time regression check (tsc covers test/**): an `interface` has
+    // no implicit index signature, so it wouldn't be assignable here.
+    const record: Record<string, Tool> = createAgentsFileTools({
+      files: newFiles(),
+    });
+    const agent = new Agent({ name: "files", tools: Object.values(record) });
+    expect(agent.tools).toHaveLength(8);
   });
 
   test("returns all eight tools by default", () => {

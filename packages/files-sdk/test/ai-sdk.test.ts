@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
+import { ToolLoopAgent, generateText, streamText } from "ai";
+import type { LanguageModel, ToolSet } from "ai";
+
 import { createFileTools } from "../src/ai-sdk/index.js";
 import { Files, FilesError } from "../src/index.js";
 import type { DownloadOptions } from "../src/index.js";
@@ -51,6 +54,47 @@ const exec = async (
 };
 
 const newFiles = () => new Files({ adapter: fakeAdapter() });
+
+// Compile-time regression check, enforced by `bun run types` (tsc covers
+// `test/**`): the tool records must be assignable to `ai`'s `ToolSet`, an
+// index-signature record. An `interface` has no implicit index signature, so
+// declaring `FileTools` as one broke `generateText({ tools })` and friends.
+describe("AI SDK ToolSet compatibility", () => {
+  test("createFileTools() feeds generateText, streamText, and ToolLoopAgent", () => {
+    const files = newFiles();
+    const all: ToolSet = createFileTools({ files });
+    const readOnly: ToolSet = createFileTools({ files, readOnly: true });
+    // The `boolean` overload returns the `FileTools | ReadOnlyFileTools` union.
+    const either = (readOnlyFlag: boolean): ToolSet =>
+      createFileTools({ files, readOnly: readOnlyFlag });
+    const writeTools = new Set([
+      "uploadFile",
+      "deleteFile",
+      "copyFile",
+      "signUploadUrl",
+    ]);
+    // Never called: these only have to typecheck. The agent mirrors the
+    // `toolApproval` function example in docs/ai/vercel.mdx.
+    const wire = (model: LanguageModel) => [
+      generateText({ model, prompt: "", tools: createFileTools({ files }) }),
+      streamText({
+        model,
+        prompt: "",
+        tools: createFileTools({ files, readOnly: true }),
+      }),
+      new ToolLoopAgent({
+        model,
+        toolApproval: ({ toolCall }) =>
+          writeTools.has(toolCall.toolName) ? "user-approval" : undefined,
+        tools: createFileTools({ files }),
+      }),
+    ];
+    expect(Object.keys(all)).toHaveLength(8);
+    expect(Object.keys(readOnly)).toHaveLength(4);
+    expect(Object.keys(either(false))).toHaveLength(8);
+    expect(wire).toBeInstanceOf(Function);
+  });
+});
 
 describe("createFileTools", () => {
   test("returns all eight tools by default", () => {

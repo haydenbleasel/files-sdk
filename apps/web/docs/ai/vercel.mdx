@@ -202,7 +202,35 @@ In a `useChat` UI the same request arrives as a tool part in the `approval-reque
 
 `requireApproval` works by setting each write tool's `needsApproval`. AI SDK 7 deprecates that field in favor of a `toolApproval` setting on `generateText`, `streamText`, and `ToolLoopAgent`, but still honors it, so the default gate works on AI SDK 6 and 7.
 
-If you also pass `toolApproval`, it takes precedence. A per-tool entry replaces that tool's default, and a function passed as `toolApproval` replaces the defaults for every tool, so make it return `"user-approval"` for each write you still want gated. A per-tool function receives the tool's input, which lets you approve by key:
+If you also pass `toolApproval`, it takes precedence over the tools' `needsApproval`:
+
+- **An object** replaces the default only for the tools it names. Writes you leave out keep their `needsApproval` gate.
+- **A function** replaces `needsApproval` for **every** tool, including the write gates `createFileTools` sets. Whatever it returns is the answer: `"user-approval"` gates the call, and returning `undefined` (or `"not-applicable"`) runs it without approval. A function that only handles the cases you care about therefore ungates every write it falls through on.
+
+`toolApproval` is set per call on `generateText` and `streamText`, and once on a `ToolLoopAgent`, where it applies to every run. If you use the function form, gate the writes in it yourself:
+
+```ts lineNumbers
+import { ToolLoopAgent } from "ai";
+import { createFileTools } from "files-sdk/ai-sdk";
+
+const WRITE_TOOLS = new Set([
+  "uploadFile",
+  "deleteFile",
+  "copyFile",
+  "signUploadUrl",
+]);
+
+const fileAgent = new ToolLoopAgent({
+  model: "anthropic/claude-sonnet-5-5",
+  tools: createFileTools({ files }),
+  // This function overrides every tool's needsApproval, so it has to
+  // return "user-approval" for the writes; undefined would run them.
+  toolApproval: ({ toolCall }) =>
+    WRITE_TOOLS.has(toolCall.toolName) ? "user-approval" : undefined,
+});
+```
+
+The object form is usually simpler. A per-tool function receives the tool's input, which lets you approve by key:
 
 ```ts lineNumbers
 import { generateText, isStepCount } from "ai";
@@ -325,7 +353,7 @@ The write factories (`uploadFile`, `deleteFile`, `copyFile`, `signUploadUrl`) ta
 
 - **Start read-only.** Give an agent `readOnly: true` and add write tools only when it needs them.
 - **Scope every request.** Use a `Files` with a per-user or per-tenant `prefix` built from your auth, not from model or user input.
-- **Keep writes gated.** Leave `requireApproval` on for `deleteFile` and `signUploadUrl` at least. If you add `toolApproval`, remember that it overrides the tools' defaults.
+- **Keep writes gated.** Leave `requireApproval` on for `deleteFile` and `signUploadUrl` at least. If you add `toolApproval`, remember that it overrides the tools' defaults, and that a `toolApproval` function returning `undefined` runs any tool, writes included, without approval.
 - **Sign approvals in chat apps.** With `useChat`, the client sends the message history back each turn, so a client could forge an approval. On AI SDK 7, set `experimental_toolApprovalSecret` so the server rejects approvals it didn't issue.
 - **Treat file contents as untrusted.** A file the model reads can contain instructions aimed at it. Approval gates on writes stop a malicious file from triggering a delete or upload on its own.
 - **Keep upload URLs short-lived.** A `signUploadUrl` result lets anyone holding it upload until `expiresIn` elapses. Keep the tool gated and pass `maxSize` where the adapter supports it (see [`signedUploadUrl`](/docs/api/signed-upload-url)).

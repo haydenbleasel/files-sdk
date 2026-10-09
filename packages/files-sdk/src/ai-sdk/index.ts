@@ -63,7 +63,12 @@ export interface FileToolsOptions {
   overrides?: Partial<Record<FileToolName, ToolOverrides>>;
 }
 
-export interface FileTools {
+// A `type`, not an `interface`: `ai`'s `ToolSet` is an index-signature record,
+// and an interface has no implicit index signature, so it isn't assignable to
+// `generateText({ tools })`, `streamText`, or `ToolLoopAgent`. The lint autofix
+// would turn it back into an interface; `test/ai-sdk.test.ts` catches that.
+// oxlint-disable-next-line typescript/consistent-type-definitions -- must stay a type alias to be assignable to `ToolSet` (see above)
+export type FileTools = {
   /**
    * Paginated list of objects with optional `prefix`, `cursor`, and `limit`.
    * Returns metadata-only entries (`key`, `size`, `type`, `lastModified`,
@@ -112,7 +117,7 @@ export interface FileTools {
    * until `expiresIn` elapses.
    */
   signUploadUrl: ReturnType<typeof signUploadUrl>;
-}
+};
 
 export type ReadOnlyFileTools = Pick<FileTools, FileReadToolName>;
 

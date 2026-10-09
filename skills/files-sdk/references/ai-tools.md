@@ -63,6 +63,10 @@ createFileTools({
 
 `execute`, `inputSchema`, and `outputSchema` cannot be overridden. If you need to change behavior, wrap the tool yourself or call the `Files` methods directly.
 
+### AI SDK 7 `toolApproval` overrides the gates
+
+`requireApproval` works through each tool's `needsApproval`. On AI SDK 7, a `toolApproval` passed to `generateText` / `streamText` / `ToolLoopAgent` takes precedence. The object form only replaces the tools it names. The **function** form replaces `needsApproval` for every tool, and returning `undefined` (or `"not-applicable"`) runs the call without approval, so a function must return `"user-approval"` for `uploadFile`, `deleteFile`, `copyFile`, and `signUploadUrl` itself or the writes become ungated.
+
 ## OpenAI — `files-sdk/openai`
 
 Two surfaces: **Responses API** and **Agents SDK**. Pick whichever your codebase already uses.

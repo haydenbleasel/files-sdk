@@ -109,7 +109,10 @@ export const agentsSignUploadUrl = (
     parameters: TOOL_SCHEMAS.signUploadUrl.input,
   });
 
-export interface AgentsFileTools {
+// A `type`, not an `interface`, so it's assignable to an index-signature
+// record (`Record<string, Tool>`) the way `files-sdk/ai-sdk`'s `FileTools` is.
+// oxlint-disable-next-line typescript/consistent-type-definitions -- must stay a type alias to be assignable to a string-keyed record (see above)
+export type AgentsFileTools = {
   listFiles: ReturnType<typeof agentsListFiles>;
   getFileMetadata: ReturnType<typeof agentsGetFileMetadata>;
   downloadFile: ReturnType<typeof agentsDownloadFile>;
@@ -118,7 +121,7 @@ export interface AgentsFileTools {
   deleteFile: ReturnType<typeof agentsDeleteFile>;
   copyFile: ReturnType<typeof agentsCopyFile>;
   signUploadUrl: ReturnType<typeof agentsSignUploadUrl>;
-}
+};
 
 export type ReadOnlyAgentsFileTools = Pick<AgentsFileTools, FileReadToolName>;
 
