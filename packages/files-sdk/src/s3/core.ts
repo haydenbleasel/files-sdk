@@ -142,7 +142,9 @@ export interface S3AdapterOptions {
    * `${publicBaseUrl}/${key}` and skips signing — appropriate for buckets
    * fronted by a CDN, public-read policy, or custom domain. When unset,
    * `url()` falls back to a presigned `GetObject` URL (see
-   * {@link defaultUrlExpiresIn}).
+   * {@link defaultUrlExpiresIn}). An explicit `url(key, { expiresIn })` or
+   * `responseContentDisposition` still presigns even when this is set, since a
+   * permanent link can't expire or carry the override.
    *
    * A trailing slash on the base is tolerated. Each key segment is
    * URL-encoded (the `/` separators are kept), so pass raw keys; a
@@ -151,7 +153,7 @@ export interface S3AdapterOptions {
   publicBaseUrl?: string;
   /**
    * Default expiry, in seconds, for the presigned URLs returned by
-   * `url()` when `publicBaseUrl` is not set. Defaults to 3600 (1 hour).
+   * `url()` when no per-call `expiresIn` is given. Defaults to 3600 (1 hour).
    * Per-call `url(key, { expiresIn })` overrides.
    */
   defaultUrlExpiresIn?: number;
@@ -1163,6 +1165,9 @@ export const createS3Adapter = (
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
+      // is configured; an explicit `expiresIn` still signs.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // `copy()` issues a CopyObject — server-side, no body round-trip.
       serverSideCopy: true,
@@ -1179,7 +1184,9 @@ export const createS3Adapter = (
       // `url()` SigV4-signs a GetObject request. SigV4 caps a presigned URL's
       // lifetime at 604800s (7 days) and the SDK's presigner enforces it in
       // code for every endpoint, AWS or S3-compatible, so it's a hard ceiling.
+      // `responseContentDisposition` is bound as `response-content-disposition`.
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
         supported: true,
@@ -1481,6 +1488,7 @@ export const createS3Adapter = (
     },
     async url(key, urlOpts) {
       const strategy = resolveUrlStrategy({
+        expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
       });

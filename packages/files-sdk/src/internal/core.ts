@@ -58,6 +58,8 @@ export const joinPublicUrl = (base: string, key: string): string => {
 export interface UrlStrategyInput {
   publicBaseUrl?: string;
   responseContentDisposition?: string;
+  /** The caller's explicit `expiresIn`, if any — not the adapter default. */
+  expiresIn?: number;
 }
 
 /**
@@ -72,6 +74,10 @@ export interface UrlStrategyInput {
  * which to bind the override, and silently dropping the override is a
  * stored-XSS regression on user-uploaded HTML/SVG. The override wins.
  *
+ * An explicit `expiresIn` forces `"sign"` too: a caller who asks for a link
+ * that expires gets one, rather than a permanent CDN URL that silently
+ * ignores the request.
+ *
  * Adapters with three or more URL strategies (e.g. Supabase's
  * public/getPublicUrl/signed split, R2's binding/hybrid/throw split) keep
  * their own logic — this helper is for the common two-state case.
@@ -79,7 +85,11 @@ export interface UrlStrategyInput {
 export const resolveUrlStrategy = (
   input: UrlStrategyInput
 ): "public" | "sign" => {
-  if (input.publicBaseUrl && !input.responseContentDisposition) {
+  if (
+    input.publicBaseUrl &&
+    !input.responseContentDisposition &&
+    input.expiresIn === undefined
+  ) {
     return "public";
   }
   return "sign";

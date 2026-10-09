@@ -119,7 +119,8 @@ export interface AzureAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips signing — appropriate for a public
    * container (`Blob` or `Container` access level) or a CDN
-   * (`*.azureedge.net`) in front of the account.
+   * (`*.azureedge.net`) in front of the account. Passing `expiresIn` or
+   * `responseContentDisposition` still mints a SAS.
    */
   publicBaseUrl?: string;
   /**
@@ -804,6 +805,8 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // A plain `url()` returns the permanent `publicBaseUrl` link when set.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // `copy()` is a server-side `syncCopyFromURL`.
       serverSideCopy: true,
@@ -816,9 +819,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         supported: Boolean(signer),
         ...sasExpiryCap,
       },
-      // `url()` mints a SAS (or returns `publicBaseUrl` when set) — only when a
-      // signer exists; SAS-only and anonymous adapters throw.
+      // `url()` mints a SAS (or returns `publicBaseUrl` when set and neither
+      // `expiresIn` nor `responseContentDisposition` is passed) — only when a
+      // signer exists; SAS-only and anonymous adapters throw. The SAS binds
+      // `responseContentDisposition` as `rscd`.
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         supported: Boolean(signer),
         ...sasExpiryCap,
@@ -1245,6 +1251,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     async url(key, urlOpts): Promise<string> {
       const strategy = resolveUrlStrategy({
+        expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
       });

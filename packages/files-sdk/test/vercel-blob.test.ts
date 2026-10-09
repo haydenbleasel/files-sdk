@@ -700,19 +700,47 @@ describe("vercel-blob adapter", () => {
     // Public blobs are reachable by anyone already; a presigned copy would
     // add a control-API round trip without restricting anything.
     const files = new Files({ adapter: vercelBlob() });
-    await files.url("a.txt", { expiresIn: 60 });
+    await files.url("a.txt");
     expect(issueSignedTokenMock).not.toHaveBeenCalled();
     expect(presignUrlMock).not.toHaveBeenCalled();
   });
 
+  test("public url() refuses an explicit expiresIn as Unsupported", async () => {
+    // A permanent CDN URL can't honor an expiry, so the core gate refuses it
+    // rather than handing back a link that silently never expires.
+    const files = new Files({ adapter: vercelBlob() });
+    headMock.mockClear();
+    const err = await files
+      .url("a.txt", { expiresIn: 60 })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("Unsupported");
+    expect(headMock).not.toHaveBeenCalled();
+    expect(issueSignedTokenMock).not.toHaveBeenCalled();
+  });
+
   test("public mode reports signedUrl unsupported; private mode supported", () => {
     expect(new Files({ adapter: vercelBlob() }).capabilities.signedUrl).toEqual(
-      { expiry: "none", supported: false }
+      { disposition: false, expiry: "none", supported: false }
     );
     expect(
       new Files({ adapter: vercelBlob({ access: "private" }) }).capabilities
         .signedUrl
-    ).toEqual({ expiry: "exact", supported: true });
+    ).toEqual({ disposition: false, expiry: "exact", supported: true });
+  });
+
+  test("publicUrl is true in public mode only", () => {
+    expect(new Files({ adapter: vercelBlob() }).capabilities.publicUrl).toBe(
+      true
+    );
+    expect(
+      new Files({ adapter: vercelBlob({ access: "public" }) }).capabilities
+        .publicUrl
+    ).toBe(true);
+    expect(
+      new Files({ adapter: vercelBlob({ access: "private" }) }).capabilities
+        .publicUrl
+    ).toBe(false);
   });
 
   test("both modes report direct presigned uploads with CDN-enforced limits", () => {

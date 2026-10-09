@@ -841,6 +841,41 @@ describe("supabase adapter", () => {
       expect(createSignedUrlMock).not.toHaveBeenCalled();
     });
 
+    test("expiresIn forces signing even when publicBaseUrl set", async () => {
+      const files = new Files({
+        adapter: makeAdapter({ publicBaseUrl: "https://cdn.example.com" }),
+      });
+      expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+      expect(createSignedUrlMock).not.toHaveBeenCalled();
+      const url = await files.url("a.txt", { expiresIn: 60 });
+      expect(url).toContain("/object/sign/");
+      expect(getPublicUrlMock).not.toHaveBeenCalled();
+      const [signCall] = createSignedUrlMock.mock.calls;
+      if (!signCall) {
+        throw new Error("expected createSignedUrl");
+      }
+      expect(signCall[0]).toBe("a.txt");
+      expect(signCall[1]).toBe(60);
+      expect(signCall[2]).toEqual({});
+    });
+
+    test("expiresIn forces signing even when public:true", async () => {
+      const files = new Files({ adapter: makeAdapter({ public: true }) });
+      expect(await files.url("a.txt")).toContain(
+        `/object/public/${BUCKET}/a.txt`
+      );
+      expect(getPublicUrlMock).toHaveBeenCalledTimes(1);
+      expect(createSignedUrlMock).not.toHaveBeenCalled();
+      const url = await files.url("a.txt", { expiresIn: 60 });
+      expect(url).toContain("/object/sign/");
+      expect(getPublicUrlMock).toHaveBeenCalledTimes(1);
+      const [signCall] = createSignedUrlMock.mock.calls;
+      if (!signCall) {
+        throw new Error("expected createSignedUrl");
+      }
+      expect(signCall[1]).toBe(60);
+    });
+
     test("default: signs with createSignedUrl and honors per-call expiresIn", async () => {
       const adapter = makeAdapter();
       const url = await adapter.url("a.txt", { expiresIn: 60 });
@@ -934,12 +969,14 @@ describe("supabase adapter", () => {
         cacheControl: true,
         delimiter: "slash",
         metadata: true,
+        publicUrl: false,
         rangeRead: false,
         resumable: true,
         serverSideCopy: true,
         uploadProgress: false,
       });
       expect(capabilities.signedUrl).toEqual({
+        disposition: true,
         expiry: "exact",
         supported: true,
       });
@@ -948,6 +985,21 @@ describe("supabase adapter", () => {
         maxSize: false,
         supported: true,
       });
+    });
+
+    test("publicUrl follows publicBaseUrl and public: true", () => {
+      for (const opts of [
+        { publicBaseUrl: "https://cdn.example.com" },
+        { public: true },
+      ]) {
+        const { capabilities } = new Files({ adapter: makeAdapter(opts) });
+        expect(capabilities.publicUrl).toBe(true);
+        expect(capabilities.signedUrl.supported).toBe(true);
+      }
+      expect(
+        new Files({ adapter: makeAdapter({ public: false }) }).capabilities
+          .publicUrl
+      ).toBe(false);
     });
   });
 

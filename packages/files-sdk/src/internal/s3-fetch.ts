@@ -437,6 +437,9 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
+      // is configured; an explicit `expiresIn` still signs.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // `copy()` issues a CopyObject — server-side, no body round-trip.
       serverSideCopy: true,
@@ -450,7 +453,9 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         supported: true,
       },
       // SigV4 caps presigned lifetimes at one week; `presign()` throws above it.
+      // `responseContentDisposition` is signed in as `response-content-disposition`.
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
         supported: true,
@@ -629,6 +634,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     },
     url(key, urlOpts?: UrlOptions): Promise<string> {
       const strategy = resolveUrlStrategy({
+        expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         ...(urlOpts?.responseContentDisposition && {
           responseContentDisposition: urlOpts.responseContentDisposition,

@@ -560,6 +560,14 @@ describe("bunnyStorage adapter", () => {
     await expectDispositionRefusal(
       publicFiles.url("a.txt", { responseContentDisposition: "attachment" })
     );
+    // A permanent CDN link can't expire, so an explicit `expiresIn` is refused.
+    await expect(
+      publicFiles.url("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining("expiresIn"),
+    });
+    expect(publicFiles.capabilities.publicUrl).toBe(true);
   });
 
   test("capabilities declare no signing and no server-side copy", () => {
@@ -574,10 +582,11 @@ describe("bunnyStorage adapter", () => {
       cacheControl: false,
       delimiter: false,
       metadata: false,
+      publicUrl: false,
       rangeRead: false,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
       uploadProgress: false,
     });
   });

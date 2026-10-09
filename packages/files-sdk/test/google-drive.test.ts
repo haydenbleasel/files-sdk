@@ -980,8 +980,32 @@ describe("google-drive adapter", () => {
       supported: true,
     });
     // No signed-URL primitive: the public-link mode is permanent.
-    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+    expect(caps.signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
+    expect(caps.publicUrl).toBe(false);
     expect(caps.uploadProgress).toBe(false);
+  });
+
+  test("publicUrl reflects the public-link mode", () => {
+    const caps = new Files({
+      adapter: googleDrive({ ...baseOpts, publicByDefault: true }),
+    }).capabilities;
+    expect(caps.publicUrl).toBe(true);
+    expect(caps.signedUrl.supported).toBe(false);
+  });
+
+  test("url refuses expiresIn even in the public-link mode", async () => {
+    const files = new Files({
+      adapter: googleDrive({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/expiresIn/u),
+    });
   });
 
   test("signedUpload is unsupported when built from the `client` escape hatch", () => {

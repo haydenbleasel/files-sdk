@@ -49,12 +49,13 @@ export interface RustfsAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` — appropriate for a public bucket policy or
    * a reverse proxy in front of RustFS. When unset, `url()` falls back to
-   * a presigned GetObject (default expiry: 1 hour).
+   * a presigned GetObject (default expiry: 1 hour). An explicit
+   * `url(key, { expiresIn })` or `responseContentDisposition` still presigns.
    */
   publicBaseUrl?: string;
   /**
    * Default expiry, in seconds, for the presigned URLs returned by
-   * `url()` when `publicBaseUrl` is not set. Defaults to 3600 (1 hour).
+   * `url()` when the call passes no `expiresIn`. Defaults to 3600 (1 hour).
    */
   defaultUrlExpiresIn?: number;
   /**

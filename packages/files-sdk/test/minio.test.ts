@@ -45,6 +45,19 @@ describe("minio adapter", () => {
     expect(adapter.capabilities).toEqual(
       s3({ bucket: "uploads", region: "us-east-1" }).capabilities
     );
+    expect(adapter.capabilities?.publicUrl).toBe(false);
+    // `publicUrl` is per instance: a publicBaseUrl flips it on both.
+    const publicBaseUrl = "https://cdn.example.com";
+    const pub = minio({
+      ...creds,
+      bucket: "uploads",
+      endpoint: "http://localhost:9000",
+      publicBaseUrl,
+    });
+    expect(pub.capabilities).toEqual(
+      s3({ bucket: "uploads", publicBaseUrl, region: "us-east-1" }).capabilities
+    );
+    expect(pub.capabilities?.publicUrl).toBe(true);
   });
 
   test("region override is forwarded to the inner S3 client", async () => {
@@ -123,6 +136,23 @@ describe("minio adapter", () => {
       secretAccessKey: "SECRET",
     });
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+  });
+
+  test("url() with an explicit expiresIn signs even with publicBaseUrl", async () => {
+    const files = new Files({
+      adapter: minio({
+        ...creds,
+        bucket: "uploads",
+        endpoint: "http://localhost:9000",
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    const signed = new URL(await files.url("a.txt", { expiresIn: 90 }));
+    expect(signed.origin).toBe("http://localhost:9000");
+    expect(signed.searchParams.get("X-Amz-Expires")).toBe("90");
+    expect(signed.searchParams.get("X-Amz-Signature")).toBeTruthy();
   });
 
   test("delegates upload to underlying S3 client", async () => {
@@ -219,10 +249,12 @@ describe("minio adapter — fetch engine", () => {
       supported: true,
     });
     expect(capabilities.signedUrl).toEqual({
+      disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
     });
+    expect(capabilities.publicUrl).toBe(false);
   });
 
   test("path-style addressing and the us-east-1 signing region by default", async () => {
@@ -253,6 +285,16 @@ describe("minio adapter — fetch engine", () => {
     ).toBe("https://cdn.example.com/a.txt");
     const url = new URL(await makeFetch({ defaultUrlExpiresIn: 90 }).url("a"));
     expect(url.searchParams.get("X-Amz-Expires")).toBe("90");
+  });
+
+  test("an explicit expiresIn signs even with publicBaseUrl", async () => {
+    const files = new Files({
+      adapter: makeFetch({ publicBaseUrl: "https://cdn.example.com" }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    const signed = new URL(await files.url("a.txt", { expiresIn: 90 }));
+    expect(signed.origin).toBe("http://localhost:9000");
+    expect(signed.searchParams.get("X-Amz-Expires")).toBe("90");
   });
 
   test("round-trips through the injected fetch", async () => {

@@ -64,7 +64,8 @@ export interface SupabaseAdapterOptions {
   /**
    * Set to `true` if the bucket is configured as a public bucket. `url()`
    * will then return `getPublicUrl()` results — a permanent, unsigned URL —
-   * instead of minting a signed read URL.
+   * instead of minting a signed read URL. Passing `expiresIn` or
+   * `responseContentDisposition` still signs.
    *
    * Supabase exposes no API to detect bucket visibility from the client; if
    * `public: true` is set on a private bucket, the returned URL will 4xx
@@ -75,7 +76,8 @@ export interface SupabaseAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips both signing and `getPublicUrl()` —
    * appropriate when a CDN sits in front of the Supabase project. Implies
-   * `public: true`.
+   * `public: true`. Passing `expiresIn` or `responseContentDisposition`
+   * still signs.
    */
   publicBaseUrl?: string;
   /**
@@ -605,14 +607,20 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // `list()` folds on "/" only (`with_delimiter`); other delimiters throw.
       delimiter: "slash",
       metadata: true,
+      // A plain `url()` returns a permanent link with `publicBaseUrl` or
+      // `public: true` (`getPublicUrl()`).
+      publicUrl: Boolean(publicBaseUrl) || Boolean(isPublic),
       // `copy()` is a server-side Storage copy.
       serverSideCopy: true,
       // `signedUploadUrl()` mints a `createSignedUploadUrl` token, which binds
       // neither a size limit nor a Content-Type (so `maxSize` / `contentType`
       // throw). Supabase fixes its TTL at 2 hours and ignores `expiresIn`.
       signedUpload: { contentType: false, maxSize: false, supported: true },
-      // `url()` mints a `createSignedUrl` (or a public URL when configured).
-      signedUrl: { expiry: "exact", supported: true },
+      // `url()` mints a `createSignedUrl` (or a public URL when configured
+      // and neither `expiresIn` nor `responseContentDisposition` is passed).
+      // An attachment disposition is bound via the signed URL's `download`
+      // option; `inline` and other types throw.
+      signedUrl: { disposition: true, expiry: "exact", supported: true },
     },
     async copy(from, to) {
       const { error } = await bucketRef.copy(from, to);
@@ -1024,17 +1032,21 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // Same precedence rule as S3/Azure: `responseContentDisposition`
       // forces signing even when a public URL is configured, because the
       // override has to be bound into the signature. Silently dropping
-      // it would be a stored-XSS regression on user-uploaded content.
-      const wantsDisposition = Boolean(urlOpts?.responseContentDisposition);
-      if (publicBaseUrl && !wantsDisposition) {
+      // it would be a stored-XSS regression on user-uploaded content. An
+      // explicit `expiresIn` forces signing too: the caller asked for a link
+      // that expires, which a permanent public URL can't be.
+      const mustSign =
+        Boolean(urlOpts?.responseContentDisposition) ||
+        urlOpts?.expiresIn !== undefined;
+      if (publicBaseUrl && !mustSign) {
         return joinPublicUrl(publicBaseUrl, key);
       }
-      if (isPublic && !wantsDisposition) {
+      if (isPublic && !mustSign) {
         const { data } = bucketRef.getPublicUrl(key);
         return data.publicUrl;
       }
-      // Both `public: true` (with disposition) and the default private
-      // path mint a signed URL so the disposition can be bound in.
+      // Public modes asked to sign and the default private path all mint a
+      // signed URL, so the expiry and disposition can be bound in.
       const { data, error } = await bucketRef.createSignedUrl(
         key,
         urlOpts?.expiresIn ?? defaultUrlExpiresIn,

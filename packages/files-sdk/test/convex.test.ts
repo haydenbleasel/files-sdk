@@ -349,6 +349,19 @@ describe("convex adapter", () => {
       );
     });
 
+    test("an explicit expiresIn is refused as Unsupported through Files", async () => {
+      const { actionCtx } = makeBackend();
+      const files = new Files({ adapter: convex({ ctx: actionCtx }) });
+      const { key } = await files.upload("k", "x");
+      expect(await files.url(key)).toBe(
+        `https://fake.convex.cloud/api/storage/${key}`
+      );
+      await expect(files.url(key, { expiresIn: 60 })).rejects.toMatchObject({
+        code: "Unsupported",
+        message: expect.stringContaining("expiresIn"),
+      });
+    });
+
     test("missing id throws NotFound", async () => {
       const { actionCtx } = makeBackend();
       const adapter = convex({ ctx: actionCtx });
@@ -380,10 +393,11 @@ describe("convex adapter", () => {
         cacheControl: false,
         delimiter: false,
         metadata: false,
+        publicUrl: true,
         rangeRead: false,
         serverSideCopy: false,
         signedUpload: { contentType: false, maxSize: false, supported: false },
-        signedUrl: { expiry: "none", supported: false },
+        signedUrl: { disposition: false, expiry: "none", supported: false },
         uploadProgress: false,
       });
     });

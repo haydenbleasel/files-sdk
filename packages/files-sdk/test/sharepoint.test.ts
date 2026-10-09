@@ -547,7 +547,27 @@ describe("sharepoint adapter", () => {
       maxSize: false,
       supported: true,
     });
-    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+    expect(caps.signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
+    expect(caps.publicUrl).toBe(false);
+  });
+
+  test("capabilities > publicUrl follows publicByDefault like the inner adapter", () => {
+    const adapter = sharepoint({
+      clientCredentials: CREDS,
+      driveId: "d",
+      publicByDefault: true,
+    });
+    expect(adapter.capabilities).toEqual(
+      onedrive({
+        client: fakeGraphClient as unknown as Client,
+        publicByDefault: true,
+      }).capabilities
+    );
+    expect(new Files({ adapter }).capabilities.publicUrl).toBe(true);
   });
 
   test("signedUploadUrl > delegates to createUploadSession", async () => {

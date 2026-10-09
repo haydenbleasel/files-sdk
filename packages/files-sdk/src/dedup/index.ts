@@ -482,8 +482,9 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     capabilities: (caps) => ({
       ...caps,
       conditional: NO_CONDITIONAL,
+      publicUrl: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
     name: "dedup",
     wrap,

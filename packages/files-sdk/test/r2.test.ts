@@ -174,7 +174,24 @@ describe("r2 adapter — HTTP path", () => {
         secretAccessKey: "S",
       }),
     });
+    expect(files.capabilities.publicUrl).toBe(true);
     expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+  });
+
+  test("url() with an explicit expiresIn signs even with publicBaseUrl", async () => {
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    const signed = await files.url("a.txt", { expiresIn: 90 });
+    expect(signed).toStartWith("https://acct.r2.cloudflarestorage.com/");
+    expect(signed).toContain("X-Amz-Signature=");
+    expect(signed).toContain("X-Amz-Expires=90");
   });
 
   test("delegates upload to underlying S3 client", async () => {
@@ -751,7 +768,36 @@ describe("r2 adapter — Workers binding path", () => {
         publicBaseUrl: "https://pub.r2.dev",
       }),
     });
+    expect(files.capabilities.publicUrl).toBe(true);
+    expect(files.capabilities.signedUrl.supported).toBe(false);
     expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+  });
+
+  test("url() with expiresIn on a binding without HTTP creds throws instead of returning the permanent link", async () => {
+    const { bucket } = fakeBinding();
+    const adapter = r2({
+      binding: bucket as never,
+      publicBaseUrl: "https://pub.r2.dev",
+    });
+    // Through Files, the core gate refuses before the adapter is reached.
+    await expect(
+      new Files({ adapter }).url("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/expiresIn/u),
+    });
+    // Called directly, the adapter refuses too, with the hybrid-mode hint —
+    // with or without a publicBaseUrl.
+    await Promise.all(
+      [adapter, r2({ binding: bucket as never })].map((direct) =>
+        expect(direct.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject({
+          code: "Unsupported",
+          message: expect.stringMatching(
+            /^r2 binding: an expiring url\(\) \(`expiresIn`\) requires signing.*HTTP credentials/u
+          ),
+        })
+      )
+    );
   });
 
   test("hybrid: binding + HTTP creds enables signed url() while reads still go through the binding", async () => {
@@ -780,6 +826,7 @@ describe("r2 adapter — Workers binding path", () => {
   test("signedUrl capability: plain binding unsupported; hybrid and HTTP carry the SigV4 one-week cap", async () => {
     const { bucket } = fakeBinding();
     const cap = {
+      disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
@@ -787,7 +834,7 @@ describe("r2 adapter — Workers binding path", () => {
     expect(
       new Files({ adapter: r2({ binding: bucket as never }) }).capabilities
         .signedUrl
-    ).toEqual({ expiry: "none", supported: false });
+    ).toEqual({ disposition: false, expiry: "none", supported: false });
     const hybrid = r2({
       accessKeyId: "K",
       accountId: "ACCT",
@@ -863,6 +910,7 @@ describe("r2 adapter — Workers binding path", () => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: false,
       rangeRead: true,
       resumable: false,
       serverSideCopy: false,
@@ -875,6 +923,7 @@ describe("r2 adapter — Workers binding path", () => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: false,
       rangeRead: true,
       resumable: true,
       serverSideCopy: true,
@@ -1004,7 +1053,26 @@ describe("r2 adapter — Workers binding path", () => {
         secretAccessKey: "S",
       }),
     });
+    expect(files.capabilities.publicUrl).toBe(true);
     expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+  });
+
+  test("hybrid: an explicit expiresIn forces signing through publicBaseUrl", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    const signed = await files.url("a.txt", { expiresIn: 90 });
+    expect(signed).toStartWith("https://acct.r2.cloudflarestorage.com/");
+    expect(signed).toContain("X-Amz-Signature=");
+    expect(signed).toContain("X-Amz-Expires=90");
   });
 
   test("upload via binding accepts Uint8Array, ArrayBuffer, Blob, ReadableStream", async () => {
@@ -1532,7 +1600,12 @@ describe('r2 adapter — HTTP path with client: "fetch"', () => {
         secretAccessKey: "S",
       }),
     });
+    expect(files.capabilities.publicUrl).toBe(true);
     expect(await files.url("a.txt")).toBe("https://pub.r2.dev/a.txt");
+    // An explicit expiresIn still presigns.
+    const signed = await files.url("a.txt", { expiresIn: 90 });
+    expect(signed).toStartWith("https://acct.r2.cloudflarestorage.com/");
+    expect(signed).toContain("X-Amz-Expires=90");
   });
 
   test("signedUploadUrl works, and maxSize throws the R2-specific error", async () => {

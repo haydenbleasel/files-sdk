@@ -1136,6 +1136,9 @@ export const onedrive = (
     basePath,
     capabilities: {
       delimiter: "slash",
+      // Under `publicByDefault`, `url(key)` returns the item's anonymous
+      // (permanent) share link.
+      publicUrl: publicByDefault,
       rangeRead: true,
       // `copy()` is a server-side Graph `/copy`.
       serverSideCopy: true,

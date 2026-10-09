@@ -301,7 +301,11 @@ describe("dedup plugin — capabilities", () => {
       { signedUrl: { maxExpiresIn: 3600, supported: true } }
     );
     const caps = withDedup({}, adapter).capabilities;
-    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+    expect(caps.signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
     expect(caps.rangeRead).toBe(true);
     expect(caps.metadata).toBe(true);
     expect(caps.conditional).toEqual({

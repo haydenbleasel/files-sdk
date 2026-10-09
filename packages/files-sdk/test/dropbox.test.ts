@@ -743,49 +743,58 @@ describe("dropbox adapter", () => {
     );
   });
 
-  test("url throws when expiresIn exceeds 4-hour cap", async () => {
-    const files = new Files({ adapter: dropbox(baseOpts) });
-    await files.upload("a.txt", "hi");
-    await expect(
-      files.url("a.txt", { expiresIn: 86_400 })
-    ).rejects.toMatchObject({
-      code: "Invalid",
-      message: expect.stringMatching(/14400|4h|maximum/u),
-    });
-  });
+  // Outside the loop below: `store` is reassigned per test.
+  const storedFileId = (key: string) => store.get(key)?.id;
 
-  test("permanent-link modes ignore expiresIn instead of capping it", async () => {
-    const shared = new Files({
-      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+  for (const [mode, opts, permanent] of [
+    ["the default mode", {}, /^https:\/\/content\.dropboxapi\.com\/tmp\//u],
+    ["publicByDefault", { publicByDefault: true }, /dl=1/u],
+    [
+      "publicBaseUrl",
+      { publicBaseUrl: "https://cdn.example.com" },
+      /^https:\/\/cdn\.example\.com\/a\.txt$/u,
+    ],
+  ] as const) {
+    test(`url with expiresIn mints a temporary link under ${mode}`, async () => {
+      const files = new Files({ adapter: dropbox({ ...baseOpts, ...opts }) });
+      await files.upload("a.txt", "hi");
+      expect(await files.url("a.txt", { expiresIn: 60 })).toBe(
+        `https://content.dropboxapi.com/tmp/${storedFileId("a.txt")}`
+      );
+      // A plain url() keeps this mode's usual link.
+      expect(await files.url("a.txt")).toMatch(permanent);
     });
-    await shared.upload("a.txt", "hi");
-    expect(await shared.url("a.txt", { expiresIn: 86_400 })).toContain("dl=1");
-    const cdn = new Files({
-      adapter: dropbox({
-        ...baseOpts,
-        publicBaseUrl: "https://cdn.example.com",
-      }),
-    });
-    expect(await cdn.url("a.txt", { expiresIn: 86_400 })).toBe(
-      "https://cdn.example.com/a.txt"
-    );
-  });
 
-  test("signedUrl capability reflects the url() mode", () => {
+    test(`url caps an explicit expiresIn at 4 hours under ${mode}`, async () => {
+      const files = new Files({ adapter: dropbox({ ...baseOpts, ...opts }) });
+      await expect(
+        files.url("a.txt", { expiresIn: 86_400 })
+      ).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/14400|4h|maximum/u),
+      });
+    });
+  }
+
+  test("signedUrl is supported in every mode; publicUrl follows the public modes", () => {
     // Temporary links live a fixed ~4h whatever `expiresIn` says, so the
-    // lifetime is provider-set; `expiresIn` above 4h still throws.
-    expect(
-      new Files({ adapter: dropbox(baseOpts) }).capabilities.signedUrl
-    ).toEqual({ expiry: "provider", maxExpiresIn: 14_400, supported: true });
-    expect(
-      new Files({ adapter: dropbox({ ...baseOpts, publicByDefault: true }) })
-        .capabilities.signedUrl
-    ).toEqual({ expiry: "none", supported: false });
-    expect(
-      new Files({
-        adapter: dropbox({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
-      }).capabilities.signedUrl
-    ).toEqual({ expiry: "none", supported: false });
+    // lifetime is provider-set; `expiresIn` above 4h still throws. The public
+    // modes still mint one when asked for `expiresIn`.
+    for (const [opts, publicUrl] of [
+      [{}, false],
+      [{ publicByDefault: true }, true],
+      [{ publicBaseUrl: "https://cdn.example" }, true],
+    ] as const) {
+      const caps = new Files({ adapter: dropbox({ ...baseOpts, ...opts }) })
+        .capabilities;
+      expect(caps.signedUrl).toEqual({
+        disposition: false,
+        expiry: "provider",
+        maxExpiresIn: 14_400,
+        supported: true,
+      });
+      expect(caps.publicUrl).toBe(publicUrl);
+    }
   });
 
   test("declares its capabilities", () => {

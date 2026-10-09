@@ -989,22 +989,54 @@ describe("box adapter", () => {
     expect(url).toBe("https://cdn.example.com/files/a.txt");
   });
 
-  test("signedUrl reflects whether url() signs or returns a permanent link", () => {
+  test("signedUrl is supported in every mode; publicUrl follows the public modes", () => {
     // Box sets the tokenized URL's lifetime server-side, so `expiresIn` is
-    // advisory: `expiry: "provider"`.
-    expect(
-      new Files({ adapter: box(baseOpts) }).capabilities.signedUrl
-    ).toEqual({ expiry: "provider", supported: true });
-    expect(
-      new Files({ adapter: box({ ...baseOpts, publicByDefault: true }) })
-        .capabilities.signedUrl
-    ).toEqual({ expiry: "none", supported: false });
-    expect(
-      new Files({
-        adapter: box({ ...baseOpts, publicBaseUrl: "https://cdn.example" }),
-      }).capabilities.signedUrl
-    ).toEqual({ expiry: "none", supported: false });
+    // advisory: `expiry: "provider"`. The public modes still mint one when
+    // asked for `expiresIn`.
+    for (const [opts, publicUrl] of [
+      [{}, false],
+      [{ publicByDefault: true }, true],
+      [{ publicBaseUrl: "https://cdn.example" }, true],
+    ] as const) {
+      const caps = new Files({ adapter: box({ ...baseOpts, ...opts }) })
+        .capabilities;
+      expect(caps.signedUrl).toEqual({
+        disposition: false,
+        expiry: "provider",
+        supported: true,
+      });
+      expect(caps.publicUrl).toBe(publicUrl);
+    }
   });
+
+  // Outside the loop below: `store` is reassigned per test.
+  const storedFileId = (name: string) =>
+    [...store.values()].find((it) => it.type === "file" && it.name === name)
+      ?.id;
+
+  for (const [mode, opts, permanent] of [
+    ["the default mode", {}, /^https:\/\/dl\.box\.test\//u],
+    [
+      "publicByDefault",
+      { publicByDefault: true },
+      /^https:\/\/app\.box\.test\/d\//u,
+    ],
+    [
+      "publicBaseUrl",
+      { publicBaseUrl: "https://cdn.example.com/files" },
+      /^https:\/\/cdn\.example\.com\/files\/a\.txt$/u,
+    ],
+  ] as const) {
+    test(`url with expiresIn mints a tokenized download URL under ${mode}`, async () => {
+      const files = new Files({ adapter: box({ ...baseOpts, ...opts }) });
+      await files.upload("a.txt", "hi");
+      expect(await files.url("a.txt", { expiresIn: 60 })).toBe(
+        `https://dl.box.test/${storedFileId("a.txt")}`
+      );
+      // A plain url() keeps this mode's usual link.
+      expect(await files.url("a.txt")).toMatch(permanent);
+    });
+  }
 
   test("declares its capabilities", () => {
     const caps = new Files({ adapter: box(baseOpts) }).capabilities;

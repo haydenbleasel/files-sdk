@@ -300,6 +300,9 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
   const adapter: WebdavAdapter = {
     capabilities: {
       delimiter: "any",
+      // `url(key)` returns a permanent `publicBaseUrl` front URL when one is
+      // configured.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // COPY / MOVE run server-side.
       serverSideCopy: true,

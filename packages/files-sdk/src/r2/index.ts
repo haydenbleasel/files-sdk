@@ -58,13 +58,15 @@ export interface R2HttpOptions {
   /**
    * Origin used to build URLs from `url()` — typically an `r2.dev`
    * subdomain or a custom domain bound to the bucket. When set, `url()`
-   * returns `${publicBaseUrl}/${key}` and skips signing. When unset,
-   * `url()` returns a presigned GetObject URL (default expiry: 1 hour).
+   * returns `${publicBaseUrl}/${key}` and skips signing — unless the call
+   * passes `expiresIn` or `responseContentDisposition`, which still presign.
+   * When unset, `url()` returns a presigned GetObject URL (default expiry:
+   * 1 hour).
    */
   publicBaseUrl?: string;
   /**
-   * Default expiry, in seconds, for `url()` when `publicBaseUrl` is unset.
-   * Defaults to 3600.
+   * Default expiry, in seconds, for a presigned `url()` when the call passes
+   * no `expiresIn`. Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
   /**
@@ -135,7 +137,9 @@ export interface R2BindingOptions {
    * Origin used to build URLs from `url()` — typically an `r2.dev`
    * subdomain or a custom domain bound to the bucket. Without this (and
    * without HTTP credentials below), `url()` throws because a Workers
-   * binding has no signing primitive.
+   * binding has no signing primitive. A `url()` that passes `expiresIn` or
+   * `responseContentDisposition` skips it and signs through hybrid mode
+   * (or throws without HTTP credentials).
    */
   publicBaseUrl?: string;
   /**
@@ -154,8 +158,8 @@ export interface R2BindingOptions {
   /** Hybrid mode: R2 secret access key. See `accountId`. */
   secretAccessKey?: string;
   /**
-   * Default expiry, in seconds, for `url()` when it falls back to HTTP
-   * signing (hybrid mode without `publicBaseUrl`). Defaults to 3600.
+   * Default expiry, in seconds, for `url()` when it signs through hybrid
+   * mode and the call passes no `expiresIn`. Defaults to 3600.
    */
   defaultUrlExpiresIn?: number;
   /**
@@ -400,6 +404,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
+      // is configured; an explicit `expiresIn` signs in hybrid mode and is
+      // refused without it.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // Bindings have no server-side copy — `copy()` streams get→put.
       serverSideCopy: false,
@@ -569,20 +577,28 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     // direct adapter callers attach `.catch` after; every other method here
     // already rejects.
     async url(key, urlOpts: UrlOptions = {}): Promise<string> {
-      // `responseContentDisposition` requires signing — bypass the
-      // publicBaseUrl path and route through hybrid signing if available.
-      // No hybrid? Fail rather than silently dropping the security ask.
+      // `responseContentDisposition` and an explicit `expiresIn` both require
+      // signing — bypass the publicBaseUrl path and route through hybrid
+      // signing if available. No hybrid? Fail rather than silently dropping
+      // the security ask or handing back a link that never expires.
       const wantsDisposition = Boolean(urlOpts.responseContentDisposition);
+      const wantsExpiry = urlOpts.expiresIn !== undefined;
       if (wantsDisposition && !hybrid) {
         throw dispositionUnsupported(
           "r2 binding: `responseContentDisposition` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
         );
       }
+      if (wantsExpiry && !hybrid) {
+        throw new FilesError(
+          "Unsupported",
+          "r2 binding: an expiring url() (`expiresIn`) requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
+        );
+      }
       // Order: explicit `publicBaseUrl` wins (cheapest, no network call) —
-      // unless the caller asked for `responseContentDisposition`, which
-      // forces signing. After that, hybrid HTTP creds let url() sign.
-      // Without either, fail with guidance.
-      if (publicBaseUrl && !wantsDisposition) {
+      // unless the caller asked for `responseContentDisposition` or an
+      // explicit `expiresIn`, which force signing. After that, hybrid HTTP
+      // creds let url() sign. Without either, fail with guidance.
+      if (publicBaseUrl && !wantsDisposition && !wantsExpiry) {
         return joinPublicUrl(publicBaseUrl, key);
       }
       if (hybrid) {

@@ -628,8 +628,25 @@ describe("memory adapter", () => {
         maxSize: false,
         supported: false,
       });
-      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.signedUrl).toEqual({
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      });
+      // The memory:// URL is opaque and non-fetchable — not a permanent link.
+      expect(caps.publicUrl).toBe(false);
       expect(caps.uploadProgress).toBe(false);
+    });
+
+    test("url refuses expiresIn: the adapter has no signer", async () => {
+      const files = new Files({ adapter: memory() });
+      await files.upload("a.txt", "x");
+      await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject(
+        {
+          code: "Unsupported",
+          message: expect.stringMatching(/expiresIn/u),
+        }
+      );
     });
   });
 });

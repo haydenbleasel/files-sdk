@@ -519,6 +519,16 @@ describe("cloudinary adapter", () => {
     );
   });
 
+  test("url > refuses an explicit expiresIn for type=upload", async () => {
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+    });
+    await expect(
+      files.url("test-file", { expiresIn: 60 })
+    ).rejects.toMatchObject({ code: "Unsupported" });
+    expect(urlMock).not.toHaveBeenCalled();
+  });
+
   test("url > mints signed URL for type=private with expiresIn", async () => {
     const files = new Files({
       adapter: cloudinary({
@@ -660,15 +670,21 @@ describe("cloudinary adapter", () => {
       cacheControl: false,
       delimiter: "any",
       metadata: false,
+      publicUrl: true,
       rangeRead: true,
       serverSideCopy: false,
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
     });
     for (const type of ["private", "authenticated"] as const) {
-      expect(
-        new Files({ adapter: cloudinary({ cloudName: CLOUD_NAME, type }) })
-          .capabilities.signedUrl
-      ).toEqual({ expiry: "exact", supported: true });
+      const { capabilities } = new Files({
+        adapter: cloudinary({ cloudName: CLOUD_NAME, type }),
+      });
+      expect(capabilities.signedUrl).toEqual({
+        disposition: false,
+        expiry: "exact",
+        supported: true,
+      });
+      expect(capabilities.publicUrl).toBe(false);
     }
   });
 

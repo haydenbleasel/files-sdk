@@ -564,6 +564,18 @@ describe("uploadthing adapter", () => {
     expect(generateSignedURLMock).not.toHaveBeenCalled();
   });
 
+  test("url refuses an explicit expiresIn on a public-read adapter", async () => {
+    // The permanent CDN URL can't expire, so the core gate refuses rather
+    // than handing back a link that silently ignores `expiresIn`.
+    const files = new Files({ adapter: uploadthing() });
+    const err = await files
+      .url("a.txt", { expiresIn: 60 })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect((err as FilesError).code).toBe("Unsupported");
+    expect(generateSignedURLMock).not.toHaveBeenCalled();
+  });
+
   test("url throws on responseContentDisposition (no override)", async () => {
     const files = new Files({ adapter: uploadthing() });
     try {
@@ -601,11 +613,26 @@ describe("uploadthing adapter", () => {
     // returns the permanent CDN URL, so it isn't a signed URL.
     expect(
       new Files({ adapter: uploadthing() }).capabilities.signedUrl
-    ).toEqual({ expiry: "none", supported: false });
+    ).toEqual({ disposition: false, expiry: "none", supported: false });
     expect(
       new Files({ adapter: uploadthing({ acl: "private" }) }).capabilities
         .signedUrl
-    ).toEqual({ expiry: "exact", maxExpiresIn: 604_800, supported: true });
+    ).toEqual({
+      disposition: false,
+      expiry: "exact",
+      maxExpiresIn: 604_800,
+      supported: true,
+    });
+  });
+
+  test("publicUrl is true for public-read only", () => {
+    expect(new Files({ adapter: uploadthing() }).capabilities.publicUrl).toBe(
+      true
+    );
+    expect(
+      new Files({ adapter: uploadthing({ acl: "private" }) }).capabilities
+        .publicUrl
+    ).toBe(false);
   });
 
   test("both ACLs presign direct uploads, binding content type but not size", () => {

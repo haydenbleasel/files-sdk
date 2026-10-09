@@ -62,6 +62,7 @@ describe("s3-fetch core — identity", () => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: false,
       rangeRead: true,
       serverSideCopy: true,
       // A presigned PUT signs `content-type`; `maxSize` needs a POST policy,
@@ -72,15 +73,27 @@ describe("s3-fetch core — identity", () => {
         maxSize: false,
         supported: true,
       },
-      signedUrl: { expiry: "exact", maxExpiresIn: 604_800, supported: true },
+      signedUrl: {
+        disposition: true,
+        expiry: "exact",
+        maxExpiresIn: 604_800,
+        supported: true,
+      },
     });
     expect(adapter.resumableUpload).toBeUndefined();
     expect(adapter.deleteMany).toBeUndefined();
     // No native progress hook: the Files wrapper reports progress itself.
     expect(new Files({ adapter }).capabilities).toMatchObject({
+      publicUrl: false,
       resumable: false,
       uploadProgress: false,
     });
+  });
+
+  test("publicUrl follows publicBaseUrl", () => {
+    const adapter = makeAdapter({ publicBaseUrl: "https://cdn.example.com" });
+    expect(adapter.capabilities?.publicUrl).toBe(true);
+    expect(new Files({ adapter }).capabilities.publicUrl).toBe(true);
   });
 });
 
@@ -430,6 +443,15 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(signed).toContain("X-Amz-Signature=");
   });
 
+  test("an explicit expiresIn signs even with publicBaseUrl configured", async () => {
+    const adapter = makeAdapter({ publicBaseUrl: "https://cdn.example.com" });
+    expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    const signed = new URL(await adapter.url("a.txt", { expiresIn: 90 }));
+    expect(signed.origin).toBe("https://acct.r2.cloudflarestorage.com");
+    expect(signed.searchParams.get("X-Amz-Expires")).toBe("90");
+    expect(signed.searchParams.get("X-Amz-Signature")).toBeTruthy();
+  });
+
   test("virtual-hosted addressing puts the bucket in the hostname", async () => {
     const adapter = s3FetchAdapter({
       accessKeyId: "AKID",
@@ -505,10 +527,14 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(week.searchParams.get("X-Amz-Expires")).toBe("604800");
   });
 
-  test("a public url() ignores expiresIn, so the SigV4 cap doesn't apply", async () => {
+  test("an explicit expiresIn past the SigV4 cap throws even with publicBaseUrl", async () => {
     const adapter = makeAdapter({ publicBaseUrl: "https://cdn.example.com" });
-    expect(await adapter.url("a.txt", { expiresIn: 10_000_000 })).toBe(
-      "https://cdn.example.com/a.txt"
+    // A plain url() stays the permanent link, so the cap doesn't apply...
+    expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    // ...but asking for an expiry signs, and the signer enforces the cap.
+    await expectCode(
+      adapter.url("a.txt", { expiresIn: 10_000_000 }),
+      "Invalid"
     );
   });
 

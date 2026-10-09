@@ -743,6 +743,21 @@ describe("pocketbase adapter", () => {
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
+  test("url with publicBaseUrl refuses an explicit expiresIn through Files", async () => {
+    const files = new Files({
+      adapter: pocketbase({
+        collection: "files",
+        publicBaseUrl: "https://cdn.example.com",
+        url: "http://pb.test",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining("expiresIn"),
+    });
+  });
+
   test("url with publicBaseUrl encodes per segment so nested keys keep their slashes", async () => {
     const adapter = pocketbase({
       collection: "files",
@@ -781,10 +796,11 @@ describe("pocketbase adapter", () => {
       cacheControl: false,
       delimiter: false,
       metadata: false,
+      publicUrl: false,
       rangeRead: true,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "provider", supported: true },
+      signedUrl: { disposition: false, expiry: "provider", supported: true },
       uploadProgress: false,
     });
     // A publicBaseUrl hands out permanent, unsigned links instead.
@@ -796,9 +812,11 @@ describe("pocketbase adapter", () => {
       }),
     });
     expect(pub.capabilities.signedUrl).toEqual({
+      disposition: false,
       expiry: "none",
       supported: false,
     });
+    expect(pub.capabilities.publicUrl).toBe(true);
   });
 
   test("signedUploadUrl is not supported", async () => {
@@ -1130,6 +1148,34 @@ describe("pocketbase adapter", () => {
       const url = await adapter.url("a.txt");
       expect(url).toContain("/api/files/");
       expect(url).not.toContain("token=");
+    });
+
+    test("url() with expiresIn never falls back to a permanent unsigned URL", async () => {
+      // No auth: there's no file token to expire, so the request is refused.
+      const anonymous = pocketbase({
+        collection: "files",
+        url: "http://pb.test",
+      });
+      await anonymous.upload("a.txt", "hello");
+      await expect(
+        anonymous.url("a.txt", { expiresIn: 60 })
+      ).rejects.toMatchObject({ code: "Unsupported" });
+      // Authenticated, but the token request fails: that failure surfaces.
+      process.env.POCKETBASE_AUTH_TOKEN = "user-token";
+      const authed = pocketbase({
+        collection: "files",
+        url: "http://pb.test",
+      });
+      getTokenMock.mockImplementationOnce(() =>
+        Promise.reject(new Error("token service down"))
+      );
+      await expect(
+        authed.url("a.txt", { expiresIn: 60 })
+      ).rejects.toMatchObject({ code: "Provider" });
+      // With a token, the expiring link is minted as usual.
+      expect(await authed.url("a.txt", { expiresIn: 60 })).toContain(
+        "token=mock-file-token"
+      );
     });
 
     test("url() includes a file token when auth store is valid", async () => {

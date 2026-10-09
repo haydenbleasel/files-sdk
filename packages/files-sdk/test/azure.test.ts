@@ -1541,6 +1541,48 @@ describe("azure adapter", () => {
       expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
     });
 
+    test("expiresIn forces signing even with publicBaseUrl set", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+          publicBaseUrl: "https://cdn.example.com",
+        }),
+      });
+      expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+      expect(generateBlobSASQueryParametersMock).not.toHaveBeenCalled();
+      const before = Date.now();
+      const url = await files.url("a.txt", { expiresIn: 60 });
+      expect(url).toContain(`${BLOB_BASE}/a.txt?`);
+      const [signCall] = generateBlobSASQueryParametersMock.mock.calls;
+      if (!signCall) {
+        throw new Error(
+          "expected generateBlobSASQueryParameters to have been called"
+        );
+      }
+      const [opts] = signCall;
+      expect(opts.expiresOn.getTime()).toBeLessThanOrEqual(
+        before + 60_000 + 5000
+      );
+    });
+
+    test("expiresIn with publicBaseUrl but no signer is refused as Unsupported", async () => {
+      const files = new Files({
+        adapter: azure({
+          accountName: ACCOUNT,
+          container: CONTAINER,
+          publicBaseUrl: "https://cdn.example.com",
+        }),
+      });
+      expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+      const err = await files
+        .url("a.txt", { expiresIn: 60 })
+        .catch((error: unknown) => error);
+      expect(err).toBeInstanceOf(FilesError);
+      expect((err as FilesError).code).toBe("Unsupported");
+    });
+
     test("publicBaseUrl tolerates trailing slash", async () => {
       const adapter = azure({
         accountKey: "k",
@@ -1808,11 +1850,34 @@ describe("azure adapter", () => {
         cacheControl: true,
         delimiter: "any",
         metadata: true,
+        publicUrl: false,
         rangeRead: true,
         resumable: true,
         serverSideCopy: true,
         uploadProgress: true,
       });
+    });
+
+    test("publicUrl follows publicBaseUrl", () => {
+      const withBase = new Files({
+        adapter: azure({
+          accountKey: "k",
+          accountName: ACCOUNT,
+          container: CONTAINER,
+          publicBaseUrl: "https://cdn.example.com",
+        }),
+      });
+      expect(withBase.capabilities.publicUrl).toBe(true);
+      expect(withBase.capabilities.signedUrl.supported).toBe(true);
+      const anonymousWithBase = new Files({
+        adapter: azure({
+          accountName: ACCOUNT,
+          container: CONTAINER,
+          publicBaseUrl: "https://cdn.example.com",
+        }),
+      });
+      expect(anonymousWithBase.capabilities.publicUrl).toBe(true);
+      expect(anonymousWithBase.capabilities.signedUrl.supported).toBe(false);
     });
 
     test("shared-key mode signs with no expiry cap", () => {
@@ -1824,6 +1889,7 @@ describe("azure adapter", () => {
         }),
       });
       expect(capabilities.signedUrl).toEqual({
+        disposition: true,
         expiry: "exact",
         supported: true,
       });
@@ -1843,6 +1909,7 @@ describe("azure adapter", () => {
         }),
       });
       expect(capabilities.signedUrl).toEqual({
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: SEVEN_DAYS_S,
         supported: true,
@@ -1871,6 +1938,7 @@ describe("azure adapter", () => {
       for (const adapter of [sasOnly, anonymous, tokenNoSas]) {
         const { capabilities } = new Files({ adapter });
         expect(capabilities.signedUrl).toEqual({
+          disposition: false,
           expiry: "none",
           supported: false,
         });

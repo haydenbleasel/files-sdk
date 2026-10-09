@@ -29,6 +29,8 @@ const recorder = (): Recorder => {
     urlOpts: undefined,
   };
   rec.adapter = {
+    // It signs (and binds a disposition), like the S3 family.
+    capabilities: { signedUrl: { disposition: true, supported: true } },
     copy: () => Promise.resolve(),
     delete: () => Promise.resolve(),
     download: () => Promise.resolve({} as StoredFile),
@@ -157,6 +159,24 @@ describe("signedUrlPolicy — url() expiry", () => {
     const { files, rec } = withPolicy({ maxExpiresIn: 900 });
     await files.url("a");
     expect(rec.urlOpts?.expiresIn).toBe(900);
+  });
+
+  test("doesn't pin an expiresIn on an instance that only returns permanent links", async () => {
+    const rec = recorder();
+    rec.adapter = {
+      ...rec.adapter,
+      capabilities: { publicUrl: true },
+    };
+    const { files } = withPolicy(
+      { disposition: false, maxExpiresIn: 900 },
+      rec
+    );
+    await files.url("a");
+    expect(rec.urlOpts?.expiresIn).toBeUndefined();
+    // An explicit one still can't be honored there, so the core refuses it.
+    await expect(files.url("a", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+    });
   });
 
   test("leaves expiresIn untouched when no cap is set", async () => {

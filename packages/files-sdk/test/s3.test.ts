@@ -1366,6 +1366,25 @@ describe("s3 adapter", () => {
     expect(signed).not.toContain("cdn.example.com");
   });
 
+  test("url with an explicit expiresIn forces signing even when publicBaseUrl is set", async () => {
+    const files = new Files({
+      adapter: s3({
+        bucket: "b",
+        credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+        publicBaseUrl: "https://cdn.example.com",
+        region: "us-east-1",
+      }),
+    });
+    // Without expiresIn, publicBaseUrl wins.
+    expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    // With it, the caller asked for a link that expires — a permanent CDN
+    // URL would silently ignore that, so signing wins.
+    const signed = await files.url("a.txt", { expiresIn: 90 });
+    expect(signed).toContain("X-Amz-Signature=");
+    expect(signed).toContain("X-Amz-Expires=90");
+    expect(signed).not.toContain("cdn.example.com");
+  });
+
   test("signedUploadUrl returns method PUT with content-type header when no maxSize", async () => {
     const adapter = s3({
       bucket: "b",
@@ -1638,16 +1657,17 @@ describe("s3 adapter", () => {
     expect(await adapter.url("k.txt", { expiresIn: 604_800 })).toContain(
       "X-Amz-Expires=604800"
     );
-    // A public URL ignores expiresIn, so the cap doesn't apply to it.
+    // An explicit expiresIn signs even with a publicBaseUrl, so the cap
+    // applies there too.
     const pub = s3({
       bucket: "b",
       credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
       publicBaseUrl: "https://cdn.example.com",
       region: "us-east-1",
     });
-    expect(await pub.url("k.txt", { expiresIn: eightDays })).toBe(
-      "https://cdn.example.com/k.txt"
-    );
+    await expect(
+      pub.url("k.txt", { expiresIn: eightDays })
+    ).rejects.toMatchObject({ code: "Invalid" });
   });
 
   test("an explicit endpoint defaults checksums to WHEN_REQUIRED; AWS keeps the SDK default", async () => {
@@ -1711,6 +1731,7 @@ describe("s3 adapter", () => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: false,
       rangeRead: true,
       resumable: true,
       serverSideCopy: true,
@@ -1718,11 +1739,25 @@ describe("s3 adapter", () => {
     });
   });
 
+  test("publicUrl follows publicBaseUrl per instance", () => {
+    const pub = new Files({
+      adapter: s3({
+        bucket: "b",
+        publicBaseUrl: "https://cdn.example.com",
+        region: "us-east-1",
+      }),
+    });
+    expect(pub.capabilities.publicUrl).toBe(true);
+    // A public instance can still sign, so expiring URLs stay available.
+    expect(pub.capabilities.signedUrl.supported).toBe(true);
+  });
+
   test("declares the SigV4 one-week ceiling as signedUrl.maxExpiresIn", () => {
     const files = new Files({
       adapter: s3({ bucket: "b", region: "us-east-1" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,

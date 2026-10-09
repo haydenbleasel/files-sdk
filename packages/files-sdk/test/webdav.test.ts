@@ -500,6 +500,16 @@ describe("webdav adapter", () => {
     );
   });
 
+  test("url refuses expiresIn: the publicBaseUrl front URL is permanent", async () => {
+    const withBase = newFiles({ publicBaseUrl: "https://cdn.example.com" });
+    await expect(
+      withBase.url("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/expiresIn/u),
+    });
+  });
+
   test("responseContentDisposition without publicBaseUrl throws", async () => {
     const files = newFiles();
     await expect(
@@ -541,7 +551,12 @@ describe("webdav adapter", () => {
         supported: false,
       });
       // A `publicBaseUrl` front URL is permanent, not signed.
-      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.signedUrl).toEqual({
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      });
+      expect(caps.publicUrl).toBe(publicBaseUrl !== undefined);
       expect(caps.uploadProgress).toBe(false);
     }
   });

@@ -58,12 +58,14 @@ export interface S3FetchAdapterOptions {
   /**
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` — for a public bucket policy or a CDN in front
-   * of it. When unset, `url()` falls back to a presigned GetObject.
+   * of it. When unset, `url()` falls back to a presigned GetObject. An
+   * explicit `url(key, { expiresIn })` or `responseContentDisposition` still
+   * presigns, since a permanent link can't expire or carry the override.
    */
   publicBaseUrl?: string;
   /**
    * Default expiry, in seconds, for the presigned URLs returned by `url()`
-   * when `publicBaseUrl` is not set. Defaults to 3600 (1 hour).
+   * when no per-call `expiresIn` is given. Defaults to 3600 (1 hour).
    */
   defaultUrlExpiresIn?: number;
   /**

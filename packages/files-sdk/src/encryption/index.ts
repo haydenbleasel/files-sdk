@@ -323,10 +323,11 @@ export const encryption = (key: EncryptionKey): FilesPlugin => {
     // upload that would throw.
     capabilities: (caps) => ({
       ...caps,
+      publicUrl: false,
       rangeRead: false,
       resumable: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
     }),
     name: "encryption",
     wrap: handlers({

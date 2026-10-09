@@ -436,6 +436,9 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
   const adapter: FtpAdapter = {
     capabilities: {
       delimiter: "any",
+      // `url(key)` returns a permanent `publicBaseUrl` front URL when one is
+      // configured.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // No server-side copy — `copy()` round-trips the bytes through the
       // client.

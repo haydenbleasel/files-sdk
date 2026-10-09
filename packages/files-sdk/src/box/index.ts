@@ -79,7 +79,8 @@ export interface BoxAdapterOptions {
    * the link can preview/download) and `url()` returns that link's
    * `download_url` (or `url` if `download_url` is absent — typical for
    * non-binary previews). When `false` (default), `url()` mints a
-   * short-lived signed download URL via `getDownloadFileUrl`.
+   * short-lived signed download URL via `getDownloadFileUrl` — as does
+   * `url(key, { expiresIn })` in either mode.
    *
    * **Plan/policy note:** public shared links may be restricted on Box
    * Business or Enterprise plans; the adapter surfaces Box's
@@ -90,7 +91,8 @@ export interface BoxAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips both signing and shared-link
    * resolution. Useful when a CDN or vanity domain sits in front of
-   * pre-shared Box links.
+   * pre-shared Box links. `url(key, { expiresIn })` still mints a signed
+   * download URL.
    */
   publicBaseUrl?: string;
   /**
@@ -868,16 +870,22 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const adapter: BoxAdapter = {
     capabilities: {
       delimiter: "slash",
+      // Under `publicBaseUrl` / `publicByDefault`, a plain `url(key)` returns a
+      // permanent link (the CDN URL, or the file's open shared link).
+      publicUrl: Boolean(publicBaseUrl || publicByDefault),
       rangeRead: true,
       // `copy()` is a server-side `copyFile`.
       serverSideCopy: true,
-      // By default `url()` returns a tokenized download URL: time-limited, but
-      // Box controls the TTL server-side, so `expiresIn` is accepted and
-      // ignored — see provider-gaps. Under `publicBaseUrl` / `publicByDefault`
-      // it returns a permanent public link instead, which isn't signed.
+      // `url()` mints a tokenized download URL: time-limited, but Box controls
+      // the TTL server-side, so `expiresIn` is advisory — see provider-gaps.
+      // Under `publicBaseUrl` / `publicByDefault` a plain `url(key)` returns
+      // the permanent link instead, but an explicit `expiresIn` still gets the
+      // tokenized one. Neither URL kind takes a Content-Disposition override
+      // (`url()` throws on one).
       signedUrl: {
+        disposition: false,
         expiry: "provider",
-        supported: !(publicBaseUrl || publicByDefault),
+        supported: true,
       },
     },
     async copy(from, to) {
@@ -1186,13 +1194,16 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
           "box: `responseContentDisposition` is not supported. Box's getDownloadFileUrl and shared-link URLs have no Content-Disposition override."
         );
       }
-      if (publicBaseUrl) {
+      // An explicit `expiresIn` asks for a URL that expires, so it skips the
+      // permanent-link modes and takes the tokenized path below.
+      const permanent = urlOpts?.expiresIn === undefined;
+      if (permanent && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
       }
       try {
         await authHandle.ensureReady();
         const fileId = await resolveFileId(key);
-        if (publicByDefault) {
+        if (permanent && publicByDefault) {
           return await ensureSharedLink(fileId);
         }
         const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;

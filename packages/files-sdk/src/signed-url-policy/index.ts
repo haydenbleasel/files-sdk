@@ -1,5 +1,10 @@
 import { handlers } from "../index.js";
-import type { FilesPlugin, SignUploadOptions, UrlOptions } from "../index.js";
+import type {
+  Files,
+  FilesPlugin,
+  SignUploadOptions,
+  UrlOptions,
+} from "../index.js";
 import { isAttachmentDisposition } from "../internal/content-disposition.js";
 
 /** The disposition forced onto `url()` when none is configured. */
@@ -30,7 +35,9 @@ export interface SignedUrlPolicyOptions {
    * one is left as-is. To guarantee the ceiling, a `url()` or
    * `signedUploadUrl()` with **no** `expiresIn` is pinned to the cap rather
    * than left to the adapter's own default — so set this to the real ceiling
-   * you want, not higher.
+   * you want, not higher. The exception is a `url()` on an instance that can't
+   * sign (`capabilities.signedUrl.supported` is `false`): its links are
+   * permanent, so no `expiresIn` is added.
    *
    * Omit to leave expiry uncapped.
    */
@@ -116,8 +123,17 @@ export const signedUrlPolicy = (
 ): FilesPlugin => {
   const { maxExpiresIn, maxUploadSize } = options;
   const disposition = options.disposition ?? DEFAULT_DISPOSITION;
+  // The instance, bound in `extend` (which sees the fully-wrapped instance).
+  // A missing `expiresIn` is only pinned to the cap when it can sign: on a
+  // permanent-link adapter an `expiresIn` can't be honored, so pinning one
+  // would make every `url()` throw.
+  let instance: Files | undefined;
 
   return {
+    extend: (files) => {
+      instance = files;
+      return {};
+    },
     name: "signed-url-policy",
     wrap: handlers({
       signedUploadUrl: (op, next) => {
@@ -141,7 +157,11 @@ export const signedUrlPolicy = (
         ) {
           opts.responseContentDisposition = disposition;
         }
-        if (maxExpiresIn !== undefined) {
+        if (
+          maxExpiresIn !== undefined &&
+          (opts.expiresIn !== undefined ||
+            instance?.capabilities.signedUrl.supported !== false)
+        ) {
           opts.expiresIn = clampToCap(opts.expiresIn, maxExpiresIn);
         }
         return next({ ...op, options: opts });

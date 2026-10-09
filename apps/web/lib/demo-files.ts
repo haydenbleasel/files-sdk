@@ -49,11 +49,17 @@ const CAPABILITIES: AdapterCapabilities = {
   },
   delimiter: "any",
   metadata: true,
+  publicUrl: false,
   rangeRead: true,
   resumable: true,
   serverSideCopy: true,
   signedUpload: { contentType: true, maxSize: true, supported: true },
-  signedUrl: { expiry: "exact", maxExpiresIn: 3600, supported: true },
+  signedUrl: {
+    disposition: true,
+    expiry: "exact",
+    maxExpiresIn: 3600,
+    supported: true,
+  },
   uploadProgress: true,
 };
 

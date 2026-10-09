@@ -79,7 +79,9 @@ export interface PocketBaseAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips PocketBase's file URL entirely —
    * appropriate when a CDN sits in front of the PB instance. When unset,
-   * `url()` falls back to `pb.files.getURL(record, filename)`.
+   * `url()` falls back to `pb.files.getURL(record, filename)`. A permanent
+   * link can't expire, so with it set `url(key, { expiresIn })` throws
+   * `Unsupported`.
    */
   publicBaseUrl?: string;
 }
@@ -424,13 +426,21 @@ export const pocketbase = (
 
   return {
     capabilities: {
+      // With `publicBaseUrl`, `url()` returns a permanent CDN link.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // No server-side copy — `copy()` downloads then re-uploads to the dest key.
       serverSideCopy: false,
       // `url()` returns a file-token URL for protected collections (the token's
-      // TTL is server-controlled, so `expiresIn` is ignored — see provider-gaps).
-      // With `publicBaseUrl` it returns a permanent link instead, unsigned.
-      signedUrl: { expiry: "provider", supported: !publicBaseUrl },
+      // TTL is server-controlled, so `expiresIn` is advisory — see
+      // provider-gaps). With `publicBaseUrl` it returns a permanent link
+      // instead, unsigned, so an explicit `expiresIn` is refused by the core
+      // gate. No URL carries a Content-Disposition override (`url()` throws).
+      signedUrl: {
+        disposition: false,
+        expiry: "provider",
+        supported: !publicBaseUrl,
+      },
     },
     collection,
     async copy(from, to, operationOpts) {
@@ -607,13 +617,27 @@ export const pocketbase = (
         const record = await findRecord(key, urlOpts?.signal);
         const filename = filenameOf(record);
         let token: string | undefined;
+        let tokenError: unknown;
         if (pb.authStore.isValid) {
           try {
             token = await pb.files.getToken(sendOpts(urlOpts?.signal));
-          } catch {
+          } catch (error) {
             // Token issuance failed — fall back to unsigned URL. If the
             // collection requires auth, the URL will 4xx when fetched.
+            tokenError = error;
           }
+        }
+        // Only a file token expires. Without one the URL is permanent, so an
+        // explicit `expiresIn` can't be honored — fail rather than hand back a
+        // link that outlives what was asked.
+        if (urlOpts?.expiresIn !== undefined && !token) {
+          if (tokenError !== undefined) {
+            throw tokenError;
+          }
+          throw new FilesError(
+            "Unsupported",
+            "pocketbase: an expiring url() (`expiresIn`) needs an authenticated client to mint a file token; this one has no auth, so its URLs don't expire"
+          );
         }
         return pb.files.getURL(record, filename, token ? { token } : {});
       } catch (error) {

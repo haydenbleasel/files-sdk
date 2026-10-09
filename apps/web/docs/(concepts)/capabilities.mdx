@@ -30,12 +30,14 @@ interface AdapterCapabilities {
   uploadProgress: boolean;
   delimiter: "any" | "slash" | false;
   metadata: boolean;
+  publicUrl: boolean;
   cacheControl: boolean;
   resumable: boolean;
   serverSideCopy: boolean;
   signedUrl: {
     supported: boolean;
     expiry: "exact" | "provider" | "none";
+    disposition: boolean;
     maxExpiresIn?: number;
   };
   signedUpload: {
@@ -69,6 +71,7 @@ interface AdapterCapabilities {
 | `cacheControl` | `upload({ cacheControl })` stores a `Cache-Control` header | `upload` |
 | `resumable` | the adapter exposes a pause-able, resumable upload primitive | `upload({ control })` |
 | `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy` |
+| `publicUrl` | a plain `url(key)` returns a permanent link (a `publicBaseUrl` CDN, a public bucket or blob, a public share link) | `url` |
 | `signedUrl` | `url()` can mint a signed or tokenized URL — see below | `url` |
 | `signedUpload` | `signedUploadUrl()` hands out a direct upload target — see below | `signedUploadUrl` |
 | `conditional` | the requested create, replace, exact-read, delete, or copy predicate has a provider-native primitive | `upload`, `download`, `delete`, `copy` |
@@ -87,13 +90,18 @@ There is no probe-then-mutate fallback. See [Conditional operations](/docs/condi
 signedUrl: {
   supported: boolean;
   expiry: "exact" | "provider" | "none";
+  disposition: boolean;
   maxExpiresIn?: number;
 }
 ```
 
 `supported` is `true` when `url()` mints a signed or tokenized download URL that grants access without the caller's own credentials and is more than a permanent public link — an S3 SigV4 URL, an Azure SAS, a GCS signed URL, a Box or PocketBase access-token URL. It's `false` when the adapter has no signing primitive: it returns only a permanent public URL (Vercel Blob in public mode, Appwrite, Convex, and Box or Dropbox with `publicBaseUrl` / `publicByDefault`) or throws because it can't mint one at all (FTP/SFTP/WebDAV without `publicBaseUrl`, Netlify Blobs, OneDrive / Google Drive outside their public-link mode). The local filesystem returns an unsigned `file://` or static-server URL. When `false`, prefer `download()`.
 
-`maxExpiresIn` is set only when the adapter enforces a hard ceiling on `expiresIn` **in code**, throwing above it. Dropbox temporary links cap at 4 hours (14400s). The S3 family — `s3()` and its S3-compatible wrappers, R2 over HTTP or in hybrid mode, the `fetch` engine, and Bun's S3 — caps presigned URLs at SigV4's 604800 seconds (7 days). Google Cloud Storage and Firebase Storage declare the same 7-day V4 signing cap, and so does UploadThing with `acl: "private"`. Azure declares its 7-day cap only in user-delegation mode, since account-key SAS has no such limit. It stays unset where the limit isn't checked in code; those cases live in [Provider gaps](/docs/provider-gaps), not here. `expiry` says what `expiresIn` does on this instance: `"exact"` when the URL expires after exactly that many seconds, `"provider"` when the URL is tokenized but the provider sets its lifetime (Box, PocketBase), and `"none"` when `url()` returns a permanent link (it's always `"none"` when `supported` is `false`).
+`maxExpiresIn` is set only when the adapter enforces a hard ceiling on `expiresIn` **in code**, throwing above it. Dropbox temporary links cap at 4 hours (14400s). The S3 family — `s3()` and its S3-compatible wrappers, R2 over HTTP or in hybrid mode, the `fetch` engine, and Bun's S3 — caps presigned URLs at SigV4's 604800 seconds (7 days). Google Cloud Storage and Firebase Storage declare the same 7-day V4 signing cap, and so does UploadThing with `acl: "private"`. Azure declares its 7-day cap only in user-delegation mode, since account-key SAS has no such limit. It stays unset where the limit isn't checked in code; those cases live in [Provider gaps](/docs/provider-gaps), not here. `expiry` says what `expiresIn` does on this instance: `"exact"` when the URL expires after exactly that many seconds, `"provider"` when the URL is tokenized but the provider sets its lifetime (Box, PocketBase, Dropbox's 4-hour links), and `"none"` when `url()` only returns permanent links (it's always `"none"` when `supported` is `false`, and then an explicit `expiresIn` throws `Unsupported`). `disposition` is `true` when a `responseContentDisposition` is bound into the signed URL; when it's `false`, passing one throws, so the gateway proxies downloads it must force `attachment` on.
+
+### `publicUrl`
+
+`true` when a plain `url(key)`, with no `expiresIn` and no `responseContentDisposition`, returns a permanent link on this instance: a configured `publicBaseUrl`, Vercel Blob in public mode, UploadThing's `public-read`, Supabase or Appwrite with `public: true`, a public share link (`publicByDefault` on Box, Dropbox, OneDrive, Google Drive), Convex serving URLs, or the filesystem's `file://` / `urlBaseUrl` URL. It's independent of `signedUrl`: the S3 family with a `publicBaseUrl` has both, returning the CDN link for a plain `url(key)` and a signed one when you pass `expiresIn`.
 
 ### `signedUpload`
 
@@ -129,7 +137,8 @@ const myAdapter: Adapter = {
     delimiter: "slash",
     metadata: true,
     serverSideCopy: true,
-    signedUrl: { supported: true, maxExpiresIn: 86_400 }, // expiry defaults to "exact"
+    publicUrl: Boolean(publicBaseUrl),
+    signedUrl: { supported: true, disposition: true, maxExpiresIn: 86_400 }, // expiry defaults to "exact"
     signedUpload: { supported: true, maxSize: true, contentType: true },
   },
   // upload, download, head, exists, delete, copy, list, url, signedUploadUrl…

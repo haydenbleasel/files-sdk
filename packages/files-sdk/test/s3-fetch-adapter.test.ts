@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { FilesError } from "../src/index.js";
+import { Files, FilesError } from "../src/index.js";
 import { s3Fetch } from "../src/s3-fetch/index.js";
 
 // The public `files-sdk/s3-fetch` entry — a thin, env-aware wrapper over the
@@ -68,7 +68,14 @@ describe("s3Fetch()", () => {
       publicBaseUrl: "https://cdn.example.com",
       sessionToken: "TOKEN",
     });
+    expect(adapter.capabilities?.publicUrl).toBe(true);
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    // An explicit expiresIn still presigns against the endpoint.
+    const signed = await new Files({ adapter }).url("a.txt", { expiresIn: 90 });
+    expect(signed).toMatch(
+      /^https:\/\/s3\.us-east-1\.amazonaws\.com\/uploads\/a\.txt\?/u
+    );
+    expect(signed).toContain("X-Amz-Expires=90");
     await adapter.delete("a.txt");
     expect(seen[0]?.url).toBe(
       "https://s3.us-east-1.amazonaws.com/uploads/a.txt"

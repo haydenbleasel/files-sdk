@@ -855,10 +855,11 @@ describe("netlify-blobs adapter", () => {
       cacheControl: true,
       delimiter: "slash",
       metadata: true,
+      publicUrl: false,
       rangeRead: false,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
       uploadProgress: false,
     });
   });

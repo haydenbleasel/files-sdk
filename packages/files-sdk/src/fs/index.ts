@@ -481,6 +481,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // `url(key)` always returns a permanent link: the `urlBaseUrl` one when
+      // configured, else a `file://` URL.
+      publicUrl: true,
       rangeRead: true,
       // `copy()` is a local `fs.copyFile` — no body round-trip.
       serverSideCopy: true,

@@ -192,9 +192,17 @@ export const urlWithDisposition = async (
   }
 };
 
-// The signed-URL redirect, or `undefined` when `auto` mode should proxy
-// instead: the adapter can sign but can't bind the `attachment` disposition
-// the gateway forces, and the proxy path sets `Content-Disposition` itself.
+/**
+ * The redirect for a download, or `undefined` to stream it through the proxy.
+ * A redirect needs a URL that honors everything the download must carry: a
+ * signed one binds the expiry and — when the adapter declares
+ * `signedUrl.disposition` — the forced disposition, while `authorize`'s inline
+ * policy needs no binding (a bare URL renders inline). The permanent public
+ * link binds neither, so it serves only when nothing must be bound and
+ * `authorize` doesn't cap the lifetime. Anything else streams through the
+ * proxy, which sets both itself. An adapter refusal the declarations didn't
+ * predict still falls back to the proxy in `auto` mode.
+ */
 const redirectTarget = async (
   cfg: DownloadConfig,
   storageKey: string,
@@ -203,6 +211,22 @@ const redirectTarget = async (
   signal: AbortSignal
 ): Promise<ResultModel | undefined> => {
   const caps = cfg.files.capabilities;
+  // An inline policy is satisfied by a URL with no disposition at all.
+  const mustBind = disposition !== undefined && !isInlinePolicy(disposition);
+  const canSign =
+    caps.signedUrl.supported && (!mustBind || caps.signedUrl.disposition);
+  const canLinkPublic =
+    caps.publicUrl && !mustBind && scope.maxExpiresIn === undefined;
+  const useRedirect =
+    cfg.downloadMode === "redirect" ||
+    (cfg.downloadMode === "auto" && (canSign || canLinkPublic));
+  if (!useRedirect) {
+    return undefined;
+  }
+  if (canLinkPublic) {
+    const url = await cfg.files.url(storageKey, { signal });
+    return { kind: "redirect", location: url, status: 302 };
+  }
   let expiresIn = cfg.defaultExpiresIn;
   if (scope.maxExpiresIn !== undefined) {
     expiresIn = Math.min(expiresIn, scope.maxExpiresIn);
@@ -240,21 +264,15 @@ export const handleDownload = async (
   const disposition =
     scope.disposition ?? (cfg.forceDisposition ? "attachment" : undefined);
 
-  const useRedirect =
-    cfg.downloadMode === "redirect" ||
-    (cfg.downloadMode === "auto" && caps.signedUrl.supported);
-
-  if (useRedirect) {
-    const redirect = await redirectTarget(
-      cfg,
-      storageKey,
-      scope,
-      disposition,
-      signal
-    );
-    if (redirect) {
-      return redirect;
-    }
+  const redirect = await redirectTarget(
+    cfg,
+    storageKey,
+    scope,
+    disposition,
+    signal
+  );
+  if (redirect) {
+    return redirect;
   }
 
   const meta = await cfg.files.head(storageKey, { signal });

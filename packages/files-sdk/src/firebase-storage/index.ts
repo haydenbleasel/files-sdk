@@ -89,7 +89,8 @@ export interface FirebaseStorageAdapterOptions {
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips signing — appropriate for a public
    * bucket or a CDN in front of Firebase Storage. When unset, `url()` falls
-   * back to a V4 signed read URL (default expiry: 1 hour). Firebase's
+   * back to a V4 signed read URL (default expiry: 1 hour); passing
+   * `expiresIn` or `responseContentDisposition` still signs. Firebase's
    * `?alt=media&token=...` download-token URL form is out of scope for v1;
    * reach for `adapter.raw` if you need it.
    */
@@ -355,6 +356,8 @@ export const firebaseStorage = (
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // A plain `url()` returns the permanent `publicBaseUrl` link when set.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // `copy()` is a server-side GCS object copy.
       serverSideCopy: true,
@@ -367,9 +370,12 @@ export const firebaseStorage = (
         maxSize: true,
         supported: true,
       },
-      // `url()` returns a V4 signed URL (or `publicBaseUrl` when set). The SDK
+      // `url()` returns a V4 signed URL (or `publicBaseUrl` when set and
+      // neither `expiresIn` nor `responseContentDisposition` is passed), with
+      // `responseContentDisposition` bound as `responseDisposition`. The SDK
       // rejects an expiry past V4's 7-day limit, so declare that ceiling.
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: V4_MAX_EXPIRES_IN,
         supported: true,
@@ -581,6 +587,7 @@ export const firebaseStorage = (
     },
     async url(key, urlOpts) {
       const strategy = resolveUrlStrategy({
+        expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
       });

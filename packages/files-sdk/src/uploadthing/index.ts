@@ -388,6 +388,8 @@ export const uploadthing = (
 
   const adapter: UploadThingAdapter = {
     capabilities: {
+      // Public-read files' `url()` is their permanent CDN URL.
+      publicUrl: acl === ACL_PUBLIC_READ,
       rangeRead: true,
       // No server-side copy — `copy()` downloads then re-uploads (buffered).
       serverSideCopy: false,
@@ -396,14 +398,16 @@ export const uploadthing = (
       // content-length-range policy, so `maxSize` throws.
       signedUpload: { contentType: true, maxSize: false, supported: true },
       // `url()` mints a `generateSignedURL` for private files, capped at 7 days
-      // by the SDK. Public-read returns the permanent CDN URL and ignores
-      // `expiresIn`, so it isn't a signed URL. (The `files-sdk/api` gateway
-      // presigns uploads on `signedUpload`, so public-read still hands out
-      // direct ingest URLs.)
+      // by the SDK; neither URL carries a Content-Disposition override (`url()`
+      // throws on one). Public-read returns the permanent CDN URL, so it isn't
+      // a signed URL and an explicit `expiresIn` is refused by the core gate.
+      // (The `files-sdk/api` gateway presigns uploads on `signedUpload`, so
+      // public-read still hands out direct ingest URLs.)
       signedUrl:
         acl === ACL_PUBLIC_READ
           ? { supported: false }
           : {
+              disposition: false,
               expiry: "exact",
               maxExpiresIn: SIGNED_URL_MAX_EXPIRES_IN,
               supported: true,

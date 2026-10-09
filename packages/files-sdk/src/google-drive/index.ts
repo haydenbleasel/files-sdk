@@ -701,6 +701,9 @@ export const googleDrive = (
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      // Under `publicByDefault`, `url(key)` returns a permanent
+      // `uc?export=download` link behind an `anyone, reader` grant.
+      publicUrl: publicByDefault,
       rangeRead: true,
       // `copy()` is a server-side `files.copy`.
       serverSideCopy: true,

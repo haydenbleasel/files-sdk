@@ -168,16 +168,16 @@ export interface BunS3AdapterOptions {
   /**
    * Origin used to build URLs from `url()`. When set, `url(key)` returns
    * `${publicBaseUrl}/${key}` and skips signing — use this if your bucket is
-   * fronted by a CDN or has a public-read policy. Passing
+   * fronted by a CDN or has a public-read policy. Passing `expiresIn` or
    * `responseContentDisposition` still forces a signed URL even when this is
-   * set, because a permanent CDN URL has no signature in which to bind the
-   * override. When unset, `url()` returns a presigned GetObject (1-hour
-   * default).
+   * set, because a permanent CDN URL can't expire and has no signature in
+   * which to bind the override. When unset, `url()` returns a presigned
+   * GetObject (1-hour default).
    */
   publicBaseUrl?: string;
   /**
    * Default expiry, in seconds, for the presigned URLs returned by `url()`
-   * when `publicBaseUrl` isn't set. Defaults to 3600 (1 hour). Per-call
+   * when no per-call `expiresIn` is given. Defaults to 3600 (1 hour). Per-call
    * `url(key, { expiresIn })` overrides.
    */
   defaultUrlExpiresIn?: number;
@@ -329,6 +329,9 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     capabilities: {
       // Bun's list forwards `delimiter` and returns `commonPrefixes`.
       delimiter: "any",
+      // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
+      // is configured; an explicit `expiresIn` still presigns.
+      publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
       // Bun's S3 client has no CopyObject helper — `copy()` streams
       // source→dest through this process, so it's not a server-side copy.
@@ -343,8 +346,10 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         supported: true,
       },
       // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`),
-      // capped at SigV4's one-week lifetime.
+      // capped at SigV4's one-week lifetime. Bun's `presign({ contentDisposition })`
+      // signs it in as `response-content-disposition`.
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
         supported: true,
@@ -628,6 +633,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     },
     url(key, urlOpts) {
       const strategy = resolveUrlStrategy({
+        expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
       });

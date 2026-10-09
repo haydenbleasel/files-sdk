@@ -596,22 +596,23 @@ export interface ExistsManyResult {
 
 export interface UrlOptions extends OperationOptions {
   /**
-   * Override the adapter's default URL expiry, in seconds.
+   * Ask for a URL that expires after this many seconds.
    *
-   * **Honored** by adapters that sign (S3, Cloudflare R2 over HTTP, MinIO,
-   * DigitalOcean Spaces, Storj, Hetzner, Akamai, Backblaze B2, Wasabi,
-   * Tigris, and the R2 binding when HTTP credentials are also configured) — those
-   * adapters return a presigned URL that expires after `expiresIn` seconds.
+   * Passing it always gets you an expiring URL or an error — never a
+   * permanent link that ignores it:
    *
-   * **Honored** by Vercel Blob (private) too: `url()` mints a Vercel Signed
-   * URL scoped to the key that expires after `expiresIn` seconds.
+   * - On an instance that can sign ({@link SignedUrlCapability.supported}),
+   *   the URL is signed, **even when a `publicBaseUrl` is configured** (a plain
+   *   `url(key)` there still returns the permanent CDN link). With
+   *   `signedUrl.expiry: "exact"` it expires after exactly `expiresIn`; with
+   *   `"provider"` (Box, PocketBase, Dropbox temporary links) the provider sets
+   *   the lifetime and `expiresIn` is advisory.
+   * - On an instance that can't sign (Vercel Blob public, UploadThing
+   *   public-read, Convex, Appwrite, the filesystem, …), it throws an
+   *   `Unsupported` {@link FilesError} before the adapter is called.
    *
-   * **Ignored** by Vercel Blob (public): the underlying CDN URL has no
-   * expiry and is reachable by anyone already, so the adapter returns it
-   * unchanged.
-   *
-   * **N/A** for adapters where `url()` throws (the R2 binding without
-   * `publicBaseUrl` and without HTTP credentials).
+   * Omit it for the adapter's default: a signed URL with its default expiry,
+   * or the permanent link when {@link AdapterCapabilities.publicUrl} is set.
    */
   expiresIn?: number;
   /**
@@ -717,6 +718,14 @@ export interface SignedUrlCapability {
    *   can't be honored.
    */
   expiry: SignedUrlExpiry;
+  /**
+   * `true` when a {@link UrlOptions.responseContentDisposition} is bound into
+   * the signed URL (S3's `response-content-disposition`, an Azure SAS `rscd`,
+   * GCS's `responseDisposition`). When `false`, passing one throws — so the
+   * `files-sdk/api` gateway, which forces `attachment` by default, proxies the
+   * download instead of redirecting.
+   */
+  disposition: boolean;
   /**
    * Hard upper bound on `expiresIn`, in seconds, when the adapter enforces one
    * in code: a longer `expiresIn` throws rather than being clamped (e.g. SigV4
@@ -844,6 +853,13 @@ export interface AdapterCapabilities {
   delimiter: DelimiterSupport;
   /** `upload({ metadata })` persists arbitrary user metadata. */
   metadata: boolean;
+  /**
+   * A plain `url(key)` — no `expiresIn`, no `responseContentDisposition` —
+   * returns a permanent link (a `publicBaseUrl` / CDN URL, a public blob, a
+   * public share link). Pass `expiresIn` to get an expiring one instead, which
+   * needs {@link SignedUrlCapability.supported}.
+   */
+  publicUrl: boolean;
   /** `download({ range })` returns only the requested bytes. */
   rangeRead: boolean;
   /** `upload({ control })` pause-able / resumable uploads. Derived from {@link Adapter.resumableUpload}. */
@@ -885,6 +901,14 @@ export interface AdapterCapabilityDeclaration {
    */
   metadata?: boolean;
   /**
+   * A plain `url(key)` returns a permanent link on this instance (a configured
+   * `publicBaseUrl`, a public bucket or blob, a public share link). When
+   * `url()` is also given `expiresIn`, the adapter must sign instead — or, if
+   * it can't (`signedUrl.supported` is `false`), the call is refused before
+   * the adapter is reached.
+   */
+  publicUrl?: boolean;
+  /**
    * `download` honors {@link DownloadOptions.range} with a real byte-range
    * request. Without it, a `range` throws before any provider call rather than
    * downloading the whole object.
@@ -902,9 +926,9 @@ export interface AdapterCapabilityDeclaration {
    */
   signedUpload?: Partial<SignedUploadCapability> & { supported: boolean };
   /**
-   * What `url` produces. Defaults to `{ supported: false, expiry: "none" }`;
-   * when `supported` is `true` and `expiry` is omitted it defaults to
-   * `"exact"`.
+   * What `url` produces when it signs. Defaults to `{ supported: false,
+   * expiry: "none" }`; when `supported` is `true`, `expiry` defaults to
+   * `"exact"` and `disposition` to `false`.
    */
   signedUrl?: Partial<SignedUrlCapability> & { supported: boolean };
   /**
@@ -1714,6 +1738,13 @@ const assertNoRelativeSegments = (key: string, label = "key"): void => {
 // which is never what callers want), and no trailing slash so we control the
 // single separator when joining. `"/users/"`, `"users/"`, and `"users"` all
 // collapse to `"users"`.
+/**
+ * Why an `expiresIn` is refused on an adapter that can't sign: its `url()`
+ * would hand back a permanent link that silently ignores the request.
+ */
+const EXPIRING_URL_UNSUPPORTED =
+  "an expiring url() (`expiresIn`) is not supported by";
+
 const normalizeDelimiterSupport = (
   declared: DelimiterSupport | undefined
 ): DelimiterSupport =>
@@ -1729,9 +1760,10 @@ const normalizeSignedUrl = (
   declared: AdapterCapabilityDeclaration["signedUrl"]
 ): SignedUrlCapability => {
   if (declared?.supported !== true) {
-    return { expiry: "none", supported: false };
+    return { disposition: false, expiry: "none", supported: false };
   }
   return {
+    disposition: declared.disposition === true,
     expiry: declared.expiry ?? "exact",
     ...(declared.maxExpiresIn !== undefined && {
       maxExpiresIn: declared.maxExpiresIn,
@@ -2369,6 +2401,16 @@ export class Files<A extends Adapter = Adapter> {
       case "url": {
         const ctx: ActionContext = { key: op.key, type: "url" };
         const path = this.#path(op.key);
+        // Also catches an `expiresIn` a plugin injected on the way in.
+        if (
+          op.options?.expiresIn !== undefined &&
+          this.#declared().signedUrl?.supported !== true
+        ) {
+          throw new FilesError(
+            "Unsupported",
+            `${this.#adapter.name}: ${EXPIRING_URL_UNSUPPORTED} this adapter`
+          );
+        }
         return this.#run(
           op.options,
           (attemptOpts) => this.#adapter.url(path, attemptOpts),
@@ -2640,6 +2682,7 @@ export class Files<A extends Adapter = Adapter> {
       },
       delimiter: normalizeDelimiterSupport(declared.delimiter),
       metadata: declared.metadata === true,
+      publicUrl: declared.publicUrl === true,
       rangeRead: declared.rangeRead === true,
       resumable: isFunction(a.resumableUpload),
       serverSideCopy: declared.serverSideCopy === true,
@@ -2690,6 +2733,13 @@ export class Files<A extends Adapter = Adapter> {
       this.#assertCapability(
         (caps) => caps.rangeRead,
         "range downloads are not supported by"
+      );
+      return;
+    }
+    if (op.kind === "url" && op.options?.expiresIn !== undefined) {
+      this.#assertCapability(
+        (caps) => caps.signedUrl.supported,
+        EXPIRING_URL_UNSUPPORTED
       );
       return;
     }

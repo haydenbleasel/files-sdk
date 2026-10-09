@@ -21,9 +21,12 @@ const signing = (): Adapter =>
     fakeAdapter({ supportsDelimiter: true, supportsRange: true }),
     {
       signedUpload: { contentType: true, maxSize: true, supported: true },
-      signedUrl: { supported: true },
+      signedUrl: { disposition: true, supported: true },
     }
   );
+
+// The shared fake signs; this turns that off, for the proxy paths.
+const NO_SIGNING = { signedUrl: { supported: false } };
 
 const router = (
   opts: Partial<CreateFilesRouterOptions> & { adapter?: Adapter } = {}
@@ -703,6 +706,103 @@ describe("createFilesRouter — download", () => {
     expect(res.headers.get("location")).toContain("fake.local");
   });
 
+  test("a signer that can't bind the forced disposition proxies instead of failing", async () => {
+    // Vercel Blob private, UploadThing private: they sign, but throw on a
+    // `responseContentDisposition`, so redirecting would fail the download.
+    const adapter = withCapabilities(fakeAdapter(), {
+      signedUrl: { disposition: false, supported: true },
+    });
+    await seed(adapter, "a.txt", "hello");
+    const r = router({ adapter, operations: ["download"] });
+    const res = await r.handle(get("op=download&key=a.txt"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("hello");
+  });
+
+  test("a permanent public link is redirected to only when nothing must be bound", async () => {
+    let seen: unknown;
+    const base = withCapabilities(fakeAdapter(), {
+      ...NO_SIGNING,
+      publicUrl: true,
+    });
+    const adapter: Adapter = {
+      ...base,
+      url: (key, opts) => {
+        seen = opts;
+        return Promise.resolve(`https://cdn.test/${key}`);
+      },
+    };
+    await seed(adapter, "a.txt", "hello");
+    // No forced disposition, no lifetime cap: the CDN link, asked for plainly.
+    const open = router({
+      adapter,
+      forceDownloadDisposition: false,
+      operations: ["download"],
+    });
+    const res = await open.handle(get("op=download&key=a.txt"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://cdn.test/a.txt");
+    expect(seen).not.toHaveProperty("expiresIn");
+    // A forced disposition, or an `authorize` lifetime cap, can't ride on a
+    // permanent link, and this adapter can't sign: stream it instead.
+    const forced = router({ adapter, operations: ["download"] });
+    expect((await forced.handle(get("op=download&key=a.txt"))).status).toBe(
+      200
+    );
+    const capped = router({
+      adapter,
+      authorize: () => ({ maxExpiresIn: 60 }),
+      forceDownloadDisposition: false,
+    });
+    expect((await capped.handle(get("op=download&key=a.txt"))).status).toBe(
+      200
+    );
+  });
+
+  test("url op: a signer always signs; a permanent-link adapter only when it must", async () => {
+    const calls: unknown[] = [];
+    const base = withCapabilities(fakeAdapter(), {
+      publicUrl: true,
+      signedUrl: { disposition: true, supported: true },
+    });
+    const adapter: Adapter = {
+      ...base,
+      url: (key, opts) => {
+        calls.push(opts?.expiresIn);
+        return base.url(key, opts);
+      },
+    };
+    await seed(adapter, "a.txt", "hello");
+    const r = router({ adapter, operations: ["url"] });
+    await r.handle(post({ key: "a.txt", op: "url" }));
+    await r.handle(post({ expiresIn: 30, key: "a.txt", op: "url" }));
+    // Signed with the default expiry, then with the asked-for 30s.
+    expect(calls).toEqual([300, 30]);
+    // An adapter that can't sign hands out its permanent link — but an
+    // asked-for expiry, or an `authorize` lifetime cap, is a 422, not a
+    // permanent link in disguise.
+    const permanent = withCapabilities(fakeAdapter(), {
+      ...NO_SIGNING,
+      publicUrl: true,
+    });
+    await seed(permanent, "a.txt", "hello");
+    const plain = router({ adapter: permanent, operations: ["url"] });
+    expect((await plain.handle(post({ key: "a.txt", op: "url" }))).status).toBe(
+      200
+    );
+    expect(
+      (await plain.handle(post({ expiresIn: 30, key: "a.txt", op: "url" })))
+        .status
+    ).toBe(422);
+    const capped = router({
+      adapter: permanent,
+      authorize: () => ({ maxExpiresIn: 60 }),
+    });
+    expect(
+      (await capped.handle(post({ key: "a.txt", op: "url" }))).status
+    ).toBe(422);
+  });
+
   test("proxy path streams bytes with metadata header", async () => {
     const adapter = memory();
     await seed(adapter, "a.txt", "hello world");
@@ -748,7 +848,7 @@ describe("createFilesRouter — download", () => {
   });
 
   test("range on a non-range adapter → 416 (reject), or ignored", async () => {
-    const adapter = fakeAdapter() as unknown as Adapter;
+    const adapter = withCapabilities(fakeAdapter(), NO_SIGNING);
     await seed(adapter, "a.txt", "hello");
     const reject = router({ adapter, operations: ["download"] });
     expect(
@@ -781,7 +881,7 @@ describe("createFilesRouter — download", () => {
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("accept-ranges")).toBe("bytes");
 
-    const plain = fakeAdapter() as unknown as Adapter;
+    const plain = withCapabilities(fakeAdapter(), NO_SIGNING);
     await seed(plain, "a.txt", "hello");
     const noRange = await router({
       adapter: plain,
@@ -842,7 +942,7 @@ describe("createFilesRouter — download", () => {
     );
     expect(older.status).toBe(200);
     // A stale validator also bypasses a non-range adapter's 416.
-    const plain = fakeAdapter() as unknown as Adapter;
+    const plain = withCapabilities(fakeAdapter(), NO_SIGNING);
     await seed(plain, "b.txt", "hello");
     const bypass = await router({
       adapter: plain,

@@ -217,6 +217,23 @@ describe("appwrite adapter", () => {
     );
   });
 
+  test("url > refuses an explicit expiresIn even when public", async () => {
+    const files = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+        public: true,
+      }),
+    });
+    await expect(
+      files.url("file-123", { expiresIn: 60 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining("expiresIn"),
+    });
+  });
+
   test("url > a bare attachment disposition uses the download endpoint", async () => {
     const files = new Files({
       adapter: appwrite({
@@ -268,12 +285,31 @@ describe("appwrite adapter", () => {
       cacheControl: false,
       delimiter: false,
       metadata: false,
+      publicUrl: false,
       rangeRead: false,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
       uploadProgress: false,
     });
+  });
+
+  test("capabilities > publicUrl follows public: true when a URL can be built", () => {
+    const publicFiles = new Files({
+      adapter: appwrite({
+        bucket: BUCKET,
+        endpoint: ENDPOINT,
+        projectId: PROJECT_ID,
+        public: true,
+      }),
+    });
+    expect(publicFiles.capabilities.publicUrl).toBe(true);
+    expect(publicFiles.capabilities.signedUrl.supported).toBe(false);
+    // A bare client with no endpoint/projectId can't build a URL even when
+    // the bucket is public, so `url()` throws and no permanent link exists.
+    const bareClient = { config: { project: "" } } as unknown as Client;
+    const bare = appwrite({ bucket: BUCKET, client: bareClient, public: true });
+    expect(new Files({ adapter: bare }).capabilities.publicUrl).toBe(false);
   });
 
   test("signedUploadUrl > throws unsupported", async () => {

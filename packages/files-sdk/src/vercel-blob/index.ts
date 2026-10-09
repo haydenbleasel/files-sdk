@@ -76,7 +76,7 @@ export interface VercelBlobAdapterOptions {
    *
    * - `"public"` (default): blobs are uploaded with `access: "public"` and
    *   reachable via their CDN URL without authentication. `url()` returns a
-   *   permanent public URL.
+   *   permanent public URL; `url(key, { expiresIn })` throws `Unsupported`.
    * - `"private"`: blobs are uploaded with `access: "private"`. They cannot
    *   be fetched by their plain URL — `download()` instead routes through
    *   `blob.get(key, { access: "private" })`, which uses whichever
@@ -568,6 +568,8 @@ export const vercelBlob = (
       cacheControl: true,
       // `list()` folds on "/" only (`mode: "folded"`); other delimiters throw.
       delimiter: "slash",
+      // Public blobs' `url()` is their permanent CDN URL.
+      publicUrl: access === "public",
       // Range rides on the standard-HTTP fetch of the public blob URL. Private
       // blobs read through `blob.get`, which has no range primitive, so they
       // fall through to the gate's loud throw.
@@ -580,10 +582,16 @@ export const vercelBlob = (
       // ceiling is enforced by the control API, not here, so no `maxExpiresIn`.
       signedUpload: { contentType: true, maxSize: true, supported: true },
       // Public blobs return their permanent CDN URL from `url()`, which is no
-      // more than a public link and ignores `expiresIn`. Private blobs mint a
-      // presigned GET that honors it. Vercel's 7-day ceiling is enforced by
-      // the control API, not here, so no `maxExpiresIn`.
-      signedUrl: { expiry: "exact", supported: access === "private" },
+      // more than a public link, so an explicit `expiresIn` is refused by the
+      // core gate. Private blobs mint a presigned GET that honors it. Neither
+      // URL carries a Content-Disposition override (`url()` throws on one).
+      // Vercel's 7-day ceiling is enforced by the control API, not here, so
+      // no `maxExpiresIn`.
+      signedUrl: {
+        disposition: false,
+        expiry: "exact",
+        supported: access === "private",
+      },
       uploadProgress: true,
     },
     async copy(from, to, operationOpts) {
@@ -1003,9 +1011,9 @@ export const vercelBlob = (
           throw mapBlobError(error);
         }
       }
-      // Public blobs: `expiresIn` is intentionally ignored. The CDN URL is
-      // already reachable by anyone, so a presigned copy would add a round
-      // trip without restricting anything. Documented on `UrlOptions`.
+      // Public blobs: the permanent CDN URL. They can't mint an expiring
+      // link, so `Files` refuses an explicit `expiresIn` before reaching here
+      // (`signedUrl.supported` is `false`); called directly, it's ignored.
       //
       // Fast path: with a known storeId and predictable keys, derive the
       // URL without an API call. `addRandomSuffix: true` makes the actual

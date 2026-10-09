@@ -180,6 +180,7 @@ export const lazyS3Adapter = (
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: Boolean(config.publicBaseUrl),
       rangeRead: true,
       // `copy()` delegates to the S3 adapter's server-side CopyObject.
       serverSideCopy: true,
@@ -190,6 +191,7 @@ export const lazyS3Adapter = (
         supported: true,
       },
       signedUrl: {
+        disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
         supported: true,

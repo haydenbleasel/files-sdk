@@ -561,17 +561,29 @@ const dispatchJson = async (
         optStr(body, "responseContentDisposition"),
         scope.disposition
       );
+      // The link always carries a disposition, so it's signed whenever the
+      // adapter can sign (with the default expiry unless the client asked for
+      // one). An adapter that only hands out permanent links gets no
+      // `expiresIn` — unless the client asked for one or `authorize` caps the
+      // lifetime, where the SDK refuses it (a 422) rather than return a link
+      // that outlives what was asked.
+      const sign =
+        expiresIn !== undefined ||
+        scope.maxExpiresIn !== undefined ||
+        ctx.files.capabilities.signedUrl.supported;
       try {
         const url = await urlWithDisposition(
           ctx.files,
           scopeKey(scope.prefix, key),
           {
-            expiresIn: clampExpiry(
-              ctx,
-              expiresIn ?? ctx.defaultExpiresIn,
-              scope,
-              "signedUrl"
-            ),
+            ...(sign && {
+              expiresIn: clampExpiry(
+                ctx,
+                expiresIn ?? ctx.defaultExpiresIn,
+                scope,
+                "signedUrl"
+              ),
+            }),
             signal,
           },
           disposition,
@@ -580,9 +592,7 @@ const dispatchJson = async (
         return json({ url });
       } catch (error) {
         if (isDispositionUnsupported(error)) {
-          throw new FilesError("Provider", URL_DISPOSITION_REFUSED, error, {
-            permanent: true,
-          });
+          throw new FilesError("Unsupported", URL_DISPOSITION_REFUSED, error);
         }
         throw error;
       }

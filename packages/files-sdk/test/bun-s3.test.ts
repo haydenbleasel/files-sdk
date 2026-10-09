@@ -314,6 +314,20 @@ describe("bun-s3 adapter", () => {
     expect(signed).toContain("content-disposition=attachment");
   });
 
+  test("an explicit expiresIn signs even with publicBaseUrl configured", async () => {
+    const files = new Files({
+      adapter: bunS3({
+        client: new FakeBunS3Client(),
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    expect(await files.url("k.txt")).toBe("https://cdn.example.com/k.txt");
+    expect(await files.url("k.txt", { expiresIn: 90 })).toBe(
+      "https://signed.example.com/k.txt?expires=90&method=GET"
+    );
+  });
+
   test("declares range + delimiter, no metadata/cacheControl/progress, and a client-side copy", () => {
     const files = new Files({
       adapter: bunS3({ client: new FakeBunS3Client() }),
@@ -322,6 +336,7 @@ describe("bun-s3 adapter", () => {
       cacheControl: false,
       delimiter: "any",
       metadata: false,
+      publicUrl: false,
       rangeRead: true,
       resumable: true,
       serverSideCopy: false,
@@ -369,6 +384,7 @@ describe("bun-s3 adapter", () => {
     const adapter = bunS3({ client });
     const eightDays = 8 * 24 * 60 * 60;
     expect(new Files({ adapter }).capabilities.signedUrl).toEqual({
+      disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
@@ -393,13 +409,17 @@ describe("bun-s3 adapter", () => {
     ).rejects.toMatchObject({ code: "Invalid" });
     expect(presigned).toBe(0);
 
-    // Exactly one week still signs, and a public URL ignores expiresIn.
+    // An explicit expiresIn signs even with a publicBaseUrl, so the cap
+    // applies there too.
+    const pub = bunS3({ client, publicBaseUrl: "https://cdn.example.com" });
+    await expect(
+      pub.url("k.txt", { expiresIn: eightDays })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(presigned).toBe(0);
+
+    // Exactly one week still signs.
     expect(await adapter.url("k.txt", { expiresIn: 604_800 })).toContain(
       "expires=604800"
-    );
-    const pub = bunS3({ client, publicBaseUrl: "https://cdn.example.com" });
-    expect(await pub.url("k.txt", { expiresIn: eightDays })).toBe(
-      "https://cdn.example.com/k.txt"
     );
   });
 

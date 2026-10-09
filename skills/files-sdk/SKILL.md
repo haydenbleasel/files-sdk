@@ -177,13 +177,13 @@ See [references/bulk-and-transfer.md](references/bulk-and-transfer.md).
 
 - **Signing adapters** (S3, R2 HTTP, MinIO, RustFS, DigitalOcean Spaces, Storj, Hetzner, Akamai, Backblaze B2, Wasabi, Tigris): presigned `GetObject` URL expiring after `opts.expiresIn` seconds (default ~3600). If the adapter was constructed with `publicBaseUrl`, the URL is built against that origin instead and does not expire.
 - **R2 binding**: uses `publicBaseUrl` if set; falls back to HTTP signing if HTTP credentials were also passed (hybrid); otherwise throws.
-- **Vercel Blob (public)**: permanent CDN URL. `expiresIn` is ignored.
+- **Vercel Blob (public)**: permanent CDN URL; an `expiresIn` throws `Unsupported`.
 - **Vercel Blob (private)**: presigned `GET` scoped to that key, expiring after `expiresIn` (default 3600, or the adapter's `defaultUrlExpiresIn`; Vercel caps it at 7 days).
 - **FTP / SFTP / WebDAV**: need `publicBaseUrl` (an HTTP server fronting the same tree); otherwise `url()` throws. `fs` returns a `file://` URL unless `urlBaseUrl` is set.
 
 ### Two `UrlOptions` worth knowing
 
-- `expiresIn` — seconds. Honored by signing adapters (including Vercel Blob private); ignored by Vercel Blob public and `publicBaseUrl` URLs; N/A where `url()` throws.
+- `expiresIn` — seconds, and always means "a link that expires": on a signing adapter it returns a signed URL even when `publicBaseUrl` is set (a plain `url(key)` still returns the CDN link); on an adapter that only has permanent links (Vercel Blob public, UploadThing public-read, Convex, Appwrite, fs) it throws `Unsupported`. `files.capabilities.publicUrl` / `signedUrl.supported` tell you which you have.
 - `responseContentDisposition` — **strongly recommend `"attachment"` (or `'attachment; filename="..."'`) for user-uploaded buckets.** Without it, a user-uploaded `.html` or scripted SVG executes inline at the bucket origin (stored XSS). Passing this option **forces the signing path** on signing adapters (even when `publicBaseUrl` is set) because a permanent CDN URL has no signature to bind the override to. Throws on Vercel Blob (no primitive) and R2 binding without HTTP creds.
 
 ### Key encoding

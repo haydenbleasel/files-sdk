@@ -1447,11 +1447,12 @@ describe("Files class", () => {
       },
       delimiter: false,
       metadata: true,
+      publicUrl: false,
       rangeRead: false,
       resumable: false,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: true, expiry: "exact", supported: true },
       uploadProgress: false,
     });
   });
@@ -1497,11 +1498,17 @@ describe("Files class", () => {
       },
       delimiter: false,
       metadata: true,
+      publicUrl: false,
       rangeRead: false,
       resumable: true,
       serverSideCopy: true,
       signedUpload: { contentType: false, maxSize: true, supported: true },
-      signedUrl: { expiry: "exact", maxExpiresIn: 604_800, supported: true },
+      signedUrl: {
+        disposition: false,
+        expiry: "exact",
+        maxExpiresIn: 604_800,
+        supported: true,
+      },
       uploadProgress: true,
     });
   });
@@ -2257,7 +2264,7 @@ const narrowing = (name: string, seen: string[]): FilesPlugin => ({
     return {
       ...caps,
       rangeRead: false,
-      signedUrl: { expiry: "none", supported: false },
+      signedUrl: { disposition: false, expiry: "none", supported: false },
     };
   },
   name,
@@ -2349,6 +2356,54 @@ describe("capability gates run before plugins", () => {
     );
   });
 
+  test("an expiresIn is refused where url() only returns permanent links", async () => {
+    const permanent = withCapabilities(fakeAdapter(), {
+      publicUrl: true,
+      signedUrl: { supported: false },
+    });
+    const files = new Files({ adapter: permanent });
+    await files.upload("a.txt", "x");
+    // A plain url() is fine: the permanent link is what this adapter has.
+    await expect(files.url("a.txt")).resolves.toContain("a.txt");
+    await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+      message:
+        "fake: an expiring url() (`expiresIn`) is not supported by this adapter",
+    });
+    // An expiry a plugin injects on the way in is caught too.
+    const injecting: FilesPlugin = {
+      name: "injecting",
+      wrap: handlers({
+        url: (op, next) =>
+          next({ ...op, options: { ...op.options, expiresIn: 30 } }),
+      }),
+    };
+    const injected = new Files({ adapter: permanent, plugins: [injecting] });
+    await expect(injected.url("a.txt")).rejects.toMatchObject({
+      code: "Unsupported",
+    });
+    // A plugin that turns signing off is named, before any wrap runs.
+    const seen: string[] = [];
+    const noSigning: FilesPlugin = {
+      capabilities: (caps) => ({
+        ...caps,
+        signedUrl: { disposition: false, expiry: "none", supported: false },
+      }),
+      name: "no-signing",
+    };
+    const narrowed = new Files({
+      adapter: fakeAdapter(),
+      plugins: [recording(seen), noSigning],
+    });
+    await expect(
+      narrowed.url("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({
+      message:
+        'an expiring url() (`expiresIn`) is not supported by the "no-signing" plugin',
+    });
+    expect(seen).toEqual([]);
+  });
+
   test("a bulk item gated before plugins fails on its own", async () => {
     const seen: string[] = [];
     const files = new Files({
@@ -2381,18 +2436,22 @@ describe("capability declarations", () => {
       uploadProgress: false,
     });
     expect(caps({ signedUrl: { supported: true } }).signedUrl).toEqual({
+      disposition: false,
       expiry: "exact",
       supported: true,
     });
     expect(
-      caps({ signedUrl: { expiry: "provider", supported: true } }).signedUrl
-    ).toEqual({ expiry: "provider", supported: true });
+      caps({
+        signedUrl: { disposition: true, expiry: "provider", supported: true },
+      }).signedUrl
+    ).toEqual({ disposition: true, expiry: "provider", supported: true });
+    expect(caps({ publicUrl: true }).publicUrl).toBe(true);
     // An unsupported signer is always "none", whatever else it declares.
     expect(
       caps({
         signedUrl: { expiry: "provider", maxExpiresIn: 9, supported: false },
       }).signedUrl
-    ).toEqual({ expiry: "none", supported: false });
+    ).toEqual({ disposition: false, expiry: "none", supported: false });
     expect(
       caps({ signedUpload: { maxExpiresIn: 60, supported: true } }).signedUpload
     ).toEqual({
@@ -2437,7 +2496,11 @@ describe("plugin capability hooks", () => {
     const caps = files.capabilities;
     expect(seen).toEqual(["first", "tagging"]);
     expect(caps.rangeRead).toBe(false);
-    expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+    expect(caps.signedUrl).toEqual({
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
     expect(caps.metadata).toBe(true);
     // The adapter's own declaration is untouched.
     expect(adapter.capabilities?.signedUrl).toEqual({

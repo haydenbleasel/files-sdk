@@ -97,7 +97,12 @@ describe("fs adapter", () => {
           maxSize: false,
           supported: false,
         });
-        expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+        expect(caps.signedUrl).toEqual({
+          disposition: false,
+          expiry: "none",
+          supported: false,
+        });
+        expect(caps.publicUrl).toBe(true);
         expect(caps.uploadProgress).toBe(false);
       }
     });
@@ -1117,6 +1122,22 @@ describe("fs adapter", () => {
         files.url("a.txt", { responseContentDisposition: "attachment" })
       );
     });
+
+    for (const urlBaseUrl of [undefined, "http://localhost:3000/files"]) {
+      test(`refuses expiresIn: the URL is always permanent (urlBaseUrl: ${urlBaseUrl})`, async () => {
+        const root = await makeRoot();
+        const files = new Files({
+          adapter: fsAdapter({ root, ...(urlBaseUrl && { urlBaseUrl }) }),
+        });
+        await files.upload("a.txt", "x");
+        await expect(
+          files.url("a.txt", { expiresIn: 60 })
+        ).rejects.toMatchObject({
+          code: "Unsupported",
+          message: expect.stringMatching(/expiresIn/u),
+        });
+      });
+    }
   });
 
   describe("signedUploadUrl", () => {

@@ -672,6 +672,26 @@ describe("firebase-storage adapter", () => {
     expect(getSignedUrlMock).not.toHaveBeenCalled();
   });
 
+  test("url with expiresIn signs even when publicBaseUrl is set", async () => {
+    const files = new Files({
+      adapter: firebaseStorage({
+        projectId: "p",
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    expect(getSignedUrlMock).not.toHaveBeenCalled();
+    const before = Date.now();
+    const url = await files.url("a.txt", { expiresIn: 60 });
+    expect(url).toBe("https://signed.example.com/read?v=v4");
+    const [signCall] = getSignedUrlMock.mock.calls;
+    if (!signCall) {
+      throw new Error("expected getSignedUrl to have been called");
+    }
+    const { expires } = signCall[0] as { expires: number };
+    expect(expires).toBeLessThanOrEqual(before + 60_000 + 5000);
+  });
+
   test("url falls back to a signed read URL when publicBaseUrl is unset", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),
@@ -746,6 +766,7 @@ describe("firebase-storage adapter", () => {
       adapter: firebaseStorage({ projectId: "p" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
@@ -764,11 +785,23 @@ describe("firebase-storage adapter", () => {
       cacheControl: true,
       delimiter: "any",
       metadata: true,
+      publicUrl: false,
       rangeRead: true,
       resumable: true,
       serverSideCopy: true,
       uploadProgress: true,
     });
+  });
+
+  test("capabilities report publicUrl when publicBaseUrl is set", () => {
+    const files = new Files({
+      adapter: firebaseStorage({
+        projectId: "p",
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    expect(files.capabilities.signedUrl.supported).toBe(true);
   });
 
   describe("error mapping", () => {

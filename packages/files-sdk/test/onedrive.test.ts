@@ -1082,9 +1082,25 @@ describe("onedrive adapter", () => {
         supported: true,
       });
       // No signed-URL primitive: the public-link mode is permanent.
-      expect(caps.signedUrl).toEqual({ expiry: "none", supported: false });
+      expect(caps.signedUrl).toEqual({
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      });
+      expect(caps.publicUrl).toBe(publicByDefault);
       expect(caps.uploadProgress).toBe(false);
     }
+  });
+
+  test("url refuses expiresIn even in the public-link mode", async () => {
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    await expect(files.url("a.txt", { expiresIn: 60 })).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/expiresIn/u),
+    });
   });
 
   test("only the / delimiter is accepted", async () => {

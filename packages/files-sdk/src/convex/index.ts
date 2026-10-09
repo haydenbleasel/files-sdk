@@ -188,10 +188,12 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
 
   const adapter: ConvexAdapter = {
     capabilities: {
+      // `url()` returns a permanent Convex serving URL in every context.
+      publicUrl: true,
       // Convex storage ids are immutable — `copy()` is unsupported (throws).
       serverSideCopy: false,
-      // No `signedUrl`: `url()` returns a permanent Convex serving URL —
-      // unsigned and non-expiring (`expiresIn` is ignored). No `signedUpload`:
+      // No `signedUrl`: the serving URL is unsigned and non-expiring, so an
+      // explicit `expiresIn` is refused by the core gate. No `signedUpload`:
       // `generateUploadUrl()` can't bind the key or any constraint, so
       // `signedUploadUrl()` always throws.
     },
@@ -411,7 +413,8 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       } catch (error) {
         throw mapConvexError(error);
       }
-      // Convex URLs do not expire while the file exists, so `expiresIn` is
+      // Convex URLs do not expire while the file exists. `Files` refuses an
+      // explicit `expiresIn` before reaching here; called directly, it's
       // ignored.
       if (url === null) {
         throw new FilesError("NotFound", `convex: not found: ${key}`);

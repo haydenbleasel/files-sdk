@@ -357,6 +357,9 @@ export const cloudinaryAdapter = (
   return {
     capabilities: {
       delimiter: "any",
+      // The default `upload` (public) delivery type's `url()` is a permanent
+      // CDN URL.
+      publicUrl: type === "upload",
       rangeRead: true,
       // No native copy — `copy()` re-uploads by URL into a new asset.
       serverSideCopy: false,
@@ -369,8 +372,14 @@ export const cloudinaryAdapter = (
         supported: Boolean(apiKey && apiSecret),
       },
       // `private` / `authenticated` delivery types sign URLs; the default
-      // `upload` (public) delivery type returns an unsigned, permanent CDN URL.
-      signedUrl: { expiry: "exact", supported: type !== "upload" },
+      // `upload` (public) delivery type returns an unsigned, permanent CDN URL,
+      // so an explicit `expiresIn` is refused by the core gate. No URL carries
+      // a Content-Disposition override (`url()` throws on one).
+      signedUrl: {
+        disposition: false,
+        expiry: "exact",
+        supported: type !== "upload",
+      },
     },
     cloudName,
     async copy(from, to) {

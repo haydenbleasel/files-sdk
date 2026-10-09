@@ -149,6 +149,24 @@ describe("rustfs adapter", () => {
     expect(await adapter.url("a.txt")).toBe("https://cdn.example.com/a.txt");
   });
 
+  test("url() with an explicit expiresIn signs even with publicBaseUrl", async () => {
+    const files = new Files({
+      adapter: rustfs({
+        ...creds,
+        bucket: "uploads",
+        endpoint: "http://localhost:9000",
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    expect(files.capabilities.signedUrl.disposition).toBe(true);
+    expect(await files.url("a.txt")).toBe("https://cdn.example.com/a.txt");
+    const signed = new URL(await files.url("a.txt", { expiresIn: 90 }));
+    expect(signed.origin).toBe("http://localhost:9000");
+    expect(signed.searchParams.get("X-Amz-Expires")).toBe("90");
+    expect(signed.searchParams.get("X-Amz-Signature")).toBeTruthy();
+  });
+
   test("defaultUrlExpiresIn is forwarded", async () => {
     const adapter = rustfs({
       ...creds,
@@ -246,6 +264,8 @@ describe("rustfs adapter — fetch engine", () => {
       maxSize: false,
       supported: true,
     });
+    expect(capabilities.publicUrl).toBe(false);
+    expect(capabilities.signedUrl.disposition).toBe(true);
   });
 
   test("path-style addressing and the us-east-1 signing region by default", async () => {
@@ -276,6 +296,16 @@ describe("rustfs adapter — fetch engine", () => {
     ).toBe("https://cdn.example.com/a.txt");
     const url = new URL(await makeFetch({ defaultUrlExpiresIn: 90 }).url("a"));
     expect(url.searchParams.get("X-Amz-Expires")).toBe("90");
+  });
+
+  test("an explicit expiresIn signs even with publicBaseUrl", async () => {
+    const files = new Files({
+      adapter: makeFetch({ publicBaseUrl: "https://cdn.example.com" }),
+    });
+    expect(files.capabilities.publicUrl).toBe(true);
+    const signed = new URL(await files.url("a.txt", { expiresIn: 90 }));
+    expect(signed.origin).toBe("http://localhost:9000");
+    expect(signed.searchParams.get("X-Amz-Expires")).toBe("90");
   });
 
   test("round-trips through the injected fetch", async () => {

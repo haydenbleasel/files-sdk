@@ -9,15 +9,15 @@ description: A register of per-adapter quirks that don't fit the capability matr
 
 `capabilities.signedUrl.supported` tells you whether `url()` can mint a signed or tokenized URL at all, and `capabilities.signedUrl.expiry` what happens to `expiresIn` once it can: `"exact"`, `"provider"` (the provider sets the lifetime), or `"none"` (a permanent link). The wrinkles below are the detail behind those values.
 
-### `expiresIn` is silently ignored
+### `expiresIn` on a permanent link, or a provider-set lifetime
 
-Some adapters return a working URL but don't honor the requested lifetime — the URL is either permanent or has a provider-fixed TTL.
+An explicit `expiresIn` is never silently dropped. On an adapter that can only return permanent links (`capabilities.signedUrl.supported` is `false`), passing one throws an `Unsupported` error; a plain `url(key)` returns the permanent link. On an adapter that can sign but has a `publicBaseUrl`, passing one returns a signed URL instead of the CDN link. What remains are the adapters below, which return a working URL whose lifetime the provider fixes, or which only have permanent links.
 
-- **Vercel Blob** — public blobs return the permanent CDN URL; `expiresIn` is ignored because the URL is reachable by anyone already. Private blobs mint a Vercel Signed URL that honors `expiresIn`; Vercel caps the lifetime at 7 days server-side.
-- **Box** — `url()` returns a tokenized download URL, but Box controls its TTL server-side (`signedUrl.expiry` is `"provider"`). `expiresIn` is accepted for API symmetry and ignored. With `publicBaseUrl` or `publicByDefault`, `url()` returns a permanent public link instead, and `signedUrl.supported` is `false`.
+- **Vercel Blob** — public blobs only have the permanent CDN URL, so an `expiresIn` throws `Unsupported`. Private blobs mint a Vercel Signed URL that honors `expiresIn`; Vercel caps the lifetime at 7 days server-side.
+- **Box** — `url()` returns a tokenized download URL, but Box controls its TTL server-side (`signedUrl.expiry` is `"provider"`). `expiresIn` is accepted for API symmetry and ignored. With `publicBaseUrl` or `publicByDefault`, a plain `url()` returns a permanent public link instead (`publicUrl` is `true`); an explicit `expiresIn` still gets the tokenized link.
 - **PocketBase** — file-token URLs have a server-controlled TTL (short, ~minutes; `signedUrl.expiry` is `"provider"`). `expiresIn` is ignored.
-- **Convex** — serving URLs do not expire while the file exists. `expiresIn` is ignored.
-- **UploadThing** (default `public-read` ACL) — `url()` returns the permanent public URL, so `expiresIn` is ignored and `signedUrl.supported` is `false`. Direct uploads still work: `signedUpload.supported` is `true`, which is what the [gateway](/docs/ui/server/gateway) presigns on.
+- **Convex** — serving URLs do not expire while the file exists, so an `expiresIn` throws `Unsupported`.
+- **UploadThing** (default `public-read` ACL) — `url()` returns the permanent public URL: `signedUrl.supported` is `false` and an `expiresIn` throws `Unsupported`. Direct uploads still work: `signedUpload.supported` is `true`, which is what the [gateway](/docs/ui/server/gateway) presigns on.
 
 ### `expiresIn` has a hard ceiling
 

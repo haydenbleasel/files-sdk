@@ -339,11 +339,14 @@ export const bunnyStorage = (
 
   return {
     capabilities: {
+      // With `publicBaseUrl`, `url()` returns a permanent Pull Zone / CDN link.
+      publicUrl: Boolean(publicBaseUrl),
       // No native copy — `copy()` reads the source and re-uploads the body.
       serverSideCopy: false,
       // No `signedUrl`: `url()` needs `publicBaseUrl` (a Pull Zone / CDN host);
       // the Storage API URL requires an AccessKey header and can't be handed
-      // out, so no signing. No `signedUpload` either, for the same reason.
+      // out, so no signing — an explicit `expiresIn` is refused by the core
+      // gate. No `signedUpload` either, for the same reason.
     },
     async copy(from, to) {
       try {

@@ -154,6 +154,14 @@ const isFileExistsConflict = (cause: unknown): boolean =>
 // can't be applied.
 const BARE_ATTACHMENT = /^\s*attachment\s*$/iu;
 
+// `url()` hands out a permanent view URL only for a public bucket, and only
+// when the endpoint and project it's built from are known (else it throws).
+const servesPublicUrl = (
+  isPublic: boolean | undefined,
+  endpoint: string | undefined,
+  projectId: string | undefined
+): boolean => Boolean(isPublic && endpoint && projectId);
+
 const isStorageInstance = (candidate: unknown): candidate is Storage =>
   isObject(candidate) &&
   "createFile" in candidate &&
@@ -250,12 +258,14 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   return {
     bucket: opts.bucket,
     capabilities: {
+      publicUrl: servesPublicUrl(opts.public, endpoint, projectId),
       // No native copy — `copy()` downloads the source and creates a new file.
       serverSideCopy: false,
       // No `signedUrl`: Appwrite SDKs can't mint signed read URLs with API
       // keys — `url()` returns a permanent view URL under `{ public: true }`,
-      // else throws. No `signedUpload` either: there is no presigned upload
-      // primitive, so `signedUploadUrl()` always throws.
+      // else throws, so an explicit `expiresIn` is refused by the core gate.
+      // No `signedUpload` either: there is no presigned upload primitive, so
+      // `signedUploadUrl()` always throws.
     },
     copy: async (from: string, to: string) => {
       assertAppwriteKey(from, "copy source");

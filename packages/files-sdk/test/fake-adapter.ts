@@ -125,6 +125,9 @@ export const fakeAdapter = (config?: {
     capabilities: {
       cacheControl: true,
       metadata: true,
+      // `url()` mints a (fake) expiring link that echoes `expiresIn` and the
+      // disposition, so it declares itself a signer.
+      signedUrl: { disposition: true, supported: true },
       ...(config?.supportsDelimiter && { delimiter: "any" as const }),
       ...(config?.supportsRange && { rangeRead: true }),
     },

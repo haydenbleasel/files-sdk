@@ -442,6 +442,9 @@ export const sharepoint = (
       // Delegates to the inner onedrive adapter, which returns folder common
       // prefixes for a "/" delimiter; listOpts (incl. delimiter) is forwarded.
       delimiter: "slash",
+      // The inner adapter returns the item's anonymous (permanent) share link
+      // under `publicByDefault`, which is forwarded to it.
+      publicUrl: opts.publicByDefault ?? false,
       // Delegates to the inner onedrive adapter, which honors Range on Graph's
       // /content endpoint; downloadOpts (incl. range) is forwarded above.
       rangeRead: true,
