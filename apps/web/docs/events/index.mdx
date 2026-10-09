@@ -68,7 +68,7 @@ All three reach the same `on()` handlers.
 
 | Format | Adapters | Delivery | Setup |
 | --- | --- | --- | --- |
-| `s3` | `s3`, `s3-fetch`, `bun-s3` | Lambda, SQS, SNS → SQS, EventBridge | [Amazon S3](/docs/events/s3) |
+| `s3` | `s3`, `s3-fetch` (against AWS) | Lambda, SQS, SNS → SQS, EventBridge | [Amazon S3](/docs/events/s3) |
 | `s3` | `minio` | Webhook | [MinIO](/docs/events/minio) |
 | `s3` | `rustfs` | Webhook (or Kafka, NATS, …) | [MinIO](/docs/events/minio#rustfs) |
 | `s3` | `wasabi` | Your own AWS SNS topic | [Amazon S3](/docs/events/s3#wasabi) |

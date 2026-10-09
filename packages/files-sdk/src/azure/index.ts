@@ -804,6 +804,8 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // Blob Storage events through Event Grid.
+      events: { format: "azure" },
       metadata: true,
       // A plain `url()` returns the permanent `publicBaseUrl` link when set.
       publicUrl: Boolean(publicBaseUrl),

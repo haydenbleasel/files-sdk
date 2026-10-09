@@ -13,6 +13,7 @@ import { memory } from "../src/memory/index.js";
 import { softDelete } from "../src/soft-delete/index.js";
 import { tiering } from "../src/tiering/index.js";
 import { versioning } from "../src/versioning/index.js";
+import { providerAdapter } from "./events-helper.js";
 import { fakeAdapter } from "./fake-adapter.js";
 
 const keyed = (list: readonly FileEvent[]) =>
@@ -177,7 +178,7 @@ describe("dispatch / emit errors", () => {
   test("dispatch rejects after trying every event; onError sees each failure", async () => {
     const onError = mock();
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [events({ onError })],
     });
     const ok = collect();
@@ -211,7 +212,7 @@ describe("dispatch / emit errors", () => {
 
   test("dispatch resolves with the events handled", async () => {
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [events()],
     });
     const list = await files.events.dispatch({ Records: [s3Record("a")] });
@@ -264,7 +265,7 @@ describe("dedupe", () => {
   test("a redelivered id is skipped; a failed one stays eligible", async () => {
     const { seen, store } = storeOf();
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [events({ dedupe: store, dedupeTtl: 1000, onError: () => {} })],
     });
     let calls = 0;
@@ -288,7 +289,7 @@ describe("dedupe", () => {
   test("the TTL defaults to a day", async () => {
     const { seen, store } = storeOf();
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [events({ dedupe: store })],
     });
     await files.events.dispatch({ Records: [s3Record("a")] });
@@ -392,15 +393,19 @@ describe("installation", () => {
 
   test("an adapter with no format can't parse, unless one is given", async () => {
     const files = createFiles({
-      adapter: { ...memory(), name: "hetzner" } as Adapter,
+      adapter: providerAdapter("hetzner"),
       plugins: [events()],
     });
     expect(files.events.format).toBeUndefined();
     await expect(files.events.parse({})).rejects.toThrow(
       "the hetzner adapter has no notification format"
     );
+    await expect(files.events.parse({})).rejects.toMatchObject({
+      code: "Unsupported",
+      permanent: true,
+    });
     const explicit = createFiles({
-      adapter: { ...memory(), name: "hetzner" } as Adapter,
+      adapter: providerAdapter("hetzner"),
       plugins: [events({ format: "s3" })],
     });
     expect(explicit.events.format).toBe("s3");

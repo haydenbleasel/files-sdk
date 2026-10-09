@@ -1101,11 +1101,11 @@ export const createS3Adapter = (
   // on its own) both point at a service whose conditional-header support is
   // unknown, so the primitives stay off and every conditional call fails
   // closed before provider I/O.
-  const nativeConditional =
-    opts.conditional ??
-    (opts.endpoint === undefined &&
-      readEnv("AWS_ENDPOINT_URL_S3") === undefined &&
-      readEnv("AWS_ENDPOINT_URL") === undefined);
+  const canonicalAws =
+    opts.endpoint === undefined &&
+    readEnv("AWS_ENDPOINT_URL_S3") === undefined &&
+    readEnv("AWS_ENDPOINT_URL") === undefined;
+  const nativeConditional = opts.conditional ?? canonicalAws;
   const conditional: S3Adapter["conditional"] = nativeConditional
     ? {
         copy: {
@@ -1164,6 +1164,10 @@ export const createS3Adapter = (
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // AWS S3 notifications (Lambda, SQS, SNS, EventBridge) are S3
+      // `Records[]`. An S3-compatible endpoint may or may not send that shape,
+      // so a wrapper that's verified to declares it itself.
+      events: canonicalAws ? { format: "s3" } : false,
       metadata: true,
       // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
       // is configured; an explicit `expiresIn` still signs.

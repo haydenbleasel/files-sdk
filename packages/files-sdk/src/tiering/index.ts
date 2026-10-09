@@ -793,10 +793,8 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     event: (event) => {
       if (fallback) {
         throw new FilesError(
-          "Provider",
-          "tiering: provider events can't be mapped with fallback: true (a hot-tier delete may be a move to cold); use gateway or events({ sdk: true }) events instead",
-          undefined,
-          { permanent: true }
+          "Unsupported",
+          "tiering: provider events can't be mapped with fallback: true (a hot-tier delete may be a move to cold); use gateway or events({ sdk: true }) events instead"
         );
       }
       return route({ key: event.key }) === "hot" ? event : null;

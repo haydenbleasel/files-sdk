@@ -40,7 +40,7 @@ events({
 
 | Option | Default |  |
 | --- | --- | --- |
-| `format` | From the adapter | The notification format to read. `s3`, `s3-fetch`, `bun-s3` and `minio` read `"s3"`; `r2` reads `"r2"`; `gcs` and `firebase-storage` read `"gcs"`; `azure` reads `"azure"`; `backblaze-b2` reads `"b2"`; `tigris`, `supabase`, `cloudinary`, `appwrite`, `box` and `memory` read their own. Set it for a provider that sends one of these formats under another adapter. |
+| `format` | `files.capabilities.events` | The notification format to read. Each adapter declares the one its provider sends: `s3()` and `s3Fetch()` against AWS, `minio`, `rustfs` and `wasabi` read `"s3"`; `r2` reads `"r2"`; `gcs` and `firebase-storage` read `"gcs"`; `azure` reads `"azure"`; `backblaze-b2` reads `"b2"`; `tigris`, `supabase`, `cloudinary`, `appwrite`, `box` and `memory` read their own. Set it for a provider that sends one of these formats under an adapter that doesn't declare it (a custom `s3()` endpoint, `bun-s3`). |
 | `bucket` | All buckets | Keep only provider events for this bucket (container, on Azure), so several buckets can share a queue or endpoint. |
 | `sdk` | `false` | Also raise events for successful `upload` / `delete` / `copy` / `move` calls through this instance, with `source: "sdk"`. Delivered after the call settles and not awaited. |
 | `dedupe` | None | Skip event ids this store has seen. See [Delivery](/docs/events/delivery#dedupe-on-eventid). |

@@ -324,6 +324,8 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // Its own change feed (`subscribe`).
+      events: { format: "memory" },
       metadata: true,
       rangeRead: true,
       // `copy()` clones the in-memory entry — no body round-trip.

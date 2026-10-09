@@ -81,9 +81,7 @@ const errorResponse = (status: number, message: string): Response =>
   Response.json({ error: { message } }, { status });
 
 const misconfigured = (message: string): FilesError =>
-  new FilesError("Provider", `files.events.webhook(): ${message}`, undefined, {
-    permanent: true,
-  });
+  new FilesError("Invalid", `files.events.webhook(): ${message}`);
 
 const authenticator = (
   verify: EventsWebhookOptions["verify"],

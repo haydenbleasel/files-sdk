@@ -206,6 +206,8 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // Pub/Sub notifications (and Eventarc).
+      events: { format: "gcs" },
       metadata: true,
       // A plain `url()` returns the permanent `publicBaseUrl` link when set.
       publicUrl: Boolean(publicBaseUrl),

@@ -403,6 +403,8 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // R2 event notifications, delivered to a Queue.
+      events: { format: "r2" },
       metadata: true,
       // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
       // is configured; an explicit `expiresIn` signs in hybrid mode and is
@@ -666,6 +668,7 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
       ...inner,
       capabilities: {
         ...inner.capabilities,
+        events: { format: "r2" },
         signedUpload: withoutMaxSize(inner.capabilities?.signedUpload),
       },
       // `async` so the `maxSize` rejection is a rejected promise, matching
@@ -706,6 +709,8 @@ const r2FromHttp = (opts: R2HttpOptions): R2Adapter => {
     // has no POST Object API, so `signedUploadUrl()` rejects it up front.
     capabilities: {
       ...inner.capabilities,
+      // R2 event notifications, delivered to a Queue.
+      events: { format: "r2" },
       signedUpload: withoutMaxSize(inner.capabilities?.signedUpload),
     },
     // Spreading snapshots the lazy `raw` getter as `undefined`; re-bind it.

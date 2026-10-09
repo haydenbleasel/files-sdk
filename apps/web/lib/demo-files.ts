@@ -48,6 +48,7 @@ const CAPABILITIES: AdapterCapabilities = {
     replace: false,
   },
   delimiter: "any",
+  events: false,
   metadata: true,
   publicUrl: false,
   rangeRead: true,

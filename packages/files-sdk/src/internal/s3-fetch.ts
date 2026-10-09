@@ -37,12 +37,18 @@ import {
   resolveUrlStrategy,
 } from "./core.js";
 import { FilesError } from "./errors.js";
+import type { EventCapability } from "./events.js";
 import { inferTypeFromName } from "./mime.js";
 import { createStoredFile } from "./stored-file.js";
 
 export interface S3FetchAdapterOptions {
   /** Bucket name. All operations are scoped to it. */
   bucket: string;
+  /**
+   * The notification format the wrapping adapter's provider sends. Defaults
+   * to S3's for an AWS endpoint and none otherwise.
+   */
+  events?: EventCapability | false;
   /**
    * Service endpoint origin, e.g. `https://ACCOUNT.r2.cloudflarestorage.com`
    * or `https://s3.us-east-1.amazonaws.com`. Only the origin is used — any
@@ -429,6 +435,11 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     return request.url;
   };
 
+  const host = endpointUrl.hostname.toLowerCase();
+  const awsHost = ["amazonaws.com", "amazonaws.com.cn"].some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+  );
+
   return {
     bucket,
     // No `uploadProgress`: bodies go up as one buffered PUT with no native
@@ -436,6 +447,9 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // AWS S3 sends S3 `Records[]` notifications; an S3-compatible endpoint
+      // (R2, MinIO, RustFS on this engine) is declared by its wrapper.
+      events: opts.events ?? (awsHost ? { format: "s3" } : false),
       metadata: true,
       // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
       // is configured; an explicit `expiresIn` still signs.

@@ -208,6 +208,7 @@ const snapshotOf = (adapter: Adapter) => {
       replace: caps.conditional.replace,
     },
     delimiter: caps.delimiter,
+    events: caps.events ? caps.events.format : null,
     metadata: caps.metadata,
     rangeRead: caps.rangeRead,
     resumable: caps.resumable,

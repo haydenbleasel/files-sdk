@@ -3,7 +3,7 @@ title: Amazon S3
 description: Send S3 bucket notifications to SQS, Lambda, SNS or EventBridge, and hand them to files.events.dispatch() or a webhook.
 ---
 
-S3 publishes notifications to SQS, SNS, Lambda or EventBridge. All of them are read by the `s3` format, which the `s3`, `s3-fetch` and `bun-s3` adapters pick automatically.
+S3 publishes notifications to SQS, SNS, Lambda or EventBridge. All of them are read by the `s3` format, which `s3()` and `s3Fetch()` declare when they talk to AWS. With a custom `endpoint`, and on `bun-s3` (whose endpoint can come from the environment), nothing is assumed: pass `events({ format: "s3" })` if that service sends S3 notifications.
 
 ## SQS (recommended)
 

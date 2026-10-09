@@ -7,6 +7,29 @@
 import type { Files } from "../index.js";
 import { isFunction, isObject } from "./is.js";
 
+/** A bucket-notification format `files-sdk/events` can read. */
+export type EventFormat =
+  | "s3"
+  | "r2"
+  | "gcs"
+  | "azure"
+  | "b2"
+  | "tigris"
+  | "supabase"
+  | "cloudinary"
+  | "appwrite"
+  | "box"
+  | "memory";
+
+/**
+ * The notification format an adapter's provider sends for this bucket, as
+ * `files.capabilities.events` reports it. `files-sdk/events` reads it
+ * to parse deliveries.
+ */
+export interface EventCapability {
+  format: EventFormat;
+}
+
 /** What happened to a key. Providers rarely tell an overwrite from a create, so these two are the honest common subset; a copy or move arrives as `created` (and `deleted`). */
 export type FileEventType = "created" | "deleted";
 

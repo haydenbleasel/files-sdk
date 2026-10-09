@@ -88,7 +88,7 @@ const { results: deleted } = await files.delete(keys);
 - `multipart` is renamed `resumable`.
 - `delimiter` is `"any" | "slash" | false`, so check `caps.delimiter !== false` for "has folders".
 - `signedUrl` gains `expiry` and `disposition`.
-- `signedUpload` (direct uploads) and `publicUrl` are new.
+- `signedUpload` (direct uploads), `publicUrl` and `events` (the bucket-notification format, for [`files-sdk/events`](/docs/events)) are new.
 
 An option the adapter can't honor, or that a plugin turns off, is now refused before any plugin runs.
 
@@ -115,6 +115,13 @@ Their other changes:
 - `deleteMany` returns `{ results, errors? }`.
 - `createStoredFile()` takes a `FileInfo`, with `contentType` instead of `type` (`StoredFileMeta` is removed).
 - Throw `Invalid` / `Unsupported` for bad calls and refusals.
+
+## New in v3: upload lifecycle and storage events
+
+Nothing to migrate, but two additions replace code many apps wrote by hand:
+
+- **[`onUploadComplete`](/docs/ui/server/upload-lifecycle)** on the gateway runs on your server once per verified upload, hands data back to the browser as the upload result's `data`, and rejects an upload by throwing. If you built a "confirm upload" endpoint for the client to call after it uploads, move that work into the hook.
+- **[`files-sdk/events`](/docs/events)** normalizes your provider's bucket notifications (S3, R2, GCS, Azure, MinIO and more) into one `FileEvent` and routes them to handlers, for writes that don't go through the SDK. Custom adapters can declare `capabilities.events` to opt in.
 
 ## Smaller changes
 

@@ -5,23 +5,11 @@
 
 import type { Adapter } from "../../index.js";
 import { FilesError } from "../../internal/errors.js";
-import type { FileEvent } from "../../internal/events.js";
+import type { EventFormat, FileEvent } from "../../internal/events.js";
 import { isNumber, isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
 
-/** A notification format `files-sdk/events` can read. */
-export type EventFormat =
-  | "s3"
-  | "r2"
-  | "gcs"
-  | "azure"
-  | "b2"
-  | "tigris"
-  | "supabase"
-  | "cloudinary"
-  | "appwrite"
-  | "box"
-  | "memory";
+export type { EventFormat } from "../../internal/events.js";
 
 /**
  * One delivery: a decoded JSON object (arrays arrive split into one delivery
@@ -78,13 +66,11 @@ export interface EventParser {
   ) => Response | undefined;
 }
 
-/** A delivery that isn't the shape the format documents. Permanent: redelivering it won't help. */
+/** A delivery that isn't the shape the format documents. `Invalid`: redelivering it won't help. */
 export const malformed = (format: EventFormat, detail: string): FilesError =>
   new FilesError(
-    "Provider",
-    `files-sdk/events: not a ${format} notification (${detail})`,
-    undefined,
-    { permanent: true }
+    "Invalid",
+    `files-sdk/events: not a ${format} notification (${detail})`
   );
 
 /** A delivery whose credential or signature doesn't check out. */

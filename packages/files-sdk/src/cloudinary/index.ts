@@ -357,6 +357,8 @@ export const cloudinaryAdapter = (
   return {
     capabilities: {
       delimiter: "any",
+      // Upload / delete / rename webhook notifications.
+      events: { format: "cloudinary" },
       // The default `upload` (public) delivery type's `url()` is a permanent
       // CDN URL.
       publicUrl: type === "upload",

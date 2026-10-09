@@ -870,6 +870,8 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
   const adapter: BoxAdapter = {
     capabilities: {
       delimiter: "slash",
+      // Box webhooks (v2); keys are rebuilt relative to `rootFolderId`.
+      events: { format: "box" },
       // Under `publicBaseUrl` / `publicByDefault`, a plain `url(key)` returns a
       // permanent link (the CDN URL, or the file's open shared link).
       publicUrl: Boolean(publicBaseUrl || publicByDefault),

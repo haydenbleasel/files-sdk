@@ -329,6 +329,9 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     capabilities: {
       // Bun's list forwards `delimiter` and returns `commonPrefixes`.
       delimiter: "any",
+      // No `events`: Bun resolves its endpoint from env vars or a caller's
+      // client, so whether this is AWS S3 (S3 notifications) isn't knowable
+      // here. Opt in with `events({ format: "s3" })`.
       // A plain `url(key)` returns the permanent `publicBaseUrl` link when one
       // is configured; an explicit `expiresIn` still presigns.
       publicUrl: Boolean(publicBaseUrl),

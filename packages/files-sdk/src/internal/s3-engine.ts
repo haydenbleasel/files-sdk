@@ -8,6 +8,7 @@ import type {
 import type { S3Adapter, S3AdapterOptions, S3Sdk } from "../s3/core.js";
 import { deleteManyWithFallback } from "./core.js";
 import { FilesError } from "./errors.js";
+import type { EventCapability } from "./events.js";
 import { isFunction } from "./is.js";
 import { SIGV4_MAX_EXPIRES_IN } from "./s3-fetch.js";
 
@@ -157,7 +158,8 @@ const lazyS3 = (
  */
 export const lazyS3Adapter = (
   config: S3AdapterOptions,
-  name: string
+  name: string,
+  events: EventCapability | false = false
 ): Adapter<S3Client> => {
   const getInner = lazyS3(config, name);
 
@@ -178,6 +180,9 @@ export const lazyS3Adapter = (
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // Always a custom endpoint (R2, MinIO, RustFS), so no notification
+      // format is assumed; the wrapper passes the one its provider sends.
+      events,
       metadata: true,
       publicUrl: Boolean(config.publicBaseUrl),
       rangeRead: true,

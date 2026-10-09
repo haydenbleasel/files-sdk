@@ -61,6 +61,8 @@ describe("s3-fetch core — identity", () => {
     expect(adapter.capabilities).toEqual({
       cacheControl: true,
       delimiter: "any",
+      // A non-AWS endpoint: no notification format is assumed.
+      events: false,
       metadata: true,
       publicUrl: false,
       rangeRead: true,

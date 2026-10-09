@@ -25,12 +25,7 @@ import type { JsonValue } from "../internal/json.js";
 import { isJsonObject } from "../internal/json.js";
 import type { MemoryNotification } from "../memory/index.js";
 import type { Delivery, EventFormat, EventParser } from "./formats/index.js";
-import {
-  EVENT_FORMATS,
-  formatForAdapter,
-  isEventFormat,
-  parserFor,
-} from "./formats/index.js";
+import { EVENT_FORMATS, isEventFormat, parserFor } from "./formats/index.js";
 import type { EventsWebhookOptions, WebhookHandler } from "./webhook.js";
 import { createWebhook } from "./webhook.js";
 
@@ -40,7 +35,7 @@ export type {
   FileEventType,
 } from "../internal/events.js";
 export type { EventFormat } from "./formats/index.js";
-export { EVENT_FORMATS, formatForAdapter } from "./formats/index.js";
+export { EVENT_FORMATS } from "./formats/index.js";
 export type {
   EventsWebhookOptions,
   GoogleOidcOptions,
@@ -176,10 +171,9 @@ const decode = (text: string): JsonValue => {
     return JSON.parse(text) as JsonValue;
   } catch (error) {
     throw new FilesError(
-      "Provider",
+      "Invalid",
       "files-sdk/events: delivery is not JSON",
-      error,
-      { permanent: true }
+      error
     );
   }
 };
@@ -198,10 +192,8 @@ const flatten = (input: unknown, headers?: Headers): Delivery[] => {
     return [{ body: input, ...(headers && { headers }) }];
   }
   throw new FilesError(
-    "Provider",
-    "files-sdk/events: expected a Request, a JSON string, an object, or an array of them",
-    undefined,
-    { permanent: true }
+    "Invalid",
+    "files-sdk/events: expected a Request, a JSON string, an object, or an array of them"
   );
 };
 
@@ -326,10 +318,8 @@ export const events = (
 ): FilesPlugin<EventsExtension> => {
   if (options.format !== undefined && !isEventFormat(options.format)) {
     throw new FilesError(
-      "Provider",
-      `events(): unknown format "${String(options.format)}" (expected one of ${EVENT_FORMATS.join(", ")})`,
-      undefined,
-      { permanent: true }
+      "Invalid",
+      `events(): unknown format "${String(options.format)}" (expected one of ${EVENT_FORMATS.join(", ")})`
     );
   }
   const registrations: Registration[] = [];
@@ -405,16 +395,15 @@ export const events = (
   };
 
   const formatOf = (files: Files): EventFormat | undefined =>
-    options.format ?? formatForAdapter(files.adapter.name);
+    options.format ??
+    (files.capabilities.events ? files.capabilities.events.format : undefined);
 
   const parserOf = (files: Files): EventParser => {
     const format = formatOf(files);
     if (!format) {
       throw new FilesError(
-        "Provider",
-        `files-sdk/events: the ${files.adapter.name} adapter has no notification format; pass events({ format }) if its provider sends S3, R2, GCS or Azure notifications`,
-        undefined,
-        { permanent: true }
+        "Unsupported",
+        `files-sdk/events: the ${files.adapter.name} adapter has no notification format; pass events({ format }) if its provider sends S3, R2, GCS or Azure notifications`
       );
     }
     return parserFor(format);
@@ -493,10 +482,8 @@ export const events = (
         : patternOrHandler;
       if (!isFunction(handler)) {
         throw new FilesError(
-          "Provider",
-          "files.events.on(): expected a handler function",
-          undefined,
-          { permanent: true }
+          "Invalid",
+          "files.events.on(): expected a handler function"
         );
       }
       const registration: Registration = {
@@ -572,7 +559,7 @@ export const events = (
       // silently fold its events against the first, so refuse it.
       if (owner && owner.files.adapter !== files.adapter) {
         throw new FilesError(
-          "Provider",
+          "Invalid",
           "events(): this plugin is already installed on another Files instance; create one events() per instance"
         );
       }

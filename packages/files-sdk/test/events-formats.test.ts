@@ -4,11 +4,20 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { events, formatForAdapter } from "../src/events/index.js";
-import type { EventFormat } from "../src/events/index.js";
+import { backblazeB2 } from "../src/backblaze-b2/index.js";
+import { events } from "../src/events/index.js";
+import { hetzner } from "../src/hetzner/index.js";
 import type { Adapter, FileEvent } from "../src/index.js";
 import { createFiles } from "../src/index.js";
-import { memory } from "../src/memory/index.js";
+import { minio } from "../src/minio/index.js";
+import { r2 } from "../src/r2/index.js";
+import { rustfs } from "../src/rustfs/index.js";
+import { s3Fetch } from "../src/s3-fetch/index.js";
+import { s3 } from "../src/s3/index.js";
+import { tigris } from "../src/tigris/index.js";
+import { wasabi } from "../src/wasabi/index.js";
+import { providerAdapter } from "./events-helper.js";
+import { fakeAdapter } from "./fake-adapter.js";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures", "events");
 
@@ -24,7 +33,7 @@ const headersOf = (name: string): Headers => {
 /** A store whose adapter reports `name`, so `events()` picks that format. */
 const filesAs = (name: string, opts: { prefix?: string } = {}) =>
   createFiles({
-    adapter: { ...memory(), name } as Adapter,
+    adapter: providerAdapter(name),
     plugins: [events()],
     ...opts,
   });
@@ -48,32 +57,100 @@ const pick = (list: FileEvent[]) =>
     versionId,
   }));
 
-describe("formatForAdapter", () => {
-  test.each([
-    ["s3", "s3"],
-    ["s3-fetch", "s3"],
-    ["bun-s3", "s3"],
-    ["minio", "s3"],
-    ["minio-fetch", "s3"],
-    ["rustfs", "s3"],
-    ["rustfs-fetch", "s3"],
-    ["wasabi", "s3"],
-    ["r2", "r2"],
-    ["r2-http", "r2"],
-    ["r2-http-fetch", "r2"],
-    ["r2-binding", "r2"],
-    ["gcs", "gcs"],
-    ["firebase-storage", "gcs"],
-    ["azure", "azure"],
-    ["memory", "memory"],
-  ] as [string, EventFormat][])("%s → %s", (name, format) => {
-    expect(formatForAdapter(name)).toBe(format);
+const declaredFormat = (adapter: Adapter) =>
+  createFiles({ adapter }).capabilities.events;
+
+describe("adapters declare their notification format", () => {
+  const creds = { accessKeyId: "k", secretAccessKey: "s" };
+
+  test("AWS S3 reads s3; an S3-compatible endpoint claims nothing", () => {
+    expect(
+      declaredFormat(
+        s3({ bucket: "b", credentials: creds, region: "us-east-1" })
+      )
+    ).toEqual({ format: "s3" });
+    expect(
+      declaredFormat(
+        s3({
+          bucket: "b",
+          credentials: creds,
+          endpoint: "https://storage.example.com",
+          region: "us-east-1",
+        })
+      )
+    ).toBe(false);
+    expect(
+      declaredFormat(
+        s3Fetch({
+          bucket: "b",
+          endpoint: "https://s3.us-east-1.amazonaws.com",
+          ...creds,
+        })
+      )
+    ).toEqual({ format: "s3" });
+    expect(
+      declaredFormat(
+        s3Fetch({
+          bucket: "b",
+          endpoint: "https://storage.example.com",
+          ...creds,
+        })
+      )
+    ).toBe(false);
   });
 
-  test("an adapter with no verified notification format has none", () => {
-    expect(formatForAdapter("vercel-blob")).toBeUndefined();
-    expect(formatForAdapter("digitalocean-spaces")).toBeUndefined();
-    expect(formatForAdapter("storj")).toBeUndefined();
+  test("verified S3-compatible wrappers read s3; unverified ones don't", () => {
+    for (const client of ["aws-sdk", "fetch"] as const) {
+      expect(
+        declaredFormat(
+          minio({
+            bucket: "b",
+            client,
+            endpoint: "http://minio.local",
+            ...creds,
+          })
+        )
+      ).toEqual({ format: "s3" });
+      expect(
+        declaredFormat(
+          rustfs({
+            bucket: "b",
+            client,
+            endpoint: "http://rustfs.local",
+            ...creds,
+          })
+        )
+      ).toEqual({ format: "s3" });
+    }
+    expect(
+      declaredFormat(wasabi({ bucket: "b", region: "us-east-1", ...creds }))
+    ).toEqual({ format: "s3" });
+    expect(
+      declaredFormat(hetzner({ bucket: "b", region: "fsn1", ...creds }))
+    ).toBe(false);
+  });
+
+  test("B2, Tigris and every R2 engine read their own formats", () => {
+    expect(
+      declaredFormat(
+        backblazeB2({ bucket: "b", region: "us-west-004", ...creds })
+      )
+    ).toEqual({ format: "b2" });
+    expect(declaredFormat(tigris({ bucket: "b", ...creds }))).toEqual({
+      format: "tigris",
+    });
+    for (const client of ["aws-sdk", "fetch"] as const) {
+      expect(
+        declaredFormat(r2({ accountId: "a", bucket: "b", client, ...creds }))
+      ).toEqual({ format: "r2" });
+    }
+    expect(declaredFormat(r2({ binding: {} as never }))).toEqual({
+      format: "r2",
+    });
+  });
+
+  test("an adapter without notifications has no format", () => {
+    expect(declaredFormat(fakeAdapter())).toBe(false);
   });
 });
 
@@ -220,20 +297,23 @@ describe("s3", () => {
   });
 
   test("RustFS (no eventSource, %2F keys) and Wasabi (wasabi:s3) records", async () => {
-    const [rustfs] = await parse(
+    const [fromRustfs] = await parse(
       "rustfs",
       fixture("s3-compatible/rustfs-webhook.json")
     );
-    expect(rustfs).toMatchObject({ key: "uploads/hello.dat", type: "created" });
-    const wasabi = fixture("s3-compatible/wasabi-sns-message.json");
-    const [direct] = await parse("wasabi", wasabi);
+    expect(fromRustfs).toMatchObject({
+      key: "uploads/hello.dat",
+      type: "created",
+    });
+    const wasabiMessage = fixture("s3-compatible/wasabi-sns-message.json");
+    const [direct] = await parse("wasabi", wasabiMessage);
     expect(direct).toMatchObject({
       key: "heart.jpg",
       size: 9061,
       type: "created",
     });
     const viaSns = await parse("wasabi", {
-      Message: JSON.stringify(wasabi),
+      Message: JSON.stringify(wasabiMessage),
       TopicArn: "arn:aws:sns:us-east-1:123456789012:wasabi",
       Type: "Notification",
     });
@@ -282,6 +362,10 @@ describe("s3", () => {
     await expect(parse("s3", { hello: "world" })).rejects.toThrow(
       "not a s3 notification"
     );
+    await expect(parse("s3", { hello: "world" })).rejects.toMatchObject({
+      code: "Invalid",
+      permanent: true,
+    });
     await expect(parse("s3", [1])).rejects.toThrow("expected a Request");
     await expect(
       parse("s3", { Records: [{ body: 4, eventSource: "aws:sqs" }] })
@@ -729,7 +813,7 @@ describe("bucket and prefix mapping", () => {
 
   test("events({ bucket }) drops other buckets' events", async () => {
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [events({ bucket: "amzn-s3-demo-bucket" })],
     });
     expect(

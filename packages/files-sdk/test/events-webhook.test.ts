@@ -6,11 +6,12 @@ import path from "node:path";
 import { timingSafeEqual } from "../src/events/crypto.js";
 import { events } from "../src/events/index.js";
 import type { EventsOptions } from "../src/events/index.js";
-import type { Adapter, FileEvent } from "../src/index.js";
+import type { FileEvent } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 import { createRouteHandler } from "../src/next/index.js";
 import { tiering } from "../src/tiering/index.js";
+import { providerAdapter } from "./events-helper.js";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures", "events");
 const fixtureText = (name: string): string =>
@@ -22,7 +23,7 @@ const URL_ = "https://app.test/hooks/storage";
 
 const filesAs = (name: string, opts: EventsOptions = {}) =>
   createFiles({
-    adapter: { ...memory(), name } as Adapter,
+    adapter: providerAdapter(name),
     plugins: [events(opts)],
   });
 
@@ -67,7 +68,7 @@ describe("webhook() construction", () => {
 
   test("a plugin that refuses provider events fails at construction", () => {
     const files = createFiles({
-      adapter: { ...memory(), name: "s3" } as Adapter,
+      adapter: providerAdapter("s3"),
       plugins: [
         events(),
         tiering({ cold: memory(), fallback: true, route: () => "hot" }),

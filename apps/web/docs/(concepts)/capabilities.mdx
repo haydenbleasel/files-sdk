@@ -34,6 +34,7 @@ interface AdapterCapabilities {
   cacheControl: boolean;
   resumable: boolean;
   serverSideCopy: boolean;
+  events: { format: EventFormat } | false;
   signedUrl: {
     supported: boolean;
     expiry: "exact" | "provider" | "none";
@@ -72,6 +73,7 @@ interface AdapterCapabilities {
 | `resumable` | the adapter exposes a pause-able, resumable upload primitive | `upload({ control })` |
 | `serverSideCopy` | `copy()` runs server-side, with no body re-transfer through your process | `copy` |
 | `publicUrl` | a plain `url(key)` returns a permanent link (a `publicBaseUrl` CDN, a public bucket or blob, a public share link) | `url` |
+| `events` | the provider sends bucket notifications in this format (`"s3"`, `"r2"`, `"gcs"`, …), for [`files-sdk/events`](/docs/events) to parse | `files.events` |
 | `signedUrl` | `url()` can mint a signed or tokenized URL — see below | `url` |
 | `signedUpload` | `signedUploadUrl()` hands out a direct upload target — see below | `signedUploadUrl` |
 | `conditional` | the requested create, replace, exact-read, delete, or copy predicate has a provider-native primitive | `upload`, `download`, `delete`, `copy` |
@@ -102,6 +104,10 @@ signedUrl: {
 ### `publicUrl`
 
 `true` when a plain `url(key)`, with no `expiresIn` and no `responseContentDisposition`, returns a permanent link on this instance: a configured `publicBaseUrl`, Vercel Blob in public mode, UploadThing's `public-read`, Supabase or Appwrite with `public: true`, a public share link (`publicByDefault` on Box, Dropbox, OneDrive, Google Drive), Convex serving URLs, or the filesystem's `file://` / `urlBaseUrl` URL. It's independent of `signedUrl`: the S3 family with a `publicBaseUrl` has both, returning the CDN link for a plain `url(key)` and a signed one when you pass `expiresIn`.
+
+### `events`
+
+The bucket-notification format this instance's provider sends, or `false` when it sends none that `files-sdk/events` can read. [`events()`](/docs/plugins/events) reads it to parse deliveries. It's declared only where the provider is verified to send that format for the configuration: `s3()` against AWS reads `"s3"`, but `s3()` with a custom `endpoint` reads `false`, since an S3-compatible service may not send S3's shape. MinIO, RustFS and Wasabi, which do, declare it themselves. See [Events](/docs/events#supported-providers) for every format.
 
 ### `signedUpload`
 
@@ -140,9 +146,10 @@ const myAdapter: Adapter = {
     publicUrl: Boolean(publicBaseUrl),
     signedUrl: { supported: true, disposition: true, maxExpiresIn: 86_400 }, // expiry defaults to "exact"
     signedUpload: { supported: true, maxSize: true, contentType: true },
+    events: { format: "s3" }, // only if the provider is verified to send S3 notifications
   },
   // upload, download, head, exists, delete, copy, list, url, signedUploadUrl…
 };
 ```
 
-Declare what the instance can actually do with its configuration. A `rangeRead`, `metadata`, `cacheControl`, or `delimiter` you declare is let through to your adapter; one you leave out is refused before your adapter is called. `serverSideCopy`, `signedUrl`, and `signedUpload` are descriptive: they don't gate the call, but callers and the gateway plan around them, so a wrong `true` sends them down a path that fails.
+Declare what the instance can actually do with its configuration. A `rangeRead`, `metadata`, `cacheControl`, or `delimiter` you declare is let through to your adapter; one you leave out is refused before your adapter is called. `serverSideCopy`, `signedUrl`, `signedUpload`, and `events` are descriptive: they don't gate the call, but callers, the gateway and `files-sdk/events` plan around them, so a wrong `true` sends them down a path that fails.

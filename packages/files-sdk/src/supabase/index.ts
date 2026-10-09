@@ -606,6 +606,8 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       cacheControl: true,
       // `list()` folds on "/" only (`with_delimiter`); other delimiters throw.
       delimiter: "slash",
+      // Database Webhooks on `storage.objects`.
+      events: { format: "supabase" },
       metadata: true,
       // A plain `url()` returns a permanent link with `publicBaseUrl` or
       // `public: true` (`getPublicUrl()`).

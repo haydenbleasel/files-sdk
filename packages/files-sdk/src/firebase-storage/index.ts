@@ -355,6 +355,8 @@ export const firebaseStorage = (
     capabilities: {
       cacheControl: true,
       delimiter: "any",
+      // A Cloud Storage bucket: GCS Pub/Sub notifications.
+      events: { format: "gcs" },
       metadata: true,
       // A plain `url()` returns the permanent `publicBaseUrl` link when set.
       publicUrl: Boolean(publicBaseUrl),

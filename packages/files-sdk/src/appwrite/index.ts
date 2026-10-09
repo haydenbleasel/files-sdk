@@ -258,6 +258,8 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
   return {
     bucket: opts.bucket,
     capabilities: {
+      // Project webhooks for storage file events.
+      events: { format: "appwrite" },
       publicUrl: servesPublicUrl(opts.public, endpoint, projectId),
       // No native copy — `copy()` downloads the source and creates a new file.
       serverSideCopy: false,

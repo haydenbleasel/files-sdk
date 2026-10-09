@@ -97,6 +97,11 @@ export const backblazeB2 = (
 
   return {
     ...inner,
+    capabilities: {
+      ...inner.capabilities,
+      // B2 Event Notifications (its own webhook format, not S3's).
+      events: { format: "b2" },
+    },
     name: "backblaze-b2",
   };
 };

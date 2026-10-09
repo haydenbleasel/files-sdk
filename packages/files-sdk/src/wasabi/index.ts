@@ -100,6 +100,11 @@ export const wasabi = (opts: WasabiAdapterOptions): WasabiAdapter => {
 
   return {
     ...inner,
+    capabilities: {
+      ...inner.capabilities,
+      // S3 `Records[]` notifications, published to your AWS SNS topic.
+      events: { format: "s3" },
+    },
     name: "wasabi",
   };
 };

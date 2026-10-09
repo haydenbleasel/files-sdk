@@ -88,6 +88,11 @@ export const tigris = (opts: TigrisAdapterOptions): TigrisAdapter => {
 
   return {
     ...inner,
+    capabilities: {
+      ...inner.capabilities,
+      // Tigris object notifications (its own webhook format, not S3's).
+      events: { format: "tigris" },
+    },
     name: "tigris",
   };
 };

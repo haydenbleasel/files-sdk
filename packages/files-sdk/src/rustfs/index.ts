@@ -140,6 +140,8 @@ export const rustfs = (opts: RustfsAdapterOptions): RustfsAdapter => {
         defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
       }),
       endpoint: opts.endpoint,
+      // S3-shaped bucket notifications (webhook, Kafka, NATS, …).
+      events: { format: "s3" },
       ...(opts.fetch && { fetch: opts.fetch }),
       forcePathStyle,
       name: "rustfs-fetch",
@@ -165,6 +167,7 @@ export const rustfs = (opts: RustfsAdapterOptions): RustfsAdapter => {
       ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
       region,
     },
-    "rustfs"
+    "rustfs",
+    { format: "s3" }
   );
 };

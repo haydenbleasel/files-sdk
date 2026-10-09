@@ -7,6 +7,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -28,6 +29,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -49,6 +51,7 @@
       "replace": false
     },
     "delimiter": false,
+    "events": "appwrite",
     "metadata": false,
     "rangeRead": false,
     "resumable": true,
@@ -65,6 +68,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -86,6 +90,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "azure",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -107,6 +112,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "b2",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -128,6 +134,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": "box",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -147,6 +154,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -168,6 +176,7 @@
       "replace": false
     },
     "delimiter": false,
+    "events": null,
     "metadata": false,
     "rangeRead": false,
     "resumable": false,
@@ -184,6 +193,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "cloudinary",
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -202,6 +212,7 @@
       "replace": false
     },
     "delimiter": false,
+    "events": null,
     "metadata": false,
     "rangeRead": false,
     "resumable": false,
@@ -218,6 +229,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -239,6 +251,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -258,6 +271,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -279,6 +293,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -300,6 +315,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "gcs",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -321,6 +337,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -337,6 +354,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -353,6 +371,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "gcs",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -374,6 +393,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -392,6 +412,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -413,6 +434,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -434,6 +456,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -455,6 +478,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "memory",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -471,6 +495,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -492,6 +517,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -513,6 +539,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": null,
     "metadata": true,
     "rangeRead": false,
     "resumable": false,
@@ -529,6 +556,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -547,6 +575,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -568,6 +597,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -589,6 +619,7 @@
       "replace": false
     },
     "delimiter": false,
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": false,
@@ -608,6 +639,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "r2",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -629,6 +661,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -650,6 +683,7 @@
       "replace": true
     },
     "delimiter": "any",
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -671,6 +705,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": false,
@@ -692,6 +727,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -713,6 +749,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -729,6 +766,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -747,6 +785,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -768,6 +807,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": "supabase",
     "metadata": true,
     "rangeRead": false,
     "resumable": true,
@@ -789,6 +829,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -810,6 +851,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "tigris",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -831,6 +873,7 @@
       "replace": false
     },
     "delimiter": false,
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": false,
@@ -849,6 +892,7 @@
       "replace": false
     },
     "delimiter": "slash",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": true,
@@ -867,6 +911,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -888,6 +933,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": "s3",
     "metadata": true,
     "rangeRead": true,
     "resumable": true,
@@ -909,6 +955,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": false,
     "rangeRead": true,
     "resumable": false,
@@ -925,6 +972,7 @@
       "replace": false
     },
     "delimiter": "any",
+    "events": null,
     "metadata": true,
     "rangeRead": true,
     "resumable": true,

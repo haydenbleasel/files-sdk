@@ -127,6 +127,8 @@ export const minio = (opts: MinioAdapterOptions): MinioAdapter => {
         defaultUrlExpiresIn: opts.defaultUrlExpiresIn,
       }),
       endpoint: opts.endpoint,
+      // S3-shaped bucket notifications (webhook, Kafka, NATS, …).
+      events: { format: "s3" },
       ...(opts.fetch && { fetch: opts.fetch }),
       forcePathStyle,
       name: "minio-fetch",
@@ -152,6 +154,7 @@ export const minio = (opts: MinioAdapterOptions): MinioAdapter => {
       ...(opts.publicBaseUrl && { publicBaseUrl: opts.publicBaseUrl }),
       region,
     },
-    "minio"
+    "minio",
+    { format: "s3" }
   );
 };

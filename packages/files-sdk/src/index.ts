@@ -6,7 +6,7 @@ import {
   mapMany,
 } from "./internal/core.js";
 import { FilesError } from "./internal/errors.js";
-import type { FileEvent } from "./internal/events.js";
+import type { EventCapability, FileEvent } from "./internal/events.js";
 import { FOLD_PROVIDER_EVENT } from "./internal/events.js";
 import { globPrefix } from "./internal/glob.js";
 import { isFunction, isNumber, isObject, isString } from "./internal/is.js";
@@ -43,6 +43,8 @@ import { buildSearchMatcher } from "./internal/search-matcher.js";
 export { rejectConditional } from "./internal/conditional.js";
 export { FilesError, type FilesErrorCode } from "./internal/errors.js";
 export type {
+  EventCapability,
+  EventFormat,
   FileEvent,
   FileEventSource,
   FileEventType,
@@ -858,6 +860,12 @@ export interface AdapterCapabilities {
   conditional: ConditionalAdapterCapabilities;
   /** Which `list({ delimiter })` values return common prefixes. */
   delimiter: DelimiterSupport;
+  /**
+   * The bucket-notification format this instance's provider sends, which
+   * `files-sdk/events` parses, or `false` when it has none the SDK can read
+   * (or none that's verified for this configuration).
+   */
+  events: EventCapability | false;
   /** `upload({ metadata })` persists arbitrary user metadata. */
   metadata: boolean;
   /**
@@ -902,6 +910,14 @@ export interface AdapterCapabilityDeclaration {
    * call, rather than silently returning a flat list.
    */
   delimiter?: DelimiterSupport;
+  /**
+   * The bucket-notification format this provider sends (S3 `Records[]`, R2
+   * Queue messages, GCS Pub/Sub, …), for `files-sdk/events`. Declare it only
+   * when the provider is verified to send that format for this configuration:
+   * an S3-compatible endpoint that may or may not send S3-shaped events
+   * declares nothing, and callers opt in with `events({ format })`.
+   */
+  events?: EventCapability | false;
   /**
    * `upload` persists {@link UploadOptions.metadata}. Without it, a non-empty
    * `metadata` throws before any provider call rather than being dropped.
@@ -2701,6 +2717,7 @@ export class Files<A extends Adapter = Adapter> {
         replace: isFunction(a.conditional?.replace),
       },
       delimiter: normalizeDelimiterSupport(declared.delimiter),
+      events: declared.events ? { format: declared.events.format } : false,
       metadata: declared.metadata === true,
       publicUrl: declared.publicUrl === true,
       rangeRead: declared.rangeRead === true,

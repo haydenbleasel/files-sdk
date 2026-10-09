@@ -35,7 +35,7 @@ files.events.on("deleted", async (e) => {
 
 | Provider | Adapter(s) | Wire it |
 | --- | --- | --- |
-| S3 → SQS / Lambda / SNS→SQS / EventBridge | `s3`, `s3-fetch`, `bun-s3` | `handler = (event) => files.events.dispatch(event)`; per-record `dispatch(record)` + `batchItemFailures` for partial retries |
+| S3 → SQS / Lambda / SNS→SQS / EventBridge | `s3`, `s3-fetch` (against AWS; `bun-s3` or a custom endpoint needs `events({ format: "s3" })`) | `handler = (event) => files.events.dispatch(event)`; per-record `dispatch(record)` + `batchItemFailures` for partial retries |
 | S3 → SNS → HTTPS | `s3` | `webhook({ verify: { sns: { topicArn, confirm: true } } })` |
 | MinIO / RustFS webhook | `minio`, `rustfs` | `webhook({ verify: { token } })` (`auth_token` → `Authorization: Bearer`) |
 | Wasabi → your AWS SNS topic | `wasabi` | SNS → SQS → `dispatch(record)`, or SNS → HTTPS with `verify: { sns }` |
@@ -51,7 +51,7 @@ files.events.on("deleted", async (e) => {
 | memory | `memory` | built in: writes emit events; `await files.events.settled()` in tests |
 
 - `webhook()` returns `{ handle }`, mountable with any gateway binding (`createRouteHandler` from `files-sdk/next`, `hono`, …). `verify` is required (`false` only when something upstream authenticates). Status codes: 401 bad credential, 400 malformed, 500 handler failure (redelivery), 200 `{ received }`.
-- Other S3-compatible services (Storj via Pub/Sub, Spaces, Hetzner, Scaleway, …): no format claimed (unverified, own format, or no notifications); opt in with `events({ format: "s3" })` only when the provider sends S3-shaped events. Adapters without notifications (Vercel Blob, Netlify Blobs, UploadThing, Dropbox, Drive, OneDrive, SharePoint, fs, …): use `events({ sdk: true })` (writes through this instance, not awaited) and gateway uploads.
+- The format comes from `files.capabilities.events` (`{ format } | false`), which each adapter declares per instance: `s3()` reads `"s3"` only against AWS (no custom `endpoint`); `bun-s3` declares nothing. Other S3-compatible services (Storj via Pub/Sub, Spaces, Hetzner, Scaleway, …) declare nothing (unverified, own format, or no notifications); opt in with `events({ format: "s3" })` only when the provider sends S3-shaped events. Parsing on an adapter with no format throws `Unsupported`; a malformed delivery throws `Invalid`. Adapters without notifications (Vercel Blob, Netlify Blobs, UploadThing, Dropbox, Drive, OneDrive, SharePoint, fs, …): use `events({ sdk: true })` (writes through this instance, not awaited) and gateway uploads.
 - `events({ bucket })` drops other buckets' events on a shared endpoint.
 - Debug a payload: `files events parse delivery.json --format s3` (stdin when no file).
 

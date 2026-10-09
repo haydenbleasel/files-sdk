@@ -17,7 +17,7 @@ import { snsVerifier, snsUrl, stringToSign } from "../src/events/sns.js";
 import { pemToDer, spkiOf } from "../src/events/x509.js";
 import type { Adapter, FileEvent } from "../src/index.js";
 import { createFiles } from "../src/index.js";
-import { memory } from "../src/memory/index.js";
+import { providerAdapter } from "./events-helper.js";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures", "events");
 const text = (name: string): string =>
@@ -33,7 +33,7 @@ const filesAs = (
   opts: EventsOptions = {}
 ) =>
   createFiles({
-    adapter: { ...memory(), ...adapter } as Adapter,
+    adapter: providerAdapter(adapter.name, adapter),
     plugins: [events(opts)],
   });
 

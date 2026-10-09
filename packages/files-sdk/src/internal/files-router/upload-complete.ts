@@ -5,7 +5,7 @@
 // be trusted to call. A throw rejects the upload: the object is deleted (unless
 // `onRejected: "keep"`) and the client gets the error.
 
-import type { Files } from "../../index.js";
+import type { FileInfo, Files } from "../../index.js";
 import { FilesError } from "../errors.js";
 import type { JsonValue } from "../json.js";
 import { RouterError, serializeFilesError } from "../router-core/envelope.js";
@@ -14,15 +14,8 @@ import type { WireFilesError, WireUploadedFile } from "./protocol.js";
 /** How the bytes reached storage: direct to a presigned target, through the gateway's proxy PUT, or a keyed `upload(key, body)`. */
 export type UploadVia = "presign" | "proxy" | "keyed";
 
-/** What the hook sees of the landed object — metadata only, the key caller-facing (authorize's `keyPrefix` stripped). */
-export interface UploadedFileInfo {
-  key: string;
-  size: number;
-  contentType: string;
-  etag?: string;
-  lastModified?: number;
-  metadata?: Record<string, string>;
-}
+/** What the hook sees of the landed object: its {@link FileInfo}, the key caller-facing (authorize's `keyPrefix` stripped). */
+export type UploadedFileInfo = FileInfo;
 
 export interface UploadCompleteContext<TContext = unknown> {
   /** The landed object, as `head()` reports it (keyed uploads: as `upload()` returned it). */
