@@ -1332,6 +1332,29 @@ describe("s3 adapter", () => {
     }
   });
 
+  test("signedUploadUrl PUT signs content-type so a different type is rejected", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      region: "us-east-1",
+    });
+    const typed = await adapter.signedUploadUrl("k.txt", {
+      contentType: "image/png",
+      expiresIn: 60,
+    });
+    // The presigner marks content-type unsignable by default, which would
+    // leave the returned header advisory; it must be in the signed set.
+    expect(
+      new URL(typed.url).searchParams.get("X-Amz-SignedHeaders")?.split(";")
+    ).toEqual(["content-type", "host"]);
+
+    const untyped = await adapter.signedUploadUrl("k.txt", { expiresIn: 60 });
+    expect(new URL(untyped.url).searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "host"
+    );
+    expect(untyped.method === "PUT" && untyped.headers).toBeUndefined();
+  });
+
   test("signedUploadUrl returns method POST with fields when maxSize is set", async () => {
     const adapter = s3({
       bucket: "b",

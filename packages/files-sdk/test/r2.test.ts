@@ -339,6 +339,10 @@ describe("r2 adapter — HTTP path", () => {
         expect(out.url).toContain("X-Amz-Signature=");
         expect(out.url).toContain("X-Amz-Expires=60");
       }
+      // The aws-sdk engine binds the Content-Type, like the fetch engine.
+      expect(
+        new URL(out.url).searchParams.get("X-Amz-SignedHeaders")?.split(";")
+      ).toContain("content-type");
     });
 
     test("signedUploadUrl with maxSize throws — R2 has no POST policy", async () => {

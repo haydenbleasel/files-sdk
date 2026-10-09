@@ -1377,6 +1377,12 @@ export const createS3Adapter = (
           return { fields: post.fields, method: "POST", url: post.url };
         }
         assertSigV4ExpiresIn(providerLabel, signOpts.expiresIn);
+        // The presigner always adds `content-type` to its unsignable set, so
+        // without an override the URL is signed over `host` alone and the
+        // Content-Type is advisory: a client could PUT any type. Opting it into
+        // `signableHeaders` (which wins over the unsignable set in
+        // `@smithy/signature-v4`) binds it, so a mismatched type gets a 403 —
+        // matching the fetch engine, whose `allHeaders` signs it too.
         const url = await getSignedUrl(
           client,
           new PutObjectCommand({
@@ -1384,7 +1390,12 @@ export const createS3Adapter = (
             Key: key,
             ...(signOpts.contentType && { ContentType: signOpts.contentType }),
           }),
-          { expiresIn: signOpts.expiresIn }
+          {
+            expiresIn: signOpts.expiresIn,
+            ...(signOpts.contentType && {
+              signableHeaders: new Set(["content-type"]),
+            }),
+          }
         );
         return {
           headers: signOpts.contentType
