@@ -98,6 +98,8 @@ const S3_UNAUTH_CODES: ReadonlySet<string> = new Set([
   "SignatureDoesNotMatch",
 ]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
+// S3's GetObject `NoSuchKey` text, reused for a bodyless 404.
+const S3_KEY_NOT_FOUND_MESSAGE = "The specified key does not exist.";
 
 const stripEtag = (etag: string | undefined): string | undefined => {
   if (!etag) {
@@ -289,16 +291,34 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       ? `${message}${ADDRESSING_HINT}`
       : message;
 
+  const errorMessage = (
+    code: string | undefined,
+    message: string | undefined,
+    status: number
+  ): string | undefined => {
+    if (message) {
+      return code ? withAddressingHint(code, message) : message;
+    }
+    // A bodyless 404 — every HEAD (`head()`, `exists()`) — reads like the
+    // `NoSuchKey` body S3 sends a GetObject, so a missing key gets the same
+    // message whichever call found it (the aws-sdk engine matches).
+    return status === 404 && (!code || S3_NOT_FOUND_CODES.has(code))
+      ? S3_KEY_NOT_FOUND_MESSAGE
+      : undefined;
+  };
+
   const errorFromXml = (xml: string, status: number): FilesError => {
     const rawCode = XML_CODE_RE.exec(xml)?.groups?.value;
     const rawMessage = XML_MESSAGE_RE.exec(xml)?.groups?.value;
     const code = rawCode && decodeXmlText(rawCode);
-    const message = rawMessage && decodeXmlText(rawMessage);
+    const message = errorMessage(
+      code || undefined,
+      rawMessage && decodeXmlText(rawMessage),
+      status
+    );
     return mapError({
       ...(code && { code }),
-      ...(message && {
-        message: code ? withAddressingHint(code, message) : message,
-      }),
+      ...(message && { message }),
       status,
     });
   };

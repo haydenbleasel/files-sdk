@@ -199,7 +199,10 @@ describe("s3-fetch core — download/head/exists/delete", () => {
 
   test("head of a missing key throws NotFound from the status alone", async () => {
     const { adapter } = withFake();
-    await expectCode(adapter.head("ghost.txt"), "NotFound");
+    const error = await expectCode(adapter.head("ghost.txt"), "NotFound");
+    // The HEAD 404 has no body; it reads like S3's GetObject NoSuchKey text
+    // (and the aws-sdk engine's head()) instead of the generic "Not found".
+    expect(error.message).toBe("The specified key does not exist.");
   });
 
   test("exists returns true/false and rethrows non-NotFound errors", async () => {

@@ -722,17 +722,35 @@ interface S3ServiceExceptionFields {
   name?: string;
 }
 
+// The AWS SDK's message for an error response with no XML body to read a
+// `<Message>` from: every failed HEAD, since a HEAD response has no body. It
+// says nothing, so it's treated as no message at all.
+const SDK_NO_BODY_MESSAGE = "UnknownError";
+// What S3 puts in a GetObject 404's `NoSuchKey` body. A HEAD 404 (`head()`,
+// `exists()`) has no body, so it gets the same text: a missing key reads the
+// same whichever call found it. Kept in step with `internal/s3-fetch.ts`.
+const S3_KEY_NOT_FOUND_MESSAGE = "The specified key does not exist.";
+
+const ownS3Message = (
+  e: S3ServiceExceptionFields | null | undefined
+): string | undefined =>
+  e?.message === SDK_NO_BODY_MESSAGE ? undefined : e?.message;
+
 const extractS3Error = (cause: unknown): ErrorExtract => {
   // SAFETY: every field is read optionally; a thrown value that is not an
   // SDK exception (or not even an object) just yields no code/status/message.
   const e = cause as S3ServiceExceptionFields | null | undefined;
   const code = e?.name ?? e?.Code;
+  const status = e?.$metadata?.httpStatusCode;
+  const message =
+    ownS3Message(e) ??
+    (status === 404 && (!code || S3_NOT_FOUND_CODES.has(code))
+      ? S3_KEY_NOT_FOUND_MESSAGE
+      : undefined);
   return {
     ...(code && { code }),
-    ...(e?.message && { message: e.message }),
-    ...(e?.$metadata?.httpStatusCode !== undefined && {
-      status: e.$metadata.httpStatusCode,
-    }),
+    ...(message && { message }),
+    ...(status !== undefined && { status }),
   };
 };
 
@@ -805,7 +823,7 @@ export const mapS3Error = (
   const code = wrapped.code as ProviderFilesErrorCode;
   return new FilesError(
     code,
-    e?.message ?? messages[code] ?? wrapped.message,
+    ownS3Message(e) ?? messages[code] ?? wrapped.message,
     cause
   );
 };

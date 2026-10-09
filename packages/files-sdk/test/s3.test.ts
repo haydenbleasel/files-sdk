@@ -12,6 +12,8 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
   ListPartsCommand,
+  NoSuchKey,
+  NotFound,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
@@ -328,6 +330,58 @@ describe("s3 adapter", () => {
       })
     );
     await expect(files.exists("missing.txt")).resolves.toBe(false);
+  });
+
+  test("head of a missing key reads like a download of it, not the SDK's UnknownError", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "test-bucket", region: "us-east-1" }),
+    });
+    // What the SDK throws for a HEAD 404: there is no XML body, so it names
+    // the error NotFound and sets the placeholder message "UnknownError".
+    s3Mock.on(HeadObjectCommand).rejects(
+      new NotFound({
+        $metadata: { httpStatusCode: 404 },
+        message: "UnknownError",
+      })
+    );
+    s3Mock.on(GetObjectCommand).rejects(
+      new NoSuchKey({
+        $metadata: { httpStatusCode: 404 },
+        message: "The specified key does not exist.",
+      })
+    );
+    const headError = await files.head("missing.txt").catch((error) => error);
+    const downloadError = await files
+      .download("missing.txt")
+      .catch((error) => error);
+    expect(headError).toBeInstanceOf(FilesError);
+    expect(headError.code).toBe("NotFound");
+    expect(headError.message).toBe("The specified key does not exist.");
+    expect(headError.message).toBe(downloadError.message);
+  });
+
+  test("a bodyless non-404 failure drops the SDK's UnknownError placeholder", async () => {
+    const adapter = s3({ bucket: "test-bucket", region: "us-east-1" });
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("UnknownError"), {
+        $metadata: { httpStatusCode: 403 },
+        name: "Unknown",
+      })
+    );
+    const denied = await adapter.head("a.txt").catch((error) => error);
+    expect(denied.code).toBe("Unauthorized");
+    expect(denied.message).toBe("Unauthorized");
+
+    s3Mock.reset();
+    s3Mock.on(HeadObjectCommand).rejects(
+      Object.assign(new Error("UnknownError"), {
+        $metadata: { httpStatusCode: 500 },
+        name: "Unknown",
+      })
+    );
+    const failed = await adapter.head("a.txt").catch((error) => error);
+    expect(failed.code).toBe("Provider");
+    expect(failed.message).toBe("S3 error");
   });
 
   test("delete sends DeleteObjectCommand", async () => {
@@ -1762,6 +1816,30 @@ describe("s3 adapter", () => {
     );
     expect(mapped.code).toBe("Provider");
     expect(mapped.message).toBe("R2 error");
+  });
+
+  test("mapS3Error treats the SDK's bodyless UnknownError message as no message", () => {
+    const headMiss = Object.assign(new Error("UnknownError"), {
+      $metadata: { httpStatusCode: 404 },
+      name: "NotFound",
+    });
+    expect(mapS3Error(headMiss).message).toBe(
+      "The specified key does not exist."
+    );
+    // The 2-arg form's per-code table fills in instead of the placeholder.
+    expect(
+      mapS3Error(headMiss, {
+        Conflict: "Conflict",
+        NotFound: "Gone",
+        Provider: "R2 error",
+        Unauthorized: "Unauthorized",
+      }).message
+    ).toBe("Gone");
+    // A 404 naming a different code (a missing bucket) keeps the generic text.
+    expect(
+      mapS3Error({ $metadata: { httpStatusCode: 404 }, name: "NoSuchBucket" })
+        .message
+    ).toBe("Not found");
   });
 
   test("aborting an in-flight lib-storage upload calls Upload.abort()", async () => {
