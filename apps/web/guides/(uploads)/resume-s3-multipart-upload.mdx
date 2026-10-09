@@ -20,7 +20,7 @@ The catch is that S3 keeps parts, not proof of what they contain. Resuming with 
 
 - An S3 bucket (this guide calls it `uploads`), `AWS_REGION` set to its region, and credentials the AWS credential chain can find. The upload needs `s3:PutObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload`, and `s3:GetObject` (the SDK `HEAD`s the object after completing). AWS lists which action covers which call in [multipart upload permissions](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html#mpuAndPermissions).
 - Node 22.18 or later, or Bun. Node runs the `.ts` files directly because [type stripping](https://nodejs.org/api/typescript.html) is on by default from 22.18, and the script opens the file with [`fs.openAsBlob`](https://nodejs.org/api/fs.html#fsopenasblobpath-options), which is stable from 22.17.
-- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, Node 24.14, and Bun 1.4.
+- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, Node 24.14, and Bun 1.4.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -232,10 +232,9 @@ There are four ways to stop an upload, and they leave S3 in different states:
 | `control.pause()`, then `control.resume()` | Same process | Kept | Yes |
 | Abort the `signal` you passed (Ctrl-C above) | Same process | Kept | Yes, from the token |
 | `await control.abort()` | Same process, while `upload()` is running | Aborted with `AbortMultipartUpload` | No |
-| `UploadControl.from(token).abort()` | A new process | **Kept** | Yes, until something else aborts it |
-| `await files.abortUpload(key, token)` (files-sdk 2.7+) | Any process | Aborted with `AbortMultipartUpload` | No |
+| `await files.abortUpload(key, token)` | Any process, from the saved token | Aborted with `AbortMultipartUpload` | No |
 
-The fourth row catches people. `abort()` can only discard a session that the control is currently driving. A control rebuilt from a token and never passed to `upload()` has nothing to discard. In the local MinIO run, calling `abort()` on such a control set its status to `"aborted"` and cleared its token, and `ListParts` still returned every part. To cancel a saved upload from a fresh process on files-sdk 2.7 or later, pass the key and token to `files.abortUpload()`:
+To give up on a saved upload, such as one whose source file is gone, use `files.abortUpload()` with the checkpoint's key and token:
 
 ```ts title="cancel.ts" lineNumbers
 import { readFile, rm } from "node:fs/promises";
@@ -258,35 +257,9 @@ await rm(checkpointPath);
 console.log(`Discarded the saved upload for ${key}`);
 ```
 
-On files-sdk 2.6, call `AbortMultipartUpload` yourself:
+Against the local MinIO server, `abortUpload()` on a stopped upload's token made the next `ListParts` fail with `NoSuchUpload`. A second call with the same token resolved, and passing the token with another key threw `Resume token does not match this upload's bucket/key.` before discarding anything.
 
-```ts title="cancel-2.6.ts" lineNumbers
-import { readFile, rm } from "node:fs/promises";
-
-import { AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
-import { Files, type ResumableUploadSession } from "files-sdk";
-import { s3 } from "files-sdk/s3";
-
-const files = new Files({ adapter: s3({ bucket: "uploads" }) });
-
-const checkpointPath = `${process.argv[2]}.upload.json`;
-const { session } = JSON.parse(await readFile(checkpointPath, "utf8")) as {
-  session: ResumableUploadSession;
-};
-if (session.provider !== "s3") {
-  throw new Error(`Not an S3 session: ${session.provider}`);
-}
-
-await files.raw.send(
-  new AbortMultipartUploadCommand({
-    Bucket: session.bucket,
-    Key: session.key,
-    UploadId: session.uploadId,
-  })
-);
-await rm(checkpointPath);
-console.log(`Discarded upload ${session.uploadId} for ${session.key}`);
-```
+Don't reach for `UploadControl.from(token).abort()` for this. `abort()` can only discard a session the control is currently driving, and a control rebuilt from a token and never passed to `upload()` has nothing to discard. In the local MinIO run, calling it set the control's status to `"aborted"` and cleared its token, and `ListParts` still returned every part. On files-sdk 2.6, which has no `abortUpload()`, send an `AbortMultipartUploadCommand` with the token's `bucket`, `key`, and `uploadId` through `files.raw`.
 
 When you call `control.abort()` in-process, `await` it before deleting your checkpoint. The `upload()` promise can reject before the `AbortMultipartUpload` request finishes. AWS also notes that [part uploads still in progress can succeed after an abort](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html), so an abort issued mid-part may leave a part behind.
 
@@ -332,7 +305,7 @@ GCS, Azure, Dropbox, OneDrive, Vercel Blob, and several others resume across pro
 
 A Node or Bun process restarts with the same file on disk. The checkpoint holds the path's size and modification time, so the script can reopen the file and confirm it's the one it was uploading.
 
-A reloaded browser tab has the token, if you stored it, but not the file. A `File` handle doesn't survive a reload, so the user has to pick the file again, and you compare its `name`, `size`, and `lastModified` with what you saved before resuming. There's a second limit in files-sdk 2.6: the browser bindings (`useFiles` and `createFilesClient`) don't accept an `UploadControl`. They upload each file with one presigned request or through your gateway. Running `s3()` itself in a browser would mean shipping AWS credentials to it, so don't. Resumable uploads with this SDK belong in processes that hold credentials: CLIs, workers, backup jobs, and desktop apps' main processes.
+A reloaded browser tab has the token, if you stored it, but not the file. A `File` handle doesn't survive a reload, so the user has to pick the file again, and you compare its `name`, `size`, and `lastModified` with what you saved before resuming. There's a second limit: in files-sdk 2.x, the browser bindings (`useFiles` and `createFilesClient`) don't accept an `UploadControl`. They upload each file with one presigned request or through your gateway. Running `s3()` itself in a browser would mean shipping AWS credentials to it, so don't. Resumable uploads with this SDK belong in processes that hold credentials: CLIs, workers, backup jobs, and desktop apps' main processes.
 
 ## Troubleshooting
 

@@ -20,7 +20,7 @@ The catch is the signed URL's lifetime. Storage checks the signature on each req
 
 - A private S3 or R2 bucket with your videos (this guide uses an S3 bucket called `videos` and keys like `lessons/intro.mp4`), and server-side credentials for it.
 - A Next.js App Router app with an auth library that resolves the signed-in user on the server.
-- Written against files-sdk 2.6, Next.js 16.4, and React 19.3. Browser behavior described below was observed in Chrome 154 against a local MinIO server; check it in the other browsers you support.
+- Written against files-sdk 2.7, Next.js 16.4, and React 19.3. Browser behavior described below was observed in Chrome 154 against a local MinIO server; check it in the other browsers you support.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -219,7 +219,7 @@ You pay for that in requests and bandwidth. Each browser request costs an `autho
 
 ## Inspect the responses with curl
 
-Point curl at the route with a session cookie and a `Range` header. Against a local MinIO bucket through the proxy path, with a 30 MB test video, the responses looked like this (trimmed to the relevant headers):
+Point curl at the route with a session cookie and a `Range` header. With the proxy-mode gateway in front of a local MinIO bucket, serving a 30 MB test file stored as `video/mp4`, the responses looked like this (trimmed to the relevant headers):
 
 ```bash
 curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=0-1023" \
@@ -231,7 +231,8 @@ HTTP/1.1 206 Partial Content
 Accept-Ranges: bytes
 Content-Type: video/mp4
 X-Content-Type-Options: nosniff
-ETag: 30a467c8fcee8008b13945d39d5856fc
+ETag: "5bfbd550cb99f1d231a2c739aff908fa"
+Last-Modified: Fri, 09 Oct 2026 05:26:26 GMT
 Content-Disposition: attachment
 Content-Range: bytes 0-1023/30084139
 Content-Length: 1024
@@ -250,11 +251,11 @@ Content-Range: bytes */30084139
 Content-Length: 0
 ```
 
-`If-Range` guards against splicing two versions of a file. Send the `ETag` from an earlier response: while it still matches, you get the `206`. If the object changed, you get `200 OK` and the whole new file. The S3 adapters strip the quotes from ETags, so the header arrives bare, and the gateway accepts the validator quoted or bare. In the Chrome test, the browser echoed the bare value back in `If-Range` on a seek and got its `206`. A weak validator (`W/"…"`) never matches.
+`If-Range` guards against splicing two versions of a file. Send the `ETag` from an earlier response: while it still matches, you get the `206`. If the object changed, you get `200 OK` and the whole new file. The S3 adapters report ETags without quotes, so the proxy adds them to its `ETag` header, and it accepts the validator back quoted or bare. An HTTP date equal to `Last-Modified` (to the second) also matches. A weak validator (`W/"…"`) never does.
 
 ```bash
 curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=0-1023" \
-  -H 'If-Range: "30a467c8fcee8008b13945d39d5856fc"' \
+  -H 'If-Range: "5bfbd550cb99f1d231a2c739aff908fa"' \
   "http://localhost:3000/api/videos?op=download&key=intro.mp4"
 ```
 
@@ -278,22 +279,22 @@ A plain `<video src>` makes no CORS request. [MDN's `crossorigin` reference](htt
 
 Range support depends on the adapter. These adapters report `files.capabilities.rangeRead` as `false`, and `download({ range })` throws on them: Appwrite, Bunny Storage, Convex, Netlify Blobs, Supabase, and Vercel Blob in private mode. Every S3-compatible adapter, R2 included, supports ranges.
 
-Through the gateway's proxy path, a non-range adapter meets the browser's opening `Range: bytes=0-`, and `onUnsupportedRange` decides what happens. The last column comes from a local Chrome test against an in-memory store with range support turned off:
+Through the gateway's proxy path, a non-range adapter can't answer with a slice, and `onUnsupportedRange` decides what it does instead. In front of an in-memory store with range support turned off, the gateway answered:
 
-| `onUnsupportedRange` | Response to `Range: bytes=0-` | What Chrome did |
+| `onUnsupportedRange` | `Range: bytes=0-` | Any other range, such as `bytes=1000-` |
 | --- | --- | --- |
-| `"reject"` (default) | `416` | Failed to load: `MEDIA_ERR_SRC_NOT_SUPPORTED`, `DEMUXER_ERROR_COULD_NOT_OPEN` |
-| `"ignore"` | `200` with the whole file | Played from the start; seeking snapped back to 0 |
+| `"reject"` (default) | `200` with the whole file | `416` |
+| `"ignore"` | `200` with the whole file | `200` with the whole file |
 
-For short clips, `"ignore"` is acceptable. For anything people seek through, serve video from a range-capable store. For private Vercel Blob files, [Share private Vercel Blob files](/guides/vercel-blob-private-downloads) covers what the adapter offers instead.
+`bytes=0-` asks for everything from the first byte, which the whole file satisfies, so both settings answer the element's opening request the same way: a `200` with `Accept-Ranges: none`. As in [How a video seeks](#how-a-video-seeks), the video then plays from the start but can't seek. That's acceptable for short clips. For anything people seek through, serve video from a range-capable store. For private Vercel Blob files, [Share private Vercel Blob files](/guides/vercel-blob-private-downloads) covers what the adapter offers instead.
 
 This guide covers progressive playback of a single file. Adaptive streaming (HLS or DASH, with multiple renditions and a manifest) is a separate kind of product, with its own packaging and players.
 
 ## Troubleshooting
 
-**The video never loads, and the route logs a `416` for `bytes=0-`.** The adapter can't serve ranges and the gateway is rejecting them. Set `onUnsupportedRange: "ignore"` or move the videos to a range-capable store.
+**The video plays, but the seek bar doesn't work.** Something answered `200` instead of `206`. Run the curl check against each hop: your route, the signed URL, and any CDN or proxy in front of them. If your route's response carries `Accept-Ranges: none`, the adapter behind the proxy can't serve ranges.
 
-**The video plays, but the seek bar doesn't work.** Something answered `200` instead of `206`. Run the curl check against each hop: your route, the signed URL, and any CDN or proxy in front of them.
+**The video never loads, and the route logs a `416` for `bytes=0-`.** The app runs files-sdk 2.6 or earlier, where the default `onUnsupportedRange: "reject"` refused that opening range on a non-range adapter. Upgrade, or set `onUnsupportedRange: "ignore"`.
 
 **Seeking stalls after a while, then `MEDIA_ERR_NETWORK`.** The signed URL expired, or the credentials that signed it did. Reload through the gateway as in the player above, raise the lifetime, or check whether your server signs with short-lived role credentials.
 

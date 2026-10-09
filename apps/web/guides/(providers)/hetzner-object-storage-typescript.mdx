@@ -21,7 +21,7 @@ Browser uploads take two more steps. The bucket needs a CORS rule, which you set
 
 - A Hetzner account with a bucket (this guide calls it `uploads`) in one of the Object Storage locations.
 - S3 credentials from the Hetzner Console: open your project, go to **Security → S3 Credentials**, and select **Generate credentials**. [Hetzner shows the secret key once](https://docs.hetzner.com/storage/object-storage/getting-started/generating-s3-keys/), so save it before you close the window. By default a key pair works on every bucket in the same project; [bucket policies](https://docs.hetzner.com/storage/object-storage/faq/s3-credentials/) narrow that.
-- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, Node.js 24, and Hetzner's documentation as of October 2026.
+- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, Node.js 24, and Hetzner's documentation as of October 2026.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -229,7 +229,7 @@ export function presignAvatarUpload(userId: string) {
 }
 ```
 
-The browser sends the file to `url` with `headers`. In files-sdk 2.6, the `PUT` URL from `hetzner()` signs only `host`, so the `Content-Type` is advisory: a client can store a different type under the key than the one you asked for. If you serve uploads from a public bucket, read the stored type with `files.head(key)` before you trust it, and keep downloads on `attachment` as above.
+The browser sends the file to `url` with `headers`. The URL's `X-Amz-SignedHeaders` is `content-type;host`, so the type is part of the signature, and a `PUT` with any other `Content-Type` doesn't match it. With `hetzner()` pointed at a local MinIO server, a `text/html` body sent to a URL signed for `image/png` got `403 SignatureDoesNotMatch`. The signed type is still only the browser's claim about the bytes, so if you serve uploads from a public bucket, keep downloads on `attachment` as above.
 
 ### Size limits need a POST policy
 
@@ -274,7 +274,7 @@ Separate signing problems from CORS problems first. Replay the request with curl
 
 ### Signing and addressing
 
-**`403` from the bucket.** Read the `<Code>` in the XML body curl prints. For `SignatureDoesNotMatch`, check that the secret belongs to the access key ID, that nothing changed the URL after signing (re-encoding the key, adding query parameters), and that the request still goes to the bucket host the URL was signed for.
+**`403` from the bucket.** Read the `<Code>` in the XML body curl prints. For `SignatureDoesNotMatch`, check that the secret belongs to the access key ID, that nothing changed the URL after signing (re-encoding the key, adding query parameters), and that the request still goes to the bucket host the URL was signed for. On an upload, also check that the client sent the `Content-Type` from the returned `headers`; a `fetch` with a `File` body and no headers sends the file's own type, which may not be the one you signed.
 
 **A URL that worked earlier now fails.** It has probably expired. Signed URLs live for `expiresIn` seconds from the `X-Amz-Date` in the URL. Mint a new one when you need it rather than storing them.
 

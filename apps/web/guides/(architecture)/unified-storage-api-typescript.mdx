@@ -21,7 +21,7 @@ The method names are shared; the behavior behind them isn't. Dropbox stores no m
 
 - A bucket, container, or folder, and server-side credentials, for each provider you deploy to.
 - `files-sdk`, plus the packages in the row for each provider you actually use. You don't need all four.
-- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, `@google-cloud/storage` 8.4, `@azure/storage-blob` 12.34, and `dropbox` 10.47.
+- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, `@google-cloud/storage` 8.4, `@azure/storage-blob` 12.34, and `dropbox` 10.47.
 
 | Provider | Adapter | Install | Credentials the adapter finds on its own |
 | --- | --- | --- | --- |
@@ -214,7 +214,7 @@ The branches fall into two kinds, and the difference matters.
 
 **Where a flag exists, read it.** `metadata`, `delimiter`, `rangeRead`, and `signedUrl` are fields on [`files.capabilities`](/docs/capabilities). The first three come from the same per-adapter flags the `Files` wrapper checks before every call; `signedUrl` is the adapter's own declaration, including its `maxExpiresIn` ceiling. `saveDocument` leaves metadata out on Dropbox instead of failing, `downloadLink` never asks for longer than the ceiling, and `readHead` only falls back to a full download on an adapter with no range primitive.
 
-**Where no flag exists, try it and fall back.** There's no capability for signed uploads or for forcing `Content-Disposition` on a link. For those, the adapter checks the request and throws a `Provider` error before contacting the provider, so `browserUploadTarget` and `downloadLink` catch it and return `null`. Your route then proxies the upload or streams the download itself. The [gateway](/docs/ui/server/gateway) does the same thing for keyless browser uploads: when signing fails, it falls back to receiving the bytes itself.
+**Where no flag exists, try it and fall back.** There's no capability for signed uploads or for forcing `Content-Disposition` on a link. For those, the adapter checks the request and throws a `Provider` error before contacting the provider, so `browserUploadTarget` and `downloadLink` catch it and return `null`. Your route then proxies the upload or streams the download itself. The [gateway](/docs/ui/server/gateway) does the same thing: when signing a keyless browser upload fails, it receives the bytes itself, and by default, when an adapter can't put `attachment` on a download link, it streams the download.
 
 Here's a route that uses `downloadLink` and `storageErrorStatus`:
 
@@ -264,10 +264,10 @@ The functions above ran against a local MinIO server through `files-sdk/s3`, and
 | `downloadLink` | Signed URL; fetching it returned `200` with `Content-Disposition: attachment` | `null`: memory can't sign |
 | `browserUploadTarget` (1 MiB, `application/pdf`) | A `POST` policy. A 2 MiB form post got `400 EntityTooLarge`; a small one got `204`. | An inert `memory://` `PUT` URL that enforces nothing |
 | `readHead(…, 8)` | `%PDF-1.7` | `%PDF-1.7` |
-| `download` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound` |
-| `head` of a missing key | `NotFound`, message `UnknownError` | `NotFound` |
+| `download` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound`, message `memory: not found: <key>` |
+| `head` of a missing key | `NotFound`, message `The specified key does not exist.` | `NotFound`, message `memory: not found: <key>` |
 
-Two lessons came out of that run. S3-style stores [keep user metadata keys in lowercase](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html#UserMetadata), so name keys in lowercase with underscores; that form is also a valid Azure metadata name. And never branch on `error.message`: a `HEAD` response has no body, so the same missing key produces two different messages. The memory adapter is good for testing the branching logic, but it isn't a faithful stand-in for metadata casing, URL signing, or upload limits.
+Two lessons came out of that run. S3-style stores [keep user metadata keys in lowercase](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html#UserMetadata), so name keys in lowercase with underscores; that form is also a valid Azure metadata name. And branch on `error.code`, never on `error.message`: the same missing key reads differently on each adapter, and the text can change between releases (in files-sdk 2.6, `head()` on S3 said only `UnknownError`, because a `HEAD` response has no body to carry a message). The memory adapter is good for testing the branching logic, but it isn't a faithful stand-in for metadata casing, URL signing, or upload limits.
 
 GCS, Azure, and Dropbox weren't run against live accounts. Their adapters were constructed locally with placeholder credentials to read `files.capabilities` and to call the signing methods, which work offline; everything else about them below comes from their source.
 
@@ -282,7 +282,7 @@ GCS, Azure, and Dropbox weren't run against live accounts. Their adapters were c
 | `delimiter` | Any string | Any string | Any string | `"/"` only |
 | `signedUrl` | Yes, up to 7 days | Yes, up to 7 days | With an account key or Entra credential; 7-day cap only with Entra. Not with a SAS token alone | Yes, but every link lives about 4 hours; `expiresIn` above 4 hours throws |
 | `url()` with `responseContentDisposition` | Yes | Yes | Yes | Throws |
-| `signedUploadUrl` without `maxSize` | `PUT`. Content type not enforced in files-sdk 2.6 | `PUT`. Content type is signed | SAS `PUT`; the client must send `x-ms-blob-type: BlockBlob`. Throws if you pass `contentType` | Throws |
+| `signedUploadUrl` without `maxSize` | `PUT`. Content type is signed; size isn't limited | `PUT`. Content type is signed; size isn't limited | SAS `PUT`; the client must send `x-ms-blob-type: BlockBlob`. Throws if you pass `contentType` | Throws |
 | `signedUploadUrl` with `maxSize` | `POST` policy; size and type enforced | `POST` policy; size and type enforced | Throws | Throws |
 | `multipart` (resumable `control`) | Yes | Yes | Yes | Yes |
 | `uploadProgress` | Yes | Yes | Yes | No |
@@ -293,7 +293,7 @@ Sources: each adapter's capability flags, read back from `files.capabilities`, a
 
 Three rows deserve a closer look:
 
-- **S3 `PUT` uploads don't pin the content type.** The S3 adapter's presigned `PUT` returns a `Content-Type` header for the client to send, but that header isn't part of the signature, so a client can send a different one. Against MinIO, a `text/html` body sent to a URL signed for `image/png` was accepted and stored as `text/html`. Pass `maxSize` to get a `POST` policy, which enforces both size and type, or check the type after upload. GCS lists `content-type` among the signed headers of its `PUT` URLs, so the client has to send exactly the type you signed.
+- **`PUT` uploads pin the type, not the size.** On S3 and GCS, a presigned `PUT` signed with a `contentType` lists `content-type` among its signed headers, so the client has to send exactly that type. Against MinIO, a `text/html` body sent to an S3 URL signed for `image/png` got `403 SignatureDoesNotMatch`. Nothing in a `PUT` signature covers the body, though, so pass `maxSize` to get a `POST` policy when the size matters too.
 - **Azure can't constrain a signed upload.** A SAS URL limits the blob and the time, not the size or type, so the adapter refuses `maxSize`, a positive `minSize`, and `contentType` rather than return a URL that ignores them. `browserUploadTarget` passes both limits, so on Azure it always returns `null` and your server receives the upload. If you accept unbounded direct uploads, call `signedUploadUrl` without them and validate the blob afterwards.
 - **Dropbox has no signed upload in this shape.** Its temporary upload link takes a raw-body `POST`, which matches neither of the SDK's `PUT` and `POST`-form shapes, so `signedUploadUrl` throws and points you at `files.raw.filesGetTemporaryUploadLink`.
 
@@ -316,7 +316,7 @@ And when you miss a branch, the failure is loud and immediate. The `Files` wrapp
 | `list({ delimiter: ";" })` | `dropbox: only supports the "/" delimiter for folder listing` | `true` |
 | `url(key, { expiresIn: 18000 })` | ``dropbox: `expiresIn` of 18000s exceeds the 14400s (4h) maximum…`` | `false` |
 
-All four use code `Provider`. `permanent: true` means retrying the same call can only fail the same way, so [retries](/docs/retries) skip it. Some adapter-level refusals, like the expiry cap above and the signed-upload refusals on Azure and Dropbox, carry `permanent: false` in files-sdk 2.6, so `storageErrorStatus` would report one as a retryable `503`. Catch them where you make the call, as `browserUploadTarget` and `downloadLink` do.
+All four use code `Provider`. `permanent: true` means retrying the same call can only fail the same way, so [retries](/docs/retries) skip it. Some adapter-level refusals, like the expiry cap above and the signed-upload refusals on Azure and Dropbox, carry `permanent: false` in files-sdk 2.7, so `storageErrorStatus` would report one as a retryable `503`. Catch them where you make the call, as `browserUploadTarget` and `downloadLink` do.
 
 ## Errors look the same
 

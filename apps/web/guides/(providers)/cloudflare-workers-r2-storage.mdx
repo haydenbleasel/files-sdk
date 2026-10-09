@@ -22,7 +22,7 @@ Two things catch people on Workers. Wrangler bundles whatever `@aws-sdk/*` packa
 - A Cloudflare account with R2, a bucket (this guide calls it `uploads`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with **Object Read & Write** on that bucket. Hybrid signing uses the token's access key ID and secret access key. Your account ID is on the R2 overview page.
 - A Worker project with Wrangler. The examples type `env` by hand with `@cloudflare/workers-types`; `npx wrangler types` can generate the same `Env` interface.
 - A way to resolve the signed-in user from a request. This guide calls it `getSession(request)` and assumes it returns `{ user: { id: string } }` or `null`. It stands in for your auth library: Better Auth, Clerk, Auth.js, or your own session cookie.
-- Written against files-sdk 2.6, Wrangler 4.148, and the `2026-10-01` compatibility date.
+- Written against files-sdk 2.7, Wrangler 4.148, and the `2026-10-01` compatibility date.
 
 ```package-install
 files-sdk
@@ -41,12 +41,12 @@ files-sdk
 | `multipart` option | Ignored, one `put` | Ignored, one `put` | Throws | Supported |
 | Bulk `delete([...])` | One binding call per key | One binding call per key | One `DELETE` request per key | Batched `DeleteObjects` |
 | Stream of unknown length | Rejected by the runtime | Rejected by the runtime | Buffered in memory, then one `PUT` | Uploaded in parts |
-| Bundles the AWS SDK | No | No | No | Yes, and needs a `DOMParser` polyfill |
+| Needs the `@aws-sdk/*` packages | No | No | No | Yes, and a `DOMParser` polyfill |
 
 On every configuration, `signedUploadUrl()` returns a presigned `PUT` and throws if you pass `maxSize`, because R2 has no `POST` upload policies. Inside a Worker, the S3 API modes default to `client: "fetch"`.
 
 - **Hybrid** fits most Workers that serve a browser app: Worker code uses the binding, and file bytes go between the browser and R2 without passing through the Worker. The rest of this guide builds it.
-- **Binding only** works when the browser never needs a URL of its own. Uploads and downloads stream through the Worker, and each upload has to fit Workers' [request body limit](https://developers.cloudflare.com/workers/platform/limits/) (100 MB on the Free and Pro plans). In files-sdk 2.6 the gateway's `url` operation fails in this mode, because it always asks for a `Content-Disposition`, which only a signed URL can carry. Leave `url` out of the operations you allow.
+- **Binding only** works when the browser never needs a URL of its own. Uploads and downloads stream through the Worker, and each upload has to fit Workers' [request body limit](https://developers.cloudflare.com/workers/platform/limits/) (100 MB on the Free and Pro plans). The gateway's `url` operation fails in this mode: it asks for `Content-Disposition: attachment` by default, which only a signed URL can carry. Returning `{ disposition: "inline" }` from `authorize` produces a URL only if you also set `publicBaseUrl`, and that URL is a permanent public link. Leave `url` out of the operations you allow; `download` streams through the Worker and sets the header itself.
 - **`client: "fetch"`** is for a Worker with no binding to the bucket, such as a bucket in another account. Each call is an HTTP subrequest.
 - **`client: "aws-sdk"`** only earns its weight when Worker code needs resumable or multipart uploads, and its XML parsing needs a `DOMParser` that workerd doesn't provide ([details](/docs/adapters/r2#default-inside-cloudflare-workers)). Test it under `wrangler dev` before you rely on it.
 
@@ -71,7 +71,7 @@ When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with it
 }
 ```
 
-`files-sdk` is the only package this Worker needs. The adapter loads the AWS SDK with `import()` for its optional `"aws-sdk"` engine, which the binding never runs. Wrangler's bundler still looks at every `import()` it can see: with the `@aws-sdk/*` packages uninstalled it leaves those imports unresolved, but with them installed it bundles them even though they never run. A `wrangler deploy --dry-run` of this guide's Worker reported 1,282 KiB (240 KiB gzipped) with the packages installed and 353 KiB (78 KiB gzipped) with the AWS SDK left out. In a monorepo that hoists them for another app, Wrangler finds them too.
+`files-sdk` is the only package this Worker needs. The adapter loads the AWS SDK with `import()` for its optional `"aws-sdk"` engine, which the binding never runs. Wrangler's bundler still looks at every `import()` it can see: with the `@aws-sdk/*` packages uninstalled it leaves those imports unresolved, but with them installed it bundles them even though they never run. A `wrangler deploy --dry-run` of this guide's Worker reported 1,288 KiB (241 KiB gzipped) with the packages installed and 358 KiB (79 KiB gzipped) without them. In a monorepo that hoists them for another app, Wrangler finds them too.
 
 :::note
 Up to files-sdk 2.6.2, a Worker without the packages failed to build instead, with `Could not resolve "@aws-sdk/client-s3"` (and the same for `lib-storage` and both presigners). On those versions, upgrade or point the four packages at a stub module with an [`alias`](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling-issues) entry in `wrangler.jsonc`.
@@ -334,12 +334,12 @@ The runtime raises an error if more or fewer bytes than `length` pass through. W
 
 Don't set `maxUploadSize` on a gateway whose `files` writes through the binding. The gateway enforces the limit by piping the request body through a `TransformStream` that counts bytes, and the output of that stream has no known length. In hybrid mode it also changes the upload path: `signedUploadUrl()` throws on `maxSize`, so the gateway falls back to proxying the upload through the Worker.
 
-Under `wrangler dev` with its local R2 simulation, a gateway with `maxUploadSize: 1 MiB` failed every upload under the limit with `500` and the known-length error, and refused a 2 MiB upload with `422` (`upload exceeds maxSize`) because its `Content-Length` was already over. Nothing under the limit ever got stored. That holds for binding-only and hybrid configurations alike.
+Under `wrangler dev` with its local R2 simulation, a gateway with `maxUploadSize: 1 MiB` failed every upload under the limit with `500` and the known-length error. Nothing under the limit ever got stored. That holds for binding-only and hybrid configurations alike. A file whose declared size is over the limit doesn't get that far: the presign step refuses it with `422` (`upload exceeds maxUploadSize`). With `maxUploadSize` set, every upload either fails at the binding or is refused up front.
 
 To cap sizes on a binding-backed Worker, pick one:
 
 - **Upload through your own route.** Check `Content-Length` before calling `files.upload(key, request.body)`, as `putAvatar` does. The body can't run past its declared length, so the check holds. The bytes pass through the Worker, within the request body limit for your plan.
-- **Keep direct uploads and check after they land.** The gateway's complete step reports the stored size but doesn't delete anything. `head` the key when your app first uses it and delete it if it's too large, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land). In this Worker, that `head` and `delete` go through the binding.
+- **Keep direct uploads and check after they land.** Without `maxUploadSize`, the gateway's complete step has no limit to check, so it reports the stored size and leaves the object in place. (Complete deletes an oversized object only when `maxUploadSize` is set, and on R2 that setting moves uploads onto the proxy path above.) `head` the key when your app first uses it and delete it if it's too large, as in the Next.js guide's [option 2](/guides/nextjs-r2-file-upload#option-2-keep-direct-uploads-and-check-after-they-land). In this Worker, that `head` and `delete` go through the binding.
 
 ## Develop locally
 
@@ -357,7 +357,7 @@ Set `"remote": true` on the binding while you develop uploads, so the binding an
 
 **`r2 binding: signing requires either…` or `r2 binding: url() requires either…`.** Hybrid mode is off because one of `bucket`, `accountId`, `accessKeyId`, or `secretAccessKey` is missing. A secret that was never set with `wrangler secret put` arrives as `undefined`.
 
-**``r2 binding: `responseContentDisposition` requires signing…`` from the gateway.** The Worker is binding-only and something called the `url` operation, which always asks for a disposition. Add the hybrid credentials, or drop `url` from the allowed operations.
+**`url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment"` from the gateway.** The Worker is binding-only and something called the `url` operation, which asks for an attachment disposition by default. Add the hybrid credentials, or drop `url` from the allowed operations.
 
 **`r2-binding: pause-able/resumable uploads are not supported by this adapter`.** `UploadControl` needs the `"aws-sdk"` engine. On the binding, upload in one request, or drive R2's multipart API through `files.raw`.
 

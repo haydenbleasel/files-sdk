@@ -18,7 +18,7 @@ The script here uses `transfer()` to stream every object from S3 to R2, writes t
 
 - AWS credentials that can list and read the source bucket (`s3:ListBucket`, `s3:GetObject`), and an [R2 API token](https://developers.cloudflare.com/r2/api/tokens/) with Object Read & Write on the destination bucket, set as `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. This guide calls both buckets `uploads`.
 - Node 22.18 or later, or Bun, on a machine with good bandwidth to both providers. Every byte streams through it.
-- Written against files-sdk 2.6 and `@aws-sdk/client-s3` 3.1148.
+- Written against files-sdk 2.7 and `@aws-sdk/client-s3` 3.1148.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -136,8 +136,11 @@ import { dest, source } from "./storage";
 
 const result = await transfer(source, dest, {
   concurrency: 16,
-  onProgress: ({ done, total }) => {
-    if (done % 1000 === 0) {
+  onProgress: ({ done, total, key, status }) => {
+    if (status === "failed") {
+      console.log(`fail  ${key}`);
+    }
+    if (done % 1000 === 0 || done === total) {
       console.log(`${done}/${total}`);
     }
   },
@@ -156,7 +159,7 @@ console.log(
 );
 ```
 
-`transfer()` doesn't throw when some keys fail. Successes come back in `transferred` and failures in `errors`, each with its key and a normalized [`FilesError`](/docs/api/errors). `onProgress` fires only for keys that transferred or were skipped, so with failures `done` never reaches `total`. Rely on the summary line, not the last progress line.
+`transfer()` doesn't throw when some keys fail. Successes come back in `transferred` and failures in `errors`, each with its key and a normalized [`FilesError`](/docs/api/errors). `onProgress` fires once per key, failures included (with `status: "failed"`), so the last progress line reads `total/total` even when keys fail. The event carries only the key; the error itself is in `errors`, which is what the script writes to the manifest.
 
 `concurrency` is how many objects stream at once. A large object's upload holds up to four 5 MiB parts in memory (lib-storage's defaults, which Files SDK keeps), so 16 large objects in flight can hold around 320 MiB. Lower it on a small machine.
 

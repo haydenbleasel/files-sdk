@@ -12,86 +12,70 @@ related:
   - /docs/api/errors
 ---
 
-The `files-sdk/vercel-blob` adapter authenticates with one of three credentials: a `token` you pass in, a Vercel OIDC token paired with a Blob store ID, or `BLOB_READ_WRITE_TOKEN`. It looks for the OIDC token and the read-write token in `process.env`. Vercel puts the OIDC token in a different place depending on where your code runs: an environment variable during builds and local development, and a request header inside a Vercel Function.
+With a Blob store connected to your Vercel project, `vercelBlob()` needs no credentials in your code. The adapter hands `@vercel/blob` the store ID from `BLOB_STORE_ID`, and `@vercel/blob` finds an OIDC token on every call: the request's `x-vercel-oidc-token` header inside a Vercel Function, `VERCEL_OIDC_TOKEN` during builds and local development. One `Files` instance created at module scope works in all three places.
 
-That header is the catch. In files-sdk 2.6 the adapter doesn't read it, so an adapter created at module scope on Vercel either falls back to the long-lived read-write token without saying so, or throws `missing credentials` when there isn't one. To use OIDC on Vercel, create the adapter inside each request and pass it the token from `@vercel/oidc`. Local development and other hosts work from environment variables, with one trap each.
+The catch is the fallback. When `@vercel/blob` finds no usable OIDC token, it uses `BLOB_READ_WRITE_TOKEN` without saying so, and without one the call fails with `missing credentials`. Most setup problems are a lookup that came up empty: a call made outside a request, a development token that couldn't be refreshed, or a pulled `.env.local` running on a server outside Vercel.
 
 ## Before you start
 
 - A Vercel project with a Blob store connected to it (the project's **Storage** tab). Include **Development** in the connection's environments if you want to use the store from your machine.
-- The Vercel CLI, for `vercel link` and `vercel env pull`.
-- Written against files-sdk 2.6, `@vercel/blob` 2.8, `@vercel/oidc` 3.8, and Next.js 16.4. The examples are App Router code, but nothing depends on Next.js except how `.env.local` gets loaded.
+- The Vercel CLI, logged in, for `vercel link`, `vercel env pull`, and refreshing development tokens.
+- Written against files-sdk 2.7, `@vercel/blob` 2.8, `@vercel/oidc` 3.8 (a dependency of `@vercel/blob`), and Next.js 16.4. The examples are App Router code, but nothing depends on Next.js except how `.env.local` gets loaded.
 
 ```package-install
-files-sdk @vercel/blob @vercel/oidc
+files-sdk @vercel/blob
 ```
-
-`@vercel/blob` is the adapter's peer dependency. `@vercel/oidc` already ships as a dependency of `@vercel/blob`; install it directly because your code imports it.
 
 ## Where each credential comes from
 
-| Where the code runs | What Vercel provides | What a module-scope `vercelBlob()` resolves |
+| Where the code runs | What Vercel provides | What a module-scope `vercelBlob()` uses |
 | --- | --- | --- |
-| A Vercel Function handling a request | The OIDC token in the request's `x-vercel-oidc-token` header. `BLOB_STORE_ID` in `process.env`, plus `BLOB_READ_WRITE_TOKEN` if the store's token is included in that environment. | `BLOB_READ_WRITE_TOKEN` if it's set, otherwise it throws `missing credentials`. It never sees the header. |
-| A Vercel build, such as `next build` prerendering a page | `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` in `process.env` | The OIDC pair |
-| Your machine after `vercel link` and `vercel env pull` | `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` in `.env.local` | The OIDC pair, if your framework loads `.env.local`. Nothing refreshes it. |
-| A server outside Vercel: CI, a container, another host | Nothing. You set `BLOB_READ_WRITE_TOKEN` yourself. | The read-write token |
+| A Vercel Function handling a request | The OIDC token in the request's `x-vercel-oidc-token` header. `BLOB_STORE_ID` in `process.env`, plus `BLOB_READ_WRITE_TOKEN` if the store's token is included in that environment. | The request's OIDC token, even when `BLOB_READ_WRITE_TOKEN` is set |
+| A Vercel build, such as `next build` prerendering a page | `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` in `process.env` | `VERCEL_OIDC_TOKEN` |
+| Your machine after `vercel link` and `vercel env pull` | `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` in `.env.local` | `VERCEL_OIDC_TOKEN`, if your framework loads `.env.local`, refreshed when it expires |
+| A server outside Vercel: CI, a container, another host | Nothing. You set `BLOB_READ_WRITE_TOKEN` yourself. | `BLOB_READ_WRITE_TOKEN` |
 
-Vercel's [OIDC docs](https://vercel.com/docs/oidc#how-oidc-token-federation-works) describe the three delivery paths, and its [system environment variables reference](https://vercel.com/docs/environment-variables/system-environment-variables#vercel_oidc_token) lists `VERCEL_OIDC_TOKEN` as available at build time, with the runtime token "set to the x-vercel-oidc-token header on your functions' Request object". Per the [OIDC reference](https://vercel.com/docs/oidc/reference#oidc-token-anatomy), build tokens expire after one hour, preview and production function tokens after two, and development tokens after 12.
-
-Vercel's [Blob SDK docs](https://vercel.com/docs/vercel-blob/using-blob-sdk#authentication) list `VERCEL_OIDC_TOKEN` among the variables a connected store adds, which reads as if Functions have it too. `@vercel/blob` checks the request header first and the variable second, so it works under either reading. The adapter only checks the variable, so code that relies on it should follow the stricter reading above.
+Vercel's [OIDC docs](https://vercel.com/docs/oidc#how-oidc-token-federation-works) describe the three delivery paths, and its [system environment variables reference](https://vercel.com/docs/environment-variables/system-environment-variables#vercel_oidc_token) lists `VERCEL_OIDC_TOKEN` as available at build time, with the runtime token "set to the x-vercel-oidc-token header on your functions' Request object". Per the [OIDC reference](https://vercel.com/docs/oidc/reference#oidc-token-anatomy), build tokens expire after one hour, preview and production function tokens after two, and development tokens after 12. `@vercel/blob` checks the request header first and the variable second, so the same code covers every row.
 
 ## How the adapter picks a credential
 
-The adapter resolves credentials in this order and uses the first match:
+The adapter resolves credentials on every call, in this order:
 
 1. The `token` option. It always wins, including over OIDC.
-2. An OIDC pair: the `oidcToken` option or `VERCEL_OIDC_TOKEN`, plus the `storeId` option or `BLOB_STORE_ID`. Both halves have to resolve. `storeId` accepts `store_<id>` or `<id>`.
-3. `BLOB_READ_WRITE_TOKEN`.
+2. The `oidcToken` option, paired with the `storeId` option or `BLOB_STORE_ID`. The token is used as given and never refreshed. Without a store ID the adapter throws rather than fall back, so a typo can't quietly switch you to the read-write token.
+3. A store ID (`storeId` or `BLOB_STORE_ID`) and no `token` option. The adapter passes only the store ID, and `@vercel/blob` picks the credential: the request's `x-vercel-oidc-token` header, then `VERCEL_OIDC_TOKEN` (refreshed if it has expired and a refresh is possible), then `BLOB_READ_WRITE_TOKEN`.
+4. No store ID: `BLOB_READ_WRITE_TOKEN`, even inside a Vercel request, because OIDC needs a store ID.
 
-That's the same order Vercel documents for `@vercel/blob`. The differences are in when and where the adapter looks:
+`storeId` accepts `store_<id>` or `<id>`. Three consequences are easy to miss:
 
-- **It resolves at construction.** `vercelBlob()` throws if nothing matches, so an adapter created at module scope fails when the module loads, before any request runs.
-- **It re-reads environment variables on every operation; options are fixed.** A `VERCEL_OIDC_TOKEN` that changes in `process.env` is used by the next call. A `token` or `oidcToken` you pass stays the same for the adapter's lifetime.
-- **It always hands `@vercel/blob` an explicit credential.** Called with no credentials, `@vercel/blob` looks the OIDC token up through `@vercel/oidc`: the request header first, then `VERCEL_OIDC_TOKEN`, refreshing an expired development token. The adapter resolves first and passes a value, so that lookup never runs.
-- **An environment OIDC pair beats an environment read-write token.** If both are set, the read-write token is ignored.
-- **An explicit `oidcToken` with no store ID throws.** It doesn't fall back to the read-write token, so a typo can't quietly switch you to the long-lived credential.
+- **A read-write token in the environment doesn't outrank OIDC.** With a store ID set, `BLOB_READ_WRITE_TOKEN` is the last resort. To use it on purpose, pass it as `token`.
+- **The fallback is silent.** When the OIDC lookup or its refresh fails, `@vercel/blob` treats the token as absent and moves on, as its [2.5.0 changelog entry](https://github.com/vercel/storage/blob/main/packages/blob/CHANGELOG.md) describes. The refresh's own error isn't reported: you see either the read-write token working, or `missing credentials`.
+- **Construction checks only what it can.** `vercelBlob()` throws immediately when there's neither a store ID nor a read-write token, or when `oidcToken` has no store ID. With a store ID alone it can't know whether a request will bring a token, so it loads fine and a missing credential surfaces at the first call. That's what lets a module-scope adapter load on Vercel.
 
 ## Use OIDC on Vercel
 
-Create the `Files` instance inside the request and pass the token `@vercel/oidc` finds:
+Create the instance once and import it wherever you need storage:
 
 ```ts title="lib/files.ts" lineNumbers
-import { getVercelOidcToken } from "@vercel/oidc";
 import { createFiles } from "files-sdk";
 import { vercelBlob } from "files-sdk/vercel-blob";
 
-// Call inside a route handler, server action, or server component, never at
-// module scope: on Vercel the OIDC token arrives with each request.
-export async function getFiles() {
-  return createFiles({
-    adapter: vercelBlob({
-      access: "private",
-      oidcToken: await getVercelOidcToken(),
-    }),
-  });
-}
+// The store ID comes from BLOB_STORE_ID. Each call authenticates with the
+// OIDC token of the request it runs in.
+export const files = createFiles({
+  adapter: vercelBlob({ access: "private" }),
+});
 ```
-
-The store ID still comes from `BLOB_STORE_ID`. `getVercelOidcToken()` returns the current request's `x-vercel-oidc-token` header inside a Vercel Function. Anywhere else it returns `VERCEL_OIDC_TOKEN`, and if that token has expired it fetches a new one with your Vercel CLI credentials for the project linked in `.vercel/project.json`, which makes the same helper work in `next dev`.
-
-Await it at the top of each handler that touches the store:
 
 ```ts title="app/api/my-files/route.ts" lineNumbers
 import { getSession } from "@/lib/auth";
-import { getFiles } from "@/lib/files";
+import { files } from "@/lib/files";
 
 export async function GET(request: Request) {
   const session = await getSession(request.headers);
   if (!session) {
     return new Response("Sign in first", { status: 401 });
   }
-  const files = await getFiles();
   const { items } = await files.list({ prefix: `users/${session.user.id}/` });
   return Response.json(items.map(({ key, size }) => ({ key, size })));
 }
@@ -99,13 +83,13 @@ export async function GET(request: Request) {
 
 `getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
 
-The [gateway](/docs/ui/server/gateway) takes the same helper as a per-request factory: `createFilesRouter({ files: () => getFiles(), authorize })`.
+Each call in the handler reads the header of the request it runs in, so concurrent requests each use their own token. Every adapter method works this way, including the presigned URLs from `url()` and `signedUploadUrl()`, which Vercel issues through `issueSignedToken` with the same credentials as other calls. The [gateway](/docs/ui/server/gateway) takes the same instance: `createFilesRouter({ files, authorize })`.
 
-:::warning
-Vercel's Blob docs warn against reading `VERCEL_OIDC_TOKEN` yourself and passing it to SDK calls, because a token you pass isn't refreshed and fails with a `403` once it expires. `getFiles()` asks for the token on every request, which is the refresh. Don't store the returned `Files` instance in a module-level variable.
+Calls made outside a request, such as code that runs when the module loads, have no header to read. They fall through to the environment (`VERCEL_OIDC_TOKEN` if the runtime has one, then `BLOB_READ_WRITE_TOKEN`) or fail with `missing credentials`. Keep storage calls inside handlers, server actions, and server components.
+
+:::note
+files-sdk 2.6 and earlier read the OIDC token only from `process.env`, so on Vercel Functions a module-scope adapter used `BLOB_READ_WRITE_TOKEN` or threw `missing credentials`. If you can't upgrade, create the adapter per request with `oidcToken: await getVercelOidcToken()` from `@vercel/oidc`.
 :::
-
-Creating an adapter per request is cheap: the `Files` constructor stores its options, and `vercelBlob()` only resolves credentials. Neither makes a network call. Every adapter method works with OIDC credentials, including the presigned URLs from `url()` and `signedUploadUrl()`, which Vercel issues through `issueSignedToken` with the same credentials as other calls.
 
 ## Set up local development
 
@@ -118,9 +102,11 @@ vercel env pull
 
 `vercel env pull` writes `.env.local`, including `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID`. If `BLOB_STORE_ID` is missing, the store's connection doesn't include Development: open the store's **Projects** tab, choose **Update Project Connection** from the project's menu, add Development, and pull again.
 
-`next dev` loads `.env.local` into `process.env`, so `getFiles()` works without further setup and refreshes the 12-hour development token when it expires.
+`next dev` loads `.env.local` into `process.env`, so the module-scope `files` works without further setup.
 
-Scripts, and a module-scope `vercelBlob()` in general, don't refresh. Once the pulled token is 12 hours old, every call fails with `Vercel Blob: Access denied, please provide a valid token for this resource.` Run `vercel env pull` again to get a new token. A script also has to load `.env.local` itself:
+The pulled token expires after 12 hours. Once it has, `@vercel/oidc` (which `@vercel/blob` calls for the token) fetches a new one: it looks for the `.vercel/project.json` that `vercel link` wrote, starting in the process's working directory and walking up, then requests a token for that project with your Vercel CLI login. It caches the token per project in your user data directory and sets it in `process.env` for the running process. `.env.local` keeps the old value. Vercel's [Blob SDK docs](https://vercel.com/docs/vercel-blob/using-blob-sdk#authentication) describe the same refresh "using your Vercel CLI credentials".
+
+The refresh doesn't depend on `next dev`. A script refreshes too, as long as it runs inside the linked directory. It does have to load `.env.local` itself:
 
 ```ts title="scripts/check-blob.ts" lineNumbers
 import { createFiles } from "files-sdk";
@@ -138,11 +124,15 @@ console.log(
 node --env-file=.env.local scripts/check-blob.ts
 ```
 
-Node 22.18 and later run TypeScript files directly. Bun loads `.env.local` on its own, so `bun scripts/check-blob.ts` works too.
+Run it from the project root. Node 22.18 and later run TypeScript files directly. Bun loads `.env.local` on its own, so `bun scripts/check-blob.ts` works too.
+
+If the refresh can't run (the working directory isn't inside the linked project, or the CLI isn't logged in), `@vercel/blob` treats the expired token as absent. The call uses `BLOB_READ_WRITE_TOKEN` if `.env.local` has one, and otherwise fails with `missing credentials`. Run `vercel login`, or `vercel env pull` for a fresh 12-hour token.
 
 ## Use a read-write token outside Vercel
 
-A server that isn't on Vercel has no OIDC token, so give it `BLOB_READ_WRITE_TOKEN`. Vercel creates that token with the store; copy it from the project's environment variables into your host's secret store. With only that variable set, a module-scope adapter works and nothing expires.
+A server that isn't on Vercel has no OIDC token, so give it `BLOB_READ_WRITE_TOKEN`. Vercel creates that token with the store; copy it from the project's environment variables into your host's secret store. It doesn't expire.
+
+Leave `BLOB_STORE_ID` unset on that server. Without a store ID, the adapter passes the read-write token straight to `@vercel/blob` and no OIDC lookup runs. With one, every call first tries the lookup and a refresh, finds nothing, and then falls back to the same token.
 
 To name the secret something else, or to use two stores from one process, pass it as `token`. An explicit `token` wins over every environment variable:
 
@@ -158,24 +148,22 @@ export const invoices = createFiles({
 });
 ```
 
-Don't deploy your `.env.local` to that server. Its `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` form an OIDC pair, and an environment OIDC pair beats `BLOB_READ_WRITE_TOKEN`. The adapter uses the pulled development token, which works until it expires and then fails every call with `Access denied`.
+Don't deploy your `.env.local` to that server. Its `BLOB_STORE_ID` hands the choice to `@vercel/blob`, and its `VERCEL_OIDC_TOKEN` is your development token, which wins while it's valid: for up to 12 hours after the pull, the server authenticates with the project's Development token. Once the token expires, the refresh fails on a server with no linked project or CLI login, and calls switch to `BLOB_READ_WRITE_TOKEN` without an error, or fail with `missing credentials` if it isn't set.
 
-## Keep a read-write token on Vercel instead
+## Decide whether Vercel still needs the read-write token
 
-If your Functions have `BLOB_READ_WRITE_TOKEN`, a module-scope adapter works on Vercel today: it doesn't see an OIDC token at runtime, so it uses the read-write token. During the build the environment OIDC pair takes precedence, so prerendering authenticates with OIDC and requests use the token.
+When you create a store, Vercel adds `BLOB_READ_WRITE_TOKEN` to the projects you select. With the store connected, Functions and builds authenticate with OIDC, and the adapter reaches the read-write token only when a lookup comes up empty, such as a call outside a request. Leaving it set turns that mistake into a silent switch to a credential that doesn't expire; removing it makes the same mistake fail with `missing credentials`.
 
-That's a reasonable choice if you'd rather keep one module-scope `files` export, or you already need the token for Vercel's own [`handleUpload`](https://vercel.com/docs/vercel-blob/using-blob-sdk#handleupload), which requires one. The cost is the one OIDC removes: a credential that doesn't expire sits in your environment. Once every call goes through `getFiles()`, the adapter no longer uses `BLOB_READ_WRITE_TOKEN` (a passed OIDC pair outranks it), so you can drop it from the project's environments unless something else needs it.
+Keep it if something else needs it. Vercel's own [`handleUpload()`](https://vercel.com/docs/vercel-blob/using-blob-sdk#handleupload) generates client tokens from a read-write token and throws without one. To use the read-write token on Vercel on purpose, pass `token: process.env.BLOB_READ_WRITE_TOKEN`, which outranks OIDC.
 
 ## Troubleshooting
 
-**``vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set both VERCEL_OIDC_TOKEN and BLOB_STORE_ID.``** Nothing resolved when the adapter was created. On Vercel, the usual cause is a module-scope adapter for a store with no read-write token: the OIDC token is in the request header, which the adapter doesn't read. Switch to `getFiles()`. Locally, `.env.local` wasn't loaded, or only one half of the OIDC pair is set (`VERCEL_OIDC_TOKEN` without `BLOB_STORE_ID` doesn't count).
+**``vercelBlob adapter: missing credentials. Pass `token`, or `oidcToken` + `storeId`, or set BLOB_READ_WRITE_TOKEN, or set BLOB_STORE_ID for OIDC (the token comes from the request's x-vercel-oidc-token header on Vercel Functions, or from VERCEL_OIDC_TOKEN).``** The `FilesError` code is `Provider`, flagged permanent, so `retries` don't repeat it. Thrown by `vercelBlob()` itself, it means neither `BLOB_STORE_ID` nor `BLOB_READ_WRITE_TOKEN` is set: `.env.local` wasn't loaded, or the store isn't connected to this environment. Thrown by a call, it means the adapter had a store ID but no OIDC token turned up and there's no read-write token. On Vercel, the call ran outside a request. Locally, the pulled token expired and couldn't be refreshed; see [Set up local development](#set-up-local-development). The error's `cause` is `@vercel/blob`'s `No blob credentials found` error.
 
-**``vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC.``** `getFiles()` passed a token, but `BLOB_STORE_ID` isn't set in that environment. Check the store's project connection covers it, then pull or redeploy.
+**``vercelBlob adapter: `oidcToken` was passed but no `storeId` was found. Pass `storeId` or set BLOB_STORE_ID to use OIDC.``** You passed `oidcToken` and no store ID resolved. Pass `storeId` as well, or check that the store's project connection covers this environment.
 
-**`Vercel Blob: Access denied, please provide a valid token for this resource.`** The `FilesError` code is `Unauthorized`. Blob rejected the credential: most often an expired OIDC token (a pulled development token older than 12 hours, or a stale `.env.local` on another host), or a read-write token from a different store. Re-pull, or let `getFiles()` fetch the token.
+**`Vercel Blob: Access denied, please provide a valid token for this resource.`** The `FilesError` code is `Unauthorized`. Blob rejected the credential. Two common causes: a token passed as `oidcToken` that has expired, since Vercel's [Blob SDK docs](https://vercel.com/docs/vercel-blob/using-blob-sdk#authentication) warn that an explicitly passed token isn't refreshed and fails with a `403` once it expires; or a read-write token from a different store.
 
 **`Vercel Blob: OIDC is enabled for this project, but not for the … environment.`** The store's connection to this project doesn't include the environment the token was issued for. Add it under **Update Project Connection** in the store's **Projects** tab, then pull or redeploy.
-
-**`The 'x-vercel-oidc-token' header is missing from the request.`** `@vercel/oidc` throws this, followed by a line from its refresh attempt, when `getVercelOidcToken()` finds neither a request header nor `VERCEL_OIDC_TOKEN`. On Vercel, `getFiles()` was called outside a request, for example at module scope. Locally, run `vercel link` and `vercel env pull`.
 
 **`Vercel Blob: This store does not exist.`** `BLOB_STORE_ID`, or the store embedded in a read-write token, points at a store that was deleted or belongs to another team.

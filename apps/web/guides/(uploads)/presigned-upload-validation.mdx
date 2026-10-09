@@ -13,13 +13,13 @@ related:
   - /docs/plugins/content-type
 ---
 
-A signed upload URL can only enforce what the storage service checks when the bytes arrive. S3 and Google Cloud Storage check size and `Content-Type` through a `POST` policy. Vercel Blob checks both on a presigned `PUT`. R2 and Azure can't cap size on a signed URL at all. Anything the service can't check, your server has to: either by receiving the bytes itself, or by inspecting the object after it lands and deleting it.
+A signed upload URL can only enforce what the storage service checks when the bytes arrive. S3 and Google Cloud Storage check size and `Content-Type` through a `POST` policy, and a presigned `PUT` from either pins the type but not the size. Vercel Blob checks both on a presigned `PUT`. R2 and Azure can't cap size on a signed URL at all. Anything the service can't check, your server has to: either by receiving the bytes itself, or by inspecting the object after it lands and deleting it.
 
-Two catches apply everywhere. First, every check here is against the `Content-Type` the client claims, not what the bytes are; an HTML file labelled `image/png` passes all of them. Second, in files-sdk 2.6 a presigned `PUT` from the `s3()` adapter doesn't bind `Content-Type` into its signature, so on S3 only the `POST` path enforces the type.
+The catch that applies everywhere: every check here is against the `Content-Type` the client claims, not what the bytes are. An HTML file labelled `image/png` passes all of them.
 
 ## Before you start
 
-- Written against files-sdk 2.6. The S3 behavior below was reproduced against a local MinIO server (`RELEASE.2025-09-06T17-38-46Z`); provider behavior for the others comes from their docs, linked where it's used.
+- Written against files-sdk 2.7. The S3 behavior below was reproduced against a local MinIO server (`RELEASE.2025-09-06T17-38-46Z`); provider behavior for the others comes from their docs, linked where it's used.
 - The adapter for your provider, installed as its docs page says. For S3's `POST` policy, that includes `@aws-sdk/s3-presigned-post`.
 
 ## What each service enforces
@@ -29,19 +29,20 @@ Each row comes from that adapter's `signedUploadUrl` source. "Throws" means File
 | Provider and adapter | Contract | Max size | Min size | Content-Type |
 | --- | --- | --- | --- | --- |
 | S3, `s3()` with `maxSize` | `POST` policy | `content-length-range`, checked by S3 | `minSize`, default 1 | `eq $Content-Type`, checked by S3 |
-| S3, `s3()` without `maxSize` | Presigned `PUT` | None | None | Not signed in files-sdk 2.6; the returned header is advisory |
+| S3, `s3()` without `maxSize` | Presigned `PUT` | None | None | Signed; a different type fails the signature |
 | S3-compatible, `s3Fetch()` | Presigned `PUT` | Throws | None | Signed; a different type fails the signature |
-| R2, `client: "fetch"` | Presigned `PUT` | Throws | None | Signed; a different type fails the signature |
-| R2, `client: "aws-sdk"` | Presigned `PUT` | Throws | None | Not signed in files-sdk 2.6 |
+| R2, either `client` | Presigned `PUT` | Throws | None | Signed; a different type fails the signature |
 | Vercel Blob, public or private | Presigned `PUT` | `maximumSizeInBytes`, checked by Vercel | A positive `minSize` throws | `allowedContentTypes`, checked by Vercel |
 | GCS, `gcs()` with `maxSize` | V4 `POST` policy | `content-length-range`, checked by GCS | `minSize`, default 1 | `eq $Content-Type`, checked by GCS |
 | GCS, `gcs()` without `maxSize` | V4 signed `PUT` | None | None | Signed |
 | Azure, `azure()` | SAS `PUT` | Throws | A positive `minSize` throws | Throws |
 
+"Signed" applies when you pass `contentType`. The S3 rows also cover every `s3()` wrapper (Hetzner, Wasabi, and the rest), and MinIO and RustFS on either client. Without a `contentType`, their `PUT` URLs sign only `host`, and the client can send any type.
+
 Sources for each row:
 
 - **S3 and GCS** document `content-length-range` and exact-match (`eq`) conditions for [S3 POST policies](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-HTTPPOSTConstructPolicy.html) and [GCS policy documents](https://docs.cloud.google.com/storage/docs/authentication/signatures). The adapters add `["content-length-range", minSize ?? 1, maxSize]` and, when you pass `contentType`, `["eq", "$Content-Type", contentType]`.
-- **R2** [doesn't support presigned `POST`](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), so there's no policy to carry a size. Cloudflare documents that a signed `Content-Type` makes a mismatched upload fail with `403 SignatureDoesNotMatch`, which holds only when the type is in the signature.
+- **R2** [doesn't support presigned `POST`](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), so there's no policy to carry a size. Cloudflare documents that a signed `Content-Type` makes a mismatched upload fail with `403 SignatureDoesNotMatch`, which holds only when the type is in the signature. Both R2 clients put it there.
 - **Vercel Blob** [enforces `allowedContentTypes` and `maximumSizeInBytes` at the CDN](https://vercel.com/docs/vercel-blob/vercel-signed-urls) for presigned `PUT`s. The adapter maps `contentType` and `maxSize` onto them. Vercel has no minimum, so a positive `minSize` throws.
 - **Azure** SAS URLs carry no size or type condition. The adapter throws on `maxSize`, a positive `minSize`, and `contentType`.
 
@@ -122,7 +123,7 @@ if (put.method === "PUT") {
 }
 ```
 
-Against MinIO, the script printed `400 EntityTooLarge` for the oversized `POST`, `host` as the signed headers, and `200` for the mismatched `PUT`. A wider run against the same server gave these results:
+Against MinIO, the script printed `400 EntityTooLarge` for the oversized `POST`, `content-type;host` as the signed headers, and `403 SignatureDoesNotMatch` for the mismatched `PUT`. A wider run against the same server gave these results:
 
 | Request | MinIO response |
 | --- | --- |
@@ -131,15 +132,19 @@ Against MinIO, the script printed `400 EntityTooLarge` for the oversized `POST`,
 | `POST`, 0 bytes (default `minSize` of 1) | `400 EntityTooSmall` |
 | `POST` with the `Content-Type` field changed to `text/html` | `403 AccessDenied` ("Policy Condition failed") |
 | `POST` of HTML bytes with the `Content-Type` field left at `image/png` | `204`, stored as `image/png` |
-| `s3()` `PUT` signed for `image/png`, sent as `text/html` | `200`, stored as `text/html` |
+| `s3()` `PUT` signed for `image/png`, sent as `image/png` | `200` |
+| `s3()` `PUT` signed for `image/png`, sent as `text/html` | `403 SignatureDoesNotMatch` |
 | `s3()` `PUT` signed for `image/png`, sent with a 5 MiB body | `200` |
+| `s3()` `PUT` signed with no `contentType`, sent as `text/html` | `200`, stored as `text/html` |
 | `s3Fetch()` `PUT` signed for `image/png`, sent as `text/html` | `403 SignatureDoesNotMatch` |
 
-The `PUT` result isn't MinIO being lenient. Which headers a SigV4 URL covers is decided by the client that signs it. `@aws-sdk/s3-request-presigner` (3.1148, the version checked) adds `content-type` to its unsignable headers before signing, so a URL from `s3()` lists only `host`, and no server can reject a header the signature never covered. `s3Fetch()` signs with aws4fetch and includes `content-type`, so its URLs list `content-type;host`. The same split applies to R2 and MinIO: `client: "fetch"` signs the type, and `client: "aws-sdk"` doesn't.
+Which headers a SigV4 URL covers is decided by the client that signs it, and a server can only reject a header the signature covers. `@aws-sdk/s3-request-presigner` (3.1148, the version checked) leaves `content-type` out of the signature by default, so `s3()` adds it back whenever you pass `contentType`. `s3Fetch()` signs with aws4fetch, which includes it too. Pointed at the same MinIO server, `hetzner()`, `wasabi()`, `r2()`, and `minio()` (the last two on both clients) all listed `content-type;host` and got `403` for a `text/html` body. In files-sdk 2.6 and earlier, `s3()` signed only `host` even with a `contentType`, so on those versions only the `POST` path enforces the type.
 
-## Make S3 enforce the type
+The 5 MiB row is the limit of a `PUT`: the signature says nothing about the body, so the type is pinned and the size isn't.
 
-On S3, pass `maxSize`. The `POST` policy then enforces both size and type. If you don't need a real cap, a generous maximum still gets you the type check:
+## Make S3 enforce the size
+
+On S3, pass `maxSize`. The `POST` policy then enforces both size and type:
 
 ```ts title="lib/sign-upload.ts" lineNumbers
 import { ALLOWED_TYPES, MAX_BYTES, files } from "./storage";
@@ -176,37 +181,18 @@ export const ALLOWED_TYPES = new Set([
 ]);
 ```
 
-If a client can only send a `PUT` (some upload widgets can't build a form), sign it yourself through the [escape hatch](/docs/escape-hatch). The AWS SDK presigner takes a `signableHeaders` set that overrides its default:
-
-```ts title="lib/sign-put.ts" lineNumbers
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-
-import { files } from "./storage";
-
-// A presigned PUT whose signature covers Content-Type.
-export async function signPutWithType(key: string, type: string) {
-  const url = await getSignedUrl(
-    files.raw,
-    new PutObjectCommand({ Bucket: "uploads", Key: key, ContentType: type }),
-    { expiresIn: 300, signableHeaders: new Set(["content-type"]) }
-  );
-  return { method: "PUT" as const, url, headers: { "Content-Type": type } };
-}
-```
-
-Against MinIO, a URL from this function accepted `image/png` (`200`) and refused `text/html` (`403`). It still has no size limit.
+If a client can only send a `PUT` (some upload widgets can't build a form), call `signedUploadUrl` with `contentType` and without `maxSize`. S3 then refuses an upload with a different type, but not a larger one, so [check the size after the upload lands](#after-a-direct-upload-sniff-and-delete).
 
 ## What the gateway does with `maxUploadSize`
 
-The gateway's keyless `upload(file)` asks the adapter for a presigned target with `maxSize: maxUploadSize`, `minSize: 0`, and the file's claimed type. If the adapter can't sign URLs, or `signedUploadUrl` throws for any reason, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
+The gateway's keyless `upload(file)` starts with the size the browser declares. A file that claims more than `maxUploadSize` gets `422` with `reason: "size"` and the message `upload exceeds maxUploadSize`, before anything is signed. Otherwise the gateway asks the adapter for a presigned target with `maxSize: maxUploadSize`, `minSize: 0`, and the file's claimed type. If the adapter can't sign URLs, or `signedUploadUrl` throws for any reason, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
 
 | Configuration | Target |
 | --- | --- |
 | `s3()`, no `maxUploadSize` | Presigned `PUT` to S3 |
 | `s3()`, `maxUploadSize` set | Presigned `POST` to S3 |
 | `gcs()`, `maxUploadSize` set | Presigned `POST` to GCS |
-| R2 (`client: "fetch"`), no `maxUploadSize` | Presigned `PUT` to R2 |
+| R2 (either `client`), no `maxUploadSize` | Presigned `PUT` to R2, with the type signed |
 | R2, `maxUploadSize` set | Proxy through your server |
 | `s3Fetch()`, `maxUploadSize` set | Proxy through your server |
 | `azure()`, any upload with a type | Proxy through your server |
@@ -220,7 +206,9 @@ Three of those rows surprise people:
 - **Azure** proxies whenever the browser sends a type, and the browser client always sends one (`application/octet-stream` when the file has none). Azure refuses `contentType`.
 - **Public Vercel Blob** proxies because the gateway presigns only when `capabilities.signedUrl.supported` is `true`, which Vercel Blob reports only in private mode.
 
-After a direct upload, the complete step `head`s the object and compares its size with `maxUploadSize`. It reports an oversized object but doesn't remove it. With the memory adapter, a 2000-byte object under a 1000-byte limit came back from complete as an error, `uploaded object is 2000 bytes, exceeds maxSize 1000`, and was still stored afterwards. The proxy path is stricter: the same body sent there got `422` `upload exceeds maxSize`, and nothing was stored.
+The declared size is only the browser's claim, so the gateway checks the real one as well. After a direct upload, the complete step `head`s the object, and if it's larger than `maxUploadSize`, deletes it and returns an error entry for that key. With a 1000-byte limit, on the memory adapter and on `s3()` against MinIO, a presign that declared 2000 bytes got `422`. One that declared 500 bytes, followed by a 2000-byte object written to the minted key, came back from complete as `uploaded object is 2000 bytes, exceeds maxSize 1000`, and the object was gone afterwards. The proxy path stops the bytes sooner: with the memory adapter, a 2000-byte body streamed there got `422` `upload exceeds maxSize`, and nothing was stored.
+
+Complete also checks that the token's key lies under the calling request's `keyPrefix`. A token minted for another user gets an `Unauthorized` entry, `upload token was not issued for this caller`, and doesn't reveal the key.
 
 ## Check the bytes, not the claim
 
@@ -294,7 +282,7 @@ This is a check, not prevention. The bytes were written and billed before it ran
 
 ## Pick an enforcement point
 
-- **S3 and GCS:** sign with `maxSize` so the service enforces size and type. Sniff after landing if you'll ever serve the files inline.
+- **S3 and GCS:** sign with `maxSize` so the service enforces size and type. Without it, a `PUT` still pins the type, but not the size. Sniff after landing if you'll ever serve the files inline.
 - **Vercel Blob:** `maxSize` and `contentType` are both enforced at the CDN. Reject empty files in your app, since there's no minimum. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) has the full upload flow.
-- **R2 and Azure:** storage can't cap size. Either proxy uploads through your server with `maxUploadSize` or the plugins, or check each object after it lands as in [the R2 uploader guide](/guides/nextjs-r2-file-upload#limit-upload-size). On R2, use `client: "fetch"` so the type is at least bound.
+- **R2 and Azure:** storage can't cap size. Either proxy uploads through your server with `maxUploadSize` or the plugins, or check each object after it lands as in [the R2 uploader guide](/guides/nextjs-r2-file-upload#limit-upload-size). R2 still pins the type on either client; Azure can't.
 - **Untrusted files you serve back inline:** sniff them with `contentType({ onMismatch: "reject" })` on the proxy path, or serve them with `Content-Disposition: attachment` so a mislabelled HTML file downloads instead of running.

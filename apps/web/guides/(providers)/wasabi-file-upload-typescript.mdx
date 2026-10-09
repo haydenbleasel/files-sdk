@@ -22,7 +22,7 @@ Two Wasabi rules shape that design. A presigned URL can't live longer than 7 day
 - A Wasabi account and a bucket. You choose the bucket's region when you create it, and the endpoint follows from that choice. [Wasabi's docs](https://docs.wasabi.com/docs/how-do-i-generate-pre-signed-urls-for-temporary-access-with-wasabi) state that buckets and objects are private by default; this guide keeps them that way.
 - An access key for a sub-user whose policy covers only that bucket. Root-account keys carry full administrative access, billing included, according to [Wasabi's API authentication docs](https://docs.wasabi.com/apidocs/authentication-with-s3-api). A server that reads and writes documents doesn't need that.
 - Somewhere to store share records: any database your app already uses.
-- Written against files-sdk 2.6, `@aws-sdk/client-s3` 3.1148, and Next.js 16.4. The two route handlers use only `Request` and `Response`, so they move to Hono, SvelteKit, or `Bun.serve` without changes.
+- Written against files-sdk 2.7, `@aws-sdk/client-s3` 3.1148, and Next.js 16.4. The two route handlers use only `Request` and `Response`, so they move to Hono, SvelteKit, or `Bun.serve` without changes.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-request-presigner @aws-sdk/s3-presigned-post
@@ -368,6 +368,6 @@ Wasabi features outside the shared API, such as object lock or bucket policies, 
 
 **Every call fails with code `Unauthorized`.** The provider answered `401` or `403`. A wrong secret key produces a `SignatureDoesNotMatch` error, which the adapter maps to `Unauthorized`; against a local MinIO server its message was "The request signature we calculated does not match the signature you provided". Check the secret key first, then that `region` is the bucket's region, since the region is part of what gets signed.
 
-**`NotFound` with the message `UnknownError`.** That's how `head()` on a missing key failed against a local MinIO server. A `HEAD` response has no body, so the AWS SDK has no error message to pass on. Branch on `error.code`, never on the message.
+**`NotFound` with the message `The specified key does not exist.`** No object has that key, usually because it was deleted after a share was created. With `wasabi()` pointed at a local MinIO server, `head()` and `download()` of a missing key both failed this way. Check `error.code === "NotFound"` and answer `404`, rather than matching the message: in files-sdk 2.6, `head()` reported the same miss as `UnknownError`, and other adapters word it differently.
 
 **A recipient sees an XML `403` error instead of your page.** They opened a presigned URL rather than your link, for example one copied from their browser's download list. Send them the `/s/…` link again.

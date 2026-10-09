@@ -22,7 +22,7 @@ The catch is that in a `useChat` app the client sends the conversation back on e
 - An R2 bucket and API token (see the [R2 adapter](/docs/adapters/r2)), or an S3 bucket.
 - A Next.js App Router app with an auth library that resolves the signed-in user on the server.
 - A [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key and a model that supports tool calling. An AI SDK provider instance works in place of the Gateway model ID.
-- Written against files-sdk 2.6, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
+- Written against files-sdk 2.7, AI SDK 7.0 (`ai` 7.0.99), Next.js 16.4, React 19.3, and Zod 4.6.
 
 ```package-install
 files-sdk ai @ai-sdk/react zod
@@ -103,9 +103,7 @@ export function createStorageAgent(files: Files) {
       "You work with the signed-in user's files.",
       "When a tool execution is not approved, do not retry it.",
     ].join("\n"),
-    // Spread into a plain object: TypeScript won't match the FileTools
-    // interface against ai@7's ToolSet index signature.
-    tools: { ...createFileTools({ files }) },
+    tools: createFileTools({ files }),
     stopWhen: isStepCount(10),
     // Binds each approval to the exact tool call and input the user saw.
     experimental_toolApprovalSecret: secret,
@@ -118,8 +116,6 @@ export type StorageAgentMessage = InferAgentUIMessage<
 ```
 
 The agent is built per request because its tools close over that request's `Files`. Constructing one makes no network calls.
-
-The spread is a typing workaround. `createFileTools` returns an interface, and TypeScript won't assign an interface to the AI SDK's `ToolSet` index signature, so passing it directly fails to compile against `ai` 7. Spreading copies the same tool objects, approval settings included.
 
 `ToolLoopAgent` runs up to 20 steps by default; listing, reading, and writing fit in far fewer, so `isStepCount(10)` caps the loop lower. The instruction not to retry declined tools comes from the [AI SDK's approval docs](https://ai-sdk.dev/docs/agents/tool-approvals), which recommend it to stop repeated requests for the same action.
 
@@ -320,8 +316,6 @@ The same eight tools ship for two other agent SDKs, with the same defaults. Buil
 - **R2 can't cap `signUploadUrl`.** If the model passes `maxSize`, the R2 adapter throws ``r2: `maxSize` is not supported.``, and an approved URL without it accepts any single-part size.
 
 ## Troubleshooting
-
-**`Type 'FileTools' is not assignable to type 'ToolSet'.`** with `Index signature for type 'string' is missing in type 'FileTools'.` You passed `createFileTools({ files })` straight to `tools`. Spread it into a new object as `lib/agent.ts` does. The read-only set doesn't hit this.
 
 **`AI_InvalidToolApprovalSignatureError` with `invalid signature`.** The tool name, call ID, or input changed after the approval request was signed, or two instances use different `TOOL_APPROVAL_SECRET` values. With `missing signature`, the approval request was issued without a secret, for example by an instance that didn't have it set.
 

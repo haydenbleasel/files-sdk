@@ -22,7 +22,7 @@ The catch is server functions. TanStack Start parses a `multipart/form-data` ser
 - An AWS account with an S3 bucket (this guide calls it `uploads`) and credentials whose policy allows `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:AbortMultipartUpload` on the bucket's objects, plus `s3:ListBucket` on the bucket.
 - A TanStack Start app with an auth library that can resolve the signed-in user from request headers.
 - A long-running Node.js server deployment. The streamed path keeps a connection open for the whole upload, which serverless hosts limit (see [Limits and tradeoffs](#limits-and-tradeoffs)).
-- Written against files-sdk 2.6, `@tanstack/react-start` 1.168, `@tanstack/react-router` 1.170, and React 19.3.
+- Written against files-sdk 2.7, `@tanstack/react-start` 1.168, `@tanstack/react-router` 1.170, and React 19.3.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
@@ -39,7 +39,7 @@ Both paths go through the same route and the same `authorize` hook. They differ 
 | Requests | Presign to `/api/files`, `POST` to S3, then complete | One `PUT /api/files?op=upload&key=…` |
 | Bytes through your server | No | Yes, streamed |
 | Who picks the key | The server: `<prefix><uuid>.<ext>` | The client, inside its `keyPrefix` |
-| `maxUploadSize` enforced by | S3, through the policy's `content-length-range` | The gateway, which counts bytes and aborts |
+| `maxUploadSize` enforced by | The gateway at presign (the declared size), then S3 (the policy's `content-length-range`) | The gateway, which counts bytes and aborts |
 | Content-Type | Bound by the policy to the type the browser claimed | Whatever header the browser sends |
 | Bucket CORS rule | Required | Not needed |
 | Server memory per upload | None | A few 5 MiB parts at a time |
@@ -113,12 +113,12 @@ What the route does with each request:
 
 - **`authorize` runs first, every time.** Throw a `FilesError`: `Unauthorized` becomes a `401` and `ReadOnly` a `403`. A plain `Error` becomes a `500`. [Authorization](/docs/ui/server/authorization) covers the rest of the returned constraint.
 - **`key` tells the two paths apart.** A presign request authorizes as `upload` with no `key`, because the server mints it. A keyed `PUT` authorizes as `upload` with the client's key, before the prefix is added. The hook above lets users stream only into `videos/`.
-- **`maxUploadSize` applies to both paths.** On the keyless path it goes into the S3 policy. On the keyed path the gateway counts bytes as they stream.
+- **`maxUploadSize` applies to both paths.** On the keyless path, presign refuses a file that declares a larger size with `422`, and the limit goes into the S3 policy for the rest. On the keyed path the gateway counts bytes as they stream.
 - **TanStack Start doesn't read the body for you.** Its server-route dispatch passes the `Request` to your handler untouched, and the gateway hands `request.body` to the adapter as a stream.
 
 ## Let the browser POST to S3
 
-With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. The policy inside those fields fixes the key, requires the `Content-Type` the browser claimed, and allows between 1 byte and `maxUploadSize`. S3 checks each condition when the form arrives.
+With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. The policy inside those fields fixes the key, requires the `Content-Type` the browser claimed, and allows anything from 0 bytes to `maxUploadSize`. S3 checks each condition when the form arrives.
 
 The browser sends that form cross-origin, so the bucket needs a CORS rule. In the S3 console, open the bucket's **Permissions** tab and edit **Cross-origin resource sharing (CORS)**:
 
@@ -256,9 +256,10 @@ TanStack's open feature request [TanStack/router#5704](https://github.com/TanSta
 ## Limits and tradeoffs
 
 - **The policy checks the claimed type, not the bytes.** On the keyless path, S3 stores the object with the `Content-Type` the browser declared and rejects a form that changes it, but a file of HTML labelled `image/png` passes. The keyed path stores whatever header the browser sends. To decide the type from the bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
-- **Keep `maxUploadSize` set.** Without it, the S3 adapter signs a presigned `PUT` instead of a `POST`. That `PUT` has no size limit, and in files-sdk 2.6 its signature doesn't cover `Content-Type` either, so the browser can store any type. (The `PUT` also needs `PUT` and the `Content-Type` header in the CORS rule.)
+- **Keep `maxUploadSize` set.** Without it, the S3 adapter signs a presigned `PUT` instead of a `POST`. That `PUT` binds the `Content-Type` the browser claimed, so S3 refuses a different one, but it has no size limit, and complete has no limit to check either. (The `PUT` also needs `PUT` and the `Content-Type` header in the CORS rule.)
 - **Body-reading plugins turn keyless uploads into proxied ones.** `contentType()`, and `validation()` with a size or type rule, refuse to sign upload URLs because they can't inspect bytes they never see. The gateway falls back to its proxy path when signing fails, so `upload(file)` then streams through your server too.
-- **Complete checks size but doesn't delete.** After a direct upload, the complete step `head`s the object and reports one larger than `maxUploadSize` as an error, but leaves it in the bucket. With S3's policy in place that case shouldn't arise, but it's why the policy matters.
+- **Complete is the last check.** After a direct upload, the complete step `head`s the object. One larger than `maxUploadSize` is deleted and reported as an error. With S3's policy in place that case shouldn't arise. Against a local MinIO server with a 1000-byte limit, a 2000-byte object written to the minted key from the server side came back from complete as `uploaded object is 2000 bytes, exceeds maxSize 1000`, and was gone afterwards.
+- **Empty files pass.** The gateway signs the policy with a minimum of 0 bytes, so a 0-byte file uploads and completes. Check `file.size` in the browser, or the size complete returns, if empty files aren't useful to you.
 - **Keyed uploads can overwrite.** A user can `PUT` to a key they already wrote. Check `key` in `authorize`, or generate unique keys on the client as above.
 - **Serverless hosts cap request bodies.** On Vercel, function request bodies are limited to 4.5 MB, so the streamed path fails above that. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side. The keyless path never sends file bytes to the function.
 - **Cloudflare Workers can't run `@aws-sdk/client-s3`**, which needs a `DOMParser`. [`s3Fetch()`](/docs/adapters/s3-fetch) runs there, but it has no `POST` policy and buffers streamed bodies, so neither path above carries over unchanged.
@@ -266,13 +267,13 @@ TanStack's open feature request [TanStack/router#5704](https://github.com/TanSta
 
 ## Troubleshooting
 
-**`upload failed (400)` on a keyless upload.** S3 rejected the form, usually because the file is over `maxUploadSize` (S3's code is `EntityTooLarge`) or empty (`EntityTooSmall`). The policy is working. Check `file.size` in the browser first for a friendlier message.
+**`upload exceeds maxUploadSize`.** The gateway refused the file. On a keyless upload that happens at presign, from the size the browser declared, before anything is signed. On a keyed upload it happens up front from `Content-Length`, or partway through the stream. Check `file.size` in the browser first for a friendlier message.
+
+**`upload failed (400)` on a keyless upload.** S3 rejected the form. A body larger than the policy allows gets `EntityTooLarge`, but the client declares each file's real size at presign, so an oversized file normally stops there instead. Open the response in the network panel and read S3's `<Code>`.
 
 **`upload failed (403)` on a keyless upload.** S3 refused the form's signature or a policy condition. The form expired, the server clock is off, or a field such as `Content-Type` was changed after signing.
 
 **`network error during upload` and a CORS error in the console.** The preflight to S3 didn't match a rule. Check that the page's exact origin is in `AllowedOrigins` and `POST` is in `AllowedMethods`.
-
-**`upload exceeds maxUploadSize` on a keyed upload.** The gateway refused it, either up front from `Content-Length` or partway through the stream.
 
 **`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** The keyed path always streams. Install `@aws-sdk/lib-storage`.
 

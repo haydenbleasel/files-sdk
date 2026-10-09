@@ -21,7 +21,7 @@ The catch is where that boundary lives. It's in your application, not in the buc
 
 - A Files SDK gateway in your app. This guide reuses the Next.js route and `lib/files.ts` from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload). The policy works the same with any adapter and any [framework binding](/docs/ui/server/gateway#other-frameworks).
 - A session that carries a stable tenant ID. A tenant can be a user or an organization; this guide uses organizations, and the code is identical with `session.user.id`.
-- Written against files-sdk 2.6 and Next.js 16.4. The results below come from running the gateway in Bun against the memory adapter, and the signing-adapter differences from a local MinIO server.
+- Written against files-sdk 2.7 and Next.js 16.4. The results below come from running the gateway in Bun against the memory adapter, and the signing-adapter differences from a local MinIO server.
 
 ## Derive the prefix from the session
 
@@ -103,7 +103,8 @@ The bucket holds `orgs/acme/report.pdf` and `orgs/acme-co/secret.txt`. A signed-
 | --- | --- | --- | --- |
 | `list` (as `prefix`) | `422` | `200`, `items: []` | listed `orgs/acme/orgs/acme-co/` |
 | `search` | `422` as `prefix`; `200`, no matches as a glob | `200`, no matches as a glob or regex | walked `orgs/acme/` only |
-| `head`, `exists` | `422` | `404` | looked up `orgs/acme/orgs/acme-co/secret.txt` |
+| `head` | `422` | `404` | looked up `orgs/acme/orgs/acme-co/secret.txt` |
+| `exists` | `422` | `200`, `exists: false` | the same lookup |
 | `download` | `422`, also when sent as `%2E%2E%2F…` | `404` | the same lookup |
 | `url` | `422` | `404` | the same lookup |
 | `upload` with a key | `422` | `200` | wrote `orgs/acme/orgs/acme-co/secret.txt` |
@@ -119,7 +120,7 @@ Every request without a session got `401`. After the run, `orgs/acme-co/` held e
 Three kinds of result show up in that table:
 
 - **`422 Validation`** means the gateway refused the key before calling storage. It prepends the prefix first and then rejects the result if it contains a `.` or `..` segment or a NUL byte, so `../acme-co/secret.txt` becomes `orgs/acme/../acme-co/secret.txt` and stops there. Query strings are decoded before the check, so `%2E%2E%2F` is caught too. A double-encoded `%252E%252E%252F` or a backslash path (`..\acme-co\secret.txt`) isn't a traversal in object storage at all; both came back `404` as literal keys under `orgs/acme/`.
-- **`404` and empty lists** mean the full storage key was treated as a relative key. `orgs/acme-co/secret.txt` becomes `orgs/acme/orgs/acme-co/secret.txt`, which doesn't exist.
+- **`404`, empty lists, and `exists: false`** mean the full storage key was treated as a relative key. `orgs/acme-co/secret.txt` becomes `orgs/acme/orgs/acme-co/secret.txt`, which doesn't exist.
 - **`200` on a write** means the write happened inside `acme`'s own prefix. That includes `delete`: deleting a key that doesn't exist succeeds, on the memory adapter and against a local MinIO server alike. A `200` from a cross-tenant delete doesn't mean anything was deleted, which is why the last column comes from listing the bucket afterwards, not from the responses.
 
 Keyless uploads can't be steered at all. The server mints the key from the tenant prefix, a random UUID, and the file's extension; the client's file name contributes nothing else. Tampering with the key in the `complete` step changes nothing either, because the signed upload token carries the real key.
@@ -128,7 +129,7 @@ On a signing adapter, two rows look different. The memory adapter can't sign URL
 
 ## Keep the check in your test suite
 
-The table comes from a script like this one. It mounts the real policy over the memory adapter, reads the session from a test header, and asserts on both the status codes and the bucket's contents afterwards:
+The table comes from a script like this one. It mounts the real policy over the memory adapter, reads the session from a test header, and asserts on the status codes, on an upload token replayed across tenants, and on the bucket's contents afterwards:
 
 ```ts title="scripts/check-tenant-isolation.ts" lineNumbers
 import assert from "node:assert/strict";
@@ -207,6 +208,23 @@ for (const [label, send, expected] of cases) {
   assert.equal(res.status, expected, `${label}: ${await res.text()}`);
 }
 
+// An upload token minted for acme-co can't be completed from acme's session.
+const minted = await as("acme-co")(
+  endpoint,
+  post({
+    op: "presign",
+    files: [{ name: "a.txt", size: 1, type: "text/plain" }],
+  })
+);
+const [upload] = (await minted.json()).uploads;
+const completed = await json({
+  op: "complete",
+  completions: [{ id: upload.id, key: upload.key }],
+});
+const outcome = await completed.json();
+assert.equal(outcome.files.length, 0);
+assert.equal(outcome.errors[0].error.code, "Unauthorized");
+
 // Whatever the responses said, acme-co's prefix must be exactly as it was.
 const after = await files.list({ prefix: "orgs/acme-co/" });
 assert.deepEqual(
@@ -216,7 +234,7 @@ assert.deepEqual(
 const stored = await files.download(fullKey);
 assert.equal(await stored.text(), "acme-co only");
 
-console.log(`${cases.length} cross-tenant requests behaved as expected`);
+console.log(`${cases.length + 1} cross-tenant requests behaved as expected`);
 ```
 
 Run it with `bun scripts/check-tenant-isolation.ts`, or move the cases into your test runner. It needs no credentials or network, so it can run on every change to the policy. Requests without an `Origin` header pass the gateway's [origin check](/docs/ui/server/authorization#origin--csrf), which is why the script doesn't set one.
@@ -250,9 +268,11 @@ A [constructor `prefix`](/docs/prefixes) matches on a path boundary, so `orgs/ac
 
 - **Bucket credentials reach every tenant.** The R2 token or AWS keys in your server environment can read and write all of `orgs/`. A leaked key, or any server route that calls `files` directly, skips `authorize` completely.
 - **Signed URLs are bearer tokens.** The URL behind a `download` redirect or a `url` call works for anyone who has it until it expires. The gateway can't revoke it.
-- **Upload tokens are bearer tokens too.** The token `presign` returns is bound to the minted key and the endpoint, not to the session. The `PUT` that redeems it doesn't run `authorize`, so anyone holding the token can write that one key until it expires. Replaying one tenant's token from another tenant's session wrote into the first tenant's prefix.
+- **Upload tokens are bearer tokens too.** The token `presign` returns is bound to the minted key and the endpoint, not to the session. The proxy `PUT` that redeems it doesn't run `authorize`, so anyone holding the token can write that one key until it expires. Replaying one tenant's token from another tenant's session wrote into the first tenant's prefix. The token is signed, not encrypted, so whoever holds it can also read the storage key inside it.
 
 Short lifetimes limit the last two, and provider-side permissions limit the first.
+
+The `complete` step after an upload is checked against the session: it runs `authorize` and refuses a token whose key isn't under the caller's `keyPrefix`. In the replay above, the second tenant's `complete` returned no file, only an `Unauthorized` entry reading `upload token was not issued for this caller`, so it never saw the stored object's size, type, or metadata. The bytes it sent stayed in the first tenant's prefix, under the minted key.
 
 ## Default lifetime vs enforced ceiling
 

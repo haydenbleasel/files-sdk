@@ -21,7 +21,7 @@ Start by taking the browser out of the loop. curl ignores CORS, so replaying the
 - The failing upload's request URL, copied from the browser's network panel. It's the `PUT` to `<account-id>.r2.cloudflarestorage.com`.
 - The exact origin of the page that sent it: scheme, host, and port.
 - Access to the bucket's CORS policy, in the dashboard under **Settings → CORS Policy** or with `npx wrangler r2 bucket cors list <bucket>`.
-- Written against files-sdk 2.6 and Cloudflare's R2 documentation as of October 2026.
+- Written against files-sdk 2.7 and Cloudflare's R2 documentation as of October 2026.
 
 Treat the URL as a secret while you debug. Cloudflare [describes presigned URLs as bearer tokens](https://developers.cloudflare.com/r2/api/s3/presigned-urls/): anyone holding one can use it until it expires.
 
@@ -107,7 +107,7 @@ The URL carries its own clock: `X-Amz-Date` is when it was signed (UTC), and `X-
 
 "Request signature does not match calculated signature." R2 recomputed the signature from the request it received and got a different answer. Three things cause it:
 
-- **A different `Content-Type` than the one signed.** Cloudflare's [presigned URL docs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/) say an upload with a different type fails this way. That applies when the URL's `X-Amz-SignedHeaders` includes `content-type`, which is the case for the `fetch` engine (`client: "fetch"`, the default inside Workers) and for hybrid signing in a Worker. The Files SDK client always sends the signed type. Your own code might not: `fetch(url, { method: "PUT", body: file })` sends the file's own type, so pass the `headers` that `signedUploadUrl()` returned. With `client: "aws-sdk"`, files-sdk 2.6 signs only `host` (check `X-Amz-SignedHeaders`), so the signature doesn't catch a mismatched type and this cause can't produce the error.
+- **A different `Content-Type` than the one signed.** Cloudflare's [presigned URL docs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/) say an upload with a different type fails this way. That applies when the URL's `X-Amz-SignedHeaders` includes `content-type`, which it does whenever `signedUploadUrl()` gets a `contentType`, on either client (`"fetch"` or `"aws-sdk"`) and with hybrid signing in a Worker. The gateway always passes the browser's type, and the Files SDK client always sends it back unchanged. Your own code might not: `fetch(url, { method: "PUT", body: file })` sends the file's own type, so pass the `headers` that `signedUploadUrl()` returned. If `X-Amz-SignedHeaders` is only `host`, no type was signed (no `contentType`, or `client: "aws-sdk"` before files-sdk 2.7), and this cause can't produce the error.
 - **A URL changed after signing.** Cloudflare lists the key, the operation, and the expiry. In practice that's a key re-encoded on the way to the browser, a query parameter added or reordered by your code, or an upload URL used with a method other than `PUT`.
 - **The wrong secret.** The access key ID and secret come from different tokens, or the secret was rotated on one server and not another.
 

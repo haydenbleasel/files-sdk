@@ -74,7 +74,7 @@ createFilesRouter({
 `downloadMode: "auto"` (the default) picks the cheapest correct path per adapter:
 
 - **Redirect** — when the adapter can sign URLs (S3, R2, GCS, …), the gateway `302`s to a short-lived signed URL and the bytes flow **directly from storage**. Your server never touches them, and `Range` requests are handled by the provider.
-- **Proxy** — when the adapter can't sign (Vercel Blob in public mode, the filesystem, …), the gateway streams the body through itself with full `Range`/`206` support. The client's abort signal is wired through, so a disconnect cancels the upstream read.
+- **Proxy** — when the adapter can't sign (Vercel Blob in public mode, the filesystem, …), the gateway streams the body through itself, answering `Range` requests with `206` slices when the adapter can read ranges (see below for adapters that can't). The client's abort signal is wired through, so a disconnect cancels the upstream read.
 
 Force one with `downloadMode: "redirect" | "proxy"`. Downloads send `Content-Disposition: attachment` by default (so a stored `.html`/SVG can't execute inline at your origin) unless [`authorize`](/docs/ui/server/authorization) returns `{ disposition: "inline" }`. The proxy path sets the header itself, and the redirect path binds it into the signed URL. Proxied downloads also send `X-Content-Type-Options: nosniff`, so the browser won't sniff stored bytes into a more dangerous type.
 
@@ -94,7 +94,7 @@ A keyless `upload(file)` runs a three-step protocol so bytes never round-trip th
 
 1. **presign** — the server mints a key (under the authorized prefix), signs an HMAC token binding the key and size/type constraints, and returns either a real presigned URL or a proxy target. A file whose declared `size` is over `maxUploadSize` is refused up front with `422` and `reason: "size"`, before anything is signed.
 2. **upload** — the client `PUT`/`POST`s the bytes directly to storage (or proxies through `?op=proxy` for non-presigning adapters), reporting progress. Like a presigned URL, the proxy `PUT` is authorized by its token alone (see [Authorization](/docs/ui/server/authorization)).
-3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry that doesn't echo its key. The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted.
+3. **complete** — the server verifies the token, checks that its key lies under the calling request's authorized prefix, and `head`s the object, then returns the stored metadata. A token minted for another caller's prefix gets an `Unauthorized` entry with no stored metadata. (The token is signed, not encrypted: its payload names the key it was minted for, so treat a token as readable by whoever holds it.) The `head` is the authoritative size check: the declared size is only advisory, so an object over the token's limit gets an error entry and is deleted.
 
 An explicit `upload(key, body)` skips presign and streams straight through the gateway. The stream reaches the adapter with no known length, so the S3-family adapters on their AWS SDK client need the optional `@aws-sdk/lib-storage` package for this path.
 

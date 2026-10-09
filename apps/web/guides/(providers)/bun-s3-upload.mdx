@@ -19,7 +19,7 @@ Both stop short at the same place: presigned uploads. Bun signs only the `Host` 
 ## Before you start
 
 - An S3 bucket (this guide calls it `uploads`) and credentials that can put, get, and delete objects in it, plus `s3:ListBucket` so missing keys come back as `404` rather than `403`.
-- Bun 1.4. Written against Bun 1.4.2, files-sdk 2.6, and `@aws-sdk/*` 3.1148 for the `s3()` section.
+- Bun 1.4. Written against Bun 1.4.2, files-sdk 2.7, and `@aws-sdk/*` 3.1148 for the `s3()` section.
 - Credentials in the environment. Bun reads `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, and `S3_ENDPOINT`, and falls back to the `AWS_*` names when they're unset. The AWS SDK behind `s3()` reads only the `AWS_*` names, so use those and one `.env` serves all three versions:
 
 ```bash title=".env"
@@ -238,9 +238,7 @@ Handing back a URL plus a `Content-Type` header to send would look like a guaran
 - ``bun-s3 adapter: `contentType` is not supported because Bun.s3 presigned PUT URLs sign only the host header, so the Content-Type can't be enforced. Omit `contentType`, or use the `s3()` or `s3Fetch()` adapter, which sign it.``
 - ``bun-s3 adapter: `maxSize` is not supported because Bun.s3 exposes presigned URLs, not S3 POST policy fields.``
 
-:::warning
-The first message overstates `s3()`. In files-sdk 2.6, `s3()` presigned `PUT` URLs don't sign `Content-Type` either, because the AWS SDK's presigner leaves it out of the signature by default. Against MinIO, a type mismatch was accepted by an `s3()` `PUT` URL and rejected with `403` by an `s3Fetch()` one. To enforce a type on a `PUT`, use `s3Fetch()`. To enforce type and size together, use `s3()` with `maxSize`, covered below.
-:::
+Both alternatives the first message names do sign the type: their presigned `PUT` URLs list `content-type;host` when you pass `contentType`. Against a local MinIO server, a `text/html` body sent to a URL signed for `image/png` got `403 SignatureDoesNotMatch` from each. Neither limits size on a `PUT`; for type and size together, use `s3()` with `maxSize`, covered below.
 
 The [`useFiles` gateway](/docs/ui/server/bun) runs into the same refusal. When the browser reports a file's type, the gateway passes it to `signedUploadUrl()`, `bun-s3` throws, and the gateway falls back to proxying that upload through your server. With `bun-s3`, most gateway uploads go through Bun rather than straight to S3.
 
@@ -392,8 +390,8 @@ The policy checks the declared type, not the file's contents. A client can still
 | Upload, download, list, delete | Yes | Yes | Yes |
 | Range reads | `slice()` | `range` | `range` |
 | Presigned `GET` | `presign()`, 24 h default | `url()`, 1 h default, 7-day cap | `url()`, 1 h default, 7-day cap |
-| Presigned `PUT` | Yes, signs `host` only | Yes, refuses `contentType` and `maxSize` | Yes, `Content-Type` not signed in files-sdk 2.6 |
-| Size and type enforced by S3 on a browser upload | No | No | Yes, POST policy via `maxSize` |
+| Presigned `PUT` | Yes, signs `host` only | Yes, refuses `contentType` and `maxSize` | Yes, signs `Content-Type` when you pass `contentType` |
+| Size and type enforced by S3 on a browser upload | No | No | Type on a `PUT`; size and type on a POST policy via `maxSize` |
 | User metadata, `Cache-Control` | No | Throws | Yes |
 | Copy | No copy method | Streams through your process | Server-side `CopyObject` |
 | Resume an upload in a new process | No | No, in-process only | Yes, [resumable](/docs/resumable) |

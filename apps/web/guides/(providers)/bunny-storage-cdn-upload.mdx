@@ -23,7 +23,7 @@ That split decides what this setup is for. Pull Zone URLs are public and permane
 - A **Pull Zone** whose origin type is **Bunny Storage Zone**, pointing at that zone, as in Bunny's [storage quickstart](https://bunny.net/docs/storage/quickstart). Use its `*.b-cdn.net` hostname or add a [custom hostname](https://bunny.net/docs/cdn/custom-hostname) such as `media.example.com`.
 - Your account **API key** from [Account → API Key](https://bunny.net/docs/account/api-keys), for purging. It's a different key from the storage zone password.
 - A Next.js App Router app with an auth library that can resolve the signed-in user on the server.
-- Written against files-sdk 2.6, `@bunny.net/storage-sdk` 0.3.2, Next.js 16.4, and React 19.3.
+- Written against files-sdk 2.7, `@bunny.net/storage-sdk` 0.3.2, Next.js 16.4, and React 19.3.
 
 ```package-install
 files-sdk @bunny.net/storage-sdk
@@ -133,7 +133,7 @@ You don't configure a proxy anywhere. The client's `upload(file)` starts by aski
 The rest of the configuration:
 
 - **`operations: ["upload"]`** is the gateway's allow-list. Any other operation gets `403 operation not allowed`. The page reads the list on the server and deletes go through a server action, so the browser needs nothing else.
-- **`maxUploadSize`** is enforced while the bytes stream through: the gateway counts them and aborts past the limit with `422 upload exceeds maxSize`, before the upload to Bunny finishes. Files SDK passes the stream to Bunny's SDK as it arrives, so a 10 MiB file isn't held in memory first.
+- **`maxUploadSize`** is checked twice. The client declares each file's size when it asks for a target, and a file over the limit gets `422 upload exceeds maxUploadSize` before any bytes move. The declared size is only the client's word, so the gateway also counts the bytes as they stream through and aborts past the limit with `422 upload exceeds maxSize`, before the upload to Bunny finishes. Files SDK passes the stream to Bunny's SDK as it arrives, so a 10 MiB file isn't held in memory first.
 - **`FILES_API_SECRET`** signs the token that ties the proxy `PUT` to the key the gateway chose. Without it, each server instance invents its own secret and logs a warning, and an upload that lands on a different instance fails.
 
 A server action can do the same job for small files, but Next.js [limits action request bodies to 1 MB by default](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions#bodysizelimit) and parses the whole form in memory. The gateway's route handler has neither limit.
@@ -227,7 +227,7 @@ export function Uploader() {
 
 Progress measures the upload to your server. An entry reaches `"success"` only after the `complete` step, which runs once the server has finished writing to Bunny.
 
-Why not ask the gateway for the URL instead? Its `url` operation always passes a `Content-Disposition` to `files.url()`, which the Bunny adapter can't honor, so in files-sdk 2.6 that call fails with a `500`; calling `files.url()` in server code avoids it.
+Why not ask the gateway for the URL instead? Its `url` operation asks `files.url()` for `Content-Disposition: attachment` by default, which a Pull Zone URL can't carry, so on Bunny it fails with a `500` rather than hand out a URL without it. If `authorize` returns `{ disposition: "inline" }` for that operation, the gateway mints the plain Pull Zone URL instead, which suits this setup, since the plugins only store images. The gateway's `download` operation works on Bunny too, but it streams every byte through your server, because there's no signed URL to redirect to. Calling `files.url()` in server code, as the page does, needs neither.
 
 To check delivery, request a file through the Pull Zone:
 
@@ -334,7 +334,7 @@ Bunny also offers an [S3-compatible API](https://bunny.net/docs/storage/s3), in 
 
 **`500` with `contentType: "users/42/….png" is declared "image/png" but its bytes are "text/html"`.** The `contentType()` plugin refused an upload whose bytes don't match its declared type. Nothing was stored. A file it can't identify fails with `could not identify the contents`, and a recognized type that isn't on the list, such as a BMP, fails `validation()` with `is not one of the allowed types`. The gateway reports these plugin rejections as `500`, so show `upload.error.message` rather than relying on the status code.
 
-**`500` with ``bunnyStorage: `responseContentDisposition` is not supported`` from `/api/files`.** Something called the gateway's `url` operation, which forces a disposition. Build URLs with `files.url()` in server code instead.
+**`500` with `url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment"` from `/api/files`.** Something called the gateway's `url` operation, which asks for an attachment disposition unless `authorize` allows inline. Build URLs with `files.url()` in server code, or return `{ disposition: "inline" }` from `authorize` for that operation.
 
 **The old image keeps showing after an overwrite.** The edge or the browser still has the previous copy. Purge the URL, or give the new version a new key.
 
