@@ -38,7 +38,7 @@
   "overrides": {
     "astro": "^7"
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.2",
   "patchedDependencies": {
     "oxfmt@0.66.0": "patches/oxfmt@0.66.0.patch"
   }
