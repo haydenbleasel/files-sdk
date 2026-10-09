@@ -15,7 +15,7 @@ related:
 
 Give `r2()` the Worker's R2 binding and every read and write goes through it, with no S3 credentials and no signed HTTP requests. A binding can't sign URLs, though, so pass an R2 API token's access key and secret next to it. In this hybrid mode the binding still does the I/O, and the keys sign the presigned `PUT` and `GET` URLs that let browsers upload to and download from the bucket directly.
 
-Two things catch people on Workers. Wrangler resolves the `@aws-sdk/*` imports behind the adapter's optional `"aws-sdk"` engine at build time, so a Worker that never uses them still fails to build until you install or alias them. And the binding only stores streams whose length it knows up front, which rules out the gateway's `maxUploadSize` whenever the Worker writes an upload itself.
+Two things catch people on Workers. Wrangler bundles whatever `@aws-sdk/*` packages it can find for the adapter's optional `"aws-sdk"` engine, even in a Worker that never runs it, so keep them out of the Worker's dependencies. And the binding only stores streams whose length it knows up front, which rules out the gateway's `maxUploadSize` whenever the Worker writes an upload itself.
 
 ## Before you start
 
@@ -68,35 +68,14 @@ When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with it
   "vars": {
     "R2_ACCOUNT_ID": "your-account-id",
   },
-  // files-sdk/r2 loads the AWS SDK with import() for its optional
-  // "aws-sdk" engine. Wrangler resolves those imports at build time, so
-  // point them at a stub this Worker never loads.
-  "alias": {
-    "@aws-sdk/client-s3": "./src/no-aws-sdk.ts",
-    "@aws-sdk/lib-storage": "./src/no-aws-sdk.ts",
-    "@aws-sdk/s3-presigned-post": "./src/no-aws-sdk.ts",
-    "@aws-sdk/s3-request-presigner": "./src/no-aws-sdk.ts",
-  },
 }
 ```
 
-```ts title="src/no-aws-sdk.ts" lineNumbers
-// Wrangler aliases the AWS SDK packages to this file (see wrangler.jsonc).
-// The binding and fetch paths never load them; if something does, fail loudly.
-throw new Error(
-  'The AWS SDK is aliased away in wrangler.jsonc. Use the R2 binding or client: "fetch".'
-);
-```
+`files-sdk` is the only package this Worker needs. The adapter loads the AWS SDK with `import()` for its optional `"aws-sdk"` engine, which the binding never runs. Wrangler's bundler still looks at every `import()` it can see: with the `@aws-sdk/*` packages uninstalled it leaves those imports unresolved, but with them installed it bundles them even though they never run. A `wrangler deploy --dry-run` of this guide's Worker reported 1,282 KiB (240 KiB gzipped) with the packages installed and 353 KiB (78 KiB gzipped) with the AWS SDK left out. In a monorepo that hoists them for another app, Wrangler finds them too.
 
-The `alias` block is the part people miss. The adapter only loads the AWS SDK when the `"aws-sdk"` engine runs, which the binding never does. Wrangler's bundler still resolves every `import()` it can see, so without the alias and without the packages installed, the build stops:
-
-```text
-✘ [ERROR] Could not resolve "@aws-sdk/client-s3"
-
-    To fix this, you can add an entry to "alias" in your Wrangler configuration.
-```
-
-The same error repeats for `lib-storage` and both presigners. Installing the four packages also fixes the build, but then they're bundled without ever running. A `wrangler deploy --dry-run` of this guide's Worker reported 1,282 KiB (240 KiB gzipped) with the packages installed and 353 KiB (78 KiB gzipped) with the alias. The stub throws on purpose, following Wrangler's [runtime-error alias pattern](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling-issues): if something does reach for the AWS SDK, you get a clear message instead of an `undefined` constructor.
+:::note
+Up to files-sdk 2.6.2, a Worker without the packages failed to build instead, with `Could not resolve "@aws-sdk/client-s3"` (and the same for `lib-storage` and both presigners). On those versions, upgrade or point the four packages at a stub module with an [`alias`](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling-issues) entry in `wrangler.jsonc`.
+:::
 
 Store the token's keys and the gateway's token secret as [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/). Each command prompts for the value and deploys a new version of the Worker right away (use `wrangler versions secret put` with gradual deployments):
 
@@ -370,7 +349,9 @@ Set `"remote": true` on the binding while you develop uploads, so the binding an
 
 ## Troubleshooting
 
-**`Could not resolve "@aws-sdk/client-s3"` from `wrangler deploy` or `wrangler dev`.** The `alias` block is missing or names a stub path that doesn't exist. Add it as shown in [Configure Wrangler](#configure-wrangler).
+**`Could not resolve "@aws-sdk/client-s3"` from `wrangler deploy` or `wrangler dev`.** The Worker runs files-sdk 2.6.2 or earlier. Upgrade, or add the `alias` entries described in [Configure Wrangler](#configure-wrangler).
+
+**`r2-http adapter: client "aws-sdk" requires the optional peer dependencies…`.** Something constructed `r2()` with `client: "aws-sdk"` (or polyfilled `DOMParser`, which keeps that default) in a Worker without the `@aws-sdk/*` packages. Drop the option to use the fetch engine, or install the packages.
 
 **`Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)`.** A stream of unknown length reached the binding. Look for `maxUploadSize` on the gateway, `onProgress` on a stream upload, or a body you piped through a `TransformStream`.
 

@@ -367,12 +367,17 @@ const assertConditionalUploadOptions = (
 // clear error when missing. `permanent`: a missing module fails every attempt
 // the same way, so `retries` must not re-issue the upload. Exported (with an
 // injectable importer) only so the missing-peer path is testable.
+//
+// The `import()` is awaited directly inside the `try` on purpose — see
+// `loadS3Sdk` in ../internal/s3-engine.ts: it is the shape that lets a bundler
+// (Wrangler's esbuild, Bun, webpack) build without the peer installed.
 export const loadLibStorage = async (
-  importLibStorage: () => Promise<typeof LibStorage> = () =>
-    import("@aws-sdk/lib-storage")
+  importLibStorage?: () => Promise<typeof LibStorage>
 ): Promise<typeof LibStorage> => {
   try {
-    return await importLibStorage();
+    return importLibStorage
+      ? await importLibStorage()
+      : await import("@aws-sdk/lib-storage");
   } catch (error) {
     throw new FilesError(
       "Provider",

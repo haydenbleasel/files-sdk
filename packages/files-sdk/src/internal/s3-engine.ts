@@ -5,8 +5,9 @@ import type {
   PartsResumableDriver,
   ResumableUploadSession,
 } from "../index.js";
-import type { S3Adapter, S3AdapterOptions } from "../s3/core.js";
+import type { S3Adapter, S3AdapterOptions, S3Sdk } from "../s3/core.js";
 import { deleteManyWithFallback } from "./core.js";
+import { FilesError } from "./errors.js";
 import { isFunction } from "./is.js";
 import { SIGV4_MAX_EXPIRES_IN } from "./s3-fetch.js";
 
@@ -60,32 +61,87 @@ export const resolveS3Engine = (explicit?: S3Engine): S3Engine => {
   return onWorkerd && !awsSdkCanParseXml ? "fetch" : "aws-sdk";
 };
 
+/**
+ * Load the `@aws-sdk/*` modules behind the `"aws-sdk"` engine.
+ *
+ * Each `import()` is awaited directly inside the `try`, and that shape is
+ * load-bearing. Consumer bundlers resolve literal `import()` specifiers at
+ * build time, so an unhandled `import("@aws-sdk/client-s3")` fails a Worker
+ * build (`Could not resolve "@aws-sdk/client-s3"` from Wrangler's esbuild)
+ * when the optional peers aren't installed, even though the binding and fetch
+ * engines never run it. An import awaited inside a `try` is one whose failure
+ * the code handles at run time: esbuild, Bun, and rolldown leave it unresolved
+ * without an error, and webpack downgrades it to a warning. When the peers
+ * *are* installed, every bundler still resolves and bundles them as before.
+ * Moving an import out of the `try`, into a `Promise.all`, or into a default
+ * parameter brings the build error back (`test/build-output.test.ts`).
+ *
+ * A missing peer doesn't always reject, though: Next.js's webpack resolves an
+ * uninstalled optional peer to an empty module, so the import succeeds and the
+ * first `new S3Client()` would fail with a bare "is not a constructor". Check
+ * the loaded exports so both cases end in the same install hint.
+ *
+ * `permanent`: a missing module fails every attempt the same way, so
+ * `retries` must not re-run the call. The importer is injectable only so the
+ * missing-peer paths are testable.
+ */
+export const loadS3Sdk = async (
+  name: string,
+  importSdk?: () => Promise<S3Sdk>
+): Promise<S3Sdk> => {
+  const missingPeers = (cause?: unknown) =>
+    new FilesError(
+      "Provider",
+      `${name} adapter: client "aws-sdk" requires the optional peer dependencies @aws-sdk/client-s3, @aws-sdk/s3-presigned-post, and @aws-sdk/s3-request-presigner. Install them, or pass client: "fetch", which needs no @aws-sdk/* package.`,
+      cause,
+      { permanent: true }
+    );
+  let sdk: S3Sdk;
+  try {
+    sdk = importSdk
+      ? await importSdk()
+      : {
+          clientS3: await import("@aws-sdk/client-s3"),
+          presignedPost: await import("@aws-sdk/s3-presigned-post"),
+          requestPresigner: await import("@aws-sdk/s3-request-presigner"),
+        };
+  } catch (error) {
+    throw missingPeers(error);
+  }
+  const loaded =
+    isFunction(sdk.clientS3.S3Client) &&
+    isFunction(sdk.presignedPost.createPresignedPost) &&
+    isFunction(sdk.requestPresigner.getSignedUrl);
+  if (!loaded) {
+    throw missingPeers();
+  }
+  return sdk;
+};
+
 // Lazy-load the s3 engine via dynamic imports so a fetch-engine Worker bundle
 // doesn't pull in @aws-sdk/client-s3 (~500KB+ minified). This goes through
 // the SDK-parameterized ../s3/core.js rather than ../s3/index.js: consumer
 // bundlers resolve even dynamically-reached chunks at build time, so the
 // entry's *static* `@aws-sdk/*` imports would hard-error against an
-// optional-peer placeholder when the SDK isn't installed (#105). Dynamic
-// specifiers stay unexecuted on the fetch path, so the placeholder never
-// throws. The returned function is single-shot: it builds the adapter once on
-// first call and returns the same promise on subsequent calls.
-const lazyS3 = (config: S3AdapterOptions): (() => Promise<S3Adapter>) => {
+// optional-peer placeholder when the SDK isn't installed (#105). The SDK
+// itself loads through `loadS3Sdk`, whose run-time-handled imports keep a
+// build without the peers from failing. The returned function is single-shot:
+// it builds the adapter once on first call and returns the same promise on
+// subsequent calls.
+const lazyS3 = (
+  config: S3AdapterOptions,
+  name: string
+): (() => Promise<S3Adapter>) => {
   let promise: Promise<S3Adapter> | null = null;
   // oxlint-disable-next-line react/function-component-definition -- not a React component; the rule misreads this returned thunk as one.
   return () => {
     if (!promise) {
       promise = (async () => {
-        const [core, clientS3, presignedPost, requestPresigner] =
-          await Promise.all([
-            import("../s3/core.js"),
-            import("@aws-sdk/client-s3"),
-            import("@aws-sdk/s3-presigned-post"),
-            import("@aws-sdk/s3-request-presigner"),
-          ]);
-        return core.createS3Adapter(
-          { clientS3, presignedPost, requestPresigner },
-          config
-        );
+        const [core, sdk] = await Promise.all([
+          import("../s3/core.js"),
+          loadS3Sdk(name),
+        ]);
+        return core.createS3Adapter(sdk, config);
       })();
     }
     return promise;
@@ -104,7 +160,7 @@ export const lazyS3Adapter = (
   config: S3AdapterOptions,
   name: string
 ): Adapter<S3Client> => {
-  const getInner = lazyS3(config);
+  const getInner = lazyS3(config, name);
 
   let cachedRaw: S3Client | undefined;
   const ensure = async (): Promise<S3Adapter> => {

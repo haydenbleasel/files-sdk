@@ -22,13 +22,21 @@ The `@aws-sdk/*` packages are only needed for the `"aws-sdk"` HTTP client (the d
 files-sdk
 ```
 
-For the `"aws-sdk"` HTTP client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime.
+For the `"aws-sdk"` HTTP client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime. If they're missing when the `"aws-sdk"` client runs, its first call rejects with a `FilesError` that names them.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
 ```
 
 Over the HTTP API with the `"aws-sdk"` client, `upload` also needs the optional `@aws-sdk/lib-storage` package to report true byte-level [progress](/docs/api/upload#progress-tracking) via `onProgress`, to use `multipart`, or to upload a `ReadableStream` body of unknown length. It's only loaded when `upload` uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length. Under the Workers `R2Bucket` binding and the fetch client the SDK reports progress generically instead — byte-level for stream bodies, start and finish for buffered ones.
+
+### Bundling for Workers
+
+The adapter loads the `"aws-sdk"` client with `import()`, and Wrangler's bundler looks at those imports at build time whether or not they run. When the `@aws-sdk/*` packages aren't installed, it leaves the imports unresolved and the Worker builds with `files-sdk` alone. When they are installed - a hoisted monorepo counts - it bundles them even if the Worker only uses the binding or the fetch client, adding roughly 900&nbsp;KiB (about 160&nbsp;KiB gzipped). Leave them out of a Worker that doesn't pass `client: "aws-sdk"`.
+
+:::note
+Up to files-sdk 2.6.2, a Worker without the `@aws-sdk/*` packages failed `wrangler deploy` and `wrangler dev` with `Could not resolve "@aws-sdk/client-s3"` (and the same for `lib-storage` and both presigners), even on the binding path. Upgrade, or point the four packages at a stub module with Wrangler's [`alias`](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling-issues) setting.
+:::
 
 ## Usage
 
@@ -52,7 +60,7 @@ const files = new Files({
 
 ## Lightweight fetch client
 
-Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). No `@aws-sdk/*` packages are installed or bundled - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling.
+Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). It needs no `@aws-sdk/*` packages, and without them installed none are bundled ([details](#bundling-for-workers)) - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling.
 
 ```ts lineNumbers
 const files = new Files({
@@ -103,7 +111,7 @@ The binding's `put()` needs an upload's length up front. Strings, bytes, `Blob`s
 
 ## Hybrid: binding + HTTP credentials
 
-Inside a Worker, you can pass _both_ a binding and HTTP credentials (`bucket`, `accountId` or `endpoint`, `accessKeyId`, and `secretAccessKey`). Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through an S3-compatible SigV4 signer because a Worker binding has no signing primitive. Hybrid signing runs on [aws4fetch](https://github.com/mhart/aws4fetch) (Web Crypto only), so neither the binding path nor hybrid mode ever pulls `@aws-sdk/*` packages into the Worker bundle.
+Inside a Worker, you can pass _both_ a binding and HTTP credentials (`bucket`, `accountId` or `endpoint`, `accessKeyId`, and `secretAccessKey`). Reads and writes go through the binding (no egress, no extra round trip); `url()` and `signedUploadUrl()` route through an S3-compatible SigV4 signer because a Worker binding has no signing primitive. Hybrid signing runs on [aws4fetch](https://github.com/mhart/aws4fetch) (Web Crypto only), so neither the binding path nor hybrid mode needs the `@aws-sdk/*` packages - leave them uninstalled to keep them out of the Worker bundle ([details](#bundling-for-workers)).
 
 ```ts lineNumbers
 // Inside a Cloudflare Worker. The binding handles uploads/downloads

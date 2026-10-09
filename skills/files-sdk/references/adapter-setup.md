@@ -66,7 +66,7 @@ Reads/writes still go through the binding (no egress fees, no extra round trip).
 Gotchas:
 
 - Binding-only with no `publicBaseUrl` and no HTTP creds → `url()` throws. There's no signing primitive available to a binding.
-- The HTTP engine is loaded lazily, so a binding-only Worker bundle doesn't pull in `@aws-sdk/client-s3` (~500 KB+).
+- The `"aws-sdk"` engine is loaded lazily, so a binding-only or fetch-engine Worker builds with `files-sdk` alone: Wrangler leaves the `@aws-sdk/*` imports unresolved when the packages aren't installed. If they _are_ installed (including hoisted in a monorepo), Wrangler bundles them (~900 KiB) even though they never run, so keep them out of such a Worker. On files-sdk ≤2.6.2 a missing `@aws-sdk/*` package failed `wrangler deploy` with `Could not resolve "@aws-sdk/client-s3"`; upgrade (or alias the four packages to a stub). With `client: "aws-sdk"` and the packages missing, the first call rejects with a `FilesError` naming them.
 - HTTP mode has two engines: `client: "aws-sdk"` (full surface, needs the `@aws-sdk/*` peers) and `client: "fetch"` (SigV4 `fetch` via aws4fetch, no AWS SDK; no multipart/resumable uploads, bulk deletes fan out per key). Inside Cloudflare Workers it defaults to `"fetch"`.
 
 ## Vercel Blob — `files-sdk/vercel-blob`

@@ -439,6 +439,7 @@
     "convex": "^1.46.0",
     "disk": "^1.8.0",
     "dropbox": "^10.47.0",
+    "esbuild": "^0.28.1",
     "fastify": "^5.12.5",
     "firebase-admin": "^14.5.0",
     "google-auth-library": "^11.2.0",

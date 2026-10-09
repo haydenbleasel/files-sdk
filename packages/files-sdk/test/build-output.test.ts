@@ -1,14 +1,18 @@
 import { expect, test } from "bun:test";
 import {
+  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import { build } from "esbuild";
 
 import pkg from "../package.json" with { type: "json" };
 import type * as ApiModule from "../src/api/index.js";
@@ -305,6 +309,121 @@ test(
     expect(
       offendingOptionalPeers(rustfsBundle, { followDynamic: true })
     ).toEqual([]);
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// Wrangler bundles a Worker with esbuild, resolving with these conditions
+// (Wrangler 4's `getBuildConditions()` default) on esbuild's default browser
+// platform.
+const WRANGLER_CONDITIONS = ["workerd", "worker", "browser"];
+
+// The subpaths a Worker reaches for without any `@aws-sdk/*` package: the
+// root, r2 (binding, hybrid, and fetch engines), the fetch engines of minio
+// and rustfs, and s3-fetch.
+const WORKER_SUBPATHS = ["files-sdk", "r2", "minio", "rustfs", "s3-fetch"].map(
+  (sub) => (sub === "files-sdk" ? sub : `files-sdk/${sub}`)
+);
+
+// The four `@aws-sdk/*` specifiers the lazy "aws-sdk" engine loads.
+const AWS_SDK_ENGINE_PEERS = [
+  "@aws-sdk/client-s3",
+  "@aws-sdk/lib-storage",
+  "@aws-sdk/s3-presigned-post",
+  "@aws-sdk/s3-request-presigner",
+];
+
+// Regression guard: r2, minio, and rustfs load the "aws-sdk" engine through
+// literal `import("@aws-sdk/…")` calls, and esbuild resolves those at build
+// time. Unhandled, they failed `wrangler deploy` / `wrangler dev` with `Could
+// not resolve "@aws-sdk/client-s3"` for a Worker that only uses the binding or
+// the fetch engine and never installed the optional peers. Install the built
+// package into a scratch `node_modules` outside the repo — so nothing
+// resolves `@aws-sdk/*` — and bundle each subpath the way Wrangler does.
+test(
+  "Worker bundles build with no @aws-sdk/* installed, bundling none of it",
+  async () => {
+    ensureBuilt();
+    const sandbox = mkdtempSync(path.join(tmpdir(), "files-sdk-workerd-"));
+    try {
+      const installed = path.join(sandbox, "node_modules", "files-sdk");
+      cpSync(distDir, path.join(installed, "dist"), {
+        filter: (src) => !(src.endsWith(".map") || src.endsWith(".d.ts")),
+        recursive: true,
+      });
+      writeFileSync(path.join(installed, "package.json"), JSON.stringify(pkg));
+      for (const specifier of WORKER_SUBPATHS) {
+        // A build error rejects here, failing the test with esbuild's message.
+        // eslint-disable-next-line no-await-in-loop -- one Worker bundle per subpath, reported in turn
+        const result = await build({
+          absWorkingDir: sandbox,
+          bundle: true,
+          conditions: WRANGLER_CONDITIONS,
+          // Runtime dependencies install with the package; only the
+          // optional peers are absent.
+          external: [...runtimeDeps],
+          format: "esm",
+          logLevel: "silent",
+          metafile: true,
+          stdin: {
+            contents: `export * from ${JSON.stringify(specifier)};`,
+            resolveDir: sandbox,
+          },
+          write: false,
+        });
+        const bundled = Object.keys(result.metafile.inputs).filter((input) =>
+          input.includes("@aws-sdk")
+        );
+        expect({ bundled, specifier }).toEqual({ bundled: [], specifier });
+        // What remains are the engine's run-time imports, which reject (and
+        // map to a FilesError) only if the "aws-sdk" engine actually runs.
+        const [output] = result.outputFiles;
+        const leftovers = new Set(
+          [
+            ...(output?.text ?? "").matchAll(
+              /["'](?<name>@aws-sdk\/[^"']+)["']/gu
+            ),
+          ]
+            .map((match) => match.groups?.name)
+            .filter((name) => name !== undefined)
+        );
+        expect(
+          [...leftovers].every((name) => AWS_SDK_ENGINE_PEERS.includes(name))
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(sandbox, { force: true, recursive: true });
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
+// The other half of the trade: when the peers *are* installed, a bundler must
+// still resolve and bundle the "aws-sdk" engine — a non-literal import() would
+// dodge the build error above but leave Next.js/Vite/Wrangler users of
+// `client: "aws-sdk"` with a module that can't load at run time.
+test(
+  "a bundler still resolves the aws-sdk engine's peers when they are installed",
+  async () => {
+    ensureBuilt();
+    const result = await build({
+      bundle: true,
+      entryPoints: [path.resolve(distDir, "r2/index.js")],
+      format: "esm",
+      logLevel: "silent",
+      metafile: true,
+      platform: "node",
+      write: false,
+    });
+    const inputs = Object.keys(result.metafile.inputs);
+    for (const peer of AWS_SDK_ENGINE_PEERS) {
+      expect({
+        peer,
+        resolved: inputs.some((input) =>
+          input.includes(`node_modules/${peer}/`)
+        ),
+      }).toEqual({ peer, resolved: true });
+    }
   },
   COLD_BUILD_TIMEOUT_MS
 );

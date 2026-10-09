@@ -11,7 +11,7 @@ The `@aws-sdk/*` packages are only needed for the `"aws-sdk"` client (the defaul
 files-sdk
 ```
 
-For the `"aws-sdk"` client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime.
+For the `"aws-sdk"` client, `@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies - install alongside the SDK so the adapter's imports resolve at runtime. If they're missing when the `"aws-sdk"` client runs, its first call rejects with a `FilesError` that names them.
 
 ```package-install
 files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
@@ -48,7 +48,7 @@ The `"aws-sdk"` client is loaded on first use, so `files.raw` is `undefined` unt
 
 ## Lightweight fetch client
 
-Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). No `@aws-sdk/*` packages are installed or bundled - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling.
+Pass `client: "fetch"` to swap the `@aws-sdk/*` stack for a SigV4-signed `fetch` engine built on [aws4fetch](https://github.com/mhart/aws4fetch) (~2.5&nbsp;KB gzipped, Web Crypto only). It needs no `@aws-sdk/*` packages - ideal for Cloudflare Workers and other edge runtimes where the AWS SDK's ~500&nbsp;KB defeats the point of web-standard tooling. A bundler still sees the `"aws-sdk"` client's `import()` calls: with the packages uninstalled, Wrangler leaves them unresolved and the Worker builds with `files-sdk` alone, but installed packages get bundled whether or not they run, so leave them out of a fetch-only Worker. (Up to files-sdk 2.6.2, Wrangler failed the build with `Could not resolve "@aws-sdk/client-s3"` when they were missing.)
 
 ```ts lineNumbers
 const files = new Files({
