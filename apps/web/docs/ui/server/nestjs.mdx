@@ -40,6 +40,20 @@ On the **Express adapter**, Nest registers `body-parser` globally _before_ any c
 The **Fastify adapter** needs no flag: Nest middleware runs at `onRequest`, before Fastify's content-type parsers, so the stream reaches the gateway untouched.
 :::
 
+## CSRF protection and security headers
+
+NestJS 12.1's opt-in `app.enableCsrfProtection()` and `app.useSecurityHeaders()` both run before Nest middleware, so they apply to the gateway too. The CSRF check rejects every cross-origin `POST` and `PUT`, so list the same origins you pass to `allowedOrigins` in its `trustedOrigins`. The security headers default to `Cross-Origin-Resource-Policy: same-origin`, which blocks other origins from embedding proxied downloads; relax it if they do.
+
+```ts title="main.ts" lineNumbers
+const app = await NestFactory.create(AppModule, { bodyParser: false });
+app.enableCsrfProtection({ trustedOrigins: ["https://app.example.com"] });
+// Only if another origin embeds proxied downloads (an <img>, a PDF viewer):
+app.useSecurityHeaders({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+});
+await app.listen(3000);
+```
+
 ## Async configuration
 
 `forRootAsync()` follows the standard Nest pattern — `imports`, `inject`, and a `useFactory` that returns the same options:

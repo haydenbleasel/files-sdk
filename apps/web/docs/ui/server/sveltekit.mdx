@@ -26,4 +26,12 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 This is the **server** binding — distinct from the [`files-sdk/svelte`](/docs/ui/client/svelte) client store that drives the upload UI. One `+server.ts` backs every client binding; the gateway dispatches on the method internally (GET = download, POST = the JSON verbs, PUT = upload).
 :::
 
+## SvelteKit settings that reach the gateway
+
+SvelteKit runs a few checks of its own before a request gets to the gateway. They apply to SvelteKit 2 and 3 alike.
+
+- **CSRF.** SvelteKit returns 403 for a cross-origin `POST` or `PUT` whose `Content-Type` looks like a form submission (`text/plain`, `multipart/form-data`, or `application/x-www-form-urlencoded`). SvelteKit 3 also rejects one with no `Content-Type`. Explicit-key uploads send the file's own type, so a cross-origin upload of a `.txt` file is rejected before `authorize` ever runs. If the gateway serves other origins, list them in `csrf.trustedOrigins` as well as in `allowedOrigins`. That goes in `svelte.config.js` on SvelteKit 2, and in the `sveltekit()` plugin options in `vite.config.js` on SvelteKit 3.
+- **Request body size.** `@sveltejs/adapter-node` caps request bodies at 512 KB unless you raise `BODY_SIZE_LIMIT`. Explicit-key `PUT` uploads stream through this route, so raise the limit to cover your largest file. Keyless uploads go straight to the provider through a signed URL and never hit the limit.
+- **Disconnects.** On `@sveltejs/adapter-node` 6 (SvelteKit 3), `request.signal` aborts when the client disconnects. The gateway passes that signal to every `Files` call, so an abandoned upload or proxied download stops instead of running to completion.
+
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

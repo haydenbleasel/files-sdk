@@ -1,9 +1,9 @@
 ---
 title: Nitro
-description: Mount the Files gateway in a Nitro (or Nuxt server) route. Marshals the h3 event into a Web Request and returns the Response for Nitro to flush.
+description: Mount the Files gateway in a Nitro (or Nuxt server) route, on Nitro 2 (h3 1) or Nitro 3 (h3 2). Hands the gateway a Web Request and returns the Response for Nitro to flush.
 ---
 
-`files-sdk/nitro` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a Nitro route (and therefore Nuxt server routes). Nitro's h3 event carries the Node request as `event.node.req`, so the binding marshals it into the Web `Request` the gateway speaks and returns the Web `Response` for Nitro to flush — hiding the `toWebRequest(event)` step. A client disconnect is wired through to abort the upstream read on a proxied download.
+`files-sdk/nitro` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a Nitro route (and therefore Nuxt server routes). It works with both h3 majors: on Nitro 3 (h3 2) the event already carries a Web `Request`, which goes to the gateway as-is; on Nitro 2 (h3 1) the binding marshals the Node request on `event.node.req` into one. Either way it returns the Web `Response` for Nitro to flush, and a client disconnect aborts the upstream read on a proxied download.
 
 ```ts title="routes/api/files.ts" lineNumbers
 import { createFiles } from "files-sdk";
@@ -19,12 +19,22 @@ const router = createFilesRouter({
   },
 });
 
-// In Nuxt, put this at server/routes/api/files.ts.
+// Nitro 2 and Nuxt 4 (put this at server/routes/api/files.ts in Nuxt).
 export default defineEventHandler(createRouteHandler(router));
 ```
 
+Nitro 3 drops auto-imports, so import `defineHandler` from `nitro`:
+
+```ts title="routes/api/files.ts" lineNumbers
+import { defineHandler } from "nitro";
+
+export default defineHandler(createRouteHandler(router));
+```
+
+Behind a proxy that terminates TLS, Nitro 3's Node server builds `event.req.url` from the connection rather than `x-forwarded-proto`, so the request looks like plain `http`. If you rely on the gateway's default same-origin check instead of `allowedOrigins`, a browser `POST` from your `https` origin is then rejected; list the origin in `allowedOrigins` as above.
+
 :::note
-One handler serves every method — the gateway dispatches internally (GET = download, POST = the JSON verbs, PUT = upload). The binding targets Nitro v2 / h3 v1, where `event.node.req` is present on every preset (a node-compat shim on edge, which Nitro polyfills via [unenv](https://github.com/unjs/unenv)). Requests Nitro serves in-process work too: the edge preset's `localFetch` and an SSR `$fetch` to your own API arrive as mock requests with no socket, and the binding reads their body from the event instead of the stream. When the event already carries a Web `Request` (h3's `toWebHandler`), that request is passed through unchanged.
+One handler serves every method — the gateway dispatches internally (GET = download, POST = the JSON verbs, PUT = upload). On Nitro 2, `event.node.req` is present on every preset (a node-compat shim on edge, which Nitro polyfills via [unenv](https://github.com/unjs/unenv)). Requests Nitro 2 serves in-process work too: the edge preset's `localFetch` and an SSR `$fetch` to your own API arrive as mock requests with no socket, and the binding reads their body from the event instead of the stream. When the event already carries a Web `Request` (Nitro 3 on every runtime, or h3 1's `toWebHandler`), that request is passed through unchanged.
 :::
 
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.

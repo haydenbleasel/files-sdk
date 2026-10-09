@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 
 import { createApp, eventHandler, toPlainHandler, toWebHandler } from "h3";
-import type { H3Event } from "h3";
+import { defineHandler, H3 } from "h3v2";
 
 import type { FilesApi } from "../src/api/index.js";
 import { createFilesRouter } from "../src/api/index.js";
@@ -13,16 +13,17 @@ import { createFiles } from "../src/index.js";
 import { sendWebResponse } from "../src/internal/node-http.js";
 import { memory } from "../src/memory/index.js";
 import { createRouteHandler } from "../src/nitro/index.js";
+import type { NitroEvent } from "../src/nitro/index.js";
 
-// Drive the binding through a real Node server, shaping a minimal h3 event
-// (`{ node: { req, res } }`) the way Nitro does, then flush the Response the
+// Drive the binding through a real Node server, shaping a minimal h3 1 event
+// (`{ node: { req, res } }`) the way Nitro 2 does, then flush the Response the
 // handler returns — exactly what Nitro does after the event handler resolves.
 let server: Server | undefined;
 
 const serve = (router: FilesApi): Promise<string> => {
   const handler = createRouteHandler(router);
   const s = createServer((req, res) => {
-    const event = { node: { req, res } } as unknown as H3Event;
+    const event: NitroEvent = { node: { req, res } };
     handler(event)
       .then((response) => sendWebResponse(res, response))
       .catch(() => {
@@ -129,7 +130,7 @@ describe("files-sdk/nitro", () => {
       handle: () => Promise.resolve(new Response("ok")),
     });
     const s = createServer((req, res) => {
-      const event = { node: { req, res } } as unknown as H3Event;
+      const event: NitroEvent = { node: { req, res } };
       res.once("close", () => {
         counts.push(req.socket.listenerCount("close"));
       });
@@ -171,30 +172,32 @@ const capabilitiesRouter = () =>
 
 // Nitro's `localFetch` hands the route a node-mock-http request: no socket
 // event API, payload on `req.body`.
-const mockEvent = (fields: Record<string, unknown>, method = "POST") =>
-  ({
-    node: {
-      req: {
-        __unenv__: {},
-        headers: { host: "app.test" },
-        method,
-        rawHeaders: ["host", "app.test"],
-        socket: {},
-        url: "/api/files",
-        ...fields,
-      },
-      res: {},
+const mockEvent = (
+  fields: Record<string, unknown>,
+  method = "POST"
+): NitroEvent => ({
+  node: {
+    req: {
+      __unenv__: {},
+      headers: { host: "app.test" },
+      method,
+      rawHeaders: ["host", "app.test"],
+      socket: {},
+      url: "/api/files",
+      ...fields,
     },
-  }) as unknown as H3Event;
+    res: {},
+  },
+});
+
+const echo: FilesApi = {
+  handle: async (req) =>
+    new Response(
+      `${req.method} ${new URL(req.url).pathname}:${await req.text()}`
+    ),
+};
 
 describe("files-sdk/nitro — in-process requests", () => {
-  const echo: FilesApi = {
-    handle: async (req) =>
-      new Response(
-        `${req.method} ${new URL(req.url).pathname}:${await req.text()}`
-      ),
-  };
-
   test("uses the event's Web Request when h3 has one (toWebHandler)", async () => {
     const app = createApp();
     app.use(
@@ -253,5 +256,55 @@ describe("files-sdk/nitro — in-process requests", () => {
     }
     const get = await handler(mockEvent({ body: "ignored" }, "GET"));
     expect(await get.text()).toBe("GET /api/files:");
+  });
+});
+
+// h3 2 (Nitro 3) hands every runtime a Web Request on `event.req`.
+describe("files-sdk/nitro — h3 2", () => {
+  test("answers a gateway op from h3 2's Web Request", async () => {
+    const app = new H3().all(
+      "/api/files",
+      defineHandler(createRouteHandler(capabilitiesRouter()))
+    );
+    const res = await app.fetch(
+      new Request("https://app.test/api/files", {
+        body: JSON.stringify({ op: "capabilities" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { capabilities: { delimiter: boolean } };
+    expect(typeof body.capabilities.delimiter).toBe("boolean");
+  });
+
+  test("passes h3 2's request through untouched, body and all", async () => {
+    const app = new H3().all(
+      "/api/files",
+      defineHandler(createRouteHandler(echo))
+    );
+    const res = await app.fetch(
+      new Request("https://app.test/api/files?op=upload&key=a.txt", {
+        body: "the-bytes",
+        method: "PUT",
+      })
+    );
+    expect(await res.text()).toBe("PUT /api/files:the-bytes");
+  });
+
+  test("prefers the Web Request over h3 2's deprecated node getter", async () => {
+    const res = await createRouteHandler(echo)({
+      node: { req: {} },
+      req: new Request("https://app.test/api/files", { method: "DELETE" }),
+    });
+    expect(await res.text()).toBe("DELETE /api/files:");
+  });
+
+  test("rejects an event with neither a Web Request nor a Node pair", async () => {
+    const handler = createRouteHandler(echo);
+    await expect(handler({})).rejects.toThrow(/neither a Web Request/u);
+    await expect(handler({ node: { req: {} } })).rejects.toThrow(
+      /neither a Web Request/u
+    );
   });
 });

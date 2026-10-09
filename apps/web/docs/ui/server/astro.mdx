@@ -27,4 +27,8 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 The endpoint must run per-request, not at build time. Set `export const prerender = false` on the route (or `output: "server"` in `astro.config.mjs`) and install an [SSR adapter](https://docs.astro.build/en/guides/on-demand-rendering/) (`@astrojs/node`, `@astrojs/vercel`, …) — otherwise Astro tries to prerender it and the upload/download paths never reach a server.
 :::
 
+## Cross-origin uploads
+
+Astro's `security.checkOrigin` (on by default) returns 403 for a cross-origin `POST` or `PUT` whose `Content-Type` is form-like (`text/plain`, `multipart/form-data`, `application/x-www-form-urlencoded`) or missing. Explicit-key uploads send the file's own type, so a cross-origin upload of a `.txt` file never reaches the gateway. Same-origin apps are unaffected. If the gateway serves other origins, Astro has no per-origin allowlist, so set `security: { checkOrigin: false }` in `astro.config.mjs` and let `allowedOrigins` do the origin check (this turns Astro's check off for every route). Avoid Astro 7.3.6, whose rewritten check also rejected cross-origin JSON requests; 7.3.7 fixed it.
+
 See the [gateway options](/docs/ui/server/gateway) for the full configuration and the [`authorize`](/docs/ui/server/authorization) model for locking it down.
