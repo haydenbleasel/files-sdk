@@ -537,6 +537,151 @@ describe("bun-s3 adapter", () => {
     expect(mapBunS3Error(preWrapped)).toBe(preWrapped);
   });
 
+  test("credential failures are Unauthorized on every verb, not retried", async () => {
+    // Bun's S3Error copies the XML <Code> and carries no HTTP status, so a
+    // bad secret or key id is recognizable only by its code.
+    for (const code of [
+      "SignatureDoesNotMatch",
+      "InvalidAccessKeyId",
+      "ExpiredToken",
+      "InvalidToken",
+    ]) {
+      const s3Error = () =>
+        Object.assign(new Error(`${code} from S3`), { code, name: "S3Error" });
+      expect(mapBunS3Error(s3Error())).toMatchObject({
+        code: "Unauthorized",
+        permanent: false,
+      });
+      const client = new FakeBunS3Client();
+      client.entries.set("a.txt", {
+        bytes: encoder.encode("a"),
+        etag: '"e"',
+        lastModified: new Date(0),
+        type: "text/plain",
+      });
+      let calls = 0;
+      const reject = () => {
+        calls += 1;
+        return Promise.reject(s3Error());
+      };
+      client.list = reject;
+      client.write = reject;
+      client.delete = reject;
+      const files = new Files({ adapter: bunS3({ client }), retries: 3 });
+      for (const run of [
+        () => files.list(),
+        () => files.upload("b.txt", "x"),
+        () => files.delete("a.txt"),
+        () => files.copy("a.txt", "c.txt"),
+      ]) {
+        calls = 0;
+        // oxlint-disable-next-line no-await-in-loop -- one verb at a time, so the call count is per verb
+        await expect(run()).rejects.toMatchObject({ code: "Unauthorized" });
+        expect(calls).toBe(1);
+      }
+    }
+  });
+
+  test("a range past the end of the object (InvalidRange) is a permanent Provider error", async () => {
+    const client = new FakeBunS3Client();
+    await client.write("small.txt", "abc");
+    let reads = 0;
+    const { file } = client;
+    client.file = (path) => {
+      const handle = file.call(client, path);
+      return {
+        ...handle,
+        slice: () => ({
+          ...handle,
+          bytes: () => {
+            reads += 1;
+            return Promise.reject(
+              Object.assign(
+                new Error("The requested range is not satisfiable"),
+                {
+                  code: "InvalidRange",
+                  name: "S3Error",
+                }
+              )
+            );
+          },
+        }),
+      };
+    };
+    const files = new Files({ adapter: bunS3({ client }), retries: 3 });
+    await expect(
+      files.download("small.txt", { range: { start: 10 } })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "The requested range is not satisfiable",
+      permanent: true,
+    });
+    expect(reads).toBe(1);
+    // Other unclassified failures stay retryable.
+    expect(
+      mapBunS3Error(Object.assign(new Error("boom"), { code: "InternalError" }))
+        .permanent
+    ).toBe(false);
+  });
+
+  test("a zero, negative, fractional, or NaN expiresIn is refused, per call or as the default", async () => {
+    const client = new FakeBunS3Client();
+    let presigned = 0;
+    const { presign } = client;
+    (client as unknown as { presign: BunS3ClientLike["presign"] }).presign = (
+      path,
+      options
+    ) => {
+      presigned += 1;
+      return presign(path, options);
+    };
+    const adapter = bunS3({ client });
+    for (const expiresIn of [0, -5, 1.5, Number.NaN]) {
+      const invalid = {
+        code: "Invalid",
+        message: expect.stringMatching(
+          /^Bun S3 error: a presigned URL's expiry must be a whole number of seconds, at least 1/u
+        ),
+      };
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(adapter.url("k.txt", { expiresIn })).rejects.toMatchObject(
+        invalid
+      );
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        bunS3({ client, defaultUrlExpiresIn: expiresIn }).url("k.txt")
+      ).rejects.toMatchObject(invalid);
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        adapter.signedUploadUrl("k.txt", { expiresIn })
+      ).rejects.toMatchObject(invalid);
+    }
+    expect(presigned).toBe(0);
+    expect(await adapter.url("k.txt", { expiresIn: 1 })).toContain("expires=1");
+  });
+
+  test("a contentType that can't be a header is refused before the write", async () => {
+    const client = new FakeBunS3Client();
+    const adapter = bunS3({ client });
+    for (const contentType of ["text/plain\r\nx-evil: 1", "text/é"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        adapter.upload("k.txt", "x", { contentType })
+      ).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(
+          /^Bun S3 error: `contentType` can't be sent as an HTTP header/u
+        ),
+      });
+      const driver = adapter.resumableUpload?.("k.bin", {});
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        driver?.begin({ contentType, total: 1 })
+      ).rejects.toMatchObject({ code: "Invalid" });
+    }
+    expect(client.writes).toHaveLength(0);
+  });
+
   test("delete removes the underlying object", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });

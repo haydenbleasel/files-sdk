@@ -566,24 +566,60 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
 });
 
 describe("s3-fetch core — metadata that can't be a header is Invalid", () => {
-  test("non-Latin-1 values and invalid key names are refused before any request", async () => {
+  test("non-ASCII values and invalid key names are refused before any request", async () => {
     const { adapter, fake } = withFake();
     const files = new Files({ adapter, retries: 2 });
-    const error = await expectCode(
-      files.upload("a.txt", "hi", { metadata: { title: "日本" } }),
-      "Invalid"
-    );
-    expect(error.message).toMatch(
-      /metadata key "title" can't be sent as an HTTP header/u
-    );
+    // Latin-1 included: fetch sends "é" as one byte while aws4fetch hashes
+    // it as two (UTF-8), so the server answers SignatureDoesNotMatch.
+    for (const title of ["日本", "café"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one refusal per value, in order
+      const error = await expectCode(
+        files.upload("a.txt", "hi", { metadata: { title } }),
+        "Invalid"
+      );
+      expect(error.message).toMatch(
+        /metadata key "title" can't be sent as an HTTP header.*printable ASCII.*encodeURIComponent/u
+      );
+    }
     await expectCode(
       adapter.upload("a.txt", "hi", { metadata: { "bad key": "v" } }),
       "Invalid"
     );
     expect(fake.requests).toHaveLength(0);
-    // Latin-1 still goes out as-is.
-    await adapter.upload("a.txt", "hi", { metadata: { title: "café" } });
+    // Printable ASCII, such as an encoded value, still goes out as-is.
+    await adapter.upload("a.txt", "hi", {
+      metadata: { title: encodeURIComponent("café") },
+    });
     expect(fake.requests).toHaveLength(1);
+    expect(fake.store.get("a.txt")?.meta).toEqual({ title: "caf%C3%A9" });
+  });
+
+  test("a contentType or cacheControl that can't be a header is refused before any request", async () => {
+    const { adapter, fake } = withFake();
+    for (const options of [
+      { contentType: "text/plain\r\nx-evil: 1" },
+      // fetch doesn't sign Content-Type, so this one used to be stored
+      // mangled rather than fail.
+      { contentType: "text/é" },
+      { cacheControl: "max-age=1 ✓" },
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one refusal per option, in order
+      const error = await expectCode(
+        adapter.upload("a.txt", "hi", options),
+        "Invalid"
+      );
+      expect(error.message).toMatch(
+        /`(?:contentType|cacheControl)` can't be sent as an HTTP header/u
+      );
+    }
+    await expectCode(
+      adapter.signedUploadUrl("a.txt", {
+        contentType: "bad\nvalue",
+        expiresIn: 60,
+      }),
+      "Invalid"
+    );
+    expect(fake.requests).toHaveLength(0);
   });
 });
 
@@ -751,13 +787,12 @@ describe("s3-fetch core — post-dispatch failures map to FilesError", () => {
 
   test("signing failures in presign map to Provider", async () => {
     const { adapter } = withFake();
-    await expectCode(
-      adapter.signedUploadUrl("a.txt", {
-        contentType: "bad\nvalue",
-        expiresIn: 60,
-      }),
+    adapter.raw.sign = () => Promise.reject(new TypeError("signer broke"));
+    const error = await expectCode(
+      adapter.signedUploadUrl("a.txt", { expiresIn: 60 }),
       "Provider"
     );
+    expect(error.message).toBe("signer broke");
   });
 });
 
@@ -821,5 +856,358 @@ describe("s3-fetch core — NoSuchBucket addressing hint (#155)", () => {
     });
     const error = await expectCode(adapter.download("a.txt"), "Provider");
     expect(error.message).toBe("boom");
+  });
+});
+
+describe("s3-fetch core — error classification", () => {
+  test("an expired or invalid session token (HTTP 400) is Unauthorized, not retried", async () => {
+    for (const code of ["ExpiredToken", "InvalidToken"]) {
+      let calls = 0;
+      const adapter = makeAdapter({
+        fetch: () => {
+          calls += 1;
+          return xmlError(
+            `<Error><Code>${code}</Code><Message>The provided token has expired.</Message></Error>`,
+            400
+          )();
+        },
+      });
+      // oxlint-disable-next-line no-await-in-loop -- one code at a time
+      await expectCode(
+        new Files({ adapter, retries: 3 }).list(),
+        "Unauthorized"
+      );
+      expect(calls).toBe(1);
+    }
+  });
+
+  test("a range past the end of the object (416 InvalidRange) is a permanent Provider error", async () => {
+    let calls = 0;
+    const adapter = makeAdapter({
+      fetch: () => {
+        calls += 1;
+        return xmlError(
+          "<Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable</Message></Error>",
+          416
+        )();
+      },
+    });
+    const error = await expectCode(
+      new Files({ adapter, retries: 3 }).download("small.txt", {
+        range: { start: 10 },
+      }),
+      "Provider"
+    );
+    expect(error.permanent).toBe(true);
+    expect(error.message).toBe("The requested range is not satisfiable");
+    expect(calls).toBe(1);
+    // A bodyless 416 is classified by status and labeled by the provider.
+    const bare = makeAdapter({
+      fetch: () => Promise.resolve(new Response(null, { status: 416 })),
+      providerLabel: "R2 error",
+    });
+    const bareError = await expectCode(
+      bare.download("small.txt", { range: { start: 10 } }),
+      "Provider"
+    );
+    expect(bareError).toMatchObject({ message: "R2 error", permanent: true });
+  });
+});
+
+describe("s3-fetch core — presigned URL lifetimes", () => {
+  test("a zero, negative, fractional, or NaN expiresIn is refused, per call or as the default", async () => {
+    const adapter = makeAdapter();
+    for (const expiresIn of [0, -5, 1.5, Number.NaN]) {
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      const error = await expectCode(
+        adapter.url("a.txt", { expiresIn }),
+        "Invalid"
+      );
+      expect(error.message).toMatch(
+        /^S3 error: a presigned URL's expiry must be a whole number of seconds, at least 1/u
+      );
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expectCode(
+        makeAdapter({ defaultUrlExpiresIn: expiresIn }).url("a.txt"),
+        "Invalid"
+      );
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expectCode(
+        adapter.signedUploadUrl("a.txt", { expiresIn }),
+        "Invalid"
+      );
+    }
+    const url = new URL(await adapter.url("a.txt", { expiresIn: 1 }));
+    expect(url.searchParams.get("X-Amz-Expires")).toBe("1");
+  });
+});
+
+interface RecordedRequest {
+  body: string;
+  headers: Headers;
+  method: string;
+  url: URL;
+}
+
+/** Which step of a multipart copy a request is. */
+const multipartCopyStep = (request: Request, url: URL) => {
+  if (request.method === "HEAD") {
+    return "head";
+  }
+  if (request.method === "DELETE") {
+    return "abort";
+  }
+  if (request.method === "POST") {
+    return url.searchParams.has("uploads") ? "create" : "complete";
+  }
+  return url.searchParams.has("partNumber") ? "part" : "copy";
+};
+
+/** The recorded requests with `method` (and query parameter `param`). */
+const steps = (requests: RecordedRequest[], method: string, param?: string) =>
+  requests.filter(
+    (request) =>
+      request.method === method &&
+      (param === undefined || request.url.searchParams.has(param))
+  );
+
+describe("s3-fetch core — copies over CopyObject's 5 GiB ceiling", () => {
+  const GIB = 1024 * 1024 * 1024;
+  const PART = 512 * 1024 * 1024;
+
+  /**
+   * A scripted S3 endpoint for the multipart copy: CopyObject refuses the
+   * oversized source, then HEAD / CreateMultipartUpload / UploadPartCopy /
+   * CompleteMultipartUpload / AbortMultipartUpload answer from `overrides`
+   * or the defaults below.
+   */
+  const scripted = (
+    overrides: Partial<
+      Record<
+        "abort" | "complete" | "copy" | "create" | "head" | "part",
+        (request: Request) => Response | Promise<Response>
+      >
+    > = {}
+  ) => {
+    const requests: RecordedRequest[] = [];
+    const defaults = {
+      abort: () => new Response(null, { status: 204 }),
+      complete: () =>
+        new Response(
+          "<CompleteMultipartUploadResult><ETag>&quot;done&quot;</ETag></CompleteMultipartUploadResult>"
+        ),
+      copy: () =>
+        new Response(
+          "<Error><Code>InvalidRequest</Code><Message>The specified copy source is larger than the maximum allowable size for a copy source: 5368709120</Message></Error>",
+          { status: 400 }
+        ),
+      create: () =>
+        new Response(
+          "<InitiateMultipartUploadResult><UploadId>up&amp;1</UploadId></InitiateMultipartUploadResult>"
+        ),
+      head: () =>
+        new Response(null, {
+          headers: {
+            "cache-control": "max-age=60",
+            "content-disposition": 'attachment; filename="v.mp4"',
+            "content-length": String(6 * GIB + 1),
+            "content-type": "video/mp4",
+            etag: '"src-etag"',
+            "x-amz-meta-owner": "ana",
+            "x-amz-request-id": "not-copied",
+          },
+          status: 200,
+        }),
+      part: (request: Request) => {
+        const partNumber = new URL(request.url).searchParams.get("partNumber");
+        return new Response(
+          `<CopyPartResult><ETag>&quot;part-${partNumber}&quot;</ETag></CopyPartResult>`
+        );
+      },
+    };
+    const fetchImpl = async (request: Request): Promise<Response> => {
+      const url = new URL(request.url);
+      requests.push({
+        body: await request.clone().text(),
+        headers: request.headers,
+        method: request.method,
+        url,
+      });
+      const step = multipartCopyStep(request, url);
+      return (overrides[step] ?? defaults[step])(request);
+    };
+    return { fetchImpl, requests };
+  };
+
+  test("copy() falls back to a server-side multipart copy that carries the source's headers", async () => {
+    const { fetchImpl, requests } = scripted();
+    const adapter = makeAdapter({
+      endpoint: "https://s3.us-east-1.amazonaws.com",
+      fetch: fetchImpl,
+    });
+    await new Files({ adapter }).copy("big video.mp4", "copy.mp4");
+
+    const [create] = steps(requests, "POST", "uploads");
+    expect(create?.url.pathname).toBe("/uploads/copy.mp4");
+    expect(create?.headers.get("cache-control")).toBe("max-age=60");
+    expect(create?.headers.get("content-disposition")).toBe(
+      'attachment; filename="v.mp4"'
+    );
+    expect(create?.headers.get("content-type")).toBe("video/mp4");
+    expect(create?.headers.get("x-amz-meta-owner")).toBe("ana");
+    expect(create?.headers.get("x-amz-request-id")).toBeNull();
+
+    const parts = steps(requests, "PUT", "partNumber");
+    // 6 GiB + 1 byte in 512 MiB parts: 12 full parts and a 1-byte tail.
+    expect(parts).toHaveLength(13);
+    expect(parts[0]?.url.searchParams.get("uploadId")).toBe("up&1");
+    expect(parts[0]?.headers.get("x-amz-copy-source")).toBe(
+      "/uploads/big%20video.mp4"
+    );
+    expect(parts[0]?.headers.get("x-amz-copy-source-range")).toBe(
+      `bytes=0-${PART - 1}`
+    );
+    // AWS: pinned to the HEAD's ETag, so a mid-copy overwrite can't splice.
+    expect(parts[0]?.headers.get("x-amz-copy-source-if-match")).toBe(
+      '"src-etag"'
+    );
+    expect(parts[12]?.headers.get("x-amz-copy-source-range")).toBe(
+      `bytes=${6 * GIB}-${6 * GIB}`
+    );
+
+    const [complete] = steps(requests, "POST", "uploadId");
+    expect(complete?.headers.get("content-type")).toBe("application/xml");
+    expect(complete?.body).toStartWith(
+      "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;part-1&quot;</ETag></Part>"
+    );
+    expect(complete?.body).toContain(
+      "<Part><PartNumber>13</PartNumber><ETag>&quot;part-13&quot;</ETag></Part></CompleteMultipartUpload>"
+    );
+    expect(steps(requests, "DELETE")).toHaveLength(0);
+  });
+
+  test("an S3-compatible endpoint copies without the ETag pin", async () => {
+    const { fetchImpl, requests } = scripted({
+      head: () =>
+        new Response(null, {
+          headers: { "content-length": String(5 * GIB + 1) },
+        }),
+    });
+    await makeAdapter({ fetch: fetchImpl }).copy("a", "b");
+    const parts = steps(requests, "PUT", "partNumber");
+    expect(parts).toHaveLength(11);
+    expect(parts[0]?.headers.get("x-amz-copy-source-if-match")).toBeNull();
+  });
+
+  test("a failed part copy aborts the upload and surfaces the part's error", async () => {
+    const { fetchImpl, requests } = scripted({
+      // An abort that fails too doesn't mask the copy's own failure.
+      abort: () => Promise.reject(new TypeError("abort failed")),
+      part: () =>
+        new Response(
+          "<Error><Code>PreconditionFailed</Code><Message>At least one of the preconditions failed</Message></Error>",
+          { status: 412 }
+        ),
+    });
+    await expectCode(
+      makeAdapter({ fetch: fetchImpl }).copy("a", "b"),
+      "Conflict"
+    );
+    const [abort] = steps(requests, "DELETE");
+    expect(abort?.url.pathname).toBe("/uploads/b");
+    expect(abort?.url.searchParams.get("uploadId")).toBe("up&1");
+    expect(steps(requests, "POST", "uploadId")).toHaveLength(0);
+  });
+
+  test("a late <Error> in a 200 from CompleteMultipartUpload fails the copy and aborts", async () => {
+    const { fetchImpl, requests } = scripted({
+      complete: () =>
+        new Response(
+          "<Error><Code>InternalError</Code><Message>complete failed</Message></Error>"
+        ),
+    });
+    const error = await expectCode(
+      makeAdapter({ fetch: fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    expect(error.message).toBe("complete failed");
+    expect(steps(requests, "DELETE")).toHaveLength(1);
+  });
+
+  test("a part result without an ETag fails the copy", async () => {
+    const { fetchImpl } = scripted({
+      part: () => new Response("<CopyPartResult></CopyPartResult>"),
+    });
+    const error = await expectCode(
+      makeAdapter({ fetch: fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    expect(error.message).toMatch(
+      /UploadPartCopy returned no ETag for part 1/u
+    );
+  });
+
+  test("a CreateMultipartUpload failure or missing UploadId is reported", async () => {
+    const denied = scripted({
+      create: () =>
+        new Response(
+          "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
+          { status: 403 }
+        ),
+    });
+    await expectCode(
+      makeAdapter({ fetch: denied.fetchImpl }).copy("a", "b"),
+      "Unauthorized"
+    );
+    const empty = scripted({
+      create: () => new Response("<InitiateMultipartUploadResult/>"),
+    });
+    const error = await expectCode(
+      makeAdapter({ fetch: empty.fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    expect(error.message).toMatch(/returned no UploadId/u);
+    expect(steps(empty.requests, "PUT", "partNumber")).toHaveLength(0);
+  });
+
+  test("a refusal that isn't about size keeps the original error", async () => {
+    // A small source: the 400 was about something else.
+    const small = scripted({
+      head: () => new Response(null, { headers: { "content-length": "10" } }),
+    });
+    const error = await expectCode(
+      makeAdapter({ fetch: small.fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    expect(error.message).toMatch(/larger than the maximum/u);
+    // A source that can't be read, or reports no length: same.
+    const unreadable = scripted({
+      head: () => new Response(null, { status: 403 }),
+    });
+    await expectCode(
+      makeAdapter({ fetch: unreadable.fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    const lengthless = scripted({ head: () => new Response(null) });
+    await expectCode(
+      makeAdapter({ fetch: lengthless.fetchImpl }).copy("a", "b"),
+      "Provider"
+    );
+    // Any other failure skips the HEAD entirely.
+    const missing = scripted({
+      copy: () =>
+        new Response(
+          "<Error><Code>NoSuchKey</Code><Message>No such key</Message></Error>",
+          { status: 404 }
+        ),
+    });
+    await expectCode(
+      makeAdapter({ fetch: missing.fetchImpl }).copy("a", "b"),
+      "NotFound"
+    );
+    expect(steps(missing.requests, "HEAD")).toHaveLength(0);
+    for (const { requests } of [small, unreadable, lengthless, missing]) {
+      expect(steps(requests, "POST", "uploads")).toHaveLength(0);
+    }
   });
 });

@@ -169,7 +169,7 @@ export default {
 
 ## Limitations
 
-- **Presigned URLs live at most 7 days**, and **`copy()` / `move()` top out at 5 GB** per object, because both limits come from S3 itself. See the S3 [limits](/docs/adapters/s3#limits).
+- **Presigned URLs live at most 7 days**, and **`copy()` / `move()` past 5 GiB use a multipart copy**, because S3 limits a single `CopyObject` to 5 GiB. See the S3 [limits](/docs/adapters/s3#limits).
 - **No conditional operations.** The adapter always sets an endpoint, so `s3()`'s provider-native [conditional operations](/docs/conditional-operations) stay off and conditional calls fail before any request.
 - **Checksums only where required.** With an explicit endpoint, the S3 client sends request checksums only on operations that require one. See [S3-compatible endpoints and checksums](/docs/adapters/s3#s3-compatible-endpoints-and-checksums).
 - A `Provider` error that carries no message of its own reads `Hetzner error` rather than `S3 error`. `files.raw` is the underlying `S3Client` for anything the unified API doesn't cover; see [escape hatch](/docs/escape-hatch).
@@ -192,7 +192,7 @@ export default {
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ✅ | Server-side `CopyObject`, limited to 5 GB source objects. |
+| `copy` | ✅ | Server-side `CopyObject`, or a server-side multipart copy for sources over 5 GiB. |
 | `url` | ✅ | Presigned URLs are capped at 7 days. |
 | `signedUploadUrl` | ✅ |  |
 | conditional operations | ❌ | Not advertised on custom endpoints; conditional calls fail before any request. |

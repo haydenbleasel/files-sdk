@@ -15,6 +15,7 @@ import {
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
+  UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
@@ -110,6 +111,7 @@ const adapterOver = (
       PutObjectCommand,
       S3Client: TestClient,
       UploadPartCommand,
+      UploadPartCopyCommand,
     },
     presignedPost: { createPresignedPost },
     requestPresigner: { getSignedUrl },

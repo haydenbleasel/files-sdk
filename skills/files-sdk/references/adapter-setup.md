@@ -22,7 +22,8 @@ Gotchas:
 - No `credentials`? The AWS SDK's default credential chain (env, shared config, EC2/ECS/EKS metadata) runs. That's usually what you want in production.
 - `publicBaseUrl` flips a plain `url(key)` to return `${publicBaseUrl}/${key}` without signing — set this when you've put CloudFront in front of the bucket.
 - Passing `expiresIn` or `responseContentDisposition` always forces signing, even with `publicBaseUrl` set, because a permanent CDN URL can't expire and has no signature to bind the override to.
-- Upload `metadata` travels as `x-amz-meta-*` headers (on `s3()`, `s3Fetch()`, and every S3-compatible wrapper): keys must be HTTP tokens and values Latin-1 without control characters, or the call throws `Invalid` before any request. `encodeURIComponent` other values.
+- Upload `metadata` travels as `x-amz-meta-*` headers (on `s3()`, `s3Fetch()`, and every S3-compatible wrapper): keys must be HTTP tokens and values printable ASCII without control characters (Latin-1 like `café` fails SigV4, so it's refused too), or the call throws `Invalid` before any request. `encodeURIComponent` other values. `contentType` and `cacheControl` follow the same value rule.
+- S3-family `copy()`/`move()` of a source over 5 GiB (CopyObject's ceiling) falls back to a server-side multipart copy (`UploadPartCopy`) on both engines; tags aren't carried, and a conditional copy of such a source throws `Unsupported`.
 - `signedUploadUrl()`: a positive `minSize` needs `maxSize` (the presigned POST policy enforces both); alone it throws `Unsupported`. Presigned PUT and POST both cap `expiresIn` at 7 days (`Invalid` past it). R2, Backblaze B2, Bun S3, and the `fetch` engine have no POST policy, so `maxSize` and a positive `minSize` throw there.
 - Conditional operations and `capabilities.events` are on only against AWS: no `endpoint`, or one under `amazonaws.com` (explicit or via `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL`).
 
@@ -186,7 +187,7 @@ Notes:
 
 - Paths that resolve outside `root` (e.g. `../etc/passwd`) throw `Invalid`.
 - Without `urlBaseUrl`, `url()` returns a `file://` URL — fine for CLIs/tests, not for browsers. Either way the link is permanent, so `url(key, { expiresIn })` throws `Unsupported`. Only `urlBaseUrl` makes `capabilities.publicUrl` `true`, so the gateway proxies downloads instead of redirecting to `file://`.
-- Directories aren't objects: `head`/`exists`/`download`/`copy`/`move` on a directory key report `NotFound`, `delete` on one is a no-op, and `EISDIR`/`ENOTEMPTY` map to `Conflict`.
+- Directories aren't objects: `head`/`exists`/`download`/`copy`/`move` on a directory key report `NotFound`, `delete` on one is a no-op, and `EISDIR`/`ENOTEMPTY` map to `Conflict`. A key ending in `/` (or a `.`/`..` segment) throws `Invalid` rather than aliasing the file (`dir/` → `dir`).
 - `signedUploadUrl()` throws `Unsupported` — the fs adapter has no upload server or signer to enforce expiry, size, or content type. Upload through `files.upload()` or your own route.
 
 ## The shape every adapter shares

@@ -74,7 +74,7 @@ Same coverage and limits as the R2 fetch client: `upload`, `download` (including
 - No provider-native [conditional operations](/docs/conditional-operations).
 - `files.raw` is the aws4fetch `AwsClient`, not an `S3Client`.
 
-S3's own [limits](/docs/adapters/s3#limits) apply here too: presigned URLs live at most 7 days (a longer `expiresIn` throws), and `copy()` is a single `CopyObject` request, capped at 5 GB.
+S3's own [limits](/docs/adapters/s3#limits) apply here too: presigned URLs live at most 7 days (a longer `expiresIn` throws), and `copy()` is a single `CopyObject` request up to 5 GiB, past which it switches to a server-side multipart copy (`UploadPartCopy`).
 
 ## Options
 

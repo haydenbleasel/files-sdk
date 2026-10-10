@@ -7,7 +7,9 @@
 // `signedUploadUrl`. Deliberately absent — each needs the S3 multipart/batch
 // XML surface or a policy signer this client doesn't carry:
 // - `resumableUpload` / `multipart` uploads (CreateMultipartUpload et al.):
-//   `upload()` buffers streams and issues a single PUT.
+//   `upload()` buffers streams and issues a single PUT. (The multipart API
+//   appears only in `copy()`, for a source over CopyObject's 5 GiB ceiling,
+//   where it moves no bytes through this process.)
 // - `deleteMany` (DeleteObjects needs a Content-MD5 the Web Crypto API can't
 //   produce): the SDK's bounded-concurrency `delete()` fan-out applies.
 // - presigned POST policies (`signedUploadUrl` with `maxSize` fails closed).
@@ -25,7 +27,16 @@ import type {
   SignedUpload,
   UrlOptions,
 } from "../index.js";
-import { assertHeaderSafeMetadata, isAwsHost } from "../s3/shared.js";
+import {
+  S3_MAX_COPY_OBJECT_SIZE,
+  SIGV4_MAX_EXPIRES_IN,
+  assertHeaderSafeUploadOptions,
+  assertSigV4ExpiresIn,
+  copyParts,
+  isAwsHost,
+  isUnsatisfiableRange,
+  mayBeCopySizeRefusal,
+} from "../s3/shared.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
   collectStream,
@@ -86,21 +97,28 @@ export type S3FetchAdapter = Adapter<AwsClient> & { readonly bucket: string };
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const METADATA_HEADER_PREFIX = "x-amz-meta-";
-
-/**
- * SigV4 caps a presigned URL's `X-Amz-Expires` at one week. A longer value
- * signs fine but every SigV4 service rejects the URL when it's used, so it
- * fails here instead (the aws-sdk engine throws for the same input).
- */
-export const SIGV4_MAX_EXPIRES_IN = 604_800;
+// The object headers CopyObject carries to the copy, besides user metadata,
+// which a multipart copy has to set on CreateMultipartUpload itself.
+const COPIED_OBJECT_HEADERS: ReadonlySet<string> = new Set([
+  "cache-control",
+  "content-disposition",
+  "content-encoding",
+  "content-language",
+  "content-type",
+  "expires",
+]);
 
 const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NoSuchKey",
   "NotFound",
 ]);
+// An expired or malformed session token is a 400, not a 403, so it needs
+// its code here to be `Unauthorized` rather than a retried Provider error.
 const S3_UNAUTH_CODES: ReadonlySet<string> = new Set([
   "AccessDenied",
+  "ExpiredToken",
   "InvalidAccessKeyId",
+  "InvalidToken",
   "SignatureDoesNotMatch",
 ]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
@@ -129,6 +147,7 @@ const XML_IS_TRUNCATED_RE = /<IsTruncated>true<\/IsTruncated>/u;
 const XML_NEXT_TOKEN_RE =
   /<NextContinuationToken>(?<value>[^<]*)<\/NextContinuationToken>/u;
 const XML_ERROR_RE = /<Error>/u;
+const XML_UPLOAD_ID_RE = /<UploadId>(?<value>[^<]*)<\/UploadId>/u;
 const XML_ENTITY_RE =
   /&(?:amp|lt|gt|quot|apos|#(?<decimal>\d+)|#x(?<hex>[\dA-Fa-f]+));/gu;
 
@@ -320,11 +339,19 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       rawMessage && decodeXmlText(rawMessage),
       status
     );
-    return mapError({
+    const extracted = {
       ...(code && { code }),
       ...(message && { message }),
       status,
-    });
+    };
+    // 416: the range starts past the end of the object. A provider answer,
+    // so still `Provider`, but reissuing it can only fail the same way.
+    if (isUnsatisfiableRange(code || undefined, status)) {
+      return new FilesError("Provider", message ?? providerLabel, extracted, {
+        permanent: true,
+      });
+    }
+    return mapError(extracted);
   };
 
   const errorFromResponse = async (res: Response): Promise<FilesError> =>
@@ -412,12 +439,8 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
       headers?: Record<string, string>;
     } = {}
   ): Promise<string> => {
-    if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
-      throw new FilesError(
-        "Invalid",
-        `${providerLabel}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
-      );
-    }
+    // Covers a per-call `expiresIn` and `defaultUrlExpiresIn` alike.
+    assertSigV4ExpiresIn(providerLabel, expiresIn);
     const url = new URL(objectUrl(key));
     url.searchParams.set("X-Amz-Expires", String(expiresIn));
     for (const [name, value] of Object.entries(extras.query ?? {})) {
@@ -438,6 +461,146 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
 
   // The same AWS test the aws-sdk engine applies to its endpoint.
   const awsHost = isAwsHost(endpointUrl.hostname);
+
+  // CopySource must be URL-encoded, mirroring the s3 adapter.
+  const copySource = (from: string): string =>
+    `/${encodeURIComponent(bucket)}/${encodeKey(from)}`;
+
+  /**
+   * Read a write step's response: a non-2xx status, or a 200 whose body is an
+   * `<Error>` (CopyObject, UploadPartCopy, and CompleteMultipartUpload stream
+   * whitespace while they work and report a late failure that way), throws.
+   * Returns the body otherwise.
+   */
+  const readWriteResult = async (res: Response): Promise<string> => {
+    const xml = await drainText(res);
+    if (!res.ok || XML_ERROR_RE.test(xml)) {
+      throw errorFromXml(xml, res.status);
+    }
+    return xml;
+  };
+
+  /**
+   * After a failed CopyObject: the source's HEAD headers when the failure was
+   * S3 refusing a source over CopyObject's 5 GiB ceiling, else `undefined`
+   * (the original error stands). The refusal's code is ambiguous, so the HEAD
+   * confirms the size; it runs only on that failure path.
+   */
+  const oversizedCopySource = async (
+    from: string,
+    failure: { code: string | undefined; status: number },
+    operationOpts: OperationOptions | undefined
+  ): Promise<Headers | undefined> => {
+    if (!mayBeCopySizeRefusal(failure.code, failure.status)) {
+      return;
+    }
+    let headers: Headers;
+    try {
+      ({ headers } = await headResponse(from, operationOpts));
+    } catch {
+      return;
+    }
+    return Number(headers.get("content-length") ?? 0) > S3_MAX_COPY_OBJECT_SIZE
+      ? headers
+      : undefined;
+  };
+
+  /**
+   * Copy a source over CopyObject's 5 GiB ceiling with S3's multipart copy,
+   * as the aws-sdk engine does: CreateMultipartUpload carrying the headers
+   * and user metadata CopyObject would have copied, one UploadPartCopy per
+   * range, CompleteMultipartUpload. On an AWS endpoint every part is pinned
+   * to the HEAD's ETag, so a source overwritten mid-copy fails as `Conflict`
+   * instead of splicing two versions. Any failure aborts the upload.
+   */
+  const multipartCopy = async (
+    from: string,
+    to: string,
+    source: Headers,
+    operationOpts: OperationOptions | undefined
+  ): Promise<void> => {
+    const signalInit = operationOpts?.signal
+      ? { signal: operationOpts.signal }
+      : {};
+    const carried: Record<string, string> = {};
+    for (const [name, value] of source) {
+      if (
+        COPIED_OBJECT_HEADERS.has(name) ||
+        name.startsWith(METADATA_HEADER_PREFIX)
+      ) {
+        carried[name] = value;
+      }
+    }
+    const created = await readWriteResult(
+      await send("POST", `${objectUrl(to)}?uploads`, {
+        headers: carried,
+        ...signalInit,
+      })
+    );
+    const rawUploadId = XML_UPLOAD_ID_RE.exec(created)?.groups?.value;
+    if (!rawUploadId) {
+      throw new FilesError(
+        "Provider",
+        `${providerLabel}: CreateMultipartUpload returned no UploadId for the multipart copy`
+      );
+    }
+    const uploadQuery = `uploadId=${encodeURIComponent(decodeXmlText(rawUploadId))}`;
+    const sourceEtag = source.get("etag");
+    const pin =
+      awsHost && sourceEtag
+        ? { "x-amz-copy-source-if-match": sourceEtag }
+        : undefined;
+    try {
+      const parts: string[] = [];
+      for (const part of copyParts(Number(source.get("content-length")))) {
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- sequential part copies, so a failure stops the copy and the abort below leaves no part in flight
+        const result = await send(
+          "PUT",
+          `${objectUrl(to)}?partNumber=${part.partNumber}&${uploadQuery}`,
+          {
+            headers: {
+              "x-amz-copy-source": copySource(from),
+              "x-amz-copy-source-range": `bytes=${part.start}-${part.end}`,
+              ...pin,
+            },
+            ...signalInit,
+          }
+        );
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- part of the sequential part copy above
+        const xml = await readWriteResult(result);
+        // Still XML-escaped, which is exactly how it goes back below.
+        const etag = XML_ETAG_RE.exec(xml)?.groups?.value;
+        if (!etag) {
+          throw new FilesError(
+            "Provider",
+            `${providerLabel}: UploadPartCopy returned no ETag for part ${part.partNumber}`
+          );
+        }
+        parts.push(
+          `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${etag}</ETag></Part>`
+        );
+      }
+      await readWriteResult(
+        await send("POST", `${objectUrl(to)}?${uploadQuery}`, {
+          body: new TextEncoder().encode(
+            `<CompleteMultipartUpload>${parts.join("")}</CompleteMultipartUpload>`
+          ),
+          headers: { "content-type": "application/xml" },
+          ...signalInit,
+        })
+      );
+    } catch (error) {
+      try {
+        await drainText(
+          await send("DELETE", `${objectUrl(to)}?${uploadQuery}`)
+        );
+      } catch {
+        // Best-effort: the copy's own failure is the one to report, and an
+        // unaborted upload is reclaimed by the bucket's lifecycle rules.
+      }
+      throw error;
+    }
+  };
 
   return {
     bucket,
@@ -476,22 +639,29 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     },
     async copy(from, to, operationOpts) {
       const res = await send("PUT", objectUrl(to), {
-        headers: {
-          // CopySource must be URL-encoded, mirroring the s3 adapter.
-          "x-amz-copy-source": `/${encodeURIComponent(bucket)}/${encodeKey(from)}`,
-        },
+        headers: { "x-amz-copy-source": copySource(from) },
         ...(operationOpts?.signal && { signal: operationOpts.signal }),
       });
       if (!res.ok) {
-        throw await errorFromResponse(res);
+        // CopyObject copies at most 5 GiB; past that, S3 needs the multipart
+        // copy API, which keeps the copy server-side.
+        const xml = await drainText(res);
+        const rawCode = XML_CODE_RE.exec(xml)?.groups?.value;
+        const source = await oversizedCopySource(
+          from,
+          { code: rawCode && decodeXmlText(rawCode), status: res.status },
+          operationOpts
+        );
+        if (!source) {
+          throw errorFromXml(xml, res.status);
+        }
+        await multipartCopy(from, to, source, operationOpts);
+        return;
       }
       // CopyObject can fail *after* returning 200 — S3 streams whitespace
       // while copying and reports late failures as an <Error> body. Always
       // read the body and check.
-      const xml = await drainText(res);
-      if (XML_ERROR_RE.test(xml)) {
-        throw errorFromXml(xml, res.status);
-      }
+      await readWriteResult(res);
     },
     async delete(key, operationOpts) {
       const res = await send("DELETE", objectUrl(key), {
@@ -592,6 +762,11 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
           `${providerLabel}: \`minSize\` requires a presigned POST policy, which the fetch client does not implement, so a presigned PUT would accept an upload of any size. Reject small uploads at your application gateway, or omit \`minSize\`.`
         );
       }
+      // The URL signs `content-type` as a header, which the uploader must
+      // then send byte-for-byte.
+      assertHeaderSafeUploadOptions(providerLabel, {
+        contentType: signOpts.contentType,
+      });
       const url = await presign("PUT", key, signOpts.expiresIn, {
         ...(signOpts.contentType && {
           headers: { "content-type": signOpts.contentType },
@@ -615,7 +790,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
           `${providerLabel}: multipart uploads are not supported by the fetch client (bodies go up as a single PUT). Use the aws-sdk client on a runtime where it runs (it needs a DOMParser, which Cloudflare Workers lack), or upload in a single request under the 5 GB PUT cap.`
         );
       }
-      assertHeaderSafeMetadata(providerLabel, uploadOpts?.metadata);
+      assertHeaderSafeUploadOptions(providerLabel, uploadOpts);
       const { data, contentType } = await normalizeBody(
         body,
         uploadOpts?.contentType

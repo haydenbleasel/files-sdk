@@ -46,9 +46,15 @@ import { reportProgress } from "../internal/resumable.js";
 import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import {
-  assertHeaderSafeMetadata,
+  S3_MAX_COPY_OBJECT_SIZE,
+  SIGV4_MAX_EXPIRES_IN,
+  assertHeaderSafeUploadOptions,
+  assertSigV4ExpiresIn,
+  copyParts,
   isAwsEndpoint,
   isAwsHost,
+  isUnsatisfiableRange,
+  mayBeCopySizeRefusal,
 } from "./shared.js";
 
 /**
@@ -78,6 +84,7 @@ export interface S3Sdk {
     | "PutObjectCommand"
     | "S3Client"
     | "UploadPartCommand"
+    | "UploadPartCopyCommand"
   >;
   presignedPost: Pick<typeof PresignedPost, "createPresignedPost">;
   requestPresigner: Pick<typeof RequestPresigner, "getSignedUrl">;
@@ -420,19 +427,62 @@ const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
 type MultipartInput = boolean | MultipartOptions | undefined;
 
+// Every multipart part except the last must be at least 5 MiB (S3 rule), so
+// clamp the requested part size up to that floor.
+const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
+
+// A multipart upload holds at most 10,000 parts, each at most 5 GiB.
+const S3_MAX_PARTS = 10_000;
+const S3_MAX_PART_SIZE = 5 * 1024 * 1024 * 1024;
+
+/**
+ * Grow the part size so `total` bytes fit in S3's 10,000-part limit (at the
+ * 5 MiB default that is only ~48.8 GiB; past it S3 rejects part 10,001 after
+ * everything before it has uploaded). Capped at the 5 GiB part maximum.
+ */
+const fitPartSizeToTotal = (partSize: number, total: number): number =>
+  Math.min(
+    Math.max(partSize, Math.ceil(total / S3_MAX_PARTS)),
+    S3_MAX_PART_SIZE
+  );
+
 /**
  * Translate our {@link MultipartOptions} into the lib-storage `Upload` knobs.
- * `partSize` is omitted when unset so lib-storage's 5 MiB default applies.
+ * `partSize` is omitted when unset so lib-storage's own sizing applies (5 MiB,
+ * grown to fit 10,000 parts when the length is known).
  */
 interface LibStorageUploadKnobs {
   partSize?: number;
   queueSize: number;
 }
 
-const resolveMultipart = (multipart: MultipartInput): LibStorageUploadKnobs => {
+/**
+ * A caller's `partSize`, rounded into what S3 accepts: at least 5 MiB, at
+ * most 5 GiB, and, when the body's length is known, large enough to fit in
+ * 10,000 parts. lib-storage uses an explicit size as-is, so a 1 MiB part
+ * would fail every attempt with `EntityTooSmall` and an undersized one would
+ * fail at part 10,001, after ~48.8 GiB had uploaded.
+ */
+const resolveUploadPartSize = (
+  partSize: number,
+  total: number | undefined
+): number => {
+  const bounded = Math.min(
+    Math.max(partSize, S3_MIN_PART_SIZE),
+    S3_MAX_PART_SIZE
+  );
+  return total === undefined ? bounded : fitPartSizeToTotal(bounded, total);
+};
+
+const resolveMultipart = (
+  multipart: MultipartInput,
+  total: number | undefined
+): LibStorageUploadKnobs => {
   const opts = isObject(multipart) ? multipart : {};
   return {
-    ...(opts.partSize !== undefined && { partSize: opts.partSize }),
+    ...(opts.partSize !== undefined && {
+      partSize: resolveUploadPartSize(opts.partSize, total),
+    }),
     queueSize: opts.concurrency ?? MULTIPART_DEFAULT_CONCURRENCY,
   };
 };
@@ -451,7 +501,10 @@ const runLibStorageUpload = async (
   signal: AbortSignal | undefined
 ): Promise<string | undefined> => {
   const { Upload } = await loadLibStorage();
-  const { partSize, queueSize } = resolveMultipart(multipart);
+  const { partSize, queueSize } = resolveMultipart(
+    multipart,
+    params.ContentLength
+  );
   const upload = new Upload({
     client,
     params,
@@ -493,29 +546,10 @@ const runLibStorageUpload = async (
   }
 };
 
-// Every multipart part except the last must be at least 5 MiB (S3 rule), so
-// clamp the requested part size up to that floor.
-const S3_MIN_PART_SIZE = 5 * 1024 * 1024;
-
-// A multipart upload holds at most 10,000 parts, each at most 5 GiB.
-const S3_MAX_PARTS = 10_000;
-const S3_MAX_PART_SIZE = 5 * 1024 * 1024 * 1024;
-
 const resolveResumablePartSize = (multipart: MultipartInput): number => {
   const partSize = isObject(multipart) ? multipart.partSize : undefined;
   return partSize && partSize > S3_MIN_PART_SIZE ? partSize : S3_MIN_PART_SIZE;
 };
-
-/**
- * Grow the part size so `total` bytes fit in S3's 10,000-part limit (at the
- * 5 MiB default that is only ~48.8 GiB; past it S3 rejects part 10,001 after
- * everything before it has uploaded). Capped at the 5 GiB part maximum.
- */
-const fitPartSizeToTotal = (partSize: number, total: number): number =>
-  Math.min(
-    Math.max(partSize, Math.ceil(total / S3_MAX_PARTS)),
-    S3_MAX_PART_SIZE
-  );
 
 /**
  * Drive a pause-able / resumable upload over S3's native multipart API
@@ -543,6 +577,9 @@ const createS3ResumableDriver = (
   } = sdk;
   let partSize = resolveResumablePartSize(driverOpts.multipart);
   let uploadId: string | undefined;
+  // The type the session was created with, known when `begin` ran in this
+  // process. A resume token doesn't carry it (see `complete`).
+  let contentType: string | undefined;
   const requireUploadId = (): string => {
     if (uploadId === undefined) {
       // Only reachable by driving the driver out of order (a part, probe, or
@@ -572,7 +609,11 @@ const createS3ResumableDriver = (
       ({ partSize } = session);
     },
     async begin(meta): Promise<ResumableUploadSession> {
-      assertHeaderSafeMetadata(providerLabel, driverOpts.metadata);
+      assertHeaderSafeUploadOptions(providerLabel, {
+        ...driverOpts,
+        contentType: meta.contentType,
+      });
+      ({ contentType } = meta);
       // Pinned in the token below, so a resume slices on the same boundaries.
       partSize = fitPartSizeToTotal(partSize, meta.total);
       try {
@@ -597,8 +638,9 @@ const createS3ResumableDriver = (
       }
     },
     async complete(parts: PartMeta[]): Promise<UploadResult> {
+      let completed: ClientS3.CompleteMultipartUploadCommandOutput;
       try {
-        const completed = await client.send(
+        completed = await client.send(
           new CompleteMultipartUploadCommand({
             Bucket: bucket,
             Key: key,
@@ -611,22 +653,33 @@ const createS3ResumableDriver = (
             UploadId: requireUploadId(),
           })
         );
-        // CompleteMultipartUpload doesn't return size/contentType; head the
-        // object for authoritative metadata, mirroring upload()'s stream path.
+      } catch (error) {
+        throw wrapErr(error);
+      }
+      const etag = stripEtag(completed.ETag);
+      const summedSize = parts.reduce((sum, part) => sum + part.size, 0);
+      // Without a type from `begin` (a resumed session), approximate it from
+      // the key, as `list()` does.
+      const knownType = contentType ?? inferTypeFromName(key);
+      // CompleteMultipartUpload doesn't return size/contentType; head the
+      // object for authoritative metadata, mirroring upload()'s stream path.
+      // Best-effort: the object has committed and the upload id is gone, so
+      // a principal allowed PutObject but not HeadObject (or a transient HEAD
+      // failure) must not turn a finished upload into an error whose resume
+      // can only hit NoSuchUpload.
+      try {
         const head = await client.send(
           new HeadObjectCommand({ Bucket: bucket, Key: key })
         );
         return {
-          contentType: head.ContentType ?? DEFAULT_CONTENT_TYPE,
-          etag: stripEtag(completed.ETag),
+          contentType: head.ContentType ?? knownType,
+          etag,
           key,
           lastModified: head.LastModified?.getTime(),
-          size: Number(
-            head.ContentLength ?? parts.reduce((sum, p) => sum + p.size, 0)
-          ),
+          size: Number(head.ContentLength ?? summedSize),
         };
-      } catch (error) {
-        throw wrapErr(error);
+      } catch {
+        return { contentType: knownType, etag, key, size: summedSize };
       }
     },
     async discard() {
@@ -708,22 +761,6 @@ const createS3ResumableDriver = (
   };
 };
 
-/**
- * SigV4 caps a presigned URL's lifetime at one week. The SDK's presigner
- * rejects anything longer — with a bare string, not an Error — so check up
- * front for a message that says what went wrong. Matches the fetch engine.
- */
-const SIGV4_MAX_EXPIRES_IN = 604_800;
-
-const assertSigV4ExpiresIn = (label: string, expiresIn: number): void => {
-  if (expiresIn > SIGV4_MAX_EXPIRES_IN) {
-    throw new FilesError(
-      "Invalid",
-      `${label}: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
-    );
-  }
-};
-
 const emptyStream = (): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
     start(controller) {
@@ -735,7 +772,16 @@ const S3_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NoSuchKey",
   "NotFound",
 ]);
-const S3_UNAUTH_CODES: ReadonlySet<string> = new Set(["AccessDenied"]);
+// Credential failures. Most arrive as 403 and classify by status alone, but
+// an expired or malformed session token is a 400 (`ExpiredToken`,
+// `InvalidToken`), which would otherwise be a retried Provider error.
+const S3_UNAUTH_CODES: ReadonlySet<string> = new Set([
+  "AccessDenied",
+  "ExpiredToken",
+  "InvalidAccessKeyId",
+  "InvalidToken",
+  "SignatureDoesNotMatch",
+]);
 const S3_CONFLICT_CODES: ReadonlySet<string> = new Set(["PreconditionFailed"]);
 const S3_RETRYABLE_CONDITIONAL_CONFLICT_CODES: ReadonlySet<string> = new Set([
   "ConditionalRequestConflict",
@@ -812,6 +858,16 @@ const buildMapS3Error = (providerLabel = "S3 error") => {
         cause
       );
     }
+    // 416: the range starts past the end of the object. A provider answer,
+    // so still `Provider`, but reissuing it can only fail the same way.
+    if (isUnsatisfiableRange(extracted.code, extracted.status)) {
+      return new FilesError(
+        "Provider",
+        extracted.message ?? providerLabel,
+        cause,
+        { permanent: true }
+      );
+    }
     return mapDefault(cause);
   };
 };
@@ -854,7 +910,8 @@ export const mapS3Error = (
   return new FilesError(
     code,
     ownS3Message(e) ?? messages[code] ?? wrapped.message,
-    cause
+    cause,
+    { permanent: wrapped.permanent }
   );
 };
 
@@ -877,7 +934,10 @@ export const createS3Adapter = (
 ): S3Adapter => {
   const {
     clientS3: {
+      AbortMultipartUploadCommand,
+      CompleteMultipartUploadCommand,
       CopyObjectCommand,
+      CreateMultipartUploadCommand,
       DeleteObjectCommand,
       DeleteObjectsCommand,
       GetObjectCommand,
@@ -885,6 +945,7 @@ export const createS3Adapter = (
       ListObjectsV2Command,
       PutObjectCommand,
       S3Client,
+      UploadPartCopyCommand,
     },
     presignedPost: { createPresignedPost },
     requestPresigner: { getSignedUrl },
@@ -944,6 +1005,13 @@ export const createS3Adapter = (
     ? buildMapS3Error(opts.defaultProviderMessage)
     : mapS3Error;
   const providerLabel = opts.defaultProviderMessage ?? "S3 error";
+  // Canonical AWS only, unless the caller says otherwise: an endpoint that
+  // isn't an AWS host points at a service whose conditional-header support is
+  // unknown, so the primitives stay off and every conditional call fails
+  // closed before provider I/O. The same trust decides whether a multipart
+  // copy pins its parts to the source's ETag.
+  const canonicalAws = resolvesToAws(opts.endpoint);
+  const nativeConditional = opts.conditional ?? canonicalAws;
 
   const signGet = (
     key: string,
@@ -1032,6 +1100,15 @@ export const createS3Adapter = (
     );
   };
 
+  // CopySource must be URL-encoded per
+  // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
+  // S3 bucket naming rules don't require encoding in practice, but we
+  // encode both halves defensively in case a custom endpoint (e.g.
+  // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
+  // signs and serializes it as part of the request, not as a URL value.
+  const copySource = (from: string): string =>
+    `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`;
+
   const copyObject = (
     from: string,
     to: string,
@@ -1044,18 +1121,136 @@ export const createS3Adapter = (
     client.send(
       new CopyObjectCommand({
         Bucket: bucket,
-        // CopySource must be URL-encoded per
-        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html.
-        // S3 bucket naming rules don't require encoding in practice, but we
-        // encode both halves defensively in case a custom endpoint (e.g.
-        // MinIO) accepts looser names. `Key:` is passed unencoded — the SDK
-        // signs and serializes it as part of the request, not as a URL value.
-        CopySource: `${encodeURIComponent(bucket)}/${encodeURIComponent(from)}`,
+        CopySource: copySource(from),
         Key: to,
         ...predicate,
       }),
       abortOptions(operationOpts?.signal)
     );
+
+  /**
+   * After a failed `CopyObject`: the source's HEAD when the failure was S3
+   * refusing a source over CopyObject's 5 GiB ceiling, else `undefined` (the
+   * original error stands). The refusal's code is ambiguous, so the HEAD
+   * confirms the size; it runs only on that failure path.
+   */
+  const oversizedCopySource = async (
+    from: string,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever CopyObject rejected with
+    error: unknown,
+    operationOpts: OperationOptions | undefined
+  ): Promise<ClientS3.HeadObjectCommandOutput | undefined> => {
+    const { code, status } = extractS3Error(error);
+    if (!mayBeCopySizeRefusal(code, status)) {
+      return;
+    }
+    let head: ClientS3.HeadObjectCommandOutput;
+    try {
+      head = await client.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: from }),
+        abortOptions(operationOpts?.signal)
+      );
+    } catch {
+      return;
+    }
+    return Number(head.ContentLength ?? 0) > S3_MAX_COPY_OBJECT_SIZE
+      ? head
+      : undefined;
+  };
+
+  /**
+   * Copy a source over CopyObject's 5 GiB ceiling with S3's multipart copy:
+   * CreateMultipartUpload carrying the headers and user metadata CopyObject
+   * would have copied (object tags are not carried), one UploadPartCopy per
+   * range, then CompleteMultipartUpload. Where conditional headers are
+   * trusted (AWS, or `conditional: true`), every part is pinned to the HEAD's
+   * ETag, so a source overwritten mid-copy fails as `Conflict` instead of
+   * splicing two versions. Any failure aborts the upload so no parts linger.
+   */
+  const multipartCopy = async (
+    from: string,
+    to: string,
+    source: ClientS3.HeadObjectCommandOutput,
+    operationOpts: OperationOptions | undefined
+  ): Promise<void> => {
+    const abortOpt = abortOptions(operationOpts?.signal);
+    const created = await client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: bucket,
+        Key: to,
+        ...(source.CacheControl && { CacheControl: source.CacheControl }),
+        ...(source.ContentDisposition && {
+          ContentDisposition: source.ContentDisposition,
+        }),
+        ...(source.ContentEncoding && {
+          ContentEncoding: source.ContentEncoding,
+        }),
+        ...(source.ContentLanguage && {
+          ContentLanguage: source.ContentLanguage,
+        }),
+        ...(source.ContentType && { ContentType: source.ContentType }),
+        ...(source.Expires && { Expires: source.Expires }),
+        ...(source.Metadata && { Metadata: source.Metadata }),
+      }),
+      abortOpt
+    );
+    const uploadId = created.UploadId;
+    if (!uploadId) {
+      throw new FilesError(
+        "Provider",
+        `${providerLabel}: CreateMultipartUpload returned no UploadId for the multipart copy`
+      );
+    }
+    const pin =
+      nativeConditional && source.ETag
+        ? { CopySourceIfMatch: source.ETag }
+        : undefined;
+    try {
+      const parts: ClientS3.CompletedPart[] = [];
+      for (const part of copyParts(Number(source.ContentLength))) {
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- sequential part copies, so a failure stops the copy and the abort below leaves no part in flight
+        const result = await client.send(
+          new UploadPartCopyCommand({
+            Bucket: bucket,
+            CopySource: copySource(from),
+            CopySourceRange: `bytes=${part.start}-${part.end}`,
+            Key: to,
+            PartNumber: part.partNumber,
+            UploadId: uploadId,
+            ...pin,
+          }),
+          abortOpt
+        );
+        parts.push({
+          ETag: result.CopyPartResult?.ETag,
+          PartNumber: part.partNumber,
+        });
+      }
+      await client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: bucket,
+          Key: to,
+          MultipartUpload: { Parts: parts },
+          UploadId: uploadId,
+        }),
+        abortOpt
+      );
+    } catch (error) {
+      try {
+        await client.send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: to,
+            UploadId: uploadId,
+          })
+        );
+      } catch {
+        // Best-effort: the copy's own failure is the one to report, and an
+        // unaborted upload is reclaimed by the bucket's lifecycle rules.
+      }
+      throw error;
+    }
+  };
 
   const deleteObject = (
     key: string,
@@ -1074,7 +1269,7 @@ export const createS3Adapter = (
     options?: AdapterUploadOptions
   ): Promise<ConditionalUploadResult> => {
     assertConditionalUploadOptions(options);
-    assertHeaderSafeMetadata(providerLabel, options?.metadata);
+    assertHeaderSafeUploadOptions(providerLabel, options);
     const predicate =
       condition.type === "create"
         ? { IfNoneMatch: "*" }
@@ -1149,12 +1344,6 @@ export const createS3Adapter = (
     }
   };
 
-  // Canonical AWS only, unless the caller says otherwise: an endpoint that
-  // isn't an AWS host points at a service whose conditional-header support is
-  // unknown, so the primitives stay off and every conditional call fails
-  // closed before provider I/O.
-  const canonicalAws = resolvesToAws(opts.endpoint);
-  const nativeConditional = opts.conditional ?? canonicalAws;
   const conditional: S3Adapter["conditional"] = nativeConditional
     ? {
         copy: {
@@ -1179,6 +1368,16 @@ export const createS3Adapter = (
                 ...destinationPredicate,
               });
             } catch (error) {
+              // A multipart copy can't carry the destination predicate in the
+              // one atomic request this primitive promises, so a source over
+              // CopyObject's 5 GiB ceiling is refused rather than copied.
+              if (await oversizedCopySource(from, error, operationOpts)) {
+                throw new FilesError(
+                  "Unsupported",
+                  `${providerLabel}: a conditional copy is one CopyObject request, which S3 limits to 5 GiB sources; "${from}" is larger. Copy it without a condition (a multipart copy), or check the condition yourself first.`,
+                  error
+                );
+              }
               throw wrapErr(error);
             }
           },
@@ -1253,7 +1452,17 @@ export const createS3Adapter = (
       try {
         await copyObject(from, to, operationOpts);
       } catch (error) {
-        throw wrapErr(error);
+        // CopyObject copies at most 5 GiB; past that, S3 needs the multipart
+        // copy API, which keeps the copy server-side.
+        const source = await oversizedCopySource(from, error, operationOpts);
+        if (!source) {
+          throw wrapErr(error);
+        }
+        try {
+          await multipartCopy(from, to, source, operationOpts);
+        } catch (copyError) {
+          throw wrapErr(copyError);
+        }
       }
     },
     async delete(key, operationOpts) {
@@ -1431,6 +1640,11 @@ export const createS3Adapter = (
       // Both the presigned POST and the presigned PUT are SigV4, so both hit
       // the one-week ceiling.
       assertSigV4ExpiresIn(providerLabel, signOpts.expiresIn);
+      // The presigned PUT signs `Content-Type` as a header, which the
+      // uploader must then send byte-for-byte.
+      assertHeaderSafeUploadOptions(providerLabel, {
+        contentType: signOpts.contentType,
+      });
       // A size floor rides on the POST policy's `content-length-range`, which
       // only `maxSize` selects. A presigned PUT has no size condition at all,
       // so a positive `minSize` on its own can't be enforced. (`0` asks for
@@ -1500,7 +1714,7 @@ export const createS3Adapter = (
     },
     async upload(key, body, options) {
       const { multipart, onProgress, signal } = options ?? {};
-      assertHeaderSafeMetadata(providerLabel, options?.metadata);
+      assertHeaderSafeUploadOptions(providerLabel, options);
       const normalized = await normalizeBody(body, options?.contentType);
       const { data, contentType, contentLength } = normalized;
       const params = putParams(key, normalized, options);

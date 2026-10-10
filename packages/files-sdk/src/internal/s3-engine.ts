@@ -6,11 +6,11 @@ import type {
   ResumableUploadSession,
 } from "../index.js";
 import type { S3Adapter, S3AdapterOptions, S3Sdk } from "../s3/core.js";
+import { SIGV4_MAX_EXPIRES_IN } from "../s3/shared.js";
 import { deleteManyWithFallback } from "./core.js";
 import { FilesError } from "./errors.js";
 import type { EventCapability } from "./events.js";
 import { isFunction } from "./is.js";
-import { SIGV4_MAX_EXPIRES_IN } from "./s3-fetch.js";
 
 // Shared plumbing for the S3-compatible adapters that offer both HTTP engines
 // (`r2()`, `minio()`, `rustfs()`): which engine to pick when the caller

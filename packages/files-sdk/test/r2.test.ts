@@ -1311,6 +1311,47 @@ describe("r2 adapter — Workers binding path", () => {
     }
   );
 
+  test("a range past the end of the object (10039 InvalidRange) is a permanent Provider error, not retried", async () => {
+    const { bucket } = fakeBinding();
+    let gets = 0;
+    bucket.get = (() => {
+      gets += 1;
+      return Promise.reject(
+        Object.assign(
+          new Error("get: The requested range is not satisfiable (10039)"),
+          {
+            code: 10_039,
+            name: "Error",
+          }
+        )
+      );
+    }) as never;
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      retries: 3,
+    });
+    await expect(
+      files.download("small.txt", { range: { start: 20 } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(gets).toBe(1);
+    // Recognized by name too, and other Provider failures stay retryable.
+    bucket.delete = (() =>
+      Promise.reject(
+        Object.assign(new Error("bad range"), { name: "InvalidRange" })
+      )) as never;
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      permanent: true,
+    });
+    bucket.delete = (() =>
+      Promise.reject(
+        Object.assign(new Error("internal"), { code: 10_001, name: "R2Error" })
+      )) as never;
+    await expect(files.delete("a.txt", { retries: 0 })).rejects.toMatchObject({
+      code: "Provider",
+      permanent: false,
+    });
+  });
+
   test("exists() rejects with Unauthorized on bad credentials (10002) instead of reporting false", async () => {
     const { bucket } = fakeBinding();
     const files = new Files({ adapter: r2({ binding: bucket as never }) });

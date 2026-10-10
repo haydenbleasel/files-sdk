@@ -294,6 +294,8 @@ const R2_UNAUTHORIZED_CODES: ReadonlySet<number> = new Set([
 ]);
 // 10031 PreconditionFailed (412), 10008 BucketNotEmpty (409).
 const R2_CONFLICT_CODES: ReadonlySet<number> = new Set([10_008, 10_031]);
+// 10039 InvalidRange (416): a range that starts past the end of the object.
+const R2_INVALID_RANGE_CODE = 10_039;
 
 const mapR2Error = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
@@ -324,6 +326,11 @@ const mapR2Error = (cause: unknown): FilesError => {
     R2_UNAUTHORIZED_CODES.has(code)
   ) {
     return new FilesError("Unauthorized", message, cause);
+  }
+  // A provider answer, so still `Provider`, but reissuing the same range can
+  // only fail the same way, so `retries` must not.
+  if (name.includes("InvalidRange") || code === R2_INVALID_RANGE_CODE) {
+    return new FilesError("Provider", message, cause, { permanent: true });
   }
   return new FilesError("Provider", message, cause);
 };

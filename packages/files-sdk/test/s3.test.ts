@@ -17,6 +17,7 @@ import {
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
+  UploadPartCopyCommand,
 } from "@aws-sdk/client-s3";
 import { sdkStreamMixin } from "@smithy/util-stream";
 import { mockClient } from "aws-sdk-client-mock";
@@ -2456,26 +2457,79 @@ describe("s3 endpoint classification", () => {
 });
 
 describe("s3 local refusals are Invalid, not retried Provider errors", () => {
-  test("non-Latin-1 metadata is refused before any request", async () => {
+  test("non-ASCII metadata is refused before any request", async () => {
     const files = new Files({
       adapter: s3({ bucket: "b", region: "us-east-1" }),
       retries: 2,
     });
-    const rejection = await files
-      .upload("k.txt", "hi", { metadata: { title: "日本" } })
-      .then(
-        () => null,
-        (error: unknown) => error
+    // Latin-1 included: Node sends "é" as one byte while the SigV4 signer
+    // hashes it as two (UTF-8), so S3 answers SignatureDoesNotMatch.
+    for (const title of ["日本", "café"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one refusal per value, in order
+      const rejection = await files
+        .upload("k.txt", "hi", { metadata: { title } })
+        .then(
+          () => null,
+          (error: unknown) => error
+        );
+      expect(rejection).toBeInstanceOf(FilesError);
+      expect((rejection as FilesError).code).toBe("Invalid");
+      expect((rejection as FilesError).message).toMatch(
+        /metadata key "title" can't be sent as an HTTP header.*printable ASCII.*encodeURIComponent/u
       );
-    expect(rejection).toBeInstanceOf(FilesError);
-    expect((rejection as FilesError).code).toBe("Invalid");
-    expect((rejection as FilesError).message).toMatch(
-      /metadata key "title" can't be sent as an HTTP header/u
-    );
-    // Latin-1 and ASCII values still go out.
+    }
+    expect(s3Mock.calls()).toHaveLength(0);
+    // Printable ASCII (and an encoded value) still goes out.
     s3Mock.on(PutObjectCommand).resolves({ ETag: '"e"' });
-    await files.upload("k.txt", "hi", { metadata: { title: "café" } });
+    await files.upload("k.txt", "hi", {
+      metadata: { note: "a\tb ~", title: encodeURIComponent("café") },
+    });
     expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
+  });
+
+  test("a contentType or cacheControl that can't be a header is Invalid on every write path", async () => {
+    // Straight to the adapter: the refusal is its own, before any request,
+    // whatever `Files` checks first.
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    for (const options of [
+      { contentType: "text/plain\r\nx-evil: 1" },
+      { contentType: "text/é" },
+      { cacheControl: "max-age=1 ✓" },
+      { cacheControl: "max-age=1\n" },
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one refusal per option, in order
+      const error = await adapter.upload("k.txt", "hi", options).then(
+        () => null,
+        (error_: unknown) => error_
+      );
+      expect(error).toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(
+          /`(?:contentType|cacheControl)` can't be sent as an HTTP header/u
+        ),
+      });
+    }
+    const conditional = requireNativeConditional(adapter);
+    await expect(
+      conditional.create("k.txt", "hi", { contentType: "text/é" })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    const driver = adapter.resumableUpload?.("big.bin", {
+      cacheControl: "max-age=1\r\n",
+    });
+    await expect(
+      driver?.begin({ contentType: "application/octet-stream", total: 10 })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    const typed = adapter.resumableUpload?.("big.bin", {});
+    await expect(
+      typed?.begin({ contentType: "text/é", total: 10 })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    await expect(
+      adapter.signedUploadUrl("k.txt", {
+        contentType: "text/plain\nx",
+        expiresIn: 60,
+      })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(s3Mock.calls()).toHaveLength(0);
   });
 
   test("control characters and invalid key names are refused too", async () => {
@@ -2520,5 +2574,418 @@ describe("s3 local refusals are Invalid, not retried Provider errors", () => {
       driver.uploadPart({ data: new Uint8Array(1), partNumber: 1 })
     ).rejects.toMatchObject({ code: "Invalid" });
     expect(s3Mock.calls()).toHaveLength(0);
+  });
+});
+
+// A typed-array view that reports `byteLength` bytes without allocating
+// them: lib-storage is stubbed, so nothing ever reads the body.
+const sizedBody = (byteLength: number): Uint8Array =>
+  Object.create(Uint8Array.prototype, {
+    byteLength: { value: byteLength },
+  }) as Uint8Array;
+
+// A bodyless 403, as a HEAD the principal isn't allowed to make returns.
+const headDenied = () =>
+  Object.assign(new Error("UnknownError"), {
+    $metadata: { httpStatusCode: 403 },
+    name: "Forbidden",
+  });
+
+// AWS's refusal of a CopyObject source over 5 GiB.
+const copySourceTooLarge = () =>
+  Object.assign(
+    new Error(
+      "The specified copy source is larger than the maximum allowable size for a copy source: 5368709120"
+    ),
+    { $metadata: { httpStatusCode: 400 }, name: "InvalidRequest" }
+  );
+
+describe("s3 multipart part sizing", () => {
+  const MIB = 1024 * 1024;
+  const GIB = 1024 * MIB;
+
+  test("a partSize under 5 MiB is raised to S3's minimum instead of failing every attempt", async () => {
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+    });
+    await files.upload("k.bin", new Uint8Array(3 * MIB), {
+      multipart: { partSize: MIB },
+    });
+    expect(FakeUpload.lastOptions?.partSize).toBe(5 * MIB);
+  });
+
+  test("an explicit partSize grows to fit 10,000 parts when the length is known, capped at 5 GiB", async () => {
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    // 60 GiB at 5 MiB would need 12,288 parts.
+    await adapter.upload("big.bin", sizedBody(60 * GIB), {
+      multipart: { partSize: 5 * MIB },
+    });
+    expect(FakeUpload.lastOptions?.partSize).toBe(
+      Math.ceil((60 * GIB) / 10_000)
+    );
+    // A larger explicit size is kept as-is.
+    await adapter.upload("big.bin", sizedBody(60 * GIB), {
+      multipart: { partSize: 64 * MIB },
+    });
+    expect(FakeUpload.lastOptions?.partSize).toBe(64 * MIB);
+    // Never past S3's 5 GiB part maximum.
+    await adapter.upload("big.bin", sizedBody(GIB), {
+      multipart: { partSize: 6 * GIB },
+    });
+    expect(FakeUpload.lastOptions?.partSize).toBe(5 * GIB);
+  });
+
+  test("an unsized stream keeps the clamped partSize (its length can't be fitted)", async () => {
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 3 });
+    await adapter.upload(
+      "s.bin",
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(3));
+          controller.close();
+        },
+      }),
+      { multipart: { partSize: MIB } }
+    );
+    expect(FakeUpload.lastOptions?.partSize).toBe(5 * MIB);
+  });
+});
+
+describe("s3 resumable complete() after the object committed", () => {
+  const FIVE_MIB = 5 * 1024 * 1024;
+  test("a HEAD the principal can't make doesn't fail the finished upload", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(UploadPartCommand).resolves({ ETag: '"p"' });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).rejects(headDenied());
+    const files = new Files({ adapter: rbAdapter() });
+    const control = new UploadControl();
+    const result = await files.upload(
+      "big.bin",
+      new Blob([new Uint8Array(FIVE_MIB + 10)], { type: "video/webm" }),
+      { control, multipart: { partSize: FIVE_MIB } }
+    );
+    expect(result).toMatchObject({
+      contentType: "video/webm",
+      etag: "final",
+      key: "big.bin",
+      size: FIVE_MIB + 10,
+    });
+    expect(control.status).toBe("completed");
+    expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(1);
+  });
+
+  test("a resumed session whose HEAD fails reports the summed parts and a type from the key", async () => {
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).rejects(headDenied());
+    const driver = rbAdapter().resumableUpload?.("clip.mp4", {});
+    if (!driver || driver.mode !== "parts") {
+      throw new Error("expected a parts-mode resumable driver");
+    }
+    driver.adopt({
+      bucket: "rb",
+      key: "clip.mp4",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "u1",
+    });
+    expect(
+      await driver.complete([
+        { etag: '"a"', partNumber: 1, size: FIVE_MIB },
+        { etag: '"b"', partNumber: 2, size: 7 },
+      ])
+    ).toEqual({
+      contentType: "video/mp4",
+      etag: "final",
+      key: "clip.mp4",
+      size: FIVE_MIB + 7,
+    });
+  });
+
+  test("a failed CompleteMultipartUpload still rejects, without a HEAD", async () => {
+    s3Mock.on(CompleteMultipartUploadCommand).rejects(
+      Object.assign(new Error("The specified upload does not exist."), {
+        $metadata: { httpStatusCode: 404 },
+        name: "NoSuchUpload",
+      })
+    );
+    const driver = rbAdapter().resumableUpload?.("big.bin", {});
+    driver?.adopt({
+      bucket: "rb",
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      provider: "s3",
+      uploadId: "gone",
+    });
+    await expect(driver?.complete([])).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
+  });
+
+  test("a HEAD without a Content-Type falls back to the session's type", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"final"' });
+    s3Mock.on(HeadObjectCommand).resolves({});
+    const driver = rbAdapter().resumableUpload?.("big.bin", {});
+    await driver?.begin({ contentType: "text/csv", total: 3 });
+    expect(
+      await driver?.complete([{ etag: '"a"', partNumber: 1, size: 3 }])
+    ).toMatchObject({ contentType: "text/csv", size: 3 });
+  });
+});
+
+describe("s3 error classification", () => {
+  test("an expired or invalid session token (HTTP 400) is Unauthorized, not retried", async () => {
+    for (const name of ["ExpiredToken", "InvalidToken"]) {
+      s3Mock.reset();
+      s3Mock.on(ListObjectsV2Command).rejects(
+        Object.assign(new Error("The provided token has expired."), {
+          $metadata: { httpStatusCode: 400 },
+          name,
+        })
+      );
+      const files = new Files({
+        adapter: s3({ bucket: "b", region: "us-east-1" }),
+        retries: 3,
+      });
+      // oxlint-disable-next-line no-await-in-loop -- one code at a time
+      await expect(files.list()).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
+      expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1);
+    }
+  });
+
+  test("a range past the end of the object (416 InvalidRange) is a permanent Provider error", async () => {
+    s3Mock.on(GetObjectCommand).rejects(
+      Object.assign(new Error("The requested range is not satisfiable"), {
+        $metadata: { httpStatusCode: 416 },
+        name: "InvalidRange",
+      })
+    );
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+      retries: 3,
+    });
+    await expect(
+      files.download("small.txt", { range: { start: 10 } })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "The requested range is not satisfiable",
+      permanent: true,
+    });
+    expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
+    // The wrapper's relabeled mapper and mapS3Error's per-code messages keep
+    // the flag too.
+    const bare = { $metadata: { httpStatusCode: 416 } };
+    expect(mapS3Error(bare, { Provider: "range" })).toMatchObject({
+      message: "range",
+      permanent: true,
+    });
+    await expect(
+      s3({
+        bucket: "b",
+        defaultProviderMessage: "Wasabi error",
+        region: "us-east-1",
+      }).download("small.txt", { range: { start: 10 } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+  });
+});
+
+describe("s3 presigned URL lifetimes", () => {
+  test("a zero, negative, fractional, or NaN expiresIn is refused, per call or as the default", async () => {
+    const credentials = { accessKeyId: "AKID", secretAccessKey: "SECRET" };
+    const adapter = s3({ bucket: "b", credentials, region: "us-east-1" });
+    for (const expiresIn of [0, -5, 1.5, Number.NaN]) {
+      const invalid = {
+        code: "Invalid",
+        message: expect.stringMatching(
+          /^S3 error: a presigned URL's expiry must be a whole number of seconds, at least 1/u
+        ),
+      };
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(adapter.url("k.txt", { expiresIn })).rejects.toMatchObject(
+        invalid
+      );
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        s3({
+          bucket: "b",
+          credentials,
+          defaultUrlExpiresIn: expiresIn,
+          region: "us-east-1",
+        }).url("k.txt")
+      ).rejects.toMatchObject(invalid);
+      // oxlint-disable-next-line no-await-in-loop -- one value at a time
+      await expect(
+        adapter.signedUploadUrl("k.txt", { expiresIn })
+      ).rejects.toMatchObject(invalid);
+    }
+    expect(await adapter.url("k.txt", { expiresIn: 1 })).toContain(
+      "X-Amz-Expires=1&"
+    );
+  });
+});
+
+describe("s3 copies over CopyObject's 5 GiB ceiling", () => {
+  const GIB = 1024 * 1024 * 1024;
+  const PART = 512 * 1024 * 1024;
+  const source = {
+    CacheControl: "max-age=60",
+    ContentDisposition: 'attachment; filename="v.mp4"',
+    ContentEncoding: "identity",
+    ContentLanguage: "en",
+    ContentLength: 6 * GIB + 1,
+    ContentType: "video/mp4",
+    ETag: '"src-etag"',
+    Expires: new Date(0),
+    Metadata: { owner: "ana" },
+  };
+  const mockMultipartCopy = () => {
+    s3Mock.on(CopyObjectCommand).rejects(copySourceTooLarge());
+    s3Mock.on(HeadObjectCommand).resolves(source);
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "copy-1" });
+    s3Mock
+      .on(UploadPartCopyCommand)
+      .callsFake((input: { PartNumber?: number }) => ({
+        CopyPartResult: { ETag: `"part-${input.PartNumber}"` },
+      }));
+    s3Mock.on(CompleteMultipartUploadCommand).resolves({ ETag: '"done"' });
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+  };
+
+  test("copy() falls back to a server-side multipart copy that carries the source's headers", async () => {
+    mockMultipartCopy();
+    const files = new Files({
+      adapter: s3({ bucket: "b", region: "us-east-1" }),
+    });
+    await files.copy("big video.mp4", "copy.mp4");
+
+    const [create] = s3Mock.commandCalls(CreateMultipartUploadCommand);
+    expect(create?.args[0].input).toEqual({
+      Bucket: "b",
+      CacheControl: "max-age=60",
+      ContentDisposition: 'attachment; filename="v.mp4"',
+      ContentEncoding: "identity",
+      ContentLanguage: "en",
+      ContentType: "video/mp4",
+      Expires: new Date(0),
+      Key: "copy.mp4",
+      Metadata: { owner: "ana" },
+    });
+    const parts = s3Mock
+      .commandCalls(UploadPartCopyCommand)
+      .map((call) => call.args[0].input);
+    // 6 GiB + 1 byte in 512 MiB parts: 12 full parts and a 1-byte tail.
+    expect(parts).toHaveLength(13);
+    expect(parts[0]).toEqual({
+      Bucket: "b",
+      CopySource: "b/big%20video.mp4",
+      // AWS: pinned to the HEAD's ETag, so a mid-copy overwrite can't splice.
+      CopySourceIfMatch: '"src-etag"',
+      CopySourceRange: `bytes=0-${PART - 1}`,
+      Key: "copy.mp4",
+      PartNumber: 1,
+      UploadId: "copy-1",
+    });
+    expect(parts[12]?.CopySourceRange).toBe(`bytes=${6 * GIB}-${6 * GIB}`);
+    const [complete] = s3Mock.commandCalls(CompleteMultipartUploadCommand);
+    expect(complete?.args[0].input.MultipartUpload?.Parts?.[12]).toEqual({
+      ETag: '"part-13"',
+      PartNumber: 13,
+    });
+    expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(0);
+  });
+
+  test("an S3-compatible endpoint copies without the ETag pin, and a bare source sends no headers", async () => {
+    mockMultipartCopy();
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 5 * GIB + 1 });
+    const adapter = s3({
+      bucket: "b",
+      endpoint: "https://storage.example.test",
+      forcePathStyle: true,
+      region: "us-east-1",
+    });
+    await adapter.copy("a", "b");
+    expect(
+      s3Mock.commandCalls(CreateMultipartUploadCommand)[0]?.args[0].input
+    ).toEqual({ Bucket: "b", Key: "b" });
+    const parts = s3Mock.commandCalls(UploadPartCopyCommand);
+    expect(parts).toHaveLength(11);
+    expect(parts[0]?.args[0].input.CopySourceIfMatch).toBeUndefined();
+  });
+
+  test("a failed part copy aborts the upload and surfaces the part's error", async () => {
+    mockMultipartCopy();
+    s3Mock.on(UploadPartCopyCommand).rejects(
+      Object.assign(new Error("At least one of the preconditions failed"), {
+        $metadata: { httpStatusCode: 412 },
+        name: "PreconditionFailed",
+      })
+    );
+    // An abort that fails too doesn't mask the copy's own failure.
+    s3Mock.on(AbortMultipartUploadCommand).rejects(new Error("abort failed"));
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    await expect(adapter.copy("a", "b")).rejects.toMatchObject({
+      code: "Conflict",
+    });
+    expect(s3Mock.commandCalls(AbortMultipartUploadCommand)).toHaveLength(1);
+    expect(
+      s3Mock.commandCalls(AbortMultipartUploadCommand)[0]?.args[0].input
+    ).toEqual({ Bucket: "b", Key: "b", UploadId: "copy-1" });
+    expect(s3Mock.commandCalls(CompleteMultipartUploadCommand)).toHaveLength(0);
+  });
+
+  test("a CreateMultipartUpload without an UploadId is a Provider error", async () => {
+    mockMultipartCopy();
+    s3Mock.on(CreateMultipartUploadCommand).resolves({});
+    await expect(
+      s3({ bucket: "b", region: "us-east-1" }).copy("a", "b")
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/returned no UploadId/u),
+    });
+    expect(s3Mock.commandCalls(UploadPartCopyCommand)).toHaveLength(0);
+  });
+
+  test("an InvalidRequest that isn't about size keeps the original error", async () => {
+    mockMultipartCopy();
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    // A small source: the 400 was about something else.
+    s3Mock.on(HeadObjectCommand).resolves({ ContentLength: 10 });
+    await expect(adapter.copy("a", "b")).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/larger than the maximum/u),
+    });
+    // A source that can't be read: the copy's error stands too.
+    s3Mock.on(HeadObjectCommand).rejects(new Error("head failed"));
+    await expect(adapter.copy("a", "b")).rejects.toMatchObject({
+      message: expect.stringMatching(/larger than the maximum/u),
+    });
+    // A HEAD with no length reads as empty.
+    s3Mock.on(HeadObjectCommand).resolves({});
+    await expect(adapter.copy("a", "b")).rejects.toMatchObject({
+      code: "Provider",
+    });
+    expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(0);
+  });
+
+  test("a conditional copy of an oversized source is Unsupported, not retried", async () => {
+    mockMultipartCopy();
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+    await expect(
+      conditional.copy.run("big.mp4", "copy.mp4", {
+        destination: { type: "create" },
+        source: { etag: "src-etag" },
+      })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/limits to 5 GiB sources/u),
+    });
+    expect(s3Mock.commandCalls(CreateMultipartUploadCommand)).toHaveLength(0);
   });
 });

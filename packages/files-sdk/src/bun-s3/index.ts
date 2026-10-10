@@ -13,25 +13,30 @@ import {
   rangedSize,
   resolveUrlStrategy,
 } from "../internal/core.js";
+import type { ErrorExtract } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
+import {
+  SIGV4_MAX_EXPIRES_IN,
+  assertHeaderSafeUploadOptions,
+  isUnsatisfiableRange,
+  sigV4ExpiresInError,
+} from "../s3/shared.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
-// SigV4 caps a presigned URL at one week. Bun signs a longer `expiresIn`
-// without complaint, but the server rejects the URL when it's used, so fail
-// here instead, matching the rest of the S3 family.
-const SIGV4_MAX_EXPIRES_IN = 604_800;
+const PROVIDER_LABEL = "Bun S3 error";
 
+/**
+ * The refusal for a presigned URL lifetime SigV4 can't honor, or `undefined`.
+ * Bun signs a longer-than-a-week, zero, negative, or fractional `expiresIn`
+ * without complaint, and the URL fails when it's used; fail here instead,
+ * matching the rest of the S3 family.
+ */
 const expiresInError = (expiresIn: number): FilesError | undefined =>
-  expiresIn > SIGV4_MAX_EXPIRES_IN
-    ? new FilesError(
-        "Invalid",
-        `Bun S3 error: presigned URLs must expire within ${SIGV4_MAX_EXPIRES_IN} seconds (7 days), the SigV4 limit; got expiresIn ${expiresIn}.`
-      )
-    : undefined;
+  sigV4ExpiresInError(PROVIDER_LABEL, expiresIn);
 
 export interface BunS3OperationOptions {
   bucket?: string;
@@ -197,31 +202,59 @@ interface BunS3ErrorFields {
   statusCode?: number;
 }
 
-export const mapBunS3Error = makeErrorMapper({
+const extractBunS3Error = (cause: unknown): ErrorExtract => {
+  // SAFETY: every field is read optionally; a thrown value that is not a
+  // Bun S3 error (or not even an object) just yields no code/status/message.
+  const e = cause as BunS3ErrorFields | null | undefined;
+  const code = e?.code ?? e?.Code;
+  const status = e?.status ?? e?.statusCode ?? e?.$metadata?.httpStatusCode;
+  return {
+    ...(code && { code }),
+    ...(e?.message && { message: e.message }),
+    ...(status !== undefined && { status }),
+  };
+};
+
+const mapBunS3ErrorByCode = makeErrorMapper({
   codes: {
     conflict: new Set(["PreconditionFailed"]),
     notFound: new Set(["NoSuchKey", "NotFound"]),
+    // Bun's `S3Error` carries no HTTP status, so a credential failure is
+    // recognizable only by the XML `<Code>` it copies from the response (or
+    // Bun's own `ERR_S3_*` code). Without one of these a bad key or secret
+    // would be a Provider error that `retries` reissues.
     unauthorized: new Set([
       "AccessDenied",
       "ERR_S3_INVALID_SIGNATURE",
       "ERR_S3_INVALID_SESSION_TOKEN",
       "ERR_S3_MISSING_CREDENTIALS",
+      "ExpiredToken",
+      "InvalidAccessKeyId",
+      "InvalidToken",
+      "SignatureDoesNotMatch",
     ]),
   },
-  extract: (cause) => {
-    // SAFETY: every field is read optionally; a thrown value that is not a
-    // Bun S3 error (or not even an object) just yields no code/status/message.
-    const e = cause as BunS3ErrorFields | null | undefined;
-    const code = e?.code ?? e?.Code;
-    const status = e?.status ?? e?.statusCode ?? e?.$metadata?.httpStatusCode;
-    return {
-      ...(code && { code }),
-      ...(e?.message && { message: e.message }),
-      ...(status !== undefined && { status }),
-    };
-  },
-  providerLabel: "Bun S3 error",
+  extract: extractBunS3Error,
+  providerLabel: PROVIDER_LABEL,
 });
+
+/**
+ * Map a Bun `S3Error` (or any S3-shaped rejection) to a {@link FilesError} —
+ * e.g. for errors from calls made on `files.raw`.
+ */
+export const mapBunS3Error = (cause: unknown): FilesError => {
+  const mapped = mapBunS3ErrorByCode(cause);
+  if (cause instanceof FilesError || mapped.code !== "Provider") {
+    return mapped;
+  }
+  // `InvalidRange` (416): the range starts past the end of the object. A
+  // provider answer, so still `Provider`, but reissuing it can only fail the
+  // same way.
+  const { code, status } = extractBunS3Error(cause);
+  return isUnsatisfiableRange(code, status)
+    ? new FilesError("Provider", mapped.message, cause, { permanent: true })
+    : mapped;
+};
 
 // Bun's `S3Error` carries no HTTP status: Bun reads the failure's class from
 // the response body's XML `<Code>`, and a HEAD response has no body. So every
@@ -591,6 +624,13 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           ({ contentType } = session);
         },
         begin(meta): Promise<ResumableUploadSession> {
+          try {
+            assertHeaderSafeUploadOptions(PROVIDER_LABEL, {
+              contentType: meta.contentType,
+            });
+          } catch (error) {
+            return Promise.reject(error);
+          }
           uploadSeq += 1;
           uploadId = `bun-${uploadSeq}`;
           ({ contentType } = meta);
@@ -697,6 +737,10 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
     async upload(key, body, options) {
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — Bun.s3 exposes no API for either.
+      // The type travels as the Content-Type request header.
+      assertHeaderSafeUploadOptions(PROVIDER_LABEL, {
+        contentType: options?.contentType,
+      });
 
       let contentType = options?.contentType;
       if (!contentType) {
