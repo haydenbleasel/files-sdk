@@ -141,6 +141,59 @@ test(
   COLD_BUILD_TIMEOUT_MS
 );
 
+// The `mcp` subcommand lazy-loads a module the build splits into a
+// `dist/chunk-*.js`, one directory shallower than `dist/cli/index.js`. It once
+// read its version from a fixed `../../package.json`, which resolved from
+// `src/cli/` but not from the chunk, so the published server failed at startup
+// with a misleading "install @modelcontextprotocol/sdk" error.
+test(
+  "built CLI starts the MCP server and reports the package version",
+  () => {
+    ensureBuilt();
+    const root = mkdtempSync(path.join(tmpdir(), "files-sdk-mcp-"));
+    try {
+      const initialize = JSON.stringify({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "initialize",
+        params: {
+          capabilities: {},
+          clientInfo: { name: "build-output-test", version: "0" },
+          protocolVersion: "2025-06-18",
+        },
+      });
+      const proc = Bun.spawnSync(
+        [
+          process.execPath,
+          cliBundle,
+          "--provider",
+          "fs",
+          "--root",
+          root,
+          "mcp",
+        ],
+        {
+          stderr: "pipe",
+          stdin: Buffer.from(`${initialize}\n`),
+          stdout: "pipe",
+          timeout: 30_000,
+        }
+      );
+      const [firstLine = ""] = proc.stdout.toString().split("\n");
+      const reply = JSON.parse(firstLine) as {
+        result?: { serverInfo?: unknown };
+      };
+      expect(reply.result?.serverInfo).toEqual({
+        name: "files-sdk",
+        version: pkg.version,
+      });
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  },
+  COLD_BUILD_TIMEOUT_MS
+);
+
 test(
   "public loader exports loadFiles without eager optional peer imports",
   async () => {

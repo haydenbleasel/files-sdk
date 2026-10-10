@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-
 import { Command, InvalidArgumentError, Option } from "commander";
 
 import { EVENT_FORMATS } from "../events/index.js";
@@ -47,17 +45,9 @@ import type { GlobalCliOptions } from "./loader.js";
 // oxlint-disable-next-line sonarjs/no-wildcard-import -- type-only namespace import of the lazily-loaded MCP module; the runtime load stays a dynamic import()
 import type * as McpModule from "./mcp.js";
 import { PROVIDER_NAMES } from "./registry.js";
+import { readPackageVersion } from "./version.js";
 
-interface PackageManifest {
-  version: string;
-}
-
-// `require` returns the manifest untyped; this is the package's own
-// package.json, whose `version` npm requires to be a semver string.
-const pkg: PackageManifest = createRequire(import.meta.url)(
-  "../../package.json"
-);
-const VERSION = pkg.version;
+const VERSION = readPackageVersion();
 
 // Flag/description literals reused across many commands, hoisted to keep the
 // option definitions consistent (and satisfy no-duplicate-string).

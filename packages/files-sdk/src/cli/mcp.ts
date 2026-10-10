@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -13,6 +11,7 @@ import { inferTypeFromName } from "../internal/mime.js";
 import { fileInfoToJson, filesErrorReplacer } from "./io.js";
 import { loadFiles } from "./loader.js";
 import type { GlobalCliOptions } from "./loader.js";
+import { readPackageVersion } from "./version.js";
 
 // Shared schema for the bulk-fanout knobs on the array-form tools.
 const concurrencyArg = z
@@ -39,16 +38,6 @@ const bulkOpts = (
   }
   return Object.keys(opts).length > 0 ? opts : undefined;
 };
-
-interface PackageManifest {
-  version: string;
-}
-
-// `require` returns the manifest untyped; this is the package's own
-// package.json, whose `version` npm requires to be a semver string.
-const pkg: PackageManifest = createRequire(import.meta.url)(
-  "../../package.json"
-);
 
 // Default cap for MCP `download` — base64-encoded bodies must fit in a
 // single tool response, so refuse anything that would obviously OOM the
@@ -229,7 +218,7 @@ export const buildMcpServer = async (
 ): Promise<McpServer> => {
   const server = new McpServer({
     name: "files-sdk",
-    version: pkg.version,
+    version: readPackageVersion(),
   });
 
   const [source, destination] = await Promise.all([
