@@ -343,6 +343,33 @@ Key options on `createFileTools` (mirrored across the three):
 
 See [references/ai-tools.md](references/ai-tools.md).
 
+## Effect
+
+`files-sdk/effect` bridges a `Files` instance into Effect v4 (optional peer `effect@^4`). `Files` is a `Context.Service`; `Files.layer(instanceOrOptions)` provides it (options the constructor rejects fail the layer with an `Invalid` reason). The service mirrors the `Files` methods and options: operations return `Effect<A, FilesError>`, `listAll`/`search` return `Stream<FileInfo, FilesError>`, and `download` resolves to a `DownloadedFile` whose `text`/`arrayBuffer`/`blob` are Effects and `stream` is a `Stream<Uint8Array>`.
+
+```ts
+import { Effect } from "effect";
+import { Files } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+
+const program = Effect.gen(function* () {
+  const files = yield* Files;
+  const file = yield* files.download("settings.json");
+  return yield* file.text;
+}).pipe(
+  Effect.catchReason("FilesError", "NotFound", () => Effect.succeed("{}"))
+);
+
+await Effect.runPromise(
+  program.pipe(Effect.provide(Files.layer({ adapter: s3({ bucket: "app" }) })))
+);
+```
+
+- **Errors**: one `FilesError` (tag `"FilesError"`) whose `reason` is a tagged error per SDK code (`NotFound`, `Unauthorized`, `Conflict`, `ReadOnly`, `Invalid`, `Unsupported`, `Provider`) carrying `message`, `permanent`, `timedOut`, `aborted`, `applied`, `appliedEtag`, and `cause` (the SDK's `FilesError`). Use `Effect.catchReason`/`catchReasons`, or `Effect.unwrapReason("FilesError")` then `catchTag`. Effect-side retries: `Effect.retry({ while: (e) => e.reason._tag === "Provider" && !e.reason.permanent })`, with the instance's `retries` unset.
+- **Cancellation**: the fiber's `AbortSignal` is passed as `signal`, so `Effect.timeout`/interruption aborts the provider call. The bulk (array) forms take no per-call signal and run to completion.
+- **Storage events** (needs the `events()` plugin, else `Unsupported`): `files.events.on(type, glob?, handler)` runs an Effect handler for the life of the `Scope`, and deliveries wait for it (at-least-once). `files.events.stream()` is a `Stream`, but it acknowledges on buffering, so buffered events are lost if the process stops; use `on` for durable work. `parse`/`dispatch` for queue consumers.
+- **Plugin methods** (`versions()`, `usage()`, …) aren't on the service: `files.tryPromise((client, signal) => client.versions(key))`. For typed plugin methods or several buckets, declare your own `Context.Service<Self, FilesService<typeof client>>` and provide `make(client)`.
+
 ## Decision guide
 
 - **"How do I add file uploads to my app?"** → Pick the adapter that matches their hosting/provider, show `new Files({ adapter: x({...}) })` + `upload`/`url`.
@@ -362,6 +389,7 @@ See [references/ai-tools.md](references/ai-tools.md).
 - **Audit log / metrics / activity feed** → `hooks` (`onAction`/`onError`/`onRetry`).
 - **Shell scripts / CI / a quick poke at a bucket** → the `files` CLI. **Give an MCP client (Claude Code, etc.) bucket access** → `files … mcp` (read-only; add `--allow-writes` deliberately).
 - **Give an in-app LLM bucket access** → the matching AI-tools subpath. Default to leaving `requireApproval` on for writes; suggest `readOnly: true` if it only needs to read.
+- **Effect (v4) codebase** → `files-sdk/effect`: provide `Files.layer(...)`, `yield* Files`, recover with `Effect.catchReason("FilesError", "NotFound", …)`.
 - **Test code that uses `Files`** → swap in `files-sdk/memory`.
 - **Feature not in the unified API** → `files.raw` + the provider's native client.
 

@@ -35,6 +35,7 @@ The repo is a Bun + Turbo monorepo:
   - Plugins, one folder each: `src/validation/`, `src/encryption/`, `src/compression/`, `src/content-type/`, `src/dedup/`, `src/versioning/`, `src/soft-delete/`, `src/cache/`, `src/tiering/`, `src/failover/`, `src/usage/`, `src/audit/`, `src/tracing/`, `src/signed-url-policy/`, `src/zip/`, `src/events/`
   - App layer: `src/api/` (the gateway core), `src/client/`, `src/react/`, `src/vue/`, `src/svelte/` (`useFiles`), and one thin binding per framework (`next`, `hono`, `express`, `fastify`, `koa`, `nestjs`, `nitro`, `astro`, `sveltekit`, `tanstack-start`)
   - AI tools: `src/ai-sdk/`, `src/openai/`, `src/claude/`
+  - Effect bridge: `src/effect/` (the `Files` service, Layer, and typed errors for Effect v4)
   - `src/cli/` — the `files` CLI and MCP server; `registry.ts` lazy-loads one adapter per provider
   - `src/providers/` — the pure-data provider catalog (names, descriptions, env vars). It imports no SDKs and is the single source of truth for the provider list: a drift test checks the CLI registry and every adapter's `readEnv` calls against it, and the docs site derives its adapter count from it
   - `src/internal/` — shared helpers used by every adapter and plugin

@@ -35,6 +35,7 @@ const NON_PROVIDER_EXPORTS = new Set([
   "./compression",
   "./content-type",
   "./dedup",
+  "./effect",
   "./encryption",
   "./events",
   "./express",

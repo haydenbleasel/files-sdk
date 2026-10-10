@@ -97,6 +97,10 @@ A growing catalog covering S3 and S3-compatible stores, the major cloud blob pla
 
 A growing set of subpaths wrap a configured `Files` instance as ready-made tools for popular AI SDKs — currently the [Vercel AI SDK](https://ai-sdk.dev) (`files-sdk/ai-sdk`), OpenAI's [Responses API](https://platform.openai.com/docs/api-reference/responses) and [Agents SDK](https://openai.github.io/openai-agents-js/) (`files-sdk/openai`), and Anthropic's [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) (`files-sdk/claude`). All share the same file operations and approval-gating defaults, so models can browse, read, and (optionally) mutate your bucket through the same unified surface as your application code. See [files-sdk.dev](https://files-sdk.dev) for the current list and per-SDK setup.
 
+## Effect
+
+`files-sdk/effect` bridges a `Files` instance into [Effect](https://effect.website) v4: a `Files` service provided by a `Layer`, operations that return `Effect`s and `Stream`s, failures typed as a `FilesError` whose `reason` is the SDK's error code, and fiber interruption that cancels the provider request. See [files-sdk.dev](https://files-sdk.dev/docs/integrations/effect) for setup.
+
 ## Live tests
 
 Most tests mock the provider. A few `*.live.test.ts` suites exercise a real backend instead. They are **skipped by default** and only run with `LIVE_TESTS=1`; suites that need credentials also skip when those env vars are absent, so the default `bun test` stays fast, offline, and credential-free.

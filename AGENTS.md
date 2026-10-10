@@ -72,6 +72,7 @@ Notes:
 - `api/`, `client/`, `react/`, `vue/`, `svelte/`, `next/`, `hono/`, `express/`, `fastify/`, `koa/`, `nestjs/`, `nitro/`, `astro/`, `sveltekit/`, `tanstack-start/` — the gateway + `useFiles` app layer. Deny-by-default `authorize`, feature-detected plugin verbs.
 - `cli/` — `commander` program, MCP server, and `registry.ts` (lazy `import()` per provider). `providers/index.ts` is the **pure-data provider catalog**: no SDK imports, drives the docs catalog and CLI list, and a drift test keeps it in sync with `package.json` exports and each adapter's `readEnv` calls.
 - `ai-sdk/`, `openai/`, `claude/` — tool definitions for agent frameworks.
+- `effect/` — the Effect v4 bridge: a `Files` `Context.Service` + `Layer` that wraps an instance (never reimplements it), `FilesError` with one tagged reason per code, and the fiber's `AbortSignal` passed as each call's `signal`.
 - `memory/` — full in-memory `Adapter`. Prefer it (or `test/fake-adapter.ts`) when testing `Files` itself.
 
 ## Conventions the linter enforces (ultracite anti-slop preset on oxlint)

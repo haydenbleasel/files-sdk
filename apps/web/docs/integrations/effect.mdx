@@ -1,0 +1,256 @@
+---
+title: Effect
+description: Use Files SDK from Effect v4 - a Files service and Layer, typed FilesError reasons, fiber interruption that cancels the provider call, and Streams for listings, downloads, and storage events.
+---
+
+The `files-sdk/effect` subpath bridges a `Files` instance into [Effect](https://effect.website) v4. You get a `Files` service you provide with a `Layer`, operations that return `Effect`s, failures typed as a `FilesError` whose `reason` is the SDK's [error code](/docs/api/errors), and cancellation that reaches the provider: interrupting a fiber aborts the request it's waiting on.
+
+It wraps an instance rather than reimplementing anything, so every adapter and plugin works through it, and retries, timeouts, and hooks behave exactly as they do without it.
+
+## Installation
+
+`effect` is an optional peer dependency. Install it only if you use the `files-sdk/effect` subpath.
+
+```package-install
+effect
+```
+
+The subpath supports Effect 4. Install your adapter's packages as well (see its page).
+
+## Quick start
+
+`Files.layer()` takes the options you'd pass to `new Files()`, or an instance you already have. `yield* Files` in a program gets the service, whose methods mirror `Files` and return `Effect`s.
+
+```ts lineNumbers
+import { Effect } from "effect";
+import { Files } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+
+const program = Effect.gen(function* () {
+  const files = yield* Files;
+  yield* files.upload("hello.txt", "Hello, Effect", {
+    contentType: "text/plain",
+  });
+  const file = yield* files.download("hello.txt");
+  return yield* file.text;
+});
+
+await Effect.runPromise(
+  program.pipe(
+    Effect.provide(Files.layer({ adapter: s3({ bucket: "uploads" }) }))
+  )
+);
+```
+
+Options the `Files` constructor rejects (an invalid `prefix`, for example) fail the layer with an `Invalid` reason instead of throwing.
+
+To share one instance with code outside Effect, such as a [gateway](/docs/ui/server/gateway), construct it yourself and pass it in. `files-sdk/effect` also exports a `Files`, so rename one of the imports:
+
+```ts lineNumbers
+import { Files as FilesClient } from "files-sdk";
+import { Files } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+
+export const client = new FilesClient({ adapter: s3({ bucket: "uploads" }) });
+export const FilesLive = Files.layer(client);
+```
+
+## Operations
+
+The service has the same methods as `Files`, with the same options and results:
+
+| Method | Returns |
+| --- | --- |
+| `upload`, `head`, `exists`, `delete`, `copy`, `move`, `list`, `url`, `signedUploadUrl`, `abortUpload` | `Effect<Result, FilesError>` |
+| `download` | `Effect<DownloadedFile, FilesError>` (see [below](#downloads-listings-and-search)) |
+| `listAll`, `search` | `Stream<FileInfo, FilesError>` |
+| `tryPromise` | Runs any other call on the instance (see [Plugin methods](#plugin-methods-and-the-instance)) |
+
+`capabilities` is `files.capabilities`, and `client` is the wrapped instance, for anything the service doesn't cover (`raw`, `prefix`, `file()`). The array (bulk) forms of `upload`, `download`, `head`, `exists`, and `delete` work too and resolve to the SDK's bulk results.
+
+## Errors
+
+Every operation fails with one error type, `FilesError`, tagged `"FilesError"`. Its `reason` is a tagged error per SDK code (`NotFound`, `Unauthorized`, `Conflict`, `ReadOnly`, `Invalid`, `Unsupported`, `Provider`), the same shape Effect's own platform and AI errors use. Recover from one code with `Effect.catchReason`:
+
+```ts lineNumbers
+const settings = Effect.gen(function* () {
+  const files = yield* Files;
+  const file = yield* files.download("settings.json");
+  return yield* file.text;
+}).pipe(
+  Effect.catchReason("FilesError", "NotFound", () => Effect.succeed("{}"))
+);
+```
+
+`Effect.catchReasons` handles several codes at once, and `Effect.unwrapReason("FilesError")` moves the reasons into the error channel so `Effect.catchTag("NotFound", …)` works on them directly.
+
+Each reason carries the SDK error's fields: `message`, `permanent`, `timedOut`, `aborted`, `applied`, `appliedEtag`, and `cause`, which is the SDK's own `FilesError` (with the provider's error as its `cause`). A test double only needs a message: `new NotFound({ message: "missing" })`. The flags default the way the SDK sets them, so `permanent` is `true` for `ReadOnly`, `Invalid`, and `Unsupported`.
+
+`FilesError` and its reasons are `Schema` classes, so they encode and decode across an RPC or `HttpApi` boundary. The code and flags survive the trip; `cause` arrives as just its name and message.
+
+### Retries
+
+The instance's own [`retries`](/docs/retries) still apply. If you'd rather retry with an Effect `Schedule`, leave `retries` unset and retry only what the SDK would: a `Provider` failure that isn't `permanent`. Both together multiply the attempts.
+
+```ts lineNumbers
+import { Effect, Schedule } from "effect";
+
+const info = Effect.gen(function* () {
+  const files = yield* Files;
+  return yield* files.head("report.pdf");
+}).pipe(
+  Effect.retry({
+    schedule: Schedule.exponential("100 millis"),
+    times: 3,
+    while: (error) =>
+      error.reason._tag === "Provider" && !error.reason.permanent,
+  })
+);
+```
+
+## Cancellation
+
+Each operation passes its fiber's `AbortSignal` to the call as `signal`, so interrupting the fiber aborts the provider request, the same as an [abort signal](/docs/cancellations) does without Effect. `Effect.timeout`, a lost `Effect.race`, and a closed scope all interrupt:
+
+```ts lineNumbers
+const download = Effect.gen(function* () {
+  const files = yield* Files;
+  return yield* files.download("big.bin");
+}).pipe(Effect.timeout("5 seconds"));
+```
+
+A `signal` you pass in the options still works alongside the fiber's: either one aborts the call.
+
+:::note
+The array (bulk) forms take no per-call `signal` in the SDK, so they run to completion even when their fiber is interrupted. To fan out with cancellation, use `Effect.forEach` over the single-key form instead.
+:::
+
+## Downloads, listings, and search
+
+`download` resolves to a `DownloadedFile`: the object's metadata (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`) plus its body as Effect values. `text`, `arrayBuffer`, and `blob` buffer the body and can be run more than once. `stream` reads it unbuffered as a `Stream<Uint8Array>`, and interrupting the stream cancels the read. As with the SDK's [`StoredFile`](/docs/api/stored-file), use one or the other: a body read as a stream can't be read again. `file` is the SDK's `StoredFile`, for APIs that take a `File`-like value.
+
+`listAll` and `search` are Streams that fetch one page at a time. Stopping the stream early (`Stream.take`, an interruption) aborts any page in flight and fetches no more.
+
+```ts lineNumbers
+const report = Effect.gen(function* () {
+  const files = yield* Files;
+  const totalBytes = yield* files.listAll({ prefix: "uploads/" }).pipe(
+    Stream.runFold(
+      () => 0,
+      (sum, file) => sum + file.size
+    )
+  );
+  const recentPdfs = yield* files
+    .search("reports/**/*.pdf")
+    .pipe(Stream.take(10), Stream.runCollect);
+  return { recentPdfs, totalBytes };
+});
+```
+
+## Storage events
+
+With the [`events()` plugin](/docs/plugins/events) installed, `files.events` reacts to [storage events](/docs/events). Without it, every member fails with `Unsupported`.
+
+`events.on(type, pattern?, handler)` runs an Effect for each matching event, for the lifetime of the current `Scope`. A delivery waits for its handler, so a failing handler fails the delivery and the provider redelivers it, and closing the scope interrupts any handler still running, which fails its delivery too. Use it for work every event must get:
+
+```ts lineNumbers
+import { Effect, Layer } from "effect";
+import { createFiles } from "files-sdk";
+import { events } from "files-sdk/events";
+import { Files } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+
+const client = createFiles({
+  adapter: s3({ bucket: "uploads" }),
+  plugins: [events()],
+});
+
+const Thumbnails = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const files = yield* Files;
+    yield* files.events.on("created", "photos/**", (event) =>
+      makeThumbnail(event.key)
+    );
+  })
+).pipe(Layer.provide(Files.layer(client)));
+```
+
+`events.stream(type?, pattern?, options?)` serves the same events as a `Stream`:
+
+```ts lineNumbers
+const watch = Effect.gen(function* () {
+  const files = yield* Files;
+  yield* files.events
+    .stream("*", "uploads/**")
+    .pipe(
+      Stream.runForEach((event) => Effect.log(`${event.type} ${event.key}`))
+    );
+});
+```
+
+:::warning
+A stream acknowledges each delivery once the event is buffered, before your consumer processes it. If the process stops with events still in the buffer, those events are lost. Use `events.on` when every event must be handled. When the buffer (`bufferSize`, default 16) is full, deliveries wait for room, and any still waiting when the stream ends fail so the provider redelivers them.
+:::
+
+For a queue consumer, `events.parse(body)` normalizes a delivery into events without running handlers, so you can process them in Effect directly. `events.dispatch(body)` parses and then runs the registered handlers, failing if any handler does.
+
+Handlers only see what reaches the instance: provider deliveries through a [webhook](/docs/events/webhooks) or `dispatch()`, gateway uploads, the memory adapter's own changes, and (with `sdk: true`) the instance's writes. Mount the webhook with any gateway binding, from the instance you passed to the layer (`client.events.webhook({ verify })`).
+
+## Plugin methods and the instance
+
+Methods that plugins add (`versions()`, `usage()`, `trashed()`, …) aren't on the service. `tryPromise` runs any call on the instance with the same error mapping and cancellation as the built-in operations. Pass `signal` to calls that take one:
+
+```ts lineNumbers
+const size = Effect.gen(function* () {
+  const files = yield* Files;
+  return yield* files.tryPromise(async (client, signal) => {
+    const info = await client.head("report.pdf", { signal });
+    return info.size;
+  });
+});
+```
+
+`Files` types its instance as a plain `Files`, so plugin methods aren't on `client`'s type. To keep them, give the service your own key with `make()`, typed by your [`createFiles()`](/docs/plugins/api#createfiles) instance:
+
+```ts lineNumbers
+import { Context, Effect, Layer } from "effect";
+import { createFiles } from "files-sdk";
+import type { FilesService } from "files-sdk/effect";
+import { make } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+import { versioning } from "files-sdk/versioning";
+
+const client = createFiles({
+  adapter: s3({ bucket: "documents" }),
+  plugins: [versioning()],
+});
+
+class Documents extends Context.Service<
+  Documents,
+  FilesService<typeof client>
+>()("app/Documents") {
+  static readonly layer = Layer.succeed(Documents, make(client));
+}
+
+const history = Effect.gen(function* () {
+  const documents = yield* Documents;
+  return yield* documents.tryPromise((client) => client.versions("report.pdf"));
+});
+```
+
+The same pattern gives each bucket its own service, so one program can use several:
+
+```ts lineNumbers
+import { Context, Layer } from "effect";
+import { Files as FilesClient } from "files-sdk";
+import type { FilesService } from "files-sdk/effect";
+import { make } from "files-sdk/effect";
+import { s3 } from "files-sdk/s3";
+
+class Avatars extends Context.Service<Avatars, FilesService>()("app/Avatars") {
+  static readonly layer = Layer.succeed(
+    Avatars,
+    make(new FilesClient({ adapter: s3({ bucket: "avatars" }) }))
+  );
+}
+```
