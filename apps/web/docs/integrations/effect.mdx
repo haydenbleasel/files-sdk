@@ -90,7 +90,7 @@ Each reason carries the SDK error's fields: `message`, `permanent`, `timedOut`, 
 
 ### Retries
 
-The instance's own [`retries`](/docs/retries) still apply. If you'd rather retry with an Effect `Schedule`, leave `retries` unset and retry only what the SDK would: a `Provider` failure that isn't `permanent` or `aborted` (including timeouts). Both together multiply the attempts.
+The instance's own [`retries`](/docs/retries) still apply. If you'd rather retry with an Effect `Schedule`, leave `retries` unset and retry only transient `Provider` failures. Both `permanent` failures and `aborted` failures (including timeouts) are excluded, matching the SDK's retry policy. Enabling both retry mechanisms multiplies the attempts.
 
 ```ts lineNumbers
 import { Effect, Schedule } from "effect";
