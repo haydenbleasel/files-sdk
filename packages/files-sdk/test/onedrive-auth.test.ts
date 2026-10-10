@@ -206,6 +206,48 @@ describe("onedrive auth construction", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("oauth refresh-token shares one in-flight exchange across a cold burst, and retries after a failure", async () => {
+    let call = 0;
+    const gate = Promise.withResolvers<null>();
+    const fetchMock = mock(async () => {
+      call += 1;
+      await gate.promise;
+      return call === 1
+        ? new Response("try later", { status: 503 })
+        : Response.json(
+            { access_token: "burst-tok", expires_in: 3600 },
+            { status: 200 }
+          );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    onedrive({
+      oauth: { clientId: "c", clientSecret: "s", refreshToken: "r" },
+    });
+    const provider = capturedAuthProvider as AuthenticationProvider;
+
+    const failed = Array.from({ length: 5 }, async () => {
+      try {
+        await provider.getAccessToken();
+        return "ok";
+      } catch {
+        return "failed";
+      }
+    });
+    gate.resolve(null);
+    expect(await Promise.all(failed)).toEqual(
+      Array.from({ length: 5 }, () => "failed")
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The failed exchange isn't replayed: the next burst exchanges afresh,
+    // still once.
+    const tokens = await Promise.all(
+      Array.from({ length: 5 }, () => provider.getAccessToken())
+    );
+    expect(tokens).toEqual(Array.from({ length: 5 }, () => "burst-tok"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test("oauth refresh-token re-fetches once the cached token is near expiry", async () => {
     let call = 0;
     const fetchMock = mock(() => {

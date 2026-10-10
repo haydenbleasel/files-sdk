@@ -30,6 +30,7 @@ interface FakeFile {
   modifiedTime?: string;
   appProperties?: Record<string, string>;
   parents?: string[];
+  trashed?: boolean;
 }
 
 const STABLE_MODIFIED = "2024-01-02T03:04:05.000Z";
@@ -151,6 +152,9 @@ const filesListMock = mock((params: unknown) => {
   if (parentsMatch) {
     const [, wantParent = ""] = parentsMatch;
     matches = matches.filter((f) => (f.parents ?? []).includes(wantParent));
+  }
+  if (q.includes("trashed=false")) {
+    matches = matches.filter((f) => !f.trashed);
   }
   return Promise.resolve({ data: { files: matches } });
 });
@@ -655,6 +659,128 @@ describe("google-drive adapter", () => {
     expect((err as FilesError).code).toBe("NotFound");
   });
 
+  test("a cached fileId another instance replaced is evicted and re-resolved", async () => {
+    // Two processes over one Drive: A caches k.txt's id, then B deletes and
+    // re-uploads the key, which lands under a new id.
+    const a = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    const b = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    await a.upload("k.txt", "v1");
+    await expect(a.exists("k.txt")).resolves.toBe(true);
+    await b.delete("k.txt");
+    await b.upload("k.txt", "v2-longer");
+    const liveId = [...store.values()].find(
+      (f) => f.appProperties?.fsdkKey === "k.txt"
+    )?.id;
+
+    await expect(a.head("k.txt")).resolves.toMatchObject({
+      size: "v2-longer".length,
+    });
+    await expect(a.exists("k.txt")).resolves.toBe(true);
+    await expect(a.download("k.txt").then((f) => f.text())).resolves.toBe(
+      `body-${liveId}`
+    );
+
+    // And a delete through the stale cache removes the live file instead of
+    // resolving on the dead id's 404 while the key lives on.
+    const stale = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    await stale.upload("d.txt", "v1");
+    await b.delete("d.txt");
+    await b.upload("d.txt", "v2");
+    await stale.delete("d.txt");
+    await expect(b.exists("d.txt")).resolves.toBe(false);
+  });
+
+  test("a stale cached id re-resolves for copy and url too", async () => {
+    const opts = { ...baseOpts, publicByDefault: true };
+    const a = new Files({ adapter: googleDrive(opts), retries: 0 });
+    const b = new Files({ adapter: googleDrive(opts), retries: 0 });
+    await a.upload("src.txt", "v1");
+    await b.delete("src.txt");
+    await b.upload("src.txt", "v2");
+    const liveId = [...store.values()].find(
+      (f) => f.appProperties?.fsdkKey === "src.txt"
+    )?.id;
+
+    await expect(a.url("src.txt")).resolves.toBe(
+      `https://drive.google.com/uc?export=download&id=${liveId}`
+    );
+    await a.upload("src2.txt", "v1");
+    await b.delete("src2.txt");
+    await b.upload("src2.txt", "v2");
+    await a.copy("src2.txt", "dst.txt");
+    const copied = [...store.values()].find(
+      (f) => f.appProperties?.fsdkKey === "dst.txt"
+    );
+    expect(copied).toBeDefined();
+    // The copy came from the live source, not a 404 on the dead id.
+    expect(filesCopyMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      fileId: [...store.values()].find(
+        (f) => f.appProperties?.fsdkKey === "src2.txt"
+      )?.id,
+    });
+  });
+
+  test("a trashed file reads as gone, through the cache and a fresh lookup alike", async () => {
+    const files = new Files({
+      adapter: googleDrive({ ...baseOpts, publicByDefault: true }),
+      retries: 0,
+    });
+    await files.upload("t.txt", "v1");
+    const trashed = [...store.values()].find(
+      (f) => f.appProperties?.fsdkKey === "t.txt"
+    ) as FakeFile;
+    // Each probe below runs against a cached id for a file the user then
+    // trashes in the Drive UI (files.get still answers for it).
+    const cacheThenTrash = async (): Promise<void> => {
+      trashed.trashed = false;
+      await files.head("t.txt");
+      trashed.trashed = true;
+    };
+
+    await cacheThenTrash();
+    await expect(files.exists("t.txt")).resolves.toBe(false);
+    await cacheThenTrash();
+    await expect(files.head("t.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await cacheThenTrash();
+    await expect(files.download("t.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await cacheThenTrash();
+    await expect(
+      files.download("t.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "NotFound" });
+    await cacheThenTrash();
+    await expect(files.url("t.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await cacheThenTrash();
+    await expect(files.copy("t.txt", "t2.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(filesCopyMock).not.toHaveBeenCalled();
+    // Deleting the key is a no-op that leaves the trashed file in the trash
+    // rather than purging it.
+    await cacheThenTrash();
+    await files.delete("t.txt");
+    expect(store.has(trashed.id)).toBe(true);
+    // A cold instance's lookup skips trashed files as well.
+    const fresh = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    await expect(fresh.exists("t.txt")).resolves.toBe(false);
+
+    // Re-uploading the key elsewhere writes a new live file; the instance
+    // holding the trashed id resolves to it, and deleting removes it (not the
+    // trashed copy).
+    await cacheThenTrash();
+    await fresh.upload("t.txt", "v2");
+    await expect(files.head("t.txt")).resolves.toMatchObject({ size: 2 });
+    await cacheThenTrash();
+    await files.delete("t.txt");
+    await expect(fresh.exists("t.txt")).resolves.toBe(false);
+    expect(store.has(trashed.id)).toBe(true);
+  });
+
   test("resolve fileId is scoped to rootFolderId", async () => {
     store.set("outside-1", {
       appProperties: { fsdkKey: "secret.txt" },
@@ -1109,13 +1235,19 @@ describe("google-drive adapter", () => {
       // straight to files.get without hitting files.list (which would
       // re-throw a different error path).
       await files.upload("a.txt", "hi");
-      filesGetMock.mockImplementationOnce(() => {
+      const fail = () => {
         const err = new Error(`status ${String(status)}`);
         if (status !== undefined) {
           Object.assign(err, { code: status });
         }
         throw err;
-      });
+      };
+      filesGetMock.mockImplementationOnce(fail);
+      // A 404 on a cached id re-resolves the key once and retries, so the
+      // retry has to 404 as well for the error to surface.
+      if (status === 404) {
+        filesGetMock.mockImplementationOnce(fail);
+      }
       const err = await files.head("a.txt").catch((error: unknown) => error);
       expect(err).toBeInstanceOf(FilesError);
       expect((err as FilesError).code).toBe(expectedCode);

@@ -40,16 +40,55 @@ import { isObject, isString } from "../internal/is.js";
 import { inferTypeFromName } from "../internal/mime.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
+/**
+ * The OAuth token pair Box's SDK keeps in a {@link BoxTokenStorage}. Persist
+ * it whole (it may carry more fields than these) and hand the same object
+ * back from `get()`.
+ */
+export interface BoxOAuthToken {
+  readonly accessToken?: string;
+  readonly refreshToken?: string;
+  /** Access-token lifetime in seconds, as Box reported it. */
+  readonly expiresIn?: number;
+  readonly tokenType?: string;
+}
+
+/**
+ * Where the OAuth tokens live between refreshes — the Box SDK's own
+ * `TokenStorage` contract. Box refresh tokens are single-use: every refresh
+ * returns a new one and invalidates the old. Back this with a database or KV
+ * store so the rotated token survives a restart and is shared by every
+ * instance using the same Box authorization.
+ */
+export interface BoxTokenStorage {
+  get: () => Promise<BoxOAuthToken | undefined>;
+  store: (token: BoxOAuthToken) => Promise<void>;
+  clear: () => Promise<void>;
+}
+
 export interface BoxOAuthOptions {
   readonly clientId: string;
   readonly clientSecret: string;
   /**
-   * A long-lived refresh token previously obtained via Box's authorization
-   * code flow. The adapter seeds the auth's token storage with this value;
-   * the SDK then exchanges it for a fresh access token on the first API call
-   * and re-refreshes when the access token expires.
+   * A refresh token previously obtained via Box's authorization code flow.
+   * The adapter seeds the token storage with this value; the SDK then
+   * exchanges it for an access token on the first API call and re-refreshes
+   * when the access token expires.
+   *
+   * Box refresh tokens are **single-use**: each refresh rotates it, and the
+   * one you passed stops working. Without `tokenStorage` the rotated token
+   * lives only in this instance's memory, so after a restart (or in a second
+   * instance) this value is spent and every call fails `Unauthorized`. When
+   * `tokenStorage` already holds a token, that one is used and this value is
+   * only the first-run seed.
    */
   readonly refreshToken: string;
+  /**
+   * Persistent storage for the OAuth tokens, so the rotated refresh token
+   * outlives the process. Defaults to in-memory storage. For server
+   * workloads, prefer `ccg` or `jwt`, which need no stored user token.
+   */
+  readonly tokenStorage?: BoxTokenStorage;
 }
 
 export interface BoxCcgOptions {
@@ -416,6 +455,51 @@ const buildJwtConfig = (jwt: BoxJwtOptions): JwtConfig => {
   return JwtConfig.fromConfigFile(jwt.configFilePath);
 };
 
+// The SDK's `TokenStorage` (not exported from the package root), as the
+// `OAuthConfig` constructor takes it.
+type SdkTokenStorage = NonNullable<
+  ConstructorParameters<typeof OAuthConfig>[0]["tokenStorage"]
+>;
+
+// Adapt a caller's storage to the SDK's contract, which resolves `undefined`
+// from `store`/`clear` rather than `void`.
+const sdkTokenStorage = (storage: BoxTokenStorage): SdkTokenStorage => ({
+  async clear() {
+    await storage.clear();
+  },
+  get: () => storage.get(),
+  async store(token) {
+    await storage.store(token);
+  },
+});
+
+type OAuthRefresh = ReturnType<BoxOAuth["refreshToken"]>;
+
+// Box refresh tokens are single-use, and the SDK refreshes from inside each
+// request that gets a 401 — so a cold burst of calls, or every call in
+// flight when the access token expires, would each spend the same refresh
+// token, and all but the first would fail with `invalid_grant`. Share one
+// exchange; it's cleared once settled, so a failure is retried by the next
+// call rather than replayed.
+class SingleFlightBoxOAuth extends BoxOAuth {
+  #inflight: OAuthRefresh | undefined;
+
+  override refreshToken(
+    networkSession?: Parameters<BoxOAuth["refreshToken"]>[0]
+  ): OAuthRefresh {
+    if (!this.#inflight) {
+      this.#inflight = (async () => {
+        try {
+          return await super.refreshToken(networkSession);
+        } finally {
+          this.#inflight = undefined;
+        }
+      })();
+    }
+    return this.#inflight;
+  }
+}
+
 const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
   if (opts.client) {
     return { authHandle: noopAuthHandle, client: opts.client };
@@ -435,21 +519,39 @@ const resolveAuth = (opts: BoxAdapterOptions): ResolvedAuth => {
   }
 
   if (opts.oauth) {
-    const { clientId, clientSecret, refreshToken } = opts.oauth;
-    const config = new OAuthConfig({ clientId, clientSecret });
-    const auth = new BoxOAuth({ config });
-    // Seed the SDK's in-memory token storage with the refresh token.
-    // The first API call sees an empty access token, gets a 401, and the
-    // SDK's interceptor refreshes using this refresh token. The seed call
-    // is deferred to first use and cached so we don't store on every call.
+    const { clientId, clientSecret, refreshToken, tokenStorage } = opts.oauth;
+    const config = new OAuthConfig({
+      clientId,
+      clientSecret,
+      ...(tokenStorage && { tokenStorage: sdkTokenStorage(tokenStorage) }),
+    });
+    const auth = new SingleFlightBoxOAuth({ config });
+    // Seed the token storage with the refresh token. The first API call sees
+    // an empty access token, gets a 401, and the SDK's interceptor refreshes
+    // using this refresh token. A storage that already holds a refresh token
+    // keeps it: refresh tokens are single-use, so a stored one is newer than
+    // the configured seed, which an earlier refresh may have spent. The seed
+    // is deferred to first use and shared so we don't store on every call,
+    // but a failed seed (a storage outage) is retried by the next call.
     let seeded: Promise<void> | undefined;
     const seed = async (): Promise<void> => {
+      const stored = await auth.tokenStorage.get();
+      if (stored?.refreshToken) {
+        return;
+      }
       await auth.tokenStorage.store({ accessToken: "", refreshToken });
     };
     const handle: AuthHandle = {
       ensureReady: () => {
         if (!seeded) {
-          seeded = seed();
+          seeded = (async () => {
+            try {
+              await seed();
+            } catch (error) {
+              seeded = undefined;
+              throw mapBoxError(error);
+            }
+          })();
         }
         return seeded;
       },

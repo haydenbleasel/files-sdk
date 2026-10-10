@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { BoxClient } from "box-typescript-sdk-gen";
 import { BoxApiError } from "box-typescript-sdk-gen/box/errors";
 import { DataSanitizer } from "box-typescript-sdk-gen/internal/logging.generated";
+import { NetworkSession } from "box-typescript-sdk-gen/networking/network.generated";
 
 import { box, mapBoxError } from "../src/box/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
@@ -607,6 +608,76 @@ const stubFetchToServeStore = () => {
       new Response(file.bytes.toString("utf-8"), { status: 200 })
     );
   }) as typeof fetch;
+};
+
+// OAuth refresh-token rotation helpers.
+interface OAuthTestToken {
+  accessToken?: string;
+  refreshToken?: string;
+}
+interface OAuthAdapter {
+  _authHandle: { ensureReady: () => Promise<void> };
+  raw: {
+    auth: {
+      refreshToken: (session: unknown) => Promise<OAuthTestToken>;
+      tokenStorage: { clear: () => Promise<undefined> };
+    };
+  };
+}
+const memoryStorage = () => {
+  const state: { current?: OAuthTestToken; stores: number } = { stores: 0 };
+  return {
+    state,
+    storage: {
+      clear: () => {
+        state.current = undefined;
+        return Promise.resolve();
+      },
+      get: () => Promise.resolve(state.current),
+      store: (token: OAuthTestToken) => {
+        state.current = token;
+        state.stores += 1;
+        return Promise.resolve();
+      },
+    },
+  };
+};
+const oauthAdapter = (
+  storage: ReturnType<typeof memoryStorage>["storage"],
+  refreshToken = "rt-1"
+) =>
+  box({
+    oauth: {
+      clientId: "ci",
+      clientSecret: "cs",
+      refreshToken,
+      tokenStorage: storage,
+    },
+  }) as unknown as OAuthAdapter;
+// Box answers each refresh with a new, rotated refresh token.
+const tokenEndpoint = () => {
+  let issued = 1;
+  const fetchMock = mock(async (_opts: { data?: Record<string, unknown> }) => {
+    await delay(1);
+    issued += 1;
+    return {
+      content: Readable.from([]),
+      data: {
+        access_token: `at-${issued}`,
+        expires_in: 3600,
+        refresh_token: `rt-${issued}`,
+        token_type: "bearer",
+      },
+      headers: {},
+      status: 200,
+    };
+  });
+  return {
+    fetchMock,
+    session: new NetworkSession({
+      networkClient: { fetch: fetchMock } as never,
+    }),
+  };
 };
 
 describe("box adapter", () => {
@@ -1572,6 +1643,89 @@ describe("box adapter", () => {
     await adapter._authHandle.ensureReady();
     const stored2 = await adapter.raw.auth.tokenStorage.get();
     expect(stored2).toBe(stored1);
+  });
+
+  describe("OAuth refresh-token rotation", () => {
+    test("tokenStorage receives the rotated token, and a stored token outranks the seed", async () => {
+      const { state, storage } = memoryStorage();
+      const adapter = oauthAdapter(storage);
+      await adapter._authHandle.ensureReady();
+      expect(state.current?.refreshToken).toBe("rt-1");
+
+      const { fetchMock, session } = tokenEndpoint();
+      await adapter.raw.auth.refreshToken(session);
+      expect(fetchMock.mock.calls[0]?.[0].data?.refresh_token).toBe("rt-1");
+      // The rotated pair lands in the caller's storage, not just in memory.
+      expect(state.current).toMatchObject({
+        accessToken: "at-2",
+        refreshToken: "rt-2",
+      });
+
+      // A restart (or a second instance) configured with the spent seed
+      // keeps the stored, rotated token instead of overwriting it.
+      const restarted = oauthAdapter(storage, "rt-1");
+      await restarted._authHandle.ensureReady();
+      expect(state.current?.refreshToken).toBe("rt-2");
+      await restarted.raw.auth.refreshToken(session);
+      expect(fetchMock.mock.calls[1]?.[0].data?.refresh_token).toBe("rt-2");
+      expect(state.current?.refreshToken).toBe("rt-3");
+
+      // Clearing the SDK's storage (a revoke/sign-out) clears the caller's.
+      await restarted.raw.auth.tokenStorage.clear();
+      expect(state.current).toBeUndefined();
+    });
+
+    test("concurrent refreshes share one exchange of the single-use token", async () => {
+      const { state, storage } = memoryStorage();
+      const adapter = oauthAdapter(storage);
+      await adapter._authHandle.ensureReady();
+      const { fetchMock, session } = tokenEndpoint();
+      const tokens = await Promise.all(
+        Array.from({ length: 5 }, () => adapter.raw.auth.refreshToken(session))
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(tokens.map((t) => t.refreshToken)).toEqual(
+        Array.from({ length: 5 }, () => "rt-2")
+      );
+      // Settled exchanges aren't replayed: the next refresh exchanges afresh.
+      await adapter.raw.auth.refreshToken(session);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(state.current?.refreshToken).toBe("rt-3");
+
+      // A failed exchange rejects every waiter once, then the next call
+      // retries.
+      fetchMock.mockImplementationOnce(() => Promise.reject(new Error("boom")));
+      const failed = await Promise.allSettled([
+        adapter.raw.auth.refreshToken(session),
+        adapter.raw.auth.refreshToken(session),
+      ]);
+      expect(failed.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await adapter.raw.auth.refreshToken(session);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    test("a failed seed (storage outage) is retried by the next call", async () => {
+      const { state, storage } = memoryStorage();
+      let failGet = true;
+      const flaky = {
+        ...storage,
+        get: () => {
+          if (failGet) {
+            failGet = false;
+            return Promise.reject(new Error("kv down"));
+          }
+          return storage.get();
+        },
+      };
+      const adapter = oauthAdapter(flaky);
+      await expect(adapter._authHandle.ensureReady()).rejects.toMatchObject({
+        code: "Provider",
+      });
+      await adapter._authHandle.ensureReady();
+      expect(state.current?.refreshToken).toBe("rt-1");
+      expect(state.stores).toBe(1);
+    });
   });
 
   test("download() from a key under a missing folder throws NotFound", async () => {

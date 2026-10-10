@@ -80,9 +80,12 @@ const errorCode = (cause: unknown): string | undefined => {
 // a key that is a folder) fails the same way on every attempt, so it maps to
 // `Conflict` (permanent) rather than a retryable `Provider`. Reads never get
 // here for a directory: `statFile` reports it as `NotFound` first.
+// `ELOOP` is what an `O_NOFOLLOW` open answers for a symlink sitting at the
+// path: as permanent as a directory there.
 const CONFLICT_CODES = new Set([
   "EEXIST",
   "EISDIR",
+  "ELOOP",
   "ENOTEMPTY",
   "ERR_FS_EISDIR",
 ]);
@@ -211,6 +214,17 @@ const resolveKeyPath = (root: string, key: string): string => {
       "fs: key resolves to the adapter root directory"
     );
   }
+  // `path.resolve` also drops a trailing separator and folds a final `.` or
+  // `..`, so `dir/`, `dir/.`, and `dir/x/..` would all land on the file
+  // `dir` — `upload("dir/")` writing a file named `dir`, `delete("a.txt/")`
+  // removing `a.txt`. A key in that shape names a folder, never an object.
+  const lastSegment = key.split(path.sep === "\\" ? /[/\\]/u : "/").at(-1);
+  if (lastSegment === "" || lastSegment === "." || lastSegment === "..") {
+    throw new FilesError(
+      "Invalid",
+      `fs: key must name a file, not a folder (it ends in a separator, "." or ".."): ${JSON.stringify(key)}`
+    );
+  }
   // The adapter stores per-object metadata in a sidecar at
   // `${bodyPath}${SIDECAR_SUFFIX}`. A key whose body path lands on another
   // key's sidecar lets a same-root caller silently rewrite that key's
@@ -280,6 +294,52 @@ const writePathUnderRoot = async (
 };
 
 const sidecarPathOf = (bodyPath: string): string => bodyPath + SIDECAR_SUFFIX;
+
+// `O_NOFOLLOW` where the platform has one (everywhere but Windows): the open
+// itself then refuses a symlink at the final path segment with `ELOOP`.
+const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+
+// Open a resumable upload's partial without following a symlink planted at its
+// key-derived path. `writePathUnderRoot` only vets the parent directory, so a
+// plain open of `root/x.fls-part -> /elsewhere` would write (and `complete()`
+// would read and then rename into place) a file outside the root. The `lstat`
+// covers Windows, which has no `O_NOFOLLOW`; on POSIX the flag also closes the
+// window between the check and the open.
+const openPartial = async (
+  partPath: string,
+  key: string,
+  flags: number
+): Promise<fsp.FileHandle> => {
+  let stat: Stats | undefined;
+  try {
+    stat = await fsp.lstat(partPath);
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") {
+      throw error;
+    }
+  }
+  if (stat && !stat.isFile()) {
+    throw new FilesError(
+      "Conflict",
+      `fs: the resumable upload's partial for ${JSON.stringify(key)} is not a regular file (a symlink or folder sits at its staging path)`
+    );
+  }
+  // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
+  return await fsp.open(partPath, flags | O_NOFOLLOW);
+};
+
+const readPartial = async (
+  partPath: string,
+  key: string
+): Promise<Uint8Array> => {
+  const handle = await openPartial(partPath, key, fsConstants.O_RDONLY);
+  try {
+    const buf = await handle.readFile();
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  } finally {
+    await handle.close();
+  }
+};
 
 // `stat` that only accepts a regular file. A directory (or socket, FIFO, …) at
 // a key's path is not an object — `list()` never yields one — so `head`,
@@ -810,10 +870,22 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             // escapes the root is rejected here before anything is created.
             await writePathUnderRoot(root, tempPath, key);
             await ensureDirFor(tempPath);
-            // Start (or truncate) the partial file so positional writes have a
-            // target. A leftover partial from a prior, abandoned attempt is
-            // overwritten — `begin` always starts fresh.
-            await fsp.writeFile(tempPath, "");
+            // Start the partial file fresh so positional writes have a target.
+            // Whatever sits at the path — a prior attempt's partial, or a
+            // planted symlink — is unlinked (`rm` never follows a link), then
+            // the file is created exclusively: `O_EXCL` refuses to open
+            // through a link that reappears in between, so nothing outside the
+            // root is ever truncated or written.
+            await fsp.rm(tempPath, { force: true });
+            const handle = await fsp.open(
+              tempPath,
+              // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
+              fsConstants.O_WRONLY |
+                fsConstants.O_CREAT |
+                fsConstants.O_EXCL |
+                O_NOFOLLOW
+            );
+            await handle.close();
           } catch (error) {
             throw mapFsError(error);
           }
@@ -821,12 +893,9 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         },
         async complete(): Promise<UploadResult> {
           try {
-            const buf = await fsp.readFile(tempPath);
-            const bytes = new Uint8Array(
-              buf.buffer,
-              buf.byteOffset,
-              buf.byteLength
-            );
+            // Never through a symlink, so a link planted after the last chunk
+            // is neither hashed nor renamed into place.
+            const bytes = await readPartial(tempPath, key);
             const lastModified = Date.now();
             const sidecar: Sidecar = {
               contentType,
@@ -884,9 +953,10 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             await writePathUnderRoot(root, tempPath, key);
             // O_RDWR | O_CREAT: positional write, creating the partial if it's
             // missing (e.g. resuming after it was cleaned up) without
-            // truncating an existing one.
-            const handle = await fsp.open(
+            // truncating an existing one — and never through a symlink.
+            const handle = await openPartial(
               tempPath,
+              key,
               // eslint-disable-next-line no-bitwise -- POSIX open flags are a bitmask
               fsConstants.O_RDWR | fsConstants.O_CREAT
             );

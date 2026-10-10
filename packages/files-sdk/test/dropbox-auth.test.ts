@@ -124,6 +124,45 @@ describe("dropbox auth construction", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test("refreshToken shares one in-flight exchange across a cold burst, and retries after a failure", async () => {
+    let call = 0;
+    const gate = Promise.withResolvers<null>();
+    const fetchMock = mock(async () => {
+      call += 1;
+      await gate.promise;
+      return call === 1
+        ? new Response("try later", { status: 503 })
+        : Response.json(
+            { access_token: "burst-tok", expires_in: 3600 },
+            { status: 200 }
+          );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const handle = handleOf(dropbox({ appKey: "ak", refreshToken: "rt" }));
+
+    const failed = Array.from({ length: 5 }, async () => {
+      try {
+        await handle.getAccessToken();
+        return "ok";
+      } catch (error) {
+        return (error as { code?: string }).code;
+      }
+    });
+    gate.resolve(null);
+    expect(await Promise.all(failed)).toEqual(
+      Array.from({ length: 5 }, () => "Provider")
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The failed exchange isn't replayed: the next burst exchanges afresh,
+    // still once.
+    const tokens = await Promise.all(
+      Array.from({ length: 5 }, () => handle.getAccessToken())
+    );
+    expect(tokens).toEqual(Array.from({ length: 5 }, () => "burst-tok"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test("refreshToken re-fetches once the cached token is near expiry", async () => {
     let call = 0;
     const fetchMock = mock(() => {

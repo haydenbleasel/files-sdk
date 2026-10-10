@@ -461,9 +461,40 @@ describe("fs adapter", () => {
       const files = new Files({ adapter: fsAdapter({ root }) });
       await files.upload("thedir/keep.txt", "x");
       await expect(files.delete("thedir")).resolves.toBeUndefined();
-      await expect(files.delete("thedir/")).resolves.toBeUndefined();
+      // A trailing slash names a folder outright, so it is refused before
+      // touching the disk rather than treated as a key.
+      await expect(files.delete("thedir/")).rejects.toMatchObject({
+        code: "Invalid",
+      });
       const kept = await files.download("thedir/keep.txt");
       expect(await kept.text()).toBe("x");
+    });
+
+    test("keys ending in a separator, . or .. are refused instead of aliasing a file", async () => {
+      // path.resolve drops a trailing slash and folds a final `.`/`..`, so
+      // `dir/` used to write a file named `dir` and `a.txt/` to address
+      // (and delete) `a.txt`.
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }), retries: 0 });
+      await files.upload("a.txt", "keep");
+      for (const key of ["dir/", "dir//", "dir/.", "dir/x/..", "a.txt/"]) {
+        // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per folder-shaped key
+        await expect(files.upload(key, "z")).rejects.toMatchObject({
+          code: "Invalid",
+        });
+      }
+      await expect(files.head("a.txt/")).rejects.toMatchObject({
+        code: "Invalid",
+      });
+      await expect(files.delete("a.txt/")).rejects.toMatchObject({
+        code: "Invalid",
+      });
+      expect(await fsp.readdir(root)).toEqual(
+        expect.arrayContaining(["a.txt"])
+      );
+      await expect(fsp.stat(path.join(root, "dir"))).rejects.toThrow();
+      const kept = await files.download("a.txt");
+      expect(await kept.text()).toBe("keep");
     });
 
     test("deleting a key under a file is a no-op", async () => {
@@ -1426,6 +1457,41 @@ describe("fs adapter", () => {
   });
 });
 
+// Plant `target` as a symlink at `linkPath`; false where the platform won't
+// let this process create one (Windows without developer mode).
+const plantSymlink = async (
+  target: string,
+  linkPath: string
+): Promise<boolean> => {
+  try {
+    await fsp.symlink(target, linkPath);
+    return true;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error.code === "EPERM" || error.code === "EACCES")
+    ) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const adoptedDriver = (root: string, key: string) => {
+  const driver = fsAdapter({ root }).resumableUpload?.(key, {});
+  if (driver?.mode !== "offset") {
+    throw new Error("expected an offset driver");
+  }
+  driver.adopt({
+    contentType: "application/octet-stream",
+    key,
+    provider: "fs",
+    tempPath: path.join(root, `${key}.fls-part`),
+  });
+  return driver;
+};
+
 describe("fs resumable uploads", () => {
   test("fresh upload writes the file and a sidecar", async () => {
     const root = await makeRoot();
@@ -1613,6 +1679,69 @@ describe("fs resumable uploads", () => {
       code: "Invalid",
       message: expect.stringMatching(/Cannot resume a gcs/u),
     });
+  });
+
+  test("begin replaces a symlink planted at the partial instead of writing through it", async () => {
+    const root = await makeRoot();
+    const outside = await makeRoot();
+    const victim = path.join(outside, "victim.txt");
+    await fsp.writeFile(victim, "SECRET-CONTENT");
+    if (!(await plantSymlink(victim, path.join(root, "victim.fls-part")))) {
+      return;
+    }
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    const result = await files.upload("victim", "hello", {
+      control: new UploadControl(),
+    });
+    expect(result.size).toBe(5);
+    // The outside file is neither truncated nor overwritten, and what landed
+    // at the key is a regular file holding the upload.
+    expect(await fsp.readFile(victim, "utf-8")).toBe("SECRET-CONTENT");
+    const stat = await fsp.lstat(path.join(root, "victim"));
+    expect(stat.isSymbolicLink()).toBe(false);
+    const landed = await files.download("victim");
+    expect(await landed.text()).toBe("hello");
+  });
+
+  test("a resumed chunk refuses to write through a symlinked partial", async () => {
+    const root = await makeRoot();
+    const outside = await makeRoot();
+    const victim = path.join(outside, "victim.txt");
+    await fsp.writeFile(victim, "SECRET-CONTENT");
+    if (!(await plantSymlink(victim, path.join(root, "r.bin.fls-part")))) {
+      return;
+    }
+    // An adopted session skips begin(), so uploadAt is the first write.
+    const failure = adoptedDriver(root, "r.bin").uploadAt({
+      data: new TextEncoder().encode("XX"),
+      isLast: false,
+      offset: 0,
+      total: 4,
+    });
+    await expect(failure).rejects.toMatchObject({ code: "Conflict" });
+    expect(await fsp.readFile(victim, "utf-8")).toBe("SECRET-CONTENT");
+  });
+
+  test("complete refuses a symlink planted at the partial after the last chunk", async () => {
+    const root = await makeRoot();
+    const outside = await makeRoot();
+    const victim = path.join(outside, "victim.txt");
+    await fsp.writeFile(victim, "SECRET-CONTENT");
+    if (!(await plantSymlink(victim, path.join(root, "c.bin.fls-part")))) {
+      return;
+    }
+    await expect(
+      adoptedDriver(root, "c.bin").complete([])
+    ).rejects.toMatchObject({ code: "Conflict" });
+    // Nothing was renamed into place at the key.
+    await expect(fsp.lstat(path.join(root, "c.bin"))).rejects.toThrow();
+  });
+
+  test("an O_NOFOLLOW refusal (ELOOP) is a permanent Conflict", () => {
+    const loop = Object.assign(new Error("ELOOP: too many symbolic links"), {
+      code: "ELOOP",
+    });
+    expect(mapFsError(loop)).toMatchObject({ code: "Conflict" });
   });
 
   test("a key ending in the reserved partial suffix is rejected", async () => {

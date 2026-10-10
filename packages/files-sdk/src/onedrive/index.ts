@@ -351,6 +351,15 @@ const throwListCursorRootMismatch = (): never => {
   );
 };
 
+// A malformed escape (`%E0%A4%A`) can't name this adapter's folder.
+const decodePathOrUndefined = (path: string): string | undefined => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return undefined;
+  }
+};
+
 const normalizeListCursor = (cursor: string, expectedPath: string): string => {
   let apiPath = cursor;
   if (/^[a-z][a-z\d+.-]*:/iu.test(cursor)) {
@@ -375,7 +384,14 @@ const normalizeListCursor = (cursor: string, expectedPath: string): string => {
   }
   const queryStart = apiPath.indexOf("?");
   const pathOnly = queryStart === -1 ? apiPath : apiPath.slice(0, queryStart);
-  if (pathOnly !== expectedPath) {
+  // Graph's `@odata.nextLink` doesn't percent-encode the path the way
+  // `encodeURIComponent` does (a site id's commas, or `@ , ; = + $ &` in a
+  // folder name, come back literal), so compare the decoded paths.
+  const decoded = decodePathOrUndefined(pathOnly);
+  if (
+    decoded === undefined ||
+    decoded !== decodePathOrUndefined(expectedPath)
+  ) {
     throwListCursorRootMismatch();
   }
   return apiPath;
@@ -567,6 +583,10 @@ class RefreshTokenCredential implements TokenCredential {
   readonly #refreshToken: string;
   readonly #tenantId: string;
   #cached?: { token: string; expiresOnMs: number };
+  // One exchange in flight at a time: a cold burst of Graph calls shares it
+  // rather than each POSTing to the token endpoint (a 429 risk, and with a
+  // rotating refresh token, concurrent redemptions can be rejected).
+  #inflight?: Promise<AccessToken>;
 
   constructor(opts: {
     clientId: string;
@@ -584,13 +604,28 @@ class RefreshTokenCredential implements TokenCredential {
     scopes: string | string[],
     _options?: GetTokenOptions
   ): Promise<AccessToken | null> {
-    const now = Date.now();
-    if (this.#cached && this.#cached.expiresOnMs - 60_000 > now) {
+    if (this.#cached && this.#cached.expiresOnMs - 60_000 > Date.now()) {
       return {
         expiresOnTimestamp: this.#cached.expiresOnMs,
         token: this.#cached.token,
       };
     }
+    if (!this.#inflight) {
+      // Cleared once settled, so a failed exchange is retried by the next
+      // call rather than replayed to every later caller.
+      this.#inflight = (async () => {
+        try {
+          return await this.#exchange(scopes);
+        } finally {
+          this.#inflight = undefined;
+        }
+      })();
+    }
+    return await this.#inflight;
+  }
+
+  async #exchange(scopes: string | string[]): Promise<AccessToken> {
+    const now = Date.now();
     const scopeStr = Array.isArray(scopes) ? scopes.join(" ") : scopes;
     const body = new URLSearchParams({
       client_id: this.#clientId,
@@ -844,17 +879,52 @@ export const onedrive = (
     return `${basePath}/root:/${encodePathSegments(fullPath)}:`;
   };
 
-  // The driveItem at `key`, or `undefined` when nothing is there.
-  const findItem = async (key: string): Promise<DriveItem | undefined> => {
+  // The driveItem at Graph item path `apiPath`, or `undefined` when nothing
+  // is there.
+  const findAt = async (apiPath: string): Promise<DriveItem | undefined> => {
     try {
       // SAFETY: the Graph client types every parsed response as `any`; a GET
-      // on the item path returns a `driveItem`.
-      return (await client.api(itemApiPath(key)).get()) as DriveItem;
+      // on an item path returns a `driveItem`.
+      return (await client.api(apiPath).get()) as DriveItem;
     } catch (error) {
       if (mapGraphError(error).code === "NotFound") {
         return undefined;
       }
       throw error;
+    }
+  };
+
+  // The driveItem at `key`, or `undefined` when nothing is there.
+  const findItem = (key: string): Promise<DriveItem | undefined> =>
+    findAt(itemApiPath(key));
+
+  // The Graph item path of a drive-relative folder path ("" = drive root).
+  const drivePathApi = (path: string): string =>
+    path
+      ? `${basePath}/root:/${encodePathSegments(path)}:`
+      : `${basePath}/root`;
+
+  // Create each folder of drive-relative `path`, top-down. A path-addressed
+  // upload creates its intermediate folders on its own, but a copy's
+  // `parentReference.path` must already exist.
+  const ensureFolderChain = async (path: string): Promise<void> => {
+    const segments = trimSlashes(path).split("/").filter(Boolean);
+    for (const [depth, name] of segments.entries()) {
+      const parent = segments.slice(0, depth).join("/");
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- each folder is created inside the one before it
+        await client.api(`${drivePathApi(parent)}/children`).post({
+          "@microsoft.graph.conflictBehavior": "fail",
+          folder: {},
+          name,
+        });
+      } catch (error) {
+        // Already there (an earlier key, or a concurrent writer) is the goal.
+        // A file in the way fails the next level, or the copy, loudly.
+        if (mapGraphError(error).code !== "Conflict") {
+          throw error;
+        }
+      }
     }
   };
 
@@ -1196,9 +1266,28 @@ export const onedrive = (
     },
     async copy(from, to) {
       try {
-        const [source, destination] = await Promise.all([
+        // Validates `to` before its folder is looked up.
+        const destinationPath = itemApiPath(to);
+        // Resolve destination parent folder. For nested keys we copy to the
+        // root and let `requestBody.parentReference.path` handle the rest.
+        const destDir = (() => {
+          const trimmedTo = trimSlashes(to);
+          const idx = trimmedTo.lastIndexOf("/");
+          return idx === -1 ? "" : trimmedTo.slice(0, idx);
+        })();
+        const fullDestDir = ((): string => {
+          if (!rootFolderPath) {
+            return destDir;
+          }
+          if (!destDir) {
+            return rootFolderPath;
+          }
+          return `${rootFolderPath}/${destDir}`;
+        })();
+        const [source, destination, destParent] = await Promise.all([
           findItem(from),
-          findItem(to),
+          findAt(destinationPath),
+          fullDestDir ? findAt(drivePathApi(fullDestDir)) : undefined,
         ]);
         // Graph copies a folder's whole tree; a folder is not an object here
         // (`head` reports it as NotFound), so neither is its copy.
@@ -1223,22 +1312,12 @@ export const onedrive = (
             `onedrive: ${JSON.stringify(from)} and ${JSON.stringify(to)} are the same item`
           );
         }
-        // Resolve destination parent folder. For nested keys we copy to the
-        // root and let `requestBody.parentReference.path` handle the rest.
-        const destDir = (() => {
-          const trimmedTo = trimSlashes(to);
-          const idx = trimmedTo.lastIndexOf("/");
-          return idx === -1 ? "" : trimmedTo.slice(0, idx);
-        })();
-        const fullDestDir = ((): string => {
-          if (!rootFolderPath) {
-            return destDir;
-          }
-          if (!destDir) {
-            return rootFolderPath;
-          }
-          return `${rootFolderPath}/${destDir}`;
-        })();
+        // Graph's copy needs the destination folder to exist (upload creates
+        // it on the way), so create the missing chain first — like the other
+        // adapters' copy into a new folder.
+        if (fullDestDir && !destParent) {
+          await ensureFolderChain(fullDestDir);
+        }
         const parentRef = fullDestDir
           ? { path: `/drive/root:/${encodePathSegments(fullDestDir)}` }
           : { path: "/drive/root:" };

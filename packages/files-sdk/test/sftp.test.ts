@@ -341,6 +341,43 @@ describe("sftp adapter", () => {
     expect(await moved.text()).toBe("payload");
   });
 
+  test("move overwrites an existing destination like every other adapter", async () => {
+    // Base SFTP v3 rename refuses an existing target (OpenSSH answers
+    // SSH_FX_FAILURE, a retryable Provider error), so a plain rename made
+    // every move onto a taken key fail after burning the retries.
+    const files = newFiles();
+    await files.upload("a.txt", "A");
+    await files.upload("b.txt", "B");
+    await files.move("a.txt", "b.txt");
+    expect(store.has("a.txt")).toBe(false);
+    expect(store.get("b.txt")?.bytes.toString()).toBe("A");
+  });
+
+  test("move never deletes the source through a case-only rename", async () => {
+    // On a case-insensitive server `A.txt` and `a.txt` are one file: the
+    // delete-then-rename fallback would delete the source itself.
+    const client = makeFakeClient();
+    client.rename = () => Promise.reject(sftpError(4, "Failure"));
+    client.exists = () => Promise.resolve("-" as const);
+    let deletes = 0;
+    client.delete = () => {
+      deletes += 1;
+      return Promise.resolve("ok");
+    };
+    const files = new Files({ adapter: sftp({ client }), retries: 0 });
+    await expect(files.move("A.txt", "a.txt")).rejects.toBeInstanceOf(
+      FilesError
+    );
+    expect(deletes).toBe(0);
+  });
+
+  test("move between two spellings of one path is a no-op", async () => {
+    const files = newFiles();
+    await files.upload("dir/a.txt", "A");
+    await files.move("dir//a.txt", "dir/a.txt");
+    expect(store.get("dir/a.txt")?.bytes.toString()).toBe("A");
+  });
+
   test("download honors a bounded byte range (buffer path)", async () => {
     const files = newFiles();
     await files.upload("r.txt", "0123456789");

@@ -446,6 +446,44 @@ describe("ftp adapter", () => {
     });
   });
 
+  test("move overwrites an existing destination on a server that refuses RNTO over it", async () => {
+    // IIS-style servers answer RNTO onto an existing file with a 550, which
+    // a plain rename surfaced as a bogus NotFound.
+    renameRefusesExisting = true;
+    const files = newFiles();
+    await files.upload("a.txt", "A");
+    await files.upload("b.txt", "B");
+    await files.move("a.txt", "b.txt");
+    expect(store.has("a.txt")).toBe(false);
+    expect(store.get("b.txt")?.toString()).toBe("A");
+  });
+
+  test("move never deletes the source through a case-only rename", async () => {
+    // On a case-insensitive server `A.txt` and `a.txt` are one file: the
+    // delete-then-rename fallback would delete the source itself.
+    const client = makeFakeClient();
+    client.rename = () => Promise.reject(ftpError(550, "550 Refused"));
+    let deletes = 0;
+    client.remove = () => {
+      deletes += 1;
+      return Promise.resolve({ code: 250, message: "", rawMessage: "" });
+    };
+    store.set("A.txt", Buffer.from("A"));
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    await expect(files.move("A.txt", "a.txt")).rejects.toBeInstanceOf(
+      FilesError
+    );
+    expect(deletes).toBe(0);
+  });
+
+  test("move between two spellings of one path is a no-op", async () => {
+    renameRefusesExisting = true;
+    const files = newFiles();
+    await files.upload("dir/a.txt", "A");
+    await files.move("dir//a.txt", "dir/a.txt");
+    expect(store.get("dir/a.txt")?.toString()).toBe("A");
+  });
+
   test("download honors an open-ended byte range via REST offset", async () => {
     const files = newFiles();
     await files.upload("r.txt", "0123456789");
@@ -700,6 +738,204 @@ describe("ftp connect-per-op (mocked basic-ftp)", () => {
     await expect(pending).rejects.toBeDefined();
     await sleep(0);
     expect(ftpCloseCount).toBe(1);
+  });
+});
+
+// basic-ftp runs one task per control connection: starting a second while one
+// is pending closes the connection for good ("User launched a task while
+// another one is still running"). This wrapper enforces the same rule on the
+// fake, yielding before each command so overlapping calls actually overlap.
+const FTP_TASKS = new Set([
+  "appendFrom",
+  "cd",
+  "downloadTo",
+  "ensureDir",
+  "lastMod",
+  "list",
+  "pwd",
+  "remove",
+  "rename",
+  "size",
+  "uploadFrom",
+]);
+
+const makeStrictClient = (base: Client = makeFakeClient()) => {
+  const state = { closed: false, commands: [] as string[] };
+  let busy = false;
+  const target = base as unknown as Record<string, unknown>;
+  const client = new Proxy(target, {
+    get(obj, prop) {
+      const value = obj[prop as string];
+      if (!(typeof prop === "string" && FTP_TASKS.has(prop))) {
+        return value;
+      }
+      const fn = value as (...args: unknown[]) => Promise<unknown>;
+      return async (...args: unknown[]) => {
+        if (busy) {
+          state.closed = true;
+        }
+        if (state.closed) {
+          throw new Error(
+            "User launched a task while another one is still running"
+          );
+        }
+        busy = true;
+        state.commands.push(`${prop} ${String(args[0])}`);
+        try {
+          await sleep(1);
+          return await fn.apply(obj, args);
+        } finally {
+          busy = false;
+        }
+      };
+    },
+  }) as unknown as Client;
+  return { client, state };
+};
+
+// A fake whose RETR completes only once `finishTransfer()` is called — a
+// stand-in for a consumer that hasn't drained the data socket yet.
+const makeGatedDownloads = () => {
+  const waiters: (() => void)[] = [];
+  let finished = false;
+  const base = makeFakeClient();
+  base.downloadTo = async (dest: Writable, path: string) => {
+    if (!finished) {
+      // oxlint-disable-next-line promise/avoid-new -- test needs a transfer that settles on demand.
+      await new Promise<void>((resolve) => {
+        waiters.push(resolve);
+      });
+    }
+    dest.end(store.get(path));
+    await once(dest, "finish");
+    return { code: 226, message: "", rawMessage: "" };
+  };
+  const finishTransfer = (): void => {
+    finished = true;
+    for (const wake of waiters.splice(0)) {
+      wake();
+    }
+  };
+  return { base, finishTransfer };
+};
+
+describe("ftp injected client: one command at a time", () => {
+  test("concurrent calls on an injected client queue instead of colliding", async () => {
+    const { client, state } = makeStrictClient();
+    store.set("a.txt", Buffer.from("aaa"));
+    store.set("b.txt", Buffer.from("bb"));
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    const [a, b, got, uploaded, there] = await Promise.all([
+      files.head("a.txt"),
+      files.head("b.txt"),
+      files.download("a.txt"),
+      files.upload("dir/c.txt", "c"),
+      files.exists("b.txt"),
+    ]);
+    expect([a.size, b.size, await got.text(), uploaded.size, there]).toEqual([
+      3,
+      2,
+      "aaa",
+      1,
+      true,
+    ]);
+    expect(state.closed).toBe(false);
+    // The nested upload's cd/ensureDir ran without another call landing
+    // inside its changed working directory.
+    expect(store.get("dir/c.txt")?.toString()).toBe("c");
+    expect(await client.pwd()).toBe("");
+  });
+
+  test("the core's bulk fan-out runs serially on an injected client", async () => {
+    const { client, state } = makeStrictClient();
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    const keys = Array.from({ length: 10 }, (_, i) => `k${i}.txt`);
+    const uploaded = await files.upload(
+      keys.map((key) => ({ body: key, key }))
+    );
+    expect(uploaded.errors).toBeUndefined();
+    const heads = await files.head(keys);
+    expect(heads.errors).toBeUndefined();
+    expect(heads.results.map((info) => info.key)).toEqual(keys);
+    expect(state.closed).toBe(false);
+  });
+
+  test("a failing call does not wedge the queue", async () => {
+    const { client, state } = makeStrictClient();
+    store.set("ok.txt", Buffer.from("ok"));
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    const [missing, found] = await Promise.allSettled([
+      files.head("missing.txt"),
+      files.head("ok.txt"),
+    ]);
+    expect(missing).toMatchObject({
+      reason: { code: "NotFound" },
+      status: "rejected",
+    });
+    expect(found).toMatchObject({ status: "fulfilled", value: { size: 2 } });
+    const again = await files.head("ok.txt");
+    expect(again.size).toBe(2);
+    expect(state.closed).toBe(false);
+  });
+
+  test("a stream download holds the client until its transfer settles", async () => {
+    // basic-ftp's RETR task only resolves once the consumer has drained the
+    // data socket, so the next queued call must wait for it — not just for
+    // download() to return the StoredFile.
+    const { base, finishTransfer } = makeGatedDownloads();
+    const { client, state } = makeStrictClient(base);
+    store.set("s.txt", Buffer.from("streamed"));
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    const got = await files.download("s.txt", { as: "stream" });
+    const head = files.head("s.txt");
+    await sleep(10);
+    // head() is still queued behind the in-flight RETR: only download()'s own
+    // SIZE has run.
+    expect(state.commands.filter((c) => c === "size s.txt")).toHaveLength(1);
+    finishTransfer();
+    expect(await got.text()).toBe("streamed");
+    const headed = await head;
+    expect(headed.size).toBe(8);
+    expect(state.closed).toBe(false);
+  });
+
+  test("a call aborted while queued never reaches the client", async () => {
+    const { base, finishTransfer } = makeGatedDownloads();
+    const { client, state } = makeStrictClient(base);
+    store.set("s.txt", Buffer.from("x"));
+    store.set("other.txt", Buffer.from("y"));
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    const got = await files.download("s.txt", { as: "stream" });
+    const controller = new AbortController();
+    const queued = files.head("other.txt", { signal: controller.signal });
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ aborted: true });
+    finishTransfer();
+    expect(await got.text()).toBe("x");
+    await sleep(5);
+    expect(state.commands).not.toContain("size other.txt");
+    // The abandoned turn was handed back: the queue keeps moving.
+    const other = await files.head("other.txt");
+    expect(other.size).toBe(1);
+  });
+
+  test("an adapter-level call whose signal fired while queued rejects as aborted", async () => {
+    const { base, finishTransfer } = makeGatedDownloads();
+    store.set("s.txt", Buffer.from("x"));
+    const adapter = ftp({ client: makeStrictClient(base).client });
+    const got = await adapter.download("s.txt", { as: "stream" });
+    const controller = new AbortController();
+    const queued = adapter.download("s.txt", {
+      as: "stream",
+      signal: controller.signal,
+    });
+    controller.abort(new Error("stop"));
+    finishTransfer();
+    expect(await got.text()).toBe("x");
+    await expect(queued).rejects.toMatchObject({
+      aborted: true,
+      message: expect.stringMatching(/stop/u),
+    });
   });
 });
 

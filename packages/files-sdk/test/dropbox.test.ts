@@ -1515,6 +1515,68 @@ describe("dropbox adapter", () => {
     expect(r.items).toEqual([]);
   });
 
+  test("list strips a rootFolderPath whose casing differs from the folder's", async () => {
+    // The folder was created as "/Uploads"; the adapter is configured with
+    // "uploads". Dropbox paths are case-insensitive, so per-key calls work,
+    // but path_display reports the folder's real casing.
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, rootFolderPath: "uploads" }),
+    });
+    const entry = (path: string, tag: "file" | "folder" = "file") => ({
+      ".tag": tag,
+      client_modified: STABLE_MODIFIED,
+      id: `id:${path}`,
+      name: path.slice(path.lastIndexOf("/") + 1),
+      path_display: path,
+      path_lower: path.toLowerCase(),
+      rev: "rev-1",
+      server_modified: STABLE_MODIFIED,
+      size: 3,
+    });
+    filesListFolderMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({
+          cursor: "",
+          entries: [
+            entry("/Uploads", "folder"),
+            entry("/Uploads/a.txt"),
+            entry("/Uploads/Docs/b.txt"),
+            // A sibling whose name merely starts with the root isn't under
+            // it, and neither is an unrelated path.
+            entry("/UploadsX/c.txt"),
+            entry("/elsewhere/d.txt"),
+          ],
+          has_more: false,
+        })
+      )) as never);
+    const r = await files.list();
+    expect(r.items.map((i) => i.key)).toEqual([
+      "a.txt",
+      "Docs/b.txt",
+      "UploadsX/c.txt",
+      "elsewhere/d.txt",
+    ]);
+
+    filesListFolderMock.mockImplementationOnce((() =>
+      Promise.resolve(
+        wrapResult({
+          cursor: "",
+          entries: [entry("/Uploads/Docs", "folder"), entry("/Uploads/a.txt")],
+          has_more: false,
+        })
+      )) as never);
+    const folded = await files.list({ delimiter: "/" });
+    expect(folded.items.map((i) => i.key)).toEqual(["a.txt"]);
+    expect(folded.prefixes).toEqual(["Docs/"]);
+
+    // A listed key round-trips: head() addresses it under the configured root.
+    filesGetMetadataMock.mockClear();
+    await files.head("a.txt").catch(() => null);
+    expect(filesGetMetadataMock.mock.calls[0]?.[0]).toMatchObject({
+      path: "/uploads/a.txt",
+    });
+  });
+
   test("list skips folder entries", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     filesListFolderMock.mockImplementationOnce((() =>

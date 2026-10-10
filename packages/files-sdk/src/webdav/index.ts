@@ -6,6 +6,7 @@ import type { FileStat, OAuthToken, WebDAVClient } from "webdav";
 import type {
   Adapter,
   Body,
+  ByteRange,
   DownloadOptions,
   FileInfo,
   ListOptions,
@@ -23,6 +24,7 @@ import {
   joinPublicUrl,
   makeErrorMapper,
   normalizeBody,
+  rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
@@ -349,6 +351,25 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
     }
   };
 
+  // The size of a streamed GET: its Content-Length, or — for a chunked
+  // response, which carries none — the file's size from a PROPFIND (narrowed to
+  // the requested slice), rather than a size of 0 for a non-empty file.
+  const streamedSize = async (
+    contentLength: string | null,
+    remote: string,
+    range: ByteRange | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<number> => {
+    if (contentLength !== null && /^\d+$/u.test(contentLength)) {
+      return Number(contentLength);
+    }
+    // SAFETY: without `details: true`, `stat` resolves to the bare FileStat.
+    const stat = (await client.stat(remote, {
+      ...(signal && { signal }),
+    })) as FileStat;
+    return range ? rangedSize(stat.size, range) : stat.size;
+  };
+
   const adapter: WebdavAdapter = {
     capabilities: {
       delimiter: "any",
@@ -423,7 +444,19 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
             );
           }
           const stream = toWebStream(body);
-          const contentLength = res.headers.get("content-length");
+          let size: number;
+          try {
+            size = await streamedSize(
+              res.headers.get("content-length"),
+              remote,
+              range,
+              downloadOpts.signal
+            );
+          } catch (error) {
+            // Don't leave the GET's connection open behind the failure.
+            await stream.cancel();
+            throw error;
+          }
           return createStoredFile(
             {
               contentType:
@@ -435,7 +468,7 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
                   res.headers.get(LAST_MODIFIED_HEADER)
                 ),
               }),
-              size: contentLength ? Number(contentLength) : 0,
+              size,
             },
             {
               factory: () => stream,

@@ -132,7 +132,30 @@ const DEFAULT_UNZIP_MAX_ENTRY_SIZE = 512 * 1024 * 1024;
 const DEFAULT_UNZIP_MAX_TOTAL_SIZE = 1024 * 1024 * 1024;
 
 const ENCODER = new TextEncoder();
-const DECODER = new TextDecoder();
+/** Strict: malformed UTF-8 throws instead of decoding to U+FFFD. */
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+/** General-purpose bit 11: the entry's name (and comment) are UTF-8. */
+const FLAG_UTF8 = 0x08_00;
+/** Info-ZIP Unicode Path extra field: a UTF-8 name beside a legacy one. */
+const EXTRA_UNICODE_PATH = 0x70_75;
+
+/**
+ * Code page 437 — the ZIP spec's encoding for names without the UTF-8 flag —
+ * bytes 0x80–0xFF in order (0x00–0x7F are ASCII). Every code point is in the
+ * BMP, so the string indexes one character per byte.
+ */
+const CP437_HIGH =
+  "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00A0";
+
+const decodeCp437 = (bytes: Uint8Array): string => {
+  let out = "";
+  for (const byte of bytes) {
+    out +=
+      byte < 0x80 ? String.fromCodePoint(byte) : CP437_HIGH.charAt(byte - 0x80);
+  }
+  return out;
+};
 
 /**
  * Throw when a size or offset no longer fits the classic 32-bit fields.
@@ -403,6 +426,74 @@ const zip64Unsupported = (key: string): FilesError =>
   );
 
 /**
+ * The UTF-8 name an Info-ZIP Unicode Path extra field (0x7075) records, or
+ * `undefined` when there is none. The field only counts while its CRC-32 of the
+ * legacy name still matches: a mismatch means a tool unaware of the field
+ * renamed the entry since, so the header's name is the current one. A
+ * malformed extra block just ends the scan — the field is optional.
+ */
+const unicodePathName = (
+  extra: Uint8Array,
+  rawName: Uint8Array
+): Uint8Array | undefined => {
+  const view = new DataView(extra.buffer, extra.byteOffset, extra.byteLength);
+  let at = 0;
+  while (at + 4 <= extra.byteLength) {
+    const id = view.getUint16(at, true);
+    const end = at + 4 + view.getUint16(at + 2, true);
+    if (end > extra.byteLength) {
+      return;
+    }
+    // Version 1 (one byte), the legacy name's CRC-32, then the UTF-8 name.
+    if (
+      id === EXTRA_UNICODE_PATH &&
+      end - at >= 9 &&
+      extra[at + 4] === 1 &&
+      view.getUint32(at + 5, true) === crc32(rawName)
+    ) {
+      return extra.subarray(at + 9, end);
+    }
+    at = end;
+  }
+};
+
+/**
+ * Decode an entry name. A Unicode Path field, or the UTF-8 flag (bit 11),
+ * means UTF-8, decoded strictly — bytes that aren't valid UTF-8 there are a
+ * corrupt record, not something to paper over with U+FFFD. Without either, the
+ * spec says CP437 (what Windows Explorer and older tools write), but plenty of
+ * tools write UTF-8 without setting the flag; a CP437 name with high bytes is
+ * almost never also well-formed multi-byte UTF-8, so a name that decodes as
+ * UTF-8 is taken as UTF-8 and anything else as CP437. Both decodings map
+ * distinct bytes to distinct names, so two entries never collide by decoding.
+ */
+const decodeEntryName = (
+  rawName: Uint8Array,
+  flags: number,
+  extra: Uint8Array,
+  key: string
+): string => {
+  const unicode = unicodePathName(extra, rawName);
+  const declared = unicode ?? ((flags & FLAG_UTF8) === 0 ? undefined : rawName);
+  if (declared !== undefined) {
+    try {
+      return UTF8_DECODER.decode(declared);
+    } catch (error) {
+      throw corrupt(
+        key,
+        "an entry name marked UTF-8 is not valid UTF-8",
+        error
+      );
+    }
+  }
+  try {
+    return UTF8_DECODER.decode(rawName);
+  } catch {
+    return decodeCp437(rawName);
+  }
+};
+
+/**
  * Read an archive's central directory — the authoritative entry index every
  * mainstream ZIP tool reads, which also makes data descriptors and trailing
  * garbage irrelevant. Fails closed on ZIP64 markers, encrypted entries, and
@@ -455,16 +546,20 @@ const parseCentralDirectory = (
     const nameLength = view.getUint16(at + 28, true);
     const extraLength = view.getUint16(at + 30, true);
     const commentLength = view.getUint16(at + 32, true);
+    const nameStart = at + CENTRAL_RECORD_SIZE;
     entries.push({
       compressedSize,
       crc: view.getUint32(at + 16, true),
       localOffset: view.getUint32(at + 42, true),
       method: view.getUint16(at + 10, true),
-      name: DECODER.decode(
+      name: decodeEntryName(
+        bytes.subarray(nameStart, nameStart + nameLength),
+        flags,
         bytes.subarray(
-          at + CENTRAL_RECORD_SIZE,
-          at + CENTRAL_RECORD_SIZE + nameLength
-        )
+          nameStart + nameLength,
+          nameStart + nameLength + extraLength
+        ),
+        key
       ),
       size,
     });

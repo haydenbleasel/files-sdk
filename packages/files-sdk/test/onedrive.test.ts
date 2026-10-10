@@ -162,6 +162,44 @@ const defaultGet = (
   );
 };
 
+// Create a folder (`conflictBehavior: "fail"`): 409 when the name is taken,
+// 404 when the parent folder is missing.
+const createFakeFolder = (
+  parent: string,
+  body: { name: string }
+): Promise<unknown> => {
+  if (parent && !store.get(parent)?.isFolder) {
+    return Promise.reject(new GraphError(404, "Parent folder not found"));
+  }
+  const path = parent ? `${parent}/${body.name}` : body.name;
+  if (store.has(path)) {
+    return Promise.reject(new GraphError(409, "nameAlreadyExists"));
+  }
+  const folder: FakeItem = {
+    ...makeItem(path, Buffer.alloc(0), "application/octet-stream"),
+    isFolder: true,
+  };
+  store.set(path, folder);
+  return Promise.resolve(itemToDriveItem(folder));
+};
+
+// Graph's copy, unlike a path-addressed upload, doesn't create the
+// destination folder: `parentReference.path` must already exist.
+const missingCopyParent = (responseType?: string): Promise<unknown> =>
+  responseType === "raw"
+    ? Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "itemNotFound",
+              message: "The parent folder does not exist",
+            },
+          },
+          { status: 404 }
+        )
+      )
+    : Promise.reject(new GraphError(404, "Parent folder not found"));
+
 const defaultPost = (
   apiPath: string,
   body: unknown,
@@ -175,6 +213,9 @@ const defaultPost = (
     return Promise.resolve({
       uploadUrl: `https://sn3302.up.1drv.com/up/session/${encodeURIComponent(parsed.virtualPath)}`,
     });
+  }
+  if (parsed.suffix === "children") {
+    return createFakeFolder(parsed.virtualPath, body as { name: string });
   }
   if (parsed.suffix === "createLink") {
     const it = store.get(parsed.virtualPath);
@@ -206,6 +247,9 @@ const defaultPost = (
       .map(decodeURIComponent)
       .join("/");
     const dest = parentVirtual ? `${parentVirtual}/${b.name}` : b.name;
+    if (parentVirtual && !store.get(parentVirtual)?.isFolder) {
+      return missingCopyParent(responseType);
+    }
     const newItem = makeItem(
       dest,
       src.bytes ?? Buffer.alloc(0),
@@ -889,6 +933,36 @@ describe("onedrive adapter", () => {
     );
   });
 
+  test("list follows a nextLink that percent-encodes its path differently", async () => {
+    // Graph hands back a site id's commas, and `@ , ; = + $ &` in folder
+    // names, literal; the adapter's own path encodes them.
+    const files = new Files({
+      adapter: onedrive({
+        ...baseOpts,
+        rootFolderPath: "a@b,c;d=e+f$g&h",
+        siteId: "contoso.sharepoint.com,1111,2222",
+      }),
+    });
+    const nextLink =
+      "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com,1111,2222/drive/root:/a@b,c;d=e+f$g&h:/children?$skiptoken=abc";
+    await files.list({ cursor: nextLink });
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/sites/contoso.sharepoint.com,1111,2222/drive/root:/a@b,c;d=e+f$g&h:/children?$skiptoken=abc"
+    );
+
+    // Decoding doesn't widen what a cursor may point at: another folder, or
+    // a path with a malformed escape, is still refused.
+    for (const cursor of [
+      "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com,1111,2222/drive/root:/other:/children?$skiptoken=abc",
+      "https://graph.microsoft.com/v1.0/sites/contoso.sharepoint.com,1111,2222/drive/root:/a@b,c;d=e+f$g&h%E0%A4%A:/children",
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one cursor per iteration, sequential by design
+      await expect(files.list({ cursor })).rejects.toMatchObject({
+        code: "Invalid",
+      });
+    }
+  });
+
   test("copy creates new item at destination and polls monitor URL", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = ((_input: string | URL | Request) =>
@@ -1152,6 +1226,49 @@ describe("onedrive adapter", () => {
       code: "Conflict",
     });
     expect(dispatchPost).not.toHaveBeenCalled();
+  });
+
+  test("copy and move into a folder that doesn't exist yet create it first", async () => {
+    await withCompletedCopyMonitor(async () => {
+      const files = new Files({
+        adapter: onedrive({ ...baseOpts, rootFolderPath: "app" }),
+      });
+      await files.upload("a.txt", "hello");
+      await files.copy("a.txt", "new/deep/b.txt");
+      expect(store.get("app")?.isFolder).toBe(true);
+      expect(store.get("app/new")?.isFolder).toBe(true);
+      expect(store.get("app/new/deep")?.isFolder).toBe(true);
+      await expect(
+        files.download("new/deep/b.txt").then((f) => f.text())
+      ).resolves.toBe("hello");
+
+      // A partly existing chain only creates what's missing; an existing
+      // destination folder skips the walk entirely.
+      await files.move("new/deep/b.txt", "new/other/c.txt");
+      expect(store.get("app/new/other")?.isFolder).toBe(true);
+      expect(store.has("app/new/deep/b.txt")).toBe(false);
+      dispatchPost.mockClear();
+      await files.copy("a.txt", "new/other/d.txt");
+      expect(
+        dispatchPost.mock.calls
+          .map((c) => String(c[0]))
+          .filter((p) => p.endsWith("/children"))
+      ).toEqual([]);
+    });
+  });
+
+  test("copy under a file that's in the way of the folder chain fails loudly", async () => {
+    await withCompletedCopyMonitor(async () => {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await files.upload("a.txt", "hello");
+      await files.upload("f", "a file, not a folder");
+      await expect(files.copy("a.txt", "f/sub/b.txt")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      expect(
+        dispatchPost.mock.calls.some((c) => String(c[0]).endsWith("/copy"))
+      ).toBe(false);
+    });
   });
 
   test("delete of a folder's key is a no-op, never a recursive DELETE", async () => {

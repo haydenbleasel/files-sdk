@@ -96,7 +96,9 @@ export interface GoogleDriveAdapterOptions {
    * LRU capacity for the in-memory virtual-key → fileId cache. Drive has
    * no native key field; every read after the first round-trips a
    * `files.list` to resolve the id, which the cache amortizes within a
-   * single adapter instance. Defaults to 1024.
+   * single adapter instance. A cached id that another process deleted,
+   * trashed, or replaced is dropped and re-resolved on first use. Defaults
+   * to 1024.
    */
   fileIdCacheSize?: number;
 }
@@ -131,6 +133,10 @@ const RESERVED_METADATA_PREFIX = "fsdk";
 
 const FILE_FIELDS =
   "id, name, size, mimeType, md5Checksum, modifiedTime, appProperties";
+// `files.get` by id still answers for a trashed file, so the per-key reads
+// also ask for `trashed` and treat a trashed file as gone (`files.list`
+// queries filter on `trashed=false` instead).
+const GET_FIELDS = `${FILE_FIELDS}, trashed`;
 
 const NOT_FOUND_STATUS = new Set([404]);
 const UNAUTH_STATUS = new Set([401, 403]);
@@ -450,6 +456,14 @@ const overwriteProps = (
 
 type FileMeta = Omit<FileInfo, "key">;
 
+// A trashed file still answers `files.get` by id, but the key no longer names
+// a live object, so read it as gone (a fresh lookup excludes it too).
+const assertNotTrashed = (file: drive_v3.Schema$File, key: string): void => {
+  if (file.trashed) {
+    throw new FilesError("NotFound", `Not found: ${key}`);
+  }
+};
+
 // The subset of a Drive `files` resource the resumable finalize response
 // carries (restricted to the `fields` requested at session initiation).
 interface ResumableUploadResult {
@@ -664,19 +678,55 @@ export const googleDrive = (
     return found?.id;
   };
 
-  const resolveFileId = async (
+  // Confirm a cached fileId still names a live file: Drive's `files.get`
+  // answers for a trashed file, which the lookup query excludes.
+  const assertLiveFileId = async (
     key: string,
-    signal?: AbortSignal
-  ): Promise<string> => {
+    fileId: string,
+    signal: AbortSignal | undefined
+  ): Promise<void> => {
+    const res = await driveClient.files.get(
+      { ...sharedDriveParams, fields: "id, trashed", fileId },
+      signalOpts(signal)
+    );
+    assertNotTrashed(res.data, key);
+  };
+
+  /**
+   * Run `fn` against the fileId carrying `key`. A cached id can go stale:
+   * another process (or the Drive UI) may delete or trash the file and write
+   * the key again under a new id. So when `fn` answers NotFound for a cached
+   * id, evict it and run `fn` once more against a fresh `files.list` lookup;
+   * a miss there is authoritative. `verify` first checks a cached id is live
+   * (not trashed) for operations whose own call wouldn't say, such as a
+   * delete or a copy that would otherwise act on a trashed file.
+   */
+  const withFileId = async <T>(
+    key: string,
+    signal: AbortSignal | undefined,
+    fn: (fileId: string) => Promise<T>,
+    { verify = false }: { verify?: boolean } = {}
+  ): Promise<T> => {
     const cached = fileIdCache.get(key);
-    if (cached) {
-      return cached;
+    if (cached !== undefined) {
+      try {
+        if (verify) {
+          await assertLiveFileId(key, cached, signal);
+        }
+        return await fn(cached);
+      } catch (error) {
+        const mapped = mapDriveError(error);
+        if (mapped.code !== "NotFound") {
+          throw mapped;
+        }
+        fileIdCache.delete(key);
+      }
     }
     const id = await lookupFileId(key, signal);
     if (id === undefined) {
       throw new FilesError("NotFound", `Not found: ${key}`);
     }
-    return id;
+    return await fn(id);
   };
 
   // The adapter-wide `anyone, reader` grant behind `publicByDefault`. Drive
@@ -848,173 +898,180 @@ export const googleDrive = (
     },
     async copy(from, to, operationOpts) {
       assertAppPropertiesFit({ [KEY_PROP]: to });
+      const signal = operationOpts?.signal;
       try {
-        const fromId = await resolveFileId(from, operationOpts?.signal);
-        // Drive copies always create a new file; capture the id currently
-        // holding `to` so overwrite semantics hold (the stale file would
-        // otherwise duplicate the key and wedge later reads with a Conflict).
-        const clobberedId = await lookupFileId(to, operationOpts?.signal);
-        const copied = await driveClient.files.copy(
-          {
-            ...sharedDriveParams,
-            fields: "id",
-            fileId: fromId,
-            requestBody: {
-              appProperties: { [KEY_PROP]: to },
-              name: basename(to),
-              parents: [rootFolderId],
-            },
-          },
-          signalOpts(operationOpts?.signal)
-        );
-        const newId = copied.data.id;
-        if (clobberedId && clobberedId !== newId) {
-          try {
-            await driveClient.files.delete(
-              { ...sharedDriveParams, fileId: clobberedId },
-              signalOpts(operationOpts?.signal)
+        // Verified: copying a stale cached id would resurrect a trashed
+        // file's bytes under `to`.
+        await withFileId(
+          from,
+          signal,
+          async (fromId) => {
+            // Drive copies always create a new file; capture the id currently
+            // holding `to` so overwrite semantics hold (the stale file would
+            // otherwise duplicate the key and wedge later reads with a
+            // Conflict).
+            const clobberedId = await lookupFileId(to, signal);
+            const copied = await driveClient.files.copy(
+              {
+                ...sharedDriveParams,
+                fields: "id",
+                fileId: fromId,
+                requestBody: {
+                  appProperties: { [KEY_PROP]: to },
+                  name: basename(to),
+                  parents: [rootFolderId],
+                },
+              },
+              signalOpts(signal)
             );
-          } catch (error) {
-            // Already gone is fine — the duplicate resolved itself.
-            if (mapDriveError(error).code !== "NotFound") {
-              throw error;
+            const newId = copied.data.id;
+            if (clobberedId && clobberedId !== newId) {
+              try {
+                await driveClient.files.delete(
+                  { ...sharedDriveParams, fileId: clobberedId },
+                  signalOpts(signal)
+                );
+              } catch (error) {
+                // Already gone is fine — the duplicate resolved itself.
+                if (mapDriveError(error).code !== "NotFound") {
+                  throw error;
+                }
+              }
             }
-          }
-        }
-        if (newId) {
-          fileIdCache.set(to, newId);
-        }
+            if (newId) {
+              fileIdCache.set(to, newId);
+            }
+          },
+          { verify: true }
+        );
       } catch (error) {
         throw mapDriveError(error);
       }
     },
     async delete(key, operationOpts) {
-      let fileId: string;
+      const signal = operationOpts?.signal;
       try {
-        fileId = await resolveFileId(key, operationOpts?.signal);
-      } catch (error) {
-        // Idempotent: a missing file is not an error on delete.
-        if (error instanceof FilesError && error.code === "NotFound") {
-          return;
-        }
-        throw error;
-      }
-      try {
-        await driveClient.files.delete(
-          { ...sharedDriveParams, fileId },
-          signalOpts(operationOpts?.signal)
+        // Verified: deleting a stale cached id — a file someone trashed and
+        // then replaced under the same key — would purge the trashed copy
+        // and leave the live file behind.
+        await withFileId(
+          key,
+          signal,
+          async (fileId) => {
+            await driveClient.files.delete(
+              { ...sharedDriveParams, fileId },
+              signalOpts(signal)
+            );
+          },
+          { verify: true }
         );
-        fileIdCache.delete(key);
       } catch (error) {
         const mapped = mapDriveError(error);
-        if (mapped.code === "NotFound") {
-          fileIdCache.delete(key);
-          return;
+        // Idempotent: a missing file is not an error on delete.
+        if (mapped.code !== "NotFound") {
+          throw mapped;
         }
-        throw mapped;
+      } finally {
+        fileIdCache.delete(key);
       }
     },
     async download(key, downloadOpts) {
+      const signal = downloadOpts?.signal;
+      const range = downloadOpts?.range;
+      // Drive's alt=media download honors a Range header and replies 206.
+      const rangeHeaders = range && { headers: rangeRequestHeaders(range) };
+      const metaGet = (fileId: string) =>
+        driveClient.files.get(
+          { ...sharedDriveParams, fields: GET_FIELDS, fileId },
+          signalOpts(signal)
+        );
       try {
-        const fileId = await resolveFileId(key, downloadOpts?.signal);
-        const range = downloadOpts?.range;
-        // Drive's alt=media download honors a Range header and replies 206.
-        const rangeHeaders = range && { headers: rangeRequestHeaders(range) };
         if (downloadOpts?.as === "stream") {
-          const [metaRes, mediaRes] = await Promise.all([
-            driveClient.files.get(
+          return await withFileId(key, signal, async (fileId) => {
+            const [metaRes, mediaRes] = await Promise.all([
+              metaGet(fileId),
+              driveClient.files.get(
+                { ...sharedDriveParams, alt: "media", fileId },
+                {
+                  responseType: "stream",
+                  ...(signal && { signal }),
+                  ...rangeHeaders,
+                }
+              ),
+            ]);
+            // SAFETY: with `alt: "media"` + `responseType: "stream"` gaxios
+            // resolves `data` with a Node Readable of the file's bytes, not
+            // the `Schema$File` the generated types declare.
+            const node = mediaRes.data as Readable;
+            if (metaRes.data.trashed) {
+              node.destroy();
+              assertNotTrashed(metaRes.data, key);
+            }
+            if (range) {
+              assertRangeHonored(mediaRes.status, PROVIDER);
+            }
+            const m = fileToMeta(metaRes.data);
+            return createStoredFile(
+              { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
               {
-                ...sharedDriveParams,
-                fields: FILE_FIELDS,
-                fileId,
-              },
-              signalOpts(downloadOpts?.signal)
-            ),
+                factory: () => toWebStream(node),
+                kind: "stream",
+              }
+            );
+          });
+        }
+        return await withFileId(key, signal, async (fileId) => {
+          const [metaRes, mediaRes] = await Promise.all([
+            metaGet(fileId),
             driveClient.files.get(
               { ...sharedDriveParams, alt: "media", fileId },
               {
-                responseType: "stream",
-                ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
+                responseType: "arraybuffer",
+                ...(signal && { signal }),
                 ...rangeHeaders,
               }
             ),
           ]);
+          assertNotTrashed(metaRes.data, key);
           if (range) {
             assertRangeHonored(mediaRes.status, PROVIDER);
           }
           const m = fileToMeta(metaRes.data);
-          // SAFETY: with `alt: "media"` + `responseType: "stream"` gaxios
-          // resolves `data` with a Node Readable of the file's bytes, not the
-          // `Schema$File` the generated types declare.
-          const node = mediaRes.data as Readable;
+          // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
+          // resolves `data` with the file's bytes, not the `Schema$File` the
+          // generated types declare; `toUint8` checks the shape at runtime.
+          const payload = mediaRes.data as DriveMediaPayload;
+          const bytes = toUint8(payload);
           return createStoredFile(
-            { key, ...m, ...(range && { size: rangedSize(m.size, range) }) },
-            {
-              factory: () => toWebStream(node),
-              kind: "stream",
-            }
+            { key, ...m, size: bytes.byteLength },
+            { data: bytes, kind: "buffer" }
           );
-        }
-        const [metaRes, mediaRes] = await Promise.all([
-          driveClient.files.get(
-            {
-              ...sharedDriveParams,
-              fields: FILE_FIELDS,
-              fileId,
-            },
-            signalOpts(downloadOpts?.signal)
-          ),
-          driveClient.files.get(
-            { ...sharedDriveParams, alt: "media", fileId },
-            {
-              responseType: "arraybuffer",
-              ...(downloadOpts?.signal && { signal: downloadOpts.signal }),
-              ...rangeHeaders,
-            }
-          ),
-        ]);
-        if (range) {
-          assertRangeHonored(mediaRes.status, PROVIDER);
-        }
-        const m = fileToMeta(metaRes.data);
-        // SAFETY: with `alt: "media"` + `responseType: "arraybuffer"` gaxios
-        // resolves `data` with the file's bytes, not the `Schema$File` the
-        // generated types declare; `toUint8` checks the shape at runtime.
-        const payload = mediaRes.data as DriveMediaPayload;
-        const bytes = toUint8(payload);
-        return createStoredFile(
-          { key, ...m, size: bytes.byteLength },
-          { data: bytes, kind: "buffer" }
-        );
+        });
       } catch (error) {
         throw mapDriveError(error);
       }
     },
     exists(key, operationOpts) {
-      return existsByProbe(async () => {
-        const fileId = await resolveFileId(key, operationOpts?.signal);
-        await driveClient.files.get(
-          {
-            ...sharedDriveParams,
-            fields: "id",
-            fileId,
-          },
-          signalOpts(operationOpts?.signal)
-        );
-      }, mapDriveError);
+      const signal = operationOpts?.signal;
+      return existsByProbe(
+        () =>
+          withFileId(key, signal, (fileId) =>
+            assertLiveFileId(key, fileId, signal)
+          ),
+        mapDriveError
+      );
     },
     async head(key, operationOpts) {
+      const signal = operationOpts?.signal;
       try {
-        const fileId = await resolveFileId(key, operationOpts?.signal);
-        const res = await driveClient.files.get(
-          {
-            ...sharedDriveParams,
-            fields: FILE_FIELDS,
-            fileId,
-          },
-          signalOpts(operationOpts?.signal)
-        );
-        return { key, ...fileToMeta(res.data) };
+        return await withFileId(key, signal, async (fileId) => {
+          const res = await driveClient.files.get(
+            { ...sharedDriveParams, fields: GET_FIELDS, fileId },
+            signalOpts(signal)
+          );
+          assertNotTrashed(res.data, key);
+          return { key, ...fileToMeta(res.data) };
+        });
       } catch (error) {
         throw mapDriveError(error);
       }
@@ -1272,14 +1329,24 @@ export const googleDrive = (
           "google-drive: url() requires the adapter to be constructed with `publicByDefault: true`. Drive has no signed URL primitive — use download() for private files."
         );
       }
+      const signal = urlOpts?.signal;
       try {
-        const fileId = await resolveFileId(key, urlOpts?.signal);
-        // upload() grants the permission as the bytes land, but a key written
-        // any other way — copy(), a resumable upload, a client upload through
-        // signedUploadUrl() — has none yet, so grant it before handing out a
-        // link that would otherwise ask for a Google sign-in.
-        await grantPublicRead(fileId, urlOpts?.signal);
-        return `https://drive.google.com/uc?export=download&id=${fileId}`;
+        // Verified: a stale cached id would hand out a link to a trashed
+        // file while the key lives on under a new one.
+        return await withFileId(
+          key,
+          signal,
+          async (fileId) => {
+            // upload() grants the permission as the bytes land, but a key
+            // written any other way — copy(), a resumable upload, a client
+            // upload through signedUploadUrl() — has none yet, so grant it
+            // before handing out a link that would otherwise ask for a Google
+            // sign-in.
+            await grantPublicRead(fileId, signal);
+            return `https://drive.google.com/uc?export=download&id=${fileId}`;
+          },
+          { verify: true }
+        );
       } catch (error) {
         throw mapDriveError(error);
       }

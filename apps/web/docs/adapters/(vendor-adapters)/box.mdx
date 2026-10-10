@@ -37,10 +37,41 @@ const files = new Files({
 
 // Other auth shapes the adapter accepts:
 //   developerToken: process.env.BOX_DEVELOPER_TOKEN  // dev-console token
-//   oauth: { clientId, clientSecret, refreshToken } // user-app flow
+//   oauth: { clientId, clientSecret, refreshToken, tokenStorage } // user-app flow
 //   jwt:   { configJsonString }                     // JWT server auth
 //   client: yourBoxClient                           // pre-built escape hatch
 ```
+
+### OAuth refresh tokens
+
+Box refresh tokens are single-use. Each refresh returns a new refresh token and invalidates the old one, so the `refreshToken` you configured stops working after the adapter's first refresh. By default the rotated token lives only in the instance's memory. After a restart, or in a second instance started with the same value, every call then fails with `Unauthorized` (`invalid_grant`).
+
+Pass `oauth.tokenStorage` to keep the rotated tokens somewhere durable and shared, such as your database or a KV store. The adapter seeds the storage with `refreshToken` only when it holds no token yet; after that, the stored token wins. Concurrent refreshes within one instance share a single exchange, so a burst of calls doesn't spend the same token twice.
+
+```ts lineNumbers
+const files = new Files({
+  adapter: box({
+    oauth: {
+      clientId: process.env.BOX_CLIENT_ID!,
+      clientSecret: process.env.BOX_CLIENT_SECRET!,
+      refreshToken: process.env.BOX_REFRESH_TOKEN!, // first-run seed only
+      tokenStorage: {
+        get: async () => (await kv.get("box-oauth-token")) ?? undefined,
+        store: async (token) => {
+          await kv.set("box-oauth-token", token);
+        },
+        clear: async () => {
+          await kv.delete("box-oauth-token");
+        },
+      },
+    },
+  }),
+});
+```
+
+:::tip
+For servers and background jobs, prefer `ccg` or `jwt`. They authenticate the app itself, so there is no user token to store or rotate.
+:::
 
 ## Options
 

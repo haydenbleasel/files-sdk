@@ -568,12 +568,12 @@ const createRefreshTokenAuth = (
   opts: RefreshTokenAuthOptions
 ): AuthHandle => {
   let cached: { token: string; expiresOnMs: number } | undefined;
+  // One exchange in flight at a time: a cold burst of calls shares it rather
+  // than each POSTing to the token endpoint (a 429 risk, and wasteful).
+  let inflight: Promise<string> | undefined;
 
-  const refresh = async (): Promise<string> => {
+  const exchange = async (): Promise<string> => {
     const now = Date.now();
-    if (cached && cached.expiresOnMs - REFRESH_LEEWAY_MS > now) {
-      return cached.token;
-    }
     const body = new URLSearchParams({
       client_id: opts.appKey,
       grant_type: "refresh_token",
@@ -611,6 +611,24 @@ const createRefreshTokenAuth = (
     };
     setAccessToken(client, json.access_token);
     return json.access_token;
+  };
+
+  const refresh = async (): Promise<string> => {
+    if (cached && cached.expiresOnMs - REFRESH_LEEWAY_MS > Date.now()) {
+      return cached.token;
+    }
+    if (!inflight) {
+      // Cleared once settled, so a failed exchange is retried by the next call
+      // rather than replayed to every later caller.
+      inflight = (async () => {
+        try {
+          return await exchange();
+        } finally {
+          inflight = undefined;
+        }
+      })();
+    }
+    return await inflight;
   };
 
   return {
@@ -810,16 +828,26 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     }
   };
 
+  // Dropbox paths are case-insensitive, and `path_display` carries the
+  // folder's real casing, which can differ from `rootFolderPath` (a folder
+  // created as `/Uploads` while the adapter is configured with `uploads`).
+  // Strip the root by comparing case-insensitively, then slice the display
+  // path by the root's length, so listed keys never carry the root.
+  const rootFolderLower = rootFolderPath.toLowerCase();
   const pathToKey = (path: string): string => {
     const inner = trimSlashes(path);
     if (!rootFolderPath) {
       return inner;
     }
-    if (inner === rootFolderPath) {
+    const head = inner.slice(0, rootFolderPath.length).toLowerCase();
+    if (head !== rootFolderLower) {
+      return inner;
+    }
+    const rest = inner.slice(rootFolderPath.length);
+    if (rest === "") {
       return "";
     }
-    const prefix = `${rootFolderPath}/`;
-    return inner.startsWith(prefix) ? inner.slice(prefix.length) : inner;
+    return rest.startsWith("/") ? rest.slice(1) : inner;
   };
 
   const createPublicSharedLink = async (

@@ -46,7 +46,7 @@ Body at `` `${root}/${key}` ``; sidecar at `` `${root}/${key}.meta.json` ``. Sid
 
 The separate body and sidecar layout cannot provide a cross-process atomic ETag compare-and-set boundary. The adapter therefore advertises no [conditional operations](/docs/conditional-operations) and rejects them before filesystem I/O; it does not emulate CAS with a read followed by a rename.
 
-Directories aren't objects. `head`, `exists`, `download`, `copy`, and `move` on a key that names a directory report `NotFound`, the way a cloud store treats a prefix with no object, and `delete` on one is a no-op. A write that would need a directory to be a file (`EISDIR`, `ENOTEMPTY`) fails with `Conflict`. If `root` itself isn't a directory, `delete` fails with `Invalid` instead of looking like an empty store.
+Directories aren't objects. `head`, `exists`, `download`, `copy`, and `move` on a key that names a directory report `NotFound`, the way a cloud store treats a prefix with no object, and `delete` on one is a no-op. A key that ends in `/` (or in a `.` or `..` segment) names a folder outright, so every method rejects it with `Invalid` instead of resolving it onto the file it would otherwise alias (`dir/` → `dir`). A write that would need a directory to be a file (`EISDIR`, `ENOTEMPTY`) fails with `Conflict`. If `root` itself isn't a directory, `delete` fails with `Invalid` instead of looking like an empty store.
 
 ## Compatibility
 
@@ -62,4 +62,5 @@ Directories aren't objects. `head`, `exists`, `download`, `copy`, and `move` on 
 | `copy` | ✅ |  |
 | `url` | ⚠️ | Returns a `file://` URL by default - fine for CLIs and tests, not browsers. With `urlBaseUrl` set, returns `<urlBaseUrl>/<key>` so a dev server (Next.js `/public` mount, `serve-static`, etc.) can deliver the body. `responseContentDisposition` throws because neither `file://` nor static-server URLs have a signature mechanism in which to bind the override. Only `urlBaseUrl` makes `capabilities.publicUrl` `true`: a `file://` link isn't a public URL, so without it the [gateway](/docs/ui/server/gateway) proxies downloads instead of redirecting. |
 | `signedUploadUrl` | ❌ | Throws - the fs adapter has no built-in upload server, signer, or verifier, so it cannot bind expiry, content type, or size limits into an upload capability. Upload through `files.upload()` or an application route that enforces those controls server-side. |
+| resumable uploads | ✅ | `upload({ control })` writes chunks to a `<key>.fls-part` partial next to the body (hidden from `list()`, reserved for writes) and renames it into place on completion. The partial is never opened through a symlink: a link at that path is replaced when the upload begins, and a chunk or completion that finds one fails with `Conflict`. |
 | conditional operations | ❌ | Body and metadata are separate files, so there is no honest cross-process native CAS primitive. |

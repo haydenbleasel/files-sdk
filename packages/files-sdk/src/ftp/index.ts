@@ -40,6 +40,7 @@ import {
   joinRemotePath,
   trimSlashes,
 } from "../internal/remote-path.js";
+import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
@@ -235,11 +236,14 @@ const removeIfPresent = async (
   }
 };
 
-// RNFR/RNTO `from` over `to`. Unix servers replace an existing target
-// atomically; others (IIS among them) refuse with a permanent 5xx while the
-// target exists. On that refusal, and only while the staged source is still in
-// place, remove the target and rename again — the one window where the key is
-// briefly absent.
+// RNFR/RNTO `from` over `to` (a resumable upload's staged partial, or a
+// `move()` source). Unix servers replace an existing target atomically; others
+// (IIS among them) refuse with a permanent 5xx while the target exists. On that
+// refusal, and only while the source is still in place, remove the target and
+// rename again — the one window where the key is briefly absent. If that second
+// rename fails too, the source is left intact. Paths that differ only by case
+// never take the fallback: on a case-insensitive server the "target" is the
+// source itself, and deleting it would lose the file.
 const renameOver = async (
   client: Client,
   from: string,
@@ -249,7 +253,11 @@ const renameOver = async (
     await client.rename(from, to);
   } catch (error) {
     const code = ftpReplyCode(error);
-    if (code === undefined || code < 500) {
+    if (
+      code === undefined ||
+      code < 500 ||
+      from.toLowerCase() === to.toLowerCase()
+    ) {
       throw error;
     }
     try {
@@ -292,6 +300,50 @@ const childListPath = (dir: string, name: string): string => {
   }
   return dir === "/" ? `/${name}` : `${dir}/${name}`;
 };
+
+// A FIFO mutex. `acquire()` resolves once every earlier holder has released,
+// with that turn's `release` (idempotent, so an abort path and a `finally` can
+// both call it). A holder that fails still releases, so the queue never wedges.
+const createLock = (): (() => Promise<() => void>) => {
+  let held = false;
+  const waiters: (() => void)[] = [];
+  const handOver = (): void => {
+    const next = waiters.shift();
+    if (next) {
+      // Still held: the turn passes straight to the next waiter.
+      next();
+    } else {
+      held = false;
+    }
+  };
+  return async () => {
+    if (held) {
+      // oxlint-disable-next-line promise/avoid-new -- woken by the previous holder's release, which isn't a promise.
+      await new Promise<void>((resolve) => {
+        waiters.push(resolve);
+      });
+    }
+    held = true;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        handOver();
+      }
+    };
+  };
+};
+
+// One borrowed connection. `release` hands it back once it's idle: it closes an
+// owned connection and unlocks an injected one. `interrupt` cuts an in-flight
+// command short on abort: it closes an owned connection; an injected client
+// can't be interrupted without killing the caller's socket, so it stays locked
+// until its command settles.
+interface Lease {
+  client: Client;
+  interrupt: () => void;
+  release: () => void;
+}
 
 type Resolved = { injected: Client } | { access: () => Promise<Client> };
 
@@ -358,64 +410,72 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
 
   const keyToRemote = (key: string): string => joinRemotePath(root, key);
 
-  const acquire = async (): Promise<{
-    client: Client;
-    release: () => void;
-  }> => {
+  // An FTP control connection runs one command at a time: basic-ftp closes the
+  // whole connection when a second task starts while one is running. Owned
+  // connections are per-operation, but an injected client is shared by every
+  // call — concurrent `head`s, the core's bulk fan-out — so its operations
+  // queue here, each holding the client until its last command settles.
+  const lockInjected = createLock();
+
+  const acquire = async (): Promise<Lease> => {
     if ("injected" in resolved) {
+      // The caller owns the connection lifecycle: never close it.
       return {
         client: resolved.injected,
-        release: () => {
-          // injected client: the caller owns the connection lifecycle.
+        interrupt: () => {
+          // Nothing to cut short without breaking the caller's connection.
         },
+        release: await lockInjected(),
       };
     }
     const client = await resolved.access();
     let released = false;
-    return {
-      client,
-      release: () => {
-        if (released) {
-          return;
-        }
-        released = true;
-        try {
-          client.close();
-        } catch {
-          // best-effort: a close failure must not mask the operation result.
-        }
-      },
+    const close = (): void => {
+      if (released) {
+        return;
+      }
+      released = true;
+      try {
+        client.close();
+      } catch {
+        // best-effort: a close failure must not mask the operation result.
+      }
     };
+    return { client, interrupt: close, release: close };
   };
 
   // Connect/login failures go through the same mapper as operation errors, so
   // a rejected login (530) is Unauthorized rather than a retryable Provider.
-  const acquireMapped = async (): Promise<{
-    client: Client;
-    release: () => void;
-  }> => {
+  // A call whose signal fired while it waited for an injected client's turn
+  // gives the turn straight back: the caller has already been rejected.
+  const acquireMapped = async (
+    signal: AbortSignal | undefined
+  ): Promise<Lease> => {
+    let lease: Lease;
     try {
-      return await acquire();
+      lease = await acquire();
     } catch (error) {
       throw mapFtpError(error);
     }
+    if (signal?.aborted) {
+      lease.release();
+      throw abortError(signal.reason);
+    }
+    return lease;
   };
 
   const run = async <T>(
     signal: AbortSignal | undefined,
     fn: (client: Client) => Promise<T>
   ): Promise<T> => {
-    const { client, release } = await acquireMapped();
-    const onAbort = (): void => {
-      release();
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
+    const { client, interrupt, release } = await acquireMapped(signal);
+    signal?.addEventListener("abort", interrupt, { once: true });
     try {
       return await fn(client);
     } catch (error) {
       throw mapFtpError(error);
     } finally {
-      signal?.removeEventListener("abort", onAbort);
+      signal?.removeEventListener("abort", interrupt);
       release();
     }
   };
@@ -531,24 +591,29 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         });
       }
       if (downloadOpts?.as === "stream") {
-        // The stream outlives this method, so we bypass `run`'s finally-close
-        // and release the connection when the stream ends, errors, or closes.
-        const { client, release } = await acquireMapped();
+        // The stream outlives this method, so we bypass `run`'s finally and
+        // hand the connection back once the transfer settles — which, for a
+        // shared injected client, is what lets the next queued call run. An
+        // unread stream back-pressures the transfer, so it holds the client
+        // until it is consumed or cancelled.
+        const { signal } = downloadOpts;
+        const { client, interrupt, release } = await acquireMapped(signal);
         try {
           const size = await client.size(remote);
           const lastModified = await tryLastMod(client, remote);
           const pass = new PassThrough();
-          const { signal } = downloadOpts;
+          // Destroying `pass` fails basic-ftp's pipe, so the transfer below
+          // settles (and releases) on abort or cancel too.
           const onAbort = (): void => {
             pass.destroy();
-            release();
+            interrupt();
           };
           // Detach from the signal once the stream settles: it can be a
           // long-lived (e.g. constructor-level) signal, and a listener left
           // behind would pin this connection and stream for its lifetime.
           const cleanup = (): void => {
             signal?.removeEventListener("abort", onAbort);
-            release();
+            interrupt();
           };
           pass.once("end", cleanup);
           pass.once("error", cleanup);
@@ -557,10 +622,17 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
           // Kick off the transfer without awaiting; basic-ftp pipes the data
           // socket into `pass` and resolves when it completes. It rejects with
           // `FTPError` or a Node system error, both `Error` instances.
-          // oxlint-disable-next-line promise/prefer-await-to-then, promise/prefer-await-to-callbacks, github/no-then -- fire-and-forget: errors surface on the returned stream.
-          client.downloadTo(pass, remote).catch((error: Error) => {
-            pass.destroy(error);
-          });
+          const transfer = async (): Promise<void> => {
+            try {
+              await client.downloadTo(pass, remote);
+            } catch (error) {
+              pass.destroy(error instanceof Error ? error : undefined);
+            } finally {
+              release();
+            }
+          };
+          // oxlint-disable-next-line typescript/no-floating-promises -- fire-and-forget: `transfer` never rejects; errors surface on the returned stream.
+          transfer();
           return createStoredFile(
             {
               contentType: inferTypeFromName(key),
@@ -700,16 +772,23 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
       assertNotStagingPath("ftp", toRemote, to);
+      if (fromRemote === toRemote) {
+        // Two spellings of one path (`a//b`, `a/./b`): a no-op, like moving a
+        // key onto itself.
+        return;
+      }
       await run(opts2?.signal, async (client) => {
         // Native rename — no body round-trip. RNFR/RNTO won't create the
         // destination's parent, so ensure it first (ensureDir changes cwd, so
         // restore it) and then rename relative to the login dir like every
-        // other path here.
+        // other path here. An existing destination is overwritten, as on
+        // every other adapter: `renameOver` falls back to delete-then-rename
+        // on servers (IIS among them) that refuse to replace it.
         const { dir } = splitRemote(toRemote);
         if (dir && dir !== "." && dir !== "/") {
           await ensureDirRestoringCwd(client, dir);
         }
-        await client.rename(fromRemote, toRemote);
+        await renameOver(client, fromRemote, toRemote);
       });
     },
     name: "ftp",

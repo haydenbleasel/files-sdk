@@ -164,9 +164,13 @@ const remoteDirname = (path: string): string => {
 };
 
 // Base SFTP (v3) `rename` refuses an existing target on OpenSSH and most other
-// servers. Replace the target only when that's what is in the way: the staged
-// source is still there and so is a file at the target. Deleting the target
-// first is the one window where the key is briefly absent.
+// servers. Replace the target (for a resumable upload's staged partial, or a
+// `move()` source) only when that's what is in the way: the source is still
+// there and so is a file at the target. Deleting the target first is the one
+// window where the key is briefly absent; if the second rename fails too, the
+// source is left intact. Paths that differ only by case never take the
+// fallback: on a case-insensitive server the "target" is the source itself,
+// and deleting it would lose the file.
 const renameOver = async (
   client: SftpClient,
   from: string,
@@ -176,6 +180,7 @@ const renameOver = async (
     await client.rename(from, to);
   } catch (error) {
     if (
+      from.toLowerCase() === to.toLowerCase() ||
       (await client.exists(from)) !== "-" ||
       (await client.exists(to)) !== "-"
     ) {
@@ -588,14 +593,19 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       const fromRemote = keyToRemote(from);
       const toRemote = keyToRemote(to);
       assertNotStagingPath("sftp", toRemote, to);
+      if (fromRemote === toRemote) {
+        // Two spellings of one path (`a//b`, `a/./b`): a no-op, like moving a
+        // key onto itself.
+        return;
+      }
       await run(opts2?.signal, async (client) => {
         // Native rename — no body round-trip. Ensure the destination's parent
-        // exists first (rename won't create it). Base SFTP `rename` fails if
-        // the destination already exists on many servers; that's the move
-        // contract here (the caller deletes/overwrites the target first if
-        // needed) and keeps the rename atomic.
+        // exists first (rename won't create it). An existing destination is
+        // overwritten, as on every other adapter: base SFTP `rename` refuses
+        // it on OpenSSH and most servers, so `renameOver` falls back to
+        // delete-then-rename (not atomic: the key is briefly absent).
         await ensureParentDir(client, toRemote);
-        await client.rename(fromRemote, toRemote);
+        await renameOver(client, fromRemote, toRemote);
       });
     },
     name: "sftp",

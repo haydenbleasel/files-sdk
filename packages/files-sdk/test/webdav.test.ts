@@ -86,17 +86,23 @@ const makeFakeClient = () =>
         return Promise.resolve(new Response(null, { status: 200 }));
       }
       if (remote.endsWith("no-length.txt")) {
-        // Streaming body with no Content-Length or Last-Modified header.
+        // Streaming (chunked) body with no Content-Length or Last-Modified
+        // header; a Range is still honored.
+        const slice = parseRange(opts.headers, entry.bytes.length);
         const stream = new ReadableStream<Uint8Array>({
           start(c) {
-            c.enqueue(entry.bytes);
+            c.enqueue(
+              slice
+                ? entry.bytes.subarray(slice.start, slice.end + 1)
+                : entry.bytes
+            );
             c.close();
           },
         });
         return Promise.resolve(
           new Response(stream, {
             headers: { "content-type": entry.type ?? "text/plain" },
-            status: 200,
+            status: slice ? 206 : 200,
           })
         );
       }
@@ -393,13 +399,52 @@ describe("webdav adapter", () => {
     ).rejects.toMatchObject({ code: "Provider" });
   });
 
-  test("a stream response without content-length reports size 0", async () => {
+  test("a stream response without content-length takes its size from PROPFIND", async () => {
+    // A chunked GET carries no Content-Length; reporting size 0 for a
+    // non-empty file misled consumers that size buffers or set headers.
     const files = newFiles();
     await files.upload("no-length.txt", "hello");
     const got = await files.download("no-length.txt", { as: "stream" });
-    expect(got.size).toBe(0);
+    expect(got.size).toBe(5);
     expect(got.lastModified).toBeUndefined();
     expect(await got.text()).toBe("hello");
+  });
+
+  test("a ranged stream without content-length sizes the slice from PROPFIND", async () => {
+    const files = newFiles();
+    await files.upload("no-length.txt", "0123456789");
+    const got = await files.download("no-length.txt", {
+      as: "stream",
+      range: { end: 5, start: 2 },
+    });
+    expect(got.size).toBe(4);
+    expect(await got.text()).toBe("2345");
+  });
+
+  test("a failed size lookup cancels the chunked body and throws", async () => {
+    let cancelled = false;
+    const client = {
+      customRequest() {
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { status: 200 }
+          )
+        );
+      },
+      stat() {
+        return Promise.reject(webdavError(403, "Forbidden"));
+      },
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }), retries: 0 });
+    await expect(
+      files.download("a.txt", { as: "stream" })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
+    expect(cancelled).toBe(true);
   });
 
   test("list walks recursively, paginates, and filters by prefix", async () => {

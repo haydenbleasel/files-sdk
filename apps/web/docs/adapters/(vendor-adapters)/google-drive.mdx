@@ -49,6 +49,8 @@ const files = new Files({
 
 Two files with the same virtual key (created out-of-band) make resolution throw `Conflict` rather than picking one silently. User `metadata` keys starting with `fsdk` are reserved - the adapter uses that prefix on Drive's `appProperties` for bookkeeping.
 
+The key-to-`fileId` cache is per instance, so another process (or someone in the Drive UI) can delete, trash, or replace a key behind it. When Drive reports a cached id gone, the adapter drops it and looks the key up again once, so the call acts on the file that carries the key now. A trashed file reads as missing, the same as a deleted one. `delete`, `copy`, and `url` check that a cached id isn't trashed before acting on it, so a `delete` never purges a trashed copy while the live file stays.
+
 Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value together. The adapter stores every key in the `fsdkKey` property, so keys can be at most 117 bytes, and each `metadata` key + value (and the content type) must fit in 124 bytes. Writes that exceed it throw an `Invalid` error before any Drive call.
 
 ## Compatibility

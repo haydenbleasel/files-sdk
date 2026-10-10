@@ -120,6 +120,10 @@ const concat = (parts: Uint8Array[]): Uint8Array => {
 
 interface CraftedEntry {
   name: string;
+  /** Raw name bytes, written verbatim instead of UTF-8-encoding `name`. */
+  rawName?: Uint8Array;
+  /** Central-directory extra field block. */
+  extra?: Uint8Array;
   data?: Uint8Array;
   method?: number;
   flags?: number;
@@ -141,7 +145,8 @@ const craftZip = (
   let offset = 0;
   for (const entry of entries) {
     const data = entry.data ?? new Uint8Array(0);
-    const name = encoder.encode(entry.name);
+    const name = entry.rawName ?? encoder.encode(entry.name);
+    const extra = entry.extra ?? new Uint8Array(0);
     const method = entry.method ?? 0;
     const flags = entry.flags ?? 0;
     const crc = entry.crc ?? crcOf(data);
@@ -159,7 +164,7 @@ const craftZip = (
     localView.setUint16(26, name.byteLength, true);
     local.set(name, 30);
     parts.push(local, data);
-    const record = new Uint8Array(46 + name.byteLength);
+    const record = new Uint8Array(46 + name.byteLength + extra.byteLength);
     const view = new DataView(record.buffer);
     view.setUint32(0, 0x02_01_4b_50, true);
     view.setUint16(4, 20, true);
@@ -170,8 +175,10 @@ const craftZip = (
     view.setUint32(20, csize, true);
     view.setUint32(24, size, true);
     view.setUint16(28, name.byteLength, true);
+    view.setUint16(30, extra.byteLength, true);
     view.setUint32(42, offset, true);
     record.set(name, 46);
+    record.set(extra, 46 + name.byteLength);
     central.push(record);
     offset += local.byteLength + data.byteLength;
   }
@@ -528,6 +535,140 @@ describe("zip plugin — reading archives", () => {
     // The second copy never lands on top of the first.
     const extracted = await files.download("out/a.txt");
     expect(await extracted.text()).toBe("first");
+  });
+
+  // An Info-ZIP Unicode Path extra field (0x7075): version 1, the CRC-32 of
+  // the header's raw name, then the UTF-8 name.
+  const unicodePathExtra = (
+    rawName: Uint8Array,
+    name: string,
+    crc?: number
+  ) => {
+    const utf8 = TEXT.encode(name);
+    const field = new Uint8Array(9 + utf8.byteLength);
+    const view = new DataView(field.buffer);
+    view.setUint16(0, 0x70_75, true);
+    view.setUint16(2, 5 + utf8.byteLength, true);
+    field[4] = 1;
+    view.setUint32(5, crc ?? crcOf(rawName), true);
+    field.set(utf8, 9);
+    return field;
+  };
+
+  test("names without the UTF-8 flag decode as CP437, so they neither garble nor collide", async () => {
+    // Windows Explorer and older tools write CP437 names: 0x82 is "é" and
+    // 0x8A is "è". Decoded as lossy UTF-8 both became U+FFFD — garbled keys,
+    // and two entries colliding on one name.
+    const files = withZip();
+    const crafted = craftZip([
+      {
+        data: TEXT.encode("e-acute"),
+        name: "",
+        rawName: Uint8Array.from([0x63, 0x61, 0x66, 0x82, 0x2e, 0x74]),
+      },
+      {
+        data: TEXT.encode("e-grave"),
+        name: "",
+        rawName: Uint8Array.from([0x63, 0x61, 0x66, 0x8a, 0x2e, 0x74]),
+      },
+      {
+        data: TEXT.encode("box"),
+        name: "",
+        // "╔═╗" + NBSP: CP437's box-drawing range and its last byte.
+        rawName: Uint8Array.from([0xc9, 0xcd, 0xbb, 0xff]),
+      },
+    ]);
+    await files.upload("in.zip", crafted);
+    const results = await files.unzip("in.zip");
+    expect(results.map((r) => r.key)).toEqual([
+      "caf\u00E9.t",
+      "caf\u00E8.t",
+      "\u2554\u2550\u2557\u00A0",
+    ]);
+    const acute = await files.download("caf\u00E9.t");
+    expect(await acute.text()).toBe("e-acute");
+  });
+
+  test("UTF-8 names decode as UTF-8 with or without the flag", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      // Flagged, as the spec asks (and as this plugin's writer does).
+      { data: TEXT.encode("1"), flags: 0x08_00, name: "na\u00EFve.txt" },
+      // Unflagged, as plenty of tools write it.
+      { data: TEXT.encode("2"), name: "\u65E5\u672C.txt" },
+    ]);
+    await files.upload("in.zip", crafted);
+    const results = await files.unzip("in.zip");
+    expect(results.map((r) => r.key)).toEqual([
+      "na\u00EFve.txt",
+      "\u65E5\u672C.txt",
+    ]);
+  });
+
+  test("a name flagged UTF-8 that isn't valid UTF-8 fails closed", async () => {
+    const files = withZip();
+    const crafted = craftZip([
+      {
+        data: TEXT.encode("x"),
+        flags: 0x08_00,
+        name: "",
+        rawName: Uint8Array.from([0x61, 0x82, 0x2e, 0x74]),
+      },
+    ]);
+    await files.upload("in.zip", crafted);
+    await expect(files.unzip("in.zip")).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/not valid UTF-8/u),
+    });
+  });
+
+  test("an Info-ZIP Unicode Path field supplies the name while its CRC matches", async () => {
+    const files = withZip();
+    const legacy = TEXT.encode("na_ve.txt");
+    const stale = TEXT.encode("old.txt");
+    // A field from another tool ahead of it is skipped over.
+    const other = Uint8Array.from([0x55, 0x54, 0x01, 0x00, 0x00]);
+    const crafted = craftZip([
+      {
+        data: TEXT.encode("1"),
+        extra: concat([other, unicodePathExtra(legacy, "na\u00EFve.txt")]),
+        name: "na_ve.txt",
+      },
+      {
+        // Renamed by a tool unaware of the field: the CRC no longer matches
+        // the header name, which wins.
+        data: TEXT.encode("2"),
+        extra: unicodePathExtra(stale, "ignored.txt", crcOf(legacy)),
+        name: "old.txt",
+      },
+      {
+        // A sub-field running past the block ends the scan harmlessly.
+        data: TEXT.encode("3"),
+        extra: Uint8Array.from([0x75, 0x70, 0xff, 0x00, 0x01]),
+        name: "plain.txt",
+      },
+    ]);
+    await files.upload("in.zip", crafted);
+    const results = await files.unzip("in.zip");
+    expect(results.map((r) => r.key)).toEqual([
+      "na\u00EFve.txt",
+      "old.txt",
+      "plain.txt",
+    ]);
+  });
+
+  test("a Unicode Path field holding invalid UTF-8 fails closed", async () => {
+    const files = withZip();
+    const legacy = TEXT.encode("a.txt");
+    const field = unicodePathExtra(legacy, "ab");
+    field[10] = 0xff;
+    const crafted = craftZip([
+      { data: TEXT.encode("x"), extra: field, name: "a.txt" },
+    ]);
+    await files.upload("in.zip", crafted);
+    await expect(files.unzip("in.zip")).rejects.toMatchObject({
+      code: "Invalid",
+    });
   });
 
   test("encrypted entries are refused", async () => {
