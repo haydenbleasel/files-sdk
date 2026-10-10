@@ -26,6 +26,12 @@ export interface TokenPayload {
    */
   path?: string;
   /**
+   * The origin (scheme + host) of the request that minted the token. A
+   * per-request `files` factory can pick the tenant's instance from the
+   * host, so the token is only honored on the host it was minted on.
+   */
+  origin?: string;
+  /**
    * `"proxy"` when presign handed the client the gateway's own proxy PUT
    * rather than a storage-signed target, so `complete` can tell
    * `onUploadComplete` how the bytes arrived. Absent = direct to storage.

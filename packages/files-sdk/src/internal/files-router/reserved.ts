@@ -11,6 +11,7 @@
 
 import type { Files } from "../../index.js";
 import { isString } from "../is.js";
+import { resolvesUnder } from "../key-prefix.js";
 
 const RESERVED_PREFIX_KEY = "files-sdk.reservedKeyPrefix:";
 
@@ -43,7 +44,9 @@ export const reservedKeyPrefixes = (files: Files): string[] =>
 /**
  * Whether `key` (or a list prefix) is a reserved dir itself or lies anywhere
  * beneath one — exactly the keys and prefixes the plugins neither hide from
- * `list()` nor treat as live objects.
+ * `list()` nor treat as live objects. Matched however the key is spelled: a
+ * case-insensitive store resolves `.TRASH/x` to the trash, and a Windows
+ * filesystem reads `.trash\x` as a path inside it.
  */
 export const isReservedKey = (key: string, dirs: readonly string[]): boolean =>
-  dirs.some((dir) => key === dir || key.startsWith(`${dir}/`));
+  dirs.some((dir) => resolvesUnder(key, dir));

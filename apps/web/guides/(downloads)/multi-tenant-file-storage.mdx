@@ -308,12 +308,12 @@ The gateway maps a thrown `FilesError` to its status code. Anything else becomes
 
 | `authorize` throws | Response |
 | --- | --- |
-| `new Error("Not signed in")` | `500`, `{"error":{"code":"Provider","message":"Not signed in"}}` |
+| `new Error("Not signed in")` | `500`, `{"error":{"code":"Provider","message":"internal server error"}}` |
 | `new FilesError("Unauthorized", …)` | `401` |
 | `new FilesError("ReadOnly", …)` | `403` |
 | `new FilesError("NotFound", …)` | `404` |
 
-A `500` tells the browser that storage failed, not that the user is signed out, so your UI shows the wrong error. A plain error's message also reaches the browser as-is. If your session lookup can throw (a database timeout, say), catch it in `authorize` and throw a `FilesError` with a message you're happy to show.
+A `500` tells the browser that storage failed, not that the user is signed out, so your UI shows the wrong error. A plain error's message never reaches the browser: it goes to the router's `onError` instead. A `FilesError` you throw keeps its message, whatever its code. If your session lookup can throw (a database timeout, say), catch it in `authorize` and throw a `FilesError` with a message you're happy to show.
 
 ## Delete a tenant's data
 

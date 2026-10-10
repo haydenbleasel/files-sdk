@@ -326,8 +326,12 @@ describe("onUploadComplete — rejection", () => {
       delete: (key) =>
         Promise.reject(new FilesError("Provider", `delete failed: ${key}`)),
     };
+    const reported: unknown[] = [];
     const { r } = setup({
       adapter: flaky,
+      onError: (error) => {
+        reported.push(error);
+      },
       onUploadComplete: () => {
         throw new UploadRejectedError("nope");
       },
@@ -336,9 +340,14 @@ describe("onUploadComplete — rejection", () => {
     await proxyPut(r, upload);
     const body = await complete(r, upload);
     // The rejection stays the error; the failed cleanup is reported with it,
-    // naming the caller's key rather than the scoped storage key.
+    // but only as much of it as the client may read: the provider's message
+    // (naming the scoped storage key) goes to `onError` instead.
     expect(body.errors?.[0]?.error.message).toBe(
-      `nope (removing it failed: delete failed: ${upload.key})`
+      "nope (removing it failed: storage provider error)"
+    );
+    expect(reported).toHaveLength(1);
+    expect((reported[0] as FilesError).message).toBe(
+      `delete failed: users/u1/${upload.key}`
     );
   });
 });

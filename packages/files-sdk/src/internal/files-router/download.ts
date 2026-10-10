@@ -4,11 +4,13 @@
 // the request signal wired into `files.download` so a client disconnect aborts
 // the upstream fetch.
 
-import type { ByteRange, Files, UrlOptions } from "../../index.js";
+import type { ByteRange, FileInfo, Files, UrlOptions } from "../../index.js";
+import { attachmentDisposition } from "../content-disposition.js";
 import { FilesError, isDispositionUnsupported } from "../errors.js";
+import { mediaTypeEssence } from "../media-type.js";
 import type { ResultModel } from "../router-core/web.js";
 import type { Scope } from "./authorize.js";
-import type { WireError } from "./protocol.js";
+import type { WireDownloadMeta, WireError } from "./protocol.js";
 
 export interface DownloadConfig {
   files: Files;
@@ -62,15 +64,7 @@ const parseRangeHeader = (header: string, size: number): RangeParse => {
   return { kind: "range", length: end - start + 1, range: { end, start } };
 };
 
-/** The `X-Files-Meta` payload — metadata with no HTTP-header home. */
-interface DownloadMeta {
-  etag: string | undefined;
-  key: string;
-  lastModified: number | undefined;
-  metadata: Record<string, string> | undefined;
-}
-
-const encodeMeta = (meta: DownloadMeta): string => {
+const encodeMeta = (meta: WireDownloadMeta): string => {
   const bytes = new TextEncoder().encode(JSON.stringify(meta));
   let binary = "";
   for (const byte of bytes) {
@@ -83,6 +77,12 @@ const encodeMeta = (meta: DownloadMeta): string => {
 export interface RangeRequest {
   range: string | null;
   ifRange: string | null;
+}
+
+/** A download request: its range headers, and whether it's a `HEAD`. */
+export interface DownloadRequest extends RangeRequest {
+  /** A `HEAD`: answer with the `GET`'s headers and no body. */
+  head: boolean;
 }
 
 const opaqueTag = (tag: string): string | undefined => {
@@ -159,10 +159,15 @@ const rangeNotSatisfiable = (size: number): ResultModel => {
  * itself: raster images, audio, video, and PDF (whose viewer is sandboxed by
  * the browser, and which a CSP `sandbox` would block from rendering in an
  * `<object>`/`<iframe>` preview). Everything else — HTML, SVG, XML, unknown
- * types — is served under {@link SANDBOX_POLICY}.
+ * types — is served under {@link SANDBOX_POLICY}. So is a value that isn't
+ * exactly one well-formed media type: a browser reads `image/png, text/html`
+ * as its last entry and renders HTML.
  */
 const isPassiveMedia = (contentType: string): boolean => {
-  const type = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  const type = mediaTypeEssence(contentType);
+  if (type === undefined) {
+    return false;
+  }
   return (
     type === "application/pdf" ||
     type.startsWith("video/") ||
@@ -313,16 +318,108 @@ const redirectTarget = async (
   }
 };
 
+/**
+ * The disposition the proxy sends. The gateway's own `attachment` default
+ * names the file after the key's last segment: the proxy URL ends in the
+ * endpoint (`/api/files`), so a bare `attachment` would save every download
+ * as `files`. A disposition `authorize` chose is sent as given.
+ */
+const proxyDisposition = (
+  disposition: string | undefined,
+  scope: Scope,
+  unscopedKey: string
+): string | undefined =>
+  disposition !== undefined && scope.disposition === undefined
+    ? attachmentDisposition(unscopedKey.slice(unscopedKey.lastIndexOf("/") + 1))
+    : disposition;
+
+/** What the proxy sends for a request's `Range`: a slice, or the whole body. */
+interface Served {
+  range: ByteRange | undefined;
+  length: number;
+  status: 200 | 206;
+}
+
+/**
+ * The part of the object to send for `rangeHeader`, or `undefined` when the
+ * range must be refused (416): unsatisfiable on a range adapter, or any range
+ * but the whole object on one that can't read ranges, under `"reject"`.
+ */
+const servedRange = (
+  cfg: DownloadConfig,
+  rangeHeader: string | null,
+  size: number
+): Served | undefined => {
+  const whole: Served = { length: size, range: undefined, status: 200 };
+  if (!rangeHeader) {
+    return whole;
+  }
+  if (!cfg.files.capabilities.rangeRead) {
+    return cfg.onUnsupportedRange === "reject" &&
+      !isWholeObjectRange(rangeHeader)
+      ? undefined
+      : whole;
+  }
+  const parsed = parseRangeHeader(rangeHeader, size);
+  if (parsed.kind === "unsatisfiable") {
+    return undefined;
+  }
+  return parsed.kind === "range"
+    ? { length: parsed.length, range: parsed.range, status: 206 }
+    : whole;
+};
+
+/** The proxied response's headers for `served` of the object `meta` describes. */
+const proxyHeaders = (
+  cfg: DownloadConfig,
+  meta: FileInfo,
+  contentType: string,
+  served: Served,
+  extra: { key: string; disposition: string | undefined }
+) => {
+  const { range } = served;
+  return {
+    "accept-ranges": cfg.files.capabilities.rangeRead ? "bytes" : "none",
+    // Download URLs are tenant-relative (`?op=download&key=avatar.jpg` is the
+    // same URL for every user under their own `keyPrefix`), so no shared cache
+    // may store one user's bytes and serve them to the next.
+    "cache-control": "private, no-store",
+    "content-length": String(served.length),
+    "content-type": contentType,
+    // The body is storage content served from the app's origin: never let the
+    // browser sniff it into something executable (HTML/script).
+    "x-content-type-options": "nosniff",
+    ...(!isPassiveMedia(contentType) && {
+      "content-security-policy": SANDBOX_POLICY,
+    }),
+    "x-files-meta": encodeMeta({
+      etag: meta.etag,
+      key: extra.key,
+      lastModified: meta.lastModified,
+      metadata: meta.metadata,
+      // The whole object's size, for a client behind compression middleware
+      // that drops `Content-Length`. A 206 slice's length isn't the size.
+      ...(served.status === 200 && { size: meta.size }),
+    }),
+    ...(meta.etag && { etag: entityTag(meta.etag) }),
+    ...(meta.lastModified !== undefined && {
+      "last-modified": new Date(meta.lastModified).toUTCString(),
+    }),
+    ...(extra.disposition && { "content-disposition": extra.disposition }),
+    ...(range && {
+      "content-range": `bytes ${range.start}-${range.end}/${meta.size}`,
+    }),
+  };
+};
+
 export const handleDownload = async (
   cfg: DownloadConfig,
   storageKey: string,
   unscopedKey: string,
-  request: RangeRequest,
+  request: DownloadRequest,
   scope: Scope,
   signal: AbortSignal
-  // oxlint-disable-next-line sonarjs/cognitive-complexity -- download flow (redirect vs proxy, Range + If-Range, disposition) is cohesive; splitting it would scatter tightly-coupled response logic
 ): Promise<ResultModel> => {
-  const caps = cfg.files.capabilities;
   const disposition =
     scope.disposition ?? (cfg.forceDisposition ? "attachment" : undefined);
 
@@ -338,67 +435,41 @@ export const handleDownload = async (
   }
 
   const meta = await cfg.files.head(storageKey, { signal });
-  const { size } = meta;
-  const rangeHeader = honouredRange(request, meta);
-
-  let range: ByteRange | undefined;
-  let length = size;
-  let status = 200;
-  if (rangeHeader) {
-    if (caps.rangeRead) {
-      const parsed = parseRangeHeader(rangeHeader, size);
-      if (parsed.kind === "unsatisfiable") {
-        return rangeNotSatisfiable(size);
-      }
-      if (parsed.kind === "range") {
-        ({ range } = parsed);
-        ({ length } = parsed);
-        status = 206;
-      }
-    } else if (
-      cfg.onUnsupportedRange === "reject" &&
-      !isWholeObjectRange(rangeHeader)
-    ) {
-      return rangeNotSatisfiable(size);
-    }
+  // Range is defined for GET alone (RFC 9110 §14.2): a HEAD describes the
+  // whole representation.
+  const served = servedRange(
+    cfg,
+    request.head ? null : honouredRange(request, meta),
+    meta.size
+  );
+  if (!served) {
+    return rangeNotSatisfiable(meta.size);
   }
 
-  const file = await cfg.files.download(storageKey, {
-    as: "stream",
-    signal,
-    ...(range && { range }),
-  });
+  // A HEAD never opens the body: `head()` already answered everything the
+  // headers need.
+  const file = request.head
+    ? undefined
+    : await cfg.files.download(storageKey, {
+        as: "stream",
+        signal,
+        ...(served.range && { range: served.range }),
+      });
 
-  const contentType = file.contentType || "application/octet-stream";
-  const headers = {
-    "accept-ranges": caps.rangeRead ? "bytes" : "none",
-    // Download URLs are tenant-relative (`?op=download&key=avatar.jpg` is the
-    // same URL for every user under their own `keyPrefix`), so no shared cache
-    // may store one user's bytes and serve them to the next.
-    "cache-control": "private, no-store",
-    "content-length": String(length),
-    "content-type": contentType,
-    // The body is storage content served from the app's origin: never let the
-    // browser sniff it into something executable (HTML/script).
-    "x-content-type-options": "nosniff",
-    ...(!isPassiveMedia(contentType) && {
-      "content-security-policy": SANDBOX_POLICY,
-    }),
-    "x-files-meta": encodeMeta({
-      etag: meta.etag,
+  const headers = proxyHeaders(
+    cfg,
+    meta,
+    (file ?? meta).contentType || "application/octet-stream",
+    served,
+    {
+      disposition: proxyDisposition(disposition, scope, unscopedKey),
       key: unscopedKey,
-      lastModified: meta.lastModified,
-      metadata: meta.metadata,
-    }),
-    ...(meta.etag && { etag: entityTag(meta.etag) }),
-    ...(meta.lastModified !== undefined && {
-      "last-modified": new Date(meta.lastModified).toUTCString(),
-    }),
-    ...(disposition && { "content-disposition": disposition }),
-    ...(range && {
-      "content-range": `bytes ${range.start}-${range.end}/${size}`,
-    }),
+    }
+  );
+  return {
+    headers,
+    kind: "stream",
+    status: served.status,
+    stream: file?.stream() ?? null,
   };
-
-  return { headers, kind: "stream", status, stream: file.stream() };
 };

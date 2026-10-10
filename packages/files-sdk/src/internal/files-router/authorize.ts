@@ -4,7 +4,7 @@
 // resolved `Scope` carries the key prefix, expiry clamp, disposition, and bulk
 // filter the handler applies to the actual `Files` call.
 
-import { RouterError } from "../router-core/envelope.js";
+import { RouterError, markClientFacing } from "../router-core/envelope.js";
 import { normalizePrefix } from "./keys.js";
 import type { FilesOperation } from "./protocol.js";
 
@@ -83,7 +83,15 @@ export const runAuthorize = async <TContext>(
     }
   }
 
-  const patch = (authorize ? await authorize(ctx) : undefined) ?? {};
+  let result: AuthorizeResult<TContext> | undefined;
+  try {
+    result = authorize ? await authorize(ctx) : undefined;
+  } catch (error) {
+    // A `FilesError` thrown here is the app's answer to the caller ("sign
+    // in"), so its message reaches the client whatever its code.
+    throw markClientFacing(error);
+  }
+  const patch = result ?? {};
   return {
     context: patch.context,
     disposition: patch.disposition,

@@ -2,15 +2,20 @@
 // (`presign` mints a key + HMAC token → direct-to-storage or proxy →
 // `complete` verifies via `head`); an explicit-key `upload(key, body)` streams
 // straight through. The HMAC token binds the server-chosen key + size/type and
-// the minting endpoint (path + query) so the server stays stateless and the
-// client can't forge, relax, or redeem it anywhere else.
+// the minting endpoint (origin + path + query) so the server stays stateless
+// and the client can't forge, relax, or redeem it anywhere else.
 
 import pMap from "p-map";
 
 import type { Files, SignedUpload, UploadResult } from "../../index.js";
 import { FilesError } from "../errors.js";
 import { eventSinkOf, gatewayUploadEvent } from "../events.js";
-import { RouterError, redactKeys } from "../router-core/envelope.js";
+import {
+  RouterError,
+  isReportedError,
+  markClientFacing,
+  redactKeys,
+} from "../router-core/envelope.js";
 import type { TokenPayload } from "../router-core/sign-token.js";
 import { signToken, verifyToken } from "../router-core/sign-token.js";
 import type { ResultModel } from "../router-core/web.js";
@@ -59,6 +64,12 @@ export interface UploadConfig {
   boundQuery: string;
   /** The request URL's path — a token only redeems at the endpoint that minted it. */
   boundPath: string;
+  /**
+   * The request URL's origin (scheme + host, as the gateway sees it). A
+   * per-request `files` factory can pick the instance from the host, so a
+   * token minted on one host must not redeem on another.
+   */
+  boundOrigin: string;
   now: () => number;
   /** The request's abort signal, threaded into every storage call. */
   signal: AbortSignal;
@@ -88,17 +99,22 @@ export const boundQuery = (query: URLSearchParams): string => {
 };
 
 const PATH_MISMATCH = "upload token was issued for a different endpoint";
+const ORIGIN_MISMATCH = "upload token was issued for a different origin";
 const QUERY_MISMATCH = "upload token was issued for a different endpoint query";
 
 // Why a verified token can't be redeemed by this request, if it can't: it was
 // minted at another path (a sibling router sharing the secret, whose
-// `authorize` never approved the upload) or under another query.
+// `authorize` never approved the upload), on another host (a factory that
+// picks the tenant's instance from it), or under another query.
 const bindingMismatch = (
   payload: TokenPayload,
   cfg: UploadConfig
 ): string | undefined => {
   if (payload.path !== cfg.boundPath) {
     return PATH_MISMATCH;
+  }
+  if (payload.origin !== cfg.boundOrigin) {
+    return ORIGIN_MISMATCH;
   }
   return (payload.query ?? "") === cfg.boundQuery ? undefined : QUERY_MISMATCH;
 };
@@ -133,6 +149,23 @@ const extFromName = (name: string): string => {
 
 const mintKey = (cfg: UploadConfig, prefix: string, name: string): string =>
   scopeKey(prefix, `${crypto.randomUUID()}${extFromName(name)}`, cfg.reserved);
+
+/**
+ * The size an upload is held to: what the client declared (and `authorize`
+ * approved), capped by the router's `maxUploadSize` — either one alone when
+ * the other is absent.
+ */
+export const clampMaxSize = (
+  requested: number | undefined,
+  maxUploadSize: number | undefined
+): number | undefined => {
+  if (requested === undefined) {
+    return maxUploadSize;
+  }
+  return maxUploadSize === undefined
+    ? requested
+    : Math.min(requested, maxUploadSize);
+};
 
 const clampExpiry = (base: number, ...caps: (number | undefined)[]): number => {
   let value = base;
@@ -197,12 +230,12 @@ export const handlePresign = async (
   unscope: (key: string) => string
 ): Promise<ResultModel> => {
   const { maxUploadSize } = cfg;
-  // The declared size is advisory (the proxy PUT and `complete` still enforce
-  // the real one), but a file that already says it is too large is refused
-  // before anything is signed.
+  // A file that already says it is too large is refused before anything is
+  // signed. One that understates its size is held to what it declared: the
+  // token binds it, so the proxy PUT and `complete` enforce it.
   if (
     maxUploadSize !== undefined &&
-    files.some((file) => file.size > maxUploadSize)
+    files.some((file) => file.size !== undefined && file.size > maxUploadSize)
   ) {
     throw new RouterError("Validation", "upload exceeds maxUploadSize", "size");
   }
@@ -226,7 +259,8 @@ export const handlePresign = async (
   // (the client is then handed the gateway's proxy PUT).
   const signedTarget = async (
     key: string,
-    file: ClientFileInfo
+    file: ClientFileInfo,
+    maxSize: number | undefined
   ): Promise<SignedUpload | undefined> => {
     if (!canPresign(file)) {
       return undefined;
@@ -237,7 +271,10 @@ export const handlePresign = async (
         expiresIn: signedExpires,
         minSize: 0,
         signal: cfg.signal,
-        ...(cfg.maxUploadSize && { maxSize: cfg.maxUploadSize }),
+        // Storage enforces the size when it can bind one (always, when
+        // `maxUploadSize` is set: `canPresign` requires it); otherwise
+        // `complete` does, from the token.
+        ...(maxSize !== undefined && signedUpload.maxSize && { maxSize }),
       });
     } catch (error) {
       // A refusal the capabilities didn't predict (a per-call limit such as
@@ -254,15 +291,19 @@ export const handlePresign = async (
 
   const presignOne = async (file: ClientFileInfo): Promise<PresignedUpload> => {
     const key = mintKey(cfg, scope.prefix, file.name);
-    const signed = await signedTarget(key, file);
+    // `authorize` approved the declared size (a per-user quota, say), so the
+    // upload may not grow past it.
+    const maxSize = clampMaxSize(file.size, maxUploadSize);
+    const signed = await signedTarget(key, file, maxSize);
     const expires = signed === undefined ? proxyExpires : signedExpires;
     const id = await signToken(
       {
         contentType: file.type || undefined,
         exp: cfg.now() + expires * 1000,
         key,
-        maxSize: cfg.maxUploadSize,
+        maxSize,
         minSize: 0,
+        origin: cfg.boundOrigin,
         path: cfg.boundPath,
         ...(cfg.boundQuery && { query: cfg.boundQuery }),
         ...(signed === undefined && { via: "proxy" as const }),
@@ -399,7 +440,8 @@ const settleUpload = async (
       cfg.files,
       cfg.lifecycle,
       upload.storageKey,
-      cfg.signal
+      cfg.signal,
+      cfg.reportError
     );
     return { cause: error, ok: false, removal };
   }
@@ -458,7 +500,8 @@ const completeOne = async (
         cfg.files,
         cfg.lifecycle,
         key,
-        cfg.signal
+        cfg.signal,
+        cfg.reportError
       );
       return {
         error: {
@@ -506,16 +549,19 @@ const completeOne = async (
     // A `FilesError` (the `head`) is reported like any bulk failure; anything
     // else came from the app's `completions` store, and its message stays on
     // the server.
-    return {
-      error:
-        error instanceof FilesError
-          ? bulkErrorToWire(error, key, unscope)
-          : {
-              error: rejectionToWire(error, cfg.reportError),
-              key: unscope(key),
-            },
-      ok: false,
-    };
+    if (!(error instanceof FilesError)) {
+      return {
+        error: {
+          error: rejectionToWire(error, cfg.reportError),
+          key: unscope(key),
+        },
+        ok: false,
+      };
+    }
+    if (isReportedError(error)) {
+      cfg.reportError(error);
+    }
+    return { error: bulkErrorToWire(error, key, unscope), ok: false };
   }
 };
 
@@ -639,7 +685,8 @@ export const handleExplicitUpload = async (
     wire,
   });
   if (!settled.ok) {
-    throw settled.cause;
+    // The hook's own refusal: its message is for the client.
+    throw markClientFacing(settled.cause);
   }
   const response: ExplicitUploadResponse = { file: settled.file, ok: true };
   return { body: response, kind: "json", status: 200 };

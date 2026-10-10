@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 
 import type { FilesApi } from "../api/index.js";
-import { isFunction, isObject } from "./is.js";
+import { isFunction, isObject, isString } from "./is.js";
 import { toNodeReadable, toWebStream } from "./node-stream";
 
 /** A Node request, optionally carrying Express's `originalUrl` (the pre-mount path). */
@@ -46,7 +46,12 @@ export const toWebRequest = (
   signal: AbortSignal,
   overrides: { body?: BodyInit | null; url?: string } = {}
 ): Request => {
-  const base = `${requestProtocol(req)}://${req.headers.host ?? "localhost"}`;
+  // HTTP/2 (`node:http2`'s compat API, Fastify's `http2: true`) carries the
+  // host in the `:authority` pseudo-header and may send no `Host` at all.
+  const authority = req.headers[":authority"];
+  const host =
+    req.headers.host ?? (isString(authority) ? authority : undefined);
+  const base = `${requestProtocol(req)}://${host ?? "localhost"}`;
   const url = new URL(overrides.url ?? req.originalUrl ?? req.url ?? "/", base);
 
   // `rawHeaders` is a flat [k, v, k, v, …] list — appending each pair preserves
@@ -55,7 +60,10 @@ export const toWebRequest = (
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
     const name = req.rawHeaders[i];
     const value = req.rawHeaders[i + 1];
-    if (name !== undefined && value !== undefined) {
+    // HTTP/2 pseudo-headers (`:method`, `:path`, `:authority`, `:scheme`)
+    // aren't valid header names, so `Headers` would throw on them; what they
+    // carry is already on the URL and method.
+    if (name !== undefined && value !== undefined && !name.startsWith(":")) {
       headers.append(name, value);
     }
   }

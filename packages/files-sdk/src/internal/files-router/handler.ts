@@ -13,8 +13,9 @@ import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
 import { isJsonArray, isJsonObject } from "../json.js";
+import { mediaTypeEssence } from "../media-type.js";
 import { abortError } from "../retry.js";
-import { RouterError } from "../router-core/envelope.js";
+import { RouterError, isReportedError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
 import { isOriginAllowed } from "../router-core/origin.js";
 import type { ParsedRequest, ResultModel } from "../router-core/web.js";
@@ -54,6 +55,7 @@ import type {
 import type { UploadConfig } from "./upload.js";
 import {
   boundQuery,
+  clampMaxSize,
   handleComplete,
   handleExplicitUpload,
   handlePresign,
@@ -194,6 +196,34 @@ const bulkConcurrency = (
     : Math.max(1, Math.min(Math.floor(requested), ctx.maxConcurrency));
 };
 
+/**
+ * Refuse (422, reason `type`) a client-supplied content type that isn't
+ * exactly one well-formed media type. A browser resolves a comma-separated
+ * list (`image/png, text/html`) to its last entry, so storing one would let
+ * a check that reads the first entry — the download sandbox, an `authorize`
+ * type gate — see an image while the browser renders HTML. An absent (or
+ * empty) type is fine: the adapter infers one.
+ */
+const assertMediaType = (contentType: string | null | undefined): void => {
+  if (contentType && mediaTypeEssence(contentType) === undefined) {
+    throw new RouterError(
+      "Validation",
+      `invalid content type: ${JSON.stringify(contentType)}`,
+      "type"
+    );
+  }
+};
+
+// A declared file size: a non-negative whole number of bytes, or absent when
+// the client doesn't know it.
+const optSize = (record: JsonObject): number | undefined => {
+  const size = optNum(record, "size");
+  if (size !== undefined && !(Number.isSafeInteger(size) && size >= 0)) {
+    return fail("expected a non-negative integer: size");
+  }
+  return size;
+};
+
 const fileInfos = (ctx: HandlerContext, body: JsonObject): ClientFileInfo[] => {
   const value = body.files;
   if (!isJsonArray(value) || value.length === 0) {
@@ -202,11 +232,10 @@ const fileInfos = (ctx: HandlerContext, body: JsonObject): ClientFileInfo[] => {
   capBatch(ctx, "files", value.length);
   return value.map((item) => {
     const r = asRecord(item);
-    return {
-      name: str(r, "name"),
-      size: num(r, "size"),
-      type: str(r, "type"),
-    };
+    const size = optSize(r);
+    const type = str(r, "type");
+    assertMediaType(type);
+    return { name: str(r, "name"), type, ...(size !== undefined && { size }) };
   });
 };
 
@@ -236,12 +265,21 @@ const json = <T extends object>(body: T): ResultModel => ({
 const unscoper = (scope: Scope) => (key: string) =>
   unscopeKey(scope.prefix, key);
 
+// A bulk op's per-key failures for the wire. Each entry carries only what the
+// client may read of its error; `onError` gets the ones whose detail that
+// withholds.
 const bulkErrors = (
+  ctx: HandlerContext,
   errors: { key: string; error: FilesError }[] | undefined,
   unscope: (key: string) => string
 ): WireBulkError[] | undefined =>
   errors?.length
-    ? errors.map((e) => bulkErrorToWire(e.error, e.key, unscope))
+    ? errors.map((e) => {
+        if (isReportedError(e.error)) {
+          ctx.reportError(e.error);
+        }
+        return bulkErrorToWire(e.error, e.key, unscope);
+      })
     : undefined;
 
 const uploadCfg = (
@@ -249,6 +287,7 @@ const uploadCfg = (
   parsed: ParsedRequest,
   scope?: Scope
 ): UploadConfig => ({
+  boundOrigin: parsed.requestOrigin,
   boundPath: parsed.path,
   boundQuery: boundQuery(parsed.query),
   completeGraceMs: ctx.completeGracePeriod * 1000,
@@ -295,7 +334,6 @@ const searchWalk = (
     caseInsensitive: boolean;
     clientPrefix: string;
     searchPrefix: string;
-    limit: number | undefined;
     signal: AbortSignal | undefined;
   }
 ): AsyncIterable<FileInfo> => {
@@ -307,8 +345,11 @@ const searchWalk = (
     q.clientPrefix || globHead === ""
       ? q.searchPrefix
       : scope.prefix + globHead;
+  // Always the largest page the router allows: `maxSearchScan` counts keys,
+  // so a small client page size would only multiply the provider calls one
+  // request makes (one `list()` per key at `limit: 1`).
   return ctx.files.listAll({
-    ...(q.limit && { limit: q.limit }),
+    limit: ctx.maxListLimit,
     signal: q.signal,
     ...(walkPrefix && { prefix: walkPrefix }),
   });
@@ -373,6 +414,28 @@ const scopedPrefix = (
   return storagePrefix;
 };
 
+/**
+ * Refuse (422) a `versionId` that could address outside the key's own version
+ * directory. Version ids are flat names, but the plugin joins one onto a
+ * storage path: a separator (either slash — a Windows filesystem reads `\`
+ * as one), a dot segment, or a NUL would climb into another key's versions,
+ * or out of the version store altogether.
+ */
+const assertVersionId = (versionId: string | undefined): void => {
+  if (
+    versionId !== undefined &&
+    (versionId === "" ||
+      versionId === "." ||
+      versionId.includes("..") ||
+      /[/\\\0]/u.test(versionId))
+  ) {
+    throw new RouterError(
+      "Validation",
+      `invalid versionId: ${JSON.stringify(versionId)}`
+    );
+  }
+};
+
 /** Refuse a single key `authorize`'s `filterKeys` hides from this caller. */
 const assertVisible = (scope: Scope, key: string): void => {
   if (scope.filterKeys && !scope.filterKeys(key)) {
@@ -414,18 +477,6 @@ const clampExpiry = (
     value = Math.min(value, capMax);
   }
   return value;
-};
-
-const clampUploadMaxSize = (
-  requestedMaxSize: number | undefined,
-  maxUploadSize: number | undefined
-): number | undefined => {
-  if (requestedMaxSize === undefined) {
-    return maxUploadSize;
-  }
-  return maxUploadSize === undefined
-    ? requestedMaxSize
-    : Math.min(requestedMaxSize, maxUploadSize);
 };
 
 const filtered = (scope: Scope, keys: string[]): string[] =>
@@ -564,7 +615,7 @@ const dispatchJson = async (
         scopedBatch(ctx, scope, keys),
         bulkOptions(ctx, body, signal)
       );
-      const errors = bulkErrors(result.errors, unscope);
+      const errors = bulkErrors(ctx, result.errors, unscope);
       return json({
         results: result.results.map((f) => fileInfoToWire(f, unscope)),
         ...(errors && { errors }),
@@ -594,7 +645,7 @@ const dispatchJson = async (
         scopedBatch(ctx, scope, keys),
         bulkOptions(ctx, body, signal)
       );
-      const errors = bulkErrors(result.errors, unscope);
+      const errors = bulkErrors(ctx, result.errors, unscope);
       return json({
         existing: result.existing.map(unscope),
         missing: result.missing.map(unscope),
@@ -625,7 +676,7 @@ const dispatchJson = async (
         scopedBatch(ctx, scope, keys),
         bulkOptions(ctx, body, signal)
       );
-      const errors = bulkErrors(result.errors, unscope);
+      const errors = bulkErrors(ctx, result.errors, unscope);
       return json({
         results: result.results.map(unscope),
         ...(errors && { errors }),
@@ -732,11 +783,9 @@ const dispatchJson = async (
         );
       }
       const caseInsensitive = optBool(body, "caseInsensitive") ?? false;
-      const requestedLimit = optNum(body, "limit");
-      const pageLimit =
-        requestedLimit === undefined
-          ? undefined
-          : Math.min(requestedLimit, ctx.maxListLimit);
+      // `limit` is the SDK's page-size hint, not a result cap (`maxResults`
+      // is); the walk pages at the router's own size, so it's only checked.
+      optNum(body, "limit");
       let pattern: string | RegExp;
       if (optBool(body, "isRegex")) {
         pattern = searchRegex(
@@ -778,7 +827,6 @@ const dispatchJson = async (
       for await (const file of searchWalk(ctx, scope, {
         caseInsensitive,
         clientPrefix,
-        limit: pageLimit,
         match,
         pattern,
         searchPrefix,
@@ -813,11 +861,10 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = str(body, "key");
       const expiresIn = num(body, "expiresIn");
-      const maxSize = clampUploadMaxSize(
-        optNum(body, "maxSize"),
-        ctx.maxUploadSize
-      );
+      const maxSize = clampMaxSize(optNum(body, "maxSize"), ctx.maxUploadSize);
       const minSize = optNum(body, "minSize");
+      const contentType = optStr(body, "contentType");
+      assertMediaType(contentType);
       const scope = await authorizeOp(ctx, {
         key,
         operation: "signedUploadUrl",
@@ -827,7 +874,6 @@ const dispatchJson = async (
           ...(minSize !== undefined && { minSize }),
         },
       });
-      const contentType = optStr(body, "contentType");
       const signed = await ctx.files.signedUploadUrl(scoped(ctx, scope, key), {
         expiresIn: clampExpiry(ctx, expiresIn, scope, "signedUpload"),
         signal,
@@ -841,8 +887,9 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const files = fileInfos(ctx, body);
       const expiresIn = optNum(body, "expiresIn");
-      // What the client declared — advisory (the proxy PUT and `complete`
-      // enforce the real size), but enough for a per-user quota or type gate.
+      // What the client declared, for a per-user quota or type gate. The
+      // upload token then binds the declared size, so the proxy PUT and
+      // `complete` hold the real bytes to what was approved here.
       const scope = await authorizeOp(ctx, {
         operation: "upload",
         params: {
@@ -888,6 +935,7 @@ const dispatchJson = async (
       requireOrigin(ctx, parsed);
       const key = str(body, "key");
       const versionId = optStr(body, "versionId");
+      assertVersionId(versionId);
       const scope = await authorizeOp(ctx, {
         key,
         operation: "restoreVersion",
@@ -974,7 +1022,9 @@ export const dispatch = async (
   ctx: HandlerContext,
   parsed: ParsedRequest
 ): Promise<ResultModel> => {
-  if (parsed.method === "GET" && parsed.action === "download") {
+  // HEAD is GET without the body: the same headers, no bytes read.
+  const isRead = parsed.method === "GET" || parsed.method === "HEAD";
+  if (isRead && parsed.action === "download") {
     const key = parsed.query.get("key");
     if (!key) {
       throw new RouterError("Validation", "download requires a key", "key");
@@ -988,7 +1038,11 @@ export const dispatch = async (
       downloadCfg(ctx),
       scoped(ctx, scope, key),
       key,
-      { ifRange: parsed.ifRangeHeader, range: parsed.rangeHeader },
+      {
+        head: parsed.method === "HEAD",
+        ifRange: parsed.ifRangeHeader,
+        range: parsed.rangeHeader,
+      },
       scope,
       parsed.signal
     );
@@ -1000,6 +1054,7 @@ export const dispatch = async (
     if (!key) {
       throw new RouterError("Validation", "upload requires a key", "key");
     }
+    assertMediaType(parsed.contentType);
     const scope = await authorizeOp(ctx, {
       key,
       operation: "upload",

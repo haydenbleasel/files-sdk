@@ -8,6 +8,8 @@ import { createFiles } from "../src/index.js";
 import { FilesError, dispositionUnsupported } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
 import { memory } from "../src/memory/index.js";
+import { softDelete } from "../src/soft-delete/index.js";
+import { versioning } from "../src/versioning/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const ENDPOINT = "https://app.test/api/files";
@@ -231,6 +233,28 @@ describe("createFilesRouter — read verbs", () => {
     expect(
       new URL(injected.url).searchParams.get("response-content-disposition")
     ).toBe("attachment");
+
+    // Browsers render these inline: the type isn't exactly `attachment`.
+    for (const disguised of [
+      "attachment, inline",
+      "attachment inline",
+      "attachment/x",
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one value per case
+      const res = await readJson<{ url: string }>(
+        // oxlint-disable-next-line no-await-in-loop -- one value per case
+        await r.handle(
+          post({
+            key: "docs/a.txt",
+            op: "url",
+            responseContentDisposition: disguised,
+          })
+        )
+      );
+      expect(
+        new URL(res.url).searchParams.get("response-content-disposition")
+      ).toBe("attachment");
+    }
 
     const inline = router({
       adapter,
@@ -1037,7 +1061,9 @@ describe("createFilesRouter — download", () => {
       get("op=download&key=a.txt")
     );
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-disposition")).toBe("attachment");
+    expect(res.headers.get("content-disposition")).toBe(
+      'attachment; filename="a.txt"'
+    );
     expect(await res.text()).toBe("hello");
   });
 
@@ -1172,8 +1198,8 @@ describe("createFilesRouter — upload", () => {
       maxUploadSize: 3,
       operations: ["upload"],
     });
-    // The declared size is advisory: a client can understate it at presign
-    // and then put more bytes straight to storage.
+    // A client can understate the size at presign and then put more bytes
+    // straight to storage; `complete` holds it to what it declared.
     const presign = await r.handle(
       post({
         files: [{ name: "x", size: 1, type: "text/plain" }],
@@ -1201,7 +1227,7 @@ describe("createFilesRouter — upload", () => {
     expect(first(body.errors ?? []).key).toBe(first(uploads).key);
     expect(first(body.errors ?? []).error).toMatchObject({
       code: "Validation",
-      message: "uploaded object is 10 bytes, exceeds maxSize 3",
+      message: "uploaded object is 10 bytes, exceeds maxSize 1",
       reason: "size",
     });
     expect(await createFiles({ adapter }).exists(first(uploads).key)).toBe(
@@ -1247,13 +1273,14 @@ describe("createFilesRouter — upload", () => {
       ).error.message;
     };
 
+    // The removal's provider message stays on the server.
     deleteError = new FilesError("Provider", "storage unavailable");
     expect(await oversized()).toBe(
-      "uploaded object is 10 bytes, exceeds maxSize 3 (removing it failed: storage unavailable)"
+      "uploaded object is 10 bytes, exceeds maxSize 1 (removing it failed: storage provider error)"
     );
     deleteError = new FilesError("NotFound", "already gone");
     expect(await oversized()).toBe(
-      "uploaded object is 10 bytes, exceeds maxSize 3"
+      "uploaded object is 10 bytes, exceeds maxSize 1"
     );
   });
 
@@ -1840,7 +1867,12 @@ describe("createFilesRouter — protocol errors", () => {
       operations: ["upload"],
     });
     const id = await signToken(
-      { exp: NOW + 60_000, key: "manual", path: "/api/files" },
+      {
+        exp: NOW + 60_000,
+        key: "manual",
+        origin: "https://app.test",
+        path: "/api/files",
+      },
       SECRET
     );
     const res = await r.handle(
@@ -1943,7 +1975,13 @@ describe("createFilesRouter — request signal", () => {
 
     const proxy = disconnecting(memory());
     const token = await signToken(
-      { exp: NOW + 60_000, key: "p.txt", path: "/api/files", via: "proxy" },
+      {
+        exp: NOW + 60_000,
+        key: "p.txt",
+        origin: "https://app.test",
+        path: "/api/files",
+        via: "proxy",
+      },
       SECRET
     );
     await abortedEnvelope(
@@ -1980,7 +2018,12 @@ describe("createFilesRouter — request signal", () => {
     await seed(adapter, "done.txt", "hi");
     const complete = disconnecting(adapter);
     const id = await signToken(
-      { exp: NOW + 60_000, key: "done.txt", path: "/api/files" },
+      {
+        exp: NOW + 60_000,
+        key: "done.txt",
+        origin: "https://app.test",
+        path: "/api/files",
+      },
       SECRET
     );
     const body = await readJson<{
@@ -2041,6 +2084,22 @@ const presignOne = async (
   return first((await readJson<Uploads>(res)).uploads);
 };
 
+// The decoded `X-Files-Meta` header of a proxied download.
+const filesMeta = (res: Response) =>
+  JSON.parse(atob(res.headers.get("x-files-meta") ?? "")) as {
+    key: string;
+    size?: number;
+  };
+
+// A storage error whose message carries what must never reach a client.
+const leaky = (code: FilesError["code"], opts = {}) =>
+  new FilesError(
+    code,
+    `${code}: ENOENT lstat '/var/app/storage/t/a.txt' at s3.internal:9000`,
+    undefined,
+    opts
+  );
+
 describe("createFilesRouter — proxied download headers", () => {
   const serve = async (contentType: string, opts = {}) => {
     const adapter = memory();
@@ -2086,6 +2145,124 @@ describe("createFilesRouter — proxied download headers", () => {
       });
       expect(res.headers.get("content-security-policy")).toBeNull();
     }
+  });
+
+  test("a content type that isn't one media type is sandboxed", async () => {
+    // A browser takes the last entry of a comma-separated list, so each of
+    // these renders as HTML or SVG even though it starts with an image type.
+    for (const contentType of [
+      "image/png, text/html",
+      "image/png;x=1,image/svg+xml",
+      "video/mp4,text/html",
+    ]) {
+      const adapter = memory({
+        initial: { f: { body: "<script>alert(1)</script>", contentType } },
+      });
+      const r = router({
+        adapter,
+        authorize: () => ({ disposition: "inline" }),
+        operations: ["download"],
+      });
+      // oxlint-disable-next-line no-await-in-loop -- one object per case
+      const res = await r.handle(get("op=download&key=f"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-security-policy")).toBe(
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+      );
+    }
+  });
+
+  test("the default attachment names the file after the key", async () => {
+    const adapter = memory({
+      initial: {
+        "docs/q3 report.pdf": "pdf",
+        "docs/résumé.pdf": "pdf",
+      },
+    });
+    const r = router({ adapter, operations: ["download"] });
+    const ascii = await r.handle(
+      get(`op=download&key=${encodeURIComponent("docs/q3 report.pdf")}`)
+    );
+    expect(ascii.headers.get("content-disposition")).toBe(
+      'attachment; filename="q3 report.pdf"'
+    );
+    const unicode = await r.handle(
+      get(`op=download&key=${encodeURIComponent("docs/résumé.pdf")}`)
+    );
+    expect(unicode.headers.get("content-disposition")).toBe(
+      "attachment; filename=\"r_sum_.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf"
+    );
+    // A disposition `authorize` chose is sent exactly as given.
+    const chosen = router({
+      adapter,
+      authorize: () => ({ disposition: "attachment" }),
+    });
+    expect(
+      (
+        await chosen.handle(
+          get(`op=download&key=${encodeURIComponent("docs/q3 report.pdf")}`)
+        )
+      ).headers.get("content-disposition")
+    ).toBe("attachment");
+  });
+
+  test("X-Files-Meta carries the object's size on a full response only", async () => {
+    const adapter = withCapabilities(fakeAdapter({ supportsRange: true }), {
+      signedUrl: { supported: false },
+    });
+    await seed(adapter, "a.txt", "0123456789");
+    const r = router({ adapter, operations: ["download"] });
+    const full = await r.handle(get("op=download&key=a.txt"));
+    expect(full.status).toBe(200);
+    expect(filesMeta(full)).toMatchObject({ key: "a.txt", size: 10 });
+    const slice = await r.handle(
+      get("op=download&key=a.txt", { range: "bytes=2-4" })
+    );
+    expect(slice.status).toBe(206);
+    expect(filesMeta(slice).size).toBeUndefined();
+  });
+
+  test("HEAD answers with the GET's headers and never opens the body", async () => {
+    const base = withCapabilities(fakeAdapter({ supportsRange: true }), {
+      signedUrl: { supported: false },
+    });
+    await seed(base, "a.txt", "0123456789");
+    let downloads = 0;
+    const adapter: Adapter = {
+      ...base,
+      download: (key, opts) => {
+        downloads += 1;
+        return base.download(key, opts);
+      },
+    };
+    const r = router({ adapter, operations: ["download"] });
+    const head = await r.handle(
+      new Request(`${ENDPOINT}?op=download&key=a.txt`, {
+        // Range applies to GET alone, so a HEAD describes the whole object.
+        headers: { range: "bytes=2-4" },
+        method: "HEAD",
+      })
+    );
+    expect(head.status).toBe(200);
+    expect(head.body).toBeNull();
+    expect(head.headers.get("content-length")).toBe("10");
+    expect(head.headers.get("content-range")).toBeNull();
+    expect(head.headers.get("content-disposition")).toBe(
+      'attachment; filename="a.txt"'
+    );
+    expect(head.headers.get("etag")).not.toBeNull();
+    expect(downloads).toBe(0);
+
+    // On a signing adapter, a HEAD gets the same redirect a GET would.
+    const signer = signing();
+    await seed(signer, "a.txt", "hello");
+    const redirected = await router({
+      adapter: signer,
+      operations: ["download"],
+    }).handle(
+      new Request(`${ENDPOINT}?op=download&key=a.txt`, { method: "HEAD" })
+    );
+    expect(redirected.status).toBe(302);
   });
 });
 
@@ -2229,28 +2406,29 @@ describe("createFilesRouter — error messages stay on the server", () => {
     ]);
   });
 
-  test("provider messages name the caller's key, never the keyPrefix", async () => {
+  test("a provider's NotFound names neither the key prefix nor anything else", async () => {
     const r = router({ authorize: () => ({ keyPrefix: "users/u1/" }) });
     const single = await r.handle(post({ key: "nope.txt", op: "head" }));
     expect(single.status).toBe(404);
-    const { message } = (await readJson<Envelope>(single)).error;
-    expect(message).toContain("nope.txt");
-    expect(message).not.toContain("users/u1");
+    expect((await readJson<Envelope>(single)).error).toEqual({
+      code: "NotFound",
+      message: "not found",
+    });
 
     const bulk = await readJson<{
-      errors: { key: string; error: { message: string } }[];
+      errors: { key: string; error: { code: string; message: string } }[];
     }>(await r.handle(post({ keys: ["gone.txt"], op: "head-many" })));
     expect(first(bulk.errors).key).toBe("gone.txt");
-    expect(first(bulk.errors).error.message).toContain("gone.txt");
-    expect(first(bulk.errors).error.message).not.toContain("users/u1");
+    expect(first(bulk.errors).error.code).toBe("NotFound");
+    expect(first(bulk.errors).error.message).toBe("not found");
   });
 
-  test("a message naming both ends of a copy names both client keys", async () => {
+  test("an SDK refusal naming both ends of a copy names both client keys", async () => {
     const base = memory();
     const adapter: Adapter = {
       ...base,
       copy: (from, to) =>
-        Promise.reject(new FilesError("Conflict", `${from} -> ${to} refused`)),
+        Promise.reject(new FilesError("Invalid", `${from} -> ${to} refused`)),
     };
     const r = router({
       adapter,
@@ -2258,25 +2436,146 @@ describe("createFilesRouter — error messages stay on the server", () => {
       authorize: () => ({ keyPrefix: "users/u1/" }),
     });
     const res = await r.handle(post({ from: "a", op: "copy", to: "a/b" }));
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(422);
     expect((await readJson<Envelope>(res)).error.message).toBe(
       "a -> a/b refused"
     );
   });
 
-  test("list failures are rewritten to the client prefix", async () => {
+  test("an Unsupported list refusal is rewritten to the client prefix", async () => {
     const base = memory();
     const adapter: Adapter = {
       ...base,
       list: (opts) =>
         Promise.reject(
-          new FilesError("Provider", `cannot list ${String(opts?.prefix)}`)
+          new FilesError("Unsupported", `cannot list ${String(opts?.prefix)}`)
         ),
     };
     const r = router({ adapter, authorize: () => ({ keyPrefix: "t/" }) });
     const res = await r.handle(post({ op: "list", prefix: "docs/" }));
     expect((await readJson<Envelope>(res)).error.message).toBe(
       "cannot list docs/"
+    );
+  });
+
+  test("storage messages stay on the server; Provider and Unauthorized go to onError", async () => {
+    const cases: [FilesError, number, string, boolean][] = [
+      [leaky("Provider"), 500, "storage provider error", true],
+      [leaky("NotFound"), 404, "not found", false],
+      [
+        leaky("Conflict"),
+        409,
+        "the request conflicts with the file's current state",
+        false,
+      ],
+      [leaky("Unauthorized"), 401, "storage access denied", true],
+      [
+        leaky("Provider", { aborted: true, timedOut: true }),
+        500,
+        "storage request timed out",
+        false,
+      ],
+      [leaky("Provider", { aborted: true }), 500, "request aborted", false],
+    ];
+    for (const [error, status, message, isReported] of cases) {
+      const reported: unknown[] = [];
+      const r = router({
+        adapter: { ...memory(), head: () => Promise.reject(error) },
+        authorize: () => ({ keyPrefix: "t/" }),
+        onError: (e) => {
+          reported.push(e);
+        },
+      });
+      // oxlint-disable-next-line no-await-in-loop -- one router per case
+      const res = await r.handle(post({ key: "a.txt", op: "head" }));
+      expect(res.status).toBe(status);
+      // oxlint-disable-next-line no-await-in-loop -- one router per case
+      const body = await readJson<Envelope>(res);
+      expect(body.error.message).toBe(message);
+      expect(JSON.stringify(body)).not.toContain("/var/app");
+      expect(reported).toEqual(isReported ? [error] : []);
+    }
+
+    // A bulk entry is withheld the same way, and reported the same way.
+    const reported: unknown[] = [];
+    const failing = leaky("Provider");
+    const bulk = router({
+      adapter: { ...memory(), head: () => Promise.reject(failing) },
+      onError: (e) => {
+        reported.push(e);
+      },
+      operations: ["head"],
+    });
+    const many = await readJson<{
+      errors: { error: { message: string } }[];
+    }>(await bulk.handle(post({ keys: ["a.txt"], op: "head-many" })));
+    expect(first(many.errors).error.message).toBe("storage provider error");
+    expect(reported).toEqual([failing]);
+
+    // So is a `complete` entry whose `head` fails.
+    reported.length = 0;
+    const completing = router({
+      adapter: { ...memory(), head: () => Promise.reject(failing) },
+      allowedOrigins: () => true,
+      onError: (e) => {
+        reported.push(e);
+      },
+      operations: ["upload"],
+    });
+    const upload = await presignOne(completing);
+    const completed = await readJson<{
+      errors: { error: { code: string; message: string } }[];
+    }>(
+      await completing.handle(
+        post({
+          completions: [{ id: upload.id, key: upload.key }],
+          op: "complete",
+        })
+      )
+    );
+    expect(first(completed.errors).error).toMatchObject({
+      code: "Provider",
+      message: "storage provider error",
+    });
+    expect(reported).toEqual([failing]);
+  });
+
+  test("an app hook's FilesError keeps its message, whatever its code", async () => {
+    const fromAuthorize = router({
+      authorize: () => {
+        throw new FilesError("NotFound", "video not found");
+      },
+    });
+    const denied = await fromAuthorize.handle(post({ key: "a", op: "head" }));
+    expect(denied.status).toBe(404);
+    expect((await readJson<Envelope>(denied)).error.message).toBe(
+      "video not found"
+    );
+
+    const fromFactory = createFilesRouter({
+      files: () => {
+        throw new FilesError("Unauthorized", "unknown tenant");
+      },
+      operations: ["head"],
+      secret: SECRET,
+    });
+    const unknown = await fromFactory.handle(post({ key: "a", op: "head" }));
+    expect(unknown.status).toBe(401);
+    expect((await readJson<Envelope>(unknown)).error.message).toBe(
+      "unknown tenant"
+    );
+
+    const fromHook = router({
+      allowedOrigins: () => true,
+      onUploadComplete: () => {
+        throw new FilesError("Conflict", "a.txt is locked");
+      },
+      operations: ["upload"],
+    });
+    const locked = await fromHook.handle(put("op=upload&key=a.txt", "x"));
+    expect(locked.status).toBe(409);
+    expect((await readJson<Envelope>(locked)).error.message).toBe(
+      "a.txt is locked"
     );
   });
 });
@@ -2590,5 +2889,349 @@ describe("createFilesRouter — bulk ops and a gone client", () => {
     }
     expect(calls).toBe(0);
     expect(await files.exists("a.txt")).toBe(true);
+  });
+});
+
+describe("createFilesRouter — client content types", () => {
+  const COMMA_TYPE = "image/png, text/html";
+
+  test("a content type that isn't one media type is refused at every entry", async () => {
+    const adapter = signing();
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      operations: ["upload", "signedUploadUrl"],
+    });
+    const refusals = [
+      await r.handle(
+        put("op=upload&key=x.png", "<script>", { "content-type": COMMA_TYPE })
+      ),
+      await r.handle(
+        post({
+          files: [{ name: "x.png", size: 8, type: COMMA_TYPE }],
+          op: "presign",
+        })
+      ),
+      await r.handle(
+        post({
+          contentType: "image/png;x=1,image/svg+xml",
+          expiresIn: 60,
+          key: "x.png",
+          op: "signed-upload-url",
+        })
+      ),
+    ];
+    for (const res of refusals) {
+      expect(res.status).toBe(422);
+      // oxlint-disable-next-line no-await-in-loop -- one response per entry
+      expect((await readJson<Envelope>(res)).error).toMatchObject({
+        code: "Validation",
+        reason: "type",
+      });
+    }
+    expect(await createFiles({ adapter }).exists("x.png")).toBe(false);
+  });
+
+  test("an absent or well-formed content type is accepted", async () => {
+    const r = router({ allowedOrigins: () => true, operations: ["upload"] });
+    expect((await r.handle(put("op=upload&key=a.bin", "x"))).status).toBe(200);
+    expect(
+      (
+        await r.handle(
+          put("op=upload&key=a.txt", "x", {
+            "content-type": "text/plain; charset=utf-8",
+          })
+        )
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await r.handle(
+          post({ files: [{ name: "a", size: 1, type: "" }], op: "presign" })
+        )
+      ).status
+    ).toBe(200);
+  });
+});
+
+describe("createFilesRouter — upload token binding", () => {
+  test("a token minted on one host doesn't redeem on another", async () => {
+    // A host-selected factory: each tenant's host gets its own instance.
+    const a = createFiles({ adapter: memory() });
+    const b = createFiles({ adapter: memory() });
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      files: (req) => (new URL(req.url).host === "a.app.test" ? a : b),
+      now: () => NOW,
+      operations: ["upload"],
+      secret: SECRET,
+    });
+    const presigned = first(
+      (
+        await readJson<Uploads>(
+          await r.handle(
+            new Request("https://a.app.test/api/files", {
+              body: JSON.stringify({ files: [TEXT_FILE], op: "presign" }),
+              method: "POST",
+            })
+          )
+        )
+      ).uploads
+    );
+    const elsewhere = new URL(presigned.target.url);
+    elsewhere.host = "b.app.test";
+    const res = await r.handle(
+      new Request(elsewhere, { body: "bytes", method: "PUT" })
+    );
+    expect(res.status).toBe(401);
+    expect((await readJson<Envelope>(res)).error.message).toBe(
+      "upload token was issued for a different origin"
+    );
+    expect(await b.exists(presigned.key)).toBe(false);
+
+    const completed = await readJson<{
+      errors: { error: { code: string; message: string } }[];
+    }>(
+      await r.handle(
+        new Request("https://b.app.test/api/files", {
+          body: JSON.stringify({
+            completions: [{ id: presigned.id, key: presigned.key }],
+            op: "complete",
+          }),
+          method: "POST",
+        })
+      )
+    );
+    expect(first(completed.errors).error).toMatchObject({
+      code: "Unauthorized",
+      message: "upload token was issued for a different origin",
+    });
+
+    // On the host that minted it, the same token works.
+    const home = await r.handle(
+      new Request(presigned.target.url, { body: "bytes", method: "PUT" })
+    );
+    expect(home.status).toBe(200);
+    expect(await a.exists(presigned.key)).toBe(true);
+  });
+
+  test("a token holds the upload to the size authorize approved", async () => {
+    const adapter = memory();
+    const sizes: unknown[] = [];
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      authorize: ({ params }) => {
+        // A per-user quota, checked against what the client declared.
+        sizes.push(params.files);
+      },
+      maxUploadSize: 1000,
+    });
+    const upload = await presignOne(r, { name: "a.txt", size: 5, type: "" });
+    expect(sizes).toEqual([[{ name: "a.txt", size: 5, type: "" }]]);
+    expect(payloadOf(upload.id)).toMatchObject({ maxSize: 5 });
+    const token = encodeURIComponent(tokenOf(upload.target.url));
+    const declared = await r.handle(
+      put(`op=proxy&token=${token}`, "0123456789", { "content-length": "10" })
+    );
+    expect(declared.status).toBe(422);
+    const streamed = await r.handle(
+      put(`op=proxy&token=${token}`, "0123456789")
+    );
+    expect(streamed.status).toBe(422);
+    expect((await readJson<Envelope>(streamed)).error.reason).toBe("size");
+    expect(await createFiles({ adapter }).exists(upload.key)).toBe(false);
+
+    // Bytes that reach storage some other way are still caught at complete.
+    await createFiles({ adapter }).upload(upload.key, "0123456789");
+    const completed = await readJson<{
+      errors: { error: { message: string; reason?: string } }[];
+    }>(
+      await r.handle(
+        post({
+          completions: [{ id: upload.id, key: upload.key }],
+          op: "complete",
+        })
+      )
+    );
+    expect(first(completed.errors).error).toMatchObject({
+      message: "uploaded object is 10 bytes, exceeds maxSize 5",
+      reason: "size",
+    });
+  });
+
+  test("a signed target binds the declared size when storage can", async () => {
+    const maxSizes: (number | undefined)[] = [];
+    const base = signing();
+    const adapter: Adapter = {
+      ...base,
+      signedUploadUrl: (key, opts) => {
+        maxSizes.push(opts.maxSize);
+        return base.signedUploadUrl(key, opts);
+      },
+    };
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 1000,
+      operations: ["upload"],
+    });
+    await presignOne(r, { name: "a.txt", size: 5, type: "text/plain" });
+    expect(maxSizes).toEqual([5]);
+
+    // An adapter that can't bind a size still signs, and `complete` enforces
+    // the declared size from the token.
+    const loose = withCapabilities(fakeAdapter(), {
+      signedUpload: { contentType: true, supported: true },
+    });
+    const unbound = await presignOne(
+      router({
+        adapter: loose,
+        allowedOrigins: () => true,
+        operations: ["upload"],
+      }),
+      { name: "c.txt", size: 5, type: "text/plain" }
+    );
+    expect(unbound.target.url).toContain("fake.local");
+    expect(payloadOf(unbound.id)).toMatchObject({ maxSize: 5 });
+  });
+
+  test("a size is optional, and must be a whole number of bytes", async () => {
+    const r = router({
+      allowedOrigins: () => true,
+      maxUploadSize: 1000,
+      operations: ["upload"],
+    });
+    const unknown = first(
+      (
+        await readJson<Uploads>(
+          await r.handle(
+            post({ files: [{ name: "a", type: "" }], op: "presign" })
+          )
+        )
+      ).uploads
+    );
+    expect(payloadOf(unknown.id)).toMatchObject({ maxSize: 1000 });
+    for (const size of [-1, 1.5]) {
+      // oxlint-disable-next-line no-await-in-loop -- one size per case
+      const res = await r.handle(
+        post({ files: [{ name: "a", size, type: "" }], op: "presign" })
+      );
+      expect(res.status).toBe(422);
+    }
+  });
+});
+
+describe("createFilesRouter — zero-byte uploads", () => {
+  test("a PUT with Content-Length: 0 and no body stream is an empty upload", async () => {
+    // Bun.serve, Deno, and workerd hand such a request a null body.
+    const adapter = memory();
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      maxUploadSize: 10,
+      operations: ["upload"],
+    });
+    const empty = (query: string) =>
+      new Request(`${ENDPOINT}?${query}`, {
+        headers: { "content-length": "0" },
+        method: "PUT",
+      });
+    const keyed = await r.handle(empty("op=upload&key=empty.txt"));
+    expect(keyed.status).toBe(200);
+    expect((await createFiles({ adapter }).head("empty.txt")).size).toBe(0);
+
+    const upload = await presignOne(r, { name: "e.txt", size: 0, type: "" });
+    const proxied = await r.handle(
+      empty(`op=proxy&token=${encodeURIComponent(tokenOf(upload.target.url))}`)
+    );
+    expect(proxied.status).toBe(200);
+    expect((await createFiles({ adapter }).head(upload.key)).size).toBe(0);
+  });
+});
+
+describe("createFilesRouter — reserved storage, however it's spelled", () => {
+  const withPlugins = async () => {
+    const adapter = memory();
+    const files = createFiles({
+      adapter,
+      plugins: [versioning(), softDelete()],
+    });
+    await files.upload("a.txt", "v1");
+    await files.upload("a.txt", "v2");
+    await files.upload("b.txt", "x");
+    await files.delete("b.txt");
+    const r = createFilesRouter({
+      allowedOrigins: () => true,
+      files,
+      now: () => NOW,
+      operations: ["head", "delete", "download", "list", "restoreVersion"],
+      secret: SECRET,
+    });
+    return { files, r };
+  };
+
+  test("case and backslash variants of a reserved prefix are refused", async () => {
+    const { files, r } = await withPlugins();
+    for (const key of [
+      ".TRASH/b.txt",
+      ".Trash/b.txt",
+      ".trash\\b.txt",
+      ".VERSIONS/a.txt",
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one key per case
+      const head = await r.handle(post({ key, op: "head" }));
+      expect(head.status).toBe(403);
+      // oxlint-disable-next-line no-await-in-loop -- one key per case
+      const del = await r.handle(post({ key, op: "delete" }));
+      expect(del.status).toBe(403);
+    }
+    expect(
+      (await r.handle(post({ op: "list", prefix: ".TRASH/" }))).status
+    ).toBe(403);
+    expect(await files.trashed()).toHaveLength(1);
+  });
+
+  test("a versionId that could leave the key's version dir is refused", async () => {
+    const { r } = await withPlugins();
+    for (const versionId of [
+      "",
+      ".",
+      "..",
+      "a..b",
+      "x\\y",
+      "x/y",
+      "x\u0000y",
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one id per case
+      const res = await r.handle(
+        post({ key: "a.txt", op: "restore-version", versionId })
+      );
+      expect(res.status).toBe(422);
+    }
+  });
+});
+
+describe("createFilesRouter — search page size", () => {
+  test("a client's limit doesn't multiply the provider list calls", async () => {
+    const base = memory();
+    const files = createFiles({ adapter: base });
+    await Promise.all(
+      Array.from({ length: 50 }, (_, i) => files.upload(`k${i}.txt`, "x"))
+    );
+    const limits: (number | undefined)[] = [];
+    const adapter: Adapter = {
+      ...base,
+      list: (opts) => {
+        limits.push(opts?.limit);
+        return base.list(opts);
+      },
+    };
+    const r = router({ adapter, operations: ["search"] });
+    const res = await readJson<{ matches: unknown[]; truncated: boolean }>(
+      await r.handle(post({ limit: 1, op: "search", pattern: "nomatch*" }))
+    );
+    expect(res).toEqual({ matches: [], truncated: false });
+    expect(limits).toEqual([1000]);
   });
 });

@@ -158,7 +158,13 @@ export type JsonRequest =
 /** Client-reported file info for keyless presign — used for keygen/validation only. */
 export interface ClientFileInfo {
   name: string;
-  size: number;
+  /**
+   * The file's byte size, when the client knows it. The upload token binds it
+   * (capped by `maxUploadSize`), so the bytes that land may not exceed it;
+   * omit it only when the size is genuinely unknown.
+   */
+  size?: number;
+  /** A single media type (`image/png`), or `""` for none. */
   type: string;
 }
 
@@ -297,6 +303,20 @@ export interface WireError {
   };
 }
 
+/**
+ * The base64 JSON `X-Files-Meta` header on a proxied `download` — the
+ * metadata with no HTTP-header home. `size` is the whole object's byte size,
+ * sent on a full (`200`) response only: compression middleware can drop
+ * `Content-Length`, so the client reads the size from here when it's present.
+ */
+export interface WireDownloadMeta {
+  key: string;
+  etag?: string;
+  lastModified?: number;
+  metadata?: Record<string, string>;
+  size?: number;
+}
+
 /** The query-string actions for the two byte paths. */
 export const DOWNLOAD_ACTION = "download";
 export const UPLOAD_ACTION = "upload";
@@ -304,3 +324,22 @@ export const PROXY_ACTION = "proxy";
 
 /** Default endpoint the client and demos assume. */
 export const DEFAULT_ENDPOINT = "/api/files";
+
+/**
+ * The `data` a router's `onUploadComplete` hands back to the client, for
+ * `createFilesClient<…>()` / `useFiles<…>()`. A type-only import of the
+ * router keeps server code out of the client bundle:
+ *
+ * ```ts
+ * import type { router } from "./server";
+ * const files = useFiles<InferUploadData<typeof router>>();
+ * ```
+ *
+ * It reads the router's phantom `~uploadData` field structurally, so the
+ * client's own types never reach into the gateway's modules.
+ */
+export type InferUploadData<T> = T extends {
+  readonly "~uploadData"?: infer TData;
+}
+  ? Awaited<TData>
+  : never;

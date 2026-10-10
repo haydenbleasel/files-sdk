@@ -11,6 +11,9 @@ import type { JsonValue } from "../json.js";
 import {
   INTERNAL_ERROR_MESSAGE,
   RouterError,
+  clientErrorMessage,
+  isReportedError,
+  markClientFacing,
   serializeFilesError,
 } from "../router-core/envelope.js";
 import type { WireFilesError, WireUploadedFile } from "./protocol.js";
@@ -130,13 +133,17 @@ export const uploadIdFor = async (token: string): Promise<string> => {
  * Delete a rejected object (unless configured to keep it). The rejection is
  * what the client needs to hear, so a removal that fails doesn't replace it;
  * it's reported alongside, as the message suffix this returns ("" when the
- * object is gone or kept).
+ * object is gone or kept). The suffix carries only what the client may read
+ * of the failure; `report` (the router's `onError`) gets the original when
+ * its detail is withheld.
  */
 export const discardRejected = async (
   files: Files,
   lifecycle: UploadLifecycle | undefined,
   storageKey: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- the router's `onError`, which takes any thrown value
+  report: (error: unknown) => void
 ): Promise<string> => {
   if (lifecycle?.onRejected === "keep") {
     return "";
@@ -146,9 +153,13 @@ export const discardRejected = async (
     return "";
   } catch (error) {
     const wrapped = FilesError.wrap(error);
-    return wrapped.code === "NotFound"
-      ? ""
-      : ` (removing it failed: ${wrapped.message})`;
+    if (wrapped.code === "NotFound") {
+      return "";
+    }
+    if (isReportedError(wrapped)) {
+      report(wrapped);
+    }
+    return ` (removing it failed: ${clientErrorMessage(wrapped)})`;
   }
 };
 
@@ -175,6 +186,7 @@ export const rejectionToWire = (
     };
   }
   if (cause instanceof FilesError) {
+    markClientFacing(cause);
     return serializeFilesError(cause);
   }
   report(cause);

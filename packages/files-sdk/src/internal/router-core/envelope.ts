@@ -140,6 +140,58 @@ export const redactKeys = (
   return out;
 };
 
+// Errors an app hook threw for its client on purpose — `authorize`, the
+// per-request `files` factory, `onUploadComplete`. Their message is the app's
+// answer to the caller ("sign in", "video not found"), so it crosses the wire
+// whatever its code.
+const clientFacing = new WeakSet<object>();
+
+/**
+ * Mark `error` as thrown by an app hook for the client to read: its message is
+ * sent as-is (keys still redacted), even under a code whose adapter-raised
+ * messages are withheld. Returns `error`, so a `catch` can rethrow the result.
+ */
+export const markClientFacing = <T>(error: T): T => {
+  if (isObject(error)) {
+    clientFacing.add(error);
+  }
+  return error;
+};
+
+/**
+ * What the client hears for a `FilesError` code whose message the storage
+ * layer wrote. A provider's message can carry anything — the `fs` adapter's
+ * absolute paths (`ENOENT … lstat '/var/app/…'`), an internal hostname, the
+ * bucket name — so for these codes the code and status still reach the
+ * client, but only a fixed message does.
+ */
+const WITHHELD_MESSAGES: Partial<Record<FilesErrorCode, string>> = {
+  Conflict: "the request conflicts with the file's current state",
+  NotFound: "not found",
+  Provider: "storage provider error",
+  Unauthorized: "storage access denied",
+};
+
+/**
+ * The message the client may read for `error`. The SDK's own refusals
+ * (`Invalid`, `Unsupported`, `ReadOnly`) and an app hook's errors are sent
+ * with every resolved storage key rewritten to the client's; anything a
+ * provider answered gets the fixed message for its code.
+ */
+export const clientErrorMessage = (
+  error: FilesError,
+  redactions?: KeyRedactions
+): string => {
+  const withheld = WITHHELD_MESSAGES[error.code];
+  if (withheld === undefined || clientFacing.has(error)) {
+    return redactKeys(error.message, redactions);
+  }
+  if (error.timedOut) {
+    return "storage request timed out";
+  }
+  return error.aborted ? "request aborted" : withheld;
+};
+
 /** Serialize a `FilesError` to the wire shape — the safe subset, no `cause`. */
 export const serializeFilesError = (
   error: FilesError,
@@ -147,7 +199,7 @@ export const serializeFilesError = (
 ): WireFilesError => ({
   aborted: error.aborted,
   code: error.code,
-  message: redactKeys(error.message, redactions),
+  message: clientErrorMessage(error, redactions),
   timedOut: error.timedOut,
 });
 
@@ -159,10 +211,28 @@ export const serializeFilesError = (
  */
 export const INTERNAL_ERROR_MESSAGE = "internal server error";
 
-/** Whether `cause` is an error the gateway reports verbatim (minus `cause`). */
+/**
+ * Whether the router's `onError` should get `cause`: a failure the client only
+ * hears about generically, so its detail would otherwise be lost. That's
+ * anything that isn't a `RouterError` or `FilesError`, plus a storage-layer
+ * `Provider` or `Unauthorized` error (the backend failed, or refused the
+ * gateway's own credentials) that wasn't a cancelled request. An app hook's
+ * deliberate `FilesError` and a routine `NotFound`/`Conflict` aren't reported.
+ */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
-export const isWireSafeError = (cause: unknown): boolean =>
-  cause instanceof RouterError || cause instanceof FilesError;
+export const isReportedError = (cause: unknown): boolean => {
+  if (cause instanceof RouterError) {
+    return false;
+  }
+  if (!(cause instanceof FilesError)) {
+    return true;
+  }
+  return (
+    (cause.code === "Provider" || cause.code === "Unauthorized") &&
+    !cause.aborted &&
+    !clientFacing.has(cause)
+  );
+};
 
 export interface ErrorResult {
   status: number;
@@ -172,7 +242,8 @@ export interface ErrorResult {
 /**
  * Map any thrown value to a wire error envelope + HTTP status. Anything other
  * than a `RouterError`/`FilesError` is a generic 500 — its message stays on the
- * server (see {@link INTERNAL_ERROR_MESSAGE}).
+ * server (see {@link INTERNAL_ERROR_MESSAGE}) — and a `FilesError`'s message is
+ * filtered by {@link clientErrorMessage}.
  */
 export const toErrorResult = (
   cause: unknown,
@@ -195,7 +266,7 @@ export const toErrorResult = (
     const code = wireCodeFromFilesError(cause.code);
     return {
       body: {
-        error: { code, message: redactKeys(cause.message, redactions) },
+        error: { code, message: clientErrorMessage(cause, redactions) },
       },
       status: httpStatus(code),
     };

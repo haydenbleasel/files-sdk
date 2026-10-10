@@ -41,7 +41,8 @@ export type ResultModel =
       kind: "stream";
       status: number;
       headers: Record<string, string>;
-      stream: ReadableStream<Uint8Array>;
+      /** `null` answers a `HEAD`: the headers the `GET` would send, no body. */
+      stream: ReadableStream<Uint8Array> | null;
     };
 
 /** Default cap on a JSON request body (1 MiB). */
@@ -112,7 +113,10 @@ export const parseRequest = async (
       throw new RouterError("Validation", "invalid JSON request body");
     }
   } else if (method === "PUT") {
-    bodyStream = req.body;
+    // Bun.serve (like other Web runtimes) hands a `Content-Length: 0` request
+    // a `null` body rather than an empty stream; that's a zero-byte upload,
+    // not a missing one. A body that's absent with no length stays `null`.
+    bodyStream = req.body ?? (knownLength === 0 ? new Blob([]).stream() : null);
   }
 
   return {

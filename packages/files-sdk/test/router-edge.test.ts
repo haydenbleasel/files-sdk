@@ -390,7 +390,12 @@ describe("upload edges", () => {
     ).toBe("Unauthorized");
 
     const id = await signToken(
-      { exp: NOW + 60_000, key: "ghost", path: "/api/files" },
+      {
+        exp: NOW + 60_000,
+        key: "ghost",
+        origin: "https://app.test",
+        path: "/api/files",
+      },
       SECRET
     );
     const missing = await router.handle(
@@ -468,21 +473,27 @@ describe("upload edges", () => {
     expect(await files.exists("k")).toBe(false);
   });
 
-  test("explicit upload without a size cap surfaces the provider error", async () => {
+  test("explicit upload without a size cap reports the provider error to onError", async () => {
+    const failure = new Error("provider write failed");
     const adapter: Adapter = {
       ...fakeAdapter(),
-      upload: () => Promise.reject(new Error("provider write failed")),
+      upload: () => Promise.reject(failure),
     };
+    const reported: unknown[] = [];
     const router = mk({
       adapter,
       allowedOrigins: () => true,
+      onError: (error) => {
+        reported.push(error);
+      },
       operations: ["upload"],
     });
     const res = await router.handle(put("op=upload&key=k", "hello"));
     expect(res.status).toBe(500);
     expect(
       (await readJson<{ error: { message: string } }>(res)).error.message
-    ).toContain("provider write failed");
+    ).toBe("storage provider error");
+    expect((reported[0] as FilesError).cause).toBe(failure);
   });
 });
 

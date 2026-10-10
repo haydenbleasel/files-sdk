@@ -22,7 +22,8 @@ import type {
 } from "../internal/files-router/upload-complete.js";
 import { isFunction } from "../internal/is.js";
 import {
-  isWireSafeError,
+  isReportedError,
+  markClientFacing,
   toErrorResult,
 } from "../internal/router-core/envelope.js";
 import type { AllowedOrigins } from "../internal/router-core/origin.js";
@@ -38,7 +39,10 @@ export type {
   AuthorizeResult,
   Scope,
 } from "../internal/files-router/authorize.js";
-export type { FilesOperation } from "../internal/files-router/protocol.js";
+export type {
+  FilesOperation,
+  InferUploadData,
+} from "../internal/files-router/protocol.js";
 export type {
   CompletionRecord,
   CompletionStore,
@@ -91,11 +95,13 @@ export interface CreateFilesRouterOptions<TData = unknown, TContext = unknown> {
    */
   completeGracePeriod?: number;
   /**
-   * Called with every failure the client only hears about as a generic 500 —
-   * anything thrown that isn't a `FilesError` or `RouterError`, from your
-   * `authorize`/`onUploadComplete` hooks or the gateway itself — so its
-   * message (a connection string, a SQL error) never crosses the wire but
-   * still reaches your logs. Default: `console.error`.
+   * Called with every failure whose detail the client doesn't get to see, so
+   * it still reaches your logs: anything thrown that isn't a `FilesError` or
+   * `RouterError` (from your `authorize`/`onUploadComplete` hooks or the
+   * gateway itself; the client gets a generic 500), and a storage
+   * `Provider`/`Unauthorized` error, whose provider message (a filesystem
+   * path, an internal hostname) the client hears only as a fixed one.
+   * Default: `console.error`.
    */
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- public hook contract: it receives whatever was thrown, by design
   onError?: (error: unknown, req: Request) => void;
@@ -159,19 +165,6 @@ export interface FilesApi<TData = unknown> {
   readonly "~uploadData"?: TData;
 }
 
-/**
- * The `data` a router's `onUploadComplete` hands back to the client, for
- * `createFilesClient<…>()` / `useFiles<…>()`. A type-only import of the
- * router keeps server code out of the client bundle:
- *
- * ```ts
- * import type { router } from "./server";
- * const files = useFiles<InferUploadData<typeof router>>();
- * ```
- */
-export type InferUploadData<T> =
-  T extends FilesApi<infer TData> ? Awaited<TData> : never;
-
 const resolveSecret = (secret: string | undefined): string => {
   if (secret) {
     return secret;
@@ -186,6 +179,19 @@ const resolveSecret = (secret: string | undefined): string => {
     "files-sdk/api: no `secret` and no FILES_API_SECRET — using a per-process random fallback. Uploads will not verify across load-balanced instances. Set a stable secret in production."
   );
   return `${crypto.randomUUID()}${crypto.randomUUID()}`;
+};
+
+// The per-request factory is app code: a `FilesError` it throws ("unknown
+// tenant") is its answer to the client, like one `authorize` throws.
+const resolveFiles = async (
+  factory: (req: Request) => Files | Promise<Files>,
+  req: Request
+): Promise<Files> => {
+  try {
+    return await factory(req);
+  } catch (error) {
+    throw markClientFacing(error);
+  }
 };
 
 export const createFilesRouter = <TData = undefined, TContext = undefined>(
@@ -259,7 +265,9 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
     };
     try {
       const parsed = await parseRequest(req, maxJsonBodySize);
-      const files = isFunction(opts.files) ? await opts.files(req) : opts.files;
+      const files = isFunction(opts.files)
+        ? await resolveFiles(opts.files, req)
+        : opts.files;
       const proxyUrl = (token: string): string => {
         const url = new URL(req.url);
         // Keep the caller's own query (e.g. a `?bucket=` hint consumed by a
@@ -281,7 +289,7 @@ export const createFilesRouter = <TData = undefined, TContext = undefined>(
       };
       return buildResponse(await dispatch(ctx, parsed));
     } catch (error) {
-      if (!isWireSafeError(error)) {
+      if (isReportedError(error)) {
         reportError(error);
       }
       const { body, status } = toErrorResult(error, redactions);
