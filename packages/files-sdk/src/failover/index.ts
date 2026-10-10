@@ -206,7 +206,8 @@ const normalizeSecondaries = (
  *   fails over during a primary outage lands only on the secondary.
  * - **`signedUploadUrl`** signs against the first reachable backend.
  * - a **streaming** `upload` (a `ReadableStream` body) can't be replayed, so it
- *   runs against the primary **alone** and isn't failed over.
+ *   runs against the primary **alone** and isn't failed over — and neither is
+ *   an upload with a resumable `control`, which drives exactly one upload.
  *
  * It's **body-transparent** — never buffers or transforms bytes — and adds no
  * surface (`wrap` only), so it works with plain `new Files({ plugins })`.
@@ -319,12 +320,17 @@ export const failover = (options: FailoverOptions): FilesPlugin => {
     op: Extract<FilesOperation, { kind: "upload" }>,
     runners: readonly BackendRunner[]
   ): Promise<UploadResult> => {
-    if (isReplayable(op.body)) {
+    // An `UploadControl` drives exactly one upload, so replaying it on a
+    // secondary would only throw "already driven" and hide the outage.
+    const control =
+      op.options && "control" in op.options ? op.options.control : undefined;
+    if (isReplayable(op.body) && control === undefined) {
       return runChain(op, runners, (r) =>
         r.upload(op.key, op.body, op.options)
       );
     }
-    // A stream is read-once: hand it to the primary alone and surface its error.
+    // A stream is read-once, and a resumable `control` single-use: hand the
+    // upload to the primary alone and surface its error.
     // SAFETY: the chain always starts with the primary runner (`runnerViaNext`).
     return (runners[0] as BackendRunner).upload(op.key, op.body, op.options);
   };

@@ -300,7 +300,10 @@ const scopeOf = (namespace: string, prefix: string): string =>
  *
  * Invalidation is by **caller-facing key** (never the internal prefixed path):
  * `upload`/`delete` drop that key, `copy` drops the destination, `move` drops
- * both. A provider storage event from `files-sdk/events` (an upload through a
+ * both — before the write and again after it settles, failed writes included
+ * (a timed-out write may still have landed). A read miss that overlaps a
+ * write to its key returns what it fetched but never caches it, so a slow
+ * read can't re-populate the bytes a write just replaced. A provider storage event from `files-sdk/events` (an upload through a
  * presigned URL, a write by another process) drops its key too, when the
  * instance has `events()` wired to a feed. Writes the plugin can't observe at
  * all won't invalidate; call `files.invalidateCache(key)` (or
@@ -401,6 +404,113 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
     await store.set(key, update(current));
   };
 
+  /**
+   * Per-store-key write counters, held only while a read miss of that key is
+   * in flight — so the map is bounded by concurrent reads, not by every key
+   * ever written. A write bumps the counter before and after it runs; a read
+   * that sees it move never records what it fetched, which may predate the
+   * write.
+   */
+  const inFlight = new Map<string, { reads: number; writes: number }>();
+
+  /** Note a write to `storeKey` for any read miss of it still in flight. */
+  const noteWrite = (storeKey: string): void => {
+    const entry = inFlight.get(storeKey);
+    if (entry) {
+      entry.writes += 1;
+    }
+  };
+
+  /**
+   * Run a read miss and record what it fetched — unless a write to the same
+   * key started or finished meanwhile. A slow `download("k")` would otherwise
+   * store the bytes it read *before* an `upload("k")` landed and invalidated,
+   * and serve that stale body for the full `ttl`. `run` fetches and returns
+   * the caller's value plus the record update (none to skip caching); a write
+   * that races the store round-trip itself has the record dropped again.
+   */
+  const watchedMiss = async <T>(
+    key: string,
+    run: () => Promise<{
+      value: T;
+      update?: (prev: CacheRecord) => CacheRecord;
+    }>
+  ): Promise<T> => {
+    const storeKey = keyOf(key);
+    const watched = inFlight.get(storeKey) ?? { reads: 0, writes: 0 };
+    inFlight.set(storeKey, watched);
+    watched.reads += 1;
+    const start = watched.writes;
+    try {
+      const { update, value } = await run();
+      if (update && watched.writes === start) {
+        await putRecord(storeKey, update);
+        // A write that began during the store round-trip may have dropped
+        // the record before this set landed.
+        if (watched.writes !== start) {
+          await store.delete(storeKey);
+        }
+      }
+      return value;
+    } finally {
+      watched.reads -= 1;
+      if (watched.reads === 0) {
+        inFlight.delete(storeKey);
+      }
+    }
+  };
+
+  /**
+   * Drop the records of `keys`, noting the write for any read miss of them in
+   * flight. `quiet` swallows the store's own failure, for the paths where the
+   * caller must see the mutation's outcome, never a store hiccup.
+   */
+  const drop = async (
+    keys: readonly string[],
+    quiet: boolean
+  ): Promise<void> => {
+    await Promise.all(
+      keys.map(async (key) => {
+        const storeKey = keyOf(key);
+        noteWrite(storeKey);
+        try {
+          await store.delete(storeKey);
+        } catch (error) {
+          if (!quiet) {
+            throw error;
+          }
+        }
+      })
+    );
+  };
+
+  /**
+   * Run a mutation with `keys` invalidated on both sides of it. Before it
+   * runs, best-effort, so a record can't outlive a write whose process dies
+   * before the second drop. After it settles — whether it succeeded or failed,
+   * since a timed-out or otherwise failed write may still have landed — on
+   * `failureKeys` when it failed (a conditional copy's rejected *source*
+   * ETag is stale too). Only the success path lets a store failure surface:
+   * a failed mutation's own error is the outcome the caller must see (a
+   * `Conflict` is what drives a head() → retry loop).
+   */
+  const invalidating = async <T>(
+    keys: readonly string[],
+    failureKeys: readonly string[],
+    run: () => Promise<T>
+  ): Promise<T> => {
+    await drop(keys, true);
+    let result: T;
+    try {
+      result = await run();
+    } catch (error) {
+      await drop(failureKeys, true);
+      throw error;
+    }
+    await drop(keys, false);
+    return result;
+  };
+
   const cachedHead = async (
     op: Extract<FilesOperation, { kind: "head" }>,
     next: PluginNext
@@ -413,13 +523,17 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
       return cloneMeta(entry.meta);
     }
     stats.misses += 1;
-    const file = await next(op);
-    const meta = metaOf(file);
-    await putRecord(keyOf(op.key), (prev) => ({
-      ...prev,
-      head: { expiresAt: expiryFrom(now), meta },
-    }));
-    return file;
+    return watchedMiss(op.key, async () => {
+      const file = await next(op);
+      const meta = metaOf(file);
+      return {
+        update: (prev) => ({
+          ...prev,
+          head: { expiresAt: expiryFrom(now), meta },
+        }),
+        value: file,
+      };
+    });
   };
 
   const cachedUrl = async (
@@ -435,24 +549,28 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
       return entry.value;
     }
     stats.misses += 1;
-    const value = await next(op);
-    // The signature-lifetime cap must apply even when the caller omits
-    // `expiresIn` — the adapter still signs with a finite default — or a
-    // long/disabled `ttl` would keep serving the URL past its signature. When
-    // the URL states its own lifetime, a shorter one (an inner plugin clamped
-    // the request) wins.
-    const capMs = Math.min(
-      (op.options?.expiresIn ?? defaultUrlExpiresIn) * 1000,
-      signedLifetimeMs(value) ?? Number.POSITIVE_INFINITY
-    );
-    await putRecord(keyOf(op.key), (prev) => ({
-      ...prev,
-      urls: {
-        ...prev.urls,
-        [signature]: { expiresAt: expiryFrom(now, capMs), value },
-      },
-    }));
-    return value;
+    return watchedMiss(op.key, async () => {
+      const value = await next(op);
+      // The signature-lifetime cap must apply even when the caller omits
+      // `expiresIn` — the adapter still signs with a finite default — or a
+      // long/disabled `ttl` would keep serving the URL past its signature.
+      // When the URL states its own lifetime, a shorter one (an inner plugin
+      // clamped the request) wins.
+      const capMs = Math.min(
+        (op.options?.expiresIn ?? defaultUrlExpiresIn) * 1000,
+        signedLifetimeMs(value) ?? Number.POSITIVE_INFINITY
+      );
+      return {
+        update: (prev) => ({
+          ...prev,
+          urls: {
+            ...prev.urls,
+            [signature]: { expiresAt: expiryFrom(now, capMs), value },
+          },
+        }),
+        value,
+      };
+    });
   };
 
   const cachedDownload = async (
@@ -473,63 +591,36 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
       });
     }
     stats.misses += 1;
-    const file = await next(op);
-    // Buffering an unknown-length or large body would break streaming, so only
-    // small, known-length responses are cached — the rest passes through as-is.
-    if (!isNumber(file.size) || file.size > maxBytes) {
-      return file;
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const meta = metaOf(file);
-    // The cache keeps its own copy, so the caller's bytes stay theirs to
-    // mutate.
-    await putRecord(keyOf(op.key), (prev) => ({
-      ...prev,
-      downloads: {
-        ...prev.downloads,
-        [signature]: {
-          bytes: new Uint8Array(bytes),
-          expiresAt: expiryFrom(now),
-          meta,
-        },
-      },
-    }));
-    return createStoredFile(cloneMeta(meta), { data: bytes, kind: "buffer" });
-  };
-
-  /**
-   * Run a mutation (or exact read) and, when it fails in a way that proves the
-   * cached record stale, drop the affected keys before rethrowing. Only a
-   * conditional operation or a `Conflict` qualifies: a plain failed write is
-   * no evidence either way, and invalidating on every failure would charge a
-   * remote-store round-trip to each NotFound in a bulk delete. The store's own
-   * failure on this path is swallowed — the caller must see the original
-   * error (a `Conflict` is what drives a head() → retry loop), never a store
-   * hiccup dressed up as the outcome of the mutation.
-   */
-  const invalidateOnStaleFailure = async <T>(
-    op: FilesOperation,
-    keys: readonly string[],
-    run: () => Promise<T>
-  ): Promise<T> => {
-    try {
-      return await run();
-    } catch (error) {
-      const conflict = error instanceof FilesError && error.code === "Conflict";
-      if (conflict || isConditionalOperation(op)) {
-        await Promise.all(
-          keys.map(async (key) => {
-            try {
-              await store.delete(keyOf(key));
-            } catch {
-              // The original error is the outcome; a store hiccup here must
-              // not replace it.
-            }
-          })
-        );
+    return watchedMiss(op.key, async () => {
+      const file = await next(op);
+      // Buffering an unknown-length or large body would break streaming, so
+      // only small, known-length responses are cached — the rest passes
+      // through as-is.
+      if (!isNumber(file.size) || file.size > maxBytes) {
+        return { value: file };
       }
-      throw error;
-    }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const meta = metaOf(file);
+      return {
+        // The cache keeps its own copy, so the caller's bytes stay theirs to
+        // mutate.
+        update: (prev) => ({
+          ...prev,
+          downloads: {
+            ...prev.downloads,
+            [signature]: {
+              bytes: new Uint8Array(bytes),
+              expiresAt: expiryFrom(now),
+              meta,
+            },
+          },
+        }),
+        value: createStoredFile(cloneMeta(meta), {
+          data: bytes,
+          kind: "buffer",
+        }),
+      };
+    });
   };
 
   // SAFETY: the engine folds `wrap` over the erased `FilesOperation` union and
@@ -555,38 +646,34 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
         // rejected predicate does prove the cached record stale, though, so
         // it invalidates like a failed conditional write would.
         if (isConditionalOperation(op)) {
-          return invalidateOnStaleFailure(op, [op.key], () => next(op));
+          try {
+            return await next(op);
+          } catch (error) {
+            await drop([op.key], true);
+            throw error;
+          }
         }
         return enabled.has("download") ? cachedDownload(op, next) : next(op);
       }
       // Writes always invalidate, regardless of which reads are cached — drop
-      // the affected key(s) after the mutation lands. A failed write leaves
-      // the record alone unless the failure itself proved it stale (see
-      // `invalidateOnStaleFailure`).
+      // the affected key(s) before and after the mutation, and after a failed
+      // one too (see `invalidating`).
       case "upload":
       case "delete": {
-        const result = await invalidateOnStaleFailure(op, [op.key], () =>
-          next(op)
-        );
-        await store.delete(keyOf(op.key));
-        return result;
+        return invalidating([op.key], [op.key], () => next(op));
       }
       case "copy": {
         // A conditional copy can fail on its *source* predicate too, so a
         // stale cached source ETag would replay the same conflict; drop both
-        // ends on a stale failure. The success path touches only `op.to`.
-        const keys = isConditionalOperation(op) ? [op.from, op.to] : [op.to];
-        const result = await invalidateOnStaleFailure(op, keys, () => next(op));
-        await store.delete(keyOf(op.to));
-        return result;
+        // ends on a failure. Otherwise only `op.to` changes.
+        const failureKeys = isConditionalOperation(op)
+          ? [op.from, op.to]
+          : [op.to];
+        return invalidating([op.to], failureKeys, () => next(op));
       }
       case "move": {
         const keys = [op.from, op.to];
-        const result = await invalidateOnStaleFailure(op, keys, () => next(op));
-        // oxlint-disable-next-line react-doctor/async-parallel -- ordered after the write settles, not independent work.
-        await store.delete(keyOf(op.from));
-        await store.delete(keyOf(op.to));
-        return result;
+        return invalidating(keys, keys, () => next(op));
       }
       default: {
         return next(op);

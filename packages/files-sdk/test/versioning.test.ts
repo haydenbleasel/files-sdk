@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
+import { fs } from "../src/fs/index.js";
 import { createFiles, FilesError } from "../src/index.js";
 import type {
   Adapter,
@@ -566,6 +570,32 @@ describe("versioning plugin — nested keys", () => {
     ).rejects.toThrow(/version ids never contain/u);
   });
 
+  test.each([
+    ["a backslash climb into another key", "..\\..\\..\\users\\2\\secret\\"],
+    ["a backslash into a nested key", "b\\"],
+    ["a dot segment", ".."],
+    ["a current-dir segment", "."],
+    ["nothing at all", ""],
+    ["a NUL byte", "\0"],
+    ["an embedded climb", "x..y"],
+  ])("rejects a versionId with %s", async (_name, spelling) => {
+    const files = withVersioning();
+    await files.upload("users/1/a", "mine-v1");
+    await files.upload("users/1/a", "mine-v2");
+    await files.upload("users/2/secret", "theirs-v1");
+    await files.upload("users/2/secret", "theirs-v2");
+    const [theirs] = await files.versions("users/2/secret");
+    const id = /[/\\]$/u.test(spelling)
+      ? `${spelling}${theirs?.versionId}`
+      : spelling;
+
+    await expect(files.restoreVersion("users/1/a", id)).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/version ids never contain/u),
+    });
+    expect(await bodyOf(files, "users/1/a")).toBe("mine-v2");
+  });
+
   test("pruning a key leaves a nested key's snapshots alone", async () => {
     const files = withVersioning({ limit: 1 });
     // a/b accrues two snapshots first, so they'd be counted (and the parent's
@@ -669,5 +699,35 @@ describe("versioning plugin — conditional policy", () => {
       next
     );
     expect(nextCalls).toBe(1);
+  });
+});
+
+describe("versioning plugin — keys spelled like the version store", () => {
+  test("a key that resolves out of the store is still snapshotted", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "files-versions-"));
+    const files = withVersioning({}, fs({ root }));
+    await files.upload("notes.txt", "v1");
+    // A filesystem resolves this to `notes.txt`; skipping its snapshot as a
+    // store key would overwrite the live file with no history.
+    await files.upload(".versions/../notes.txt", "v2");
+    expect(await bodyOf(files, "notes.txt")).toBe("v2");
+    expect(await files.versions("notes.txt")).toHaveLength(1);
+    await files.restoreVersion("notes.txt");
+    expect(await bodyOf(files, "notes.txt")).toBe("v1");
+  });
+
+  test("an ignore prefix is matched the same way", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "files-versions-"));
+    const files = withVersioning({ ignore: ["scratch"] }, fs({ root }));
+    await files.upload("notes.txt", "v1");
+    await files.upload("scratch/../notes.txt", "v2");
+    expect(await files.versions("notes.txt")).toHaveLength(1);
+  });
+
+  test("a differently cased store key is a live key on a case-sensitive store", async () => {
+    const files = withVersioning();
+    await files.upload(".VERSIONS/report.pdf", "v1");
+    await files.upload(".VERSIONS/report.pdf", "v2");
+    expect(await files.versions(".VERSIONS/report.pdf")).toHaveLength(1);
   });
 });

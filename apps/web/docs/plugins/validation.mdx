@@ -48,6 +48,8 @@ Every option is independent - set any combination, and with none set the plugin 
 
 Each `allowedTypes` entry is an exact type (`"image/png"`) or a group wildcard (`"image/*"`). Matching is case-insensitive and ignores any `; charset=...` parameter. The type checked is `options.contentType` if you pass it, otherwise a `Blob`/`File`'s own `.type`, otherwise the type inferred from the key's extension - and the plugin forwards that checked type as the upload's `contentType`, so it's the type the object is stored as.
 
+A type that isn't exactly one well-formed media type - `image/png, text/html`, a missing subtype, a control character - fails the `type` rule outright. A browser reads a comma-separated list as its _last_ entry, so `image/png;a=b, text/html` would otherwise pass an `image/*` allowlist and render as HTML.
+
 ```ts lineNumbers
 validation({ allowedTypes: ["image/*"] });
 

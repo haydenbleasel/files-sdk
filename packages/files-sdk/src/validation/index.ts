@@ -3,6 +3,7 @@ import type { Body, FilesPlugin } from "../index.js";
 import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { isFunction, isString } from "../internal/is.js";
+import { mediaTypeEssence } from "../internal/media-type.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
 /**
@@ -62,7 +63,11 @@ export interface ValidationOptions {
    * `; charset=…` parameter. The type checked is `options.contentType` when you
    * pass it, else a `Blob`/`File`'s own `.type`, else the type inferred from the
    * key's extension — and that checked type is forwarded as the upload's
-   * `contentType`, so it's the type that gets stored.
+   * `contentType`, so it's the type that gets stored. A type that isn't exactly
+   * one well-formed media type (`"image/png, text/html"`, a missing subtype, a
+   * control character) is rejected outright: a browser reads a
+   * comma-separated list as its *last* entry, so it would render a type the
+   * check never saw.
    */
   allowedTypes?: string[];
   /**
@@ -80,18 +85,33 @@ const baseType = (value: string): string => {
   return essence.trim().toLowerCase();
 };
 
-/** Whether `type` satisfies any of `allowed` (an exact match or `group/*`). */
-const typeIsAllowed = (type: string, allowed: readonly string[]): boolean => {
-  const actual = baseType(type);
-  const slash = actual.indexOf("/");
-  const group = slash === -1 ? "" : actual.slice(0, slash + 1);
+/**
+ * Whether the media-type `essence` (already lowercased `type/subtype`)
+ * satisfies any of `allowed` (an exact match or `group/*`).
+ */
+const typeIsAllowed = (
+  essence: string,
+  allowed: readonly string[]
+): boolean => {
+  const group = essence.slice(0, essence.indexOf("/") + 1);
   return allowed.some((entry) => {
     const pattern = baseType(entry);
     return (
-      pattern === actual ||
+      pattern === essence ||
       (pattern.endsWith("/*") && pattern.slice(0, -1) === group)
     );
   });
+};
+
+/**
+ * The approved type as it's stored: the normalized essence plus whatever
+ * parameters the caller attached (`text/plain; charset=utf-8`). Only called
+ * once {@link mediaTypeEssence} has accepted `type`, so the parameters hold no
+ * comma or control character.
+ */
+const storedType = (type: string, essence: string): string => {
+  const semicolon = type.indexOf(";");
+  return semicolon === -1 ? essence : `${essence}${type.slice(semicolon)}`;
 };
 
 /**
@@ -310,16 +330,29 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
             op.body,
             op.key
           );
-          if (!typeIsAllowed(type, allowedTypes)) {
+          // Parse strictly before matching: a loose read of
+          // `image/png;a=b, text/html` sees `image/png`, but a browser
+          // renders the stored value as its last entry, `text/html`.
+          const essence = mediaTypeEssence(type);
+          if (essence === undefined) {
             throw new ValidationError(
               "type",
-              `validation: "${op.key}" has type "${baseType(type)}", which is not one of the allowed types (${allowedTypes.join(", ")})`
+              `validation: "${op.key}" has a malformed content type ${JSON.stringify(type)}; declare exactly one media type, like "image/png"`
+            );
+          }
+          if (!typeIsAllowed(essence, allowedTypes)) {
+            throw new ValidationError(
+              "type",
+              `validation: "${op.key}" has type "${essence}", which is not one of the allowed types (${allowedTypes.join(", ")})`
             );
           }
           // Store the type that was approved. A key-inferred type would
           // otherwise be dropped (core never infers from the key), and the
           // object would land as the adapter's default instead.
-          checked = { ...op, options: { ...op.options, contentType: type } };
+          checked = {
+            ...op,
+            options: { ...op.options, contentType: storedType(type, essence) },
+          };
         }
         // No size rule → nothing left to inspect; forward the body untouched
         // so streaming and resumable uploads keep working.

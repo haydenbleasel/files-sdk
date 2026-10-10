@@ -720,6 +720,102 @@ describe("tiering — per-call options reach a cross-tier copy", () => {
   });
 });
 
+/**
+ * A fake whose delete throws `NotFound` for a missing key, as GCS and Firebase
+ * do — the core contract allows either that or a no-op.
+ */
+const strictDelete = (base: FakeAdapter): Adapter => ({
+  ...base,
+  delete: (key) =>
+    base.has(key)
+      ? base.delete(key)
+      : Promise.reject(new FilesError("NotFound", `strict: ${key} not found`)),
+});
+
+describe("tiering — fallback over tiers whose delete throws NotFound", () => {
+  const big = "x".repeat(50);
+  const strictTiers = (route: TierRouter = sizeRoute) => {
+    const hot = fakeAdapter();
+    const cold = fakeAdapter();
+    const files = createFiles({
+      adapter: strictDelete(hot),
+      plugins: [tiering({ cold: strictDelete(cold), fallback: true, route })],
+    });
+    return { cold, files, hot };
+  };
+
+  test("a first upload lands without the eviction failing it", async () => {
+    const { cold, files, hot } = strictTiers();
+    await files.upload("small.txt", "tiny");
+    await files.upload("big.txt", big);
+    expect(hot.has("small.txt")).toBe(true);
+    expect(cold.has("big.txt")).toBe(true);
+    // A tier flip still evicts the stale copy.
+    await files.upload("small.txt", big);
+    expect(hot.has("small.txt")).toBe(false);
+    expect(cold.has("small.txt")).toBe(true);
+  });
+
+  test("delete removes a key from whichever tier holds it", async () => {
+    const { cold, files, hot } = strictTiers();
+    await files.upload("big.txt", big);
+    await files.upload("small.txt", "tiny");
+    await files.delete("big.txt");
+    await files.delete("small.txt");
+    expect(cold.has("big.txt")).toBe(false);
+    expect(hot.has("small.txt")).toBe(false);
+  });
+
+  test("a delete of a key neither tier holds surfaces NotFound", async () => {
+    const { files } = strictTiers();
+    await expect(files.delete("ghost")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  test("a delete absent from both tiers stays a no-op when one tier no-ops", async () => {
+    const files = createFiles({
+      adapter: fakeAdapter(),
+      plugins: [
+        tiering({
+          cold: strictDelete(fakeAdapter()),
+          fallback: true,
+          route: sizeRoute,
+        }),
+      ],
+    });
+    await files.delete("ghost");
+  });
+
+  test("a non-NotFound eviction failure still surfaces", async () => {
+    const hot = fakeAdapter();
+    const files = createFiles({
+      adapter: {
+        ...hot,
+        delete: () => Promise.reject(new FilesError("Provider", "hot down")),
+      },
+      plugins: [
+        tiering({ cold: fakeAdapter(), fallback: true, route: sizeRoute }),
+      ],
+    });
+    await expect(files.upload("big.txt", big)).rejects.toThrow(/hot down/u);
+  });
+
+  test("copy and move land without the destination eviction failing them", async () => {
+    const { cold, files, hot } = strictTiers();
+    await files.upload("small.txt", "tiny");
+    await files.upload("big.txt", big);
+    await files.copy("small.txt", "small-copy.txt");
+    await files.copy("big.txt", "big-copy.txt");
+    await files.move("big-copy.txt", "big-moved.txt");
+    expect(hot.has("small-copy.txt")).toBe(true);
+    expect(cold.has("big-copy.txt")).toBe(false);
+    expect(
+      await files.download("big-moved.txt").then((file) => file.text())
+    ).toBe(big);
+  });
+});
+
 describe("tiering — copy with a missing source under fallback", () => {
   test("surfaces the provider NotFound", async () => {
     const { files } = harness(sizeRoute, { fallback: true });

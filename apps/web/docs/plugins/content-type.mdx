@@ -25,7 +25,7 @@ The sniffer is deliberately scoped to where a verdict is unambiguous and useful:
 
 - **Images** — PNG, JPEG, GIF, BMP, WebP, TIFF, and ICO, by their magic bytes.
 - **PDF** — the `%PDF` signature.
-- **HTML, SVG, and XML** — the security-relevant part. These are text, so they have no fixed magic bytes; a leading text scan (skipping a BOM, whitespace, and any leading `<!-- … -->` comments) catches `<!doctype html>`, `<html>`, `<script>`, `<svg>`, `<?xml>`, and friends. A comment with nothing recognizable after it counts as HTML, unless the declared type is XML-based.
+- **HTML, SVG, and XML** — the security-relevant part. These are text, so they have no fixed magic bytes; a leading text scan (skipping a BOM, whitespace, and any leading `<!-- … -->` comments) catches `<!doctype html>`, `<html>`, `<script>`, `<svg>`, `<?xml>`, and friends. A comment with nothing recognizable after it counts as HTML, unless the declared type is XML-based. A document behind an `<?xml` prolog is classified by its root element: an `svg` root (or one in the SVG namespace) is `image/svg+xml`, an `html` root (or one in the XHTML namespace) is `application/xhtml+xml`, and anything else is `application/xml`.
 
 Container formats whose magic bytes are shared by many real types — ZIP (which also backs `.docx`, `.jar`, `.epub`), gzip, and the `ftyp` audio/video family — are intentionally **not** sniffed: relabeling them would do more harm than good. Bodies it can't identify are handled by [`onUnknown`](#onunknown).
 
@@ -45,9 +45,15 @@ When the bytes disagree with the type the caller declared (or that the key's ext
 - **`"correct"`** (default) — overwrite the stored `Content-Type` with the sniffed one, so the object is always stored as what it actually _is_. The mislabeled file still lands, but under its true type.
 - **`"reject"`** — throw, so the upload never reaches the adapter. The security-hardening choice: a `.png` whose bytes are HTML is refused outright.
 
-A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's stored **exactly** as declared, so a `text/html; charset=utf-8` keeps its `charset` parameter — including a type implied only by the key's extension, so a `photo.png` of real PNG bytes is stored as `image/png` rather than the adapter's default.
+A declared `application/octet-stream` (i.e. no real claim) is treated as _unset_ rather than a contradiction — the sniffed type fills it in under both modes. And when the declared type already agrees with the bytes, it's stored as declared (its type and subtype lowercased), so a `text/html; charset=utf-8` keeps its `charset` parameter — including a type implied only by the key's extension, so a `photo.png` of real PNG bytes is stored as `image/png` rather than the adapter's default.
 
-Agreement allows for more than one spelling of the same thing: `image/vnd.microsoft.icon` (the registered `.ico` type) agrees with the sniffed `image/x-icon`, and since an `<?xml` prolog only proves "some XML", any XML-based type — `application/rss+xml`, `application/gpx+xml`, `image/svg+xml`, `text/xml`, … — agrees with a sniffed `application/xml`.
+A declared type that isn't exactly one well-formed media type — `image/png, text/html`, a missing subtype, a control character — is refused with an `Invalid` error in every mode, whatever the bytes are. A browser reads a comma-separated list as its _last_ entry, so storing one would render a type the sniff never compared.
+
+Agreement allows for more than one spelling of the same thing: `image/vnd.microsoft.icon` (the registered `.ico` type) agrees with the sniffed `image/x-icon`, and since a generic XML root only proves "some XML", an XML-based type — `application/rss+xml`, `application/gpx+xml`, `text/xml`, … — agrees with a sniffed `application/xml`. Two exceptions keep active content from hiding behind that leniency: an SVG or XHTML root needs exactly `image/svg+xml` or `application/xhtml+xml`, and an XML document never agrees with an `image/`, `audio/`, `video/`, or `font/` type other than `image/svg+xml` (so `image/x+xml` can't slip an XML document past an `image/*` allowlist).
+
+:::note
+Any XML document can carry script in a nested XHTML-namespaced element, which runs when a browser renders it. Allowing an XML type at all (`application/rss+xml`, `text/xml`, …) accepts that; serve such uploads with an `attachment` disposition.
+:::
 
 :::warning
 `onMismatch: "correct"` makes the stored type _honest_; it does not make a dangerous file safe. Detecting that an upload is really HTML and storing it as `text/html` still leaves it executable if you serve it inline. To **block** mislabeled active content, use `onMismatch: "reject"`; to serve user uploads safely, pair this with a forced `attachment` disposition on [`url()`](/docs/api/url).

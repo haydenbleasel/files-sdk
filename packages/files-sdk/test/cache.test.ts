@@ -598,7 +598,7 @@ describe("cache plugin — invalidation", () => {
     ).toBeGreaterThan(1);
   });
 
-  test("a plain failed write leaves the cache alone and costs no store round-trip", async () => {
+  test("a plain failed write still invalidates, since it may have landed", async () => {
     const inner = fakeAdapter();
     const flaky: Adapter = {
       ...inner,
@@ -629,9 +629,43 @@ describe("cache plugin — invalidation", () => {
     deletes.length = 0;
 
     await expect(files.delete("a.txt")).rejects.toThrow(/delete boom/u);
-    expect(deletes).toEqual([]);
+    // Dropped before the attempt and again after it failed.
+    expect(deletes).toEqual(["test//a.txt", "test//a.txt"]);
     await files.head("a.txt");
-    expect(calls.head).toEqual(["a.txt"]);
+    expect(calls.head).toEqual(["a.txt", "a.txt"]);
+  });
+
+  test("a store failure before the write never blocks it", async () => {
+    const memory = new Map<string, CacheRecord>();
+    let failDeletes = false;
+    const store: CacheStore = {
+      clear: () => memory.clear(),
+      delete: (key) => {
+        if (failDeletes) {
+          failDeletes = false;
+          return Promise.reject(new Error("redis: connection reset"));
+        }
+        memory.delete(key);
+        return Promise.resolve();
+      },
+      get: (key) => memory.get(key),
+      set: (key, entry) => {
+        memory.set(key, entry);
+      },
+    };
+    const { adapter, calls } = counting();
+    const files = createFiles({
+      adapter,
+      plugins: [cache({ namespace: "test", store })],
+    });
+    await files.upload("a.txt", "hello");
+    await files.head("a.txt");
+    // Only the first (pre-write) drop fails; the write and the second drop
+    // still run.
+    failDeletes = true;
+    await files.upload("a.txt", "hi");
+    expect(await sizeOf(files, "a.txt")).toBe(2);
+    expect(calls.head).toEqual(["a.txt", "a.txt"]);
   });
 
   test("upload invalidates the cached read", async () => {
@@ -677,6 +711,140 @@ describe("cache plugin — invalidation", () => {
 
     expect(await sizeOf(files, "b.txt")).toBe(3);
     await expect(files.head("a.txt")).rejects.toThrow(/not found/u);
+  });
+});
+
+type GatedVerb = "download" | "head" | "url";
+
+/** Hold the next read of a verb until `release()`, to overlap it with a write. */
+const gated = (inner: Adapter = fakeAdapter()) => {
+  let holding: GatedVerb | undefined;
+  let held = Promise.withResolvers<undefined>();
+  let reached = Promise.withResolvers<undefined>();
+  const wait = async <T>(verb: GatedVerb, value: T): Promise<T> => {
+    if (holding !== verb) {
+      return value;
+    }
+    holding = undefined;
+    reached.resolve();
+    await held.promise;
+    return value;
+  };
+  const adapter: Adapter = {
+    ...inner,
+    download: async (key, opts) =>
+      wait("download", await inner.download(key, opts)),
+    head: async (key, opts) => wait("head", await inner.head(key, opts)),
+    url: async (key, opts) => wait("url", await inner.url(key, opts)),
+  };
+  return {
+    adapter,
+    /** Hold the next `verb` read; resolves once it's in flight, holding. */
+    hold: (verb: GatedVerb): Promise<void> => {
+      holding = verb;
+      held = Promise.withResolvers<undefined>();
+      reached = Promise.withResolvers<undefined>();
+      return reached.promise;
+    },
+    release: () => held.resolve(),
+  };
+};
+
+describe("cache plugin — reads racing writes", () => {
+  test("a read that fetched before a write landed never caches the old bytes", async () => {
+    const gate = gated();
+    const files = createFiles({
+      adapter: gate.adapter,
+      plugins: [cache({ operations: ["download"] })],
+    });
+    await files.upload("k", "v1");
+    const holding = gate.hold("download");
+    const slowRead = files.download("k");
+    await holding;
+    await files.upload("k", "v2");
+    gate.release();
+    // The overlapping read returns what it fetched...
+    const overlapped = await slowRead;
+    expect(await overlapped.text()).toBe("v1");
+    // ...but the next read sees the write.
+    expect(await bodyOf(files, "k")).toBe("v2");
+  });
+
+  test("a head miss overlapping a write isn't cached either", async () => {
+    const gate = gated();
+    const files = createFiles({
+      adapter: gate.adapter,
+      plugins: [cache()],
+    });
+    await files.upload("k", "one");
+    const holding = gate.hold("head");
+    const slowHead = files.head("k");
+    await holding;
+    await files.upload("k", "three");
+    gate.release();
+    const overlapped = await slowHead;
+    expect(overlapped.size).toBe(3);
+    expect(await sizeOf(files, "k")).toBe(5);
+  });
+
+  test("a url miss overlapping a write isn't cached, and later misses are", async () => {
+    const { adapter, calls } = counting();
+    const gate = gated(adapter);
+    const files = createFiles({ adapter: gate.adapter, plugins: [cache()] });
+    await files.upload("k", "one");
+    const holding = gate.hold("url");
+    const slowUrl = files.url("k");
+    await holding;
+    await files.upload("k", "two");
+    gate.release();
+    await slowUrl;
+    await files.url("k");
+    await files.url("k");
+    // The raced miss, then one miss that populated, then a hit.
+    expect(calls.url).toEqual(["k", "k"]);
+  });
+
+  test("a write racing the store round-trip has the record dropped again", async () => {
+    const memory = new Map<string, CacheRecord>();
+    let onSet: (() => Promise<void>) | undefined;
+    const store: CacheStore = {
+      clear: () => memory.clear(),
+      delete: (key) => {
+        memory.delete(key);
+      },
+      get: (key) => memory.get(key),
+      set: async (key, entry) => {
+        const hook = onSet;
+        onSet = undefined;
+        // The write lands (and drops the key) before this set does.
+        await hook?.();
+        memory.set(key, entry);
+      },
+    };
+    const { adapter, calls } = counting();
+    const files = createFiles({
+      adapter,
+      plugins: [cache({ namespace: "test", store })],
+    });
+    await files.upload("k", "one");
+    onSet = async () => {
+      await files.upload("k", "three");
+    };
+    const raced = await files.head("k");
+    expect(raced.size).toBe(3);
+    expect(memory.has("test//k")).toBe(false);
+    expect(await sizeOf(files, "k")).toBe(5);
+    expect(calls.head).toEqual(["k", "k"]);
+  });
+
+  test("concurrent misses of one key share their watch", async () => {
+    const { adapter, calls } = counting();
+    const files = createFiles({ adapter, plugins: [cache()] });
+    await files.upload("k", "one");
+    const sizes = await Promise.all([files.head("k"), files.head("k")]);
+    expect(sizes.map((file) => file.size)).toEqual([3, 3]);
+    await files.head("k");
+    expect(calls.head).toEqual(["k", "k"]);
   });
 });
 

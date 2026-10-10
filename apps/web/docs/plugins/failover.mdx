@@ -95,6 +95,8 @@ Failing over on `NotFound` means a `delete` that only reached one backend can be
 
 A `ReadableStream` body is **read-once** - once the primary has consumed it, there's nothing left to replay against a backup. So a streaming `upload` runs against the **primary alone** and isn't failed over; if the primary is down, the upload fails. Every other body (a string, `Blob`, `File`, `ArrayBuffer`, or typed array) re-reads, so it fails over normally. Buffer a stream up front if you need a streaming upload to survive a primary outage.
 
+The same goes for a [resumable](/docs/resumable) upload with a `control`: an `UploadControl` drives exactly one upload, so it runs against the primary alone and a primary failure surfaces as the primary's own error.
+
 ## Observing failovers
 
 `onFailover` fires (fire-and-forget) each time an operation moves to the next backend - wire it to your metrics or alerting to learn a backend is degraded:
@@ -134,6 +136,6 @@ Failover buys **availability**, not consistency. An object written to a secondar
 
 - **Secondaries are real stores.** A failed-over read pays the secondary's latency, and it must actually hold the object (keep it in sync with your provider's native replication, or [`sync`](/docs/api/sync) / [`transfer`](/docs/api/transfer)).
 - **The primary is the source of truth.** With the default predicate, a healthy primary's `NotFound` is returned without consulting any replica.
-- **Streaming uploads don't fail over.** A `ReadableStream` can't be replayed; buffer it first if it must survive a primary outage.
+- **Streaming and resumable uploads don't fail over.** A `ReadableStream` can't be replayed, and an `UploadControl` drives one upload; buffer a stream first if it must survive a primary outage.
 - **[Conditional operations](/docs/conditional-operations) are refused.** Retrying on another backend can't preserve one native compare-and-set, so every conditional mode throws before any I/O, and [`files.capabilities`](/docs/capabilities) reports every `conditional` flag as `false`.
 - **Capabilities are what every backend can do.** `files.capabilities` intersects the primary with each secondary: booleans are ANDed, the weakest `delimiter` and `signedUrl.expiry` win, and the smallest `maxExpiresIn` applies. The core gates on that up front, so an option one secondary can't honor (`range`, `metadata`, `cacheControl`, a `delimiter`) is refused on every call, rather than working while the primary is healthy and throwing only once an outage fails the call over. `events` stays the primary's.

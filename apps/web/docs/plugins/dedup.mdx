@@ -39,7 +39,9 @@ Bulk `upload([...])` / `download([...])` are de-duplicated per item. Objects wit
 | --- | --- | --- |
 | `prefix` | `".dedup"` | Where the content-addressed blobs live. Hidden from `list()`, and write-protected. |
 
-Objects under `prefix` are never themselves de-duplicated and are hidden from `list()` (unless you list within the prefix). You can read them, but writes into the store through the instance are refused: an `upload`, a `signedUploadUrl()`, or a `copy` / `move` whose destination is inside `prefix` throws a permanent `FilesError`. Otherwise anyone who can write a key could overwrite `.dedup/<sha256>` and change what every pointer to that content returns. The check resolves the key the way a filesystem would, so `/.dedup/x`, `a/../.dedup/x`, and `.DEDUP/x` are refused too.
+Objects under `prefix` are never themselves de-duplicated and are hidden from `list()` (unless you list within the prefix). You can read them, but writes into the store through the instance are refused: an `upload`, a `signedUploadUrl()`, or a `copy` / `move` whose destination is inside `prefix` throws a permanent `FilesError`, and so does a `move` out of it (which would delete the blob). Otherwise anyone who can write a key could overwrite or remove `.dedup/<sha256>` and change what every pointer to that content returns. The check resolves the key the way a filesystem would, so `/.dedup/x`, `a/../.dedup/x`, `.DEDUP/x`, and `.dedup\x` are refused too.
+
+The store is also private to the instance: the [`files-sdk/api` gateway](/docs/ui/server/gateway) refuses any client key or list prefix inside it with a `403`, so a client can't list the blobs, download another user's content by its hash, or delete a blob out from under every pointer.
 
 :::warning
 Blob reads don't re-verify the hash (that would mean buffering every download), so anyone with **raw provider write access** to the store can still substitute content. Lock the bucket down like you would for any other data.

@@ -48,7 +48,7 @@ cache({
 
 ## Invalidation
 
-Caching is only safe because writes evict. Every mutation **through the instance** drops the affected key's entire record (all of its cached verbs) once the write lands:
+Caching is only safe because writes evict. Every mutation **through the instance** drops the affected key's entire record (all of its cached verbs):
 
 | Write            | Invalidates         |
 | ---------------- | ------------------- |
@@ -56,6 +56,8 @@ Caching is only safe because writes evict. Every mutation **through the instance
 | `delete(key)`    | `key`               |
 | `copy(from, to)` | `to` (destination)  |
 | `move(from, to)` | `from` **and** `to` |
+
+The key is dropped both before the write runs and after it settles, whether it succeeded or failed: a write that timed out or errored may still have landed. A read miss that overlaps a write to the same key still returns what it fetched, but never caches it, so a slow `download()` that started before an `upload()` can't re-populate the old bytes after the upload invalidated them. That guard covers reads and writes through the same `cache()`; another process sharing the `store` is covered by the drop after its own write and by the `ttl`.
 
 Invalidation is keyed by the **caller-facing** key - never the internal [prefixed](/docs/prefixes) path - so it lines up with the keys reads are cached under. In the store, each key is scoped by the [`namespace`](#the-store) and the instance `prefix` (`<namespace>/<prefix>/<key>`), so instances sharing one store only see each other's entries when they share both.
 

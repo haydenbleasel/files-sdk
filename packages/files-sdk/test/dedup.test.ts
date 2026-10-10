@@ -521,6 +521,87 @@ describe("dedup plugin — store prefix is write-protected", () => {
     await files.upload("cas/other", "fine");
     expect(await bodyText(files, "cas/other")).toBe("fine");
   });
+
+  test("refuses a backslash-separated spelling of the store", async () => {
+    const files = withDedup();
+    for (const key of [".dedup\\abc", "a\\..\\.dedup\\abc"]) {
+      // eslint-disable-next-line no-await-in-loop -- each key is asserted independently
+      await expect(files.upload(key, "x")).rejects.toThrow(/content store/u);
+    }
+  });
+
+  test("refuses a move out of the store, which would break every pointer", async () => {
+    const adapter = fakeAdapter();
+    const files = withDedup({}, adapter);
+    await files.upload("alice/a.txt", "shared");
+    await files.upload("bob/b.txt", "shared");
+    const [blobKey = ""] = blobKeys(adapter);
+
+    for (const from of [blobKey, blobKey.toUpperCase()]) {
+      // eslint-disable-next-line no-await-in-loop -- each spelling is asserted independently
+      await expect(files.move(from, "mine.txt")).rejects.toMatchObject({
+        code: "Invalid",
+        message: expect.stringMatching(/move out of the content store/u),
+        permanent: true,
+      });
+    }
+    expect(blobKeys(adapter)).toEqual([blobKey]);
+    expect(await bodyText(files, "alice/a.txt")).toBe("shared");
+    expect(await bodyText(files, "bob/b.txt")).toBe("shared");
+    // Copying a blob out is a read, and stays allowed.
+    await files.copy(blobKey, "copy.txt");
+    expect(await bodyText(files, "copy.txt")).toBe("shared");
+  });
+});
+
+describe("dedup plugin — the gateway can't reach the store", () => {
+  const ENDPOINT = "https://app.test/api/files";
+  const post = (body: unknown): Request =>
+    new Request(ENDPOINT, {
+      body: JSON.stringify(body),
+      headers: {
+        "content-type": "application/json",
+        origin: "https://app.test",
+      },
+      method: "POST",
+    });
+
+  test("listing, reading, deleting, or moving a blob is refused", async () => {
+    const adapter = fakeAdapter();
+    const files = withDedup({}, adapter);
+    await files.upload("alice/secret.txt", "top secret");
+    await files.upload("bob/copy.txt", "top secret");
+    const [blobKey = ""] = blobKeys(adapter);
+    const router = createFilesRouter({
+      authorize: () => ({}),
+      files,
+      operations: ["list", "download", "head", "delete", "move", "copy"],
+      secret: "test-secret",
+    });
+
+    const listed = await router.handle(post({ op: "list", prefix: ".dedup/" }));
+    expect(listed.status).toBe(403);
+    // A plain listing hides the store too.
+    const all = await router.handle(post({ op: "list" }));
+    const { items } = (await all.json()) as { items: { key: string }[] };
+    expect(items.map((item) => item.key).toSorted()).toEqual([
+      "alice/secret.txt",
+      "bob/copy.txt",
+    ]);
+    const read = await router.handle(
+      new Request(`${ENDPOINT}?op=download&key=${encodeURIComponent(blobKey)}`)
+    );
+    expect(read.status).toBe(403);
+    const deleted = await router.handle(post({ key: blobKey, op: "delete" }));
+    expect(deleted.status).toBe(403);
+    const moved = await router.handle(
+      post({ from: blobKey, op: "move", to: "mine.txt" })
+    );
+    expect(moved.status).toBe(403);
+
+    expect(blobKeys(adapter)).toEqual([blobKey]);
+    expect(await bodyText(files, "alice/secret.txt")).toBe("top secret");
+  });
 });
 
 describe("dedup plugin — presigned URLs fail closed", () => {

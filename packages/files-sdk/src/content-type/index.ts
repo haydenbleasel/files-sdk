@@ -2,6 +2,7 @@ import { handlers } from "../index.js";
 import type { Body, FilesOperation, FilesPlugin } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { isString } from "../internal/is.js";
+import { mediaTypeEssence } from "../internal/media-type.js";
 import { inferTypeFromName } from "../internal/mime.js";
 
 /** The single in-flight `upload` operation — the only verb this plugin touches. */
@@ -184,6 +185,96 @@ const markupType = (head: string): string | undefined => {
   }
 };
 
+const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+/** Index just past the next `token` at or after `from`, or -1 when absent. */
+const endAfter = (text: string, token: string, from: number): number => {
+  const at = text.indexOf(token, from);
+  return at === -1 ? -1 : at + token.length;
+};
+
+/**
+ * Index just past the markup opening at `i` that may precede an XML root — a
+ * processing instruction, a comment, or a doctype (whose internal subset
+ * `[…]` can hold `>`s of its own) — or -1 when it runs past the window.
+ */
+const skipXmlMarkup = (text: string, i: number): number => {
+  if (text.startsWith("<?", i)) {
+    return endAfter(text, "?>", i + 2);
+  }
+  if (text.startsWith("<!--", i)) {
+    return endAfter(text, "-->", i + 4);
+  }
+  const close = text.indexOf(">", i);
+  const subset = text.indexOf("[", i);
+  if (subset !== -1 && (close === -1 || subset < close)) {
+    const subsetEnd = text.indexOf("]", subset);
+    return subsetEnd === -1 ? -1 : endAfter(text, ">", subsetEnd);
+  }
+  return close === -1 ? -1 : close + 1;
+};
+
+/**
+ * The contents of an XML document's root start tag (`svg xmlns="…"`, without
+ * the angle brackets), found by skipping the prolog, comments, processing
+ * instructions, and doctype from `from` — or `undefined` when the root lies
+ * past the sniff window. A start tag cut off by the window is returned as far
+ * as it goes.
+ */
+const xmlRootTag = (text: string, from: number): string | undefined => {
+  let i = skipWhitespace(text, from);
+  while (text.startsWith("<?", i) || text.startsWith("<!", i)) {
+    const end = skipXmlMarkup(text, i);
+    if (end === -1) {
+      return;
+    }
+    i = skipWhitespace(text, end);
+  }
+  if (text.codePointAt(i) !== LESS_THAN) {
+    return;
+  }
+  const close = text.indexOf(">", i);
+  return text.slice(i + 1, close === -1 ? text.length : close);
+};
+
+/** `name="value"` / `name='value'` pairs in a start tag. */
+const ATTRIBUTE = /(?<name>[^\s=]+)\s*=\s*["'](?<value>[^"']*)["']/gu;
+
+/**
+ * Classify a document that opens with an `<?xml` prolog by its root element.
+ * A root named `svg` or `html` (under any namespace prefix), or one whose own
+ * namespace is SVG or XHTML, is active content a browser renders and runs
+ * scripts in — reported as `image/svg+xml` / `application/xhtml+xml`, so only
+ * a declaration of that exact type agrees with it. Anything else, including a
+ * root past the window, is generic `application/xml`.
+ */
+const xmlType = (text: string, from: number): string => {
+  const tag = xmlRootTag(text, from);
+  if (tag === undefined) {
+    return "application/xml";
+  }
+  const nameEnd = tag.search(/[\s/]/u);
+  const name = nameEnd === -1 ? tag : tag.slice(0, nameEnd);
+  const colon = name.indexOf(":");
+  const local = name.slice(colon + 1);
+  // The root's own namespace: `xmlns="…"` unprefixed, `xmlns:p="…"` for `p:`.
+  const declaration = colon === -1 ? "xmlns" : `xmlns:${name.slice(0, colon)}`;
+  let namespace: string | undefined;
+  for (const { groups } of tag.matchAll(ATTRIBUTE)) {
+    if (groups?.name === declaration) {
+      namespace = groups.value;
+    }
+  }
+  if (local === "svg" || namespace === SVG_NAMESPACE) {
+    return "image/svg+xml";
+  }
+  if (local === "html" || namespace === XHTML_NAMESPACE) {
+    return "application/xhtml+xml";
+  }
+  return "application/xml";
+};
+
 /**
  * Detect active text-based content — the security-relevant case the binary
  * table can't cover, since HTML and SVG have no fixed magic bytes. Skips a BOM
@@ -193,7 +284,8 @@ const markupType = (head: string): string | undefined => {
  * the type, so an SVG or HTML document that opens with a comment is still
  * recognized as what it is. A comment followed by nothing recognizable is
  * HTML (the WHATWG sniffing rule) — unless `xmlDeclared`, when the caller has
- * declared an XML-family type and a leading comment is ordinary XML.
+ * declared an XML-family type and a leading comment is ordinary XML (its root
+ * classified as {@link xmlType} would).
  */
 const sniffText = (
   bytes: Uint8Array,
@@ -209,8 +301,7 @@ const sniffText = (
     return;
   }
   if (text.startsWith("<?xml", i)) {
-    // An XML prolog can precede an `<svg>` root; scan the window for it.
-    return text.includes("<svg", i) ? "image/svg+xml" : "application/xml";
+    return xmlType(text, i);
   }
   if (!text.startsWith("<!--", i)) {
     return markupType(text.slice(i, i + 32));
@@ -219,9 +310,15 @@ const sniffText = (
     const close = text.indexOf("-->", i + 4);
     i = close === -1 ? -1 : skipWhitespace(text, close + 3);
   }
-  const afterComments =
-    i === -1 ? undefined : markupType(text.slice(i, i + 32));
-  return afterComments ?? (xmlDeclared ? "application/xml" : "text/html");
+  if (i === -1) {
+    return xmlDeclared ? "application/xml" : "text/html";
+  }
+  // Under an XML claim, a root after the comments is classified like one
+  // after a prolog, so an XHTML-namespaced root can't pass as generic XML.
+  return (
+    markupType(text.slice(i, i + 32)) ??
+    (xmlDeclared ? xmlType(text, i) : "text/html")
+  );
 };
 
 /** Every byte-level sniff; `xmlDeclared` only matters for comment-led text. */
@@ -237,19 +334,14 @@ const sniff = (bytes: Uint8Array, xmlDeclared: boolean): string | undefined => {
 /**
  * Identify the MIME type of a body from its leading bytes, or `undefined` when
  * the bytes match no known signature. Checks binary magic numbers (images, PDF)
- * first, then falls back to a text scan for HTML/SVG/XML. Exported so callers
- * can sniff outside the plugin; only the first {@link SNIFF_BYTES} bytes matter.
+ * first, then falls back to a text scan for HTML/SVG/XML. A document behind an
+ * `<?xml` prolog is classified by its root element: `image/svg+xml` for an SVG
+ * root, `application/xhtml+xml` for an XHTML one, else `application/xml`.
+ * Exported so callers can sniff outside the plugin; only the first
+ * {@link SNIFF_BYTES} bytes matter.
  */
 export const detectContentType = (bytes: Uint8Array): string | undefined =>
   sniff(bytes, false);
-
-/** Strip any `; charset=…` parameter and normalize for comparison. */
-const baseType = (value: string): string => {
-  const semicolon = value.indexOf(";");
-  return (semicolon === -1 ? value : value.slice(0, semicolon))
-    .trim()
-    .toLowerCase();
-};
 
 /**
  * Registered spellings of a type the sniffer reports under another name — the
@@ -263,14 +355,42 @@ const isXmlFamily = (type: string): boolean =>
   type === "application/xml" || type === "text/xml" || type.endsWith("+xml");
 
 /**
- * Whether a declared base type already agrees with the sniffed one: the same
- * type or an alias of it, or — since a bare `<?xml` prolog only proves "some
- * XML" — any XML-family type (`application/rss+xml`, `image/svg+xml`, …)
- * against a sniffed `application/xml`.
+ * Top-level types a browser displays as media. No XML document is one of
+ * them except SVG, which the sniffer recognizes and matches exactly.
+ */
+const MEDIA_TOP_LEVEL = new Set(["audio", "font", "image", "video"]);
+
+/**
+ * Whether a declared XML-family type may stand for a generic XML sniff: not a
+ * media type (`image/x+xml` would pass an `image/*` allowlist while a browser
+ * renders the document, scripts and all), except `image/svg+xml` itself — an
+ * SVG whose root sits past the sniff window still reads as generic XML.
+ */
+const plausibleXmlClaim = (declared: string): boolean =>
+  isXmlFamily(declared) &&
+  (declared === "image/svg+xml" ||
+    !MEDIA_TOP_LEVEL.has(declared.slice(0, declared.indexOf("/"))));
+
+/**
+ * Whether a declared essence already agrees with the sniffed one: the same
+ * type or an alias of it, or — since a generic XML root only proves "some
+ * XML" — a plausible XML-family type (`application/rss+xml`, …) against a
+ * sniffed `application/xml`. An SVG or XHTML root needs that exact type.
  */
 const agrees = (declared: string, sniffed: string): boolean =>
   (ALIASES.get(declared) ?? declared) === sniffed ||
-  (sniffed === "application/xml" && isXmlFamily(declared));
+  (sniffed === "application/xml" && plausibleXmlClaim(declared));
+
+/**
+ * The type as it's forwarded: the normalized essence plus whatever parameters
+ * the caller attached (`text/html; charset=utf-8`). Only called once
+ * {@link mediaTypeEssence} has accepted `type`, so the parameters hold no comma
+ * or control character.
+ */
+const storedType = (type: string, essence: string): string => {
+  const semicolon = type.indexOf(";");
+  return semicolon === -1 ? essence : `${essence}${type.slice(semicolon)}`;
+};
 
 /**
  * The type the caller claims for the object: an explicit `contentType` wins,
@@ -407,7 +527,9 @@ const peekStream = async (
  *
  * When the bytes confirm the claimed type, that type is forwarded to the
  * adapter too, so a `photo.png` of real PNG bytes is stored as `image/png`
- * rather than the adapter's default.
+ * rather than the adapter's default. A declared type that isn't exactly one
+ * well-formed media type (`image/png, text/html` — which a browser renders as
+ * its last entry) is refused in every mode.
  *
  * `signedUploadUrl()` hands upload capability to a client that writes directly,
  * bypassing the sniff, so it **fails closed** and throws.
@@ -436,7 +558,16 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
   /** Decide the op to forward (or throw) given the sniffed prefix. */
   const reconcile = (op: UploadOp, head: Uint8Array, body: Body): UploadOp => {
     const claimed = declaredType(op.body, op.key, op.options?.contentType);
-    const declared = baseType(claimed);
+    // Parse strictly: a loose read of `image/png;a=b, text/html` sees
+    // `image/png`, but a browser renders the stored value as its last entry.
+    // Such a value is never stored — not even under the trust/correct paths.
+    const declared = mediaTypeEssence(claimed);
+    if (declared === undefined) {
+      throw new FilesError(
+        "Invalid",
+        `contentType: "${op.key}" has a malformed content type ${JSON.stringify(claimed)}; declare exactly one media type, like "image/png"`
+      );
+    }
     const sniffed = sniff(head, isXmlFamily(declared));
     if (sniffed === undefined) {
       if (onUnknown === "reject") {
@@ -452,7 +583,11 @@ export const contentType = (options: ContentTypeOptions = {}): FilesPlugin => {
       // stored: a type implied only by the key's extension would otherwise
       // fall back to the adapter's default (`photo.png` stored as
       // octet-stream).
-      return { ...op, body, options: { ...op.options, contentType: claimed } };
+      return {
+        ...op,
+        body,
+        options: { ...op.options, contentType: storedType(claimed, declared) },
+      };
     }
     if (onMismatch === "reject" && declared !== GENERIC) {
       throw new FilesError(

@@ -11,6 +11,7 @@ import type {
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { reserveKeyPrefix } from "../internal/files-router/reserved.js";
+import { resolvesUnder } from "../internal/key-prefix.js";
 
 /**
  * A trashed object, as returned by {@link SoftDeleteApi.trashed}. Pass its
@@ -88,6 +89,9 @@ export interface SoftDeleteOptions {
   prefix?: string;
 }
 
+const isNotFound = (cause: unknown): boolean =>
+  cause instanceof FilesError && cause.code === "NotFound";
+
 /**
  * Collapse leading/trailing slashes the way the SDK treats keys. The negative
  * lookbehind anchors the trailing run to its first slash so the match can't
@@ -124,6 +128,9 @@ const normalizeDir = (prefix: string): string => {
  * - **One copy per key.** A delete relocates to `"<prefix>/<key>"`, so deleting
  *   a key whose trashed copy still exists **replaces** that copy (latest delete
  *   wins). Reach for `versioning()` if you need every deleted generation kept.
+ *   On a hierarchical store (fs, SFTP, …) a trashed `a` and a trashed `a/b`
+ *   can't coexist, so the second delete throws a `Conflict` naming the
+ *   trashed entry to `purge()` first.
  * - **`delete` becomes a `copy` + `delete`.** A soft delete is a move, so it
  *   costs an extra round-trip versus a hard delete. Deleting a key that doesn't
  *   exist stays a no-op, the same as a plain `delete`.
@@ -164,9 +171,78 @@ export const softDelete = (
   const trashDir = normalizeDir(options.prefix ?? ".trash");
 
   const trashKeyFor = (key: string): string => `${trashDir}/${key}`;
-  /** Whether a key lives in the trash store — deletes of those are real. */
+  /**
+   * Whether a key lives in the trash store — deletes of those are real. The
+   * spelling must match exactly: on a case-sensitive store `.TRASH/x` is a
+   * live key of its own, and hard-deleting it would bypass the trash. It must
+   * also *stay* inside once resolved, so `.trash/../notes.txt` (which a
+   * filesystem resolves to `notes.txt`) is trashed, not hard-deleted.
+   */
   const isTrashKey = (key: string): boolean =>
-    key === trashDir || key.startsWith(`${trashDir}/`);
+    (key === trashDir || key.startsWith(`${trashDir}/`)) &&
+    resolvesUnder(key, trashDir);
+
+  /**
+   * The trash key for a caller's original key, refusing one that resolves out
+   * of the trash (`../notes.txt`): `purge()` would otherwise hard-delete, and
+   * `restoreTrashed()` move, a live object.
+   */
+  const trashKeyOf = (key: string): string => {
+    const trashKey = trashKeyFor(key);
+    if (!isTrashKey(trashKey)) {
+      throw new FilesError(
+        "Invalid",
+        `softDelete: "${key}" resolves outside the trash ("${trashDir}"); pass the original key of a trashed object`
+      );
+    }
+    return trashKey;
+  };
+
+  /** The refusal naming the trashed entry that blocks trashing `key`. */
+  const collision = (
+    key: string,
+    blocker: string,
+    cause: FilesError
+  ): FilesError =>
+    new FilesError(
+      "Conflict",
+      `softDelete: can't move "${key}" to the trash — the trashed copy of "${blocker}" ("${trashKeyFor(blocker)}") is in its way on this hierarchical store, where a trashed key and a trashed key nested under it can't coexist. purge("${blocker}") (or restoreTrashed("${blocker}")) and delete "${key}" again.`,
+      cause
+    );
+
+  /**
+   * Explain a `Conflict` from the move into the trash. On a hierarchical store
+   * (fs, SFTP, …) a trashed `a` is a file where trashing `a/b` needs a
+   * folder, and a trashed `a/b` makes `.trash/a` a folder a trashed `a` can't
+   * replace. Find the trashed entry in the way and name it; when there's
+   * none (or looking fails), the original error stands.
+   */
+  const explainConflict = async (
+    key: string,
+    next: PluginNext,
+    cause: FilesError
+  ): Promise<FilesError> => {
+    try {
+      const segments = key.split("/");
+      for (let end = 1; end < segments.length; end += 1) {
+        const ancestor = segments.slice(0, end).join("/");
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- nearest ancestor first; stops at the first trashed one.
+        if (await next({ key: trashKeyFor(ancestor), kind: "exists" })) {
+          return collision(key, ancestor, cause);
+        }
+      }
+      const { items } = await next({
+        kind: "list",
+        options: { limit: 1, prefix: `${trashKeyFor(key)}/` },
+      });
+      const [nested] = items;
+      return nested
+        ? collision(key, nested.key.slice(trashDir.length + 1), cause)
+        : cause;
+    } catch {
+      return cause;
+    }
+  };
 
   /**
    * Hide trashed objects from listings, so a soft delete doesn't leave the key
@@ -226,7 +302,7 @@ export const softDelete = (
   };
 
   const restore = async (files: Files, key: string): Promise<FileInfo> => {
-    const trashKey = trashKeyFor(key);
+    const trashKey = trashKeyOf(key);
     if (!(await files.exists(trashKey))) {
       throw new FilesError(
         "NotFound",
@@ -241,8 +317,17 @@ export const softDelete = (
 
   const purge = async (files: Files, key?: string): Promise<void> => {
     if (key !== undefined) {
-      // A delete of a trash key is a real delete (idempotent if already gone).
-      await files.delete(trashKeyFor(key));
+      // A delete of a trash key is a real delete. Purge is idempotent, but an
+      // adapter may throw `NotFound` for a missing key (GCS, Firebase) rather
+      // than no-op, so nothing trashed is no error either way.
+      const trashKey = trashKeyOf(key);
+      try {
+        await files.delete(trashKey);
+      } catch (error) {
+        if (!isNotFound(error)) {
+          throw error;
+        }
+      }
       return;
     }
     const keys: string[] = [];
@@ -255,12 +340,18 @@ export const softDelete = (
     // The bulk delete never throws — it collects per-key failures — so surface
     // them here, or a purge would resolve while trashed() still lists the key.
     // Every deletable key is still removed first (no `stopOnError`).
-    const { errors } = await files.delete(keys);
-    const [first] = errors ?? [];
+    // A `NotFound` means the object is already gone (purged concurrently, on
+    // an adapter that reports a missing key rather than no-op), which is
+    // what a purge wants.
+    const outcome = await files.delete(keys);
+    const errors = (outcome.errors ?? []).filter(
+      (failure) => !isNotFound(failure.error)
+    );
+    const [first] = errors;
     if (first) {
       throw new FilesError(
         first.error.code,
-        `softDelete: purge failed for ${String(errors?.length)} of ${String(keys.length)} trashed object(s); first failure at "${first.key}": ${first.error.message}`,
+        `softDelete: purge failed for ${String(errors.length)} of ${String(keys.length)} trashed object(s); first failure at "${first.key}": ${first.error.message}`,
         first.error
       );
     }
@@ -306,8 +397,11 @@ export const softDelete = (
         } catch (error) {
           // Deleting a key that doesn't exist is a no-op, same as a plain
           // delete; the move's copy step is what surfaces a missing source.
-          if (error instanceof FilesError && error.code === "NotFound") {
+          if (isNotFound(error)) {
             return;
+          }
+          if (error instanceof FilesError && error.code === "Conflict") {
+            throw await explainConflict(op.key, next, error);
           }
           throw error;
         }

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { failover } from "../src/failover/index.js";
 import type { FailoverEvent, FailoverOptions } from "../src/failover/index.js";
-import { Files } from "../src/index.js";
+import { Files, UploadControl } from "../src/index.js";
 import type {
   Adapter,
   AdapterCapabilities,
@@ -330,6 +330,57 @@ describe("failover — streaming uploads", () => {
       )
     ).rejects.toThrow(/backend down/u);
     expect(secondary.has("s.bin")).toBe(false);
+  });
+});
+
+/** A memory adapter whose resumable sessions fail to begin. */
+const resumableDown = (): Adapter => {
+  const base = memory();
+  return {
+    ...base,
+    resumableUpload: (key, opts) => {
+      const driver = (
+        base.resumableUpload as NonNullable<Adapter["resumableUpload"]>
+      )(key, opts);
+      return {
+        ...driver,
+        begin: () => Promise.reject(new FilesError("Provider", "primary down")),
+      };
+    },
+  };
+};
+
+describe("failover — resumable uploads", () => {
+  test("an upload with a control isn't replayed on a secondary", async () => {
+    const secondary = memory();
+    let failedOver = false;
+    const files = new Files({
+      adapter: resumableDown(),
+      plugins: [
+        failover({
+          onFailover: () => {
+            failedOver = true;
+          },
+          secondaries: secondary,
+        }),
+      ],
+    });
+    // The primary's own outage surfaces, not "already driven an upload".
+    await expect(
+      files.upload("k", new Uint8Array(10), { control: new UploadControl() })
+    ).rejects.toThrow(/primary down/u);
+    expect(failedOver).toBe(false);
+    expect(await secondary.exists("k")).toBe(false);
+  });
+
+  test("the same body without a control still fails over", async () => {
+    const secondary = memory();
+    const files = new Files({
+      adapter: downAdapter(),
+      plugins: [failover({ secondaries: secondary })],
+    });
+    await files.upload("k", new Uint8Array(10));
+    expect(await secondary.exists("k")).toBe(true);
   });
 });
 

@@ -76,6 +76,8 @@ Each entry's `lastModified` is the snapshotted object's own last-modified time. 
 
 The `key` on each entry is a real, downloadable object, so you can preview a version without restoring it: `await files.download(history[0].key)`.
 
+`restoreVersion()` refuses a `versionId` that is empty or `.`, or that contains `/`, `\`, `..`, or a NUL byte, with an `Invalid` error: a version id is a single name, and anything else could address another key's history (on a Windows filesystem, `..\` climbs into a sibling's version folder). Omit the id to restore the newest version.
+
 ## Capping history
 
 By default history grows unbounded. Set `limit` to keep only the newest N versions per key - the oldest are pruned once the write that took the snapshot succeeds (a failed write prunes nothing, so history can briefly exceed the cap until the next successful write):
@@ -98,7 +100,7 @@ Objects under the version prefix are **hidden from [`list()`](/docs/api/list)** 
 
 ## Leaving prefixes un-versioned
 
-Pass `ignore` to skip snapshots for keys under the given prefixes, on top of the version prefix itself. Writes and deletes there pass straight through:
+Pass `ignore` to skip snapshots for keys under the given prefixes, on top of the version prefix itself. Writes and deletes there pass straight through. A key counts as under a prefix only when it's spelled exactly that way and stays inside once resolved, so `.versions/../notes.txt` (which a filesystem resolves to `notes.txt`) is still snapshotted:
 
 ```ts
 versioning({ ignore: [".trash"] });

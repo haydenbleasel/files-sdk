@@ -80,7 +80,7 @@ await files.purge("report.pdf"); // one item
 await files.purge(); // the whole trash
 ```
 
-`purge()` is idempotent: purging a key with nothing trashed is a no-op. (Under the hood, a `delete` of a key inside the trash prefix is a **real** delete - that's how purging works, and how any manual trash cleanup behaves.)
+`purge()` is idempotent: purging a key with nothing trashed is a no-op, including on adapters whose `delete` throws `NotFound` for a missing key (GCS, Firebase). (Under the hood, a `delete` of a key inside the trash prefix is a **real** delete - that's how purging works, and how any manual trash cleanup behaves. The key has to be spelled exactly as the prefix and stay inside it once resolved: `.TRASH/x` on a case-sensitive store and `.trash/../notes.txt` are soft-deleted like any live key, never hard-deleted.) `purge()` and `restoreTrashed()` refuse a key that resolves out of the trash, such as `../notes.txt`, with an `Invalid` error.
 
 A whole-trash `purge()` removes everything it can and then **throws** if any trashed object couldn't be deleted - the error names how many failed and carries the first failure as its `cause` - so it never resolves while `trashed()` still lists a key.
 
@@ -111,6 +111,7 @@ plugins: [versioning({ ignore: [".trash"] }), softDelete()];
 ## Things to keep in mind
 
 - **One trashed copy per key.** A delete moves to `"<prefix>/<key>"`, so re-deleting a key whose trashed copy still exists **replaces** that copy (latest delete wins). Reach for [`versioning()`](/docs/plugins/versioning) if you need every deleted generation kept.
+- **On a hierarchical store, a trashed key blocks trashing keys nested under it.** On [`fs`](/docs/adapters/fs), SFTP, and other folder-based adapters, a trashed `a` is a file at `.trash/a`, so deleting `a/b` (which needs a `.trash/a/` folder) fails, and a trashed `a/b` likewise blocks trashing `a`. The delete throws a `Conflict` that names the trashed entry in the way; `purge()` (or `restoreTrashed()`) it and delete again. The live object is left untouched. Object stores (S3, R2, GCS, …) have no such collision.
 - **A delete costs an extra round-trip.** A soft delete is a server-side `copy` + `delete` rather than a single delete. It's the price of recoverability.
 - **Only deletes through the instance are trashed.** Overwrites (including presigned uploads) and deletes made directly against the provider aren't - reach for [`versioning()`](/docs/plugins/versioning) to keep overwritten bytes. It's a safety net, not a security control, so - unlike [`validation()`](/docs/plugins/validation) - it doesn't fail closed.
 - **[Conditional](/docs/conditional-operations) deletes are refused outside the trash.** A soft delete is a move no native predicate spans, so a `delete` with a `condition` throws before any I/O (a conditional delete of an already-trashed key is a real delete and keeps its predicate). [`files.capabilities`](/docs/capabilities) reports `conditional.delete` as `false`.

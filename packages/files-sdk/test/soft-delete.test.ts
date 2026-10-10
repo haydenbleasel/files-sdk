@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
+import { fs } from "../src/fs/index.js";
 import { createFiles, FilesError } from "../src/index.js";
 import type {
   FilesOperation,
@@ -222,6 +226,158 @@ describe("soft-delete plugin — purge", () => {
     // Everything deletable was still removed; only the failed key remains.
     const remaining = await files.trashed();
     expect(remaining.map((t) => t.key)).toEqual(["b.txt"]);
+  });
+});
+
+/** A fake whose delete of a missing key throws, as GCS and Firebase do. */
+const strict = (vanish?: string): Adapter => {
+  const inner = fakeAdapter();
+  return {
+    ...inner,
+    delete(key, opts) {
+      if (key === vanish) {
+        // Purged by someone else between the listing and the delete.
+        inner.raw.delete(key);
+      }
+      return inner.has(key)
+        ? inner.delete(key, opts)
+        : Promise.reject(new FilesError("NotFound", `missing: ${key}`));
+    },
+  };
+};
+
+const tempRoot = (): string => mkdtempSync(path.join(tmpdir(), "files-trash-"));
+
+/** A store that refuses every trash move with a `Conflict`. */
+const conflicting = (exists?: Adapter["exists"]): Adapter => {
+  const inner = fakeAdapter();
+  return {
+    ...inner,
+    copy: () =>
+      Promise.reject(new FilesError("Conflict", "EISDIR: is a directory")),
+    ...(exists && { exists }),
+  };
+};
+
+/** The original keys of everything currently trashed. */
+const trashedKeys = async (files: {
+  trashed: () => Promise<{ key: string }[]>;
+}): Promise<string[]> => {
+  const entries = await files.trashed();
+  return entries.map((entry) => entry.key);
+};
+
+describe("soft-delete plugin — purge over a delete that throws NotFound", () => {
+  test("purging a key with nothing trashed is still a no-op", async () => {
+    const files = withSoftDelete({}, strict());
+    await expect(files.purge("ghost.txt")).resolves.toBeUndefined();
+  });
+
+  test("a single-key purge still surfaces any other failure", async () => {
+    const files = withSoftDelete(
+      {},
+      {
+        ...fakeAdapter(),
+        delete: () => Promise.reject(new FilesError("Unauthorized", "denied")),
+      }
+    );
+    await expect(files.purge("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
+  test("a whole-trash purge ignores an object that's already gone", async () => {
+    const files = withSoftDelete({}, strict(".trash/b.txt"));
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    await files.delete("a.txt");
+    await files.delete("b.txt");
+    await expect(files.purge()).resolves.toBeUndefined();
+    expect(await files.trashed()).toEqual([]);
+  });
+});
+
+describe("soft-delete plugin — keys that escape the trash", () => {
+  test("a delete that resolves out of the trash is trashed, not hard-deleted", async () => {
+    const files = withSoftDelete({}, fs({ root: tempRoot() }));
+    await files.upload("notes.txt", "keep me");
+    // A filesystem resolves this to `notes.txt`; forwarding it as a trash
+    // key's real delete would destroy the live file.
+    await files.delete(".trash/../notes.txt");
+    expect(await files.exists("notes.txt")).toBe(false);
+    expect(await trashedKeys(files)).toEqual(["notes.txt"]);
+    await files.restoreTrashed("notes.txt");
+    expect(await bodyOf(files, "notes.txt")).toBe("keep me");
+  });
+
+  test("a differently cased trash key is a live key on a case-sensitive store", async () => {
+    const adapter = fakeAdapter();
+    const files = withSoftDelete({}, adapter);
+    await files.upload(".TRASH/report.pdf", "mine");
+    await files.delete(".TRASH/report.pdf");
+    expect(adapter.has(".trash/.TRASH/report.pdf")).toBe(true);
+  });
+
+  test.each(["../notes.txt", "a/../../notes.txt", "..\\notes.txt"])(
+    "purge() and restoreTrashed() refuse %s",
+    async (key) => {
+      const files = withSoftDelete();
+      await files.upload("notes.txt", "live");
+      await expect(files.purge(key)).rejects.toMatchObject({ code: "Invalid" });
+      await expect(files.restoreTrashed(key)).rejects.toThrow(
+        /resolves outside the trash/u
+      );
+      expect(await bodyOf(files, "notes.txt")).toBe("live");
+    }
+  );
+});
+
+describe("soft-delete plugin — trash collisions on hierarchical stores", () => {
+  test("a trashed parent blocking a nested key names what to purge", async () => {
+    const files = withSoftDelete({}, fs({ root: tempRoot() }));
+    await files.upload("a", "file a");
+    await files.delete("a");
+    await files.upload("a/b", "file b");
+
+    const failure = await files.delete("a/b").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect(failure).toMatchObject({ code: "Conflict" });
+    expect((failure as FilesError).message).toMatch(
+      /trashed copy of "a" \(".trash\/a"\) is in its way.*purge\("a"\)/u
+    );
+    expect((failure as FilesError).cause).toBeInstanceOf(FilesError);
+    // Nothing was lost, and purging the blocker clears the way.
+    expect(await bodyOf(files, "a/b")).toBe("file b");
+    await files.purge("a");
+    await files.delete("a/b");
+    expect(await trashedKeys(files)).toEqual(["a/b"]);
+  });
+
+  test("a trashed nested key blocking its parent is named too", async () => {
+    const adapter = conflicting();
+    const files = withSoftDelete({}, adapter);
+    await adapter.upload(".trash/a/b", new Uint8Array([1]));
+    await files.upload("a", "file a");
+    await expect(files.delete("a")).rejects.toThrow(
+      /trashed copy of "a\/b" \(".trash\/a\/b"\).*purge\("a\/b"\)/u
+    );
+  });
+
+  test("a conflict with nothing in the way surfaces unchanged", async () => {
+    const files = withSoftDelete({}, conflicting());
+    await files.upload("x/y", "1");
+    await expect(files.delete("x/y")).rejects.toThrow(
+      /^EISDIR: is a directory$/u
+    );
+  });
+
+  test("a failure while looking for the blocker keeps the original conflict", async () => {
+    const files = withSoftDelete(
+      {},
+      conflicting(() => Promise.reject(new Error("probe down")))
+    );
+    await files.upload("x/y", "1");
+    await expect(files.delete("x/y")).rejects.toThrow(/EISDIR/u);
   });
 });
 

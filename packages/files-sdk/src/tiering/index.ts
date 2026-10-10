@@ -198,6 +198,30 @@ const declaredSize = (body: Body): number | undefined => {
 const isNotFound = (cause: unknown): boolean =>
   cause instanceof FilesError && cause.code === "NotFound";
 
+/**
+ * Delete `key` from a tier that may not hold it, resolving to whether it was
+ * there to delete. The core contract lets a delete of a missing key either
+ * no-op (S3, memory) or throw `NotFound` (GCS, Firebase), so the eviction and
+ * cleanup deletes below treat that `NotFound` as "nothing to evict" instead
+ * of failing an upload, copy, or delete that has already landed. A no-op
+ * delete can't tell, so it reads as present.
+ */
+const evict = async (
+  runner: TierRunner,
+  key: string,
+  opts?: OperationOptions
+): Promise<boolean> => {
+  try {
+    await runner.delete(key, opts);
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) {
+      return false;
+    }
+    throw error;
+  }
+};
+
 /** Stable key ordering for the merged listing, matching provider sort order. */
 const byKey = (a: FileInfo, b: FileInfo): number => {
   if (a.key < b.key) {
@@ -617,7 +641,7 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     if (fallback) {
       // Keep a single copy: a re-upload that flips tiers would otherwise leave a
       // stale shadow that a fallback read could surface first.
-      await pick(hot, otherTier(tier)).delete(key);
+      await evict(pick(hot, otherTier(tier)), key);
     }
     return result;
   };
@@ -628,9 +652,21 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     opts?: OperationOptions
   ): Promise<void> => {
     if (fallback) {
-      // The key could be in either tier; deleting a missing one is a no-op.
-      await pick(hot, "hot").delete(key, opts);
-      await pick(hot, "cold").delete(key, opts);
+      // The key could be in either tier, so delete it from both — a tier that
+      // throws `NotFound` for a missing key mustn't stop the other's delete.
+      // Only when *both* report `NotFound` is the key gone everywhere; then
+      // surface that, as a single backend with the same contract would.
+      const routed = route({ key });
+      const deleted = [
+        await evict(pick(hot, routed), key, opts),
+        await evict(pick(hot, otherTier(routed)), key, opts),
+      ];
+      if (!deleted.includes(true)) {
+        throw new FilesError(
+          "NotFound",
+          `tiering: nothing stored for "${key}"`
+        );
+      }
       return;
     }
     await pick(hot, route({ key })).delete(key, opts);
@@ -659,7 +695,7 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
     }
     if (fallback) {
       // Drop any stale copy of the destination key in the tier it didn't land in.
-      await pick(hot, otherTier(dstTier)).delete(to, opts);
+      await evict(pick(hot, otherTier(dstTier)), to, opts);
     }
   };
 

@@ -14,7 +14,9 @@ import type {
 } from "../index.js";
 import { collectStream, normalizeBody } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
+import { reserveKeyPrefix } from "../internal/files-router/reserved.js";
 import { isNumber } from "../internal/is.js";
+import { resolvesUnder } from "../internal/key-prefix.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export interface DedupOptions {
@@ -25,8 +27,9 @@ export interface DedupOptions {
    * Objects under this prefix are hidden from `list()` (unless you list within
    * it) and are never themselves de-duplicated. Writes into it through the
    * instance (`upload`, `signedUploadUrl`, or a `copy` / `move` destination)
-   * are rejected, so a caller can't overwrite the content every pointer
-   * resolves to.
+   * and a `move` out of it are rejected, so a caller can't overwrite or
+   * remove the content every pointer resolves to, and the `files-sdk/api`
+   * gateway refuses client keys inside it.
    */
   prefix?: string;
 }
@@ -90,29 +93,19 @@ const stripInternalMeta = (
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
-/**
- * Split a key into its path segments the way a filesystem would resolve it —
- * empty and `.` segments dropped, `..` popping its parent — lowercased, so a
- * spelling like `/.dedup//x`, `a/../.dedup/x`, or `.DEDUP/x` (the same file on
- * a case-insensitive filesystem) is still recognized as a store key.
- */
-const resolvedSegments = (key: string): string[] => {
-  const segments: string[] = [];
-  for (const segment of key.toLowerCase().split("/")) {
-    if (segment === "..") {
-      segments.pop();
-    } else if (segment !== "" && segment !== ".") {
-      segments.push(segment);
-    }
-  }
-  return segments;
-};
-
 /** Refuse a caller write that would land in the blob store. */
 const rejectStoreWrite = (verb: string, key: string): never => {
   throw new FilesError(
     "Invalid",
     `dedup: ${verb} into the content store ("${key}") is refused — blobs are written only by the plugin, and overwriting one would change what every pointer to it returns`
+  );
+};
+
+/** Refuse a caller move that would carry a blob out of the store. */
+const rejectStoreMove = (key: string): never => {
+  throw new FilesError(
+    "Invalid",
+    `dedup: move out of the content store ("${key}") is refused — it would remove the blob every pointer to that content resolves to; copy it instead`
   );
 };
 
@@ -184,11 +177,13 @@ const NO_CONDITIONAL: AdapterCapabilities["conditional"] = {
  *   periodic sweep. Deleting a blob that a pointer still references makes
  *   that pointer's reads fail with `NotFound`.
  * - **The store is write-protected through the instance.** `upload`,
- *   `signedUploadUrl`, and `copy` / `move` into the store prefix throw, so no
- *   caller can overwrite `.dedup/<sha256>` and change what every pointer to it
- *   returns. Blob reads don't re-verify the hash (that would buffer every
- *   download), so anyone with raw provider write access to the store can
- *   still substitute content — lock that down like the rest of the bucket.
+ *   `signedUploadUrl`, and `copy` / `move` into the store prefix throw, as
+ *   does a `move` out of it, so no caller can overwrite or relocate
+ *   `.dedup/<sha256>` and change what every pointer to it returns. The
+ *   `files-sdk/api` gateway refuses client keys and list prefixes inside the
+ *   store altogether. Blob reads don't re-verify the hash (that would buffer
+ *   every download), so anyone with raw provider write access to the store
+ *   can still substitute content — lock that down like the rest of the bucket.
  * - **Conditional operations throw** — a pointer's native ETag is identical
  *   for every key, so no provider compare-and-set can guard its content.
  *
@@ -215,16 +210,14 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
   /** Whether a key lives in the blob store — those bypass de-duplication. */
   const isStoreKey = (key: string): boolean =>
     key === store || key.startsWith(`${store}/`);
-  const storeSegments = resolvedSegments(store);
   /**
    * Whether a write to `key` would land in the blob store, however it's
-   * spelled — stricter than {@link isStoreKey}, since a false positive only
-   * refuses an odd key while a miss would let a caller overwrite a blob.
+   * spelled (`/.dedup//x`, `a/../.dedup/x`, `.DEDUP/x` on a case-insensitive
+   * filesystem, `.dedup\x` on Windows) — stricter than {@link isStoreKey},
+   * since a false positive only refuses an odd key while a miss would let a
+   * caller overwrite a blob.
    */
-  const targetsStore = (key: string): boolean => {
-    const segments = resolvedSegments(key);
-    return storeSegments.every((segment, index) => segments[index] === segment);
-  };
+  const targetsStore = (key: string): boolean => resolvesUnder(key, store);
 
   /** Build the caller-facing {@link StoredFile} for a followed pointer. */
   const rewrap = (
@@ -435,6 +428,12 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     if ((op.kind === "copy" || op.kind === "move") && targetsStore(op.to)) {
       rejectStoreWrite(op.kind, op.to);
     }
+    // A move out of the store deletes the blob, breaking every pointer to it
+    // at once. (A plain `delete` of a blob stays allowed: it's how a sweep
+    // reclaims unreferenced content.)
+    if (op.kind === "move" && targetsStore(op.from)) {
+      rejectStoreMove(op.from);
+    }
     // Direct reads of the blob store bypass the plugin: blobs are read
     // verbatim, never treated as pointers. Deleting a blob is allowed (it's how
     // a sweep reclaims unreferenced content).
@@ -501,6 +500,13 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       }
       const { etag: _pointerEtag, size: _pointerSize, ...rest } = event;
       return rest;
+    },
+    extend: (files) => {
+      // The blob store is plugin-private: `files-sdk/api` refuses client keys
+      // and list prefixes inside it, so a client can't list, read, delete, or
+      // move another user's content by its hash.
+      reserveKeyPrefix(files, "dedup", store);
+      return {};
     },
     name: "dedup",
     wrap,

@@ -5,6 +5,7 @@ import type { ContentTypeOptions } from "../src/content-type/index.js";
 import { failover } from "../src/failover/index.js";
 import { Files, FilesError } from "../src/index.js";
 import type { Adapter } from "../src/index.js";
+import { validation } from "../src/validation/index.js";
 import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 const withContentType = (
@@ -88,6 +89,69 @@ describe("detectContentType — text scan", () => {
     ["bare svg", "<svg/>", "image/svg+xml"],
     ["xml prolog + svg", "<?xml version='1.0'?><svg></svg>", "image/svg+xml"],
     ["xml prolog only", "<?xml version='1.0'?><root/>", "application/xml"],
+    [
+      "xml prolog + xhtml root",
+      "<?xml version='1.0'?><html xmlns='http://www.w3.org/1999/xhtml'>",
+      "application/xhtml+xml",
+    ],
+    [
+      "prefixed svg root",
+      "<?xml version='1.0'?><s:svg xmlns:s='http://www.w3.org/2000/svg'>",
+      "image/svg+xml",
+    ],
+    [
+      "root in the xhtml namespace",
+      '<?xml version="1.0"?><foo xmlns = "http://www.w3.org/1999/xhtml">',
+      "application/xhtml+xml",
+    ],
+    [
+      "prefixed root in the svg namespace",
+      "<?xml version='1.0'?><a:x xmlns:a='http://www.w3.org/2000/svg'/>",
+      "image/svg+xml",
+    ],
+    [
+      "root past a pi, comment, and doctype subset",
+      "<?xml version='1.0'?>\n<?style x?><!-- <svg> -->" +
+        "<!DOCTYPE html [<!ENTITY a '<b>'>]><html>",
+      "application/xhtml+xml",
+    ],
+    [
+      "doctype without a subset",
+      "<?xml version='1.0'?><!DOCTYPE svg PUBLIC 'x'><svg>",
+      "image/svg+xml",
+    ],
+    [
+      "svg only below a generic root",
+      "<?xml version='1.0'?><feed><svg/></feed>",
+      "application/xml",
+    ],
+    [
+      "an unrelated namespace prefix",
+      "<?xml version='1.0'?><feed xmlns:h='http://www.w3.org/1999/xhtml'>",
+      "application/xml",
+    ],
+    ["unclosed pi", "<?xml version='1.0'", "application/xml"],
+    [
+      "unclosed comment after a prolog",
+      "<?xml version='1.0'?><!-- x",
+      "application/xml",
+    ],
+    ["unclosed doctype", "<?xml version='1.0'?><!DOCTYPE x", "application/xml"],
+    [
+      "unclosed doctype subset",
+      "<?xml version='1.0'?><!DOCTYPE x [<!ENTITY",
+      "application/xml",
+    ],
+    [
+      "text where a root should be",
+      "<?xml version='1.0'?>hi",
+      "application/xml",
+    ],
+    [
+      "a root cut off by the window",
+      `<?xml version='1.0'?><svg ${"a".repeat(600)}`,
+      "image/svg+xml",
+    ],
   ])("detects %s", (_name, text, expected) => {
     expect(detectContentType(ascii(text))).toBe(expected);
   });
@@ -418,5 +482,134 @@ describe("contentType plugin — rejections are permanent", () => {
       expect((failure as FilesError).message).toMatch(/^contentType: /u);
     }
     expect(secondary.raw.size).toBe(0);
+  });
+});
+
+describe("contentType plugin — malformed declared types", () => {
+  test.each([
+    ["a list ending in HTML", "image/png, text/html"],
+    ["params then a list", "image/png;a=b, text/html"],
+    ["no subtype", "image"],
+    ["a control character", "image/png\r\nX-Bad: 1"],
+  ])("refuses %s under every mode", async (_name, declared) => {
+    for (const options of [
+      {},
+      { onMismatch: "reject" },
+      { onUnknown: "reject" },
+    ] satisfies ContentTypeOptions[]) {
+      const adapter = fakeAdapter();
+      const files = withContentType(options, adapter);
+      // A PNG polyglot (matches the claimed image) and unknown bytes (kept as
+      // declared under onUnknown: "trust") alike.
+      for (const body of [PNG, ascii("<b>hi</b> words")]) {
+        // eslint-disable-next-line no-await-in-loop -- each upload is inspected on its own
+        const failure = await files
+          .upload("x.png", body, { contentType: declared })
+          .catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(FilesError);
+        expect(failure).toMatchObject({ code: "Invalid", permanent: true });
+        expect(String(failure)).toMatch(/malformed content type/u);
+      }
+      expect(adapter.raw.size).toBe(0);
+    }
+  });
+
+  test("refuses a malformed Blob type", async () => {
+    const files = withContentType();
+    await expect(
+      files.upload("x.png", new Blob([PNG], { type: "image/png, text/html" }))
+    ).rejects.toMatchObject({ code: "Invalid" });
+  });
+
+  test("a confirmed type is stored normalized, keeping its parameters", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("a.png", PNG, { contentType: " IMAGE/PNG " });
+    await files.upload("b.svg", "<svg/>", {
+      contentType: "Image/SVG+XML; charset=utf-8",
+    });
+    expect(await typeOf(files, "a.png")).toBe("image/png");
+    expect(await typeOf(files, "b.svg")).toBe("image/svg+xml; charset=utf-8");
+  });
+
+  test("the polyglot never reaches a validation() allowlist", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({
+      adapter,
+      plugins: [
+        contentType({ onMismatch: "reject" }),
+        validation({ allowedTypes: ["image/png"] }),
+      ],
+    });
+    await expect(
+      files.upload("x.png", PNG, { contentType: "image/png;a=b, text/html" })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(adapter.raw.size).toBe(0);
+  });
+});
+
+describe("contentType plugin — XML under a media type", () => {
+  const XHTML = `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><script>alert(1)</script></html>`;
+
+  test("an XHTML root never passes as an image/*+xml type", async () => {
+    const adapter = fakeAdapter();
+    const files = new Files({
+      adapter,
+      plugins: [
+        contentType({ onMismatch: "reject", onUnknown: "reject" }),
+        validation({ allowedTypes: ["image/*"] }),
+      ],
+    });
+    await expect(
+      files.upload("avatar.png", XHTML, { contentType: "image/x+xml" })
+    ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
+    expect(adapter.raw.size).toBe(0);
+  });
+
+  test("correct mode relabels it to its real type", async () => {
+    const files = withContentType();
+    await files.upload("avatar", XHTML, { contentType: "image/x+xml" });
+    expect(await typeOf(files, "avatar")).toBe("application/xhtml+xml");
+  });
+
+  test("an XHTML root needs the exact type, not just any XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload("feed.rss", XHTML, { contentType: "application/rss+xml" })
+    ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
+    await expect(
+      files.upload("logo.svg", XHTML, { contentType: "image/svg+xml" })
+    ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
+  });
+
+  test("generic XML never agrees with a media-typed XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    // Script nested below an innocuous root still runs when a browser
+    // renders the document, so the image label is refused.
+    const nested = `<?xml version="1.0"?><x><s:script xmlns:s="http://www.w3.org/1999/xhtml">alert(1)</s:script></x>`;
+    for (const declared of ["image/x+xml", "video/x+xml", "audio/x+xml"]) {
+      // eslint-disable-next-line no-await-in-loop -- each claim is inspected on its own
+      await expect(
+        files.upload("a", nested, { contentType: declared })
+      ).rejects.toThrow(/its bytes are "application\/xml"/u);
+    }
+  });
+
+  test("an SVG whose root sits past the window keeps image/svg+xml", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload(
+      "logo.svg",
+      `<?xml version="1.0"?><!-- ${"x".repeat(600)} --><svg/>`
+    );
+    expect(await typeOf(files, "logo.svg")).toBe("image/svg+xml");
+  });
+
+  test("an XHTML root after a leading comment is classified under an XML claim", async () => {
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload(
+        "feed.rss",
+        `<!-- x --><x xmlns="http://www.w3.org/1999/xhtml"><script/></x>`
+      )
+    ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
   });
 });

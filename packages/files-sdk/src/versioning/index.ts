@@ -11,6 +11,7 @@ import type {
 } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { reserveKeyPrefix } from "../internal/files-router/reserved.js";
+import { resolvesUnder } from "../internal/key-prefix.js";
 
 /**
  * A saved snapshot of a key, as returned by {@link VersioningApi.versions}.
@@ -147,9 +148,30 @@ const ownVersionId = (listedKey: string, dir: string): string | undefined => {
   return id.includes("/") ? undefined : id;
 };
 
-/** Whether `key` is `dir` itself or lives anywhere beneath it. */
+/**
+ * Whether `key` is `dir` itself or lives anywhere beneath it. The spelling
+ * must match exactly — on a case-sensitive store `.VERSIONS/x` is a live key
+ * of its own, which still deserves its snapshots — and the key must *stay*
+ * inside once resolved, so `.versions/../notes.txt` (which a filesystem
+ * resolves to `notes.txt`) can't skip the snapshot of a live file.
+ */
 const under = (key: string, dir: string): boolean =>
-  key === dir || key.startsWith(`${dir}/`);
+  (key === dir || key.startsWith(`${dir}/`)) && resolvesUnder(key, dir);
+
+/**
+ * Whether a caller-supplied version id could address anything but one of the
+ * key's own snapshots: a separator (`/`, or `\` on a Windows filesystem)
+ * reaches into a nested key's — or another tenant's — version dir, a dot
+ * segment climbs out of it, an empty id names the dir itself, and a NUL byte
+ * truncates the path on some backends. The `files-sdk/api` gateway refuses
+ * the same ids before they reach the plugin.
+ */
+const isUnsafeVersionId = (id: string): boolean =>
+  id === "" ||
+  id === "." ||
+  id.includes("..") ||
+  id.includes("\0") ||
+  /[/\\]/u.test(id);
 
 /**
  * Recover the source object's last-modified time from a {@link versionId}: the
@@ -404,12 +426,14 @@ export const versioning = (
     requested?: string
   ): Promise<FileInfo> => {
     let id = requested;
-    if (id !== undefined && id.includes("/")) {
-      // A slash would address into a nested key's version dir (a version of
-      // "a/b" via restore("a", "b/<id>")) — never a version of `key` itself.
+    if (id !== undefined && isUnsafeVersionId(id)) {
+      // A separator would address into a nested key's version dir (a version
+      // of "a/b" via restore("a", "b/<id>")), and `..\` climbs into another
+      // key's on a Windows filesystem — never a version of `key` itself.
+      // (Omit the id, rather than passing "", to restore the newest.)
       throw new FilesError(
         "Invalid",
-        `versioning: invalid versionId "${id}" — version ids never contain "/"`
+        `versioning: invalid versionId ${JSON.stringify(id)} — version ids never contain "/", "\\", "..", or NUL, and are never empty or "."`
       );
     }
     if (id === undefined) {

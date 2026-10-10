@@ -200,6 +200,43 @@ describe("validation plugin — content type", () => {
       /type "text\/plain", which is not one of the allowed types/u
     );
   });
+
+  test.each([
+    ["a list ending in HTML", ["image/*"], "image/png, text/html"],
+    ["params then a list", ["image/png"], "image/png;a=b, text/html"],
+    ["no subtype", ["image/*"], "image"],
+    ["a control character", ["image/*"], "image/png\r\nX-Bad: 1"],
+  ])(
+    "refuses a malformed declared type (%s)",
+    async (_name, allowedTypes, declared) => {
+      const adapter = fakeAdapter();
+      const files = withValidation({ allowedTypes }, adapter);
+      const error = await caught(
+        files.upload("x.png", "<script>alert(1)</script>", {
+          contentType: declared,
+        })
+      );
+      expect(error).toBeInstanceOf(ValidationError);
+      expect(error).toMatchObject({ code: "Invalid", reason: "type" });
+      expect(String(error)).toMatch(/malformed content type/u);
+      expect(await files.exists("x.png")).toBe(false);
+    }
+  );
+
+  test("refuses a malformed Blob type too", async () => {
+    const files = withValidation({ allowedTypes: ["image/*"] });
+    await expect(
+      files.upload("x.png", new Blob(["<b>"], { type: "image/png, text/html" }))
+    ).rejects.toMatchObject({ reason: "type" });
+  });
+
+  test("stores the approved type normalized, keeping its parameters", async () => {
+    const files = withValidation({ allowedTypes: ["text/*"] });
+    await files.upload("a.txt", "hi", {
+      contentType: " Text/Plain; charset=utf-8",
+    });
+    expect(await typeOf(files, "a.txt")).toBe("text/plain; charset=utf-8");
+  });
 });
 
 describe("validation plugin — key naming", () => {
