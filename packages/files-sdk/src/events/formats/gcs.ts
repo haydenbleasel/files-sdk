@@ -58,6 +58,29 @@ interface ObjectChange {
   raw: JsonValue;
 }
 
+/**
+ * How long before the event a deleted generation's `timeDeleted` must be for
+ * it to count as already noncurrent. Deleting a live object stamps both with
+ * the moment of the delete; the margin absorbs rounding and clock drift.
+ */
+const NONCURRENT_MARGIN_MS = 60 * 1000;
+
+/**
+ * Whether a permanent delete removed a generation that had already stopped
+ * being live (a lifecycle `numNewerVersions` / `daysSinceNoncurrentTime`
+ * cleanup, or a delete naming a noncurrent generation): the resource's
+ * `timeDeleted`, when it became noncurrent, predates the event itself. Its
+ * key may well have a live generation, so the delete isn't reported. GCS
+ * documents no other marker of a noncurrent generation; without a payload
+ * (`payloadFormat: NONE`) there's no telling, so the delete is reported.
+ */
+const wasNoncurrent = (
+  resource: JsonObject | undefined,
+  sentAt: JsonValue | undefined
+): boolean =>
+  toTime(sentAt, Number.NaN) - toTime(resource?.timeDeleted, Number.NaN) >
+  NONCURRENT_MARGIN_MS;
+
 const toEvent = (change: ObjectChange): RawEvent => {
   const { resource } = change;
   const size = toSize(resource?.size);
@@ -82,7 +105,9 @@ const toEvent = (change: ObjectChange): RawEvent => {
  * archive that carries `overwrittenByGeneration` is the old generation of an
  * overwrite — its `OBJECT_FINALIZE` arrives separately — so it's skipped.
  * `OBJECT_ARCHIVE` otherwise means the live version of a versioned object
- * became noncurrent: deleted, from the caller's side.
+ * became noncurrent: deleted, from the caller's side. (An `OBJECT_DELETE` of
+ * a generation that was already noncurrent is skipped too; see
+ * {@link wasNoncurrent}.)
  */
 const pubsubType = (
   eventType: string,
@@ -112,6 +137,13 @@ const fromPubSub = (
   if (!type) {
     return [];
   }
+  const resource = decodeData(message.data);
+  if (
+    eventType === "OBJECT_DELETE" &&
+    wasNoncurrent(resource, attributes.eventTime)
+  ) {
+    return [];
+  }
   return [
     toEvent({
       bucket: isString(bucketId) ? bucketId : undefined,
@@ -120,7 +152,7 @@ const fromPubSub = (
       kind: eventType,
       name: objectId,
       raw: message,
-      resource: decodeData(message.data),
+      resource,
       sentAt: attributes.eventTime,
       time: toTime(attributes.eventTime, Date.now()),
       type,
@@ -157,6 +189,9 @@ const fromCloudEvent = (
     return [];
   }
   const resource = isJsonObject(data) ? data : undefined;
+  if (type === "deleted" && wasNoncurrent(resource, attrs.time)) {
+    return [];
+  }
   const fromSubject =
     isString(attrs.subject) && attrs.subject.startsWith("objects/")
       ? attrs.subject.slice("objects/".length)

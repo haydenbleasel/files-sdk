@@ -64,6 +64,7 @@ subscription.on("message", async (message) => {
 | `OBJECT_DELETE` | `deleted` |
 | `OBJECT_ARCHIVE` | `deleted`: the live version became noncurrent |
 | `OBJECT_DELETE` / `OBJECT_ARCHIVE` with `overwrittenByGeneration` | skipped: an overwrite, whose `OBJECT_FINALIZE` arrives separately |
+| `OBJECT_DELETE` whose payload `timeDeleted` is over a minute before the event | skipped: a generation that was already noncurrent (see [versioned buckets](/docs/events/delivery#versioned-buckets)) |
 | `OBJECT_METADATA_UPDATE` | skipped |
 
 One storage change can arrive as several Pub/Sub messages with different message ids, so `event.id` is built from the bucket, object, generation and event type instead. `versionId` is the generation.

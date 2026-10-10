@@ -78,9 +78,10 @@ Handlers run one at a time, in the order they were registered. Await anything th
 
 ## Versioned buckets
 
-On a versioned bucket, providers report deletes of individual versions too:
+On a versioned bucket, providers also report deletes of single versions: a delete that names a version id, or a lifecycle rule that prunes old versions (S3 `NoncurrentVersionExpiration`, GCS `numNewerVersions`, B2's "keep only the last version"). The key may still have a live version, so these are skipped rather than reported as `deleted`:
 
-- **S3:** an `ObjectRemoved:Delete` with a `versionId` may have removed an older version while the key still exists. `ObjectRemoved:DeleteMarkerCreated` means the key is gone.
-- **GCS:** `OBJECT_ARCHIVE` (the live version became noncurrent) is reported as `deleted`; an archive or delete caused by an overwrite is skipped, since its `OBJECT_FINALIZE` arrives separately. A purged noncurrent generation still arrives as `OBJECT_DELETE`.
+- **S3:** `ObjectRemoved:Delete` and `LifecycleExpiration:Delete` carrying a `versionId` (anything but `"null"`, which S3 sends for an unversioned bucket), and an EventBridge `Object Deleted` whose `deletion-type` is `Permanently Deleted` with a `version-id`. A plain delete on a versioned bucket leaves a delete marker, which arrives as `ObjectRemoved:DeleteMarkerCreated` (or `LifecycleExpiration:DeleteMarkerCreated`) and is reported. On an unversioned bucket, every delete is reported.
+- **B2:** every bucket is versioned, and `b2:ObjectDeleted:*` always removes one file version. A delete through `files-sdk/backblaze-b2` leaves a hide marker (`b2:HideMarkerCreated:*`), which is reported.
+- **GCS:** `OBJECT_ARCHIVE` (the live version became noncurrent) is reported as `deleted`; an archive or delete caused by an overwrite is skipped, since its `OBJECT_FINALIZE` arrives separately. An `OBJECT_DELETE` (or Eventarc `object.v1.deleted`) is skipped when its payload's `timeDeleted`, the moment the generation stopped being live, is more than a minute before the event: that generation was already noncurrent. GCS documents no other field that tells a noncurrent generation apart, so without a payload (`payloadFormat: NONE`) the delete is reported.
 
-Both carry `versionId`, so check it, or re-read the key, before treating a `deleted` as the end of the object.
+Events still carry `versionId`, so re-read the key before treating a `deleted` as the end of the object, especially on GCS.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { Agent, RunContext } from "@openai/agents";
+import { Agent, RunContext, Runner, Usage } from "@openai/agents";
 import type { Tool } from "@openai/agents";
 
 import { Files, FilesError } from "../src/index.js";
@@ -44,6 +44,42 @@ const approval = async (t: unknown): Promise<boolean> => {
   const tool = asTool(t);
   const ctx = new RunContext();
   return await tool.needsApproval(ctx, {}, "test-call");
+};
+
+// A model that calls one tool with `args`, then answers.
+const modelCalling = (name: string, args: Record<string, unknown>) => {
+  let turn = 0;
+  return {
+    getResponse: () => {
+      turn += 1;
+      return Promise.resolve(
+        turn === 1
+          ? {
+              output: [
+                {
+                  arguments: JSON.stringify(args),
+                  callId: "c1",
+                  name,
+                  status: "completed",
+                  type: "function_call",
+                },
+              ],
+              usage: new Usage(),
+            }
+          : {
+              output: [
+                {
+                  content: [{ text: "done", type: "output_text" }],
+                  role: "assistant",
+                  status: "completed",
+                  type: "message",
+                },
+              ],
+              usage: new Usage(),
+            }
+      );
+    },
+  };
 };
 
 // OpenAI strict mode (the Agents SDK's default for Zod parameters) rejects a
@@ -260,19 +296,67 @@ describe("createAgentsFileTools", () => {
     expect(typeof FilesError).toBe("function");
   });
 
-  test("overrides patch description without dropping required props", () => {
+  test("overrides patch description and approval without dropping required props", async () => {
     const tools = createAgentsFileTools({
       files: newFiles(),
       overrides: {
         deleteFile: { needsApproval: false },
-        listFiles: { description: "Custom list" },
+        listFiles: { description: "Custom list", needsApproval: true },
       },
     });
     expect(asTool(tools.listFiles).description).toBe("Custom list");
     expect(asTool(tools.listFiles).invoke).toBeInstanceOf(Function);
-    // After override, needsApproval becomes a literal boolean (overrides apply
-    // via Object.assign on the tool object — same pattern as ai-sdk)
-    expect(asTool(tools.deleteFile).needsApproval).toBe(false as never);
+    // The tool is rebuilt with the override, so `needsApproval` stays the
+    // function the Agents runner calls (a patched-on boolean would throw).
+    expect(asTool(tools.deleteFile).needsApproval).toBeInstanceOf(Function);
+    expect(await approval(tools.deleteFile)).toBe(false);
+    expect(await approval(tools.listFiles)).toBe(true);
+    // Untouched tools keep their defaults; an override beats requireApproval.
+    expect(await approval(tools.uploadFile)).toBe(true);
+    const gated = createAgentsFileTools({
+      files: newFiles(),
+      overrides: { copyFile: { needsApproval: true } },
+      requireApproval: false,
+    });
+    expect(await approval(gated.copyFile)).toBe(true);
+    expect(await approval(gated.deleteFile)).toBe(false);
+  });
+
+  test("an approval override runs through the Agents runner", async () => {
+    const files = newFiles();
+    await files.upload("a.txt", "hi");
+    const tools = createAgentsFileTools({
+      files,
+      overrides: { deleteFile: { needsApproval: false } },
+    });
+    const agent = new Agent({
+      instructions: "x",
+      model: modelCalling("deleteFile", { key: "a.txt" }) as never,
+      name: "files",
+      tools: Object.values(tools),
+    });
+    await new Runner({ tracingDisabled: true }).run(agent, "go");
+    expect(await files.exists("a.txt")).toBe(false);
+
+    // And `true` on a read tool pauses the run for approval.
+    const gated = createAgentsFileTools({
+      files,
+      overrides: { listFiles: { needsApproval: true } },
+    });
+    const paused = await new Runner({ tracingDisabled: true }).run(
+      new Agent({
+        instructions: "x",
+        model: modelCalling("listFiles", {
+          cursor: null,
+          limit: null,
+          prefix: null,
+        }) as never,
+        name: "files",
+        tools: Object.values(gated),
+      }),
+      "go"
+    );
+    expect(paused.interruptions).toHaveLength(1);
   });
 
   test("overrides for unknown tool names are ignored", () => {
@@ -400,6 +484,19 @@ describe("createAgentsFileTools", () => {
     })) as string;
     expect(typeof result).toBe("string");
     expect(result).toMatch(/missing\.txt|not found|FilesError/u);
+  });
+
+  test("cherry-picked factories take a description, and needsApproval on reads too", async () => {
+    const files = newFiles();
+    const list = agentsListFiles(files, {
+      description: "Mine",
+      needsApproval: true,
+    });
+    expect(asTool(list).description).toBe("Mine");
+    expect(await approval(list)).toBe(true);
+    const del = agentsDeleteFile(files, { description: "Remove" });
+    expect(asTool(del).description).toBe("Remove");
+    expect(await approval(del)).toBe(true);
   });
 
   test("cherry-picked individual factories work and accept needsApproval", async () => {

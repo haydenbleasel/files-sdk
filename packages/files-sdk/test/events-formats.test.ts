@@ -58,6 +58,29 @@ const pick = (list: FileEvent[]) =>
     versionId,
   }));
 
+const typesOf = (list: FileEvent[]) => list.map((e) => e.type);
+
+/** `s3/lambda-put.json` as `eventName`, versioned as `versionId` (none when omitted). */
+const lambdaRecord = (eventName: string, versionId?: string | null) => {
+  const { Records } = fixture("s3/lambda-put.json") as {
+    Records: { s3: { object: Record<string, unknown> } }[];
+  };
+  const record = Records[0] as { s3: { object: Record<string, unknown> } };
+  const { versionId: _v, ...object } = record.s3.object;
+  return {
+    Records: [
+      {
+        ...record,
+        eventName,
+        s3: {
+          ...record.s3,
+          object: { ...object, ...(versionId !== undefined && { versionId }) },
+        },
+      },
+    ],
+  };
+};
+
 const declaredFormat = (adapter: Adapter) =>
   createFiles({ adapter }).capabilities.events;
 
@@ -425,12 +448,68 @@ describe("s3", () => {
     ["ObjectRestore:Completed", undefined],
     ["ObjectTagging:Put", undefined],
   ])("eventName %s → %s", async (eventName, type) => {
-    const base = fixture("s3/lambda-put.json") as {
-      Records: { eventName: string }[];
-    };
-    const record = { ...base.Records[0], eventName };
-    const list = await parse("s3", { Records: [record] });
+    // An unversioned bucket's record: no version id.
+    const list = await parse("s3", lambdaRecord(eventName));
     expect(list[0]?.type).toBe(type as FileEvent["type"]);
+  });
+
+  test("a permanent delete of one version is skipped; a delete marker is a delete", async () => {
+    const types = async (eventName: string, versionId?: string | null) =>
+      typesOf(await parse("s3", lambdaRecord(eventName, versionId)));
+    // `DELETE ?versionId=`, NoncurrentVersionExpiration, an expired delete
+    // marker's cleanup: the key may still have a live version.
+    expect(await types("ObjectRemoved:Delete", "3HL4kqtJlcpXroDTDmJ")).toEqual(
+      []
+    );
+    expect(await types("s3:ObjectRemoved:Delete", "v2")).toEqual([]);
+    expect(await types("LifecycleExpiration:Delete", "v1")).toEqual([]);
+    // Unversioned: no version, or S3's "null".
+    expect(await types("ObjectRemoved:Delete")).toEqual(["deleted"]);
+    expect(await types("ObjectRemoved:Delete", "null")).toEqual(["deleted"]);
+    expect(await types("ObjectRemoved:Delete", null)).toEqual(["deleted"]);
+    expect(await types("ObjectRemoved:Delete", "")).toEqual(["deleted"]);
+    expect(await types("LifecycleExpiration:Delete")).toEqual(["deleted"]);
+    // A delete marker carries its own version id, and is the logical delete.
+    expect(await types("ObjectRemoved:DeleteMarkerCreated", "m1")).toEqual([
+      "deleted",
+    ]);
+    expect(
+      await types("LifecycleExpiration:DeleteMarkerCreated", "m1")
+    ).toEqual(["deleted"]);
+    // The fixtures without a version id still report.
+    const fromFixture = await parse("s3", fixture("s3/lambda-delete.json"));
+    expect(typesOf(fromFixture)).toEqual(["deleted"]);
+  });
+
+  test("EventBridge: a version permanently deleted is skipped", async () => {
+    const deleted = fixture("s3/eventbridge-deleted.json") as {
+      detail: { object: Record<string, unknown> } & Record<string, unknown>;
+    };
+    const withDetail = (extra: Record<string, unknown>, versionId?: string) => {
+      const { "version-id": _v, ...object } = deleted.detail.object;
+      return {
+        ...deleted,
+        detail: {
+          ...deleted.detail,
+          ...extra,
+          object: {
+            ...object,
+            ...(versionId !== undefined && { "version-id": versionId }),
+          },
+        },
+      };
+    };
+    const permanently = { "deletion-type": "Permanently Deleted" };
+    expect(await parse("s3", withDetail(permanently, "v1"))).toEqual([]);
+    const unversioned = await parse("s3", withDetail(permanently));
+    expect(typesOf(unversioned)).toEqual(["deleted"]);
+    const nullVersion = await parse("s3", withDetail(permanently, "null"));
+    expect(typesOf(nullVersion)).toEqual(["deleted"]);
+    // The fixture: a delete marker, with its version id.
+    const marker = await parse("s3", deleted);
+    expect(marker.map((e) => [e.type, e.versionId])).toEqual([
+      ["deleted", "1QW9g1Z99LUNbvaaYVpW9xDlOLU.qxgF"],
+    ]);
   });
 
   test("without a sequencer, the id comes from the version, time and ETag, never the clock", async () => {
@@ -658,6 +737,60 @@ describe("gcs", () => {
     expect(
       await parse("gcs", fixture("gcs/pubsub-pull-metadata-update.json"))
     ).toEqual([]);
+  });
+
+  test("an OBJECT_DELETE of a generation that was already noncurrent is skipped", async () => {
+    const message = fixture("gcs/pubsub-pull-delete.json") as {
+      attributes: Record<string, string>;
+      data: string;
+    };
+    const resource = JSON.parse(atob(message.data)) as Record<string, unknown>;
+    const deletedAt = Date.parse(resource.timeDeleted as string);
+    const at = async (eventTime: number, eventType = "OBJECT_DELETE") =>
+      typesOf(
+        await parse("gcs", {
+          ...message,
+          attributes: {
+            ...message.attributes,
+            eventTime: new Date(eventTime).toISOString(),
+            eventType,
+          },
+        })
+      );
+    // A lifecycle `numNewerVersions` cleanup, days after the generation
+    // stopped being live: the key's live generation is untouched.
+    expect(await at(deletedAt + 3 * 86_400_000)).toEqual([]);
+    // A live object's delete stamps both with the same moment (give or take).
+    expect(await at(deletedAt)).toEqual(["deleted"]);
+    expect(await at(deletedAt + 5000)).toEqual(["deleted"]);
+    // Archive is when it stops being live, whatever its payload says.
+    expect(await at(deletedAt + 86_400_000, "OBJECT_ARCHIVE")).toEqual([
+      "deleted",
+    ]);
+    // Without a payload, there's no telling: reported.
+    const { data: _d, ...noData } = message;
+    const bare = await parse("gcs", {
+      ...noData,
+      attributes: { ...message.attributes, eventTime: "2030-01-01T00:00:00Z" },
+    });
+    expect(typesOf(bare)).toEqual(["deleted"]);
+    // Eventarc: the same check against the CloudEvent's time.
+    const ce = {
+      ...(fixture("gcs/eventarc-cloudevent-finalize-structured.json") as {
+        data: object;
+      }),
+      type: "google.cloud.storage.object.v1.deleted",
+    };
+    const ceAt = async (time: string) =>
+      typesOf(
+        await parse("gcs", {
+          ...ce,
+          data: { ...ce.data, timeDeleted: "2020-09-29T11:32:00.000Z" },
+          time,
+        })
+      );
+    expect(await ceAt("2020-10-29T11:32:00.000Z")).toEqual([]);
+    expect(await ceAt("2020-09-29T11:32:00.000Z")).toEqual(["deleted"]);
   });
 
   test("push wrappers, pulled batches and Buffer data", async () => {

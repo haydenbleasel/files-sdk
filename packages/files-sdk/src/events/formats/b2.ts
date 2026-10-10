@@ -5,6 +5,10 @@
 // A delete through `files-sdk/backblaze-b2` (the S3 API, no version id)
 // leaves a hide marker rather than removing the version, so it arrives as
 // `b2:HideMarkerCreated:Hide` — a delete from the caller's side.
+// `b2:ObjectDeleted:*` is always one file version going
+// (`b2_delete_file_version`, an S3 delete with a version id, a lifecycle rule
+// pruning old versions): the file may still have a live version, so it isn't
+// reported.
 
 import { isNumber, isString } from "../../internal/is.js";
 import type { JsonObject, JsonValue } from "../../internal/json.js";
@@ -17,13 +21,11 @@ const typeOf = (eventType: string): "created" | "deleted" | undefined => {
   if (eventType.startsWith("b2:ObjectCreated:")) {
     return "created";
   }
-  if (
-    eventType.startsWith("b2:ObjectDeleted:") ||
-    eventType.startsWith("b2:HideMarkerCreated:")
-  ) {
+  if (eventType.startsWith("b2:HideMarkerCreated:")) {
     return "deleted";
   }
-  // b2:TestEvent, b2:MultipartUploadCreated:*, and types B2 adds later.
+  // b2:ObjectDeleted:* (one version, not the file), b2:TestEvent,
+  // b2:MultipartUploadCreated:*, and types B2 adds later.
   return undefined;
 };
 

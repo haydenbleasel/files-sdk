@@ -59,7 +59,9 @@ const field = (record: JsonObject, name: string): JsonObject | undefined => {
  * that doesn't create or remove the live object: tagging, ACL, restore,
  * replication and storage-class changes, MinIO's metadata-only
  * `ObjectCreated:Put{Tagging,Retention,LegalHold,Encryption}` and
- * `ObjectRemoved:NoOP`, and lifecycle expiry of a delete marker.
+ * `ObjectRemoved:NoOP`, and MinIO's `LifecycleDelMarkerExpiration:Delete`.
+ * A `deleted` name can still stand for one version going rather than the
+ * object (see {@link removesOneVersion}).
  */
 export const s3EventType = (
   eventName: string
@@ -85,6 +87,32 @@ export const s3EventType = (
   return undefined;
 };
 
+/**
+ * Whether a delete event names a specific version: anything but S3's `"null"`
+ * (or no version at all) for an object in an unversioned bucket.
+ */
+const isVersion = (versionId: JsonValue | undefined): versionId is string =>
+  isString(versionId) && versionId !== "" && versionId !== "null";
+
+/**
+ * Whether a permanent delete removed one version of a versioned object — a
+ * `DELETE ?versionId=`, `NoncurrentVersionExpiration`, an expired delete
+ * marker's cleanup — rather than the object: the key may still have a live
+ * version, so it isn't reported. (A plain delete on a versioned bucket leaves
+ * a delete marker, which is.)
+ */
+const removesOneVersion = (
+  eventName: string,
+  versionId: JsonValue | undefined
+): boolean => {
+  const name = eventName.replace(/^s3:/u, "");
+  return (
+    (name === "ObjectRemoved:Delete" ||
+      name === "LifecycleExpiration:Delete") &&
+    isVersion(versionId)
+  );
+};
+
 // One `Records[]` entry of the S3 event itself.
 const fromRecord = (record: JsonObject): RawEvent[] => {
   const { eventName } = record;
@@ -94,7 +122,7 @@ const fromRecord = (record: JsonObject): RawEvent[] => {
     throw malformed("s3", "record without eventName or s3.object.key");
   }
   const type = s3EventType(eventName);
-  if (!type) {
+  if (!type || removesOneVersion(eventName, object.versionId)) {
     return [];
   }
   const key = decodeKey(object.key);
@@ -148,6 +176,14 @@ const fromEventBridge = (event: JsonObject): RawEvent[] => {
   if (!(object && isString(object.key))) {
     throw malformed("s3", "EventBridge event without detail.object.key");
   }
+  // One version permanently deleted (see `removesOneVersion`); a delete
+  // marker (`"Delete Marker Created"`) or an unversioned delete is reported.
+  if (
+    detail?.["deletion-type"] === "Permanently Deleted" &&
+    isVersion(object["version-id"])
+  ) {
+    return [];
+  }
   const bucket = detail && field(detail, "bucket");
   const etag = bareEtag(object.etag);
   const size = toSize(object.size);
@@ -177,6 +213,21 @@ const fromEventBridge = (event: JsonObject): RawEvent[] => {
  * pulled, or from the Node client.
  */
 const unwrap = (value: JsonObject): JsonValue[] | undefined => {
+  // An SNS notification. Checked first: over HTTPS only its signed fields
+  // vouch for anything, so a body that is one can't also be read as another
+  // envelope (a Lambda SNS record, below) that would put unsigned content in
+  // front of the signed `Message`.
+  if (isString(value.Type) && "TopicArn" in value) {
+    if ("EventSource" in value || "Sns" in value || "Records" in value) {
+      throw malformed(
+        "s3",
+        "an SNS notification that also carries EventSource, Sns or Records"
+      );
+    }
+    return value.Type === "Notification" && isString(value.Message)
+      ? [decodeJson(value.Message)]
+      : [];
+  }
   // A Lambda subscribed to the SNS topic gets `{ Records: [{ EventSource:
   // "aws:sns", Sns }] }`; `Sns` is the notification, as over HTTPS.
   if (value.EventSource === "aws:sns") {
@@ -184,11 +235,6 @@ const unwrap = (value: JsonObject): JsonValue[] | undefined => {
       throw malformed("s3", "SNS record without an Sns notification");
     }
     return [value.Sns];
-  }
-  if (isString(value.Type) && "TopicArn" in value) {
-    return value.Type === "Notification" && isString(value.Message)
-      ? [decodeJson(value.Message)]
-      : [];
   }
   if (value.eventSource === "aws:sqs") {
     if (!isString(value.body)) {

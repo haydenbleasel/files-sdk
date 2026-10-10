@@ -111,15 +111,27 @@ describe("b2", () => {
     expect(res.status).toBe(200);
   });
 
-  test("deletes and hide markers are deletes; tests and unknowns are skipped", async () => {
+  test("hide markers are deletes; version deletes, tests and unknowns are skipped", async () => {
     const files = filesAs({ name: "backblaze-b2" });
-    const [deleted] = await files.events.parse(json("b2/delete.derived.json"));
-    expect(deleted).toMatchObject({ type: "deleted" });
-    expect(deleted?.size).toBeUndefined();
+    // `b2:ObjectDeleted:*` removes one file version (by API or a lifecycle
+    // rule pruning old versions); the file may still have a live one.
+    expect(await files.events.parse(json("b2/delete.derived.json"))).toEqual(
+      []
+    );
+    const [deleted] = jsonAs<{ events: Record<string, unknown>[] }>(
+      "b2/delete.derived.json"
+    ).events;
+    expect(
+      await files.events.parse({
+        ...deleted,
+        eventType: "b2:ObjectDeleted:LifecycleRule",
+      })
+    ).toEqual([]);
     const [hidden] = await files.events.parse(
       json("b2/hide-marker.derived.json")
     );
     expect(hidden).toMatchObject({ key: "objectName.txt", type: "deleted" });
+    expect(hidden?.size).toBeUndefined();
     expect(await files.events.parse(json("b2/test-event.json"))).toEqual([]);
     expect(
       (await files.events.parse(json("b2/captured-upload.json")))[0]?.key
@@ -931,7 +943,7 @@ describe("SNS over HTTPS", () => {
     const viaCert = (n: number) => {
       const body = JSON.stringify({
         ...message,
-        SigningCertURL: `https://sns.us-west-2.amazonaws.com/cert-${n}.pem`,
+        SigningCertURL: `https://sns.us-west-2.amazonaws.com/SimpleNotificationService-${n.toString(16).padStart(32, "0")}.pem`,
       });
       return verify(post(body), body);
     };
@@ -1044,6 +1056,73 @@ describe("SNS over HTTPS", () => {
     );
   });
 
+  test("only the signed fields of a verified message are returned", async () => {
+    const verify = snsVerifier(optsFor("notification-v2"));
+    const message = jsonAs<Record<string, string>>(
+      "sns-http/notification-v2.json"
+    );
+    const body = JSON.stringify({
+      ...message,
+      EventSource: "aws:sns",
+      Records: [],
+      Sns: { Message: "forged" },
+    });
+    const verified = await verify(post(body), body);
+    expect(Object.keys(verified).toSorted()).toEqual([
+      "Message",
+      "MessageId",
+      "Timestamp",
+      "TopicArn",
+      "Type",
+    ]);
+    expect(verified.Message).toBe(message.Message as string);
+  });
+
+  test("unsigned fields beside a genuine signed message can't smuggle events in", async () => {
+    const message = jsonAs<Record<string, string>>(
+      "sns-http/notification-v2.json"
+    );
+    const forgedRecords = JSON.stringify({
+      Records: [
+        {
+          eventName: "ObjectRemoved:Delete",
+          eventSource: "aws:s3",
+          s3: {
+            bucket: { name: "victim" },
+            object: { key: "invoices/2026.pdf", sequencer: "1" },
+          },
+        },
+      ],
+    });
+    const { hook, seen } = hookFor("s3", { sns: optsFor("notification-v2") });
+    for (const extra of [
+      {
+        EventSource: "aws:sns",
+        Sns: { Message: forgedRecords, TopicArn: "x", Type: "Notification" },
+      },
+      { Records: JSON.parse(forgedRecords).Records },
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one forgery after another
+      const res = await hook.handle(
+        post(JSON.stringify({ ...message, ...extra }))
+      );
+      // The signature holds, so it's parsed — but only the signed Message,
+      // which isn't an S3 event.
+      expect(res.status).toBe(400);
+    }
+    expect(seen).toEqual([]);
+    // And the s3 format itself never reads an SNS notification as anything
+    // else.
+    const files = filesAs({ name: "s3" });
+    await expect(
+      files.events.parse({
+        ...message,
+        EventSource: "aws:sns",
+        Sns: { Message: forgedRecords, TopicArn: "x", Type: "Notification" },
+      })
+    ).rejects.toThrow("an SNS notification that also carries");
+  });
+
   test("a verified notification goes on to the s3 parser", async () => {
     const { hook } = hookFor("s3", { sns: optsFor("notification-v2") });
     // Signed, but its Message isn't an S3 event: verified, then a 400.
@@ -1100,25 +1179,37 @@ describe("SNS over HTTPS", () => {
   });
 
   test("helpers", () => {
-    expect(
-      snsUrl("https://sns.us-east-1.amazonaws.com/x.pem", true)
-    ).toBeDefined();
-    expect(
-      snsUrl("https://sns.cn-north-1.amazonaws.com.cn/x.pem", true)
-    ).toBeDefined();
-    expect(
-      snsUrl("https://SNS.US-EAST-1.AMAZONAWS.COM:443/x.pem", true)
-    ).toBeDefined();
+    const pem =
+      "SimpleNotificationService-7506a1e35b36ef5a444dd1a8e7cc3ed8.pem";
+    for (const accepted of [
+      `https://sns.us-east-1.amazonaws.com/${pem}`,
+      `https://sns.ap-southeast-2.amazonaws.com/${pem}`,
+      `https://sns.us-gov-west-1.amazonaws.com/${pem}`,
+      `https://sns.cn-north-1.amazonaws.com.cn/${pem}`,
+      `https://sns.cn-northwest-1.amazonaws.com.cn/${pem}`,
+      `https://SNS.US-EAST-1.AMAZONAWS.COM:443/${pem}`,
+    ]) {
+      expect(snsUrl(accepted, true)).toBeDefined();
+    }
     for (const rejected of [
-      "http://sns.us-east-1.amazonaws.com/x.pem",
-      "https://sns.us-east-1.amazonaws.com/x.txt",
-      "https://sns.us-east-1.amazonaws.com/x.pem?x=1",
-      "https://sns.us-east-1.amazonaws.com/x.pem#f",
-      "https://sns.us-east-1.amazonaws.com:8443/x.pem",
-      "https://user:pw@sns.us-east-1.amazonaws.com/x.pem",
-      "https://sns.us-east-1.amazonaws.com@evil.com/x.pem",
-      "https://sns.us-east-1.amazonaws.com.evil.com/x.pem",
-      "https://sns.us-east-1.amazonaws.com./x.pem",
+      `http://sns.us-east-1.amazonaws.com/${pem}`,
+      "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc.txt",
+      `https://sns.us-east-1.amazonaws.com/${pem}?x=1`,
+      `https://sns.us-east-1.amazonaws.com/${pem}#f`,
+      `https://sns.us-east-1.amazonaws.com:8443/${pem}`,
+      `https://user:pw@sns.us-east-1.amazonaws.com/${pem}`,
+      `https://sns.us-east-1.amazonaws.com@evil.com/${pem}`,
+      `https://sns.us-east-1.amazonaws.com.evil.com/${pem}`,
+      `https://sns.us-east-1.amazonaws.com./${pem}`,
+      // S3 bucket endpoints: a bucket named `sns` could serve a .pem.
+      `https://sns.s3-accelerate.amazonaws.com/${pem}`,
+      `https://sns.s3-us-west-2.amazonaws.com/${pem}`,
+      `https://sns.s3-external-1.amazonaws.com/${pem}`,
+      `https://sns.s3.amazonaws.com/${pem}`,
+      // Only SNS's own certificate path.
+      "https://sns.us-east-1.amazonaws.com/x.pem",
+      "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-xyz.pem",
+      `https://sns.us-east-1.amazonaws.com/certs/${pem}`,
     ]) {
       expect(snsUrl(rejected, true)).toBeUndefined();
     }

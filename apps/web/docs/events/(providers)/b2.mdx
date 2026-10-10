@@ -5,7 +5,7 @@ description: Receive B2 Event Notifications at files.events.webhook(), verified 
 
 B2 Event Notifications POST to a webhook URL. The `backblaze-b2` adapter reads the `b2` format.
 
-Create a rule in the B2 web UI (Buckets → Event Notifications) or with the `b2_set_bucket_notification_rules` API. Choose `b2:ObjectCreated:*`, `b2:ObjectDeleted:*` and `b2:HideMarkerCreated:*`, set the webhook URL, and set a signing secret.
+Create a rule in the B2 web UI (Buckets → Event Notifications) or with the `b2_set_bucket_notification_rules` API. Choose `b2:ObjectCreated:*` and `b2:HideMarkerCreated:*` (`b2:ObjectDeleted:*` is skipped, see below), set the webhook URL, and set a signing secret.
 
 ```ts title="app/api/storage-events/route.ts" lineNumbers
 import { createRouteHandler } from "files-sdk/next";
@@ -20,6 +20,6 @@ export const { POST } = createRouteHandler(
 
 ## Hide markers are deletes
 
-`files-sdk/backblaze-b2` deletes through B2's S3-compatible API without a version id, which hides the file instead of removing its versions. That arrives as `b2:HideMarkerCreated:Hide`, so subscribe to hide markers to see your own deletes. Both hide markers and `b2:ObjectDeleted:*` become `deleted`.
+`files-sdk/backblaze-b2` deletes through B2's S3-compatible API without a version id, which hides the file instead of removing its versions. That arrives as `b2:HideMarkerCreated:Hide`, so subscribe to hide markers to see your own deletes. Hide markers become `deleted`. `b2:ObjectDeleted:*` is skipped: it always removes one file version (`b2_delete_file_version`, an S3 delete with a version id, or a lifecycle rule pruning old versions), and the file may still have a live one.
 
 `b2:TestEvent` (the dashboard's test button) parses to nothing. `event.id` is B2's `eventId`, and `versionId` is the file version.

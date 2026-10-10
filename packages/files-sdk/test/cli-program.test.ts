@@ -468,6 +468,46 @@ describe("cli/program parseAsync (fs end-to-end)", () => {
     expect(cap.exits).toEqual([2, 2]);
   });
 
+  test("--metadata takes one pair per flag, so the key can follow it", async () => {
+    await run(
+      "--provider",
+      "fs",
+      "--root",
+      root,
+      "--dry-run",
+      "upload",
+      "--metadata",
+      "team=finance",
+      "report.pdf",
+      "--file",
+      "r.pdf",
+      "--metadata",
+      "quarter=q1"
+    );
+    expect(lastJson(cap.stdout)).toMatchObject({
+      key: "report.pdf",
+      metadata: { quarter: "q1", team: "finance" },
+    });
+    // Two pairs after one flag: the second is a stray argument, refused.
+    await expect(
+      run(
+        "--provider",
+        "fs",
+        "--root",
+        root,
+        "--dry-run",
+        "upload",
+        "report.pdf",
+        "--file",
+        "r.pdf",
+        "--metadata",
+        "a=1",
+        "b=2"
+      )
+    ).rejects.toThrow("__exit:2");
+    expect(cap.stderr.join("")).toContain("too many arguments");
+  });
+
   test("--help and --version still exit 0", async () => {
     await expect(run("--help")).rejects.toThrow("__exit:0");
     await expect(run("--version")).rejects.toThrow("__exit:0");

@@ -22,7 +22,7 @@ Each maps to a `Files` method:
 
 | Command | Method | Notes |
 | --- | --- | --- |
-| `upload` | `upload` | `--file ./x` or `--stdin`; `--content-type` (else inferred) |
+| `upload` | `upload` | `--file ./x` or `--stdin`; `--content-type` (else inferred); `--metadata k=v` once per pair (repeat the flag) |
 | `download` | `download` | `--out ./x` to disk, `--stdout` to pipe; `--range start-end` |
 | `head` | `head` | metadata as JSON; takes multiple keys |
 | `exists` | `exists` | one key prints `{ exists, key }` and exits 0 = exists, 1 = missing; many keys print `{ existing, missing, errors? }` and exit 0 only if every key exists. A usage error (unknown flag, missing argument) exits 2 on every command, so it never reads as missing |

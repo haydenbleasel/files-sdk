@@ -133,7 +133,7 @@ const webhook = files.events.webhook({
 });
 ```
 
-`topicArn` is required (one ARN, or an array): SNS signs messages for any topic, including one an attacker owns, so every message, `SubscriptionConfirmation` included, must come from yours. The signed `Timestamp` must be no older than `maxAge` (default one hour, the longest SNS retries for) and no more than five minutes ahead of the clock, so a captured message can't be replayed later. The signing certificate is fetched from the message's `SigningCertURL`, which must be an `sns.<region>.amazonaws.com` host, and cached; if the fetch fails, the webhook answers `502` so SNS redelivers. With `confirm: false` (the default), the confirmation URL is logged for you to visit. Raw message delivery strips the signature, so it's refused; leave it off. SQS is simpler and more durable than SNS over HTTPS when you have the choice.
+`topicArn` is required (one ARN, or an array): SNS signs messages for any topic, including one an attacker owns, so every message, `SubscriptionConfirmation` included, must come from yours. The signed `Timestamp` must be no older than `maxAge` (default one hour, the longest SNS retries for) and no more than five minutes ahead of the clock, so a captured message can't be replayed later. The signing certificate is fetched from the message's `SigningCertURL`, which must be `https://sns.<region>.amazonaws.com/SimpleNotificationService-<id>.pem` (`.amazonaws.com.cn` in China), and cached; if the fetch fails, the webhook answers `502` so SNS redelivers. Only the fields the signature covers (`Type`, `TopicArn`, `Message`, `MessageId`, `Timestamp`, `Subject`) are parsed, so nothing added to a genuine message's body can reach your handlers. With `confirm: false` (the default), the confirmation URL is logged for you to visit. Raw message delivery strips the signature, so it's refused; leave it off. SQS is simpler and more durable than SNS over HTTPS when you have the choice.
 
 ## Wasabi
 
@@ -168,6 +168,7 @@ Storj reports `POST` and multipart uploads as `ObjectCreated:Put`, and its event
 | --- | --- |
 | `ObjectCreated:Put`, `Post`, `Copy`, `CompleteMultipartUpload` | `created` |
 | `ObjectRemoved:Delete`, `DeleteMarkerCreated`, `LifecycleExpiration:*` | `deleted` |
+| `ObjectRemoved:Delete`, `LifecycleExpiration:Delete` with a `versionId` | skipped: one version went, and the key may still have a live one |
 | Tagging, ACL, restore, replication, storage-class transitions | skipped |
 
 On a versioned bucket, see [versioned buckets](/docs/events/delivery#versioned-buckets).

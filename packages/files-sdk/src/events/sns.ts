@@ -48,7 +48,12 @@ export interface SnsVerifyOptions {
   fetch?: typeof fetch;
 }
 
-const SNS_HOST = /^sns\.[a-z0-9-]{3,}\.amazonaws\.com(?:\.cn)?$/u;
+// `sns.<region>.amazonaws.com[.cn]`, the region a real one (`us-east-1`,
+// `us-gov-west-1`, `cn-north-1`): a looser label would also take S3 bucket
+// endpoints (`sns.s3-accelerate.amazonaws.com` is a bucket named `sns`).
+const SNS_HOST = /^sns\.[a-z]{2}(?:-[a-z]+)+-\d+\.amazonaws\.com(?:\.cn)?$/u;
+/** Where SNS publishes its signing certificates. */
+const SNS_CERT_PATH = /^\/SimpleNotificationService-[\dA-Fa-f]+\.pem$/u;
 /** The default {@link SnsVerifyOptions.maxAge}. */
 const MAX_AGE_MS = 60 * 60 * 1000;
 /** Allowed clock drift ahead of a message's `Timestamp`. */
@@ -76,8 +81,9 @@ const SUBSCRIPTION_FIELDS = [
 
 /**
  * An `https://sns.<region>.amazonaws.com[.cn]/…` URL on the default port with
- * no credentials, or `undefined`. With `pem`, a signing certificate's URL: a
- * `.pem` path and nothing after it (no query or fragment).
+ * no credentials, or `undefined`. With `pem`, a signing certificate's URL:
+ * `/SimpleNotificationService-<hex>.pem` and nothing after it (no query or
+ * fragment).
  */
 export const snsUrl = (
   value: JsonValue | undefined,
@@ -95,23 +101,27 @@ export const snsUrl = (
       url.username === "" &&
       url.password === "";
     const certificate =
-      url.pathname.endsWith(".pem") && url.search === "" && url.hash === "";
+      SNS_CERT_PATH.test(url.pathname) && url.search === "" && url.hash === "";
     return plain && (!pem || certificate) ? url : undefined;
   } catch {
     return undefined;
   }
 };
 
-export const stringToSign = (message: JsonObject): string => {
-  const fields =
-    message.Type === "Notification" ? NOTIFICATION_FIELDS : SUBSCRIPTION_FIELDS;
-  return fields
-    .flatMap((field) => {
-      const value = message[field];
-      return isString(value) ? [`${field}\n${value}\n`] : [];
-    })
+/** The signed fields `message` carries, in signing order, with their values. */
+const signedFields = (message: JsonObject): [string, string][] =>
+  (message.Type === "Notification"
+    ? NOTIFICATION_FIELDS
+    : SUBSCRIPTION_FIELDS
+  ).flatMap((field) => {
+    const value = message[field];
+    return isString(value) ? [[field, value]] : [];
+  });
+
+export const stringToSign = (message: JsonObject): string =>
+  signedFields(message)
+    .map(([field, value]) => `${field}\n${value}\n`)
     .join("");
-};
 
 /** The digest a `SignatureVersion` signs with, or `undefined` for an unknown one. */
 const hashOf = (
@@ -204,8 +214,12 @@ const checkTimestamp = (
 };
 
 /**
- * A verifier for SNS HTTP deliveries. Resolves with the verified envelope;
- * caches signing keys per certificate URL (the most recently used few).
+ * A verifier for SNS HTTP deliveries. Resolves with the verified envelope cut
+ * down to the fields the signature covers (`Type`, `TopicArn`, `Message`,
+ * `MessageId`, `Timestamp`, `Subject`, and for subscription messages
+ * `SubscribeURL` and `Token`): anything else in the body is unauthenticated,
+ * so nothing downstream may read it. Caches signing keys per certificate URL
+ * (the most recently used few).
  */
 export const snsVerifier = (
   opts: SnsVerifyOptions
@@ -299,7 +313,7 @@ export const snsVerifier = (
     if (!valid) {
       throw unauthorized("SNS signature does not match");
     }
-    return message;
+    return Object.fromEntries(signedFields(message));
   };
 };
 

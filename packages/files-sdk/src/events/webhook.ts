@@ -2,12 +2,13 @@
 // `{ handle(req) }` shape as the gateway, so every framework binding mounts
 // it. Order: authenticate (the raw body, for signature schemes) → provider
 // handshakes (CloudEvents `OPTIONS`, SNS subscriptions, Event Grid
-// validation) → decode → normalize → handlers. Status codes tell the provider
-// what to do next: `401` (bad credential) and `400` (malformed delivery)
-// won't improve on retry; `502` (a certificate or key fetch failed) and `500`
-// (a handler threw) ask for redelivery. A response names what went wrong only
-// when the SDK wrote the message; anything else (a handler's error, which may
-// carry your data) gets a generic one, and goes to `onError`.
+// validation) → decode (exactly what was authenticated: an HMAC's raw bytes,
+// an SNS envelope's signed fields) → normalize → handlers. Status codes tell
+// the provider what to do next: `401` (bad credential) and `400` (malformed
+// delivery) won't improve on retry; `502` (a certificate or key fetch failed)
+// and `500` (a handler threw) ask for redelivery. A response names what went
+// wrong only when the SDK wrote the message; anything else (a handler's error,
+// which may carry your data) gets a generic one, and goes to `onError`.
 
 import { FilesError } from "../internal/errors.js";
 import type { FileEvent } from "../internal/events.js";
@@ -84,11 +85,19 @@ export interface WebhookDeps {
   isHandlerFailure: (cause: unknown) => boolean;
 }
 
-/** Checks a delivery; may answer it outright (an SNS subscription message). */
+/**
+ * What authenticating a delivery decided: answer it outright (an SNS
+ * subscription message), or parse only the part the credential vouches for
+ * (an SNS envelope's signed fields, never the unsigned rest of its body).
+ * `undefined`: parse the body as received.
+ */
+type Authenticated = { answer: Response } | { verified: string } | undefined;
+
+/** Checks a delivery (see {@link Authenticated}). */
 type Authenticate = (
   req: Request,
   body: string
-) => Promise<Response | undefined> | Response | undefined;
+) => Promise<Authenticated> | Authenticated;
 
 const errorResponse = (status: number, message: string): Response =>
   Response.json({ error: { message } }, { status });
@@ -134,8 +143,13 @@ const authenticator = (
       );
     }
     const check = snsVerifier(verify.sns);
-    return async (req, body) =>
-      snsHandshake(await check(req, body), verify.sns);
+    return async (req, body) => {
+      // Only the signed fields: an unsigned `Records`, `EventSource` or `Sns`
+      // riding alongside a genuine message must never reach the parser.
+      const signed = await check(req, body);
+      const answer = await snsHandshake(signed, verify.sns);
+      return answer ? { answer } : { verified: JSON.stringify(signed) };
+    };
   }
   const { verifySignature } = parser;
   if (!verifySignature) {
@@ -218,11 +232,14 @@ export const createWebhook = (
     if (req.method !== "POST" && req.method !== "OPTIONS") {
       return new Response(null, { headers: { Allow: "POST" }, status: 405 });
     }
-    const body = req.method === "POST" ? await req.text() : "";
+    let body = req.method === "POST" ? await req.text() : "";
     try {
-      const answered = await authenticate(req, body);
-      if (answered) {
-        return answered;
+      const authenticated = await authenticate(req, body);
+      if (authenticated && "answer" in authenticated) {
+        return authenticated.answer;
+      }
+      if (authenticated) {
+        body = authenticated.verified;
       }
     } catch (error) {
       return authFailure(error, req);

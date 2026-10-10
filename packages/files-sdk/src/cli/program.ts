@@ -412,9 +412,11 @@ export const buildProgram = (
     )
     .option("--content-type <type>", "MIME content type")
     .option("--cache-control <value>", "Cache-Control header")
+    // One pair per flag, repeated (`--metadata a=1 --metadata b=2`): a
+    // variadic `<kv...>` would swallow the positional key that follows it.
     .option(
-      "--metadata <kv...>",
-      "metadata as key=value pairs (repeatable)",
+      "--metadata <kv>",
+      "metadata as a key=value pair (repeat the flag for more)",
       collect
     )
     .option("--multipart", "upload in parallel parts")

@@ -25,6 +25,8 @@ Appwrite signs the webhook URL followed by the body (base64 HMAC-SHA1), so `url`
 
 What happened to the file is in the `X-Appwrite-Webhook-Events` header, not the body, so Appwrite deliveries need the whole request: use `webhook()` or `parse(request)`, not `parse(body)`.
 
+Appwrite's signature doesn't cover its headers, the event name and delivery id included, so someone holding one captured delivery could replay it as another event (a create sent again as a delete). Before destructive cleanup on a `deleted`, confirm it with `await files.exists(event.key)`.
+
 ## What maps to what
 
 `…files.<id>.create` becomes `created` and `…files.<id>.delete` becomes `deleted`; updates (renames, permissions) are skipped. The key is the file's `$id`, which is the key `files-sdk/appwrite` writes under. A project webhook can cover several buckets, so `events()` keeps only the adapter's own bucket by default; pass `events({ bucket: "<bucket id>" })` to pick another, or `bucket: false` for all of them.

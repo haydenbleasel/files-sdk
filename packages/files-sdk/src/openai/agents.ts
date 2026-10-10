@@ -24,35 +24,57 @@ const agentsUploadFileInput = TOOL_SCHEMAS.uploadFile.input.omit({
   metadata: true,
 });
 
-export const agentsListFiles = (files: Files) =>
+// SAFETY: `Set#has` is a pure membership test — widening the probe to the
+// set's key type can't yield a false positive, and a hit proves the name is a
+// write-tool name.
+const isWriteTool = (name: string): name is FileWriteToolName =>
+  WRITE_TOOL_NAMES.has(name as FileWriteToolName);
+
+export const agentsListFiles = (
+  files: Files,
+  { description, needsApproval = false }: AgentsToolOverrides = {}
+) =>
   tool({
-    description: TOOL_SCHEMAS.listFiles.description,
+    description: description ?? TOOL_SCHEMAS.listFiles.description,
     execute: (input) => executors.listFiles(files, input),
     name: "listFiles",
+    needsApproval,
     parameters: TOOL_SCHEMAS.listFiles.input,
   });
 
-export const agentsGetFileMetadata = (files: Files) =>
+export const agentsGetFileMetadata = (
+  files: Files,
+  { description, needsApproval = false }: AgentsToolOverrides = {}
+) =>
   tool({
-    description: TOOL_SCHEMAS.getFileMetadata.description,
+    description: description ?? TOOL_SCHEMAS.getFileMetadata.description,
     execute: (input) => executors.getFileMetadata(files, input),
     name: "getFileMetadata",
+    needsApproval,
     parameters: TOOL_SCHEMAS.getFileMetadata.input,
   });
 
-export const agentsDownloadFile = (files: Files) =>
+export const agentsDownloadFile = (
+  files: Files,
+  { description, needsApproval = false }: AgentsToolOverrides = {}
+) =>
   tool({
-    description: TOOL_SCHEMAS.downloadFile.description,
+    description: description ?? TOOL_SCHEMAS.downloadFile.description,
     execute: (input) => executors.downloadFile(files, input),
     name: "downloadFile",
+    needsApproval,
     parameters: TOOL_SCHEMAS.downloadFile.input,
   });
 
-export const agentsGetFileUrl = (files: Files) =>
+export const agentsGetFileUrl = (
+  files: Files,
+  { description, needsApproval = false }: AgentsToolOverrides = {}
+) =>
   tool({
-    description: TOOL_SCHEMAS.getFileUrl.description,
+    description: description ?? TOOL_SCHEMAS.getFileUrl.description,
     execute: (input) => executors.getFileUrl(files, input),
     name: "getFileUrl",
+    needsApproval,
     parameters: TOOL_SCHEMAS.getFileUrl.input,
   });
 
@@ -63,10 +85,10 @@ export const agentsGetFileUrl = (files: Files) =>
  */
 export const agentsUploadFile = (
   files: Files,
-  { needsApproval = true }: { needsApproval?: boolean } = {}
+  { description, needsApproval = true }: AgentsToolOverrides = {}
 ) =>
   tool({
-    description: TOOL_SCHEMAS.uploadFile.description,
+    description: description ?? TOOL_SCHEMAS.uploadFile.description,
     execute: (input) => executors.uploadFile(files, input),
     name: "uploadFile",
     needsApproval,
@@ -75,10 +97,10 @@ export const agentsUploadFile = (
 
 export const agentsDeleteFile = (
   files: Files,
-  { needsApproval = true }: { needsApproval?: boolean } = {}
+  { description, needsApproval = true }: AgentsToolOverrides = {}
 ) =>
   tool({
-    description: TOOL_SCHEMAS.deleteFile.description,
+    description: description ?? TOOL_SCHEMAS.deleteFile.description,
     execute: (input) => executors.deleteFile(files, input),
     name: "deleteFile",
     needsApproval,
@@ -87,10 +109,10 @@ export const agentsDeleteFile = (
 
 export const agentsCopyFile = (
   files: Files,
-  { needsApproval = true }: { needsApproval?: boolean } = {}
+  { description, needsApproval = true }: AgentsToolOverrides = {}
 ) =>
   tool({
-    description: TOOL_SCHEMAS.copyFile.description,
+    description: description ?? TOOL_SCHEMAS.copyFile.description,
     execute: (input) => executors.copyFile(files, input),
     name: "copyFile",
     needsApproval,
@@ -99,10 +121,10 @@ export const agentsCopyFile = (
 
 export const agentsSignUploadUrl = (
   files: Files,
-  { needsApproval = true }: { needsApproval?: boolean } = {}
+  { description, needsApproval = true }: AgentsToolOverrides = {}
 ) =>
   tool({
-    description: TOOL_SCHEMAS.signUploadUrl.description,
+    description: description ?? TOOL_SCHEMAS.signUploadUrl.description,
     execute: (input) => executors.signUploadUrl(files, input),
     name: "signUploadUrl",
     needsApproval,
@@ -144,7 +166,8 @@ export interface AgentsFileToolsOptions {
   requireApproval?: ApprovalConfig;
   /**
    * Per-tool overrides for `description` and `needsApproval` without
-   * touching `execute` or `parameters`.
+   * touching `execute` or `parameters`. A `needsApproval` here wins over
+   * `requireApproval`, and can gate a read tool too.
    */
   overrides?: Partial<Record<FileToolName, AgentsToolOverrides>>;
 }
@@ -196,33 +219,37 @@ export function createAgentsFileTools({
   requireApproval = true,
   overrides,
 }: AgentsFileToolsOptions): AgentsFileTools | ReadOnlyAgentsFileTools {
-  const approval = (name: FileWriteToolName) => ({
-    needsApproval: resolveApproval(name, requireApproval),
-  });
-
-  const allTools: AgentsFileTools = {
-    copyFile: agentsCopyFile(files, approval("copyFile")),
-    deleteFile: agentsDeleteFile(files, approval("deleteFile")),
-    downloadFile: agentsDownloadFile(files),
-    getFileMetadata: agentsGetFileMetadata(files),
-    getFileUrl: agentsGetFileUrl(files),
-    listFiles: agentsListFiles(files),
-    signUploadUrl: agentsSignUploadUrl(files, approval("signUploadUrl")),
-    uploadFile: agentsUploadFile(files, approval("uploadFile")),
+  // Overrides go into each factory rather than onto the built tool: the
+  // Agents SDK turns `needsApproval` into the function its runner calls, so a
+  // boolean patched onto a built tool would fail on the first call.
+  const optionsFor = (name: FileToolName): AgentsToolOverrides => {
+    const override = overrides?.[name];
+    return {
+      ...(isWriteTool(name) && {
+        needsApproval: resolveApproval(name, requireApproval),
+      }),
+      ...(override?.description !== undefined && {
+        description: override.description,
+      }),
+      ...(override?.needsApproval !== undefined && {
+        needsApproval: override.needsApproval,
+      }),
+    };
   };
 
-  if (overrides) {
-    for (const [name, toolOverrides] of Object.entries(overrides)) {
-      if (name in allTools && toolOverrides) {
-        // SAFETY: `allTools` is a closed record keyed by exactly the
-        // FileToolName union, so the `in` check above proves membership.
-        const key = name as keyof AgentsFileTools;
-        Object.assign(allTools, {
-          [key]: { ...allTools[key], ...toolOverrides },
-        });
-      }
-    }
-  }
+  const allTools: AgentsFileTools = {
+    copyFile: agentsCopyFile(files, optionsFor("copyFile")),
+    deleteFile: agentsDeleteFile(files, optionsFor("deleteFile")),
+    downloadFile: agentsDownloadFile(files, optionsFor("downloadFile")),
+    getFileMetadata: agentsGetFileMetadata(
+      files,
+      optionsFor("getFileMetadata")
+    ),
+    getFileUrl: agentsGetFileUrl(files, optionsFor("getFileUrl")),
+    listFiles: agentsListFiles(files, optionsFor("listFiles")),
+    signUploadUrl: agentsSignUploadUrl(files, optionsFor("signUploadUrl")),
+    uploadFile: agentsUploadFile(files, optionsFor("uploadFile")),
+  };
 
   if (!readOnly) {
     return allTools;
@@ -230,12 +257,9 @@ export function createAgentsFileTools({
 
   // SAFETY: `allTools` holds exactly the FileToolName keys; dropping the
   // FileWriteToolName ones leaves exactly the FileReadToolName entries the
-  // read-only shape declares. `Set#has` is a pure membership test, so widening
-  // its probe to the key type can't yield a false positive.
+  // read-only shape declares.
   return Object.fromEntries(
-    Object.entries(allTools).filter(
-      ([name]) => !WRITE_TOOL_NAMES.has(name as FileWriteToolName)
-    )
+    Object.entries(allTools).filter(([name]) => !isWriteTool(name))
   ) as ReadOnlyAgentsFileTools;
 }
 

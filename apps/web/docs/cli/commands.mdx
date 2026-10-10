@@ -31,7 +31,7 @@ Examples use `--provider r2 --bucket uploads`, with credentials read from `R2_AC
 
 ### upload
 
-Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. Without `--content-type`, the content type is inferred from the key's extension (`application/octet-stream` when it has none).
+Write a body to a key. Read it from a file with `--file`, or pipe it through `--stdin`. Without `--content-type`, the content type is inferred from the key's extension (`application/octet-stream` when it has none). Attach user metadata with `--metadata key=value`, repeating the flag once per pair (`--metadata team=finance --metadata quarter=q1`).
 
 ```bash lineNumbers
 files --provider r2 --bucket uploads \

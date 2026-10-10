@@ -218,6 +218,12 @@ export const googleOidcVerifier = (
     if (jose.alg !== "RS256" || !isString(jose.kid)) {
       throw unauthorized("OIDC token is not RS256 with a key id");
     }
+    let signatureBytes: Uint8Array<ArrayBuffer>;
+    try {
+      signatureBytes = fromBase64(signature);
+    } catch {
+      throw unauthorized("malformed OIDC token");
+    }
     const key = await keyFor(jose.kid);
     if (!key) {
       throw unauthorized("OIDC token signed with an unknown key");
@@ -225,7 +231,7 @@ export const googleOidcVerifier = (
     const valid = await crypto.subtle.verify(
       "RSASSA-PKCS1-v1_5",
       key,
-      fromBase64(signature),
+      signatureBytes,
       utf8(`${head}.${payload}`)
     );
     if (!valid) {

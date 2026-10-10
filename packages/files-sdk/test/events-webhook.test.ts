@@ -558,6 +558,38 @@ describe("Google OIDC verification", () => {
     expect(await res.text()).toContain(message);
   });
 
+  test("a signature segment that isn't base64 is a 401, before any key fetch", async () => {
+    const { fetchJwks, hook, seen } = setup();
+    const errors: unknown[] = [];
+    const files = filesAs("gcs");
+    const reporting = files.events.webhook({
+      onError: (cause) => {
+        errors.push(cause);
+      },
+      verify: {
+        google: {
+          audience: AUDIENCE,
+          email: EMAIL,
+          fetch: fetchJwks as unknown as typeof fetch,
+          now: () => NOW,
+        },
+      },
+    });
+    const [head, payload] = (await sign(valid())).split(".");
+    for (const target of [hook, reporting]) {
+      // oxlint-disable-next-line no-await-in-loop -- two endpoints, one after the other
+      const res = await target.handle(
+        post(push, { authorization: `Bearer ${head}.${payload}.%%%` })
+      );
+      expect(res.status).toBe(401);
+      // oxlint-disable-next-line no-await-in-loop -- as above
+      expect(await res.text()).toContain("malformed OIDC token");
+    }
+    expect(errors).toEqual([]);
+    expect(fetchJwks).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+  });
+
   test.each([
     ["an HS256 token", () => sign(valid(), { alg: "HS256" }), "not RS256"],
     [
