@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import type { EffectScope } from "vue";
 import { effectScope, nextTick, ref } from "vue";
@@ -7,6 +7,7 @@ import { createFilesRouter } from "../src/api/index.js";
 import type { Transport } from "../src/client/transport.js";
 import type { Adapter } from "../src/index.js";
 import { createFiles } from "../src/index.js";
+import { FilesError } from "../src/internal/errors.js";
 import { memory } from "../src/memory/index.js";
 import { useFile, useList, useSearch } from "../src/vue/use-files-query.js";
 import { useFiles } from "../src/vue/use-files.js";
@@ -71,6 +72,37 @@ const flush = async (): Promise<void> => {
   await Bun.sleep(0);
   await nextTick();
 };
+
+/** Poll until `check` stops throwing (async gateway round trips). */
+const until = async (check: () => void): Promise<void> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      if (attempt > 100) {
+        throw error;
+      }
+      // oxlint-disable-next-line no-await-in-loop -- polling
+      await Bun.sleep(1);
+    }
+  }
+};
+
+// A fetch that never answers, rejecting with its signal's reason once that
+// aborts — what the platform's fetch does.
+const pendingFetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+  // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+  new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal?.addEventListener("abort", () => reject(signal.reason));
+  })) as typeof fetch;
+
+const ENDPOINT = "https://app.test/api/files";
 
 describe("vue useFiles", () => {
   test("upload results and uploads entries carry onUploadComplete data", async () => {
@@ -351,6 +383,143 @@ describe("vue reactive query composables", () => {
       );
       await flush();
       expect(list.error.value).toBeDefined();
+    });
+  });
+});
+
+describe("vue errors are FilesErrors", () => {
+  test("abort() rejects an in-flight verb with an aborted FilesError and records it", async () => {
+    await withScope(async () => {
+      const files = useFiles({ endpoint: ENDPOINT, fetchImpl: pendingFetch });
+      const pending = files.list().catch((error: unknown) => error);
+      files.abort(new Error("stop"));
+      const caught = await pending;
+      expect(caught).toBeInstanceOf(FilesError);
+      expect(caught).toMatchObject({
+        aborted: true,
+        message: "Operation aborted: stop",
+      });
+      expect(files.error.value).toBe(caught as FilesError);
+    });
+  });
+});
+
+describe("vue query data belongs to one input", () => {
+  test("useFile drops the previous key's data on a key change and when disabled", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("a.txt", "aaaa");
+    await withScope(async () => {
+      const key = ref<string | undefined>("a.txt");
+      const file = useFile(key, config(adapter));
+      await until(() => expect(file.data.value?.key).toBe("a.txt"));
+
+      key.value = "missing.txt";
+      await nextTick();
+      expect(file.data.value).toBeUndefined();
+      expect(file.isLoading.value).toBe(true);
+      await until(() => expect(file.isFetching.value).toBe(false));
+      expect(file.data.value).toBeUndefined();
+      expect(file.error.value?.code).toBe("NotFound");
+
+      key.value = undefined;
+      await nextTick();
+      expect(file.data.value).toBeUndefined();
+      expect(file.error.value).toBeUndefined();
+      expect(file.isFetching.value).toBe(false);
+    });
+  });
+
+  test("a refetch keeps its own data while reloading, and when it fails", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("a.txt", "aaaa");
+    const base = config(adapter);
+    let failing = false;
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      failing
+        ? Promise.resolve(
+            Response.json(
+              { error: { code: "Provider", message: "down" } },
+              { status: 500 }
+            )
+          )
+        : base.fetchImpl(input, init)) as typeof fetch;
+    await withScope(async () => {
+      const file = useFile("a.txt", { ...base, fetchImpl });
+      await until(() => expect(file.data.value?.key).toBe("a.txt"));
+      failing = true;
+      file.refetch();
+      await nextTick();
+      expect(file.isFetching.value).toBe(true);
+      expect(file.isLoading.value).toBe(false);
+      await until(() => expect(file.error.value?.message).toBe("down"));
+      expect(file.data.value?.key).toBe("a.txt");
+    });
+  });
+});
+
+describe("vue queries honor the composable-level signal", () => {
+  test("an already-aborted signal settles the query with an aborted error", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("gone"));
+    await withScope(async () => {
+      const list = useList(
+        {},
+        {
+          endpoint: ENDPOINT,
+          fetchImpl: pendingFetch,
+          signal: controller.signal,
+        }
+      );
+      await until(() => expect(list.isFetching.value).toBe(false));
+      expect(list.error.value).toMatchObject({
+        aborted: true,
+        message: "Operation aborted: gone",
+      });
+    });
+  });
+
+  test("aborting mid-flight cancels; dispose detaches from the signal", async () => {
+    const controller = new AbortController();
+    const added = spyOn(controller.signal, "addEventListener");
+    const removed = spyOn(controller.signal, "removeEventListener");
+    const scope = effectScope();
+    const hits = scope.run(() =>
+      useSearch(
+        "*",
+        {},
+        {
+          endpoint: ENDPOINT,
+          fetchImpl: pendingFetch,
+          signal: controller.signal,
+        }
+      )
+    );
+    expect(hits?.isFetching.value).toBe(true);
+    const idle = scope.run(() =>
+      useFile("k", {
+        endpoint: ENDPOINT,
+        fetchImpl: pendingFetch,
+        signal: controller.signal,
+      })
+    );
+    expect(added).toHaveBeenCalledTimes(2);
+    // Disposing the scope cancels without settling, and drops both listeners.
+    scope.stop();
+    expect(removed).toHaveBeenCalledTimes(2);
+    expect(idle?.error.value).toBeUndefined();
+
+    await withScope(async () => {
+      const list = useList(
+        {},
+        {
+          endpoint: ENDPOINT,
+          fetchImpl: pendingFetch,
+          signal: controller.signal,
+        }
+      );
+      controller.abort(new Error("stop"));
+      await until(() => expect(list.error.value?.aborted).toBe(true));
+      expect(list.isFetching.value).toBe(false);
     });
   });
 });

@@ -33,7 +33,14 @@ plugin({
   },
 });
 
-beforeAll(() => GlobalRegistrator.register());
+// happy-dom swaps in its own `TransformStream`, which Bun's native
+// `ReadableStream#pipeThrough` rejects; the in-process gateway these tests call
+// pipes upload bodies through one (it runs server-side for real), so keep Bun's.
+const { TransformStream: NativeTransformStream } = globalThis;
+beforeAll(() => {
+  GlobalRegistrator.register();
+  globalThis.TransformStream = NativeTransformStream;
+});
 afterAll(() => GlobalRegistrator.unregister());
 
 // `import("svelte")` resolves to the *server* build (its `default` condition),

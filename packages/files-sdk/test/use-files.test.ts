@@ -5,6 +5,7 @@ import {
   beforeAll,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 
@@ -12,9 +13,15 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 import type { Transport } from "../src/client/transport.js";
 import type { Adapter, Files } from "../src/index.js";
+import { FilesError } from "../src/internal/errors.js";
 
+// happy-dom swaps in its own `TransformStream`, which Bun's native
+// `ReadableStream#pipeThrough` rejects; the in-process gateway these tests call
+// pipes upload bodies through one (it runs server-side for real), so keep Bun's.
+const { TransformStream: NativeTransformStream } = globalThis;
 beforeAll(() => {
   GlobalRegistrator.register();
+  globalThis.TransformStream = NativeTransformStream;
   (
     globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
   ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -111,6 +118,19 @@ const hanging: Transport = (req) =>
   new Promise((_resolve, reject) => {
     req.signal?.addEventListener("abort", () => reject(req.signal?.reason));
   });
+
+// A fetch that never answers, rejecting with its signal's reason once that
+// aborts — what the platform's fetch does.
+const pendingFetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+  // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+  new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal?.addEventListener("abort", () => reject(signal.reason));
+  })) as typeof fetch;
 
 afterEach(() => cleanup());
 
@@ -424,6 +444,209 @@ describe("useFiles", () => {
   });
 });
 
+describe("useFiles errors are FilesErrors", () => {
+  test("abort() rejects an in-flight verb with an aborted FilesError and records it", async () => {
+    const { result } = renderHook(() =>
+      useFiles({ ...config(memory()), fetchImpl: pendingFetch })
+    );
+    let caught: unknown;
+    await act(async () => {
+      const pending = result.current.list().catch((error: unknown) => {
+        caught = error;
+      });
+      result.current.abort(new Error("stop"));
+      await pending;
+    });
+    expect(caught).toBeInstanceOf(FilesError);
+    expect(caught).toMatchObject({
+      aborted: true,
+      message: "Operation aborted: stop",
+    });
+    expect(result.current.error).toBe(caught as FilesError);
+  });
+
+  test("a network failure rejects with the same FilesError the hook records", async () => {
+    const network = new TypeError("Failed to fetch");
+    const { result } = renderHook(() =>
+      useFiles({
+        endpoint: "https://app.test/api/files",
+        fetchImpl: (() => Promise.reject(network)) as unknown as typeof fetch,
+      })
+    );
+    let caught: unknown;
+    await act(async () => {
+      caught = await result.current.head("k").catch((error: unknown) => error);
+    });
+    expect(caught).toBeInstanceOf(FilesError);
+    expect(caught).toMatchObject({
+      aborted: false,
+      cause: network,
+      code: "Provider",
+    });
+    expect(result.current.error).toBe(caught as FilesError);
+  });
+
+  test("a stopOnError bulk upload resolves with nothing left uploading", async () => {
+    const base = config(memory());
+    const { result } = renderHook(() => useFiles(base));
+    let outcome: { results: { key: string }[]; errors?: unknown[] } | undefined;
+    await act(async () => {
+      outcome = await result.current.upload(
+        [
+          { body: "1", key: "ok.txt" },
+          { body: "2", key: "../escape" },
+          { body: "3", key: "later.txt" },
+        ],
+        { stopOnError: true }
+      );
+    });
+    expect(outcome?.results.map((r) => r.key)).toEqual(["ok.txt"]);
+    expect(outcome?.errors).toHaveLength(1);
+    expect(result.current.isUploading).toBe(false);
+    expect(result.current.uploads.map((u) => u.status)).toEqual([
+      "success",
+      "error",
+      "aborted",
+    ]);
+  });
+});
+
+describe("reactive query data belongs to one input", () => {
+  test("useFile never shows the previous key's data, error, or a disabled query's", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("a.txt", "aaaa");
+    const cfg = config(adapter);
+    const renders: { k?: string; data?: string; isLoading: boolean }[] = [];
+    const { rerender, result } = renderHook(
+      ({ k }: { k: string | undefined }) => {
+        const query = useFile(k, cfg);
+        renders.push({ data: query.data?.key, isLoading: query.isLoading, k });
+        return query;
+      },
+      { initialProps: { k: "a.txt" as string | undefined } }
+    );
+    await waitFor(() => expect(result.current.data?.key).toBe("a.txt"));
+
+    rerender({ k: "missing.txt" });
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    // Every render for the new key — including the one before the effect ran —
+    // was empty and loading until it settled, never showing a.txt.
+    const switched = renders.filter((r) => r.k === "missing.txt");
+    expect(switched.some((r) => r.data !== undefined)).toBe(false);
+    expect(switched[0]?.isLoading).toBe(true);
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.error?.code).toBe("NotFound");
+
+    rerender({ k: "a.txt" });
+    await waitFor(() => expect(result.current.data?.key).toBe("a.txt"));
+    expect(result.current.error).toBeUndefined();
+
+    rerender({ k: undefined });
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.isFetching).toBe(false);
+  });
+
+  test("a refetch keeps its own data while reloading, and when it fails", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("a.txt", "aaaa");
+    const base = config(adapter);
+    let failing = false;
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
+      failing
+        ? Promise.resolve(
+            Response.json(
+              { error: { code: "Provider", message: "down" } },
+              { status: 500 }
+            )
+          )
+        : base.fetchImpl(input, init)) as typeof fetch;
+    const { result } = renderHook(() =>
+      useFile("a.txt", { ...base, fetchImpl })
+    );
+    await waitFor(() => expect(result.current.data?.key).toBe("a.txt"));
+    failing = true;
+    act(() => {
+      result.current.refetch();
+    });
+    expect(result.current.isFetching).toBe(true);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.data?.key).toBe("a.txt");
+    await waitFor(() => expect(result.current.error?.message).toBe("down"));
+    expect(result.current.data?.key).toBe("a.txt");
+  });
+});
+
+describe("reactive queries honor the hook-level signal", () => {
+  test("an already-aborted signal settles the query with an aborted error", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("gone"));
+    const { result } = renderHook(() =>
+      useList(
+        {},
+        {
+          endpoint: "https://app.test/api/files",
+          fetchImpl: pendingFetch,
+          signal: controller.signal,
+        }
+      )
+    );
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.error).toMatchObject({
+      aborted: true,
+      message: "Operation aborted: gone",
+    });
+  });
+
+  test("aborting the signal mid-flight cancels the request", async () => {
+    const controller = new AbortController();
+    const { result } = renderHook(() =>
+      useSearch(
+        "*",
+        {},
+        {
+          endpoint: "https://app.test/api/files",
+          fetchImpl: pendingFetch,
+          signal: controller.signal,
+        }
+      )
+    );
+    expect(result.current.isFetching).toBe(true);
+    act(() => {
+      controller.abort(new Error("stop"));
+    });
+    await waitFor(() => expect(result.current.error?.aborted).toBe(true));
+    expect(result.current.isFetching).toBe(false);
+  });
+
+  test("a settled or unmounted query detaches from a long-lived signal", async () => {
+    const { signal } = new AbortController();
+    const added = spyOn(signal, "addEventListener");
+    const removed = spyOn(signal, "removeEventListener");
+    const { result, unmount } = renderHook(() =>
+      useList({}, { ...config(memory()), signal })
+    );
+    await waitFor(() => expect(result.current.data).toBeDefined());
+    expect(added).toHaveBeenCalledTimes(1);
+    expect(removed).toHaveBeenCalledWith("abort", added.mock.calls[0]?.[1]);
+
+    const pending = renderHook(() =>
+      useList(
+        {},
+        {
+          endpoint: "https://app.test/api/files",
+          fetchImpl: pendingFetch,
+          signal,
+        }
+      )
+    );
+    expect(added).toHaveBeenCalledTimes(2);
+    pending.unmount();
+    expect(removed).toHaveBeenCalledWith("abort", added.mock.calls[1]?.[1]);
+    unmount();
+  });
+});
+
 describe("reactive query hooks", () => {
   test("useList loads and refetches", async () => {
     const adapter = memory();
@@ -468,6 +691,9 @@ describe("reactive query hooks", () => {
       expect(result.current.data?.items.map((f) => f.key)).toEqual(["d.txt"])
     );
     rerender({ endpoint: "https://app.test/api/files?bucket=images" });
+    // Another bucket's listing is other data: none shows while it loads.
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.isLoading).toBe(true);
     await waitFor(() =>
       expect(result.current.data?.items.map((f) => f.key)).toEqual(["i.png"])
     );

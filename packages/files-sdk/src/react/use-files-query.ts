@@ -2,8 +2,11 @@
 // declarative data/loading/error/refetch shape React devs expect for a file
 // browser. Deliberately dependency-light: no global cache, each hook owns a
 // `useState`-backed query that aborts its in-flight request on dep-change or
-// unmount. For real caching, bring React Query: call `useFiles()` at the
-// component's top level and call one of its methods inside `queryFn`.
+// unmount. `data` belongs to one input: a new key (or endpoint) starts empty
+// and loading, a disabled query has none, and only a `refetch()` of the same
+// input keeps showing its data while it reloads. For real caching, bring React
+// Query: call `useFiles()` at the component's top level and call one of its
+// methods inside `queryFn`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -14,6 +17,7 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
+import { followSignal } from "../client/remember.js";
 import type { FileInfo, ListResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import { isFunction } from "../internal/is.js";
@@ -56,58 +60,91 @@ const useClient = (config?: QueryConfig): FilesClient => {
   }, [endpoint]);
 };
 
+/** What one query has loaded, tagged with the input (`id`) it belongs to. */
+interface QueryState<T> {
+  id?: string;
+  data?: T;
+  error?: FilesError;
+  isFetching: boolean;
+}
+
 const useQuery = <T>(
   key: string,
   run: (signal: AbortSignal) => Promise<T>,
   enabled: boolean,
-  client: FilesClient
+  client: FilesClient,
+  config: QueryConfig | undefined
 ): QueryResult<T> => {
-  const [state, setState] = useState<{
-    data?: T;
-    error?: FilesError;
-    isFetching: boolean;
-  }>({ isFetching: enabled });
+  // The endpoint is part of the input: a `?bucket=` switch is other data.
+  const id = JSON.stringify([config?.endpoint, key]);
+  const [state, setState] = useState<QueryState<T>>({ isFetching: false });
   const [tick, setTick] = useState(0);
   const runRef = useRef(run);
   runRef.current = run;
+  // Read when a request starts, like `headers`: an inline signal must not
+  // refetch on every render.
+  const signalRef = useRef(config?.signal);
+  signalRef.current = config?.signal;
 
   useEffect(() => {
     if (!enabled) {
-      setState((prev) => ({ ...prev, isFetching: false }));
+      // Nothing to show while disabled: drop what an earlier input loaded.
+      setState((prev) =>
+        prev.id === undefined ? prev : { isFetching: false }
+      );
       return;
     }
     const controller = new AbortController();
-    // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = error field unset; null would change the state shape
-    setState((prev) => ({ ...prev, error: undefined, isFetching: true }));
+    // The hook-level `signal` cancels this request too; unlike the cleanup's
+    // abort, that settles the query (with an `aborted` error).
+    const detach = followSignal(controller, signalRef.current);
+    let live = true;
+    // A refetch keeps its own input's data while it reloads; a new input
+    // never shows the previous one's.
+    setState((prev) =>
+      prev.id === id
+        ? { data: prev.data, id, isFetching: true }
+        : { id, isFetching: true }
+    );
     const load = async () => {
       try {
         const data = await runRef.current(controller.signal);
-        if (!controller.signal.aborted) {
-          setState({ data, isFetching: false });
+        if (live) {
+          setState({ data, id, isFetching: false });
         }
       } catch (error) {
-        if (!controller.signal.aborted) {
+        if (live) {
           setState((prev) => ({
-            ...prev,
+            data: prev.data,
             error: FilesError.wrap(error),
+            id,
             isFetching: false,
           }));
         }
+      } finally {
+        detach();
       }
     };
     void load();
     return () => {
+      live = false;
+      detach();
       controller.abort();
     };
     // `client` is rebuilt when the endpoint changes (a `?bucket=` switch,
     // say), and that must refetch even though `key` is unchanged.
-  }, [key, tick, enabled, client]);
+  }, [id, tick, enabled, client]);
 
+  // Derived at render, so the render that switches input (before the effect
+  // above runs) already shows it empty and loading, never the old data.
+  const current = enabled && state.id === id;
+  const data = current ? state.data : undefined;
+  const isFetching = enabled && (!current || state.isFetching);
   return {
-    data: state.data,
-    error: state.error,
-    isFetching: state.isFetching,
-    isLoading: state.isFetching && state.data === undefined,
+    data,
+    error: current ? state.error : undefined,
+    isFetching,
+    isLoading: isFetching && data === undefined,
     refetch: () => setTick((t) => t + 1),
   };
 };
@@ -125,7 +162,8 @@ export const useList = (
     key,
     (signal) => client.list({ ...opts, signal }),
     enabled,
-    client
+    client,
+    config
   );
 };
 
@@ -141,7 +179,8 @@ export const useFile = (
     JSON.stringify({ key, kind: "file" }),
     (signal) => client.head(key as string, { signal }),
     enabled,
-    client
+    client,
+    config
   );
 };
 
@@ -177,6 +216,7 @@ export const useSearch = (
       return out;
     },
     enabled,
-    client
+    client,
+    config
   );
 };

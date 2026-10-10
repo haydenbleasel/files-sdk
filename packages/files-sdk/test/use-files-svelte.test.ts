@@ -1,10 +1,11 @@
 // oxlint-disable unicorn/no-await-expression-member -- asserting fields off awaited results is the natural shape here.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import { createFilesRouter } from "../src/api/index.js";
 import type { Transport } from "../src/client/transport.js";
 import type { Adapter } from "../src/index.js";
 import { createFiles } from "../src/index.js";
+import { FilesError } from "../src/internal/errors.js";
 import { memory } from "../src/memory/index.js";
 import { useFile, useList, useSearch } from "../src/svelte/use-files-query.js";
 import { useFiles } from "../src/svelte/use-files.js";
@@ -386,5 +387,92 @@ describe("svelte reactive query stores", () => {
     );
     await flush();
     expect(read(list.error)).toBeDefined();
+  });
+});
+
+// A fetch that never answers, rejecting with its signal's reason once that
+// aborts — what the platform's fetch does.
+const pendingFetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+  // oxlint-disable-next-line promise/avoid-new -- settles only on abort
+  new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal?.addEventListener("abort", () => reject(signal.reason));
+  })) as typeof fetch;
+
+const ENDPOINT = "https://app.test/api/files";
+
+describe("svelte errors are FilesErrors", () => {
+  test("abort() rejects an in-flight verb with an aborted FilesError and records it", async () => {
+    const files = useFiles({ endpoint: ENDPOINT, fetchImpl: pendingFetch });
+    const pending = files.list();
+    files.abort(new Error("stop"));
+    let caught: unknown;
+    try {
+      await pending;
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FilesError);
+    expect(caught).toMatchObject({
+      aborted: true,
+      message: "Operation aborted: stop",
+    });
+    expect(read(files.error)).toBe(caught as FilesError);
+  });
+});
+
+describe("svelte queries honor the binding-level signal", () => {
+  test("an already-aborted signal settles the query with an aborted error", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("gone"));
+    const list = useList(
+      {},
+      { endpoint: ENDPOINT, fetchImpl: pendingFetch, signal: controller.signal }
+    );
+    await flush();
+    expect(read(list.isFetching)).toBe(false);
+    expect(read(list.error)).toMatchObject({
+      aborted: true,
+      message: "Operation aborted: gone",
+    });
+  });
+
+  test("aborting mid-flight cancels the request and detaches", async () => {
+    const controller = new AbortController();
+    const added = spyOn(controller.signal, "addEventListener");
+    const removed = spyOn(controller.signal, "removeEventListener");
+    const hits = useSearch(
+      "*",
+      {},
+      { endpoint: ENDPOINT, fetchImpl: pendingFetch, signal: controller.signal }
+    );
+    expect(read(hits.isFetching)).toBe(true);
+    expect(added).toHaveBeenCalledTimes(1);
+    controller.abort(new Error("stop"));
+    await flush();
+    expect(read(hits.isFetching)).toBe(false);
+    expect(read(hits.error)?.aborted).toBe(true);
+    expect(removed).toHaveBeenCalledWith("abort", added.mock.calls[0]?.[1]);
+  });
+
+  test("an idle abort cancels without settling and drops the listener", async () => {
+    const { signal } = new AbortController();
+    const added = spyOn(signal, "addEventListener");
+    const removed = spyOn(signal, "removeEventListener");
+    const file = useFile("k", {
+      endpoint: ENDPOINT,
+      fetchImpl: pendingFetch,
+      signal,
+    });
+    const off = file.data.subscribe(() => {});
+    await flush();
+    off();
+    await flush();
+    expect(removed).toHaveBeenCalledWith("abort", added.mock.calls[0]?.[1]);
+    expect(read(file.error)).toBeUndefined();
   });
 });

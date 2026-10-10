@@ -15,7 +15,11 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
-import { rememberIteration } from "../client/remember.js";
+import {
+  rememberCall,
+  rememberIteration,
+  signalledFetch,
+} from "../client/remember.js";
 import { defaultTransport } from "../client/transport.js";
 import { createUploadLedger } from "../client/upload-ledger.js";
 import type { UploadManyResult } from "../index.js";
@@ -79,18 +83,10 @@ export const useFiles = <TData = unknown>(
     return mergeSignals(signals).signal as AbortSignal;
   };
 
-  // SAFETY: the client only ever calls `fetchImpl(input, init)`; the runtime
-  // `typeof fetch` also declares static helpers (Bun's `preconnect`) that no
-  // client code path reads.
-  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
-    baseFetch(input, {
-      ...init,
-      signal: mergedSignal(init?.signal ?? undefined),
-    })) as typeof fetch;
   const client = createFilesClient({
     concurrency: opts.concurrency,
     endpoint: opts.endpoint,
-    fetchImpl,
+    fetchImpl: signalledFetch(baseFetch, mergedSignal),
     headers: opts.headers,
     transport: (req) =>
       (opts.transport ?? defaultTransport(baseFetch))({
@@ -102,14 +98,8 @@ export const useFiles = <TData = unknown>(
   const recordError = (cause: unknown): void => {
     errorRef.value = FilesError.wrap(cause);
   };
-  const remember = async <T>(run: () => Promise<T>): Promise<T> => {
-    try {
-      return await run();
-    } catch (error) {
-      recordError(error);
-      throw error;
-    }
-  };
+  const remember = <T>(run: () => Promise<T>): Promise<T> =>
+    rememberCall(run, recordError);
 
   // Folds every report into the ledger (so `uploads` accumulates across
   // calls), and hands the client the merged signal so an `abort()` settles

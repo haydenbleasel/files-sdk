@@ -8,14 +8,33 @@
 // in the base64 `X-Files-Meta` header.
 
 import type { StoredFile } from "../index.js";
+import type { WireDownloadMeta } from "../internal/files-router/protocol.js";
+import { isNumber } from "../internal/is.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
-interface MetaHeader {
-  key?: string;
-  metadata?: Record<string, string>;
-  lastModified?: number;
-  etag?: string;
-}
+/**
+ * The decoded `X-Files-Meta` header — every field optional, since a foreign or
+ * garbled header decodes to `{}`. `size` is the whole object's, sent on a full
+ * (200) proxied download only.
+ */
+type MetaHeader = Partial<WireDownloadMeta>;
+
+// `MetaHeader` is decoded JSON, so `size` is re-checked at run time.
+const byteCount = (value: number | undefined): number | undefined =>
+  isNumber(value) && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+
+const contentLength = (header: string | null): number | undefined =>
+  header === null || header.trim() === ""
+    ? undefined
+    : byteCount(Number(header));
+
+/** An HTTP date (`Last-Modified`) as epoch milliseconds, like `FileInfo`. */
+const httpDate = (header: string | null): number | undefined => {
+  const ms = header ? Date.parse(header) : Number.NaN;
+  return Number.isNaN(ms) ? undefined : ms;
+};
 
 const decodeMeta = (header: string | null): MetaHeader => {
   if (!header) {
@@ -37,8 +56,14 @@ export const decodeDownload = (
   fallbackKey: string
 ): StoredFile => {
   const meta = decodeMeta(res.headers.get("x-files-meta"));
-  const lengthHeader = res.headers.get("content-length");
-  const size = lengthHeader === null ? 0 : Number(lengthHeader);
+  // The gateway's own `size` wins on a full download: compression middleware
+  // between it and the browser drops or rewrites `Content-Length`. A 206 is a
+  // slice, whose size is its own length, and a redirected download has no
+  // meta header, so both fall back to the header.
+  const size =
+    (res.status === 206 ? undefined : byteCount(meta.size)) ??
+    contentLength(res.headers.get("content-length")) ??
+    0;
   const { body } = res;
   return createStoredFile(
     {
@@ -49,7 +74,9 @@ export const decodeDownload = (
       // redirected download has no meta header, so the storage `ETag` stands.
       etag: meta.etag ?? res.headers.get("etag") ?? undefined,
       key: meta.key ?? fallbackKey,
-      lastModified: meta.lastModified,
+      // Likewise the storage host's `Last-Modified` stands in on a redirect.
+      lastModified:
+        meta.lastModified ?? httpDate(res.headers.get("last-modified")),
       metadata: meta.metadata,
       size,
     },

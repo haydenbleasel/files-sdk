@@ -294,6 +294,71 @@ describe("createFilesClient — round-trip", () => {
   });
 });
 
+describe("createFilesClient — picker refs of unknown size", () => {
+  test("a NativeFileRef without a size presigns without one and uploads", async () => {
+    const adapter = memory();
+    const files = createFiles({ adapter });
+    const router = createFilesRouter({
+      allowedOrigins: () => true,
+      files,
+      maxUploadSize: 1024,
+      operations: ["upload"],
+      secret: "client-secret",
+    });
+    const presigned: unknown[] = [];
+    const picked = "file:///cache/picked.txt";
+    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+      // React Native's fetch reads a picker uri off disk.
+      if (String(input) === picked) {
+        return Promise.resolve(new Response("picked bytes"));
+      }
+      const payload = init?.body ? JSON.parse(String(init.body)) : undefined;
+      if (payload?.op === "presign") {
+        presigned.push(...payload.files);
+      }
+      return router.handle(new Request(input, init));
+    }) as typeof fetch;
+    const transport: Transport = async (req) => {
+      const res = await router.handle(
+        new Request(req.url, {
+          body: req.body as Blob | null,
+          headers: req.headers,
+          method: req.method,
+        })
+      );
+      return { status: res.status, text: await res.text() };
+    };
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl,
+      transport,
+    });
+
+    const out = await client.upload({
+      name: "picked.txt",
+      type: "text/plain",
+      uri: picked,
+    });
+    // An unknown size is omitted — sending 0 would bind the token to 0 bytes.
+    expect(presigned).toEqual([{ name: "picked.txt", type: "text/plain" }]);
+    expect(out.size).toBe(12);
+    expect(await (await files.download(out.key)).text()).toBe("picked bytes");
+
+    // A known size is still declared (and bound).
+    await client.upload({
+      name: "b.txt",
+      size: 12,
+      type: "text/plain",
+      uri: picked,
+    });
+    expect(presigned.at(-1)).toEqual({
+      name: "b.txt",
+      size: 12,
+      type: "text/plain",
+    });
+  });
+});
+
 describe("createFilesClient — bulk partial failure", () => {
   test("delete-many surfaces per-key errors", async () => {
     const client = clientFor(fakeAdapter() as unknown as Adapter);

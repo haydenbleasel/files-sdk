@@ -5,15 +5,13 @@
 // returns the same lazy `StoredFile` the server SDK returns; `head`/`list`/
 // `search` return plain `FileInfo` metadata, with no body accessors.
 
-import pMap from "p-map";
-
 import type {
   AdapterCapabilities,
   BulkError,
   FileInfo,
   StoredFile,
 } from "../index.js";
-import { assertRangeHonored, makeErrorMapper } from "../internal/core.js";
+import { assertRangeHonored, mapMany } from "../internal/core.js";
 import type { FilesErrorCode } from "../internal/errors.js";
 import { FilesError } from "../internal/errors.js";
 import type {
@@ -29,6 +27,8 @@ import type {
 } from "../internal/files-router/protocol.js";
 import { isFunction, isObject, isString } from "../internal/is.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
+import { isJsonObject } from "../internal/json.js";
+import { abortError } from "../internal/retry.js";
 import { decodeDownload } from "./download-decode.js";
 import type { FileUploadState } from "./progress.js";
 import { aggregate, fileName, initialState } from "./progress.js";
@@ -56,6 +56,11 @@ import { isNativeFileRef } from "./types.js";
 
 const DEFAULT_ENDPOINT = "/api/files";
 const DEFAULT_CONCURRENCY = 4;
+// What the SDK's body normalization stores a string body as when the caller
+// gives no `contentType`, so a client string upload lands the same way.
+const STRING_BODY_TYPE = "text/plain; charset=utf-8";
+// How much of a foreign error body's reason a client error message carries.
+const DETAIL_LIMIT = 200;
 
 const mapCode = (code: string): FilesErrorCode => {
   switch (code) {
@@ -121,23 +126,147 @@ const toOutcome = (wire: WireUploadedFile): UploadOutcome => ({
   ...(wire.data !== undefined && { data: wire.data }),
 });
 
-// A download the gateway redirected fails at the storage host, whose error
-// body isn't the gateway's envelope: classify it by HTTP status the way an
-// adapter would (a missing key is `NotFound`, a refused or expired signature
-// `Unauthorized`), not as a generic `Provider` failure.
-const storageError = makeErrorMapper({
-  codes: { conflict: new Set(), notFound: new Set(), unauthorized: new Set() },
-  extract: (cause) => {
-    const status = cause instanceof Response ? cause.status : undefined;
-    return { message: `storage responded ${String(status)}`, status };
-  },
-  providerLabel: "files-sdk/client",
-});
+const parseJson = (text: string): JsonValue | undefined => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // No parseable body (a proxy's HTML error page, an empty 502).
+  }
+};
 
-/** The gateway's failure envelope (see `toErrorResult`). */
-interface ErrorEnvelope {
-  error?: WireFilesError;
-}
+/**
+ * The gateway's failure envelope (`{ error: { code, message } }`, from
+ * `toErrorResult`), or `undefined` for any other body. Requiring a string
+ * `code` keeps look-alikes out: a storage or auth layer's
+ * `{ "error": "InvalidJWT" }` or GCS's `{ "error": { "code": 404 } }`.
+ */
+const envelopeError = (
+  body: JsonValue | undefined
+): WireFilesError | undefined => {
+  const error = isJsonObject(body) ? body.error : undefined;
+  if (isJsonObject(error) && isString(error.code)) {
+    return {
+      aborted: error.aborted === true,
+      code: error.code,
+      message: isString(error.message) ? error.message : error.code,
+      timedOut: error.timedOut === true,
+    };
+  }
+};
+
+/**
+ * A short reason from a body that isn't the envelope, for the error message:
+ * the JSON `error` / `message` strings an auth or storage layer sends, or a
+ * plain-text body. Markup (an HTML error page, S3's XML) is left out.
+ */
+const failureDetail = (body: JsonValue | undefined, text: string): string => {
+  let parts: unknown[] = [];
+  if (isJsonObject(body)) {
+    const nested = isJsonObject(body.error) ? body.error.message : undefined;
+    parts = [body.error, body.message, nested];
+  } else if (isString(body)) {
+    parts = [body];
+  } else if (body === undefined && !text.trimStart().startsWith("<")) {
+    parts = [text];
+  }
+  const detail = [...new Set(parts.filter(isString))]
+    .join(": ")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  return detail.length > DETAIL_LIMIT
+    ? `${detail.slice(0, DETAIL_LIMIT)}…`
+    : detail;
+};
+
+const statusCode = (status: number): FilesErrorCode => {
+  switch (status) {
+    case 401:
+    case 403: {
+      return "Unauthorized";
+    }
+    case 404: {
+      return "NotFound";
+    }
+    case 409:
+    case 412: {
+      return "Conflict";
+    }
+    default: {
+      return "Provider";
+    }
+  }
+};
+
+/**
+ * A failure response without the gateway's envelope — from auth middleware in
+ * front of the gateway, a proxy, or the storage host a download redirected to
+ * or a presigned upload went to — classified by HTTP status the way an adapter
+ * would (a refused or expired credential is `Unauthorized`, a missing key
+ * `NotFound`), with the body's own reason appended when it has one.
+ */
+const httpFailure = (
+  status: number,
+  label: string,
+  body: JsonValue | undefined,
+  text: string,
+  cause?: unknown
+): FilesError => {
+  // A Range past the end — from an older gateway without an error body, or
+  // the storage host a download redirected to — is the caller's to fix.
+  if (status === 416) {
+    return new FilesError("Invalid", "range not satisfiable", cause);
+  }
+  const detail = failureDetail(body, text);
+  return new FilesError(
+    statusCode(status),
+    detail ? `${label}: ${detail}` : label,
+    cause
+  );
+};
+
+const isAbortError = (cause: unknown): boolean =>
+  isObject(cause) && "name" in cause && cause.name === "AbortError";
+
+/**
+ * Normalize whatever a gateway call threw — a `fetch` network failure (a bare
+ * `TypeError`), a cancelled request's `AbortError`, an unreadable body — into
+ * the `FilesError` every client method promises. A call whose `signal` fired
+ * is flagged `aborted`, as the XHR upload transport already does.
+ */
+const callFailure = (
+  cause: unknown,
+  signal: AbortSignal | undefined
+): FilesError => {
+  if (cause instanceof FilesError) {
+    return cause;
+  }
+  if (signal?.aborted) {
+    return abortError(signal.reason);
+  }
+  return isAbortError(cause) ? abortError(cause) : FilesError.wrap(cause);
+};
+
+/**
+ * A 2xx gateway body, which is always JSON. A cancelled read is rethrown as-is
+ * for {@link callFailure} to flag `aborted`; any other parse failure means the
+ * endpoint isn't the gateway (an SPA fallback page answering 200, say).
+ */
+const readJson = async (
+  res: Response,
+  signal: AbortSignal | undefined
+): Promise<JsonValue> => {
+  try {
+    return await res.json();
+  } catch (error) {
+    throw signal?.aborted || isAbortError(error)
+      ? error
+      : new FilesError(
+          "Provider",
+          `gateway answered ${res.status} with a body that isn't JSON`,
+          error
+        );
+  }
+};
 
 interface NormalizedBody {
   body: Blob | Uint8Array<ArrayBuffer>;
@@ -181,7 +310,7 @@ const toBody = (
   }
   if (isString(body)) {
     return fromBlob(
-      new Blob([body], contentType ? { type: contentType } : undefined)
+      new Blob([body], { type: contentType || STRING_BODY_TYPE })
     );
   }
   const bytes = asBytes(body);
@@ -304,95 +433,103 @@ export const createFilesClient = <TData = unknown>(
   };
 
   const wireError = async (res: Response): Promise<FilesError> => {
+    let text = "";
     try {
-      // SAFETY: a non-OK gateway response carries the `{ error: WireFilesError }`
-      // envelope `toErrorResult` serializes; `error?.code` guards the read, and
-      // any other body (a proxy error page) falls through to the generic error.
-      const body = (await res.json()) as ErrorEnvelope;
-      if (body.error?.code) {
-        return reviveError(body.error);
-      }
+      text = await res.text();
     } catch {
-      // fall through
+      // An unreadable body is classified by its status alone.
     }
-    // A Range past the end — from an older gateway without an error body, or
-    // the storage host a download redirected to — is the caller's to fix.
-    if (res.status === 416) {
-      return new FilesError("Invalid", "range not satisfiable");
+    const body = parseJson(text);
+    const wire = envelopeError(body);
+    if (wire) {
+      return reviveError(wire);
     }
-    return res.redirected
-      ? storageError(res)
-      : new FilesError("Provider", `gateway responded ${res.status}`);
+    const origin = res.redirected ? "storage" : "gateway";
+    return httpFailure(
+      res.status,
+      `${origin} responded ${res.status}`,
+      body,
+      text,
+      res
+    );
   };
 
   const post = async <T>(
     payload: JsonObject,
     signal?: AbortSignal
   ): Promise<T> => {
-    const res = await fetchImpl(endpoint, {
-      body: JSON.stringify(payload),
-      headers: {
-        "content-type": "application/json",
-        ...(await resolveHeaders()),
-      },
-      method: "POST",
-      signal,
-    });
-    if (!res.ok) {
-      throw await wireError(res);
+    try {
+      const res = await fetchImpl(endpoint, {
+        body: JSON.stringify(payload),
+        // The body is always JSON: a global `Content-Type` in `headers` must
+        // not relabel it.
+        headers: {
+          ...(await resolveHeaders()),
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal,
+      });
+      if (!res.ok) {
+        throw await wireError(res);
+      }
+      // SAFETY: a 2xx gateway response is the success envelope of the JSON op
+      // named in `payload.op` — the wire shape `T` each caller pins from
+      // `protocol.ts`; failures were already raised as `FilesError` above.
+      return (await readJson(res, signal)) as T;
+    } catch (error) {
+      throw callFailure(error, signal);
     }
-    // SAFETY: a 2xx gateway response is the success envelope of the JSON op
-    // named in `payload.op` — the wire shape `T` each caller pins from
-    // `protocol.ts`; failures were already raised as `FilesError` above.
-    return (await res.json()) as T;
   };
 
   const downloadOne = async (
     key: string,
     opts?: DownloadCallOptions
   ): Promise<StoredFile> => {
-    const headers = await resolveHeaders();
-    if (opts?.range) {
-      headers.range = `bytes=${opts.range.start}-${opts.range.end ?? ""}`;
+    try {
+      const headers = await resolveHeaders();
+      if (opts?.range) {
+        headers.range = `bytes=${opts.range.start}-${opts.range.end ?? ""}`;
+      }
+      const res = await fetchImpl(
+        `${endpoint}${sep}op=download&key=${encodeURIComponent(key)}`,
+        { headers, method: "GET", signal: opts?.signal }
+      );
+      if (!res.ok) {
+        throw await wireError(res);
+      }
+      if (opts?.range) {
+        // A gateway or storage host that ignores `Range` answers 200 with the
+        // whole object; never hand that back as if it were the slice.
+        assertRangeHonored(res.status, "files-sdk/client");
+      }
+      return decodeDownload(res, key);
+    } catch (error) {
+      throw callFailure(error, opts?.signal);
     }
-    const res = await fetchImpl(
-      `${endpoint}${sep}op=download&key=${encodeURIComponent(key)}`,
-      { headers, method: "GET", signal: opts?.signal }
-    );
-    if (!res.ok) {
-      throw await wireError(res);
-    }
-    if (opts?.range) {
-      // A gateway or storage host that ignores `Range` answers 200 with the
-      // whole object; never hand that back as if it were the slice.
-      assertRangeHonored(res.status, "files-sdk/client");
-    }
-    return decodeDownload(res, key);
   };
 
   // --- upload paths ---
 
   // The through-endpoint upload answers with the op's JSON body on 2xx and the
-  // `{ error: WireFilesError }` envelope otherwise; `undefined` = no parseable
-  // body (a proxy error page), which is reported generically.
+  // `{ error: WireFilesError }` envelope otherwise; any other failure body (a
+  // storage host's, a proxy's error page) is classified by its status.
   const handleEndpointResult = <T>(status: number, text: string): T => {
-    let body: JsonValue | undefined;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // oxlint-disable-next-line sonarjs/no-undefined-assignment -- undefined = no parseable body; null would be a distinct wire value
-      body = undefined;
-    }
+    const body = parseJson(text);
     if (status < 200 || status >= 300) {
-      // SAFETY: a non-2xx gateway body is the `{ error }` envelope from
-      // `toErrorResult`; a missing `error` (foreign body) takes the generic path.
-      const error = (body as ErrorEnvelope | undefined)?.error;
-      throw error
-        ? reviveError(error)
-        : new FilesError("Provider", `upload failed (${status})`);
+      const wire = envelopeError(body);
+      throw wire
+        ? reviveError(wire)
+        : httpFailure(status, `upload failed (${status})`, body, text);
     }
-    // SAFETY: a 2xx body is the success envelope of the upload op — the wire
-    // shape `T` the caller pins from `protocol.ts`.
+    if (!isJsonObject(body)) {
+      throw new FilesError(
+        "Provider",
+        `gateway answered ${status} with a body that isn't JSON`
+      );
+    }
+    // SAFETY: a 2xx JSON body is the success envelope of the upload op — the
+    // wire shape `T` the caller pins from `protocol.ts`.
     return body as T;
   };
 
@@ -434,7 +571,15 @@ export const createFilesClient = <TData = unknown>(
     try {
       const presign = await post<{ uploads: PresignedUpload[] }>(
         {
-          files: [{ name: fileName(file), size: file.size ?? 0, type }],
+          // The token binds the declared size, so an unknown one (a picker
+          // ref without `size`) is omitted, never sent as 0.
+          files: [
+            {
+              name: fileName(file),
+              type,
+              ...(file.size !== undefined && { size: file.size }),
+            },
+          ],
           op: "presign",
           ...(opts?.expiresIn && { expiresIn: opts.expiresIn }),
         },
@@ -474,9 +619,10 @@ export const createFilesClient = <TData = unknown>(
       report();
       return toOutcome(done);
     } catch (error) {
-      settleFailed(state, error, opts?.signal);
+      const failure = callFailure(error, opts?.signal);
+      settleFailed(state, failure, opts?.signal);
       report();
-      throw error;
+      throw failure;
     }
   };
 
@@ -504,9 +650,11 @@ export const createFilesClient = <TData = unknown>(
       state.total = norm.size;
       const result = await transport({
         body: norm.body,
+        // The body's type is set last: a global `Content-Type` in `headers`
+        // (a common API-client default) must not relabel every upload.
         headers: {
-          "content-type": norm.type || "application/octet-stream",
           ...(await resolveHeaders()),
+          "content-type": norm.type || "application/octet-stream",
         },
         method: "PUT",
         onProgress: (loaded, total) => {
@@ -524,9 +672,10 @@ export const createFilesClient = <TData = unknown>(
       report();
       return toOutcome(parsed.file);
     } catch (error) {
-      settleFailed(state, error, opts?.signal);
+      const failure = callFailure(error, opts?.signal);
+      settleFailed(state, failure, opts?.signal);
       report();
-      throw error;
+      throw failure;
     }
   };
 
@@ -544,6 +693,15 @@ export const createFilesClient = <TData = unknown>(
     );
   };
 
+  // Both bulk transfers mirror the SDK's bulk engine: a pool of `concurrency`
+  // collecting per-key failures, or — with `stopOnError` — one item at a time
+  // in input order, resolving at the first failure with what finished plus
+  // that error (nothing is left running behind a settled call).
+  const bulkOptions = (opts?: BulkCallOptions) => ({
+    concurrency: opts?.concurrency ?? concurrency,
+    stopOnError: opts?.stopOnError,
+  });
+
   const uploadMany = async (
     items: UploadManyClientItem[],
     opts?: UploadManyCallOptions
@@ -555,100 +713,47 @@ export const createFilesClient = <TData = unknown>(
     });
     const states = entries.map((entry) => entry.state);
     const report = () => opts?.onProgress?.(aggregate(states), states);
-    let results;
-    try {
-      results = await pMap(
-        entries,
-        async ({ item, prepared, state }) => {
-          try {
-            const out = await putExplicit(
-              item.key,
-              prepared,
-              { contentType: item.contentType, signal: opts?.signal },
-              { report, state }
-            );
-            return { ok: true as const, out };
-          } catch (error) {
-            if (opts?.stopOnError) {
-              throw error;
-            }
-            return {
-              error: FilesError.wrap(error),
-              key: item.key,
-              ok: false as const,
-            };
-          }
-        },
-        { concurrency: opts?.concurrency ?? concurrency }
+    const { errors, results } = await mapMany(
+      entries,
+      (entry) => entry.item.key,
+      ({ item, prepared, state }) =>
+        putExplicit(
+          item.key,
+          prepared,
+          { contentType: item.contentType, signal: opts?.signal },
+          { report, state }
+        ),
+      bulkOptions(opts)
+    );
+    // A `stopOnError` failure ends the batch: items that never started won't,
+    // so settle them rather than leave them "pending" forever.
+    const notStarted = states.filter((state) => state.status === "pending");
+    for (const state of notStarted) {
+      state.status = "aborted";
+      state.error = new FilesError(
+        "Provider",
+        "upload not started: an earlier upload in the batch failed",
+        errors[0]?.error,
+        { aborted: true }
       );
-    } catch (error) {
-      // A `stopOnError` failure ends the batch: items that never started
-      // won't, so settle them rather than leave them "pending" forever.
-      const notStarted = states.filter((state) => state.status === "pending");
-      for (const state of notStarted) {
-        state.status = "aborted";
-        state.error = new FilesError(
-          "Provider",
-          "upload not started: an earlier upload in the batch failed",
-          error,
-          { aborted: true }
-        );
-      }
-      if (notStarted.length > 0) {
-        report();
-      }
-      throw error;
     }
-    const uploaded: UploadOutcome[] = [];
-    const errors: BulkError[] = [];
-    for (const result of results) {
-      if (result.ok) {
-        uploaded.push(result.out);
-      } else {
-        errors.push({ error: result.error, key: result.key });
-      }
+    if (notStarted.length > 0) {
+      report();
     }
-    return errors.length
-      ? { errors, results: uploaded }
-      : { results: uploaded };
+    return errors.length ? { errors, results } : { results };
   };
 
   const downloadMany = async (
     keys: string[],
     opts?: BulkCallOptions & { as?: "blob" | "stream" }
   ) => {
-    const results = await pMap(
+    const { errors, results } = await mapMany(
       keys,
-      async (key) => {
-        try {
-          return {
-            file: await downloadOne(key, {
-              as: opts?.as,
-              signal: opts?.signal,
-            }),
-            ok: true as const,
-          };
-        } catch (error) {
-          if (opts?.stopOnError) {
-            throw error;
-          }
-          return { error: FilesError.wrap(error), key, ok: false as const };
-        }
-      },
-      { concurrency: opts?.concurrency ?? concurrency }
+      (key) => key,
+      (key) => downloadOne(key, { as: opts?.as, signal: opts?.signal }),
+      bulkOptions(opts)
     );
-    const downloaded: StoredFile[] = [];
-    const errors: BulkError[] = [];
-    for (const result of results) {
-      if (result.ok) {
-        downloaded.push(result.file);
-      } else {
-        errors.push({ error: result.error, key: result.key });
-      }
-    }
-    return errors.length
-      ? { errors, results: downloaded }
-      : { results: downloaded };
+    return errors.length ? { errors, results } : { results };
   };
 
   // --- assembled client ---

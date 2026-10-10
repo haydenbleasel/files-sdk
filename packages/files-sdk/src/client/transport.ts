@@ -151,14 +151,23 @@ export const fetchTransport =
     } else {
       body = asRawBody(req.body);
     }
-    const res = await fetchImpl(req.url, {
-      body,
-      headers: req.method === "POST" && req.fields ? undefined : req.headers,
-      method: req.method,
-      signal: req.signal,
-    });
-    req.onProgress?.(total, total);
-    return { status: res.status, text: await res.text() };
+    try {
+      const res = await fetchImpl(req.url, {
+        body,
+        headers: req.method === "POST" && req.fields ? undefined : req.headers,
+        method: req.method,
+        signal: req.signal,
+      });
+      req.onProgress?.(total, total);
+      return { status: res.status, text: await res.text() };
+    } catch (error) {
+      // Settle like the XHR transport: a cancelled request is an `aborted`
+      // FilesError, anything else (a CORS block, a dropped connection) a
+      // network error — never the runtime's raw `TypeError`/`AbortError`.
+      throw req.signal?.aborted
+        ? abortError(req.signal.reason)
+        : new FilesError("Provider", "network error during upload", error);
+    }
   };
 
 /** Default transport: XHR when available (real progress), else fetch. */

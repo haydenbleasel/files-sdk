@@ -51,7 +51,7 @@ if (step.value.truncated) {
 }
 ```
 
-Every verb mirrors the SDK's signature, including the bulk array forms — `files.delete([a, b])`, `files.head([a, b])`, `files.download([a, b])` — which return the same partial-result shape (`{ results, errors? }`) and never throw on a single bad key.
+Every verb mirrors the SDK's signature, including the bulk array forms — `files.delete([a, b])`, `files.head([a, b])`, `files.download([a, b])` — which return the same partial-result shape (`{ results, errors? }`) and never throw on a single bad key. With `stopOnError: true`, items run one at a time in order and the call resolves at the first failure with what finished plus that one error, as on the server; nothing keeps running after it resolves.
 
 ## Uploading
 
@@ -70,6 +70,8 @@ await files.upload([
   { key: "b.txt", body: "two" },
 ]);
 ```
+
+A keyed upload is stored with its `contentType`, else the body's own type: a `Blob`'s `type`, or `text/plain; charset=utf-8` for a string, as the SDK does. A `Content-Type` in the hook's `headers` never overrides it.
 
 Track progress per call, or read the hook's ambient state:
 
@@ -116,7 +118,7 @@ A ranged `download` must come back as `206 Partial Content`. If the gateway (or 
 
 ## Errors & cancellation
 
-A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Invalid" | "Unsupported" | "Provider"`), rebuilt from the wire envelope. The last error from any verb is also mirrored to `files.error` for render-time display. That includes errors thrown while you iterate `listAll()` or `search()`:
+A thrown error is a `FilesError` (`.code` of `"NotFound" | "Unauthorized" | "Conflict" | "ReadOnly" | "Invalid" | "Unsupported" | "Provider"`), rebuilt from the wire envelope. A response that doesn't carry the envelope, such as a `401` from auth middleware in front of the gateway or a storage host's error, is classified by its status (`401`/`403` → `Unauthorized`, `404` → `NotFound`, `409`/`412` → `Conflict`, otherwise `Provider`), with the body's reason in the message. A network failure is a `Provider` error with the original error as its `cause`, and a cancelled call has `aborted: true`. The last error from any verb is also mirrored to `files.error` for render-time display. That includes errors thrown while you iterate `listAll()` or `search()`:
 
 ```tsx lineNumbers
 try {
@@ -146,6 +148,8 @@ const { data, isLoading, refetch } = useList({ prefix: "docs/" });
 const file = useFile(selectedKey); // head() for a preview; disabled without a key
 const hits = useSearch(query, { match: "substring" });
 ```
+
+`data` always belongs to the current input. When the key, options, or endpoint change, the hook drops the old result and reports `isLoading` until the new one arrives, and a disabled query (`useFile(undefined)`, or `enabled: false`) has no `data` or `error`. A `refetch()` keeps the current `data` while it reloads (`isFetching` without `isLoading`), and keeps it if the reload fails. A `signal` in the hook's options cancels its request too, which settles the query with an `aborted` error.
 
 They are deliberately cache-free and dependency-light. For shared caching, bring React Query or SWR and call a `useFiles()` method inside your `queryFn` — the imperative methods are designed for exactly that.
 

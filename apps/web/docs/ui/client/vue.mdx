@@ -79,6 +79,8 @@ list.error; // Ref<FilesError | undefined>
 list.refetch(); // re-run on demand
 ```
 
+`data` always belongs to the current input: when the source changes, the old result is dropped and `isLoading` is `true` until the new one arrives, and a disabled query (`useFile` with no key, or `enabled: false`) has no `data` or `error`. `refetch()` keeps the current `data` while it reloads, and keeps it if the reload fails. A `signal` in the options cancels the query's request too, which settles it with an `aborted` error.
+
 Like the React versions they are cache-free and dependency-light; for shared caching, reach for a query library and call the imperative `useFiles()` methods inside it.
 
 ## Setting up the gateway

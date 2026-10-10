@@ -14,7 +14,11 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { aggregate, createFilesClient } from "../client/index.js";
-import { rememberIteration } from "../client/remember.js";
+import {
+  rememberCall,
+  rememberIteration,
+  signalledFetch,
+} from "../client/remember.js";
 import { defaultTransport } from "../client/transport.js";
 import { createUploadLedger } from "../client/upload-ledger.js";
 import type { UploadManyResult } from "../index.js";
@@ -112,18 +116,10 @@ export const useFiles = <TData = unknown>(
 
   const client = useMemo<FilesClient>(() => {
     const baseFetch = baseFetchImpl ?? fetch;
-    // SAFETY: the client only ever calls `fetchImpl(input, init)`; the runtime
-    // `typeof fetch` also declares static helpers (Bun's `preconnect`) that no
-    // client code path reads.
-    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
-      baseFetch(input, {
-        ...init,
-        signal: mergedSignals(init?.signal ?? undefined),
-      })) as typeof fetch;
     return createFilesClient({
       concurrency,
       endpoint,
-      fetchImpl,
+      fetchImpl: signalledFetch(baseFetch, mergedSignals),
       headers: async () => {
         const { headers } = optsRef.current;
         return isFunction(headers) ? await headers() : (headers ?? {});
@@ -153,14 +149,8 @@ export const useFiles = <TData = unknown>(
     const recordError = (cause: unknown): void => {
       store.patch({ error: FilesError.wrap(cause) });
     };
-    const remember = async <T>(run: () => Promise<T>): Promise<T> => {
-      try {
-        return await run();
-      } catch (error) {
-        recordError(error);
-        throw error;
-      }
-    };
+    const remember = <T>(run: () => Promise<T>): Promise<T> =>
+      rememberCall(run, recordError);
 
     // Folds every report into the ledger (so `uploads` accumulates across
     // calls), and hands the client the merged signal so a hook `abort()`

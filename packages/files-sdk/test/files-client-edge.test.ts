@@ -9,6 +9,7 @@ import type { SendRequest, Transport } from "../src/client/transport.js";
 import { fetchTransport, xhrTransport } from "../src/client/transport.js";
 import type { NativeFileRef } from "../src/client/types.js";
 import { isNativeFileRef } from "../src/client/types.js";
+import { FilesError } from "../src/internal/errors.js";
 
 const ENDPOINT = "https://app.test/api/files";
 
@@ -48,6 +49,357 @@ describe("client error mapping", () => {
     await expect(client.exists("k")).rejects.toMatchObject({
       code: "Provider",
     });
+  });
+});
+
+describe("call failures normalize to FilesError", () => {
+  const throwing = (cause: unknown): typeof fetch =>
+    (() => Promise.reject(cause)) as unknown as typeof fetch;
+
+  test("a network failure on a JSON verb or download is a Provider FilesError", async () => {
+    const network = new TypeError("Failed to fetch");
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: throwing(network),
+    });
+    const head = await client.head("a.txt").catch((error: unknown) => error);
+    expect(head).toBeInstanceOf(FilesError);
+    expect(head).toMatchObject({
+      aborted: false,
+      cause: network,
+      code: "Provider",
+      message: "Failed to fetch",
+    });
+    const download = await client
+      .download("a.txt")
+      .catch((error: unknown) => error);
+    expect(download).toBeInstanceOf(FilesError);
+    expect(download).toMatchObject({ cause: network, code: "Provider" });
+  });
+
+  test("a cancelled call rejects with an aborted FilesError", async () => {
+    const controller = new AbortController();
+    const reason = new Error("user cancelled");
+    controller.abort(reason);
+    // Real fetch rejects with the signal's reason once it has aborted.
+    const fetchImpl = ((_input: unknown, init?: RequestInit) =>
+      Promise.reject(init?.signal?.reason)) as unknown as typeof fetch;
+    const client = createFilesClient({ endpoint: ENDPOINT, fetchImpl });
+    for (const call of [
+      () => client.list({ signal: controller.signal }),
+      () => client.download("k", { signal: controller.signal }),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect(failure).toMatchObject({ aborted: true, cause: reason });
+    }
+    // An `AbortError` with no signal of ours (a fetch wrapper's own timeout,
+    // say) still reads as an abort.
+    const domAbort = new DOMException(
+      "The operation was aborted.",
+      "AbortError"
+    );
+    const wrapped = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: throwing(domAbort),
+    });
+    await expect(wrapped.exists("k")).rejects.toMatchObject({
+      aborted: true,
+      cause: domAbort,
+    });
+  });
+
+  test("a 2xx body that isn't JSON is a Provider FilesError", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(
+        () => new Response("<!doctype html><html></html>", { status: 200 })
+      ),
+    });
+    const failure = await client.head("k").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    expect(failure).toMatchObject({
+      code: "Provider",
+      message: "gateway answered 200 with a body that isn't JSON",
+    });
+    // The through-endpoint upload holds its 2xx body to the same rule.
+    const upload = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () => Promise.resolve({ status: 200, text: "ok" }),
+    });
+    await expect(upload.upload("k", "x")).rejects.toMatchObject({
+      code: "Provider",
+      message: "gateway answered 200 with a body that isn't JSON",
+    });
+  });
+
+  test("a body read cancelled mid-way stays an abort", async () => {
+    const controller = new AbortController();
+    const res = new Response("{}", { status: 200 });
+    Object.defineProperty(res, "json", {
+      value: () => {
+        controller.abort(new Error("stop"));
+        return Promise.reject(controller.signal.reason);
+      },
+    });
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() => res),
+    });
+    await expect(
+      client.list({ signal: controller.signal })
+    ).rejects.toMatchObject({
+      aborted: true,
+      message: "Operation aborted: stop",
+    });
+  });
+
+  test("a custom transport's raw failure is normalized for keyed and keyless uploads", async () => {
+    const raw = new TypeError("Load failed");
+    const transport: Transport = () => Promise.reject(raw);
+    const presign = ((_input: unknown, init?: RequestInit) => {
+      const { op } = JSON.parse(String(init?.body));
+      return Promise.resolve(
+        Response.json(
+          op === "presign"
+            ? {
+                uploads: [
+                  { id: "t", key: "k", target: { method: "PUT", url: "u" } },
+                ],
+              }
+            : { files: [] }
+        )
+      );
+    }) as unknown as typeof fetch;
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: presign,
+      transport,
+    });
+    for (const call of [
+      () => client.upload("k", "x"),
+      () => client.upload(new Blob(["x"])),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect(failure).toMatchObject({ cause: raw, code: "Provider" });
+    }
+  });
+
+  test("fetchTransport settles a network failure or abort like the XHR transport", async () => {
+    const network = new TypeError("Failed to fetch");
+    await expect(
+      fetchTransport(throwing(network))({
+        body: new Blob(["x"]),
+        method: "PUT",
+        url: "u",
+      })
+    ).rejects.toMatchObject({
+      cause: network,
+      code: "Provider",
+      message: "network error during upload",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    const aborted = await fetchTransport(
+      throwing(new DOMException("aborted", "AbortError"))
+    )({
+      body: new Blob(["x"]),
+      method: "PUT",
+      signal: controller.signal,
+      url: "u",
+    }).catch((error: unknown) => error);
+    expect(aborted).toBeInstanceOf(FilesError);
+    expect(aborted).toMatchObject({ aborted: true });
+  });
+});
+
+describe("non-envelope failure bodies", () => {
+  const uploadFailing = (status: number, text: string) =>
+    createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport: () => Promise.resolve({ status, text }),
+    }).upload("k.txt", "x");
+
+  test("a string `error` field is not the gateway envelope", async () => {
+    // A Supabase/auth-layer body: `error` is a string, not `{ code }`.
+    await expect(
+      uploadFailing(
+        400,
+        JSON.stringify({
+          error: "InvalidJWT",
+          message: "jwt expired",
+          statusCode: "400",
+        })
+      )
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "upload failed (400): InvalidJWT: jwt expired",
+    });
+  });
+
+  test("statuses map to codes and the body's reason rides the message", async () => {
+    const cases: [number, string, string, string][] = [
+      [401, '{"message":"jwt expired"}', "Unauthorized", ": jwt expired"],
+      [403, '{"error":{"message":"denied"}}', "Unauthorized", ": denied"],
+      [404, "", "NotFound", ""],
+      [409, "busy", "Conflict", ": busy"],
+      [412, '"precondition failed"', "Conflict", ": precondition failed"],
+      // GCS's JSON error: a numeric `code` is not the envelope either.
+      [
+        404,
+        '{"error":{"code":404,"message":"No such object"}}',
+        "NotFound",
+        ": No such object",
+      ],
+      // Markup (an HTML page, S3's XML) is left out of the message.
+      [500, "<html><body>Bad gateway</body></html>", "Provider", ""],
+      [502, "[1,2]", "Provider", ""],
+    ];
+    for (const [status, text, code, detail] of cases) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential assertions
+      await expect(uploadFailing(status, text)).rejects.toMatchObject({
+        code,
+        message: `upload failed (${status})${detail}`,
+      });
+    }
+  });
+
+  test("a long reason is collapsed and truncated", async () => {
+    const failure = await uploadFailing(
+      500,
+      `too\n\n   ${"x".repeat(400)}`
+    ).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FilesError);
+    const { message } = failure as FilesError;
+    expect(message.startsWith("upload failed (500): too x")).toBe(true);
+    expect(message.endsWith("…")).toBe(true);
+    expect(message.length).toBeLessThan(260);
+  });
+
+  test("a 401 from auth middleware on a JSON verb is Unauthorized", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(
+        () => new Response("Unauthorized", { status: 401 })
+      ),
+    });
+    await expect(client.list()).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "gateway responded 401: Unauthorized",
+    });
+  });
+
+  test("an unreadable failure body is classified by status alone", async () => {
+    const res = new Response("x", { status: 403 });
+    Object.defineProperty(res, "text", {
+      value: () => Promise.reject(new Error("body stream already read")),
+    });
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() => res),
+    });
+    await expect(client.head("k")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "gateway responded 403",
+    });
+  });
+
+  test("an envelope without a string message falls back to its code", async () => {
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: fetchReturning(() =>
+        Response.json({ error: { code: "Conflict" } }, { status: 409 })
+      ),
+    });
+    await expect(client.copy("a", "b")).rejects.toMatchObject({
+      aborted: false,
+      code: "Conflict",
+      message: "Conflict",
+      timedOut: false,
+    });
+  });
+});
+
+describe("upload content types", () => {
+  const capture = () => {
+    const sent: SendRequest[] = [];
+    const transport: Transport = (req) => {
+      sent.push(req);
+      const key = new URL(req.url).searchParams.get("key");
+      return Promise.resolve({
+        status: 200,
+        text: JSON.stringify({ file: { contentType: "x", key, size: 1 } }),
+      });
+    };
+    return { sent, transport };
+  };
+
+  test("a global Content-Type header never overrides a keyed upload's type", async () => {
+    const { sent, transport } = capture();
+    const posts: Headers[] = [];
+    const fetchImpl = ((_input: unknown, init?: RequestInit) => {
+      posts.push(new Headers(init?.headers));
+      return Promise.resolve(Response.json({ exists: true }));
+    }) as unknown as typeof fetch;
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl,
+      headers: {
+        Authorization: "Bearer t",
+        "Content-Type": "application/json",
+      },
+      transport,
+    });
+    await client.upload(
+      "pic.png",
+      new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" })
+    );
+    await client.upload("doc.pdf", new Uint8Array([1]), {
+      contentType: "application/pdf",
+    });
+    expect(sent.map((req) => req.headers?.["content-type"])).toEqual([
+      "image/png",
+      "application/pdf",
+    ]);
+    // The other headers still ride along.
+    expect(sent[0]?.headers?.authorization).toBe("Bearer t");
+    // JSON verbs always label their JSON body, whatever the global says.
+    const relabel = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl,
+      headers: { "content-type": "text/plain" },
+    });
+    await relabel.exists("k");
+    expect(posts.at(-1)?.get("content-type")).toBe("application/json");
+  });
+
+  test("a string body defaults to text/plain like the SDK", async () => {
+    const { sent, transport } = capture();
+    const states: FileUploadState[] = [];
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport,
+    });
+    await client.upload("notes.txt", "hello", {
+      onProgress: (_agg, perFile) => {
+        states.push(...perFile);
+      },
+    });
+    await client.upload("data.json", "{}", { contentType: "application/json" });
+    await client.upload([{ body: "a", key: "bulk.txt" }]);
+    expect(sent.map((req) => req.headers?.["content-type"])).toEqual([
+      "text/plain; charset=utf-8",
+      // An explicit type still wins (Bun's Blob appends a charset to it).
+      expect.stringMatching(/^application\/json/u),
+      "text/plain; charset=utf-8",
+    ]);
+    expect(states[0]?.type).toBe("text/plain; charset=utf-8");
   });
 });
 
@@ -387,37 +739,110 @@ describe("upload state lifecycle", () => {
       fetchImpl: okStub,
       transport: () => Promise.resolve({ status: 500, text: "" }),
     });
-    await expect(
-      client.upload(
-        [
-          { body: "a", key: "one" },
-          { body: "b", key: "two" },
-        ],
-        { concurrency: 1, onProgress, stopOnError: true }
-      )
-    ).rejects.toBeDefined();
+    const result = await client.upload(
+      [
+        { body: "a", key: "one" },
+        { body: "b", key: "two" },
+      ],
+      { onProgress, stopOnError: true }
+    );
+    // Like the SDK: the partial result, not a rejection.
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((e) => e.key)).toEqual(["one"]);
     const last = seen.at(-1);
     expect(last?.map((state) => state.status)).toEqual(["error", "aborted"]);
     expect(last?.[1]?.error?.aborted).toBe(true);
+    expect(last?.[1]?.error?.cause).toBe(result.errors?.[0]?.error);
   });
 
-  test("stopOnError with nothing left pending rethrows without a report", async () => {
+  test("stopOnError with nothing left pending resolves without a sweep report", async () => {
     let reports = 0;
     const client = createFilesClient({
       endpoint: ENDPOINT,
       fetchImpl: okStub,
       transport: () => Promise.resolve({ status: 500, text: "" }),
     });
-    await expect(
-      client.upload([{ body: "a", key: "one" }], {
-        onProgress: () => {
-          reports += 1;
-        },
-        stopOnError: true,
-      })
-    ).rejects.toBeDefined();
+    const result = await client.upload([{ body: "a", key: "one" }], {
+      onProgress: () => {
+        reports += 1;
+      },
+      stopOnError: true,
+    });
+    expect(result.errors).toHaveLength(1);
     // uploading + error only — no extra "aborted" sweep.
     expect(reports).toBe(2);
+  });
+
+  test("stopOnError runs items one at a time and leaves none running after it resolves", async () => {
+    const started: string[] = [];
+    const finished: string[] = [];
+    const transport: Transport = async (req) => {
+      const key = new URL(req.url).searchParams.get("key") ?? "";
+      started.push(key);
+      await Bun.sleep(key === "bad" ? 1 : 5);
+      finished.push(key);
+      return key === "bad"
+        ? {
+            status: 500,
+            text: JSON.stringify({
+              error: { code: "Provider", message: "boom" },
+            }),
+          }
+        : {
+            status: 200,
+            text: JSON.stringify({ file: { contentType: "x", key, size: 1 } }),
+          };
+    };
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl: okStub,
+      transport,
+    });
+    const result = await client.upload(
+      [
+        { body: "a", key: "first" },
+        { body: "b", key: "bad" },
+        { body: "c", key: "never" },
+      ],
+      // `concurrency` is ignored under stopOnError, as in the SDK.
+      { concurrency: 8, stopOnError: true }
+    );
+    expect(result.results.map((r) => r.key)).toEqual(["first"]);
+    expect(result.errors?.map((e) => [e.key, e.error.message])).toEqual([
+      ["bad", "boom"],
+    ]);
+    await Bun.sleep(20);
+    // Nothing started after the failure, and nothing landed after the call.
+    expect(started).toEqual(["first", "bad"]);
+    expect(finished).toEqual(["first", "bad"]);
+  });
+
+  test("bulk download with stopOnError resolves the partial result in input order", async () => {
+    const requested: string[] = [];
+    const fetchImpl = ((input: RequestInfo | URL) => {
+      const key = new URL(String(input)).searchParams.get("key") ?? "";
+      requested.push(key);
+      return Promise.resolve(
+        key === "missing"
+          ? Response.json(
+              { error: { code: "NotFound", message: "gone" } },
+              { status: 404 }
+            )
+          : new Response(key, { status: 200 })
+      );
+    }) as typeof fetch;
+    const client = createFilesClient({ endpoint: ENDPOINT, fetchImpl });
+    const result = await client.download(["a", "missing", "c"], {
+      stopOnError: true,
+    });
+    expect(result.results.map((f) => f.key)).toEqual(["a"]);
+    expect(result.errors?.map((e) => [e.key, e.error.code])).toEqual([
+      ["missing", "NotFound"],
+    ]);
+    expect(requested).toEqual(["a", "missing"]);
+    // Without stopOnError every key runs and a clean batch omits `errors`.
+    const all = await client.download(["a", "c"]);
+    expect(all).toEqual({ results: [expect.anything(), expect.anything()] });
   });
 
   test("keyless upload honours opts.contentType over the file's type", async () => {
@@ -510,14 +935,15 @@ describe("download edge paths", () => {
         message: "range not satisfiable",
       });
     }
-    // A non-envelope failure from the gateway itself stays generic.
+    // A non-envelope failure from in front of the gateway (auth middleware, a
+    // proxy) is classified by its status too, with its reason appended.
     const direct = createFilesClient({
       endpoint: ENDPOINT,
       fetchImpl: fetchReturning(() => new Response("nope", { status: 404 })),
     });
     await expect(direct.download("k")).rejects.toMatchObject({
-      code: "Provider",
-      message: "gateway responded 404",
+      code: "NotFound",
+      message: "gateway responded 404: nope",
     });
   });
 
@@ -573,6 +999,75 @@ describe("download edge paths", () => {
     expect(redirected.etag).toBe('"from-storage"');
     const none = decodeDownload(new Response("bytes"), "k");
     expect(none.etag).toBeUndefined();
+  });
+
+  test("decodeDownload takes the size from the meta header on a full download", () => {
+    const meta = (fields: Record<string, number>) =>
+      btoa(JSON.stringify({ key: "k", ...fields }));
+    // Compression middleware dropped Content-Length: the gateway's size stands.
+    const compressed = decodeDownload(
+      new Response("bytes", {
+        headers: { "x-files-meta": meta({ size: 12 }) },
+      }),
+      "k"
+    );
+    expect(compressed.size).toBe(12);
+    // ...and wins over a rewritten (compressed) Content-Length.
+    const rewritten = decodeDownload(
+      new Response("bytes", {
+        headers: { "content-length": "5", "x-files-meta": meta({ size: 12 }) },
+      }),
+      "k"
+    );
+    expect(rewritten.size).toBe(12);
+    // A 206 is a slice: its size is its own Content-Length.
+    const slice = decodeDownload(
+      new Response("by", {
+        headers: { "content-length": "2", "x-files-meta": meta({ size: 12 }) },
+        status: 206,
+      }),
+      "k"
+    );
+    expect(slice.size).toBe(2);
+    // A garbled size or length is ignored rather than becoming NaN.
+    const garbled = decodeDownload(
+      new Response("bytes", {
+        headers: {
+          "content-length": "abc",
+          "x-files-meta": meta({ size: -1 }),
+        },
+      }),
+      "k"
+    );
+    expect(garbled.size).toBe(0);
+  });
+
+  test("decodeDownload falls back to Last-Modified on a redirected download", () => {
+    const at = Date.UTC(2026, 9, 1, 12, 0, 0);
+    const redirected = decodeDownload(
+      new Response("bytes", {
+        headers: { "last-modified": new Date(at).toUTCString() },
+      }),
+      "k"
+    );
+    expect(redirected.lastModified).toBe(at);
+    // The meta header's value wins when present.
+    const proxied = decodeDownload(
+      new Response("bytes", {
+        headers: {
+          "last-modified": new Date(at).toUTCString(),
+          "x-files-meta": btoa(JSON.stringify({ key: "k", lastModified: 5 })),
+        },
+      }),
+      "k"
+    );
+    expect(proxied.lastModified).toBe(5);
+    const invalid = decodeDownload(
+      new Response("bytes", { headers: { "last-modified": "not a date" } }),
+      "k"
+    );
+    expect(invalid.lastModified).toBeUndefined();
+    expect(decodeDownload(new Response("x"), "k").lastModified).toBeUndefined();
   });
 
   test("decodeDownload buffers via arrayBuffer when Response.body is missing", async () => {
@@ -915,9 +1410,10 @@ describe("native file refs", () => {
     // The wire `contentType` surfaces as the outcome's `contentType`.
     expect(out.contentType).toBe("image/png");
     expect(sent?.body).toBeInstanceOf(Blob);
-    // presign info derives the name from the uri and defaults size to 0
+    // presign info derives the name from the uri; an unknown size is left
+    // out (the token binds what's declared, so 0 would refuse the bytes)
     expect(posts[0]?.files?.[0]?.name).toBe("photo.png");
-    expect(posts[0]?.files?.[0]?.size).toBe(0);
+    expect(posts[0]?.files?.[0]).not.toHaveProperty("size");
   });
 
   test("keyless ref upload rides the form untouched on a POST target", async () => {

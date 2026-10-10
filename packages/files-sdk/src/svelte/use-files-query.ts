@@ -9,7 +9,9 @@
 // `$:` block swapped in a new query), the in-flight request is aborted, just as
 // React/Vue abort on unmount. A synchronous peek (`get(store)`) doesn't count —
 // only a subscription that outlives the tick it was made in arms the abort —
-// and a query aborted this way re-runs when it is subscribed to again.
+// and a query aborted this way re-runs when it is subscribed to again. The
+// binding-level `signal` option cancels a query's request too, which settles it
+// with an `aborted` error.
 
 import type {
   FilesClient,
@@ -18,6 +20,7 @@ import type {
 } from "../client/index.js";
 // oxlint-disable-next-line react-doctor/no-barrel-import -- public entrypoint; the client barrel is the documented import surface
 import { createFilesClient } from "../client/index.js";
+import { followSignal } from "../client/remember.js";
 import type { FileInfo, ListResult } from "../index.js";
 import { FilesError } from "../internal/errors.js";
 import type { ReadableStore } from "./store.js";
@@ -44,9 +47,11 @@ const makeClient = (config?: QueryConfig): FilesClient =>
 
 const useQuery = <T>(
   enabled: boolean,
-  run: (signal: AbortSignal) => Promise<T>
+  run: (signal: AbortSignal) => Promise<T>,
+  external: AbortSignal | undefined
 ): QueryReturn<T> => {
-  let controller: AbortController | undefined;
+  // Cancels the run in flight without settling it (a re-run or idle abort).
+  let stop: (() => void) | undefined;
   let pending = false;
   // Stores with at least one subscriber; `armed` once one has held on past
   // the tick it subscribed in; `idled` when a run was aborted for want of any.
@@ -73,7 +78,7 @@ const useQuery = <T>(
       armed = false;
       if (pending) {
         idled = true;
-        controller?.abort();
+        stop?.();
       }
     }
   };
@@ -84,7 +89,7 @@ const useQuery = <T>(
   const isLoading = writable(false, watch);
 
   const load = () => {
-    controller?.abort();
+    stop?.();
     idled = false;
     if (!enabled) {
       pending = false;
@@ -92,28 +97,37 @@ const useQuery = <T>(
       isLoading.set(false);
       return;
     }
-    const current = new AbortController();
-    controller = current;
+    const controller = new AbortController();
+    // Unlike `stop`, an abort from the external signal settles the run.
+    const detach = followSignal(controller, external);
+    let live = true;
+    stop = () => {
+      live = false;
+      detach();
+      controller.abort();
+    };
     pending = true;
     isFetching.set(true);
     isLoading.set(data.get() === undefined);
     errorStore.set(undefined);
     void (async () => {
       try {
-        const result = await run(current.signal);
-        if (!current.signal.aborted) {
+        const result = await run(controller.signal);
+        if (live) {
           pending = false;
           data.set(result);
           isFetching.set(false);
           isLoading.set(false);
         }
       } catch (error) {
-        if (!current.signal.aborted) {
+        if (live) {
           pending = false;
           errorStore.set(FilesError.wrap(error));
           isFetching.set(false);
           isLoading.set(false);
         }
+      } finally {
+        detach();
       }
     })();
   };
@@ -127,8 +141,10 @@ export const useList = (
   config?: QueryConfig
 ): QueryReturn<ListResult> => {
   const client = makeClient(config);
-  return useQuery(config?.enabled ?? true, (signal) =>
-    client.list({ ...opts, signal })
+  return useQuery(
+    config?.enabled ?? true,
+    (signal) => client.list({ ...opts, signal }),
+    config?.signal
   );
 };
 
@@ -139,8 +155,10 @@ export const useFile = (
   const client = makeClient(config);
   // SAFETY: `enabled` is false whenever `key` is undefined, and `useQuery`
   // never invokes `run` while disabled.
-  return useQuery((config?.enabled ?? true) && key !== undefined, (signal) =>
-    client.head(key as string, { signal })
+  return useQuery(
+    (config?.enabled ?? true) && key !== undefined,
+    (signal) => client.head(key as string, { signal }),
+    config?.signal
   );
 };
 
@@ -163,6 +181,7 @@ export const useSearch = (
         out.push(file);
       }
       return out;
-    }
+    },
+    config?.signal
   );
 };

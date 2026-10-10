@@ -76,7 +76,7 @@ The query stores load on creation and expose `data` / `error` / `isLoading` / `i
 {/if}
 ```
 
-When the last subscriber of a query's stores goes away, its in-flight request is aborted, like React and Vue do on unmount. That happens when the component is destroyed, or when a `$:` block swaps in a new query. A one-off read such as `get(store)` doesn't count. `refetch()` re-runs the same query on demand.
+When the last subscriber of a query's stores goes away, its in-flight request is aborted, like React and Vue do on unmount. That happens when the component is destroyed, or when a `$:` block swaps in a new query. A one-off read such as `get(store)` doesn't count. `refetch()` re-runs the same query on demand, keeping its `data` while it reloads. A `signal` in the options cancels the query's request too, which settles it with an `aborted` error.
 
 `useFile(key)` (a `head()` for previews) and `useSearch(pattern, opts)` work the same way.
 
